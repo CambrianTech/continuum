@@ -23,9 +23,12 @@ export interface CorrelatorStatus {
 export class ResponseCorrelator {
   private pendingRequests = new Map<UUID, PendingRequest>();
   private defaultTimeoutMs: number;
+  private cleanupTimer?: ReturnType<typeof setInterval>;
 
   constructor(defaultTimeoutMs: number = 30000) {
     this.defaultTimeoutMs = defaultTimeoutMs;
+    // Periodic sweep for orphaned requests (every 60s)
+    this.cleanupTimer = setInterval(() => this.cleanup(), 60_000);
   }
 
   /**
@@ -147,5 +150,17 @@ export class ResponseCorrelator {
    */
   get pendingCount(): number {
     return this.pendingRequests.size;
+  }
+
+  /**
+   * Stop cleanup timer and reject all pending requests.
+   * Call on disconnect or shutdown to prevent orphaned timers.
+   */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+    this.rejectAll('Correlator destroyed');
   }
 }

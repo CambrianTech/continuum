@@ -38,7 +38,7 @@ export class ResourceManager {
       availableMemory: 16384
     };
 
-    console.log('🔧 ResourceManager: Initialized with moderator:', this.moderator.constructor.name);
+    // ResourceManager initialized with moderator
   }
 
   /**
@@ -72,7 +72,7 @@ export class ResourceManager {
       lastActivityTime: Date.now()
     });
 
-    console.log(`🔧 ResourceManager: Registered adapter ${displayName} (GPU: ${quota}MB, Workers: ${maxWorkers})`);
+    // Adapter registered (logged per-persona during init — not actionable)
   }
 
   /**
@@ -85,7 +85,7 @@ export class ResourceManager {
       this.systemResources.availableGpuMemory += adapter.gpuMemoryUsed;
       this.systemResources.activeWorkers -= adapter.activeWorkers;
       this.adapters.delete(adapterId);
-      console.log(`🔧 ResourceManager: Unregistered adapter ${adapter.displayName}`);
+      // Adapter unregistered
     }
   }
 

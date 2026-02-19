@@ -17,9 +17,9 @@ import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 class EventRateLimiter {
   private counts = new Map<string, number>();
   private windowStart = Date.now();
-  private readonly windowMs = 100;      // 100ms window
-  private readonly maxPerWindow = 20;   // Max 20 of same event per window
-  private readonly warnThreshold = 10;  // Warn at 10+ per window
+  private readonly windowMs = 1000;      // 1-second window (matches Rust-side rate limiter)
+  private readonly maxPerWindow = 200;   // Max 200 of same event per second
+  private readonly warnThreshold = 100;  // Warn at 100+ per second
   private blocked = new Set<string>();
   private warned = new Set<string>();   // Track warned events to avoid spam
 
@@ -40,7 +40,7 @@ class EventRateLimiter {
           .sort((a, b) => b[1] - a[1]);
 
         if (hotEvents.length > 0) {
-          console.warn(`⚠️ EVENT ACTIVITY: ${hotEvents.map(([e, c]) => `${e}(${c})`).join(', ')}`);
+          console.warn(`[EventRateLimiter] EVENT ACTIVITY: ${hotEvents.map(([e, c]) => `${e}(${c})`).join(', ')}`);
         }
       }
 
@@ -63,7 +63,7 @@ class EventRateLimiter {
     if (count === this.warnThreshold && !this.warned.has(eventName)) {
       this.warned.add(eventName);
       this.totalWarned++;
-      console.warn(`⚠️ EVENT TRENDING: "${eventName}" at ${count}x in ${this.windowMs}ms (blocking at ${this.maxPerWindow})`);
+      console.warn(`[EventRateLimiter] EVENT TRENDING: "${eventName}" at ${count}x in ${this.windowMs}ms (blocking at ${this.maxPerWindow})`);
     }
 
     // Block if over threshold
@@ -75,7 +75,7 @@ class EventRateLimiter {
       if (this.blockedHistory.length > 100) {
         this.blockedHistory.shift();
       }
-      console.error(`🛑 EVENT CASCADE BLOCKED: "${eventName}" fired ${count}x in ${this.windowMs}ms`);
+      console.error(`[EventRateLimiter] EVENT CASCADE BLOCKED: "${eventName}" fired ${count}x in ${this.windowMs}ms`);
       return true;
     }
 

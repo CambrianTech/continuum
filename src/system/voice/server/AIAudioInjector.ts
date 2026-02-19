@@ -208,7 +208,6 @@ export class AIAudioInjector {
    * This needs to be fixed in VoiceSynthesizeServerCommand to include session context.
    */
   static subscribeToTTSEvents(personaId: string, personaName: string): () => void {
-    console.log(`🎙️ ${personaName}: Subscribing to TTS audio events (PROTOTYPE - needs callId in events)`);
 
     // Track active injectors by call ID
     const activeInjectors = new Map<string, AIAudioInjector>();

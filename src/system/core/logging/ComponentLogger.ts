@@ -17,19 +17,12 @@ import type { LoggerConfig, LogCategory } from './LoggerTypes';
 import { LogLevel } from './LoggerTypes';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
 import { LogLevelRegistry } from './LogLevelRegistry';
+import type { LogBatcher } from './LogBatcher';
 
 /** Interface for the parent logger (to avoid circular imports) */
 export interface ParentLogger {
   queueMessage(logFile: string, message: string): void;
-  workerClient: {
-    writeLog(entry: {
-      category: string;
-      level: WorkerLogLevel;
-      component: string;
-      message: string;
-      args?: any[];
-    }): Promise<unknown>;  // Returns WriteLogResult but we don't use it
-  } | null;
+  logBatcher: LogBatcher | null;
   useRustLogger: boolean;
   logDir: string;
 }
@@ -74,9 +67,9 @@ export class ComponentLogger {
       }
     }
 
-    // File output - route to Rust worker OR TypeScript queue
+    // File output - route to Rust worker (via LogBatcher) OR TypeScript queue
     if (this.parentLogger && this.logFilePath) {
-      if (this.parentLogger.useRustLogger && this.parentLogger.workerClient) {
+      if (this.parentLogger.useRustLogger && this.parentLogger.logBatcher) {
         this.sendToWorker(level as WorkerLogLevel, message, args, timestamp);
       } else {
         const formattedArgs = args.length > 0
@@ -127,15 +120,13 @@ export class ComponentLogger {
       }
     }
 
-    if (this.parentLogger.workerClient) {
-      this.parentLogger.workerClient.writeLog({
+    if (this.parentLogger.logBatcher) {
+      this.parentLogger.logBatcher.queue({
         category,
         level,
         component: this.component,
         message,
         args: args.length > 0 ? args : undefined
-      }).catch((err) => {
-        console.error(`[Logger] Rust worker write failed for ${this.component}:`, err.message);
       });
     }
   }

@@ -675,61 +675,69 @@ export class PersonaUser extends AIUser {
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
     // Also wires the bridge to inbox for Rust-backed channel routing
     try {
+      // Phase A: Rust bridge must init first — everything else depends on it
       await this._rustCognition?.initialize();
       if (this._rustCognition) {
         this.inbox.setRustBridge(this._rustCognition);
       }
       this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected (inbox routing enabled)`);
 
-      // Sync rate limiter config to Rust (mirrors TS RateLimiter config)
+      // Phase B: These are independent of each other — run in parallel
+      // - Rate limiter sync (~5ms)
+      // - Adapter sync + genome sync (~20-50ms)
+      // - Corpus ORM query (~100-500ms, I/O bound)
       if (this._rustCognition) {
-        const rlConfig = this.rateLimiter.getConfig();
-        await this._rustCognition.configureRateLimiter(
-          rlConfig.minSecondsBetweenResponses,
-          rlConfig.maxResponsesPerSession
-        );
-        this.log.info(`🦀 ${this.displayName}: Rate limiter synced to Rust (min=${rlConfig.minSecondsBetweenResponses}s, max=${rlConfig.maxResponsesPerSession})`);
-      }
+        const parallelTasks: Promise<void>[] = [];
 
-      // Sync genome adapter registry to Rust for model selection
-      if (this._rustCognition && this.memory?.genome) {
-        const adapters = this.memory.genome.getAllAdapters().map(a => ({
-          name: a.getName(),
-          domain: a.getDomain(),
-          ollama_model_name: a.getTrainedModelName() ?? undefined,
-          is_loaded: a.isLoaded(),
-          is_current: a === this.memory!.genome.getCurrentAdapter(),
-          priority: a.getPriority(),
-        }));
-        if (adapters.length > 0) {
-          await this._rustCognition.syncAdapters(adapters as any);
-          this.log.info(`🦀 ${this.displayName}: ${adapters.length} adapters synced to Rust for model selection`);
+        // Task 1: Sync rate limiter config to Rust
+        parallelTasks.push((async () => {
+          const rlConfig = this.rateLimiter.getConfig();
+          await this._rustCognition!.configureRateLimiter(
+            rlConfig.minSecondsBetweenResponses,
+            rlConfig.maxResponsesPerSession
+          );
+          this.log.info(`🦀 ${this.displayName}: Rate limiter synced to Rust (min=${rlConfig.minSecondsBetweenResponses}s, max=${rlConfig.maxResponsesPerSession})`);
+        })());
+
+        // Task 2: Sync genome adapters to Rust for model selection + LRU eviction
+        if (this.memory?.genome) {
+          parallelTasks.push((async () => {
+            const adapters = this.memory!.genome.getAllAdapters().map(a => ({
+              name: a.getName(),
+              domain: a.getDomain(),
+              ollama_model_name: a.getTrainedModelName() ?? undefined,
+              is_loaded: a.isLoaded(),
+              is_current: a === this.memory!.genome.getCurrentAdapter(),
+              priority: a.getPriority(),
+            }));
+            if (adapters.length > 0) {
+              await this._rustCognition!.syncAdapters(adapters as any);
+              this.log.info(`🦀 ${this.displayName}: ${adapters.length} adapters synced to Rust for model selection`);
+            }
+            this.memory!.genome.setRustBridge(this._rustCognition!);
+            await this.memory!.genome.syncToRust();
+            this.log.info(`🦀 ${this.displayName}: Genome paging engine synced to Rust`);
+          })());
         }
 
-        // Wire Rust bridge into genome for LRU eviction decisions
-        this.memory.genome.setRustBridge(this._rustCognition);
-        await this.memory.genome.syncToRust();
-        this.log.info(`🦀 ${this.displayName}: Genome paging engine synced to Rust`);
+        // Task 3: Load corpus from ORM (I/O bound — overlaps with sync tasks above)
+        // Then load into Rust compute engine for sub-millisecond 6-layer parallel recall
+        parallelTasks.push((async () => {
+          try {
+            const { memories, events } = await this.loadCorpusFromORM();
+            const corpusResult = await this._rustCognition!.memoryLoadCorpus(memories, events);
+            this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+          } catch (error) {
+            this.log.error(`${this.displayName}: Corpus load failed:`, error);
+            // Non-fatal — recall will return empty results until corpus is loaded
+          }
+        })());
+
+        await Promise.all(parallelTasks);
       }
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
       // Don't throw - let persona initialize, but message handling will fail loudly
-    }
-
-    // STEP 1.5.2: Load memory corpus into Rust compute engine
-    // Bulk-loads all memories + timeline events from ORM (longterm.db) into Rust's
-    // in-memory corpus. This enables sub-millisecond 6-layer parallel recall.
-    // Data path: ORM (DataOpen/DataList) → map to Rust types → IPC → DashMap<Arc<MemoryCorpus>>
-    // Must happen AFTER bridge.initialize() and BEFORE any RAG/recall usage.
-    if (this._rustCognition) {
-      try {
-        const { memories, events } = await this.loadCorpusFromORM();
-        const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
-        this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
-      } catch (error) {
-        this.log.error(`${this.displayName}: Corpus load failed:`, error);
-        // Non-fatal — recall will return empty results until corpus is loaded
-      }
     }
 
     // STEP 1.6: Register with ResourceManager for holistic resource allocation

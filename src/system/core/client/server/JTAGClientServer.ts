@@ -70,26 +70,21 @@ export class JTAGClientServer extends JTAGClient {
    * Server clients don't need session storage - base class handles session management
    * Base class already updates this._session which is used by sessionId getter
    */
-  protected updateClientSessionStorage(sessionId: UUID): void {
+  protected updateClientSessionStorage(_sessionId: UUID): void {
     // No-op for server clients - session already updated by base class
-    console.log(`🏷️ JTAGClientServer: Session updated to: ${sessionId} (managed by base class)`);
   }
-  
-  protected async getLocalSystem(): Promise<JTAGSystem | null> {
-    // FIXED: Never auto-create systems - only connect to existing ones
-    // This prevents server clients from automatically creating new JTAG systems
-    // when they should connect to existing systems (like test-bench on port WS_PORT)
 
-    console.log(`🔍 getLocalSystem() CHECK at ${new Date().toISOString()}: instance=${JTAGSystemServer.instance ? 'EXISTS' : 'NULL'}`);
+  protected async getLocalSystem(): Promise<JTAGSystem | null> {
+    // Never auto-create systems - only connect to existing ones.
+    // This prevents server clients from creating new JTAG systems
+    // when they should connect to existing ones.
 
     // Only return existing instance if it's already running in same process
     if (JTAGSystemServer.instance) {
-      console.log('🏠 JTAGClientServer: Found existing local system instance');
       return JTAGSystemServer.instance;
     }
 
     // Force remote connection for all other cases
-    console.log('🌐 JTAGClientServer: No local system - using remote connection');
     return null;
   }
   

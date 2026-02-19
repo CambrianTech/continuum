@@ -134,22 +134,27 @@ export class PersonaTaskExecutor {
 
     // Update task in database with completion status
     const duration = Date.now() - startTime;
-    await ORM.update<TaskEntity>(
-      COLLECTIONS.TASKS,
-      task.taskId,
-      {
-        status,
-        completedAt: new Date(),
-        result: {
-          success: status === 'completed',
-          output: outcome,
-          error: status === 'failed' ? outcome : undefined,
-          metrics: {
-            latencyMs: duration
+    try {
+      await ORM.update<TaskEntity>(
+        COLLECTIONS.TASKS,
+        task.taskId,
+        {
+          status,
+          completedAt: new Date(),
+          result: {
+            success: status === 'completed',
+            output: outcome,
+            error: status === 'failed' ? outcome : undefined,
+            metrics: {
+              latencyMs: duration
+            }
           }
         }
-      }
-    );
+      );
+    } catch {
+      // Task was deleted between dequeue and completion — work was still done, just can't record it
+      this.log(`⚠️ ${this.displayName}: Task ${task.taskId.slice(0, 8)} vanished during execution (deleted externally?)`);
+    }
 
     // Record activity in persona state (affects energy/mood)
     const complexity = task.priority; // Use priority as proxy for complexity

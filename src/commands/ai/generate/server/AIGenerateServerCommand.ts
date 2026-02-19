@@ -38,7 +38,6 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
       // Mode selection: RAG context building OR direct messages
       if (params.roomId) {
         // RAG MODE: Build context from chat room (SAME code path as PersonaUser)
-        console.log(`🤖 AI Generate: Building RAG context for room ${params.roomId.slice(0, 8)}...`);
 
         // Find persona if not specified
         let targetPersonaId = params.personaId;
@@ -57,7 +56,6 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           const personaRecord = usersResult.data[0];
           targetPersonaId = personaRecord.id;
           personaDisplayName = personaRecord.data.displayName;
-          console.log(`✅ AI Generate: Using persona "${personaRecord.data.displayName}" (${targetPersonaId.slice(0, 8)})`);
         }
 
         // Build RAG context (SAME code as PersonaUser.respondToMessage line 207-215)
@@ -134,7 +132,6 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
 
       } else if (params.messages) {
         // DIRECT MODE: Use provided messages
-        console.log(`🤖 AI Generate: Using provided messages (${params.messages.length})...`);
         request = paramsToRequest(params);
 
       } else {
@@ -143,7 +140,6 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
 
       // PREVIEW MODE: Return request without calling LLM
       if (params.preview) {
-        console.log(`👁️  AI Generate: Preview mode - returning request without LLM call`);
         const formatted = this.formatRequestPreview(request, ragContext);
 
         return createAIGenerateResultFromParams(params, {
@@ -156,15 +152,9 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
       }
 
       // GENERATION MODE: Call AIProviderDaemon
-      console.log(`🤖 AI Generate: Calling LLM with ${request.messages.length} messages...`);
       const response = await AIProviderDaemon.generateText(request);
-
-      const result = responseToResult(response, params);
-      console.log(`✅ AI Generate: Generated ${result.usage?.outputTokens} tokens in ${result.responseTimeMs}ms`);
-
-      return result;
+      return responseToResult(response, params);
     } catch (error) {
-      console.error(`❌ AI Generate: Execution failed:`, error);
       return createErrorResult(params, error instanceof Error ? error.message : String(error));
     }
   }

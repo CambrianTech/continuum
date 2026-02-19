@@ -44,6 +44,21 @@ export interface WriteLogResult {
 }
 
 /**
+ * Payload for log/write-batch requests.
+ * Sends multiple log entries in a single IPC call.
+ */
+export interface WriteLogBatchPayload {
+  entries: WriteLogPayload[];
+}
+
+/**
+ * Result of log/write-batch command.
+ */
+export interface WriteLogBatchResult {
+  entriesQueued: number;
+}
+
+/**
  * Payload for flush-logs requests.
  */
 export interface FlushLogsPayload {

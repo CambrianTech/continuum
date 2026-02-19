@@ -84,8 +84,8 @@ export function logOperationStart(
       console.log(`[ORM] ${operation} ${collection} completed in ${durationMs}ms`);
     }
 
-    // Warn on slow operations
-    if (durationMs > 100) {
+    // Warn on slow operations (>1000ms — raised from 100ms to reduce startup noise)
+    if (durationMs > 1000) {
       console.warn(`[ORM] SLOW: ${operation} ${collection} took ${durationMs}ms`);
     }
   };

@@ -335,8 +335,9 @@ export class TimingCollector {
       }
     }
 
-    // Console debug log for slow operations (>500ms — raised from 100ms to reduce spam)
-    if (timing.totalMs > 500) {
+    // Console debug log for slow operations (>500ms, excluding fire-and-forget operations)
+    // log/write-batch has a 10s timeout by design — not a real slowness indicator
+    if (timing.totalMs > 500 && !timing.operation.includes('log/write-batch')) {
       const phases = Object.entries(timing.phases)
         .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}ms`)
         .join(', ');

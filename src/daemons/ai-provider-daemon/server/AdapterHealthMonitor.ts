@@ -174,6 +174,25 @@ export class AdapterHealthMonitor {
   }
 
   /**
+   * Compute per-adapter check interval with exponential backoff.
+   * Healthy adapters use base interval. Failed adapters back off exponentially
+   * up to a ceiling, so they still recover when network returns.
+   *
+   * Backoff schedule (with 30s base):
+   *   0 failures → 30s
+   *   1 failure  → 60s
+   *   2 failures → 120s
+   *   3 failures → 240s (4 min)
+   *   5+ failures → 300s (5 min ceiling)
+   */
+  private adapterCheckInterval(state: AdapterHealthState, baseInterval: number): number {
+    if (state.consecutiveFailures === 0) return baseInterval;
+    const backoff = baseInterval * Math.pow(2, state.consecutiveFailures);
+    const ceiling = 5 * 60 * 1000; // 5-minute max — ensures recovery from transient network issues
+    return Math.min(backoff, ceiling);
+  }
+
+  /**
    * Check a single adapter's health
    * Concurrent-safe with per-adapter lock
    */
@@ -188,8 +207,11 @@ export class AdapterHealthMonitor {
       return;
     }
 
+    // Exponential backoff for failing adapters (still retries at ceiling for recovery)
+    const effectiveInterval = this.adapterCheckInterval(state, checkInterval);
+
     // Check if enough time has passed since last check
-    if (now - state.lastCheckTime < checkInterval) {
+    if (now - state.lastCheckTime < effectiveInterval) {
       return; // Too soon for this adapter
     }
 
@@ -211,7 +233,12 @@ export class AdapterHealthMonitor {
         state.consecutiveFailures = 0;
       } else {
         state.consecutiveFailures++;
-        log.warn(`⚠️  ${state.adapter.providerId}: Health check failed (${state.consecutiveFailures} consecutive failures)`);
+        const nextRetryMs = this.adapterCheckInterval(state, checkInterval);
+        const nextRetrySec = Math.round(nextRetryMs / 1000);
+        // Only log on first failure and at backoff milestones (powers of 2) to reduce noise
+        if (state.consecutiveFailures === 1 || (state.consecutiveFailures & (state.consecutiveFailures - 1)) === 0) {
+          log.warn(`⚠️  ${state.adapter.providerId}: Health check failed (${state.consecutiveFailures} consecutive, next retry in ${nextRetrySec}s)`);
+        }
 
         // Get max failures threshold from SystemDaemon
         const systemDaemon = SystemDaemon.sharedInstance();

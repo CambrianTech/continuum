@@ -45,6 +45,13 @@ export interface EventEmitOptions {
  */
 export class Events {
   /**
+   * Registry of event names with active DOM listeners.
+   * Used by EventsDaemonBrowser to filter DOM dispatch — only events in this set get dispatched.
+   * Events.subscribe() registers here automatically in browser environment.
+   */
+  static readonly domInterest = new Set<string>();
+
+  /**
    * ✨ Universal event emission - works in server, browser, shared code
    *
    * TWO FORMS:
@@ -366,9 +373,12 @@ export class Events {
 
         document.addEventListener(patternOrEventName, eventHandler);
 
+        // Register DOM interest so EventsDaemonBrowser dispatches this event to DOM
+        this.domInterest.add(patternOrEventName);
+
         return () => {
           document.removeEventListener(patternOrEventName, eventHandler);
-          //console.log(`🔌 Events: Unsubscribed from ${patternOrEventName}`);
+          this.domInterest.delete(patternOrEventName);
         };
       } else {
         // Server environment - store exact-match subscriptions in map

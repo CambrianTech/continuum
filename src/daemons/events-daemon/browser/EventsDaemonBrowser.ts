@@ -32,14 +32,15 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
   private domEventBridge: DOMEventBridge;
   private subscriptionManager = new EventSubscriptionManager();
 
+  /**
+   * Registry of event names with active DOM listeners.
+   * DOM CustomEvent dispatch is skipped for events not in this set.
+   * Widgets register via registerDOMInterest() when they need document-level events.
+   */
+  private static _domInterest = new Set<string>();
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-
-    // Reduce log spam - debug logs removed
-    // console.log(`🔥 CLAUDE-BROWSER-DAEMON-DEBUG-${Date.now()}: EventsDaemonBrowser constructor called!`);
-    // console.log(`🔥 Context: ${context.environment}/${context.uuid}`);
-    // console.log(`🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "${this.subpath}"`);
-    // console.log(`🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/${this.subpath}"`);
 
     // Setup DOM event bridge for widget communication
     this.domEventBridge = new DOMEventBridge(this.eventManager);
@@ -56,32 +57,69 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
   }
 
   /**
+   * Register interest in receiving DOM CustomEvents for a specific event name.
+   * Only events with registered interest will be dispatched to the document.
+   * Returns an unregister function.
+   */
+  public static registerDOMInterest(eventName: string): () => void {
+    EventsDaemonBrowser._domInterest.add(eventName);
+    return () => {
+      EventsDaemonBrowser._domInterest.delete(eventName);
+    };
+  }
+
+  /**
+   * Check if anything has registered DOM interest for this event name.
+   * Checks both:
+   * - Events.domInterest (populated by Events.subscribe() in browser)
+   * - _domInterest (populated by registerDOMInterest() from BaseWidget/WidgetEventServiceBrowser)
+   * Uses prefix matching: 'data:chat_messages' matches 'data:chat_messages:created'.
+   */
+  private hasDOMInterest(eventName: string): boolean {
+    // Direct match in either registry
+    if (Events.domInterest.has(eventName)) return true;
+    if (EventsDaemonBrowser._domInterest.has(eventName)) return true;
+
+    // Prefix match against both registries
+    for (const interest of Events.domInterest) {
+      if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
+    }
+    for (const interest of EventsDaemonBrowser._domInterest) {
+      if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
+    }
+    return false;
+  }
+
+  /**
    * Handle local event bridging - emit to event system AND DOM for BaseWidget
+   *
+   * Dispatch order:
+   * 1. Internal EventEmitter (DOMEventBridge handles mapped events)
+   * 2. SubscriptionManager (exact, wildcard, elegant pattern matching)
+   * 3. Legacy wildcard subscriptions
+   * 4. DOM CustomEvent ONLY if a widget registered interest (filter-first, not spam-then-filter)
    */
   protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
-    // 1. Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
+    // 1. Emit to local event system — DOMEventBridge handles its mapped events
     this.eventManager.events.emit(eventName, eventData);
 
-    // 2. Dispatch DOM event for BaseWidget integration (backward compatibility)
-    const domEvent = new CustomEvent(eventName, {
-      detail: eventData
-    });
-
-    // Type-safe document access for browser environment
-    if (typeof globalThis !== 'undefined' && 'document' in globalThis) {
-      (globalThis as typeof globalThis & { document: Document }).document.dispatchEvent(domEvent);
-    }
-
-    // 3. Trigger unified subscription manager (NEW!)
-    // This handles exact, wildcard, and elegant pattern subscriptions
+    // 2. Trigger unified subscription manager (exact, wildcard, and elegant patterns)
     this.subscriptionManager.trigger(eventName, eventData);
 
-    // 4. Legacy: Also check wildcard subscriptions from Events.subscribe()
-    // TODO: Migrate to unified subscription manager
+    // 3. Legacy: Also check wildcard subscriptions from Events.subscribe()
     try {
       Events.checkWildcardSubscriptions(eventName, eventData);
     } catch (error) {
       console.error('Failed to check wildcard subscriptions:', error);
+    }
+
+    // 4. DOM dispatch — ONLY if a widget registered interest for this event namespace
+    // This prevents creating DOM CustomEvents for high-frequency events no widget cares about
+    if (this.hasDOMInterest(eventName)) {
+      if (typeof globalThis !== 'undefined' && 'document' in globalThis) {
+        const domEvent = new CustomEvent(eventName, { detail: eventData });
+        (globalThis as typeof globalThis & { document: Document }).document.dispatchEvent(domEvent);
+      }
     }
   }
 

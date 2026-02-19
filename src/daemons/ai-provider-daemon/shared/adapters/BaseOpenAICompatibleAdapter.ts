@@ -151,6 +151,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
   protected readonly config: OpenAICompatibleConfig;
   protected isInitialized = false;
 
+  // Throttle per-status log messages (avoid spamming same error every call)
+  private _lastStatusLogTime: Map<string, number> = new Map();
+  private readonly _statusLogThrottleMs = 5 * 60 * 1000; // 5 minutes
+
   constructor(config: OpenAICompatibleConfig) {
     super();
     this.config = config;
@@ -731,7 +735,13 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
               timestamp: Date.now(),
             });
 
-            this.log(null, 'error', `💰 ${this.providerName}: ${status} - ${errorBody.slice(0, 200)}`);
+            // Throttle log to once per 5 minutes per status (avoid spamming same error)
+            const now = Date.now();
+            const lastLog = this._lastStatusLogTime.get(status) ?? 0;
+            if (now - lastLog >= this._statusLogThrottleMs) {
+              this._lastStatusLogTime.set(status, now);
+              this.log(null, 'error', `💰 ${this.providerName}: ${status} - ${errorBody.slice(0, 200)}`);
+            }
           }
 
           throw new Error(`HTTP ${response.status}: ${errorBody}`);

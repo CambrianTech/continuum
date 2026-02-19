@@ -870,6 +870,10 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       await this.connectionBroker.shutdown();
       verbose('✅ JTAGClient: Connection Broker shut down');
     }
+
+    // Cleanup ResponseCorrelator — stops periodic cleanup timer and rejects orphaned requests
+    this.responseCorrelator.destroy();
+    verbose('✅ JTAGClient: ResponseCorrelator destroyed');
   }
 
   /**

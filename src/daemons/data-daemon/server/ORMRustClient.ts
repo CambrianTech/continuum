@@ -143,7 +143,6 @@ export class ORMRustClient {
       this.socket.on('connect', () => {
         this.connected = true;
         this.connecting = false;
-        console.log('[ORMRustClient] Connected to continuum-core');
         resolve();
       });
 
@@ -223,8 +222,8 @@ export class ORMRustClient {
         const networkAndRustMs = totalMs - timing.stringifyMs - timing.writeMs - parseMs;
         this.pendingTimings.delete(response.requestId);
 
-        // Log slow operations (>50ms threshold matches Rust)
-        if (totalMs > 50) {
+        // Log slow operations (>1000ms — raised from 50ms to reduce startup noise)
+        if (totalMs > 1000) {
           console.warn(`[ORMRustClient] SLOW IPC: ${timing.command} total=${totalMs}ms (stringify=${timing.stringifyMs}ms write=${timing.writeMs}ms network+rust=${networkAndRustMs}ms parse=${parseMs}ms)`);
         }
       }
