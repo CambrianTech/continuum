@@ -4,7 +4,7 @@
 **Authors**: Joel (system architect), Claude Code (implementation & observation)
 **Date**: 2025-11-16
 **Status**: Observational Study - Documented in Real-Time
-**Implementation**: `src/debug/jtag/system/user/server/modules/cognition/`
+**Implementation**: `src/system/user/server/modules/cognition/`
 
 ---
 
@@ -786,7 +786,7 @@ The foundation is cognition observability. The emergent behavior is swarm intell
 
 ## Appendix B: Cognition Data Schema
 
-See implementation: `src/debug/jtag/system/data/entities/`
+See implementation: `src/system/data/entities/`
 
 **Files**:
 - `CognitionStateEntity.ts` - Self-state snapshots

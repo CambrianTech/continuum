@@ -101,7 +101,7 @@ python3 -c "import unsloth; print(unsloth.__version__)"
 
 ```bash
 .continuum/genome/python/train-wrapper.sh \
-  src/debug/jtag/system/genome/fine-tuning/server/adapters/scripts/peft-train.py \
+  src/system/genome/fine-tuning/server/adapters/scripts/peft-train.py \
   --config config.json \
   --output output/
 ```
@@ -245,5 +245,5 @@ If training fails with unclear errors:
 4. Check logs in temporary test directory
 
 For architecture questions, see:
-- `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
-- `src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md`
+- `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+- `src/system/user/server/modules/LORA-GENOME-PAGING.md`

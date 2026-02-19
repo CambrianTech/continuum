@@ -512,7 +512,7 @@ class PersonaUser {
 ## 9. Cognition Observability & Emergent Swarm Diagnosis
 **Paper**: `cognition-observability-swarm-diagnosis/` ✅ COMPLETE
 **Status**: Observational study documented 2025-11-16
-**Implementation**: `src/debug/jtag/system/user/server/modules/cognition/`
+**Implementation**: `src/system/user/server/modules/cognition/`
 
 ### Novel Contribution
 **Complete introspection system** enabling AI agents to observe their own and each other's cognitive processes, leading to emergent **swarm diagnosis** - collective debugging through shared introspection.

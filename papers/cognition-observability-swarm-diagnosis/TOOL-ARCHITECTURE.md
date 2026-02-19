@@ -202,7 +202,7 @@ interface CodeReadResult extends CommandResult {
 
 **Example Usage**:
 ```bash
-./jtag code/read --path="src/debug/jtag/system/user/server/PersonaUser.ts" \
+./jtag code/read --path="src/system/user/server/PersonaUser.ts" \
   --startLine=318 --endLine=400
 ```
 
@@ -1423,7 +1423,7 @@ class ToolValidator {
       '.git/config',
       'node_modules',
       '.continuum/sessions',  // Contains sensitive session data
-      'src/debug/jtag/.continuum/genome/secrets'
+      'src/.continuum/genome/secrets'
     ]);
     this.blockedPatterns = [
       /\.env(\.|$)/,          // Any .env files

@@ -16,7 +16,7 @@ Enable AI personas to autonomously read, search, analyze, and eventually execute
 
 ### ✅ code/read - Read source files
 ```bash
-./jtag code/read --path="continuum/src/debug/jtag/package.json"
+./jtag code/read --path="continuum/src/package.json"
 ./jtag code/read --path="src/PersonaUser.ts" --startLine=100 --endLine=150
 ```
 
@@ -53,7 +53,7 @@ Enable AI personas to autonomously read, search, analyze, and eventually execute
 
 ### code/list - List files and directories
 ```bash
-./jtag code/list --path="src/debug/jtag/commands" --pattern="*.ts"
+./jtag code/list --path="src/commands" --pattern="*.ts"
 ./jtag code/list --path="daemons" --recursive=true --type="directory"
 ```
 
@@ -71,7 +71,7 @@ Enable AI personas to autonomously read, search, analyze, and eventually execute
 
 ### code/tree - Generate directory tree
 ```bash
-./jtag code/tree --path="src/debug/jtag" --depth=3 --excludePatterns="node_modules,dist"
+./jtag code/tree --path="src" --depth=3 --excludePatterns="node_modules,dist"
 ```
 
 **Features:**

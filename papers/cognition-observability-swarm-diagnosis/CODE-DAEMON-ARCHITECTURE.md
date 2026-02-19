@@ -1314,7 +1314,7 @@ const DEFAULT_PERSONA_ACCESS: PersonaAccessConfig = {
   pathRestrictions: new Map([
     ['helper-ai', {
       allowedPaths: [
-        'src/debug/jtag',
+        'src',
         'docs',
         'papers'
       ],
@@ -1580,7 +1580,7 @@ export class PersonaUser extends AIUser {
 
 # Add persona to whitelist
 ./jtag code/config/add-persona --personaId="new-ai-id" \
-  --allowedPaths="src/debug/jtag" \
+  --allowedPaths="src" \
   --readPerMinute=10
 
 # Remove persona from whitelist

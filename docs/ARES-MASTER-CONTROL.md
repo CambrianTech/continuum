@@ -326,7 +326,7 @@ Ares: "✅ Monitoring active. I'll notify you if I detect:
 
 ## Component 2: Ares PersonaUser (Intelligence Layer)
 
-**Location**: `src/debug/jtag/system/user/server/personas/AresPersona.ts`
+**Location**: `src/system/user/server/personas/AresPersona.ts`
 
 **Purpose**: AI-powered security analyst that reads daemon logs, explains threats, and interacts with users.
 

@@ -75,7 +75,7 @@ echo ""
 mkdir -p "$TEST_DIR/output"
 
 if "$SCRIPT_DIR/train-wrapper.sh" \
-    "$(dirname "$SCRIPT_DIR")/../../src/debug/jtag/system/genome/fine-tuning/server/adapters/scripts/unsloth-train.py" \
+    "$(dirname "$SCRIPT_DIR")/../../src/system/genome/fine-tuning/server/adapters/scripts/unsloth-train.py" \
     --config "$TEST_DIR/config.json" \
     --output "$TEST_DIR/output"; then
 

@@ -122,7 +122,7 @@
 **✅ SUCCESS INDICATOR:**
 ```bash
 # Search event/data code for specific entities - should find minimal results
-cd src/debug/jtag
+cd src
 
 # Events daemon should be 100% generic
 grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" daemons/events-daemon/

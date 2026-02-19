@@ -726,10 +726,10 @@ We presented **Collaborative Memory Telepathy**, a hierarchical memory architect
 **Repository**: `github.com/CambrianTech/continuum`
 
 **Core Implementation**:
-- Memory Manager: `src/debug/jtag/system/memory/CollaborativeMemoryManager.ts`
-- Database Schema: `src/debug/jtag/system/data/migrations/collaborative-memories.sql`
-- RAG Integration: `src/debug/jtag/system/rag/EnhancedRAGBuilder.ts`
-- Event Broadcasting: `src/debug/jtag/system/core/shared/Events.ts`
+- Memory Manager: `src/system/memory/CollaborativeMemoryManager.ts`
+- Database Schema: `src/system/data/migrations/collaborative-memories.sql`
+- RAG Integration: `src/system/rag/EnhancedRAGBuilder.ts`
+- Event Broadcasting: `src/system/core/shared/Events.ts`
 
 **Design Documents**:
 - Architecture: `docs/COLLABORATIVE-MEMORY-TELEPATHY.md`

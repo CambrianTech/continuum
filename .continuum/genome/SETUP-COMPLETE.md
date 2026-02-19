@@ -30,7 +30,7 @@
 ### 2. TypeScript Integration
 
 **Modified Files:**
-- `src/debug/jtag/system/genome/fine-tuning/server/adapters/UnslothLoRAAdapter.ts`
+- `src/system/genome/fine-tuning/server/adapters/UnslothLoRAAdapter.ts`
   - `supportsFineTuning()`: Checks if environment bootstrapped
   - `executeUnslothTraining()`: Uses wrapper script (auto-activates conda)
   - Clear error messages if environment missing
@@ -299,7 +299,7 @@ If Unsloth import fails, training falls back to standard PyTorch (slower but wor
 
 .gitignore                     # MODIFIED - Added genome paths
 
-src/debug/jtag/system/genome/fine-tuning/server/adapters/
+src/system/genome/fine-tuning/server/adapters/
 └── UnslothLoRAAdapter.ts     # MODIFIED - Uses wrapper script
 ```
 
@@ -319,7 +319,7 @@ src/debug/jtag/system/genome/fine-tuning/server/adapters/
 ## Questions?
 
 **Setup issues:** See `.continuum/genome/python/README.md`
-**Architecture questions:** See `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+**Architecture questions:** See `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
 **Training errors:** Run test script first to verify environment
 
 **Philosophy:** "Test the shit out of it" - Every piece is validated before integration.

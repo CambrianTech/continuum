@@ -1,0 +1,308 @@
+# JTAG Test Classification System
+
+**Autonomous Development with Zero Friction**
+
+This system organizes all JTAG tests by **what** they test (Category), **how** they test (Level), and **why** they matter (Importance) for autonomous AI development.
+
+## 🎯 **Core Philosophy**
+
+**Screenshots, logging, router, and events are SACRED** - if any break, JTAG debugging becomes useless. This system prevents that from ever happening through intelligent test classification.
+
+## 📊 **Test Categories** (What Component)
+
+### 🚨 **BLOCKER Categories** (Commit-blocking if broken)
+- **`transport`** - WebSocket connections, message transport
+- **`messaging`** - Message correlation, routing, request/response  
+- **`routing`** - Command routing, daemon communication
+- **`session`** - Session management, state tracking
+
+### 📸 **CRITICAL Categories** (Push-blocking if broken) 
+- **`screenshot`** - Visual debugging, querySelector, capture
+- **`commands`** - Command discovery, execution, validation
+- **`exec`** - JavaScript execution in browser, result capture
+- **`data`** - Database operations, CRUD, persistence
+
+### 📈 **HIGH Categories** (CI-blocking if broken)
+- **`chat`** - Multi-user messaging, rooms, history
+- **`events`** - Real-time events, cross-context routing
+- **`widgets`** - UI components, lifecycle, state
+
+### 📊 **MEDIUM/LOW Categories** (Quality/optimization)
+- **`health`** - Monitoring, logging, console capture
+- **`performance`** - Speed, memory, optimization
+- **`security`** - Validation, XSS protection
+- **`compatibility`** - Cross-browser support
+
+## 🏗️ **Test Levels** (How Complex)
+
+- **`foundation`** - Core types, utilities, infrastructure
+- **`unit`** - Individual components in isolation
+- **`integration`** - Component interactions, cross-module
+- **`system`** - Full system with all components running
+- **`e2e`** - Complete user workflows, UI interactions
+
+## ⚡ **Importance Hierarchy** (Git Impact)
+
+- **`BLOCKER`** - Blocks commits (nothing works)
+- **`CRITICAL`** - Blocks pushes (core features broken)  
+- **`HIGH`** - Blocks CI (enhanced features broken)
+- **`MEDIUM`** - Quality gates (performance/monitoring)
+- **`LOW`** - Polish (edge cases, optimizations)
+- **`EXPERIMENTAL`** - Future features (never blocks)
+
+## 🎮 **Usage Commands**
+
+### **By Importance** (Git Hook Ready)
+```bash
+npm run test:blocker        # 🚨 Blocks commits (15s)
+npm run test:critical       # 📸 Blocks pushes (2min) 
+npm run test:core-debugging # Both BLOCKER + CRITICAL
+npm run test:high           # 📈 Enhanced features
+```
+
+### **By Category** (Feature Focused)
+```bash
+npm run test:transport      # 🔗 WebSocket, routing, messaging
+npm run test:screenshots    # 📸 Visual debugging
+npm run test:chat           # 💬 Multi-user collaboration  
+npm run test:events         # 📡 Real-time events
+npm run test:routing        # 🔀 Command routing
+npm run test:logging        # 📝 Console capture
+```
+
+### **By Level** (Architecture Focused)
+```bash
+npm run test:foundation     # 🏛️ Core infrastructure
+npm run test:unit           # 🧪 Individual components
+npm run test:integration    # 🔗 Component interactions
+npm run test:system         # 🏗️ Full system validation
+npm run test:e2e            # 🎯 End-to-end workflows
+```
+
+## 🎯 **Test-Driven Development for Chat & Personas**
+
+### **Chat System TDD Workflow**
+```bash
+# 1. RED: Write failing chat tests
+npm run test:chat           # Should fail initially
+
+# 2. GREEN: Implement minimal chat functionality
+npm run test:transport      # Ensure messaging foundation works
+npm run test:events         # Ensure real-time delivery works
+npm run test:chat           # Should pass now
+
+# 3. REFACTOR: Optimize while maintaining tests
+npm run test:core-debugging # Full validation
+```
+
+### **Realistic Personas TDD** 
+```bash
+# Build from transport up to AI integration
+npm run test:transport      # WebSocket foundation
+npm run test:data           # Database persistence  
+npm run test:chat           # Multi-user messaging
+# → Then integrate OpenAI/Anthropic APIs with real data
+```
+
+---
+
+# Legacy Layer-Based Testing (Being Migrated)
+
+## 🧅 Layer-Based Testing Structure (OLD SYSTEM)
+
+Following the middle-out testing methodology, JTAG tests are organized by validation layers that must pass in sequence:
+
+### **Layer 1: Foundation Tests** - `layer-1-foundation/`
+**Prerequisites**: TypeScript compilation passes, core types load
+- `JTAGWebSocket.simple.test.ts` - WebSocket basic functionality
+- `JTAGWebSocket.test.ts` - WebSocket comprehensive testing  
+- `console-mapping.test.ts` - Console interception and mapping validation
+
+**Success Criteria**: 
+- ✅ WebSocket connections establish successfully
+- ✅ Console methods map correctly (console.error → jtag.error) 
+- ✅ Base message transport works
+
+### **Layer 2: Daemon Processes** - `layer-2-daemon-processes/`
+**Prerequisites**: Layer 1 passes
+- `logging-system-integration.test.ts` - End-to-end log file creation
+- `websocket-server-integration.test.ts` - Server daemon startup and operation
+
+**Success Criteria**:
+- ✅ JTAG server starts on configured port (9001)
+- ✅ Log files created with correct platform.level.txt pattern
+- ✅ WebSocket server accepts and processes messages
+
+### **Layer 4: System Integration** - `layer-4-system-integration/`
+**Prerequisites**: Layers 1-2 pass
+- `jtag-integration.test.ts` - Full JTAG system integration
+- `websocket-integration.test.ts` - Client-server message flow
+- `jtag-real-integration.test.ts` - Real-world scenario testing
+- `module-integration-test.ts` - Module loading and API testing
+- `standalone-integration-test.ts` - Standalone system validation
+- `screenshot-integration.test.ts` - Screenshot functionality testing
+
+**Success Criteria**:
+- ✅ Browser ↔ Server communication works end-to-end
+- ✅ Screenshot requests process correctly
+- ✅ Log entries persist to files with correct format
+- ✅ Module can run independently of continuum system
+
+### **Layer 6: Browser Integration** - `layer-6-browser-integration/`
+**Prerequisites**: Layers 1,2,4 pass
+- `browser-automation-test.ts` - Puppeteer browser automation
+- `integration-with-browser-open.ts` - Live browser testing
+- `manual-browser-test.ts` - Interactive browser validation
+
+**Success Criteria**:
+- ✅ Browser loads JTAG correctly via script tag
+- ✅ Console interception works in real browser context
+- ✅ Screenshots capture actual browser content
+- ✅ WebSocket connection stable in browser environment
+
+### **Examples as Integration Tests** - `examples/`
+- `browser-simulation.html` - Interactive browser testing interface
+- **Used by integration tests** - Examples ARE the integration validation
+
+**Success Criteria**:
+- ✅ Standalone HTML page runs JTAG completely independently
+- ✅ All buttons trigger correct JTAG functionality
+- ✅ Server communication works without CORS issues
+- ✅ Visual validation demonstrates working system
+
+## 🔧 Test Execution Strategy
+
+### **Sequential Layer Testing** (REQUIRED ORDER)
+```bash
+# Layer 1: Foundation
+npm run test:layer-1
+
+# Layer 2: Daemon Processes  
+npm run test:layer-2
+
+# Layer 4: System Integration (skip layer 3 for JTAG)
+npm run test:layer-4
+
+# Layer 6: Browser Integration
+npm run test:layer-6
+
+# Full validation
+npm run test:all
+```
+
+### **Individual Test Categories**
+```bash
+# WebSocket-specific tests
+npm run test:websocket:all
+
+# Browser automation (Puppeteer)  
+npm run test:browser
+
+# Standalone validation
+npm run test:standalone
+
+# Module integration
+npm run test:module
+
+# Manual interactive testing
+npm run test:manual
+```
+
+### **Integration with Continuum Tests**
+```bash
+# From continuum root - includes JTAG in full test suite
+npm test
+
+# Test JTAG module specifically from continuum root
+npm test -- src/
+
+# Independent JTAG testing (can run without continuum)
+cd src && npm test
+```
+
+## 📊 Test Coverage Matrix
+
+| Feature | Layer 1 | Layer 2 | Layer 4 | Layer 6 | Examples |
+|---------|---------|---------|---------|---------|----------|
+| **WebSocket Connection** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Console Mapping** | ✅ | - | ✅ | ✅ | ✅ |
+| **Log File Creation** | - | ✅ | ✅ | - | - |
+| **Screenshot API** | - | - | ✅ | ✅ | ✅ |  
+| **Browser Integration** | - | - | - | ✅ | ✅ |
+| **Standalone Operation** | - | - | ✅ | ✅ | ✅ |
+| **Error Handling** | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+## 🎯 Debugging Failed Tests
+
+### **Layer 1 Failures**
+```bash
+# Check TypeScript compilation
+npx tsc --noEmit --project .
+
+# Verify WebSocket functionality
+node -e "console.log(require('ws').WebSocket)"
+
+# Test console mapping directly
+npx tsx tests/layer-1-foundation/console-mapping.test.ts
+```
+
+### **Layer 2 Failures** 
+```bash
+# Check port availability
+lsof -i :9001
+
+# Verify log directory permissions
+ls -la ../../../.continuum/jtag/logs/
+
+# Test daemon startup
+npx tsx tests/layer-2-daemon-processes/logging-system-integration.test.ts
+```
+
+### **Layer 4 Failures**
+```bash
+# Check full integration
+npx tsx tests/layer-4-system-integration/jtag-real-integration.test.ts
+
+# Verify module loading
+npx tsx tests/layer-4-system-integration/module-integration-test.ts
+
+# Test screenshot functionality
+npx tsx tests/layer-4-system-integration/screenshot-integration.test.ts
+```
+
+### **Layer 6 Failures**
+```bash
+# Test with Puppeteer
+npx tsx tests/layer-6-browser-integration/browser-automation-test.ts
+
+# Manual browser validation
+npm run test:manual
+# Open browser to http://localhost:8080 and test interactively
+```
+
+## 🚀 Dual Testing Capability
+
+**JTAG supports both standalone and integrated testing:**
+
+### **Standalone Testing (JTAG as independent NPM module)**
+```bash
+cd src
+npm test                    # Runs complete JTAG test suite independently
+npm run test:all           # All layers + integration + browser tests  
+npm start                  # Launches examples/end-to-end-demo.js
+```
+
+### **Continuum Integration Testing**
+```bash
+# From continuum root
+npm test                   # Includes JTAG in full continuum test suite
+npm test -- src # Tests JTAG module as part of continuum
+```
+
+**Success Validation** (Both modes):
+1. ✅ Check log files exist: `ls -la .continuum/jtag/logs/`
+2. ✅ Verify examples work: Open `examples/browser-simulation.html`
+3. ✅ Test standalone: `npm run test:standalone`
+4. ✅ Full validation: `npm run test:all`
+
+**The layer-based approach ensures each foundation is solid before building the next level, preventing cascade failures and providing clear debugging paths. JTAG can be tested completely independently or as part of the broader continuum system.**
