@@ -1,0 +1,41 @@
+{
+  "name": "migration/status",
+  "description": "Get current migration progress with per-collection breakdown",
+  "params": [],
+  "results": [
+    {
+      "name": "total",
+      "type": "number",
+      "description": "Total records across all collections"
+    },
+    {
+      "name": "migrated",
+      "type": "number",
+      "description": "Records successfully migrated so far"
+    },
+    {
+      "name": "failed",
+      "type": "number",
+      "description": "Records that failed to migrate"
+    },
+    {
+      "name": "paused",
+      "type": "boolean",
+      "description": "Whether migration is currently paused"
+    },
+    {
+      "name": "collections",
+      "type": "object[]",
+      "description": "Per-collection status (collection, status, total, migrated, failed, error)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check migration progress",
+      "command": "./jtag migration/status",
+      "expectedResult": "{ total: 50000, migrated: 25000, failed: 0, paused: false, collections: [...] }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

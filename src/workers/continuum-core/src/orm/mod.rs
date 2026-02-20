@@ -22,6 +22,8 @@
 
 pub mod adapter;
 pub mod connection_manager;
+pub mod migration;
+pub mod postgres;
 pub mod query;
 pub mod sqlite;
 pub mod types;
@@ -29,6 +31,8 @@ pub mod vector;
 
 pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
+pub use migration::{MigrationEngine, MigrationHandle};
+pub use postgres::PostgresAdapter;
 pub use query::{QueryBuilder, StorageQuery, QueryOperator, SortDirection};
 pub use sqlite::SqliteAdapter;
 pub use types::{DataRecord, RecordMetadata, StorageResult, CollectionSchema, SchemaField, FieldType};

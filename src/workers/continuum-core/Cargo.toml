@@ -70,6 +70,8 @@ regex = "1"                      # Regex search for code search
 
 # ORM module — database-agnostic storage with adapter traits
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
+deadpool-postgres.workspace = true                        # Postgres connection pool
+tokio-postgres.workspace = true                           # Postgres async driver
 
 [features]
 default = ["metal"]

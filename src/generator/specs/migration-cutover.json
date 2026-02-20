@@ -1,0 +1,39 @@
+{
+  "name": "migration/cutover",
+  "description": "Switch all operations from current adapter to the migration target. Saves previous connection for rollback.",
+  "params": [
+    {
+      "name": "current",
+      "type": "string",
+      "optional": false,
+      "description": "Current (source) connection string to decommission"
+    },
+    {
+      "name": "target",
+      "type": "string",
+      "optional": false,
+      "description": "Target connection string to switch to"
+    }
+  ],
+  "results": [
+    {
+      "name": "cutover",
+      "type": "boolean",
+      "description": "Whether cutover was successful"
+    },
+    {
+      "name": "previousConnection",
+      "type": "string",
+      "description": "The connection string that was replaced (for rollback)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Switch from SQLite to PostgreSQL",
+      "command": "./jtag migration/cutover --current=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://joel@localhost:5432/continuum\"",
+      "expectedResult": "{ cutover: true, previousConnection: \"/Users/joel/.continuum/data/database.sqlite\" }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

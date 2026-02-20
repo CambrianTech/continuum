@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/migration/cutover",
+  "version": "1.0.0",
+  "description": "Switch all operations from current adapter to the migration target. Saves previous connection for rollback.",
+  "main": "server/MigrationCutoverServerCommand.ts",
+  "types": "shared/MigrationCutoverTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/MigrationCutoverIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "migration/cutover"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

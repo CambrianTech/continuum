@@ -1,0 +1,21 @@
+{
+  "name": "migration/pause",
+  "description": "Pause an in-flight migration. Can be resumed later from the last checkpoint.",
+  "params": [],
+  "results": [
+    {
+      "name": "paused",
+      "type": "boolean",
+      "description": "Whether the migration was successfully paused"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Pause active migration",
+      "command": "./jtag migration/pause",
+      "expectedResult": "{ paused: true }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

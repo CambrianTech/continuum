@@ -1,0 +1,26 @@
+{
+  "name": "migration/verify",
+  "description": "Verify migration integrity by comparing record counts between source and target",
+  "params": [],
+  "results": [
+    {
+      "name": "verified",
+      "type": "boolean",
+      "description": "Whether all collections match between source and target"
+    },
+    {
+      "name": "collections",
+      "type": "object[]",
+      "description": "Per-collection verification (collection, sourceCount, targetCount, migrated, failed, matches)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Verify migration data integrity",
+      "command": "./jtag migration/verify",
+      "expectedResult": "{ verified: true, collections: [{ collection: 'users', sourceCount: 100, targetCount: 100, matches: true }] }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

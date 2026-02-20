@@ -1,0 +1,41 @@
+{
+  "name": "migration/resume",
+  "description": "Resume a paused migration from its last checkpoint",
+  "params": [],
+  "results": [
+    {
+      "name": "total",
+      "type": "number",
+      "description": "Total records across all collections"
+    },
+    {
+      "name": "migrated",
+      "type": "number",
+      "description": "Records successfully migrated after resume"
+    },
+    {
+      "name": "failed",
+      "type": "number",
+      "description": "Records that failed to migrate"
+    },
+    {
+      "name": "paused",
+      "type": "boolean",
+      "description": "Whether migration is still paused"
+    },
+    {
+      "name": "collections",
+      "type": "object[]",
+      "description": "Per-collection migration status"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Resume paused migration",
+      "command": "./jtag migration/resume",
+      "expectedResult": "{ total: 50000, migrated: 50000, failed: 0, paused: false }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}
