@@ -62,7 +62,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       // causing massive lock contention when multiple personas responded concurrently.
       // PersonaTimeline and other per-persona data structures pass their own dbHandle.
 
-      let countResult;
+      let countResult: { success: boolean; data?: number } | undefined;
       let result;
 
       // Build queries
@@ -91,10 +91,13 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       }
 
       // Use ORM for all operations (routes to Rust with correct dbPath)
-      countResult = await ORM.count(countQuery, dbPath);
+      // skipCount avoids a separate COUNT(*) round-trip when the caller only needs items
+      if (!params.skipCount) {
+        countResult = await ORM.count(countQuery, dbPath);
+      }
       result = await ORM.query<BaseEntity>(storageQuery, dbPath);
 
-      const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
+      const totalCount = countResult?.success ? (countResult.data ?? 0) : 0;
 
       if (!result.success) {
         const errorMsg = result.error || 'Unknown DataDaemon error';

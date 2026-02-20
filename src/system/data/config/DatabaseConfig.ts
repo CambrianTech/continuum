@@ -25,8 +25,8 @@ import { PATHS } from '../../shared/Constants';
  * Runtime paths come from ServerConfig which checks config.env first.
  */
 export const DATABASE_PATHS = {
-  /** Default Postgres connection (dedicated cluster at ~/.continuum/data/postgres/, port 5433) */
-  POSTGRES: 'postgres://joel@localhost:5433/continuum',
+  /** Default Postgres connection (system Postgres, database 'continuum') */
+  POSTGRES: 'postgres://joel@localhost:5432/continuum',
 
   /** SQLite fallback path (used when DATABASE_URL is not set) */
   SQLITE: '$HOME/.continuum/data/database.sqlite',

@@ -872,18 +872,21 @@ export class PersonaUser extends AIUser {
     const dbHandle = openResult.dbHandle;
 
     // Parallel ORM queries — both are read-only against the same DB handle
+    // skipCount: true — corpus loading only needs data, not COUNT(*) round-trips
     const [memResult, evtResult] = await Promise.all([
       DataList.execute({
         dbHandle,
         collection: 'memories',
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: 100000,
+        skipCount: true,
       }),
       DataList.execute({
         dbHandle,
         collection: 'timeline_events',
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: 100000,
+        skipCount: true,
       }),
     ]);
 

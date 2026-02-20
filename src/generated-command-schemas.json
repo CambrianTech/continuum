@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-20T00:46:46.335Z",
+  "generated": "2026-02-20T05:33:34.531Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5309,6 +5309,11 @@
           "type": "string",
           "required": false,
           "description": "dbHandle parameter"
+        },
+        "skipCount": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipCount parameter"
         },
         "backend": {
           "type": "string",

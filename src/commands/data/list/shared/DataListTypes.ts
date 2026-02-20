@@ -42,6 +42,9 @@ export interface DataListParams extends CommandParams {
   readonly verbose?: boolean;
   /** Database handle for multi-database operations */
   readonly dbHandle?: DbHandle;
+  /** Skip the separate COUNT query (saves one IPC round-trip per call).
+   *  When true, result.count will be 0. Use when you only need the items. */
+  readonly skipCount?: boolean;
   /**
    * Backend preference for browser commands:
    * - 'server': Always fetch from server (use for real-time data)
