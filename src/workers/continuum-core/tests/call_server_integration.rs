@@ -19,6 +19,7 @@ fn create_test_ai(id: &str, name: &str) -> VoiceParticipant {
         display_name: name.to_string(),
         participant_type: SpeakerType::Persona,
         expertise: vec![],
+        is_audio_native: false,
     }
 }
 
@@ -42,9 +43,10 @@ async fn test_call_manager_uses_orchestrator() {
     let manager = CallManager::new();
 
     // Join call
-    let (handle, _rx, mut transcription_rx) = manager
+    let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
+    let mut transcription_rx = join.transcription_rx;
 
     // NOTE: We cannot fully test transcription → orchestrator flow without:
     // 1. STT being initialized (requires Whisper model)
@@ -57,7 +59,7 @@ async fn test_call_manager_uses_orchestrator() {
 
     // Push audio (will be buffered, but won't trigger transcription without STT)
     let audio_samples = vec![0i16; 16000]; // 1 second of silence
-    manager.push_audio(&handle, audio_samples).await;
+    manager.push_audio(&join.handle, audio_samples).await;
 
     // Give audio loop time to process
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -73,7 +75,7 @@ async fn test_call_manager_uses_orchestrator() {
     assert!(result.is_err(), "Should timeout - STT not initialized");
 
     // Cleanup
-    manager.leave_call(&handle).await;
+    manager.leave_call(&join.handle).await;
 }
 
 #[tokio::test]
@@ -97,7 +99,7 @@ async fn test_orchestrator_registered_before_call() {
     let manager = CallManager::new();
 
     // Join call with the same session ID
-    let (handle, _rx, _transcription_rx) = manager
+    let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
 
@@ -120,7 +122,7 @@ async fn test_orchestrator_registered_before_call() {
     assert!(responders.contains(&Uuid::parse_str(TEST_AI_2).unwrap()));
 
     // Cleanup
-    manager.leave_call(&handle).await;
+    manager.leave_call(&join.handle).await;
 }
 
 #[tokio::test]
@@ -145,7 +147,7 @@ async fn test_multiple_participants_orchestrator_filtering() {
     let manager = CallManager::new();
 
     // Join call
-    let (handle, _rx, _transcription_rx) = manager
+    let join = manager
         .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
 
@@ -168,7 +170,7 @@ async fn test_multiple_participants_orchestrator_filtering() {
     assert!(!responders.contains(&ai1_id), "Should NOT contain AI 1 (speaker)");
 
     // Cleanup
-    manager.leave_call(&handle).await;
+    manager.leave_call(&join.handle).await;
 }
 
 #[tokio::test]
@@ -269,10 +271,10 @@ async fn test_concurrent_calls_different_sessions() {
     // Join all 3 calls concurrently
     let mut handles = Vec::new();
     for (session_id, _) in &sessions {
-        let (handle, _rx, _transcription_rx) = manager
+        let join = manager
             .join_call(&session_id.to_string(), TEST_HUMAN_USER, "Human User", false)
             .await;
-        handles.push(handle);
+        handles.push(join.handle);
     }
 
     // Simulate utterances in all sessions concurrently

@@ -45,8 +45,6 @@ const lib = ffi.Library(libraryPath, {
 	continuum_voice_free: ['void', [voidPtr]],
 	continuum_voice_register_session: ['int', [voidPtr, charPtr, charPtr, charPtr]],
 	continuum_voice_on_utterance: ['int', [voidPtr, charPtr, charPtr]],
-	continuum_voice_should_route_to_tts: ['int', [voidPtr, charPtr, charPtr]],
-
 	// PersonaInbox
 	continuum_inbox_create: [voidPtr, [charPtr]],
 	continuum_inbox_free: ['void', [voidPtr]],
@@ -252,20 +250,6 @@ export class VoiceOrchestrator {
 		} else {
 			throw new Error('Failed to process utterance');
 		}
-	}
-
-	/**
-	 * Check if TTS should be routed to this session for a persona
-	 */
-	shouldRouteToTts(sessionId: string, personaId: string): boolean {
-		const sessionIdBuf = Buffer.from(sessionId + '\0', 'utf-8');
-		const personaIdBuf = Buffer.from(personaId + '\0', 'utf-8');
-
-		const result = timeFfiCall('voice_should_route_to_tts', () =>
-			lib.continuum_voice_should_route_to_tts(this.ptr, sessionIdBuf, personaIdBuf)
-		);
-
-		return result === 1;
 	}
 
 	/**

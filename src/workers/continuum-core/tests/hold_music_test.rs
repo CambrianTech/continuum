@@ -13,8 +13,9 @@ async fn test_hold_music_plays_when_alone() {
     let manager = CallManager::new();
 
     // STEP 2: Join a call as single participant (false = not AI)
-    let (handle, mut audio_rx, _transcription_rx) =
-        manager.join_call("test-hold-music", "user-1", "Alice", false).await;
+    let join = manager.join_call("test-hold-music", "user-1", "Alice", false).await;
+    let handle = join.handle;
+    let mut audio_rx = join.audio_rx;
 
     println!("✓ Participant joined call");
 

@@ -52,19 +52,6 @@ impl VoiceService {
         Ok(orchestrator.on_utterance(event))
     }
 
-    /// Check if TTS should be routed to a session
-    pub fn should_route_tts(&self, session_id: &str, persona_id: &str) -> Result<bool, String> {
-        let session_uuid = Uuid::parse_str(session_id)
-            .map_err(|e| format!("Invalid session_id: {e}"))?;
-        
-        let persona_uuid = Uuid::parse_str(persona_id)
-            .map_err(|e| format!("Invalid persona_id: {e}"))?;
-
-        let orchestrator = self.orchestrator.lock()
-            .map_err(|e| format!("Lock poisoned: {e}"))?;
-        
-        Ok(orchestrator.should_route_to_tts(session_uuid, persona_uuid))
-    }
 }
 
 impl Default for VoiceService {

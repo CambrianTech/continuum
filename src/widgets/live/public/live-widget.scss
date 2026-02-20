@@ -25,6 +25,29 @@
 }
 
 // ========================================
+// Video Display (Server-rendered frames)
+// Displays incoming video frames from the call server.
+// Sources: test pattern, webcam, bgfx-rs avatar, AI-generated video.
+// ========================================
+
+.video-display {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: $spacing-sm;
+  background: #111;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.video-canvas {
+  image-rendering: pixelated;  // Sharp pixels at low res (test pattern is 160x120)
+  max-width: 100%;
+  max-height: 240px;  // Constrain height so it doesn't push participant grid off screen
+  border-radius: $border-radius-md;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+// ========================================
 // Participant Grid (Teams/Discord style)
 // Fills available space intelligently based on participant count
 // ========================================

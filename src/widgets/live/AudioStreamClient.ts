@@ -19,6 +19,14 @@ import {
   CALL_SERVER_URL,
 } from '../../shared/AudioConstants';
 
+/** Binary frame type discriminator (first byte of every binary WebSocket message) */
+const FRAME_KIND_AUDIO = 0x01;
+const FRAME_KIND_VIDEO = 0x02;
+const FRAME_KIND_AVATAR_STATE = 0x03;
+
+/** Video frame header size in bytes (matches Rust VideoFrameHeader::WIRE_SIZE) */
+const VIDEO_HEADER_SIZE = 16;
+
 /** Transcription result from Whisper STT */
 export interface TranscriptionResult {
   userId: string;
@@ -26,6 +34,30 @@ export interface TranscriptionResult {
   text: string;
   confidence: number;
   language: string;
+}
+
+/** Decoded video frame from the server */
+export interface VideoFrameEvent {
+  width: number;
+  height: number;
+  /** Pixel format: 0=RGBA8, 1=NV12, 2=VP8, 3=H264, 4=JPEG */
+  pixelFormat: number;
+  timestampMs: number;
+  sequence: number;
+  /** Raw pixel data (Uint8Array view into the ArrayBuffer) */
+  data: Uint8Array;
+}
+
+/** Avatar state update from the server */
+export interface AvatarUpdateEvent {
+  persona_id: string;
+  speaking: boolean;
+  listening: boolean;
+  emotion: string;
+  viseme: number;
+  viseme_weight: number;
+  head_rotation: [number, number, number];
+  gaze_target: [number, number];
 }
 
 interface AudioStreamClientOptions {
@@ -45,6 +77,10 @@ interface AudioStreamClientOptions {
   onMicLevel?: (level: number) => void;
   /** Callback when speech is transcribed (VAD-triggered, Whisper STT) */
   onTranscription?: (result: TranscriptionResult) => void;
+  /** Callback when a video frame arrives from another participant */
+  onVideoFrame?: (frame: VideoFrameEvent) => void;
+  /** Callback when an avatar state update arrives */
+  onAvatarUpdate?: (update: AvatarUpdateEvent) => void;
 }
 
 export class AudioStreamClient {
@@ -121,9 +157,9 @@ export class AudioStreamClient {
         };
 
         this.ws.onmessage = (event) => {
-          // Binary frames are raw audio data (i16 PCM, little-endian)
+          // Binary frames: FrameKind-prefixed (audio, video, avatar state)
           if (event.data instanceof ArrayBuffer) {
-            this.handleBinaryAudio(event.data);
+            this.handleBinaryFrame(event.data);
           } else {
             // Text frames are JSON (transcriptions, join/leave notifications)
             this.handleMessage(event.data);
@@ -340,6 +376,9 @@ export class AudioStreamClient {
             language: msg.language,
           });
           break;
+        case 'AvatarUpdate':
+          this.options.onAvatarUpdate?.(msg as unknown as AvatarUpdateEvent);
+          break;
       }
     } catch (error) {
       console.error('AudioStreamClient: Failed to parse message:', error);
@@ -347,8 +386,8 @@ export class AudioStreamClient {
   }
 
   /**
-   * Send audio frame to server as BINARY WebSocket frame
-   * Direct bytes transfer - no JSON, no base64 encoding overhead
+   * Send audio frame to server as BINARY WebSocket frame with FrameKind prefix.
+   * Wire format: [0x01 (FrameKind::Audio)][PCM16 i16 LE bytes]
    */
   private sendAudioFrame(samples: Float32Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -360,17 +399,53 @@ export class AudioStreamClient {
       int16Data[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
     }
 
-    // Send raw bytes directly - WebSocket binary frame
-    // Rust server receives as Message::Binary(data) and converts with bytes_to_i16()
-    this.ws.send(int16Data.buffer);
+    // Prepend FrameKind::Audio byte (0x01) before PCM data
+    const frameBuffer = new ArrayBuffer(1 + int16Data.byteLength);
+    const frameView = new Uint8Array(frameBuffer);
+    frameView[0] = FRAME_KIND_AUDIO;
+    frameView.set(new Uint8Array(int16Data.buffer), 1);
+
+    this.ws.send(frameBuffer);
   }
 
   /**
-   * Handle binary audio frames from server
-   * Raw i16 PCM data - no base64 decoding needed
-   * This is the new high-performance path for real-time audio
+   * Handle binary frames from server.
+   * First byte is FrameKind discriminator:
+   *   0x01 = Audio (PCM16 i16 LE)
+   *   0x02 = Video (VideoFrameHeader + pixel data)
+   *   0x03 = AvatarState (JSON)
+   * Legacy: if first byte is not a valid FrameKind, treat as raw audio (backward compat)
    */
-  private handleBinaryAudio(arrayBuffer: ArrayBuffer): void {
+  private handleBinaryFrame(arrayBuffer: ArrayBuffer): void {
+    if (arrayBuffer.byteLength < 2) return;
+
+    const view = new DataView(arrayBuffer);
+    const frameKind = view.getUint8(0);
+
+    switch (frameKind) {
+      case FRAME_KIND_AUDIO:
+        this.handleAudioPayload(arrayBuffer, 1); // skip FrameKind byte
+        break;
+
+      case FRAME_KIND_VIDEO:
+        this.handleVideoPayload(arrayBuffer, 1); // skip FrameKind byte
+        break;
+
+      case FRAME_KIND_AVATAR_STATE:
+        // JSON-encoded avatar state (unlikely as binary, but handle it)
+        break;
+
+      default:
+        // Legacy: no FrameKind prefix, entire payload is raw audio
+        this.handleAudioPayload(arrayBuffer, 0);
+        break;
+    }
+  }
+
+  /**
+   * Handle audio payload — PCM16 i16 little-endian samples
+   */
+  private handleAudioPayload(arrayBuffer: ArrayBuffer, offset: number): void {
     // Ensure audio context is running (needed after user interaction)
     if (this.audioContext?.state === 'suspended') {
       this.audioContext.resume();
@@ -378,8 +453,8 @@ export class AudioStreamClient {
 
     if (!this.playbackWorkletNode) return;
 
-    // Direct ArrayBuffer to Int16Array view (zero-copy)
-    const int16Data = new Int16Array(arrayBuffer);
+    // Create Int16Array view starting at offset (zero-copy)
+    const int16Data = new Int16Array(arrayBuffer, offset);
 
     // Convert Int16 to Float32 for Web Audio API
     const samples = new Float32Array(int16Data.length);
@@ -392,6 +467,43 @@ export class AudioStreamClient {
       { type: 'audio', samples },
       [samples.buffer]  // Transfer ownership - zero-copy
     );
+  }
+
+  /**
+   * Handle video payload — [VideoFrameHeader (16 bytes)][pixel data]
+   * VideoFrameHeader layout (little-endian):
+   *   bytes 0-1:  width (u16)
+   *   bytes 2-3:  height (u16)
+   *   byte  4:    pixelFormat (0=RGBA8, 1=NV12, 2=VP8, 3=H264, 4=JPEG)
+   *   byte  5:    flags (reserved)
+   *   bytes 6-9:  timestampMs (u32)
+   *   bytes 10-13: sequence (u32)
+   *   bytes 14-15: reserved
+   */
+  private handleVideoPayload(arrayBuffer: ArrayBuffer, offset: number): void {
+    const remaining = arrayBuffer.byteLength - offset;
+    if (remaining < VIDEO_HEADER_SIZE) return;
+
+    const view = new DataView(arrayBuffer, offset);
+    const width = view.getUint16(0, true); // little-endian
+    const height = view.getUint16(2, true);
+    const pixelFormat = view.getUint8(4);
+    // byte 5: flags (reserved)
+    const timestampMs = view.getUint32(6, true);
+    const sequence = view.getUint32(10, true);
+    // bytes 14-15: reserved
+
+    const dataOffset = offset + VIDEO_HEADER_SIZE;
+    const data = new Uint8Array(arrayBuffer, dataOffset);
+
+    this.options.onVideoFrame?.({
+      width,
+      height,
+      pixelFormat,
+      timestampMs,
+      sequence,
+      data,
+    });
   }
 
   /**

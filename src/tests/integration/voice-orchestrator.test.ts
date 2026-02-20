@@ -2,14 +2,13 @@
  * voice-orchestrator.test.ts
  *
  * Integration tests for Voice AI Response System
- * Tests VoiceOrchestrator, turn arbitration, and voice transcription flow
+ * Tests VoiceOrchestrator broadcast model
  *
  * Architecture tested:
  * 1. VoiceOrchestrator receives transcriptions
- * 2. CompositeArbiter selects ONE responder
- * 3. Directed event emitted to selected persona
- * 4. PersonaUser receives event and enqueues to inbox
- * 5. PersonaResponseGenerator routes to TTS based on sourceModality
+ * 2. Broadcasts to ALL text-based AIs (no gating, no selection)
+ * 3. Each AI gets a directed event with its userId as targetPersonaId
+ * 4. Audio-native AIs excluded (they hear via mixer)
  *
  * Run with: npx vitest tests/integration/voice-orchestrator.test.ts
  */
@@ -169,7 +168,6 @@ describe('Voice Orchestrator Integration Tests', () => {
         roomId: MOCK_ROOM_ID,
         recentUtterances: [],
         turnCount: 0,
-        lastResponderId: MOCK_PERSONA_TEACHER_ID // Teacher AI responded last
       });
 
       const emitSpy = vi.spyOn(Events, 'emit');
@@ -240,7 +238,6 @@ describe('Voice Orchestrator Integration Tests', () => {
         roomId: MOCK_ROOM_ID,
         recentUtterances: [],
         turnCount: 0,
-        lastResponderId: MOCK_PERSONA_HELPER_ID // Helper AI responded last
       });
 
       const emitSpy = vi.spyOn(Events, 'emit');
@@ -281,7 +278,7 @@ describe('Voice Orchestrator Integration Tests', () => {
         const utterance = createUtterance(text);
         await orchestrator.onUtterance(utterance);
 
-        // Should emit directed event (arbiter recognized it as question)
+        // Should emit directed event (broadcast to all text-based AIs)
         expect(emitSpy).toHaveBeenCalledWith(
           'voice:transcription:directed',
           expect.objectContaining({
@@ -291,7 +288,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       }
     });
 
-    it('should rotate between AIs on successive questions', async () => {
+    it('should broadcast to ALL AIs on each question', async () => {
       const participants = [
         { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' as const },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' as const },
@@ -309,39 +306,23 @@ describe('Voice Orchestrator Integration Tests', () => {
       };
       (orchestrator as any).sessionContexts.set(MOCK_SESSION_ID, context);
 
-      const questions = [
-        'What is TypeScript?',
-        'How do closures work?',
-        'Can you explain hoisting?'
-      ];
+      const emitSpy = vi.spyOn(Events, 'emit');
+      const utterance = createUtterance('What is TypeScript?');
+      await orchestrator.onUtterance(utterance);
 
-      const selectedPersonas: UUID[] = [];
+      // Should broadcast to ALL 3 text-based AIs (not just one)
+      const directedCalls = emitSpy.mock.calls.filter(c => c[0] === 'voice:transcription:directed');
+      expect(directedCalls.length).toBe(3);
 
-      for (const question of questions) {
-        const emitSpy = vi.spyOn(Events, 'emit');
-        const utterance = createUtterance(question);
-        await orchestrator.onUtterance(utterance);
-
-        const call = emitSpy.mock.calls.find(c => c[0] === 'voice:transcription:directed');
-        if (call) {
-          const eventData = call[1] as any;
-          selectedPersonas.push(eventData.targetPersonaId);
-          context.lastResponderId = eventData.targetPersonaId;
-        }
-
-        context.turnCount++;
-      }
-
-      // Verify round-robin attempted (at least one AI selected per question)
-      expect(selectedPersonas.length).toBe(3); // All 3 questions got responses
-
-      // Note: Exact round-robin rotation depends on arbiter implementation
-      // The important thing is that responders ARE selected for questions
+      const targetIds = directedCalls.map(c => (c[1] as any).targetPersonaId);
+      expect(targetIds).toContain(MOCK_PERSONA_HELPER_ID);
+      expect(targetIds).toContain(MOCK_PERSONA_TEACHER_ID);
+      expect(targetIds).toContain(MOCK_PERSONA_CODE_ID);
     });
   });
 
-  describe('Turn Arbitration - Statement Filtering', () => {
-    it('should ignore casual statements (no question, no mention)', async () => {
+  describe('Broadcast Model - All AIs Get All Utterances', () => {
+    it('should broadcast statements to all AIs (no filtering)', async () => {
       const statements = [
         'The weather is nice today',
         'I just finished my coffee',
@@ -365,9 +346,9 @@ describe('Voice Orchestrator Integration Tests', () => {
         const utterance = createUtterance(text);
         await orchestrator.onUtterance(utterance);
 
-        // Should NOT emit directed event (arbiter rejected statement)
+        // Should broadcast to all text-based AIs (1 in this case)
         const directedCalls = emitSpy.mock.calls.filter(c => c[0] === 'voice:transcription:directed');
-        expect(directedCalls.length).toBe(0);
+        expect(directedCalls.length).toBe(1);
       }
     });
 
@@ -396,28 +377,6 @@ describe('Voice Orchestrator Integration Tests', () => {
           targetPersonaId: MOCK_PERSONA_HELPER_ID
         })
       );
-    });
-  });
-
-  describe('TTS Routing Logic', () => {
-    it('should track voice responder for session', () => {
-      (orchestrator as any).trackVoiceResponder(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID);
-
-      const shouldRoute = orchestrator.shouldRouteToTTS(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID);
-      expect(shouldRoute).toBe(true);
-
-      const shouldNotRoute = orchestrator.shouldRouteToTTS(MOCK_SESSION_ID, MOCK_PERSONA_TEACHER_ID);
-      expect(shouldNotRoute).toBe(false);
-    });
-
-    it('should clear voice responder after routing', () => {
-      (orchestrator as any).trackVoiceResponder(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID);
-
-      // Simulate response handled
-      (orchestrator as any).voiceResponders.delete(MOCK_SESSION_ID);
-
-      const shouldRoute = orchestrator.shouldRouteToTTS(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID);
-      expect(shouldRoute).toBe(false);
     });
   });
 
@@ -468,16 +427,16 @@ describe('Voice Orchestrator Integration Tests', () => {
         turnCount: 0
       });
 
-      // Helper AI speaks (should be ignored by arbiter)
+      // Helper AI speaks — broadcast to all OTHER text-based AIs
       const utterance = createUtterance('I think this is correct', MOCK_PERSONA_HELPER_ID, 'Helper AI');
 
       const emitSpy = vi.spyOn(Events, 'emit');
       await orchestrator.onUtterance(utterance);
 
-      // Should filter out Helper AI from candidates
-      // Only Teacher AI remains, but utterance is from AI so should not trigger response
+      // Should broadcast to Teacher AI (Helper AI excluded as speaker)
       const directedCalls = emitSpy.mock.calls.filter(c => c[0] === 'voice:transcription:directed');
-      expect(directedCalls.length).toBe(0);
+      expect(directedCalls.length).toBe(1);
+      expect((directedCalls[0][1] as any).targetPersonaId).toBe(MOCK_PERSONA_TEACHER_ID);
     });
   });
 
@@ -568,25 +527,13 @@ describe('Voice Orchestrator Success Criteria', () => {
     expect((orchestrator as any).sessionParticipants.has(MOCK_SESSION_ID)).toBe(false);
   }, 10000);
 
-  it('✅ Arbiter selects responders based on priority: mention > relevance > round-robin', async () => {
-    // This is validated by the turn arbitration tests above
-    // Direct mention tests show mentions work
-    // Topic relevance tests show expertise matching works
-    // Round-robin tests show fair distribution for questions
+  it('✅ Broadcast model: every text-based AI gets every utterance', async () => {
+    // Validated by broadcast tests — no selection, no gating, no cooldowns
     expect(true).toBe(true);
   });
 
-  it('✅ Directed events prevent spam (only selected AI responds)', async () => {
-    // Validated by the directed event emission tests
-    // Only ONE targetPersonaId per utterance
+  it('✅ Broadcasts to ALL text-based AIs (no gating, no selection)', async () => {
+    // Validated by the broadcast tests — every text-based AI gets every utterance
     expect(true).toBe(true);
-  });
-
-  it('✅ TTS routing correctly identifies which persona should speak', () => {
-    const orchestrator = VoiceOrchestrator.instance;
-    (orchestrator as any).trackVoiceResponder(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID);
-
-    expect(orchestrator.shouldRouteToTTS(MOCK_SESSION_ID, MOCK_PERSONA_HELPER_ID)).toBe(true);
-    expect(orchestrator.shouldRouteToTTS(MOCK_SESSION_ID, MOCK_PERSONA_TEACHER_ID)).toBe(false);
   });
 });

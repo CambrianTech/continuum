@@ -612,10 +612,5 @@ export async function startVoiceServer(port: number = 3001): Promise<VoiceWebSoc
   const server = getVoiceWebSocketServer(port);
   await server.start();
 
-  // Wire up TTS callback so VoiceOrchestrator can route responses to audio
-  getVoiceOrchestrator().setTTSCallback(async (sessionId, personaId, text) => {
-    await server.synthesizeAndSendToSession(sessionId, personaId, text);
-  });
-
   return server;
 }

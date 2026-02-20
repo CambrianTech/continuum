@@ -13,6 +13,7 @@ export interface VoiceParticipant {
 	display_name: string;
 	participant_type: 'human' | 'persona' | 'agent';
 	expertise: string[];
+	is_audio_native: boolean;
 }
 
 export interface UtteranceEvent {
@@ -40,10 +41,12 @@ export interface VoiceSynthesizeResult {
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
-	voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean>;
 	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
 	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
 	voiceInjectAudio(callId: string, userId: string, samples: number[]): Promise<void>;
+	voiceAmbientAdd(callId: string, sourceName: string): Promise<{ handle: string; source_name: string }>;
+	voiceAmbientInject(callId: string, handle: string, samples: number[]): Promise<void>;
+	voiceAmbientRemove(callId: string, handle: string): Promise<void>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -86,22 +89,6 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			return response.result?.[VOICE_RESPONSE_FIELDS.RESPONDER_IDS] || [];
 		}
 
-		/**
-		 * Check if TTS should route to a specific persona
-		 */
-		async voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean> {
-			const response = await this.request({
-				command: 'voice/should-route-tts',
-				session_id: sessionId,
-				persona_id: personaId,
-			});
-
-			if (!response.success) {
-				throw new Error(response.error || 'Failed to check TTS routing');
-			}
-
-			return response.result?.should_route ?? false;
-		}
 
 		/**
 		 * Synthesize speech from text
@@ -188,6 +175,65 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 				numSamples: response.result?.num_samples || 0,
 				adapter: response.result?.adapter || 'unknown',
 			};
+		}
+
+		/**
+		 * Add an ambient audio source to a call (TV, music, background noise).
+		 * Returns a handle for injecting audio and removing the source later.
+		 */
+		async voiceAmbientAdd(
+			callId: string,
+			sourceName: string,
+		): Promise<{ handle: string; source_name: string }> {
+			const response = await this.request({
+				command: 'voice/ambient-add',
+				call_id: callId,
+				source_name: sourceName,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to add ambient source');
+			}
+
+			return response.result as { handle: string; source_name: string };
+		}
+
+		/**
+		 * Inject audio into an ambient source by handle.
+		 */
+		async voiceAmbientInject(
+			callId: string,
+			handle: string,
+			samples: number[],
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/ambient-inject',
+				call_id: callId,
+				handle,
+				samples,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to inject ambient audio');
+			}
+		}
+
+		/**
+		 * Remove an ambient audio source from a call.
+		 */
+		async voiceAmbientRemove(
+			callId: string,
+			handle: string,
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/ambient-remove',
+				call_id: callId,
+				handle,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to remove ambient source');
+			}
 		}
 	};
 }

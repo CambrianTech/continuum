@@ -24,6 +24,7 @@ import type {
 import { DEFAULT_AUDIO_NATIVE_CONFIG, AUDIO_NATIVE_VOICES } from '../shared/AudioNativeTypes';
 import { Qwen3OmniRealtimeAdapter } from './adapters/Qwen3OmniRealtimeAdapter';
 import { GeminiLiveAdapter } from './adapters/GeminiLiveAdapter';
+import { GPT4oRealtimeAdapter } from './adapters/GPT4oRealtimeAdapter';
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
@@ -35,6 +36,14 @@ const CALL_SERVER_SAMPLE_RATE = 16000;
 const STREAMING_CORE_URL = process.env.STREAMING_CORE_WS_URL || 'ws://127.0.0.1:50053';
 
 /**
+ * Binary frame protocol discriminators (must match FrameKind in types.rs)
+ * First byte of every binary WebSocket message from the call server.
+ */
+const FRAME_KIND_AUDIO = 0x01;
+const FRAME_KIND_VIDEO = 0x02;
+const FRAME_KIND_AVATAR_STATE = 0x03;
+
+/**
  * Registry of audio-native adapter factories
  */
 const ADAPTER_FACTORIES: Record<string, (apiKey?: string) => IAudioNativeAdapter> = {
@@ -42,6 +51,9 @@ const ADAPTER_FACTORIES: Record<string, (apiKey?: string) => IAudioNativeAdapter
   'qwen3-omni': (apiKey) => new Qwen3OmniRealtimeAdapter(apiKey),
   'gemini-2.5-flash-native-audio-preview': (apiKey) => new GeminiLiveAdapter(apiKey),
   'gemini-live': (apiKey) => new GeminiLiveAdapter(apiKey),
+  'gpt-4o-realtime': (apiKey) => new GPT4oRealtimeAdapter(apiKey),
+  'gpt-4o-realtime-preview': (apiKey) => new GPT4oRealtimeAdapter(apiKey),
+  'gpt-4o-realtime-preview-2024-12-17': (apiKey) => new GPT4oRealtimeAdapter(apiKey),
 };
 
 // CallMessage types matching Rust call_server.rs
@@ -68,6 +80,11 @@ interface ActiveConnection extends AudioNativeConnection {
   outputSampleRate: number;
   /** Adapter's input sample rate (e.g. 16000) */
   inputSampleRate: number;
+  /** Accumulated output samples for current response (for duration calculation) */
+  responseSampleCount: number;
+  /** Frame counters for periodic logging (don't log every 20ms frame) */
+  roomAudioFrameCount: number;
+  injectedAudioChunkCount: number;
 }
 
 /**
@@ -173,6 +190,9 @@ export class AudioNativeBridge {
         ws: null,
         outputSampleRate: sessionConfig.outputAudioFormat.sampleRate,
         inputSampleRate: sessionConfig.inputAudioFormat.sampleRate,
+        responseSampleCount: 0,
+        roomAudioFrameCount: 0,
+        injectedAudioChunkCount: 0,
       };
       this.connections.set(key, connection);
 
@@ -239,17 +259,41 @@ export class AudioNativeBridge {
   }
 
   /**
-   * Handle a binary audio frame from the call server.
-   * Converts from call server format (16kHz i16 LE) to adapter input format
-   * and forwards to the audio-native model.
+   * Handle a binary frame from the call server.
+   * Binary frame protocol: first byte is FrameKind discriminator.
+   *   0x01 = Audio (PCM16 i16 LE), 0x02 = Video, 0x03 = AvatarState
+   * Forwards audio to the audio-native model adapter.
    */
   private handleRoomAudioFrame(key: string, data: WebSocket.Data): void {
     const connection = this.connections.get(key);
     if (!connection || !connection.adapter.isConnected()) return;
 
-    // Convert raw bytes to Int16Array (little-endian PCM from call server)
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
+    if (buffer.length < 2) return;
+
+    // Check FrameKind discriminator (first byte)
+    const frameKind = buffer[0];
+    let pcmBuffer: Buffer;
+
+    if (frameKind === FRAME_KIND_AUDIO) {
+      // New protocol: [0x01][PCM16 data...]
+      pcmBuffer = buffer.subarray(1);
+    } else if (frameKind === FRAME_KIND_VIDEO || frameKind === FRAME_KIND_AVATAR_STATE) {
+      // Video and avatar state frames — not handled by audio-native adapters yet
+      return;
+    } else {
+      // Legacy: no FrameKind prefix, treat entire buffer as raw audio
+      pcmBuffer = buffer;
+    }
+
+    // Convert bytes to Int16Array (little-endian PCM from call server)
+    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength / 2);
+
+    // Periodic logging: every 250 frames (~5 seconds at 20ms/frame) confirm audio is flowing
+    connection.roomAudioFrameCount++;
+    if (connection.roomAudioFrameCount === 1 || connection.roomAudioFrameCount % 250 === 0) {
+      console.log(`🎙️ AudioNativeBridge: Room audio → ${connection.displayName}: frame #${connection.roomAudioFrameCount} (${samples.length} samples)`);
+    }
 
     // Resample if adapter expects different rate than call server (16kHz)
     if (connection.inputSampleRate !== CALL_SERVER_SAMPLE_RATE) {
@@ -338,19 +382,31 @@ export class AudioNativeBridge {
     connection: ActiveConnection
   ): void {
     // Audio output from the AI → inject into call mixer via IPC
+    // Also track accumulated sample count for duration calculation
     adapter.onAudioOutput((samples) => {
+      connection.responseSampleCount += samples.length;
       this.injectAudioToMixer(callId, userId, displayName, samples, connection.outputSampleRate);
     });
 
     // Transcripts → broadcast so text-based AIs can see what was said
+    // On final transcript, calculate audio duration from accumulated samples
     adapter.onTranscript((text, isFinal) => {
       if (isFinal) {
-        this.handleTranscript(callId, userId, displayName, text);
+        const audioDurationMs = connection.outputSampleRate > 0
+          ? Math.round((connection.responseSampleCount / connection.outputSampleRate) * 1000)
+          : 0;
+        this.handleTranscript(callId, userId, displayName, text, audioDurationMs);
+        // Reset for next response
+        connection.responseSampleCount = 0;
       }
     });
 
     // Speech detection → turn-taking coordination
     adapter.onSpeechDetected((started) => {
+      if (started) {
+        // New speech detected from input — reset sample counter for fresh response
+        connection.responseSampleCount = 0;
+      }
       Events.emit('voice:audio-native:speech-detected', {
         callId,
         userId,
@@ -390,6 +446,16 @@ export class AudioNativeBridge {
 
       // Inject via IPC — audio goes directly into the Rust mixer
       await this.ipcClient.voiceInjectAudio(callId, userId, Array.from(resampled));
+
+      // Periodic logging: first chunk + every 50th chunk (~1 per second of speech)
+      const key = `${callId}-${userId}`;
+      const conn = this.connections.get(key);
+      if (conn) {
+        conn.injectedAudioChunkCount++;
+        if (conn.injectedAudioChunkCount === 1 || conn.injectedAudioChunkCount % 50 === 0) {
+          console.log(`🎙️ AudioNativeBridge: ${displayName} → mixer: chunk #${conn.injectedAudioChunkCount} (${resampled.length} samples at ${CALL_SERVER_SAMPLE_RATE}Hz)`);
+        }
+      }
     } catch (error) {
       console.error(`🎙️ AudioNativeBridge: inject failed for ${displayName}:`, error);
     }
@@ -402,9 +468,10 @@ export class AudioNativeBridge {
     callId: string,
     userId: UUID,
     displayName: string,
-    text: string
+    text: string,
+    audioDurationMs: number
   ): Promise<void> {
-    console.log(`🎙️ AudioNativeBridge: ${displayName} said: "${text.slice(0, 50)}..."`);
+    console.log(`🎙️ AudioNativeBridge: ${displayName} said: "${text.slice(0, 50)}..." (${audioDurationMs}ms audio)`);
 
     if (DataDaemon.jtagContext) {
       await Events.emit(
@@ -415,6 +482,7 @@ export class AudioNativeBridge {
           speakerId: userId,
           speakerName: displayName,
           text,
+          audioDurationMs,
           isAudioNative: true,
           timestamp: Date.now(),
         },
@@ -435,6 +503,10 @@ export class AudioNativeBridge {
 
     if (lower.includes('gemini') && (lower.includes('native-audio') || lower.includes('live'))) {
       return 'gemini-2.5-flash-native-audio-preview';
+    }
+
+    if (lower.includes('gpt-4o-realtime') || lower.includes('gpt-realtime')) {
+      return 'gpt-4o-realtime';
     }
 
     return modelId;

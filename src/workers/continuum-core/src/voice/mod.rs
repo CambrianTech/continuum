@@ -12,6 +12,7 @@ pub mod tts;
 pub mod tts_service;
 pub mod types;
 pub mod vad;
+pub mod video_generator;
 pub mod voice_service;
 
 pub use audio_router::{AudioEvent, AudioRouter, RoutedParticipant};

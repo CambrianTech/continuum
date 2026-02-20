@@ -3,7 +3,8 @@
 //! Handles: voice/register-session, voice/on-utterance, voice/should-route-tts,
 //!          voice/synthesize, voice/speak-in-call, voice/synthesize-handle,
 //!          voice/play-handle, voice/discard-handle, voice/transcribe,
-//!          voice/inject-audio
+//!          voice/inject-audio, voice/ambient-add, voice/ambient-inject,
+//!          voice/ambient-remove
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
@@ -94,15 +95,6 @@ impl ServiceModule for VoiceModule {
                 Ok(CommandResult::Json(serde_json::json!({
                     VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.into_iter().map(|id| id.to_string()).collect::<Vec<String>>()
                 })))
-            }
-
-            "voice/should-route-tts" => {
-                let _timer = TimingGuard::new("module", "voice_should_route_tts");
-                let session_id = p.str("session_id")?;
-                let persona_id = p.str("persona_id")?;
-
-                let should_route = self.state.voice_service.should_route_tts(session_id, persona_id)?;
-                Ok(CommandResult::Json(serde_json::json!({ "should_route": should_route })))
             }
 
             "voice/synthesize" => {
@@ -315,6 +307,62 @@ impl ServiceModule for VoiceModule {
 
                 log_info!("module", "voice_inject_audio", "Injected audio into call {} for {}", call_id, user_id);
                 Ok(CommandResult::Json(serde_json::json!({ "success": true })))
+            }
+
+            "voice/ambient-add" => {
+                let _timer = TimingGuard::new("module", "voice_ambient_add");
+                let call_id = p.str("call_id")?;
+                let source_name = p.str("source_name")?;
+
+                let handle = self.state.call_manager.add_ambient_source(call_id, source_name).await
+                    .map_err(|e| {
+                        log_error!("module", "voice_ambient_add", "ambient-add failed: {}", e);
+                        format!("ambient-add failed: {}", e)
+                    })?;
+
+                log_info!("module", "voice_ambient_add", "Added ambient source '{}' to call {}", source_name, call_id);
+                Ok(CommandResult::Json(serde_json::json!({
+                    "handle": handle.to_string(),
+                    "source_name": source_name,
+                })))
+            }
+
+            "voice/ambient-inject" => {
+                let _timer = TimingGuard::new("module", "voice_ambient_inject");
+                let call_id = p.str("call_id")?;
+                let handle_str = p.str("handle")?;
+                let samples: Vec<i16> = p.json("samples")?;
+
+                use crate::voice::handle::Handle as VoiceHandle;
+                let handle: VoiceHandle = handle_str.parse()
+                    .map_err(|e| format!("Invalid handle UUID: {}", e))?;
+
+                self.state.call_manager.inject_audio_by_handle(call_id, &handle, samples).await
+                    .map_err(|e| {
+                        log_error!("module", "voice_ambient_inject", "ambient-inject failed: {}", e);
+                        format!("ambient-inject failed: {}", e)
+                    })?;
+
+                Ok(CommandResult::Json(serde_json::json!({ "success": true })))
+            }
+
+            "voice/ambient-remove" => {
+                let _timer = TimingGuard::new("module", "voice_ambient_remove");
+                let call_id = p.str("call_id")?;
+                let handle_str = p.str("handle")?;
+
+                use crate::voice::handle::Handle as VoiceHandle;
+                let handle: VoiceHandle = handle_str.parse()
+                    .map_err(|e| format!("Invalid handle UUID: {}", e))?;
+
+                self.state.call_manager.remove_ambient_source(call_id, handle).await
+                    .map_err(|e| {
+                        log_error!("module", "voice_ambient_remove", "ambient-remove failed: {}", e);
+                        format!("ambient-remove failed: {}", e)
+                    })?;
+
+                log_info!("module", "voice_ambient_remove", "Removed ambient source from call {}", call_id);
+                Ok(CommandResult::Json(serde_json::json!({ "removed": true })))
             }
 
             _ => Err(format!("Unknown voice command: {command}")),

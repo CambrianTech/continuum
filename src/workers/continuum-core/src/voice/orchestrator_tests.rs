@@ -22,6 +22,7 @@ mod tests {
             display_name: name.to_string(),
             participant_type: SpeakerType::Persona,
             expertise: vec![],
+            is_audio_native: false,
         }
     }
 
@@ -171,6 +172,7 @@ mod tests {
                     display_name: "Speaker AI".to_string(),
                     participant_type: SpeakerType::Persona,
                     expertise: vec![],
+                    is_audio_native: false,
                 },
                 create_test_ai(TEST_AI_1, "Other AI"),
             ],
@@ -202,6 +204,7 @@ mod tests {
                 display_name: "Human".to_string(),
                 participant_type: SpeakerType::Human,
                 expertise: vec![],
+                is_audio_native: false,
             }],
         );
 

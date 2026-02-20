@@ -277,58 +277,6 @@ pub unsafe extern "C" fn continuum_voice_on_utterance(
 ///
 /// @param ptr VoiceOrchestrator pointer
 /// @param session_id UUID string
-/// @param persona_id UUID string
-/// @return 1 if should route, 0 if not, -1 on error
-/// # Safety
-/// Caller must ensure ptr is valid and session_id/persona_id are null-terminated.
-#[no_mangle]
-pub unsafe extern "C" fn continuum_voice_should_route_to_tts(
-    ptr: *mut VoiceOrchestrator,
-    session_id: *const c_char,
-    persona_id: *const c_char,
-) -> i32 {
-    let _timer = TimingGuard::new("ffi", "voice_should_route_to_tts");
-
-    if ptr.is_null() || session_id.is_null() || persona_id.is_null() {
-        logger().error("ffi", "voice", "voice_should_route_to_tts: null pointer");
-        return -1;
-    }
-
-    let orchestrator = unsafe { &*ptr };
-
-    // Parse session_id
-    let session_id_str = unsafe {
-        match CStr::from_ptr(session_id).to_str() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        }
-    };
-
-    let session_uuid = match Uuid::parse_str(session_id_str) {
-        Ok(u) => u,
-        Err(_) => return -1,
-    };
-
-    // Parse persona_id
-    let persona_id_str = unsafe {
-        match CStr::from_ptr(persona_id).to_str() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        }
-    };
-
-    let persona_uuid = match Uuid::parse_str(persona_id_str) {
-        Ok(u) => u,
-        Err(_) => return -1,
-    };
-
-    if orchestrator.should_route_to_tts(session_uuid, persona_uuid) {
-        1
-    } else {
-        0
-    }
-}
-
 // ============================================================================
 // PersonaInbox FFI
 // ============================================================================

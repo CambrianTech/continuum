@@ -157,16 +157,7 @@ async function main() {
 	printResult(analyze('Statement Processing (no responder)', statementTimings));
 
 	// Benchmark 5: TTS routing check
-	console.log('\n\nBenchmark 5: TTS Routing Check');
-	const ttsTimings: number[] = [];
-	for (let i = 0; i < 1000; i++) {
-		const start = performance.now();
-		await client.voiceShouldRouteTts(sessionId, '550e8400-e29b-41d4-a716-446655440003');
-		ttsTimings.push(performance.now() - start);
-	}
-	printResult(analyze('TTS Routing Check', ttsTimings));
-
-	// Benchmark 6: Message size impact (long transcript)
+	// Benchmark 5: Message size impact (long transcript)
 	console.log('\n\nBenchmark 6: Long Transcript Impact');
 	const longText = 'How do I '.repeat(100) + 'use Rust?';
 	const longTimings: number[] = [];

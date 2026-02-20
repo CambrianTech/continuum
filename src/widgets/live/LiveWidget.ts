@@ -25,7 +25,7 @@ import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/upd
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import type { CallEntity } from '../../system/data/entities/CallEntity';
-import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
+import { AudioStreamClient, type TranscriptionResult, type VideoFrameEvent } from './AudioStreamClient';
 import { ContentService } from '../../system/state/ContentService';
 
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
@@ -77,6 +77,12 @@ export class LiveWidget extends ReactiveWidget {
 
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
+
+  // Video display state
+  private _videoCanvas: HTMLCanvasElement | null = null;
+  private _videoCtx: CanvasRenderingContext2D | null = null;
+  private _lastVideoSequence: number = -1;
+  @reactive() private hasVideoStream: boolean = false;
 
   // Caption fade timeouts per speaker (supports multiple simultaneous speakers)
   private captionFadeTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -155,6 +161,12 @@ export class LiveWidget extends ReactiveWidget {
    */
   protected override updated(changedProperties: Map<string, unknown>): void {
     super.updated(changedProperties);
+
+    // Reset cached canvas ref when video stream state changes (DOM was re-rendered)
+    if (changedProperties.has('hasVideoStream')) {
+      this._videoCanvas = null;
+      this._videoCtx = null;
+    }
 
     // Auto-sync mic state when micEnabled changes
     if (changedProperties.has('micEnabled') && this.audioClient && !this._applyingMicState) {
@@ -298,6 +310,12 @@ export class LiveWidget extends ReactiveWidget {
     // Clear speaking timeouts
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
     this.speakingTimeouts.clear();
+
+    // Clear video state
+    this._videoCanvas = null;
+    this._videoCtx = null;
+    this._lastVideoSequence = -1;
+    this.hasVideoStream = false;
 
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
@@ -503,6 +521,9 @@ export class LiveWidget extends ReactiveWidget {
               // Re-apply mute state to server after reconnection
               this.audioClient?.setMuted(!this.micEnabled);
             }
+          },
+          onVideoFrame: (frame: VideoFrameEvent) => {
+            this.handleVideoFrame(frame);
           },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) {
@@ -892,6 +913,47 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
+   * Handle incoming video frame — render to canvas.
+   * Currently renders to a shared video canvas (test pattern source).
+   * When per-participant video is added, this will route frames to
+   * individual participant canvases by sender handle.
+   */
+  private handleVideoFrame(frame: VideoFrameEvent): void {
+    // Skip duplicate/out-of-order frames
+    if (frame.sequence <= this._lastVideoSequence) return;
+    this._lastVideoSequence = frame.sequence;
+
+    if (!this.hasVideoStream) {
+      this.hasVideoStream = true;
+    }
+
+    // Get or create the video canvas
+    if (!this._videoCanvas) {
+      this._videoCanvas = this.shadowRoot?.getElementById('video-canvas') as HTMLCanvasElement | null;
+      if (this._videoCanvas) {
+        this._videoCtx = this._videoCanvas.getContext('2d');
+      }
+    }
+
+    if (!this._videoCtx || !this._videoCanvas) return;
+
+    // Resize canvas if frame dimensions changed
+    if (this._videoCanvas.width !== frame.width || this._videoCanvas.height !== frame.height) {
+      this._videoCanvas.width = frame.width;
+      this._videoCanvas.height = frame.height;
+    }
+
+    // Only handle RGBA8 for now (pixelFormat === 0)
+    if (frame.pixelFormat === 0 && frame.data.length === frame.width * frame.height * 4) {
+      // Copy into a fresh ArrayBuffer to satisfy TypeScript's strict ArrayBuffer/SharedArrayBuffer distinction
+      const pixelData = new Uint8ClampedArray(frame.data.length);
+      pixelData.set(frame.data);
+      const imageData = new ImageData(pixelData, frame.width, frame.height);
+      this._videoCtx.putImageData(imageData, 0, 0);
+    }
+  }
+
+  /**
    * Open user profile in a new tab
    */
   private openParticipantProfile(participant: Participant): void {
@@ -941,6 +1003,11 @@ export class LiveWidget extends ReactiveWidget {
       // Grid mode: everyone equal
       return html`
         <div class="live-container">
+          ${this.hasVideoStream ? html`
+            <div class="video-display">
+              <canvas id="video-canvas" class="video-canvas" width="160" height="120"></canvas>
+            </div>
+          ` : ''}
           <div class="participant-grid" data-count="${this.getGridDataCount()}">
             ${this.participants.length === 0
               ? html`<div class="empty-state">Waiting for others to join...</div>`
