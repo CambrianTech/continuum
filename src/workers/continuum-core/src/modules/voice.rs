@@ -6,7 +6,7 @@
 //!          voice/transcribe-with-adapter, voice/stt-list,
 //!          voice/test-audio-generate,
 //!          voice/inject-audio, voice/ambient-add, voice/ambient-inject,
-//!          voice/ambient-remove
+//!          voice/ambient-remove, voice/poll-transcriptions
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
@@ -96,6 +96,17 @@ impl ServiceModule for VoiceModule {
                         log_error!("module", "voice_register_session",
                             "Failed to spawn STT listener for call {}: {}",
                             &call_id[..8.min(call_id.len())], e);
+                    }
+                });
+
+                // Spawn ambient background audio (rain) for the call.
+                let ambient_manager = self.state.livekit_manager.clone();
+                let ambient_call_id = session_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = ambient_manager.start_ambient_audio(&ambient_call_id).await {
+                        log_error!("module", "voice_register_session",
+                            "Failed to start ambient audio for call {}: {}",
+                            &ambient_call_id[..8.min(ambient_call_id.len())], e);
                     }
                 });
 
@@ -507,6 +518,25 @@ impl ServiceModule for VoiceModule {
                     "duration_ms": duration_ms,
                     "noise_type": noise_type.label(),
                     "sample_rate": crate::audio_constants::AUDIO_SAMPLE_RATE,
+                })))
+            }
+
+            "voice/poll-transcriptions" => {
+                let _timer = TimingGuard::new("module", "voice_poll_transcriptions");
+                let call_id = p.str_opt("call_id");
+
+                let entries = self.state.livekit_manager.poll_transcriptions(call_id).await;
+
+                log_info!(
+                    "module", "voice_poll_transcriptions",
+                    "Polled {} transcriptions{}",
+                    entries.len(),
+                    call_id.map(|c| format!(" for call {}", &c[..8.min(c.len())])).unwrap_or_default()
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "transcriptions": entries,
+                    "count": entries.len(),
                 })))
             }
 

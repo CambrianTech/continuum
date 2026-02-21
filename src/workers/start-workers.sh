@@ -57,7 +57,9 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   sleep 0.5
 
   echo -e "${YELLOW}🔊 Starting LiveKit SFU server...${NC}"
-  "$LIVEKIT_BIN" --dev --bind 127.0.0.1 >> "$LIVEKIT_LOG" 2>&1 &
+  # Truncate log on startup (prevents multi-MB bloat) and reduce log level
+  : > "$LIVEKIT_LOG"
+  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind 127.0.0.1 >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 

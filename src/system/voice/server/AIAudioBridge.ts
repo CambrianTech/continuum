@@ -95,8 +95,8 @@ export class AIAudioBridge {
 
       // ONE Rust IPC call: synthesize + publish via LiveKit agent.
       // LiveKitAgentManager.speak_in_call() creates agent on-demand if needed.
-      // Explicit 'edge' adapter: <200ms, concurrent (no Mutex), 300+ distinct voices.
-      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'edge');
+      // Kokoro: local ONNX, 54 voices, fast reliable — until Orpheus (3B, LoRA-trainable) is installed.
+      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro');
 
       const audioDurationMs = result.durationMs;
       console.log(`🤖 AIAudioBridge: ${displayName} spoke ${audioDurationMs}ms via LiveKit: "${text.slice(0, 50)}..."`);

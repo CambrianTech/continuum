@@ -14,7 +14,7 @@ use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Cached voice list (fetched once on init)
 struct EdgeState {
@@ -139,45 +139,55 @@ impl TextToSpeech for EdgeTTS {
             tokio::task::spawn_blocking(move || {
             let start = std::time::Instant::now();
 
-            let mut tts = msedge_tts::tts::client::connect()
-                .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
+            // Retry up to 2 times — Edge-TTS WebSocket can return empty audio on first try
+            let max_attempts = 2;
+            for attempt in 1..=max_attempts {
+                let mut tts = msedge_tts::tts::client::connect()
+                    .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
 
-            let config = msedge_tts::tts::SpeechConfig {
-                voice_name: voice_name_owned,
-                audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
-                pitch: 0,
-                rate: 0,
-                volume: 0,
-            };
+                let config = msedge_tts::tts::SpeechConfig {
+                    voice_name: voice_name_owned.clone(),
+                    audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
+                    pitch: 0,
+                    rate: 0,
+                    volume: 0,
+                };
 
-            let audio = tts
-                .synthesize(&text, &config)
-                .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
+                let audio = tts
+                    .synthesize(&text, &config)
+                    .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
 
-            let network_ms = start.elapsed().as_millis();
+                let network_ms = start.elapsed().as_millis();
+                let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
 
-            let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
+                if samples.is_empty() {
+                    warn!(
+                        "Edge-TTS: empty audio on attempt {}/{} (audio_bytes={} bytes, metadata_count={})",
+                        attempt, max_attempts, audio.audio_bytes.len(), audio.audio_metadata.len()
+                    );
+                    if attempt < max_attempts {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        continue;
+                    }
+                    return Err(TTSError::SynthesisFailed(
+                        format!("Edge-TTS returned empty audio after {} attempts (raw bytes={})",
+                            max_attempts, audio.audio_bytes.len()),
+                    ));
+                }
 
-            if samples.is_empty() {
-                return Err(TTSError::SynthesisFailed(
-                    "Edge-TTS returned empty audio".into(),
-                ));
+                let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
+                info!(
+                    "Edge-TTS: {} samples ({}ms audio) in {}ms network",
+                    samples.len(), dur, network_ms
+                );
+
+                return Ok(SynthesisResult {
+                    samples,
+                    sample_rate: AUDIO_SAMPLE_RATE,
+                    duration_ms: dur,
+                });
             }
-
-            let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
-
-            info!(
-                "Edge-TTS: {} samples ({}ms audio) in {}ms network",
-                samples.len(),
-                dur,
-                network_ms
-            );
-
-            Ok(SynthesisResult {
-                samples,
-                sample_rate: AUDIO_SAMPLE_RATE,
-                duration_ms: dur,
-            })
+            unreachable!()
         })
         )
         .await

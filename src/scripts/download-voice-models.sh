@@ -209,16 +209,45 @@ else
   echo -e "${GREEN}Silero VAD model already exists${NC}"
 fi
 
-# Orpheus TTS (3B, LoRA-trainable — manual download required)
-# Gated model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
-# GGUF via llama.cpp for inference, Unsloth for LoRA training
-# Too large for auto-download (~6GB). Download manually:
-#   mkdir -p models/orpheus && cd models/orpheus
-#   huggingface-cli download canopylabs/orpheus-3b-0.1-ft --local-dir .
+# Orpheus TTS (3B, LoRA-trainable — auto-download Q4_K_M quantized)
+# Model: Llama-3B fine-tuned for expressive speech with emotion tags
+# GGUF via Candle for inference, Unsloth for LoRA training
+# 3 files needed: GGUF model (~2.4GB), tokenizer, SNAC audio codec decoder
 ORPHEUS_DIR="$MODELS_DIR/orpheus"
-if [ ! -d "$ORPHEUS_DIR" ] || [ -z "$(ls -A "$ORPHEUS_DIR" 2>/dev/null)" ]; then
-  echo -e "${YELLOW}Orpheus TTS (3B, LoRA-trainable): Not installed${NC}"
-  echo -e "${YELLOW}  Optional — download from: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft${NC}"
+ORPHEUS_GGUF="$ORPHEUS_DIR/orpheus-3b-0.1-ft-q4_k_m.gguf"
+ORPHEUS_TOKENIZER="$ORPHEUS_DIR/tokenizer.json"
+ORPHEUS_SNAC="$ORPHEUS_DIR/snac_decoder.onnx"
+
+ORPHEUS_GGUF_URL="https://huggingface.co/isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF/resolve/main/orpheus-3b-0.1-ft-q4_k_m.gguf"
+ORPHEUS_TOKENIZER_URL="https://huggingface.co/canopylabs/orpheus-3b-0.1-ft/resolve/main/tokenizer.json"
+ORPHEUS_SNAC_URL="https://huggingface.co/laion/SNAC-24khz-decoder-onnx/resolve/main/snac24_int2wav_static.onnx"
+
+mkdir -p "$ORPHEUS_DIR"
+
+if [ ! -f "$ORPHEUS_GGUF" ] || [ ! -f "$ORPHEUS_TOKENIZER" ] || [ ! -f "$ORPHEUS_SNAC" ]; then
+  echo -e "${YELLOW}Downloading Orpheus TTS (3B, LoRA-trainable, ~2.5GB total)...${NC}"
+  echo -e "${YELLOW}  GGUF model (~2.4GB) + tokenizer + SNAC decoder${NC}"
+
+  if command -v curl &> /dev/null; then
+    [ ! -f "$ORPHEUS_TOKENIZER" ] && echo "  Downloading tokenizer..." && \
+      curl -L --progress-bar -o "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    [ ! -f "$ORPHEUS_SNAC" ] && echo "  Downloading SNAC audio codec (~53MB)..." && \
+      curl -L --progress-bar -o "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
+    [ ! -f "$ORPHEUS_GGUF" ] && echo "  Downloading GGUF model (~2.4GB, Q4_K_M)..." && \
+      curl -L --progress-bar -o "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
+  elif command -v wget &> /dev/null; then
+    [ ! -f "$ORPHEUS_TOKENIZER" ] && wget -q --show-progress -O "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    [ ! -f "$ORPHEUS_SNAC" ] && wget -q --show-progress -O "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
+    [ ! -f "$ORPHEUS_GGUF" ] && wget -q --show-progress -O "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
+  fi
+
+  if [ -f "$ORPHEUS_GGUF" ] && [ -f "$ORPHEUS_TOKENIZER" ] && [ -f "$ORPHEUS_SNAC" ]; then
+    echo -e "${GREEN}Orpheus TTS downloaded (3B, LoRA-trainable, 8 voices + emotion tags)${NC}"
+  else
+    echo -e "${YELLOW}Orpheus TTS download incomplete (some files missing)${NC}"
+  fi
+else
+  echo -e "${GREEN}Orpheus TTS (3B, LoRA-trainable) already exists${NC}"
 fi
 
 echo -e "${GREEN}Voice model check complete${NC}"

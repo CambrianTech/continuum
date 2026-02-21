@@ -67,6 +67,8 @@ interface AudioStreamClientOptions {
 
 /** Identity prefix for STT listener agents — filtered out from UI */
 const STT_LISTENER_PREFIX = '__stt__';
+/** Identity prefix for AI persona agents — filtered out from UI (audio only, no avatar) */
+const AI_AGENT_PREFIX = '__ai__';
 
 export class AudioStreamClient {
   private room: Room | null = null;
@@ -229,16 +231,22 @@ export class AudioStreamClient {
       this.options.onConnectionChange?.(false);
     });
 
-    // Remote participant joined (filter out system agents)
+    // Remote participant joined (filter out system/AI agents from UI grid)
+    // AI agents publish audio tracks but shouldn't appear as separate participants
+    // (they're already shown via the pre-registered participant list)
     this.room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
       if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
+      if (participant.identity.startsWith(AI_AGENT_PREFIX)) return;
+      if (participant.identity.startsWith('ambient-')) return;
       console.log(`AudioStreamClient: ${participant.name || participant.identity} joined`);
       this.options.onParticipantJoined?.(participant.identity, participant.name || participant.identity);
     });
 
-    // Remote participant left (filter out system agents)
+    // Remote participant left (filter out system/AI agents)
     this.room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
       if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
+      if (participant.identity.startsWith(AI_AGENT_PREFIX)) return;
+      if (participant.identity.startsWith('ambient-')) return;
       console.log(`AudioStreamClient: ${participant.identity} left`);
       this.options.onParticipantLeft?.(participant.identity);
     });
@@ -249,16 +257,23 @@ export class AudioStreamClient {
       publication: RemoteTrackPublication,
       participant: RemoteParticipant,
     ) => {
-      // Skip system agents (STT listener doesn't publish tracks, but guard anyway)
+      // Skip system agents entirely (STT listeners don't publish, but guard anyway)
       if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
+      if (participant.identity.startsWith('ambient-')) return;
+
+      // Strip __ai__ prefix to map back to the original user ID for UI matching.
+      // AI agents join LiveKit as __ai__<userId> but the UI tiles are keyed by userId.
+      const userId = participant.identity.startsWith(AI_AGENT_PREFIX)
+        ? participant.identity.slice(AI_AGENT_PREFIX.length)
+        : participant.identity;
 
       if (track.kind === Track.Kind.Audio) {
         // Attach audio element for playback (hidden container, auto-plays)
         const element = track.attach() as HTMLAudioElement;
         element.volume = this.speakerMuted ? 0 : this.speakerVolume;
         this.audioContainer?.appendChild(element);
-        this.remoteAudioElements.set(participant.identity, element);
-        console.log(`AudioStreamClient: Audio track subscribed from ${participant.identity}`);
+        this.remoteAudioElements.set(userId, element);
+        console.log(`AudioStreamClient: Audio track subscribed from ${userId}`);
       }
 
       if (track.kind === Track.Kind.Video) {
@@ -267,8 +282,8 @@ export class AudioStreamClient {
         element.style.width = '100%';
         element.style.height = '100%';
         element.style.objectFit = 'cover';
-        this.options.onVideoTrackAdded?.(participant.identity, element);
-        console.log(`AudioStreamClient: Video track subscribed from ${participant.identity}`);
+        this.options.onVideoTrackAdded?.(userId, element);
+        console.log(`AudioStreamClient: Video track subscribed from ${userId}`);
       }
     });
 
@@ -281,15 +296,20 @@ export class AudioStreamClient {
       // Detach and remove all DOM elements for this track
       track.detach().forEach(el => el.remove());
 
+      // Strip __ai__ prefix for matching
+      const userId = participant.identity.startsWith(AI_AGENT_PREFIX)
+        ? participant.identity.slice(AI_AGENT_PREFIX.length)
+        : participant.identity;
+
       if (track.kind === Track.Kind.Audio) {
-        this.remoteAudioElements.delete(participant.identity);
+        this.remoteAudioElements.delete(userId);
       }
 
       if (track.kind === Track.Kind.Video) {
-        this.options.onVideoTrackRemoved?.(participant.identity);
+        this.options.onVideoTrackRemoved?.(userId);
       }
 
-      console.log(`AudioStreamClient: Track unsubscribed from ${participant.identity} (${track.kind})`);
+      console.log(`AudioStreamClient: Track unsubscribed from ${userId} (${track.kind})`);
     });
 
     // Transcriptions (LiveKit native transcription API)

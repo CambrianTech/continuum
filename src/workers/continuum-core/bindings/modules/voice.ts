@@ -65,6 +65,19 @@ export interface TestAudioGenerateResult {
 	sample_rate: number;
 }
 
+export interface TranscriptionEntry {
+	call_id: string;
+	speaker_id: string;
+	speaker_name: string;
+	text: string;
+	timestamp_ms: number;
+}
+
+export interface PollTranscriptionsResult {
+	transcriptions: TranscriptionEntry[];
+	count: number;
+}
+
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
@@ -77,6 +90,7 @@ export interface VoiceMixin {
 	voiceSttList(): Promise<SttListResult>;
 	voiceTranscribeWithAdapter(audio: string, adapter: string, language?: string): Promise<TranscribeResult>;
 	voiceTestAudioGenerate(noiseType: string, durationMs: number, params?: Record<string, any>): Promise<TestAudioGenerateResult>;
+	voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -330,6 +344,24 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			}
 
 			return response.result as TestAudioGenerateResult;
+		}
+
+		/**
+		 * Poll and drain transcriptions from the STT listener buffer.
+		 * Returns all transcriptions since the last poll, optionally filtered by call_id.
+		 * Used by integration tests to verify E2E audio roundtrip.
+		 */
+		async voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult> {
+			const response = await this.request({
+				command: 'voice/poll-transcriptions',
+				...(callId ? { call_id: callId } : {}),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to poll transcriptions');
+			}
+
+			return response.result as PollTranscriptionsResult;
 		}
 	};
 }

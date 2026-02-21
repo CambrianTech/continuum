@@ -11,6 +11,7 @@ import type { UtteranceEvent } from './VoiceOrchestrator';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { UserEntity } from '../../data/entities/UserEntity';
 import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { getAIAudioBridge } from './AIAudioBridge';
 
 /**
  * Rust-backed VoiceOrchestrator — broadcasts to all, no gating
@@ -84,7 +85,19 @@ export class VoiceOrchestratorRustBridge {
 
 		const aiCount = rustParticipants.filter(p => p.participant_type !== 'human').length;
 		await this.client.voiceRegisterSession(sessionId, roomId, rustParticipants);
-		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participantIds.length} participants (${aiCount} AI)`);
+
+		// Register AI participants with AIAudioBridge so speak() works when
+		// persona:response:generated fires. Without this, isInCall() returns false
+		// and AI responses are silently dropped.
+		const bridge = getAIAudioBridge();
+		for (const p of rustParticipants) {
+			if (p.participant_type !== 'human') {
+				const user = userMap.get(p.user_id);
+				await bridge.joinCall(sessionId, p.user_id as UUID, user?.displayName || p.display_name);
+			}
+		}
+
+		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participantIds.length} participants (${aiCount} AI, all registered with AIAudioBridge)`);
 	}
 
 	/**
