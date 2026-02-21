@@ -224,19 +224,39 @@ ORPHEUS_SNAC_URL="https://huggingface.co/laion/SNAC-24khz-decoder-onnx/resolve/m
 
 mkdir -p "$ORPHEUS_DIR"
 
+# Clean up stale tokenizer (earlier versions downloaded error page instead of actual file)
+if [ -f "$ORPHEUS_TOKENIZER" ] && [ "$(wc -c < "$ORPHEUS_TOKENIZER")" -lt 10000 ]; then
+  echo -e "${YELLOW}Orpheus tokenizer is stale (error file), removing...${NC}"
+  rm -f "$ORPHEUS_TOKENIZER"
+fi
+
 if [ ! -f "$ORPHEUS_GGUF" ] || [ ! -f "$ORPHEUS_TOKENIZER" ] || [ ! -f "$ORPHEUS_SNAC" ]; then
   echo -e "${YELLOW}Downloading Orpheus TTS (3B, LoRA-trainable, ~2.5GB total)...${NC}"
-  echo -e "${YELLOW}  GGUF model (~2.4GB) + tokenizer + SNAC decoder${NC}"
+  echo -e "${YELLOW}  GGUF model (~2.4GB) + tokenizer (~22MB, requires HF_TOKEN) + SNAC decoder (~53MB)${NC}"
 
   if command -v curl &> /dev/null; then
-    [ ! -f "$ORPHEUS_TOKENIZER" ] && echo "  Downloading tokenizer..." && \
-      curl -L --progress-bar -o "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    # Tokenizer is on a gated repo — requires HF_TOKEN authentication
+    if [ ! -f "$ORPHEUS_TOKENIZER" ]; then
+      if [ -n "$HF_TOKEN" ]; then
+        echo "  Downloading tokenizer (gated, using HF_TOKEN)..."
+        curl -sL -H "Authorization: Bearer $HF_TOKEN" --progress-bar -o "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+        # Verify it's actually a tokenizer and not an error page
+        if [ -f "$ORPHEUS_TOKENIZER" ] && [ "$(wc -c < "$ORPHEUS_TOKENIZER")" -lt 10000 ]; then
+          echo -e "${RED}  Orpheus tokenizer download failed (got error page). Check HF_TOKEN has access to canopylabs/orpheus-3b-0.1-ft${NC}"
+          rm -f "$ORPHEUS_TOKENIZER"
+        fi
+      else
+        echo -e "${YELLOW}  Skipping tokenizer (requires HF_TOKEN in config.env with access to canopylabs/orpheus-3b-0.1-ft)${NC}"
+      fi
+    fi
     [ ! -f "$ORPHEUS_SNAC" ] && echo "  Downloading SNAC audio codec (~53MB)..." && \
       curl -L --progress-bar -o "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
     [ ! -f "$ORPHEUS_GGUF" ] && echo "  Downloading GGUF model (~2.4GB, Q4_K_M)..." && \
       curl -L --progress-bar -o "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
   elif command -v wget &> /dev/null; then
-    [ ! -f "$ORPHEUS_TOKENIZER" ] && wget -q --show-progress -O "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    if [ ! -f "$ORPHEUS_TOKENIZER" ] && [ -n "$HF_TOKEN" ]; then
+      wget -q --show-progress --header="Authorization: Bearer $HF_TOKEN" -O "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    fi
     [ ! -f "$ORPHEUS_SNAC" ] && wget -q --show-progress -O "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
     [ ! -f "$ORPHEUS_GGUF" ] && wget -q --show-progress -O "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
   fi

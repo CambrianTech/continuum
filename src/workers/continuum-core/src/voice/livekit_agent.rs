@@ -10,7 +10,7 @@
 //! STT Listener agent (one per call):
 //!   - Subscribes to human audio tracks → NativeAudioStream → VAD → STT
 //!   - Publishes transcription segments via LiveKit's native API
-//!   - Uses __stt__ identity prefix (filtered out in browser UI)
+//!   - Role set via ParticipantMetadata (stt_listener) — browser filters by metadata
 //!
 //! Audio format: 16kHz mono i16 PCM — matches our TTS output and LiveKit's AudioFrame.data (Cow<[i16]>).
 
@@ -33,6 +33,47 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tracing::{info, warn, error};
 
+// =============================================================================
+// Participant metadata — typed role classification instead of string prefixes.
+// Serialized as JSON in the LiveKit JWT token's metadata field.
+// Browser reads via participant.metadata (livekit-client JS SDK).
+// Must match src/shared/LiveKitTypes.ts enum values exactly.
+// =============================================================================
+
+/// LiveKit participant role — determines audio routing and UI visibility.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantRole {
+    /// Human user with microphone/camera
+    Human,
+    /// AI persona agent — publishes TTS audio, visible in participant grid
+    AiPersona,
+    /// STT listener — subscribe-only for VAD/STT, invisible in UI
+    SttListener,
+    /// Ambient audio source (rain, hold music) — invisible in UI
+    AmbientAudio,
+}
+
+/// Metadata attached to every LiveKit participant via JWT token.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ParticipantMetadata {
+    pub role: ParticipantRole,
+}
+
+impl ParticipantMetadata {
+    pub fn new(role: ParticipantRole) -> Self {
+        Self { role }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn from_json(json: &str) -> Option<Self> {
+        serde_json::from_str(json).ok()
+    }
+}
+
 /// A captured transcription from the STT listener, available for test polling.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptionEntry {
@@ -52,11 +93,11 @@ const MAX_TRANSCRIPTION_BUFFER: usize = 100;
 /// Audio samples per 10ms at 16kHz — LiveKit processes in 10ms chunks
 const SAMPLES_PER_10MS: u32 = (AUDIO_SAMPLE_RATE / 100) as u32;
 
-/// Identity prefix for STT listener agents — filtered out in browser UI
-pub const STT_LISTENER_PREFIX: &str = "__stt__";
-
-/// Identity prefix for AI persona agents — STT listener skips these to prevent echo loops
-pub const AI_AGENT_PREFIX: &str = "__ai__";
+/// STT listener identity prefix (for descriptive LiveKit room identities only).
+/// Role classification uses ParticipantMetadata, NOT these prefixes.
+const STT_IDENTITY_PREFIX: &str = "stt-";
+/// Ambient audio identity prefix (descriptive only).
+const AMBIENT_IDENTITY_PREFIX: &str = "ambient-";
 
 /// Events emitted by the agent for the VoiceModule to handle
 #[derive(Debug)]
@@ -82,8 +123,9 @@ pub struct LiveKitAgent {
     room: Room,
     /// Primary audio source for TTS output
     audio_source: NativeAudioSource,
-    /// Video source for avatar rendering
-    video_source: NativeVideoSource,
+    /// Video source for avatar rendering — lazily created on first publish_video_frame() call.
+    /// Not created at connect() time to avoid publishing uninitialized garbled frames.
+    video_source: Mutex<Option<NativeVideoSource>>,
     /// Additional audio sources for ambient/background audio (hold music, etc.)
     ambient_sources: Arc<Mutex<HashMap<String, NativeAudioSource>>>,
     /// Agent events channel
@@ -93,7 +135,11 @@ pub struct LiveKitAgent {
 }
 
 impl LiveKitAgent {
-    /// Connect to a LiveKit room as a server-side participant (publishes audio + video tracks).
+    /// Connect to a LiveKit room as a server-side participant.
+    ///
+    /// Publishes an audio track immediately (for TTS output).
+    /// Video track is deferred — created lazily on first publish_video_frame() call
+    /// to avoid streaming uninitialized buffer data (garbled frames).
     ///
     /// Returns the agent and an event receiver for incoming audio/participant events.
     pub async fn connect(
@@ -102,12 +148,14 @@ impl LiveKitAgent {
         persona_id: &str,
         persona_name: &str,
     ) -> Result<(Self, mpsc::UnboundedReceiver<AgentEvent>), String> {
-        // Generate access token using secrets (config.env) with dev fallbacks
+        // Generate access token with metadata for role classification
+        let metadata = ParticipantMetadata::new(ParticipantRole::AiPersona);
         let api_key = get_secret("LIVEKIT_API_KEY").unwrap_or(LIVEKIT_DEV_KEY);
         let api_secret = get_secret("LIVEKIT_API_SECRET").unwrap_or(LIVEKIT_DEV_SECRET);
         let token = AccessToken::with_api_key(api_key, api_secret)
             .with_identity(persona_id)
             .with_name(persona_name)
+            .with_metadata(&metadata.to_json())
             .with_grants(VideoGrants {
                 room_join: true,
                 room: call_id.to_string(),
@@ -125,7 +173,7 @@ impl LiveKitAgent {
             .map_err(|e| format!("Failed to connect to LiveKit room: {}", e))?;
 
         info!(
-            "🔊 LiveKitAgent '{}' connected to room '{}'",
+            "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona)",
             persona_name, call_id
         );
 
@@ -137,7 +185,7 @@ impl LiveKitAgent {
             1000, // 1 second queue
         );
 
-        // Publish TTS audio track
+        // Publish TTS audio track immediately
         let audio_track = LocalAudioTrack::create_audio_track(
             &format!("{}-voice", persona_id),
             RtcAudioSource::Native(audio_source.clone()),
@@ -153,36 +201,17 @@ impl LiveKitAgent {
             .await
             .map_err(|e| format!("Failed to publish audio track: {}", e))?;
 
-        // Create video source for avatar (640x480 default, not a screencast)
-        let video_source = NativeVideoSource::new(
-            VideoResolution {
-                width: 640,
-                height: 480,
-            },
-            false, // is_screencast
-        );
-
-        // Publish avatar video track
-        let video_track = LocalVideoTrack::create_video_track(
-            &format!("{}-avatar", persona_id),
-            RtcVideoSource::Native(video_source.clone()),
-        );
-        room.local_participant()
-            .publish_track(
-                LocalTrack::Video(video_track),
-                TrackPublishOptions {
-                    source: TrackSource::Camera,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| format!("Failed to publish video track: {}", e))?;
+        // Video source is NOT created here — deferred to first publish_video_frame().
+        // Publishing an empty NativeVideoSource streams uninitialized buffer memory
+        // which renders as garbled patterns in the browser (looks like broken vsync).
+        // The browser shows avatar circles for participants without video tracks.
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let event_tx_clone = event_tx.clone();
         let identity = persona_id.to_string();
 
-        // Spawn event handler task — routes room events to the agent's event channel
+        // Spawn event handler task — routes room events to the agent's event channel.
+        // Uses participant metadata for role classification, not identity string matching.
         tokio::spawn(async move {
             while let Some(event) = room_events.recv().await {
                 match event {
@@ -192,10 +221,16 @@ impl LiveKitAgent {
                         participant,
                     } => {
                         let speaker_id = participant.identity().to_string();
-                        // Skip tracks from other system agents
-                        if speaker_id.starts_with(STT_LISTENER_PREFIX) {
+                        let meta = ParticipantMetadata::from_json(&participant.metadata());
+
+                        // Only process audio from human participants
+                        let is_human = meta.as_ref()
+                            .map(|m| m.role == ParticipantRole::Human)
+                            .unwrap_or(true); // Unknown = probably human
+                        if !is_human {
                             continue;
                         }
+
                         info!("🎤 Agent subscribed to track from '{}'", speaker_id);
 
                         if let RemoteTrack::Audio(audio_track) = track {
@@ -207,11 +242,14 @@ impl LiveKitAgent {
                         }
                     }
                     RoomEvent::ParticipantConnected(participant) => {
+                        let meta = ParticipantMetadata::from_json(&participant.metadata());
+                        let is_visible = meta.as_ref()
+                            .map(|m| m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona)
+                            .unwrap_or(true);
+                        if !is_visible { continue; }
+
                         let name = participant.name().to_string();
                         let id = participant.identity().to_string();
-                        if id.starts_with(STT_LISTENER_PREFIX) {
-                            continue;
-                        }
                         info!("👤 Participant joined: {} ({})", name, id);
                         let _ = event_tx_clone.send(AgentEvent::ParticipantJoined {
                             identity: id,
@@ -219,10 +257,13 @@ impl LiveKitAgent {
                         });
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
+                        let meta = ParticipantMetadata::from_json(&participant.metadata());
+                        let is_visible = meta.as_ref()
+                            .map(|m| m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona)
+                            .unwrap_or(true);
+                        if !is_visible { continue; }
+
                         let id = participant.identity().to_string();
-                        if id.starts_with(STT_LISTENER_PREFIX) {
-                            continue;
-                        }
                         info!("👤 Participant left: {}", id);
                         let _ = event_tx_clone.send(AgentEvent::ParticipantLeft {
                             identity: id,
@@ -236,7 +277,7 @@ impl LiveKitAgent {
         let agent = Self {
             room,
             audio_source,
-            video_source,
+            video_source: Mutex::new(None), // Deferred until first frame
             ambient_sources: Arc::new(Mutex::new(HashMap::new())),
             event_tx,
             identity,
@@ -274,11 +315,43 @@ impl LiveKitAgent {
     }
 
     /// Publish a video frame to the avatar track.
-    /// Accepts RGBA8 pixel data and converts to I420 for LiveKit.
-    pub fn publish_video_frame(&self, _rgba: &[u8], width: u32, height: u32) {
+    /// Accepts RGBA8 pixel data. Creates and publishes the video track lazily on first call.
+    ///
+    /// The video track is NOT created at connect() time to avoid streaming
+    /// uninitialized buffer data (garbled vsync-like artifacts in browsers).
+    pub async fn publish_video_frame(&self, _rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+        let mut source_guard = self.video_source.lock().await;
+
+        // Lazily create and publish video source on first frame
+        if source_guard.is_none() {
+            let video_source = NativeVideoSource::new(
+                VideoResolution { width, height },
+                false, // is_screencast
+            );
+            let video_track = LocalVideoTrack::create_video_track(
+                &format!("{}-avatar", self.identity),
+                RtcVideoSource::Native(video_source.clone()),
+            );
+            self.room
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(video_track),
+                    TrackPublishOptions {
+                        source: TrackSource::Camera,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| format!("Failed to publish video track: {}", e))?;
+
+            info!("📹 Video track published for '{}' ({}x{})", self.identity, width, height);
+            *source_guard = Some(video_source);
+        }
+
         // TODO: Convert RGBA to I420 VideoFrame and call video_source.capture_frame()
-        // For now this is a placeholder — avatar rendering will be wired in later.
-        let _ = (width, height);
+        // This will be wired when avatar rendering (wgpu/rend3) is integrated.
+        let _ = (_rgba, width, height);
+        Ok(())
     }
 
     /// Add a named ambient audio source (hold music, background noise, etc.)
@@ -385,17 +458,20 @@ impl LiveKitAgent {
 // =============================================================================
 
 /// Generate a LiveKit JWT token for a given identity and room.
+/// Includes participant metadata for role classification.
 fn generate_token(
     identity: &str,
     name: &str,
     room: &str,
     can_publish: bool,
+    metadata: &ParticipantMetadata,
 ) -> Result<String, String> {
     let api_key = get_secret("LIVEKIT_API_KEY").unwrap_or(LIVEKIT_DEV_KEY);
     let api_secret = get_secret("LIVEKIT_API_SECRET").unwrap_or(LIVEKIT_DEV_SECRET);
     AccessToken::with_api_key(api_key, api_secret)
         .with_identity(identity)
         .with_name(name)
+        .with_metadata(&metadata.to_json())
         .with_grants(VideoGrants {
             room_join: true,
             room: room.to_string(),
@@ -503,30 +579,32 @@ async fn process_audio_stream_with_vad(
 
 /// Spawn an STT listener agent for a call.
 ///
-/// This agent joins the LiveKit room with `__stt__` prefix identity,
-/// subscribes to all human audio tracks, runs VAD → STT, and publishes
-/// transcriptions via LiveKit's native transcription API.
+/// Joins the LiveKit room with stt_listener role metadata.
+/// Subscribes only to human audio tracks (checks participant metadata).
+/// Runs VAD → STT and publishes transcriptions via data channel.
 ///
-/// The browser filters out `__stt__` participants from the UI grid.
+/// Browser filters out STT participants via metadata role, not identity prefix.
 async fn spawn_stt_listener(
     livekit_url: &str,
     call_id: &str,
     transcription_buffer: TranscriptionBuffer,
 ) -> Result<Arc<Room>, String> {
-    let listener_id = format!("{}{}", STT_LISTENER_PREFIX, &call_id[..8.min(call_id.len())]);
-    let token = generate_token(&listener_id, "STT", call_id, true)?;
+    let listener_id = format!("{}{}", STT_IDENTITY_PREFIX, &call_id[..8.min(call_id.len())]);
+    let metadata = ParticipantMetadata::new(ParticipantRole::SttListener);
+    let token = generate_token(&listener_id, "STT", call_id, true, &metadata)?;
 
     let (room, mut room_events) = Room::connect(livekit_url, &token, RoomOptions::default())
         .await
         .map_err(|e| format!("Failed to connect STT listener: {}", e))?;
 
-    info!("🎤 STT listener connected to room '{}' as '{}'", call_id, listener_id);
+    info!("🎤 STT listener connected to room '{}' as '{}' (role=stt_listener)", call_id, listener_id);
 
     let room = Arc::new(room);
     let room_for_events = room.clone();
     let call_id_owned = call_id.to_string();
 
-    // Spawn room event handler — subscribes to audio tracks and processes them
+    // Spawn room event handler — subscribes to audio tracks and processes them.
+    // Uses participant metadata to determine role. Only transcribes human audio.
     tokio::spawn(async move {
         while let Some(event) = room_events.recv().await {
             match event {
@@ -537,12 +615,17 @@ async fn spawn_stt_listener(
                 } => {
                     let speaker_id = participant.identity().to_string();
                     let speaker_name = participant.name().to_string();
+                    let meta = ParticipantMetadata::from_json(&participant.metadata());
 
-                    // Skip tracks from system/AI agents (STT listeners, ambient sources, AI persona agents)
-                    // Without this, AI TTS audio gets transcribed back → infinite echo loop
-                    if speaker_id.starts_with(STT_LISTENER_PREFIX)
-                        || speaker_id.starts_with("ambient-")
-                        || speaker_id.starts_with(AI_AGENT_PREFIX) {
+                    // Only transcribe audio from human participants.
+                    // AI persona TTS, STT listeners, and ambient audio are skipped.
+                    // Without this, AI TTS gets transcribed → infinite echo loop.
+                    let is_human = meta.as_ref()
+                        .map(|m| m.role == ParticipantRole::Human)
+                        .unwrap_or(true); // Unknown metadata = probably human
+                    if !is_human {
+                        info!("🎤 STT: Skipping non-human track from '{}' (role={:?})",
+                            speaker_id, meta.as_ref().map(|m| &m.role));
                         continue;
                     }
 
@@ -816,6 +899,10 @@ impl LiveKitAgentManager {
 
     /// Get or create an agent for a persona in a call.
     /// If the agent doesn't exist yet, connects to LiveKit.
+    ///
+    /// The agent's identity is the persona's user_id directly — no prefix mangling.
+    /// Role classification uses JWT metadata (ParticipantRole::AiPersona), which
+    /// the STT listener and browser both check to determine behavior.
     async fn get_or_create_agent(
         &self,
         call_id: &str,
@@ -831,14 +918,12 @@ impl LiveKitAgentManager {
             }
         }
 
-        // Slow path: create new agent
-        // Use __ai__ prefix so STT listener skips this participant (prevents echo loop)
-        let ai_identity = format!("{}{}", AI_AGENT_PREFIX, user_id);
+        // Slow path: create new agent with ai_persona role in metadata
         let (agent, _event_rx) = LiveKitAgent::connect(
             &self.livekit_url,
             call_id,
-            &ai_identity,
-            user_id, // display name = user_id for now (caller should provide better name)
+            user_id,    // Identity = persona's userId (unique UUID, no prefix needed)
+            user_id,    // Display name (caller should provide better name)
         ).await?;
 
         let agent = Arc::new(agent);
@@ -985,8 +1070,9 @@ async fn run_ambient_audio_loop(
 ) -> Result<(), String> {
     use crate::voice::vad::test_audio::TestAudioGenerator;
 
-    let identity = format!("ambient-bg-{}", &call_id[..8.min(call_id.len())]);
-    let token = generate_token(&identity, "Background Audio", call_id, true)?;
+    let identity = format!("{}{}", AMBIENT_IDENTITY_PREFIX, &call_id[..8.min(call_id.len())]);
+    let metadata = ParticipantMetadata::new(ParticipantRole::AmbientAudio);
+    let token = generate_token(&identity, "Background Audio", call_id, true, &metadata)?;
 
     let (room, _events) = Room::connect(livekit_url, &token, RoomOptions::default())
         .await

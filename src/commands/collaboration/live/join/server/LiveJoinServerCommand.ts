@@ -295,7 +295,8 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   }
 
   /**
-   * Generate a LiveKit JWT access token for a participant.
+   * Generate a LiveKit JWT access token for a human participant.
+   * Includes ParticipantMetadata with role=human for typed classification.
    * Uses livekit-server-sdk to create a token granting room join + publish + subscribe.
    */
   private async generateLiveKitToken(
@@ -304,12 +305,14 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     displayName: string
   ): Promise<string> {
     const { AccessToken } = await import('livekit-server-sdk');
+    const { ParticipantRole } = await import('../../../../../shared/LiveKitTypes');
 
     const apiKey = getSecret('LIVEKIT_API_KEY', 'LiveJoinServerCommand') || LIVEKIT_API_KEY;
     const apiSecret = getSecret('LIVEKIT_API_SECRET', 'LiveJoinServerCommand') || LIVEKIT_API_SECRET;
     const token = new AccessToken(apiKey, apiSecret, {
       identity: userId,
       name: displayName,
+      metadata: JSON.stringify({ role: ParticipantRole.Human }),
       ttl: '6h',
     });
     token.addGrant({

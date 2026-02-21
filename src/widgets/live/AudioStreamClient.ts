@@ -7,8 +7,9 @@
  * - Subscribing to remote audio/video tracks
  * - Receiving live transcriptions
  *
- * Replaces the legacy WebSocket binary frame protocol with LiveKit's
- * encrypted WebRTC transport (DTLS-SRTP, Opus codec, VP8/H264 video).
+ * Participant classification uses JWT metadata (ParticipantRole enum),
+ * NOT identity string prefixes. Role is set at token generation time
+ * and read via participant.metadata on the SDK.
  */
 
 import {
@@ -24,6 +25,13 @@ import {
   type TrackPublication,
   type TranscriptionSegment,
 } from 'livekit-client';
+
+import {
+  type ParticipantMetadata,
+  ParticipantRole,
+  parseParticipantMetadata,
+  isVisibleParticipant,
+} from '../../shared/LiveKitTypes';
 
 /** Transcription result from STT pipeline */
 export interface TranscriptionResult {
@@ -64,11 +72,6 @@ interface AudioStreamClientOptions {
   /** Callback when an avatar state update arrives (via data channel) */
   onAvatarUpdate?: (update: AvatarUpdateEvent) => void;
 }
-
-/** Identity prefix for STT listener agents — filtered out from UI */
-const STT_LISTENER_PREFIX = '__stt__';
-/** Identity prefix for AI persona agents — filtered out from UI (audio only, no avatar) */
-const AI_AGENT_PREFIX = '__ai__';
 
 export class AudioStreamClient {
   private room: Room | null = null;
@@ -218,6 +221,14 @@ export class AudioStreamClient {
 
   // --- Event handlers ---
 
+  /**
+   * Resolve a participant's role from their JWT metadata.
+   * Every participant should have metadata set at token generation time.
+   */
+  private getParticipantRole(participant: RemoteParticipant): ParticipantMetadata | null {
+    return parseParticipantMetadata(participant.metadata);
+  }
+
   private setupEventHandlers(): void {
     if (!this.room) return;
 
@@ -231,22 +242,18 @@ export class AudioStreamClient {
       this.options.onConnectionChange?.(false);
     });
 
-    // Remote participant joined (filter out system/AI agents from UI grid)
-    // AI agents publish audio tracks but shouldn't appear as separate participants
-    // (they're already shown via the pre-registered participant list)
+    // Remote participant joined — only notify UI for visible participants
     this.room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
-      if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
-      if (participant.identity.startsWith(AI_AGENT_PREFIX)) return;
-      if (participant.identity.startsWith('ambient-')) return;
-      console.log(`AudioStreamClient: ${participant.name || participant.identity} joined`);
+      const meta = this.getParticipantRole(participant);
+      if (!isVisibleParticipant(meta)) return;
+      console.log(`AudioStreamClient: ${participant.name || participant.identity} joined (role=${meta?.role ?? 'unknown'})`);
       this.options.onParticipantJoined?.(participant.identity, participant.name || participant.identity);
     });
 
-    // Remote participant left (filter out system/AI agents)
+    // Remote participant left — only notify UI for visible participants
     this.room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
-      if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
-      if (participant.identity.startsWith(AI_AGENT_PREFIX)) return;
-      if (participant.identity.startsWith('ambient-')) return;
+      const meta = this.getParticipantRole(participant);
+      if (!isVisibleParticipant(meta)) return;
       console.log(`AudioStreamClient: ${participant.identity} left`);
       this.options.onParticipantLeft?.(participant.identity);
     });
@@ -257,15 +264,14 @@ export class AudioStreamClient {
       publication: RemoteTrackPublication,
       participant: RemoteParticipant,
     ) => {
-      // Skip system agents entirely (STT listeners don't publish, but guard anyway)
-      if (participant.identity.startsWith(STT_LISTENER_PREFIX)) return;
-      if (participant.identity.startsWith('ambient-')) return;
+      const meta = this.getParticipantRole(participant);
 
-      // Strip __ai__ prefix to map back to the original user ID for UI matching.
-      // AI agents join LiveKit as __ai__<userId> but the UI tiles are keyed by userId.
-      const userId = participant.identity.startsWith(AI_AGENT_PREFIX)
-        ? participant.identity.slice(AI_AGENT_PREFIX.length)
-        : participant.identity;
+      // Skip tracks from invisible system participants (STT listeners, ambient audio)
+      if (!isVisibleParticipant(meta)) return;
+
+      // Identity IS the userId — no prefix stripping needed.
+      // AI agents use their persona userId directly; role is in metadata.
+      const userId = participant.identity;
 
       if (track.kind === Track.Kind.Audio) {
         // Attach audio element for playback (hidden container, auto-plays)
@@ -273,7 +279,7 @@ export class AudioStreamClient {
         element.volume = this.speakerMuted ? 0 : this.speakerVolume;
         this.audioContainer?.appendChild(element);
         this.remoteAudioElements.set(userId, element);
-        console.log(`AudioStreamClient: Audio track subscribed from ${userId}`);
+        console.log(`AudioStreamClient: Audio track subscribed from ${userId} (role=${meta?.role ?? 'unknown'})`);
       }
 
       if (track.kind === Track.Kind.Video) {
@@ -296,10 +302,7 @@ export class AudioStreamClient {
       // Detach and remove all DOM elements for this track
       track.detach().forEach(el => el.remove());
 
-      // Strip __ai__ prefix for matching
-      const userId = participant.identity.startsWith(AI_AGENT_PREFIX)
-        ? participant.identity.slice(AI_AGENT_PREFIX.length)
-        : participant.identity;
+      const userId = participant.identity;
 
       if (track.kind === Track.Kind.Audio) {
         this.remoteAudioElements.delete(userId);
