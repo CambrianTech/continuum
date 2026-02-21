@@ -794,15 +794,9 @@ export class PersonaUser extends AIUser {
       this._eventUnsubscribes.push(unsubVoiceTranscription);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
-      // Subscribe to TTS audio events and inject into CallServer
-      // This allows AI voice responses to be heard in voice calls
-      const { AIAudioInjector } = await import('../../voice/server/AIAudioInjector');
-      const unsubAudioInjection = AIAudioInjector.subscribeToTTSEvents(
-        this.id,
-        this.displayName
-      );
-      this._eventUnsubscribes.push(unsubAudioInjection);
-      this.log.info(`🎙️ ${this.displayName}: Subscribed to TTS audio injection events`);
+      // TTS audio injection is handled by Rust LiveKitAgentManager — no TS subscription needed.
+      // When AI responds to voice, VoiceOrchestrator → AIAudioBridge.speak() → Rust voice/speak-in-call
+      // → LiveKitAgent.speak() → NativeAudioSource → LiveKit → browser.
 
       // Subscribe to shell events from Rust CodeModule (feedback loop for coding system)
       // Events: shell:{personaId}:complete, shell:{personaId}:error, shell:{personaId}:started
@@ -872,18 +866,21 @@ export class PersonaUser extends AIUser {
     const dbHandle = openResult.dbHandle;
 
     // Parallel ORM queries — both are read-only against the same DB handle
+    // skipCount: true — corpus loading only needs data, not COUNT(*) round-trips
     const [memResult, evtResult] = await Promise.all([
       DataList.execute({
         dbHandle,
         collection: 'memories',
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: 100000,
+        skipCount: true,
       }),
       DataList.execute({
         dbHandle,
         collection: 'timeline_events',
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: 100000,
+        skipCount: true,
       }),
     ]);
 

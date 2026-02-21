@@ -50,8 +50,15 @@ impl Secrets {
         }
 
         // 2. Load from environment variables (override/fallback)
+        // Accept API keys, secrets, tokens, and URLs — all patterns used by our adapters
         for (key, value) in std::env::vars() {
-            if key.ends_with("_API_KEY") || key.ends_with("_KEY") {
+            if key.ends_with("_API_KEY")
+                || key.ends_with("_KEY")
+                || key.ends_with("_API_SECRET")
+                || key.ends_with("_SECRET")
+                || key.ends_with("_TOKEN")
+                || key.ends_with("_URL")
+            {
                 secrets.insert(key, value);
             }
         }

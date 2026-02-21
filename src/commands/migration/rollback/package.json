@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/migration/rollback",
+  "version": "1.0.0",
+  "description": "Revert to the previous connection string after a cutover. Source data is never deleted.",
+  "main": "server/MigrationRollbackServerCommand.ts",
+  "types": "shared/MigrationRollbackTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/MigrationRollbackIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "migration/rollback"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

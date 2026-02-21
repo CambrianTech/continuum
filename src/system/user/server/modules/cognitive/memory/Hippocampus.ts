@@ -42,6 +42,7 @@ import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDae
 import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
+import { CognitionLogger } from '../../cognition/CognitionLogger';
 
 import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
@@ -155,6 +156,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       this.memoryDbHandle = result.dbHandle;
+      CognitionLogger.registerDbHandle(this.persona.id, this.memoryDbHandle);
       this.log(`LTM database opened: ${this.memoryDbHandle}`);
       this.log('LTM database initialized successfully');
     } catch (error) {
@@ -187,6 +189,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           }
 
           this.memoryDbHandle = result.dbHandle;
+          CognitionLogger.registerDbHandle(this.persona.id, this.memoryDbHandle);
           this.log(`LTM database opened (after recovery): ${this.memoryDbHandle}`);
           this.log('✅ LTM database recovered and initialized successfully');
           return;
@@ -468,7 +471,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           const result = await DataCreate.execute<any>({
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
-            data: memory
+            data: memory,
+            suppressEvents: true,
           } as any);
 
           if (result.success) {

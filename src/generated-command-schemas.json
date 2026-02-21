@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-19T04:38:24.449Z",
+  "generated": "2026-02-21T11:15:29.617Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2450,6 +2450,108 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/verify",
+      "description": "Verify migration integrity by comparing record counts between source and target",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/status",
+      "description": "Get current migration progress with per-collection breakdown",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/start",
+      "description": "Start streaming data migration between any two storage adapters (e.g., SQLite to PostgreSQL)",
+      "params": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "description": "source parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        },
+        "throttleMs": {
+          "type": "number",
+          "required": false,
+          "description": "throttleMs parameter"
+        },
+        "collections": {
+          "type": "array",
+          "required": false,
+          "description": "collections parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/rollback",
+      "description": "Revert to the previous connection string after a cutover. Source data is never deleted.",
+      "params": {
+        "current": {
+          "type": "string",
+          "required": true,
+          "description": "current parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/resume",
+      "description": "Resume a paused migration from its last checkpoint",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/pause",
+      "description": "Pause an in-flight migration. Can be resumed later from the last checkpoint.",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "migration/cutover",
+      "description": "Switch all operations from current adapter to the migration target. Saves previous connection for rollback.",
+      "params": {
+        "current": {
+          "type": "string",
+          "required": true,
+          "description": "current parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
         }
       }
     },
@@ -5207,6 +5309,11 @@
           "type": "string",
           "required": false,
           "description": "dbHandle parameter"
+        },
+        "skipCount": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipCount parameter"
         },
         "backend": {
           "type": "string",

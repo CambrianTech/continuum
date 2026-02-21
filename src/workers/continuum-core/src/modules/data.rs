@@ -12,6 +12,8 @@ use crate::{log_error, log_info};
 use crate::modules::embedding::generate_embeddings_batch;
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
+    migration::{MigrationConfig, MigrationEngine, MigrationHandle},
+    postgres::PostgresAdapter,
     query::{FieldFilter, StorageQuery},
     sqlite::SqliteAdapter,
     types::{BatchOperation, CollectionSchema, DataRecord, RecordMetadata, UUID},
@@ -71,14 +73,16 @@ struct PaginatedQueryState {
 
 /// DataModule manages storage operations. Database path comes from each request.
 ///
-/// NOTE: SqliteAdapter uses an internal worker thread with mpsc channels.
-/// All methods take &self and the sender is Clone+Send, so we don't need
-/// a Mutex around the adapter - concurrent sends are safe.
+/// Adapter-agnostic: connection string determines which adapter is used.
+/// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
+/// - `postgres://` or `postgresql://` → PostgresAdapter (async connection pool)
+///
+/// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
+/// PostgresAdapter is internally thread-safe via deadpool connection pool.
 pub struct DataModule {
-    /// Adapter cache: path -> initialized adapter
-    /// Lazy initialization per unique path
-    /// Uses Arc<SqliteAdapter> without Mutex - SqliteAdapter is internally thread-safe
-    adapters: DashMap<String, Arc<SqliteAdapter>>,
+    /// Adapter cache: connection_string -> initialized adapter (polymorphic)
+    /// Lazy initialization per unique connection string
+    adapters: DashMap<String, Arc<dyn StorageAdapter>>,
     /// Mutex only used during adapter initialization (one-time setup)
     init_lock: Mutex<()>,
     /// Vector cache: (db_path, collection) -> vectors
@@ -90,6 +94,10 @@ pub struct DataModule {
     /// Module context for inter-module communication (event bus, shared compute)
     /// Set during initialize(), used to publish data change events
     context: RwLock<Option<Arc<ModuleContext>>>,
+    /// Active migration handle for status/pause/verify (lightweight, lock-free)
+    active_migration: Mutex<Option<MigrationHandle>>,
+    /// Pre-cutover connection string (for rollback)
+    previous_connection: Mutex<Option<String>>,
 }
 
 impl DataModule {
@@ -100,6 +108,8 @@ impl DataModule {
             vector_cache: RwLock::new(HashMap::new()),
             paginated_queries: DashMap::new(),
             context: RwLock::new(None),
+            active_migration: Mutex::new(None),
+            previous_connection: Mutex::new(None),
         }
     }
 
@@ -131,9 +141,12 @@ impl DataModule {
         }
     }
 
-    /// Get or create adapter for the given path. Path is REQUIRED.
-    /// NOTE: No Mutex around adapter - SqliteAdapter is internally thread-safe via mpsc channels.
-    async fn get_adapter(&self, db_path: &str) -> Result<Arc<SqliteAdapter>, String> {
+    /// Get or create adapter for the given connection string. Connection string is REQUIRED.
+    ///
+    /// Routing logic:
+    /// - `postgres://` or `postgresql://` → PostgresAdapter (async pool, MVCC)
+    /// - Everything else (file paths, `:memory:`) → SqliteAdapter (worker thread)
+    async fn get_adapter(&self, db_path: &str) -> Result<Arc<dyn StorageAdapter>, String> {
         // Check cache first (fast path - no lock needed)
         if let Some(adapter) = self.adapters.get(db_path) {
             return Ok(adapter.clone());
@@ -147,19 +160,28 @@ impl DataModule {
             return Ok(adapter.clone());
         }
 
-        // Create and initialize new adapter
-        let mut adapter = SqliteAdapter::new();
         let config = AdapterConfig {
             connection_string: db_path.to_string(),
             namespace: None,
             timeout_ms: 30_000,
             max_connections: 20,
         };
-        adapter.initialize(config).await?;
 
-        let adapter = Arc::new(adapter);
+        // Route based on connection string
+        let adapter: Arc<dyn StorageAdapter> = if db_path.starts_with("postgres://")
+            || db_path.starts_with("postgresql://")
+        {
+            log_info!("data", "get_adapter", "Creating PostgresAdapter for: {}", db_path);
+            let mut pg = PostgresAdapter::new();
+            pg.initialize(config).await?;
+            Arc::new(pg)
+        } else {
+            let mut sqlite = SqliteAdapter::new();
+            sqlite.initialize(config).await?;
+            Arc::new(sqlite)
+        };
+
         self.adapters.insert(db_path.to_string(), adapter.clone());
-
         Ok(adapter)
     }
 }
@@ -176,7 +198,7 @@ impl ServiceModule for DataModule {
         ModuleConfig {
             name: "data",
             priority: ModulePriority::Normal,
-            command_prefixes: &["data/", "adapter/", "vector/"],
+            command_prefixes: &["data/", "adapter/", "vector/", "migration/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -233,22 +255,23 @@ impl ServiceModule for DataModule {
             "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
             "vector/backfill" => self.handle_backfill_vectors(params).await,
 
+            // Migration between adapters
+            "migration/start" => self.handle_migration_start(params).await,
+            "migration/status" => self.handle_migration_status(params).await,
+            "migration/pause" => self.handle_migration_pause(params).await,
+            "migration/resume" => self.handle_migration_resume(params).await,
+            "migration/verify" => self.handle_migration_verify(params).await,
+            "migration/cutover" => self.handle_migration_cutover(params).await,
+            "migration/rollback" => self.handle_migration_rollback(params).await,
+
             _ => Err(format!("Unknown data command: {command}")),
         }
     }
 
     async fn shutdown(&self) -> Result<(), String> {
-        // Close all adapters - take ownership to get mutable access
-        let paths: Vec<String> = self.adapters.iter().map(|e| e.key().clone()).collect();
-        for path in paths {
-            if let Some((_, adapter)) = self.adapters.remove(&path) {
-                // Try to get exclusive access for proper close
-                // If other refs exist, drop will clean up eventually
-                if let Ok(mut adapter) = Arc::try_unwrap(adapter) {
-                    let _ = adapter.close().await;
-                }
-            }
-        }
+        // Close all adapters - clear the DashMap
+        // Adapters will clean up when their Arc refcount drops to zero
+        self.adapters.clear();
         Ok(())
     }
 
@@ -447,6 +470,45 @@ struct QueryNextParams {
 #[serde(rename_all = "camelCase")]
 struct QueryCloseParams {
     query_id: String,
+}
+
+// ============================================================================
+// Migration Params
+// ============================================================================
+
+/// Start migration params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationStartParams {
+    source: String,
+    target: String,
+    #[serde(default = "default_migration_batch")]
+    batch_size: usize,
+    #[serde(default = "default_migration_throttle")]
+    throttle_ms: u64,
+    #[serde(default)]
+    collections: Option<Vec<String>>,
+}
+
+fn default_migration_batch() -> usize { 500 }
+fn default_migration_throttle() -> u64 { 10 }
+
+/// Cutover params - switch active connection
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationCutoverParams {
+    /// The db_path currently in use to swap out
+    current: String,
+    /// The new connection string to swap in
+    target: String,
+}
+
+/// Rollback params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationRollbackParams {
+    /// The db_path that was swapped in (to remove)
+    current: String,
 }
 
 impl DataModule {
@@ -1410,6 +1472,157 @@ impl DataModule {
             "success": removed,
             "queryId": params.query_id
         })))
+    }
+
+    // =========================================================================
+    // Migration Handlers
+    // =========================================================================
+
+    /// Start a streaming migration between two adapters (async — returns immediately)
+    async fn handle_migration_start(&self, params: Value) -> Result<CommandResult, String> {
+        let params: MigrationStartParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "migration/start", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        // Get or create adapters for source and target
+        let source = self.get_adapter(&params.source).await?;
+        let target = self.get_adapter(&params.target).await?;
+
+        let config = MigrationConfig {
+            batch_size: params.batch_size,
+            throttle_ms: params.throttle_ms,
+            collections: params.collections,
+        };
+
+        let mut engine = MigrationEngine::new(source, target, config);
+        let handle = engine.handle();
+
+        // Store handle for status/pause/resume/verify (before spawning)
+        *self.active_migration.lock().await = Some(handle.clone());
+
+        let src = params.source.clone();
+        let tgt = params.target.clone();
+
+        // Spawn migration as background task — returns immediately
+        tokio::spawn(async move {
+            log_info!("data", "migration/start", "Background migration started: {} -> {}", src, tgt);
+            match engine.run().await {
+                Ok(status) => {
+                    log_info!("data", "migration/start", "Migration completed: {}", status);
+                }
+                Err(e) => {
+                    log_error!("data", "migration/start", "Migration failed: {}", e);
+                }
+            }
+        });
+
+        // Return handle status immediately
+        Ok(CommandResult::Json(handle.status_json()))
+    }
+
+    /// Get migration progress (lock-free — reads atomic counters)
+    async fn handle_migration_status(&self, _params: Value) -> Result<CommandResult, String> {
+        let guard = self.active_migration.lock().await;
+        match guard.as_ref() {
+            Some(handle) => Ok(CommandResult::Json(handle.status_json())),
+            None => Err("No active migration".into()),
+        }
+    }
+
+    /// Pause active migration (atomic flag — returns immediately)
+    async fn handle_migration_pause(&self, _params: Value) -> Result<CommandResult, String> {
+        let guard = self.active_migration.lock().await;
+        match guard.as_ref() {
+            Some(handle) => {
+                handle.pause();
+                log_info!("data", "migration/pause", "Migration paused");
+                Ok(CommandResult::Json(handle.status_json()))
+            }
+            None => Err("No active migration".into()),
+        }
+    }
+
+    /// Resume paused migration (clears pause flag, migration loop re-checks)
+    async fn handle_migration_resume(&self, _params: Value) -> Result<CommandResult, String> {
+        let guard = self.active_migration.lock().await;
+        match guard.as_ref() {
+            Some(handle) => {
+                handle.resume();
+                log_info!("data", "migration/resume", "Migration resumed");
+                Ok(CommandResult::Json(handle.status_json()))
+            }
+            None => Err("No active migration".into()),
+        }
+    }
+
+    /// Verify migration integrity (compare counts between source and target)
+    async fn handle_migration_verify(&self, _params: Value) -> Result<CommandResult, String> {
+        let guard = self.active_migration.lock().await;
+        match guard.as_ref() {
+            Some(handle) => {
+                let verify = handle.verify().await?;
+                Ok(CommandResult::Json(verify))
+            }
+            None => Err("No active migration".into()),
+        }
+    }
+
+    /// Cutover: swap the active adapter for a connection string
+    /// After migration, this redirects all operations to the new backend
+    async fn handle_migration_cutover(&self, params: Value) -> Result<CommandResult, String> {
+        let params: MigrationCutoverParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "migration/cutover", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        // Store current for rollback
+        *self.previous_connection.lock().await = Some(params.current.clone());
+
+        // Remove old adapter from cache (forces re-creation on next access)
+        self.adapters.remove(&params.current);
+
+        // Pre-warm the target adapter
+        let _target = self.get_adapter(&params.target).await?;
+
+        log_info!("data", "migration/cutover", "Cutover: {} -> {}", params.current, params.target);
+
+        Ok(CommandResult::Json(json!({
+            "previous": params.current,
+            "active": params.target,
+            "adapter": _target.name()
+        })))
+    }
+
+    /// Rollback: revert to the previous connection string
+    async fn handle_migration_rollback(&self, params: Value) -> Result<CommandResult, String> {
+        let params: MigrationRollbackParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "migration/rollback", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let previous = self.previous_connection.lock().await;
+        match previous.as_ref() {
+            Some(prev) => {
+                // Remove current adapter
+                self.adapters.remove(&params.current);
+
+                // Pre-warm previous adapter
+                let _adapter = self.get_adapter(prev).await?;
+
+                log_info!("data", "migration/rollback", "Rolled back: {} -> {}", params.current, prev);
+
+                Ok(CommandResult::Json(json!({
+                    "rolledBackFrom": params.current,
+                    "rolledBackTo": prev,
+                    "adapter": _adapter.name()
+                })))
+            }
+            None => Err("No previous connection to rollback to".into()),
+        }
     }
 }
 

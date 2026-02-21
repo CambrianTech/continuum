@@ -39,7 +39,6 @@ interface Participant {
   cameraEnabled: boolean;
   screenShareEnabled: boolean;
   isSpeaking: boolean;
-  videoStream?: MediaStream;
 }
 
 export class LiveWidget extends ReactiveWidget {
@@ -78,6 +77,15 @@ export class LiveWidget extends ReactiveWidget {
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
 
+  // Remote video elements from LiveKit — keyed by participant identity (userId)
+  private _remoteVideoElements: Map<string, HTMLVideoElement> = new Map();
+
+  // Set of participant userIds with active video (triggers re-render when changed)
+  @reactive() private activeVideoUsers: Set<string> = new Set();
+
+  // Spotlight mode — focus on one participant (click to maximize)
+  @reactive() private spotlightUserId: string | null = null;
+
   // Caption fade timeouts per speaker (supports multiple simultaneous speakers)
   private captionFadeTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
@@ -87,6 +95,13 @@ export class LiveWidget extends ReactiveWidget {
   // Saved state for visibility changes (IntersectionObserver auto-mute)
   private _visibilitySavedMic: boolean | null = null;
   private _visibilitySavedSpeaker: boolean | null = null;
+
+  // Keyboard listener for Escape key (spotlight exit)
+  private _escapeHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && this.spotlightUserId) {
+      this.spotlightUserId = null;
+    }
+  };
 
   // Saved state for tab deactivation (onDeactivate/onActivate)
   private _deactivateSavedMic: boolean | null = null;
@@ -107,6 +122,9 @@ export class LiveWidget extends ReactiveWidget {
 
   override connectedCallback(): void {
     super.connectedCallback();
+
+    // Listen for Escape key to exit spotlight mode
+    document.addEventListener('keydown', this._escapeHandler);
 
     // Wait for userState to load before trying to read call state
     // loadUserContext is already called by super.connectedCallback()
@@ -155,6 +173,11 @@ export class LiveWidget extends ReactiveWidget {
    */
   protected override updated(changedProperties: Map<string, unknown>): void {
     super.updated(changedProperties);
+
+    // Attach LiveKit video elements to their container divs after DOM updates
+    if (changedProperties.has('activeVideoUsers') || changedProperties.has('participants')) {
+      this.attachVideoElements();
+    }
 
     // Auto-sync mic state when micEnabled changes
     if (changedProperties.has('micEnabled') && this.audioClient && !this._applyingMicState) {
@@ -280,6 +303,7 @@ export class LiveWidget extends ReactiveWidget {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    document.removeEventListener('keydown', this._escapeHandler);
     this.cleanup();
   }
 
@@ -298,6 +322,10 @@ export class LiveWidget extends ReactiveWidget {
     // Clear speaking timeouts
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
     this.speakingTimeouts.clear();
+
+    // Clear remote video elements
+    this._remoteVideoElements.clear();
+    this.activeVideoUsers = new Set();
 
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
@@ -468,10 +496,8 @@ export class LiveWidget extends ReactiveWidget {
         // Subscribe to session events
         this.subscribeToEvents();
 
-        // Connect to audio streaming server
+        // Connect to LiveKit audio/video streaming
         this.audioClient = new AudioStreamClient({
-          // Port configured via STREAMING_CORE_WS_PORT env var, default 50053
-          serverUrl: `ws://127.0.0.1:${(window as any).__STREAMING_CORE_WS_PORT || 50053}`,
           onMicLevel: (level) => {
             // Update mic level indicator directly (bypass reactive rendering for 30fps)
             const indicator = this.shadowRoot?.getElementById('mic-level') as HTMLElement;
@@ -496,19 +522,49 @@ export class LiveWidget extends ReactiveWidget {
           onParticipantLeft: (userId) => {
             console.log(`LiveWidget: ${userId} left the call`);
             this.participants = this.participants.filter(p => p.userId !== userId);
+            // Clean up video element if any
+            this._remoteVideoElements.delete(userId);
+            const newSet = new Set(this.activeVideoUsers);
+            newSet.delete(userId);
+            this.activeVideoUsers = newSet;
           },
           onConnectionChange: (connected) => {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
             if (connected) {
-              // Re-apply mute state to server after reconnection
+              // Re-apply mute state after reconnection
               this.audioClient?.setMuted(!this.micEnabled);
             }
+          },
+          onVideoTrackAdded: (participantId: string, element: HTMLVideoElement) => {
+            console.log(`LiveWidget: Video track added for ${participantId}`);
+            this._remoteVideoElements.set(participantId, element);
+            this.activeVideoUsers = new Set([...this.activeVideoUsers, participantId]);
+          },
+          onVideoTrackRemoved: (participantId: string) => {
+            console.log(`LiveWidget: Video track removed for ${participantId}`);
+            this._remoteVideoElements.delete(participantId);
+            const newSet = new Set(this.activeVideoUsers);
+            newSet.delete(participantId);
+            this.activeVideoUsers = newSet;
           },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) {
               return;
             }
 
+            // Resolve display name from participants list (authoritative source).
+            // Data channel transcriptions may have UUID as speaker_name;
+            // participants list has the real display name from session registration.
+            const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
+              || transcription.displayName;
+
+            // Show caption and speaking indicator IMMEDIATELY — before the IPC relay.
+            // The relay call can take 200-500ms, and the caption should appear
+            // as soon as the transcription arrives (concurrent with audio start).
+            this.setCaption(resolvedName, transcription.text);
+            this.setSpeaking(transcription.userId as UUID, true);
+
+            // Relay transcription to server asynchronously (for AI response routing)
             try {
               await CollaborationLiveTranscription.execute({
                 callSessionId: this.sessionId,
@@ -522,12 +578,6 @@ export class LiveWidget extends ReactiveWidget {
             } catch (error) {
               console.error(`Failed to relay transcription:`, error);
             }
-
-            // Update caption display
-            this.setCaption(transcription.displayName, transcription.text);
-
-            // Mark user as speaking (auto-clears after 2s)
-            this.setSpeaking(transcription.userId as UUID, true);
           },
         });
 
@@ -536,8 +586,8 @@ export class LiveWidget extends ReactiveWidget {
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          // Join audio stream (callId is guaranteed non-null here)
-          await this.audioClient.join(result.callId, myUserId, myDisplayName);
+          // Join LiveKit room (callId is guaranteed non-null here)
+          await this.audioClient.join(result.callId, myUserId, myDisplayName, result.livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
 
           // Apply saved state to audio client (ONE source of truth)
@@ -609,9 +659,10 @@ export class LiveWidget extends ReactiveWidget {
       })
     );
 
-    // AI speech captions - when an AI speaks via TTS, show it in captions
-    // This event is emitted by AIAudioBridge AFTER TTS synthesis, when audio is sent to server
-    // audioDurationMs tells us how long the audio will play, so we can time the caption/highlight
+    // AI speech duration — extend caption/speaking timing after audio duration is known.
+    // This event fires AFTER TTS synthesis + audio frame queuing (several seconds late),
+    // so it must NOT set the caption text (onTranscription already showed it at the right time).
+    // It ONLY extends the fade timer and speaking indicator to match actual audio duration.
     this.unsubscribers.push(
       Events.subscribe('voice:ai:speech', (data: {
         sessionId: string;
@@ -621,14 +672,29 @@ export class LiveWidget extends ReactiveWidget {
         audioDurationMs?: number;
         timestamp: number;
       }) => {
-        // Only show captions for this session
         if (data.sessionId === this.sessionId) {
-          const durationMs = data.audioDurationMs || 5000;  // Default 5s if not provided
-          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..." (${durationMs}ms)`);
+          const durationMs = data.audioDurationMs || 5000;
+          console.log(`LiveWidget: AI speech duration update: ${data.speakerName} (${durationMs}ms)`);
 
-          // Show caption and speaking indicator for the duration of the audio
-          this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          // Extend the speaking indicator to match actual audio duration.
+          // Caption was already shown by onTranscription; extend its fade timer too.
           this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
+
+          // Only extend caption timeout (don't re-set text — it's already showing).
+          // If caption is already showing from onTranscription, just update the fade timer.
+          if (this.activeCaptions.has(data.speakerName)) {
+            const existingTimeout = this.captionFadeTimeouts.get(data.speakerName);
+            if (existingTimeout) clearTimeout(existingTimeout);
+            const timeout = setTimeout(() => {
+              this.activeCaptions.delete(data.speakerName);
+              this.captionFadeTimeouts.delete(data.speakerName);
+              this.requestUpdate();
+            }, durationMs + 500);
+            this.captionFadeTimeouts.set(data.speakerName, timeout);
+          } else {
+            // Caption hasn't arrived yet (transcription path failed) — show it as fallback
+            this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          }
         }
       })
     );
@@ -708,33 +774,34 @@ export class LiveWidget extends ReactiveWidget {
   private async toggleCamera(): Promise<void> {
     this.cameraEnabled = !this.cameraEnabled;
 
-    if (this.cameraEnabled) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        if (this.localStream) {
-          stream.getVideoTracks().forEach(track => this.localStream!.addTrack(track));
-        } else {
-          this.localStream = stream;
-        }
-        // TODO: Stream video to server
-      } catch (error) {
-        console.error('LiveWidget: Failed to get camera:', error);
-        this.cameraEnabled = false;
-      }
-    } else {
-      if (this.localStream) {
-        this.localStream.getVideoTracks().forEach(track => track.stop());
-      }
+    if (!this.audioClient) {
+      console.error('LiveWidget: No audio client for camera toggle');
+      this.cameraEnabled = false;
+      return;
     }
 
-    // TODO: Notify server about camera state change (command doesn't exist yet)
-    // When live/camera command is implemented, uncomment:
-    // if (this.sessionId) {
-    //   await Commands.execute<LiveCameraParams, LiveCameraResult>('live/camera', {
-    //     sessionId: this.sessionId,
-    //     enabled: this.cameraEnabled
-    //   });
-    // }
+    try {
+      const videoElement = await this.audioClient.setCameraEnabled(this.cameraEnabled);
+
+      if (this.cameraEnabled && videoElement) {
+        // Store local video element for self-preview
+        const myUserId = this.currentUser?.id || '';
+        this._remoteVideoElements.set(myUserId, videoElement);
+        this.activeVideoUsers = new Set([...this.activeVideoUsers, myUserId]);
+        console.log('LiveWidget: Local camera preview enabled');
+      } else if (!this.cameraEnabled) {
+        // Remove self-preview
+        const myUserId = this.currentUser?.id || '';
+        this._remoteVideoElements.delete(myUserId);
+        const newSet = new Set(this.activeVideoUsers);
+        newSet.delete(myUserId);
+        this.activeVideoUsers = newSet;
+        console.log('LiveWidget: Local camera preview disabled');
+      }
+    } catch (error) {
+      console.error('LiveWidget: Failed to toggle camera:', error);
+      this.cameraEnabled = false;
+    }
   }
 
   private async toggleScreenShare(): Promise<void> {
@@ -776,8 +843,12 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
-   * Set a caption to display (auto-fades after 5 seconds)
-   * Uses speakerName as key to support multiple simultaneous speakers
+   * Set a caption to display.
+   * Uses speakerName as key to support multiple simultaneous speakers.
+   *
+   * Default timeout is 15 seconds. For AI speech, voice:ai:speech event
+   * adjusts the timeout to match actual audio duration once it's known.
+   * For human speech, new transcription segments keep resetting the timeout.
    */
   private setCaption(speakerName: string, text: string): void {
     // Clear existing timeout for this speaker
@@ -796,12 +867,14 @@ export class LiveWidget extends ReactiveWidget {
     // Force re-render
     this.requestUpdate();
 
-    // Auto-fade after 5 seconds of no new transcription from this speaker
+    // Auto-fade after 15 seconds. For AI speech, voice:ai:speech adjusts this
+    // to match actual audio duration. For human speech, each new transcription
+    // segment resets this timeout (effectively keeping it alive while speaking).
     const timeout = setTimeout(() => {
       this.activeCaptions.delete(speakerName);
       this.captionFadeTimeouts.delete(speakerName);
       this.requestUpdate();
-    }, 5000);
+    }, 15000);
     this.captionFadeTimeouts.set(speakerName, timeout);
   }
 
@@ -892,6 +965,25 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
+   * Attach LiveKit video elements to their container divs in the shadow DOM.
+   * Called from updated() after DOM re-renders to ensure video elements are
+   * placed in the correct participant tile containers.
+   */
+  private attachVideoElements(): void {
+    for (const [userId, element] of this._remoteVideoElements) {
+      // Find the video container in this participant's tile
+      const container = this.shadowRoot?.querySelector(
+        `.participant-tile[data-user-id="${userId}"] .video-container, .presenter-tile[data-user-id="${userId}"] .video-container`
+      ) as HTMLElement | null;
+
+      if (container && !container.contains(element)) {
+        container.innerHTML = '';
+        container.appendChild(element);
+      }
+    }
+  }
+
+  /**
    * Open user profile in a new tab
    */
   private openParticipantProfile(participant: Participant): void {
@@ -930,8 +1022,10 @@ export class LiveWidget extends ReactiveWidget {
   protected override render(): TemplateResult {
     // Joined: show full call UI
     if (this.isJoined) {
-      // Check if someone is screen sharing (spotlight mode)
-      const presenter = this.participants.find(p => p.screenShareEnabled);
+      // Check if someone is screen sharing OR spotlighted
+      const presenter = this.spotlightUserId
+        ? this.participants.find(p => p.userId === this.spotlightUserId)
+        : this.participants.find(p => p.screenShareEnabled);
 
       if (presenter) {
         // Spotlight mode: presenter main, others in strip
@@ -1020,19 +1114,22 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private renderParticipant(participant: Participant): TemplateResult {
+    const hasVideo = this.activeVideoUsers.has(participant.userId);
+
     return html`
       <div
-        class="participant-tile ${participant.isSpeaking ? 'speaking' : ''}"
-        @click=${() => this.openParticipantProfile(participant)}
+        class="participant-tile ${participant.isSpeaking ? 'speaking' : ''} ${hasVideo ? 'has-video' : ''}"
+        data-user-id="${participant.userId}"
+        @click=${() => this.handleParticipantClick(participant)}
         title="Click to view ${participant.displayName}'s profile"
       >
-        ${participant.cameraEnabled && participant.videoStream
-          ? html`<video class="participant-video" autoplay muted></video>`
+        ${hasVideo
+          ? html`<div class="video-container"></div>`
           : html`
-              <div class="participant-avatar">
-                ${participant.displayName.charAt(0).toUpperCase()}
-              </div>
-            `
+                <div class="participant-avatar">
+                  ${participant.displayName.charAt(0).toUpperCase()}
+                </div>
+              `
         }
         <div class="participant-name">${participant.displayName}</div>
         <div class="participant-indicators">
@@ -1042,6 +1139,20 @@ export class LiveWidget extends ReactiveWidget {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Handle click on participant tile — toggle spotlight (maximize/minimize).
+   * Click once to maximize, click again to return to grid.
+   */
+  private handleParticipantClick(participant: Participant): void {
+    if (this.spotlightUserId === participant.userId) {
+      // Already spotlighted — exit back to grid
+      this.spotlightUserId = null;
+    } else {
+      // Maximize this participant
+      this.spotlightUserId = participant.userId;
+    }
   }
 
   // ========================================
@@ -1160,29 +1271,41 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
-   * Render spotlight view - presenter in main area, others in strip at bottom
-   * Used when someone is screen sharing or presenting
+   * Render spotlight view - presenter in main area, others in strip at bottom.
+   * Used when someone is screen sharing, presenting, or user-spotlighted.
    */
   private renderSpotlightView(presenter: Participant): TemplateResult {
     const otherParticipants = this.participants.filter(p => p.userId !== presenter.userId);
+    const presenterHasVideo = this.activeVideoUsers.has(presenter.userId);
 
     return html`
-      <div class="live-container spotlight-mode">
+      <div class="live-container spotlight-mode" @keydown=${this.handleSpotlightKeydown}>
         <!-- Main presenter area -->
-        <div class="spotlight-main">
-          <div class="presenter-tile">
+        <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>
+          <div
+            class="presenter-tile ${presenterHasVideo ? 'has-video' : ''}"
+            data-user-id="${presenter.userId}"
+            @click=${(e: Event) => e.stopPropagation()}
+          >
             ${presenter.screenShareEnabled
               ? html`<div class="screen-share-placeholder">${this.renderScreenShareIcon()} ${presenter.displayName} is sharing</div>`
-              : presenter.cameraEnabled && presenter.videoStream
-                ? html`<video class="participant-video" autoplay muted></video>`
+              : presenterHasVideo
+                ? html`<div class="video-container spotlight-video"></div>`
                 : html`
-                    <div class="participant-avatar large">
-                      ${presenter.displayName.charAt(0).toUpperCase()}
-                    </div>
-                  `
+                      <div class="participant-avatar large">
+                        ${presenter.displayName.charAt(0).toUpperCase()}
+                      </div>
+                    `
             }
             <div class="participant-name">${presenter.displayName}</div>
-            <div class="live-badge">LIVE</div>
+            ${this.spotlightUserId ? html`
+              <button class="exit-spotlight-btn" @click=${() => { this.spotlightUserId = null; }} title="Exit spotlight (Esc)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            ` : html`<div class="live-badge">LIVE</div>`}
           </div>
         </div>
 
@@ -1190,7 +1313,11 @@ export class LiveWidget extends ReactiveWidget {
         ${otherParticipants.length > 0 ? html`
           <div class="participant-strip">
             ${otherParticipants.map(p => html`
-              <div class="strip-tile ${p.isSpeaking ? 'speaking' : ''}">
+              <div
+                class="strip-tile ${p.isSpeaking ? 'speaking' : ''}"
+                @click=${() => { this.spotlightUserId = p.userId; }}
+                title="Spotlight ${p.displayName}"
+              >
                 <div class="strip-avatar">
                   ${p.displayName.charAt(0).toUpperCase()}
                 </div>
@@ -1202,6 +1329,16 @@ export class LiveWidget extends ReactiveWidget {
 
         <!-- Controls -->
         <div class="controls">
+          ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
+            <div class="caption-display multi-speaker">
+              ${Array.from(this.activeCaptions.values()).map(caption => html`
+                <div class="caption-line">
+                  <span class="caption-speaker">${caption.speakerName}:</span>
+                  <span class="caption-text">${caption.text}</span>
+                </div>
+              `)}
+            </div>
+          ` : ''}
           <button
             class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
             @click=${this.toggleMic}
@@ -1210,6 +1347,13 @@ export class LiveWidget extends ReactiveWidget {
           >
             ${this.micEnabled ? this.renderMicOnIcon() : this.renderMicOffIcon()}
             ${this.micEnabled ? html`<span class="mic-level-indicator" style="height: ${Math.min(100, this.micLevel * 300)}%"></span>` : ''}
+          </button>
+          <button
+            class="control-btn ${this.speakerEnabled ? 'active' : 'inactive'}"
+            @click=${this.toggleSpeaker}
+            title="${this.speakerEnabled ? 'Mute audio' : 'Unmute audio'}"
+          >
+            ${this.speakerEnabled ? this.renderSpeakerOnIcon() : this.renderSpeakerOffIcon()}
           </button>
           <button
             class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
@@ -1226,6 +1370,13 @@ export class LiveWidget extends ReactiveWidget {
             ${this.renderScreenShareIcon()}
           </button>
           <button
+            class="control-btn ${this.captionsEnabled ? 'active' : 'inactive'}"
+            @click=${this.toggleCaptions}
+            title="${this.captionsEnabled ? 'Hide captions' : 'Show captions'}"
+          >
+            ${this.renderCaptionsIcon()}
+          </button>
+          <button
             class="control-btn leave"
             @click=${this.handleLeave}
             title="Leave"
@@ -1235,6 +1386,15 @@ export class LiveWidget extends ReactiveWidget {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Handle Escape key to exit spotlight mode
+   */
+  private handleSpotlightKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && this.spotlightUserId) {
+      this.spotlightUserId = null;
+    }
   }
 }
 

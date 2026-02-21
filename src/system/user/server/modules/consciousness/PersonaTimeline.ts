@@ -244,7 +244,8 @@ export class PersonaTimeline {
           await DataCreate.execute<TimelineEventEntity>({
             dbHandle: this.dbHandle!,
             collection: TimelineEventEntity.collection,
-            data: entity
+            data: entity,
+            suppressEvents: true,
           } as any);
           migrated++;
         } catch (err) {
@@ -344,12 +345,13 @@ export class PersonaTimeline {
       throw new Error('Invalid timeline event: missing required fields');
     }
 
-    // Store in database
+    // Store in database (suppressEvents: per-persona DB, no subscribers need these)
     const entity = this.eventToEntity(event);
     const result = await DataCreate.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
-      data: entity
+      data: entity,
+      suppressEvents: true,
     } as any);
 
     if (!result.success) {
@@ -698,7 +700,8 @@ export class PersonaTimeline {
         dbHandle: this.dbHandle!,
         collection: TimelineEventEntity.collection,
         id: eventId,
-        data: { embedding }
+        data: { embedding },
+        suppressEvents: true,
       } as any);
     } catch (err) {
       this.log.warn(`Failed to update embedding for event ${eventId}: ${err}`);

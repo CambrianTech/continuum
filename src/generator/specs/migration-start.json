@@ -1,0 +1,76 @@
+{
+  "name": "migration/start",
+  "description": "Start streaming data migration between any two storage adapters (e.g., SQLite to PostgreSQL)",
+  "params": [
+    {
+      "name": "source",
+      "type": "string",
+      "optional": false,
+      "description": "Source connection string (file path for SQLite, postgres:// URL for Postgres)"
+    },
+    {
+      "name": "target",
+      "type": "string",
+      "optional": false,
+      "description": "Target connection string (file path for SQLite, postgres:// URL for Postgres)"
+    },
+    {
+      "name": "batchSize",
+      "type": "number",
+      "optional": true,
+      "description": "Records per batch (default: 500)"
+    },
+    {
+      "name": "throttleMs",
+      "type": "number",
+      "optional": true,
+      "description": "Milliseconds to pause between batches (default: 10)"
+    },
+    {
+      "name": "collections",
+      "type": "string[]",
+      "optional": true,
+      "description": "Specific collections to migrate (default: all)"
+    }
+  ],
+  "results": [
+    {
+      "name": "total",
+      "type": "number",
+      "description": "Total records across all collections"
+    },
+    {
+      "name": "migrated",
+      "type": "number",
+      "description": "Records successfully migrated"
+    },
+    {
+      "name": "failed",
+      "type": "number",
+      "description": "Records that failed to migrate"
+    },
+    {
+      "name": "paused",
+      "type": "boolean",
+      "description": "Whether migration was paused"
+    },
+    {
+      "name": "collections",
+      "type": "object[]",
+      "description": "Per-collection migration status"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Migrate SQLite to PostgreSQL",
+      "command": "./jtag migration/start --source=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://joel@localhost:5432/continuum\"",
+      "expectedResult": "{ total: 50000, migrated: 50000, failed: 0, paused: false }"
+    },
+    {
+      "description": "Migrate with custom batch size",
+      "command": "./jtag migration/start --source=\"/path/to/source.db\" --target=\"postgres://localhost/mydb\" --batchSize=1000 --throttleMs=50"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

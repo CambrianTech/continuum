@@ -25,6 +25,7 @@ import type { SentinelEntity, SentinelExecutionResult } from './SentinelDefiniti
 import type { EscalationRule, EscalationPriority } from './entities/SentinelEntity';
 import { DEFAULT_ESCALATION_RULES } from './entities/SentinelEntity';
 import type { MemoryEntity } from '../user/server/modules/MemoryTypes';
+import { CognitionLogger } from '../user/server/modules/cognition/CognitionLogger';
 
 /**
  * Priority mapping: escalation priority → numeric inbox priority
@@ -320,7 +321,9 @@ async function storeSentinelMemory(
       source: 'sentinel-escalation',
     };
 
+    const dbHandle = CognitionLogger.getDbHandle(parentPersonaId as UUID);
     await Commands.execute('data/create', {
+      dbHandle,
       collection: 'memories',
       data: memory,
     } as any);

@@ -28,6 +28,7 @@ mod tests {
             display_name: "Helper AI".to_string(),
             participant_type: SpeakerType::Persona,
             expertise: vec![],
+            is_audio_native: false,
         };
 
         let ai2 = VoiceParticipant {
@@ -35,6 +36,7 @@ mod tests {
             display_name: "Teacher AI".to_string(),
             participant_type: SpeakerType::Persona,
             expertise: vec![],
+            is_audio_native: false,
         };
 
         orchestrator.register_session(session_id, room_id, vec![ai1, ai2]);
@@ -75,6 +77,7 @@ mod tests {
             display_name: "Helper AI".to_string(),
             participant_type: SpeakerType::Persona,
             expertise: vec![],
+            is_audio_native: false,
         };
 
         orchestrator.register_session(session_id, room_id, vec![ai]);

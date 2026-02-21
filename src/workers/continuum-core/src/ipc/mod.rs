@@ -119,11 +119,9 @@ struct ServerState {
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
     channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
     rag_engine: Arc<RagEngine>,
-    /// Shared CallManager for direct audio injection (speak-in-call).
-    call_manager: Arc<crate::voice::call_server::CallManager>,
     /// Server-side audio buffer pool for handle-based synthesis.
     audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
-    /// Tokio runtime handle for calling async CallManager methods from IPC threads.
+    /// Tokio runtime handle for async operations from IPC threads.
     rt_handle: tokio::runtime::Handle,
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
@@ -138,7 +136,6 @@ struct ServerState {
 impl ServerState {
     #[allow(clippy::too_many_arguments)]
     fn new_with_shared_state(
-        call_manager: Arc<crate::voice::call_server::CallManager>,
         rt_handle: tokio::runtime::Handle,
         memory_manager: Arc<crate::memory::PersonaMemoryManager>,
         runtime: Arc<Runtime>,
@@ -153,7 +150,6 @@ impl ServerState {
             voice_service,
             channel_registries,
             rag_engine,
-            call_manager,
             audio_pool,
             rt_handle,
             memory_manager,
@@ -561,7 +557,7 @@ mod tests {
 
 pub fn start_server(
     socket_path: &str,
-    call_manager: Arc<crate::voice::call_server::CallManager>,
+    livekit_manager: Arc<crate::voice::livekit_agent::LiveKitAgentManager>,
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
 ) -> std::io::Result<()> {
@@ -609,7 +605,7 @@ pub fn start_server(
     let audio_pool = Arc::new(crate::voice::audio_buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
-        call_manager.clone(),
+        livekit_manager.clone(),
         audio_pool.clone(),
     ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
@@ -700,7 +696,6 @@ pub fn start_server(
 
     let listener = UnixListener::bind(socket_path)?;
     let state = Arc::new(ServerState::new_with_shared_state(
-        call_manager,
         rt_handle,
         memory_manager,
         runtime,

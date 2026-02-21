@@ -16,7 +16,7 @@ import type { UUID } from '../../types/CrossPlatformUUID.js';
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID.js';
 import { Events } from '../../system/core/shared/Events.js';
 import { Commands } from '../../system/core/shared/Commands.js';
-import { getVoiceOrchestrator } from '../../system/voice/server/VoiceOrchestrator.js';
+import { getVoiceOrchestrator } from '../../system/voice/server/index.js';
 import type { UtteranceEvent } from '../../system/voice/shared/VoiceTypes.js';
 import type { UserCreateParams, UserCreateResult } from '../../commands/user/create/shared/UserCreateTypes.js';
 

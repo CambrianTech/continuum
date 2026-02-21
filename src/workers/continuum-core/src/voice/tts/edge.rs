@@ -8,12 +8,13 @@
 //! Quality: High (Microsoft Neural voices).
 //! Voices: 300+ voices across 100+ languages.
 
+use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Cached voice list (fetched once on init)
 struct EdgeState {
@@ -66,17 +67,18 @@ impl TextToSpeech for EdgeTTS {
             return Ok(());
         }
 
-        info!("Edge-TTS: Fetching voice list from Microsoft...");
-
-        let voices = msedge_tts::voice::get_voices_list()
-            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to fetch Edge voices: {e}")))?;
-
-        info!("Edge-TTS: {} voices available", voices.len());
+        // IMPORTANT: We intentionally DO NOT call msedge_tts::voice::get_voices_list() here.
+        // That function uses isahc→curl→openssl-sys, which causes a SIGSEGV due to symbol
+        // conflicts with LiveKit's bundled BoringSSL (both link OpenSSL into the same binary).
+        // The synthesis path (msedge_tts::tts::client::connect) uses tungstenite WebSocket
+        // which does NOT go through the conflicting OpenSSL path, so synthesis still works.
+        info!("Edge-TTS: Initializing with known voice catalog (skipping HTTP voice list)");
 
         let mut state = self.state.write().map_err(|e| {
             TTSError::SynthesisFailed(format!("Failed to acquire state lock: {e}"))
         })?;
-        *state = Some(EdgeState { voices });
+        // Use empty list — available_voices() returns hardcoded English voices as fallback
+        *state = Some(EdgeState { voices: vec![] });
 
         self.initialized.store(true, Ordering::Relaxed);
         Ok(())
@@ -126,96 +128,110 @@ impl TextToSpeech for EdgeTTS {
             super::truncate_str(text, 50)
         );
 
-        // Connect and synthesize — request raw PCM directly (no MP3 decode needed)
-        let start = std::time::Instant::now();
+        // msedge_tts uses blocking WebSocket (tungstenite). MUST run on spawn_blocking
+        // to avoid deadlocking the tokio runtime (commands dispatch via rt_handle.spawn).
+        // Wrapped in 15s timeout to prevent indefinite hangs on network issues.
+        let text = text.to_string();
+        let voice_name_owned = voice_name;
 
-        let mut tts = msedge_tts::tts::client::connect()
-            .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            tokio::task::spawn_blocking(move || {
+            let start = std::time::Instant::now();
 
-        let config = msedge_tts::tts::SpeechConfig {
-            voice_name: voice_name.clone(),
-            audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
-            pitch: 0,
-            rate: 0,
-            volume: 0,
-        };
+            // Retry up to 2 times — Edge-TTS WebSocket can return empty audio on first try
+            let max_attempts = 2;
+            for attempt in 1..=max_attempts {
+                let mut tts = msedge_tts::tts::client::connect()
+                    .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
 
-        let audio = tts
-            .synthesize(text, &config)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
+                let config = msedge_tts::tts::SpeechConfig {
+                    voice_name: voice_name_owned.clone(),
+                    audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
+                    pitch: 0,
+                    rate: 0,
+                    volume: 0,
+                };
 
-        let network_ms = start.elapsed().as_millis();
+                let audio = tts
+                    .synthesize(&text, &config)
+                    .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
 
-        // Raw PCM bytes → i16 samples (no decoding needed)
-        let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
+                let network_ms = start.elapsed().as_millis();
+                let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
 
-        if samples.is_empty() {
-            return Err(TTSError::SynthesisFailed(
-                "Edge-TTS returned empty audio".into(),
-            ));
-        }
+                if samples.is_empty() {
+                    warn!(
+                        "Edge-TTS: empty audio on attempt {}/{} (audio_bytes={} bytes, metadata_count={})",
+                        attempt, max_attempts, audio.audio_bytes.len(), audio.audio_metadata.len()
+                    );
+                    if attempt < max_attempts {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        continue;
+                    }
+                    return Err(TTSError::SynthesisFailed(
+                        format!("Edge-TTS returned empty audio after {} attempts (raw bytes={})",
+                            max_attempts, audio.audio_bytes.len()),
+                    ));
+                }
 
-        let duration_ms = (samples.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+                let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
+                info!(
+                    "Edge-TTS: {} samples ({}ms audio) in {}ms network",
+                    samples.len(), dur, network_ms
+                );
 
-        info!(
-            "Edge-TTS: {} samples ({}ms audio) in {}ms network",
-            samples.len(),
-            duration_ms,
-            network_ms
-        );
-
-        Ok(SynthesisResult {
-            samples,
-            sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms,
+                return Ok(SynthesisResult {
+                    samples,
+                    sample_rate: AUDIO_SAMPLE_RATE,
+                    duration_ms: dur,
+                });
+            }
+            unreachable!()
         })
+        )
+        .await
+        .map_err(|_| TTSError::SynthesisFailed("Edge-TTS timed out after 15s".into()))?
+        .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS task join: {e}")))?
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
-        let state = match self.state.read() {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+        // Hardcoded catalog of commonly-used English Edge neural voices.
+        // We cannot fetch the full list at runtime because msedge_tts::voice::get_voices_list()
+        // uses isahc→curl→openssl-sys which SIGSEGVs when linked alongside LiveKit's BoringSSL.
+        // This catalog covers the primary English voices; synthesis works with ANY valid Edge
+        // voice name (e.g., "en-GB-SoniaNeural") even if it's not listed here.
+        static KNOWN_VOICES: &[(&str, &str, &str)] = &[
+            ("en-US-JennyNeural", "female", "en-US"),
+            ("en-US-GuyNeural", "male", "en-US"),
+            ("en-US-AriaNeural", "female", "en-US"),
+            ("en-US-DavisNeural", "male", "en-US"),
+            ("en-US-AmberNeural", "female", "en-US"),
+            ("en-US-AnaNeural", "female", "en-US"),
+            ("en-US-AndrewNeural", "male", "en-US"),
+            ("en-US-EmmaNeural", "female", "en-US"),
+            ("en-US-BrianNeural", "male", "en-US"),
+            ("en-US-ChristopherNeural", "male", "en-US"),
+            ("en-US-EricNeural", "male", "en-US"),
+            ("en-US-MichelleNeural", "female", "en-US"),
+            ("en-US-RogerNeural", "male", "en-US"),
+            ("en-US-SteffanNeural", "male", "en-US"),
+            ("en-GB-SoniaNeural", "female", "en-GB"),
+            ("en-GB-RyanNeural", "male", "en-GB"),
+            ("en-AU-NatashaNeural", "female", "en-AU"),
+            ("en-AU-WilliamNeural", "male", "en-AU"),
+            ("en-CA-ClaraNeural", "female", "en-CA"),
+            ("en-CA-LiamNeural", "male", "en-CA"),
+        ];
 
-        let edge_state = match state.as_ref() {
-            Some(s) => s,
-            None => {
-                return vec![VoiceInfo {
-                    id: "en-US-JennyNeural".into(),
-                    name: "Jenny (default)".into(),
-                    language: "en-US".into(),
-                    gender: Some("female".into()),
-                    description: Some("Microsoft Edge neural voice".into()),
-                }];
-            }
-        };
-
-        // Return English voices (full list is 300+, filter to manageable set)
-        edge_state
-            .voices
+        KNOWN_VOICES
             .iter()
-            .filter(|v| {
-                v.locale
-                    .as_deref()
-                    .is_some_and(|loc| loc.starts_with("en-"))
-            })
-            .map(|v| {
-                let short = v.short_name.as_deref().unwrap_or(&v.name);
-                let locale = v.locale.as_deref().unwrap_or("en-US");
-                let gender_str = v.gender.as_deref().unwrap_or_else(|| {
-                    if short.contains("Male") || short.ends_with("Guy") {
-                        "Male"
-                    } else {
-                        "Female"
-                    }
-                });
-                VoiceInfo {
-                    id: short.to_string(),
-                    name: short.to_string(),
-                    language: locale.to_string(),
-                    gender: Some(gender_str.to_lowercase()),
-                    description: Some(format!("Microsoft Edge neural voice ({locale})")),
-                }
+            .map(|(id, gender, locale)| VoiceInfo {
+                id: id.to_string(),
+                name: id.to_string(),
+                language: locale.to_string(),
+                gender: Some(gender.to_string()),
+                description: Some(format!("Microsoft Edge neural voice ({locale})")),
             })
             .collect()
     }

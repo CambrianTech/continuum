@@ -52,7 +52,7 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	// Internal members (public for mixin compatibility, but treat as private)
 	public _socket: net.Socket | null = null;
 	public _buffer: Buffer = Buffer.alloc(0);
-	public _pendingRequests: Map<number, (result: IPCResponse) => void> = new Map();
+	public _pendingRequests: Map<number, { resolve: (result: IPCResponse) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }> = new Map();
 	public _nextRequestId = 1;
 	public _connected = false;
 	public _socketPath: string;
@@ -61,6 +61,9 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	private static slowWarningTimestamps: Map<string, number> = new Map();
 	private static readonly SLOW_IPC_THRESHOLD_MS = 500;
 	private static readonly SLOW_WARNING_COOLDOWN_MS = 10_000;
+
+	/** Default timeout for IPC requests (60s — generous for heavy TTS synthesis) */
+	private static readonly REQUEST_TIMEOUT_MS = 60_000;
 
 	constructor(socketPath: string) {
 		super();
@@ -99,12 +102,14 @@ export class RustCoreIPCClientBase extends EventEmitter {
 			});
 
 			this._socket.on('error', (err) => {
+				this._rejectAllPending(err instanceof Error ? err : new Error(String(err)));
 				this.emit('error', err);
 				reject(err);
 			});
 
 			this._socket.on('close', () => {
 				this._connected = false;
+				this._rejectAllPending(new Error('IPC socket closed'));
 				this.emit('close');
 			});
 		});
@@ -154,12 +159,24 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	 */
 	public _handleResponse(response: IPCJsonResponse, binaryData?: Buffer): void {
 		if (response.requestId !== undefined) {
-			const callback = this._pendingRequests.get(response.requestId);
-			if (callback) {
-				callback({ response, binaryData });
+			const pending = this._pendingRequests.get(response.requestId);
+			if (pending) {
+				clearTimeout(pending.timer);
 				this._pendingRequests.delete(response.requestId);
+				pending.resolve({ response, binaryData });
 			}
 		}
+	}
+
+	/**
+	 * Reject all pending requests (called on socket close/error).
+	 */
+	public _rejectAllPending(err: Error): void {
+		for (const [_id, pending] of this._pendingRequests) {
+			clearTimeout(pending.timer);
+			pending.reject(err);
+		}
+		this._pendingRequests.clear();
 	}
 
 	/**
@@ -175,31 +192,42 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	/**
 	 * Send a request and wait for full response (including optional binary data).
 	 */
-	async requestFull(command: any): Promise<IPCResponse> {
+	async requestFull(command: any, timeoutMs?: number): Promise<IPCResponse> {
 		await this._ensureConnected();
 
 		const requestId = this._nextRequestId++;
 		const requestWithId = { ...command, requestId };
+		const timeout = timeoutMs ?? RustCoreIPCClientBase.REQUEST_TIMEOUT_MS;
 
 		return new Promise((resolve, reject) => {
 			const json = JSON.stringify(requestWithId) + '\n';
 			const start = performance.now();
 
-			this._pendingRequests.set(requestId, (result) => {
-				const duration = performance.now() - start;
-				if (duration > RustCoreIPCClientBase.SLOW_IPC_THRESHOLD_MS) {
-					const now = Date.now();
-					const lastWarned = RustCoreIPCClientBase.slowWarningTimestamps.get(command.command) ?? 0;
-					if (now - lastWarned > RustCoreIPCClientBase.SLOW_WARNING_COOLDOWN_MS) {
-						RustCoreIPCClientBase.slowWarningTimestamps.set(command.command, now);
-						console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(0)}ms`);
+			const timer = setTimeout(() => {
+				this._pendingRequests.delete(requestId);
+				reject(new Error(`IPC timeout: ${command.command} did not respond within ${timeout}ms`));
+			}, timeout);
+
+			this._pendingRequests.set(requestId, {
+				resolve: (result) => {
+					const duration = performance.now() - start;
+					if (duration > RustCoreIPCClientBase.SLOW_IPC_THRESHOLD_MS) {
+						const now = Date.now();
+						const lastWarned = RustCoreIPCClientBase.slowWarningTimestamps.get(command.command) ?? 0;
+						if (now - lastWarned > RustCoreIPCClientBase.SLOW_WARNING_COOLDOWN_MS) {
+							RustCoreIPCClientBase.slowWarningTimestamps.set(command.command, now);
+							console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(0)}ms`);
+						}
 					}
-				}
-				resolve(result);
+					resolve(result);
+				},
+				reject,
+				timer,
 			});
 
 			this._socket!.write(json, (err) => {
 				if (err) {
+					clearTimeout(timer);
 					this._pendingRequests.delete(requestId);
 					reject(err);
 				}

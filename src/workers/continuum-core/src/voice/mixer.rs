@@ -94,6 +94,10 @@ pub struct ParticipantStream {
     pub muted: bool,
     /// Is this an AI participant (no transcription needed - we have their text)?
     pub is_ai: bool,
+    /// Is this an ambient audio source (TV, music, background noise)?
+    /// Ambient sources use AI ring buffer infrastructure but are NEVER excluded
+    /// from mix-minus — everyone hears them, including themselves.
+    pub is_ambient: bool,
 
     // === AI Audio Ring Buffer ===
     // AI participants dump all TTS audio at once, we buffer and pull frame-by-frame
@@ -135,6 +139,7 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: false,
+            is_ambient: false,
             ai_ring_buffer: None, // Humans don't need ring buffer (Vec not allocated)
             ai_ring_write: 0,
             ai_ring_read: 0,
@@ -158,11 +163,36 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: true,
+            is_ambient: false,
             ai_ring_buffer: Some(ring_buffer),
             ai_ring_write: 0,
             ai_ring_read: 0,
             ai_ring_available: 0,
             vad: None, // AI doesn't need VAD
+            is_speaking: false,
+        }
+    }
+
+    /// Create ambient audio source (TV, music, background noise)
+    /// Uses ring buffer infrastructure (same as AI) for server-paced playback.
+    /// Ambient sources are NEVER excluded from mix-minus — everyone hears them.
+    pub fn new_ambient(handle: Handle, source_name: String) -> Self {
+        let ring_buffer = vec![0i16; AI_RING_BUFFER_SIZE];
+
+        Self {
+            handle,
+            user_id: format!("ambient:{}", source_name),
+            display_name: source_name,
+            audio_frame: [0i16; FRAME_SIZE],
+            frame_len: 0,
+            muted: false,
+            is_ai: true, // Uses AI ring buffer path for push/get_audio
+            is_ambient: true,
+            ai_ring_buffer: Some(ring_buffer),
+            ai_ring_write: 0,
+            ai_ring_read: 0,
+            ai_ring_available: 0,
+            vad: None,
             is_speaking: false,
         }
     }
@@ -176,7 +206,7 @@ impl ParticipantStream {
                     info!("🎯 ProductionVAD initialized for {}", self.display_name);
                 }
                 Err(e) => {
-                    debug!("VAD init failed for {} (test mode): {:?}", self.display_name, e);
+                    warn!("⚠️ VAD init failed for {}: {:?}", self.display_name, e);
                     // In tests, VAD may not be available - gracefully disable
                     self.vad = None;
                 }
@@ -366,6 +396,17 @@ pub struct AudioMixer {
     sample_rate: u32,
     /// Frame size in samples (e.g., 320 for 20ms at 16kHz)
     frame_size: usize,
+
+    // === Pre-allocated scratch buffers for the 20ms mix tick ===
+    // These eliminate per-tick HashMap/Vec allocations on the real-time audio path.
+    // At 50Hz tick rate with 5 participants, this saves ~800KB/sec of allocation churn.
+
+    /// Cached audio frames pulled from participants (reused across ticks)
+    tick_audio_cache: HashMap<Handle, Vec<i16>>,
+    /// i32 accumulation buffer for mixing (avoids per-target allocation)
+    tick_mix_buffer: Vec<i32>,
+    /// Participant handle snapshot for iteration (avoids borrow conflicts)
+    tick_handles: Vec<(Handle, bool)>,
 }
 
 impl AudioMixer {
@@ -375,6 +416,9 @@ impl AudioMixer {
             participants: HashMap::new(),
             sample_rate,
             frame_size,
+            tick_audio_cache: HashMap::new(),
+            tick_mix_buffer: vec![0i32; frame_size],
+            tick_handles: Vec::new(),
         }
     }
 
@@ -454,19 +498,19 @@ impl AudioMixer {
     /// Mix all participants (sum all streams)
     /// Note: Requires &mut self because AI participants pull from ring buffer
     pub fn mix_all(&mut self) -> Vec<i16> {
-        let mut mixed = vec![0i32; self.frame_size];
+        // Reuse pre-allocated i32 buffer
+        for s in self.tick_mix_buffer.iter_mut() { *s = 0; }
 
         for participant in self.participants.values_mut() {
             let audio = participant.get_audio();
             for (i, &sample) in audio.iter().enumerate() {
                 if i < self.frame_size {
-                    mixed[i] += sample as i32;
+                    self.tick_mix_buffer[i] += sample as i32;
                 }
             }
         }
 
-        // Convert back to i16 with clamping
-        Self::clamp_to_i16(&mixed)
+        Self::clamp_to_i16(&self.tick_mix_buffer)
     }
 
     /// Mix-minus: mix all participants EXCEPT the one with the given handle
@@ -475,23 +519,23 @@ impl AudioMixer {
     /// hears everyone except themselves to prevent feedback.
     /// Note: Requires &mut self because AI participants pull from ring buffer
     pub fn mix_minus(&mut self, exclude_handle: &Handle) -> Vec<i16> {
-        let mut mixed = vec![0i32; self.frame_size];
+        // Reuse pre-allocated i32 buffer
+        for s in self.tick_mix_buffer.iter_mut() { *s = 0; }
 
         for (handle, participant) in &mut self.participants {
             if handle == exclude_handle {
-                continue; // Skip the excluded participant
+                continue;
             }
 
             let audio = participant.get_audio();
             for (i, &sample) in audio.iter().enumerate() {
                 if i < self.frame_size {
-                    mixed[i] += sample as i32;
+                    self.tick_mix_buffer[i] += sample as i32;
                 }
             }
         }
 
-        // Convert back to i16 with clamping
-        Self::clamp_to_i16(&mixed)
+        Self::clamp_to_i16(&self.tick_mix_buffer)
     }
 
     /// Generate mix-minus for all participants
@@ -501,37 +545,64 @@ impl AudioMixer {
     /// CRITICAL: Pull all audio frames ONCE at the start, then mix from cache.
     /// Otherwise AI ring buffers get pulled N-1 times per tick (once per other participant),
     /// causing audio to play at (N-1)x speed!
+    ///
+    /// Ambient sources are NEVER excluded from any mix — everyone hears them,
+    /// including the ambient source's own "participant" entry (which is just a source,
+    /// not a listener). Ambient sources don't get mix output entries since they're
+    /// not listeners.
     pub fn mix_minus_all(&mut self) -> HashMap<Handle, Vec<i16>> {
-        // STEP 1: Pull audio from ALL participants ONCE (including AI ring buffers)
-        // This ensures each AI's audio is only consumed once per tick
-        let mut audio_cache: HashMap<Handle, Vec<i16>> = HashMap::new();
+        // STEP 1: Pull audio from ALL participants ONCE into pre-allocated cache.
+        // Uses std::mem::take to avoid borrow conflicts between participants and cache.
+        // The cache HashMap retains its capacity across ticks — no reallocation.
+        let mut audio_cache = std::mem::take(&mut self.tick_audio_cache);
+        audio_cache.clear();
         for (handle, participant) in &mut self.participants {
             let audio = participant.get_audio();
-            audio_cache.insert(*handle, audio.to_vec());
+            let entry = audio_cache.entry(*handle)
+                .or_insert_with(|| Vec::with_capacity(self.frame_size));
+            entry.clear();
+            entry.extend_from_slice(audio);
         }
 
-        // STEP 2: Generate mix-minus for each participant using cached audio
-        let handles: Vec<Handle> = self.participants.keys().copied().collect();
-        let mut result = HashMap::new();
+        // STEP 2: Snapshot participant handles into pre-allocated vec
+        let mut handles = std::mem::take(&mut self.tick_handles);
+        handles.clear();
+        handles.extend(self.participants.iter().map(|(h, p)| (*h, p.is_ambient)));
 
-        for target_handle in handles {
-            let mut mixed = vec![0i32; self.frame_size];
+        // STEP 3: Generate mix-minus for each non-ambient participant using cached audio.
+        // Reuses tick_mix_buffer for i32 accumulation (zeroed per target, not reallocated).
+        let frame_size = self.frame_size;
+        let mix_buffer = &mut self.tick_mix_buffer;
+        let mut result = HashMap::with_capacity(handles.len());
+
+        for (target_handle, target_is_ambient) in &handles {
+            // Ambient sources are not listeners — skip generating output for them
+            if *target_is_ambient {
+                continue;
+            }
+
+            // Zero the pre-allocated mixing buffer
+            for s in mix_buffer.iter_mut() { *s = 0; }
 
             // Mix all OTHER participants' cached audio
             for (handle, audio) in &audio_cache {
-                if handle == &target_handle {
-                    continue; // Skip self (mix-minus)
+                if handle == target_handle {
+                    continue;
                 }
 
                 for (i, &sample) in audio.iter().enumerate() {
-                    if i < self.frame_size {
-                        mixed[i] += sample as i32;
+                    if i < frame_size {
+                        mix_buffer[i] += sample as i32;
                     }
                 }
             }
 
-            result.insert(target_handle, Self::clamp_to_i16(&mixed));
+            result.insert(*target_handle, Self::clamp_to_i16(mix_buffer));
         }
+
+        // Return scratch buffers for next tick
+        self.tick_audio_cache = audio_cache;
+        self.tick_handles = handles;
 
         result
     }
@@ -559,6 +630,27 @@ impl AudioMixer {
         self.participants.iter()
             .find(|(_, stream)| stream.user_id == user_id)
             .map(|(handle, _)| *handle)
+    }
+
+    /// Find a participant's user_id by handle
+    pub fn find_user_id_by_handle(&self, handle: &Handle) -> Option<String> {
+        self.participants.get(handle).map(|p| p.user_id.clone())
+    }
+
+    /// Pull audio from each participant individually (SFU pattern).
+    /// Returns (handle, user_id, audio_frame) for each participant that has audio.
+    /// Unlike mix_minus_all(), this does NOT mix — the browser handles mixing.
+    /// Each participant's audio is pulled ONCE (important for AI ring buffers).
+    pub fn pull_all_audio(&mut self) -> Vec<(Handle, String, Vec<i16>)> {
+        let mut result = Vec::with_capacity(self.participants.len());
+        for (handle, participant) in &mut self.participants {
+            let user_id = participant.user_id.clone();
+            let audio = participant.get_audio();
+            if !audio.is_empty() {
+                result.push((*handle, user_id, audio.to_vec()));
+            }
+        }
+        result
     }
 }
 
@@ -798,6 +890,46 @@ mod tests {
         assert_eq!(all_mixes.len(), 2);
         assert!(all_mixes.contains_key(&handle_a));
         assert!(all_mixes.contains_key(&handle_b));
+    }
+
+    #[tokio::test]
+    async fn test_pull_all_audio() {
+        let mut mixer = AudioMixer::default_voice();
+
+        let handle_a = Handle::new();
+        let handle_b = Handle::new();
+        let handle_c = Handle::new();
+
+        let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
+        let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+        let stream_c = ParticipantStream::new(handle_c, "user-c".into(), "Charlie".into());
+
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
+        // Charlie doesn't push audio — should not appear in result
+
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+
+        mixer.add_participant(stream_a);
+        mixer.add_participant(stream_b);
+        mixer.add_participant(stream_c);
+
+        let frames = mixer.pull_all_audio();
+
+        // Should have exactly 2 frames (Alice and Bob have audio, Charlie is silent)
+        assert_eq!(frames.len(), 2, "Expected 2 active senders, got {}", frames.len());
+
+        // Check user_ids are correct
+        let user_ids: Vec<&str> = frames.iter().map(|(_, uid, _)| uid.as_str()).collect();
+        assert!(user_ids.contains(&"user-a"), "Should contain user-a");
+        assert!(user_ids.contains(&"user-b"), "Should contain user-b");
+
+        // Check audio is not empty
+        for (_, user_id, audio) in &frames {
+            assert!(!audio.is_empty(), "Audio for {} should not be empty", user_id);
+            assert!(!is_silence(audio, 100.0), "Audio for {} should not be silence", user_id);
+        }
     }
 
     #[tokio::test]

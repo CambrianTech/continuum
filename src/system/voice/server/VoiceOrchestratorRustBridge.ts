@@ -1,41 +1,25 @@
 /**
- * VoiceOrchestratorRustBridge - Swaps TypeScript VoiceOrchestrator with Rust implementation
+ * VoiceOrchestratorRustBridge - Delegates to Rust VoiceOrchestrator via IPC
  *
- * This is the "wildly different integration" test:
- * - TypeScript VoiceWebSocketHandler continues to work unchanged
- * - But underneath, it calls Rust continuum-core via IPC
- * - If this works seamlessly, the API is proven correct
- *
- * Performance target: <1ms overhead vs TypeScript implementation
+ * Broadcasts utterances to ALL text-based AI participants.
+ * No turn-taking. No gating. No cooldowns.
+ * Rust handles the fast path (filtering, participant lookup).
  */
 
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { UtteranceEvent } from './VoiceOrchestrator';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-
-interface VoiceParticipant {
-	userId: UUID;
-	displayName: string;
-	type: 'human' | 'persona' | 'agent';
-	expertise?: string[];
-}
+import type { UserEntity } from '../../data/entities/UserEntity';
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { getAIAudioBridge } from './AIAudioBridge';
 
 /**
- * Rust-backed VoiceOrchestrator
- *
- * Drop-in replacement for TypeScript VoiceOrchestrator.
- * Uses continuum-core via IPC (0.13ms latency measured).
+ * Rust-backed VoiceOrchestrator — broadcasts to all, no gating
  */
 export class VoiceOrchestratorRustBridge {
 	private static _instance: VoiceOrchestratorRustBridge | null = null;
 	private client: RustCoreIPCClient;
 	private connected = false;
-
-	// Session state (mirrors TypeScript implementation)
-	private sessionParticipants: Map<UUID, VoiceParticipant[]> = new Map();
-
-	// TTS callback (set by VoiceWebSocketHandler)
-	private ttsCallback: ((sessionId: UUID, personaId: UUID, text: string) => Promise<void>) | null = null;
 
 	private constructor() {
 		this.client = new RustCoreIPCClient(getContinuumCoreSocketPath());
@@ -55,141 +39,106 @@ export class VoiceOrchestratorRustBridge {
 			this.connected = true;
 			console.log('🦀 VoiceOrchestrator: Connected to Rust core');
 		} catch (e) {
-			console.error('❌ VoiceOrchestrator: Failed to connect to Rust core:', e);
-			console.error('   Falling back to TypeScript implementation would go here');
+			console.error('🦀 VoiceOrchestrator: Failed to connect to Rust core:', e);
 		}
 	}
 
 	/**
-	 * Set the TTS callback for routing voice responses
+	 * Register participants for a voice session via Rust IPC.
+	 * Looks up user types from database to correctly classify human vs persona vs agent.
+	 * Rust orchestrator uses participant_type to route transcriptions to AI responders.
 	 */
-	setTTSCallback(callback: (sessionId: UUID, personaId: UUID, text: string) => Promise<void>): void {
-		this.ttsCallback = callback;
-	}
-
-	/**
-	 * Register participants for a voice session
-	 *
-	 * Delegates to Rust VoiceOrchestrator via IPC
-	 */
-	async registerSession(sessionId: UUID, roomId: UUID, participants: VoiceParticipant[]): Promise<void> {
+	async registerSession(sessionId: UUID, roomId: UUID, participantIds: UUID[]): Promise<void> {
 		if (!this.connected) {
 			await this.initializeConnection();
 		}
 
-		// Store participants locally (needed for TTS routing)
-		this.sessionParticipants.set(sessionId, participants);
-
-		// Convert to Rust format
-		const rustParticipants = participants.map(p => ({
-			user_id: p.userId,
-			display_name: p.displayName,
-			participant_type: p.type,
-			expertise: p.expertise || [],
-		}));
-
-		// Call Rust VoiceOrchestrator via IPC
-		try {
-			await this.client.voiceRegisterSession(sessionId, roomId, rustParticipants);
-			console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId} with ${participants.length} participants`);
-		} catch (e) {
-			console.error('❌ VoiceOrchestrator: Failed to register session:', e);
-			throw e;
+		// Look up actual user types from database — MUST distinguish human from AI
+		const userMap = new Map<string, UserEntity>();
+		if (participantIds.length > 0) {
+			const result = await DataList.execute<UserEntity>({
+				collection: 'users',
+				filter: { id: { $in: participantIds } },
+				limit: participantIds.length,
+			});
+			if (result.success && result.items) {
+				for (const user of result.items) {
+					userMap.set(user.id, user);
+				}
+			}
 		}
+
+		const rustParticipants = participantIds.map(id => {
+			const user = userMap.get(id);
+			// Map UserType to Rust SpeakerType: 'persona'/'agent' → AI, 'human'/'system' → human
+			let participantType: 'human' | 'persona' | 'agent' = 'human';
+			if (user?.type === 'persona') participantType = 'persona';
+			else if (user?.type === 'agent') participantType = 'agent';
+			return {
+				user_id: id,
+				display_name: user?.displayName || '',
+				participant_type: participantType,
+				expertise: [] as string[],
+				is_audio_native: false,
+			};
+		});
+
+		const aiCount = rustParticipants.filter(p => p.participant_type !== 'human').length;
+		await this.client.voiceRegisterSession(sessionId, roomId, rustParticipants);
+
+		// Register AI participants with AIAudioBridge so speak() works when
+		// persona:response:generated fires. Without this, isInCall() returns false
+		// and AI responses are silently dropped.
+		const bridge = getAIAudioBridge();
+		for (const p of rustParticipants) {
+			if (p.participant_type !== 'human') {
+				const user = userMap.get(p.user_id);
+				await bridge.joinCall(sessionId, p.user_id as UUID, user?.displayName || p.display_name);
+			}
+		}
+
+		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participantIds.length} participants (${aiCount} AI, all registered with AIAudioBridge)`);
 	}
 
 	/**
-	 * Process an utterance and broadcast to ALL AI participants
-	 * Returns array of AI participant IDs who should receive the utterance
-	 *
-	 * This is the critical path - must be <1ms overhead
+	 * Process utterance — returns ALL text-based AI participant IDs (broadcast model)
 	 */
 	async onUtterance(event: UtteranceEvent): Promise<UUID[]> {
 		if (!this.connected) {
-			console.warn('⚠️  VoiceOrchestrator: Not connected to Rust core, skipping');
+			console.error('🦀 VoiceOrchestrator: Not connected to Rust core');
 			return [];
 		}
 
 		const start = performance.now();
 
-		try {
-			// Convert to Rust format
-			const rustEvent = {
-				session_id: event.sessionId,
-				speaker_id: event.speakerId,
-				speaker_name: event.speakerName,
-				speaker_type: event.speakerType,
-				transcript: event.transcript,
-				confidence: event.confidence,
-				timestamp: event.timestamp,
-			};
+		const rustEvent = {
+			session_id: event.sessionId,
+			speaker_id: event.speakerId,
+			speaker_name: event.speakerName,
+			speaker_type: event.speakerType,
+			transcript: event.transcript,
+			confidence: event.confidence,
+			timestamp: event.timestamp,
+		};
 
-			// Call Rust VoiceOrchestrator via IPC - returns ALL AI participant IDs
-			const responderIds = await this.client.voiceOnUtterance(rustEvent);
+		const responderIds = await this.client.voiceOnUtterance(rustEvent);
+		const duration = performance.now() - start;
 
-			const duration = performance.now() - start;
-
-			if (duration > 5) {
-				console.warn(`⚠️  VoiceOrchestrator: Slow utterance processing: ${duration.toFixed(2)}ms`);
-			} else {
-				console.log(`🦀 VoiceOrchestrator: Processed utterance in ${duration.toFixed(2)}ms → ${responderIds.length} AI participants`);
-			}
-
-			return responderIds as UUID[];
-		} catch (e) {
-			console.error('❌ VoiceOrchestrator: Failed to process utterance:', e);
-			return [];
-		}
-	}
-
-	/**
-	 * Check if TTS should be routed to a specific session
-	 *
-	 * Called when a persona responds to determine if it should go to voice
-	 */
-	async shouldRouteToTTS(sessionId: UUID, personaId: UUID): Promise<boolean> {
-		if (!this.connected) {
-			return false;
+		if (duration > 5) {
+			console.warn(`🦀 VoiceOrchestrator: Slow utterance: ${duration.toFixed(2)}ms`);
 		}
 
-		try {
-			return await this.client.voiceShouldRouteTts(sessionId, personaId);
-		} catch (e) {
-			console.error('❌ VoiceOrchestrator: Failed to check TTS routing:', e);
-			return false;
-		}
-	}
-
-	/**
-	 * Route a text response to TTS
-	 *
-	 * Called when a persona responds and should use voice output
-	 */
-	async routeToTTS(sessionId: UUID, personaId: UUID, text: string): Promise<void> {
-		if (!this.ttsCallback) {
-			console.warn('⚠️  VoiceOrchestrator: No TTS callback set');
-			return;
-		}
-
-		try {
-			await this.ttsCallback(sessionId, personaId, text);
-		} catch (e) {
-			console.error('❌ VoiceOrchestrator: Failed to route to TTS:', e);
-		}
+		return responderIds as UUID[];
 	}
 
 	/**
 	 * End a voice session
 	 */
 	async endSession(sessionId: UUID): Promise<void> {
-		this.sessionParticipants.delete(sessionId);
-		console.log(`🦀 VoiceOrchestrator: Ended session ${sessionId}`);
+		console.log(`🦀 VoiceOrchestrator: Ended session ${sessionId.slice(0, 8)}`);
 	}
 }
 
-/**
- * Get the Rust-backed VoiceOrchestrator instance
- */
 export function getRustVoiceOrchestrator(): VoiceOrchestratorRustBridge {
 	return VoiceOrchestratorRustBridge.instance;
 }

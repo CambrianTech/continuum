@@ -4,6 +4,7 @@
 //! High-quality voices, efficient inference, designed for production use.
 //! Used by Home Assistant and other production systems.
 
+use super::audio_utils;
 use super::{Phonemizer, SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;
 use ndarray;
@@ -115,67 +116,20 @@ impl PiperTTS {
             .try_extract_raw_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
-        // Convert f32 to i16 (Piper outputs at model sample rate, we need 16kHz)
-        const PCM_I16_MAX: f32 = 32767.0;  // Maximum value for signed 16-bit PCM
-        const AUDIO_RANGE_MIN: f32 = -1.0;
-        const AUDIO_RANGE_MAX: f32 = 1.0;
-
-        let source_rate = model.sample_rate;
-
-        let samples_source: Vec<i16> = audio_data
-            .iter()
-            .map(|&s| (s.clamp(AUDIO_RANGE_MIN, AUDIO_RANGE_MAX) * PCM_I16_MAX) as i16)
-            .collect();
-
-        // Resample from model's sample rate to standard audio rate
-        use crate::audio_constants::AUDIO_SAMPLE_RATE;
-        let samples_resampled = Self::resample_to_target(&samples_source, source_rate, AUDIO_SAMPLE_RATE);
-
-        let duration_ms = (samples_resampled.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+        // Normalize to standard 16kHz i16 PCM via shared audio utilities
+        let f32_samples: Vec<f32> = audio_data.to_vec();
+        let result = audio_utils::normalize_audio(&f32_samples, model.sample_rate)?;
 
         info!(
             "Piper synthesized {} samples ({}ms) for '{}...'",
-            samples_resampled.len(),
-            duration_ms,
+            result.samples.len(),
+            result.duration_ms,
             super::truncate_str(text, 30)
         );
 
-        Ok(SynthesisResult {
-            samples: samples_resampled,
-            sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms,
-        })
+        Ok(result)
     }
 
-    /// Resample from source sample rate to target rate (linear interpolation)
-    fn resample_to_target(samples: &[i16], source_rate: u32, target_rate: u32) -> Vec<i16> {
-        // If already at target rate, return as-is
-        if source_rate == target_rate {
-            return samples.to_vec();
-        }
-
-        let ratio = source_rate as f64 / target_rate as f64;
-        let output_len = (samples.len() as f64 / ratio) as usize;
-        let mut output = Vec::with_capacity(output_len);
-
-        for i in 0..output_len {
-            let src_pos = i as f64 * ratio;
-            let src_idx = src_pos as usize;
-            let frac = src_pos - src_idx as f64;
-
-            let sample = if src_idx + 1 < samples.len() {
-                let s0 = samples[src_idx] as f64;
-                let s1 = samples[src_idx + 1] as f64;
-                (s0 + frac * (s1 - s0)) as i16
-            } else {
-                samples.get(src_idx).copied().unwrap_or(0)
-            };
-
-            output.push(sample);
-        }
-
-        output
-    }
 }
 
 impl Default for PiperTTS {
@@ -236,9 +190,9 @@ impl TextToSpeech for PiperTTS {
             phonemizer,
         };
 
-        PIPER_SESSION
-            .set(Arc::new(Mutex::new(model)))
-            .map_err(|_| TTSError::ModelNotLoaded("Failed to set global session".into()))?;
+        let _ = PIPER_SESSION
+            .set(Arc::new(Mutex::new(model)));
+        // OnceLock::set Err = another thread already initialized — that's fine
 
         info!("Piper model loaded successfully");
         Ok(())
@@ -276,7 +230,6 @@ impl TextToSpeech for PiperTTS {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::AUDIO_SAMPLE_RATE;
 
     #[test]
     fn test_piper_adapter() {
@@ -294,12 +247,5 @@ mod tests {
         assert_eq!(voices[0].id, "default");
     }
 
-    #[test]
-    fn test_resample() {
-        // 6 samples at 22050Hz should become ~4 samples at AUDIO_SAMPLE_RATE
-        let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = PiperTTS::resample_to_target(&input, 22050, AUDIO_SAMPLE_RATE);
-        // 6 * 16000 / 22050 ≈ 4.35 samples
-        assert!(output.len() >= 4 && output.len() <= 5);
-    }
+    // Resample tests moved to audio_utils::tests (shared across all adapters)
 }

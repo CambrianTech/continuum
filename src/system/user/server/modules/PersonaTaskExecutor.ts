@@ -26,6 +26,7 @@ import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import { Commands } from '../../../core/shared/Commands';
 import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
 import type { RustCognitionBridge } from './RustCognitionBridge';
+import { CognitionLogger } from './cognition/CognitionLogger';
 
 /**
  * Interface for PersonaUser dependency injection into task executor.
@@ -253,9 +254,15 @@ export class PersonaTaskExecutor {
         embedding: embedding || undefined
       };
 
-      // 5. Store to memories collection
+      // 5. Store to persona's longterm.db (not shared database)
       try {
-        await ORM.store(COLLECTIONS.MEMORIES, memory as MemoryEntity);
+        const memoryDbHandle = CognitionLogger.getDbHandle(this.personaId);
+        await Commands.execute('data/create', {
+          dbHandle: memoryDbHandle,
+          collection: COLLECTIONS.MEMORIES,
+          data: memory,
+          suppressEvents: true,
+        } as any);
         created++;
         this.log(`💾 ${this.displayName}: Stored memory (importance=${score.toFixed(2)}): "${text.slice(0, 50)}..."`);
       } catch (error) {
@@ -869,7 +876,9 @@ export class PersonaTaskExecutor {
         type: 'sentinel',
       };
 
+      const dbHandle = CognitionLogger.getDbHandle(this.personaId);
       const result = await Commands.execute('data/list', {
+        dbHandle,
         collection: 'memories',
         filter,
         orderBy: [{ field: 'timestamp', direction: 'desc' }],

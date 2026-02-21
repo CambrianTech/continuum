@@ -3,34 +3,24 @@
  *
  * Responsibilities:
  * 1. Receive transcription events from VoiceWebSocketHandler
- * 2. Post transcripts to chat (all AIs see them through normal flow)
- * 3. Perform turn arbitration (which AI responds via VOICE)
- * 4. Track pending voice responses
- * 5. Route responses to TTS when they come back
+ * 2. Broadcast transcripts to ALL text-based AIs (audio-native AIs hear via mixer)
+ * 3. Route persona responses to TTS
  *
- * Key Insight: Voice is a MODALITY, not a domain.
- * Personas see voice transcripts as chat messages - the sourceModality metadata
- * tells PersonaResponseGenerator to route the response to TTS instead of just posting.
+ * NO turn-taking gating. NO cooldowns. NO arbiter selection.
+ * Every text-based AI gets every utterance. They each decide independently
+ * whether to respond. This is a GROUP CONVERSATION, not a turn-based game.
  *
- * The orchestrator doesn't directly access PersonaInbox. Instead:
- * - Transcripts become chat messages (all AIs see them)
- * - Arbitration selects ONE responder for voice output
- * - Selected responder's response gets TTS routing via metadata
+ * Audio-native AIs (Gemini Live, Qwen3-Omni, GPT-4o Realtime) hear raw audio
+ * through the mixer's mix-minus stream and are excluded from text broadcasts.
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { InboxMessage } from '../../user/server/modules/QueueItemTypes';
 import { Events } from '../../core/shared/Events';
-import { Commands } from '../../core/shared/Commands';
 import type { UserEntity } from '../../data/entities/UserEntity';
-import { generateUUID } from '../../core/types/CrossPlatformUUID';
-import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
-import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getAIAudioBridge } from './AIAudioBridge';
 import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
-
 import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 /**
  * Utterance event from voice transcription
@@ -60,35 +50,13 @@ interface VoiceParticipant {
 }
 
 /**
- * Turn arbitration strategy interface
+ * Session context - tracks recent conversation for RAG
  */
-interface TurnArbiter {
-  selectResponder(
-    event: UtteranceEvent,
-    candidates: VoiceParticipant[],
-    context: ConversationContext
-  ): VoiceParticipant | null;
-}
-
-/**
- * Conversation context for arbitration
- */
-interface ConversationContext {
+interface SessionContext {
   sessionId: UUID;
-  roomId: UUID;            // Room this call belongs to
+  roomId: UUID;
   recentUtterances: UtteranceEvent[];
-  lastResponderId?: UUID;
   turnCount: number;
-}
-
-/**
- * Pending response waiting for TTS
- */
-interface PendingVoiceResponse {
-  sessionId: UUID;
-  personaId: UUID;
-  originalMessageId: UUID;
-  timestamp: number;
 }
 
 /**
@@ -99,23 +67,9 @@ export class VoiceOrchestrator {
 
   // Session state
   private sessionParticipants: Map<UUID, VoiceParticipant[]> = new Map();
-  private sessionContexts: Map<UUID, ConversationContext> = new Map();
-  private pendingResponses: Map<UUID, PendingVoiceResponse> = new Map();
-
-  // Track when current speaker will FINISH - don't select new responder until then
-  // This prevents interrupting the current speaker
-  private lastSpeechEndTime: Map<UUID, number> = new Map();
-  private static readonly POST_SPEECH_BUFFER_MS = 500; // 0.5 seconds after speaker finishes (reduced for faster turn-taking)
-  private static readonly MAX_COOLDOWN_MS = 30000; // Maximum 30 seconds cooldown (safety net if speech event never fires)
-
-  // Turn arbitration
-  private arbiter: TurnArbiter;
-
-  // TTS callback (set by VoiceWebSocketHandler)
-  private ttsCallback: ((sessionId: UUID, personaId: UUID, text: string) => Promise<void>) | null = null;
+  private sessionContexts: Map<UUID, SessionContext> = new Map();
 
   private constructor() {
-    this.arbiter = new CompositeArbiter();
     this.setupEventListeners();
 
     // Register with VoiceConversationSource for RAG context building
@@ -129,13 +83,6 @@ export class VoiceOrchestrator {
       VoiceOrchestrator._instance = new VoiceOrchestrator();
     }
     return VoiceOrchestrator._instance;
-  }
-
-  /**
-   * Set the TTS callback for routing voice responses
-   */
-  setTTSCallback(callback: (sessionId: UUID, personaId: UUID, text: string) => Promise<void>): void {
-    this.ttsCallback = callback;
   }
 
   /**
@@ -248,171 +195,83 @@ export class VoiceOrchestrator {
   /**
    * Handle incoming utterance from transcription
    *
-   * This is the main entry point called by VoiceWebSocketHandler
-   *
-   * Key flow:
-   * 1. Post transcript to chat (so ALL AIs see it, including text-only models)
-   * 2. Turn arbitration selects ONE responder for voice output
-   * 3. Selected responder gets InboxMessage with sourceModality='voice'
-   * 4. All other AIs see the chat message normally (can respond via text)
+   * Broadcasts to ALL text-based AI participants. No gating. No cooldowns.
+   * No arbiter selection. Each AI decides independently whether to respond.
    */
   async onUtterance(event: UtteranceEvent): Promise<void> {
     const { sessionId, speakerId, transcript, speakerName } = event;
 
     console.log(`🎙️ VoiceOrchestrator: Utterance from ${speakerName}: "${transcript.slice(0, 50)}..."`);
 
-    // Get conversation context first (need roomId for chat posting)
     const context = this.sessionContexts.get(sessionId);
     if (!context) {
-      console.warn(`🎙️ VoiceOrchestrator: No context for session ${sessionId.slice(0, 8)}`);
+      console.error(`🎙️ VoiceOrchestrator: No context for session ${sessionId.slice(0, 8)} — was registerSession() called?`);
       return;
     }
 
-    // Get participants for this session
     const participants = this.sessionParticipants.get(sessionId);
     if (!participants || participants.length === 0) {
-      console.warn(`🎙️ VoiceOrchestrator: No participants registered for session ${sessionId.slice(0, 8)}`);
-      return;
-    }
-
-    // Update context with new utterance
-    context.recentUtterances.push(event);
-    if (context.recentUtterances.length > 20) {
-      context.recentUtterances.shift(); // Keep last 20
-    }
-    context.turnCount++;
-
-    // Get AI participants (excluding the speaker)
-    const aiParticipants = participants.filter(
-      p => p.type === 'persona' && p.userId !== speakerId
-    );
-
-    if (aiParticipants.length === 0) {
-      console.log('🎙️ VoiceOrchestrator: No AI participants to respond');
-      return;
-    }
-
-    // COOLDOWN CHECK - wait until current speaker finishes + buffer
-    // Safety net: MAX_COOLDOWN_MS ensures we eventually recover if speech event never fires
-    const speechEndTime = this.lastSpeechEndTime.get(sessionId) || 0;
-    const now = Date.now();
-
-    // Normal cooldown: wait until speech ends + post-speech buffer
-    const normalWaitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
-
-    // Safety timeout: never wait more than MAX_COOLDOWN_MS from when cooldown started
-    // speechEndTime is typically set to "now + thinking_buffer", so we can infer start time
-    const cooldownExpired = now > (speechEndTime + VoiceOrchestrator.MAX_COOLDOWN_MS);
-
-    if (now < normalWaitUntil && !cooldownExpired) {
-      const msLeft = normalWaitUntil - now;
-      console.log(`🎙️ VoiceOrchestrator: Cooldown active (${Math.round(msLeft / 1000)}s left)`);
-      return;
-    } else if (cooldownExpired && speechEndTime > 0) {
-      console.warn(`🎙️ VoiceOrchestrator: Cooldown EXPIRED (safety timeout) - clearing stale cooldown`);
-      this.lastSpeechEndTime.delete(sessionId);
-    }
-
-    // USE ARBITER to select ONE responder for coordinated turn-taking
-    const selectedResponder = this.arbiter.selectResponder(event, aiParticipants, context);
-
-    if (!selectedResponder) {
-      console.log('🎙️ VoiceOrchestrator: Arbiter selected no responder');
+      console.error(`🎙️ VoiceOrchestrator: No participants for session ${sessionId.slice(0, 8)}`);
       return;
     }
 
     // Update context
-    context.lastResponderId = selectedResponder.userId;
+    context.recentUtterances.push(event);
+    if (context.recentUtterances.length > 20) {
+      context.recentUtterances.shift();
+    }
+    context.turnCount++;
 
-    // Set IMMEDIATE cooldown - block other selections while AI is thinking/responding
-    // This prevents multiple AIs being selected before first one speaks
-    // Will be extended when AI actually speaks (via voice:ai:speech event with audioDurationMs)
-    const THINKING_BUFFER_MS = 3000; // 3 seconds for AI to start responding (reduced from 10s)
-    this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
+    // Get TEXT-BASED AI participants (excluding speaker AND audio-native AIs)
+    // Audio-native AIs hear raw audio through mixer — text would cause double response
+    const textAIs = participants.filter(
+      p => p.type === 'persona' && p.userId !== speakerId && !p.isAudioNative
+    );
 
-    // Send directed event ONLY to the selected responder
-    Events.emit('voice:transcription:directed', {
-      sessionId: event.sessionId,
-      speakerId: event.speakerId,
-      speakerName: event.speakerName,
-      speakerType: event.speakerType,
-      transcript: event.transcript,
-      confidence: event.confidence,
-      language: 'en',
-      timestamp: event.timestamp,
-      targetPersonaId: selectedResponder.userId
-    });
+    if (textAIs.length === 0) {
+      console.log('🎙️ VoiceOrchestrator: No text-based AIs to notify');
+      return;
+    }
+
+    // Broadcast to ALL text-based AIs — each gets the utterance
+    console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${textAIs.length} text-based AIs`);
+    for (const ai of textAIs) {
+      Events.emit('voice:transcription:directed', {
+        sessionId: event.sessionId,
+        speakerId: event.speakerId,
+        speakerName: event.speakerName,
+        speakerType: event.speakerType,
+        transcript: event.transcript,
+        confidence: event.confidence,
+        language: 'en',
+        timestamp: event.timestamp,
+        targetPersonaId: ai.userId
+      });
+    }
   }
 
   /**
-   * Track which persona should respond via voice for a session
-   */
-  private voiceResponders: Map<UUID, UUID> = new Map();  // sessionId -> personaId
-
-  private trackVoiceResponder(sessionId: UUID, personaId: UUID): void {
-    this.voiceResponders.set(sessionId, personaId);
-    // Voice responder tracked for session
-  }
-
-  /**
-   * Check if a persona's response should be routed to TTS
-   */
-  shouldRouteToTTS(sessionId: UUID, personaId: UUID): boolean {
-    const expectedResponder = this.voiceResponders.get(sessionId);
-    return expectedResponder === personaId;
-  }
-
-  /**
-   * Clear voice responder after they respond (one response per utterance)
-   */
-  clearVoiceResponder(sessionId: UUID): void {
-    this.voiceResponders.delete(sessionId);
-  }
-
-  /**
-   * Handle persona response (called from PersonaResponseGenerator)
-   *
-   * When a persona generates a response to a voice message,
-   * this routes it to TTS instead of posting as text.
+   * Handle persona response — route to TTS.
+   * No fallbacks. If the AI isn't in the call, that's an error.
    */
   async onPersonaResponse(
     personaId: UUID,
     response: string,
     originalMessage: InboxMessage
   ): Promise<void> {
-    // Only handle voice messages
     if (originalMessage.sourceModality !== 'voice' || !originalMessage.voiceSessionId) {
       return;
     }
 
     const sessionId = originalMessage.voiceSessionId;
 
-    // Clean up pending response
-    this.pendingResponses.delete(originalMessage.id);
-
-    // Route to TTS via AIAudioBridge (injects audio into the call)
     const bridge = getAIAudioBridge();
-    if (bridge.isInCall(sessionId, personaId)) {
-      await bridge.speak(sessionId, personaId, response);
-    } else if (this.ttsCallback) {
-      // Fallback to external TTS callback if set
-      await this.ttsCallback(sessionId, personaId, response);
-    } else {
-      console.warn('🎙️ VoiceOrchestrator: AI not in call and no TTS callback — emitting failed speech to unblock chain');
-
-      // CRITICAL: Emit failed speech event so the voice chain can continue
-      // to the next AI. Without this, onUtterance cooldown stays active
-      // and no other AI can ever be selected.
-      Events.emit('voice:ai:speech', {
-        sessionId,
-        speakerId: personaId,
-        speakerName: 'unknown',
-        text: response,
-        audioDurationMs: 0,
-        failed: true,
-        timestamp: Date.now()
-      });
+    if (!bridge.isInCall(sessionId, personaId)) {
+      console.error(`🎙️ VoiceOrchestrator: AI ${personaId.slice(0, 8)} NOT in call ${sessionId.slice(0, 8)} — cannot speak. WebSocket connection failed or was never established.`);
+      return;
     }
+
+    await bridge.speak(sessionId, personaId, response);
   }
 
   /**
@@ -437,8 +296,10 @@ export class VoiceOrchestrator {
       }
     });
 
-    // Listen for transcriptions from Rust streaming-core via browser
-    // This bridges the Rust call_server's Whisper STT to the persona system
+    // Listen for transcriptions — update session context for RAG only.
+    // AI notification is handled by CollaborationLiveTranscriptionServerCommand
+    // which calls the Rust VoiceOrchestrator and emits directed events.
+    // We do NOT call onUtterance() here to avoid duplicate broadcasts.
     Events.subscribe('voice:transcription', async (event: {
       sessionId: string;
       speakerId: string;
@@ -448,27 +309,90 @@ export class VoiceOrchestrator {
       language: string;
       timestamp: number;
     }) => {
-      console.log(`[STEP 10] 🎙️ VoiceOrchestrator RECEIVED event: "${event.transcript.slice(0, 50)}..."`);
-
-      // Convert to UtteranceEvent and process
-      const utteranceEvent: UtteranceEvent = {
-        sessionId: event.sessionId as UUID,
-        speakerId: event.speakerId as UUID,
-        speakerName: event.speakerName,
-        speakerType: 'human',  // Could be enhanced to detect AI speakers
-        transcript: event.transcript,
-        confidence: event.confidence,
-        timestamp: event.timestamp
-      };
-
-      console.log(`[STEP 11] 🎯 VoiceOrchestrator calling onUtterance for turn arbitration`);
-      await this.onUtterance(utteranceEvent);
+      // Update session context for RAG (getRecentUtterances)
+      const context = this.sessionContexts.get(event.sessionId as UUID);
+      if (context) {
+        const utteranceEvent: UtteranceEvent = {
+          sessionId: event.sessionId as UUID,
+          speakerId: event.speakerId as UUID,
+          speakerName: event.speakerName,
+          speakerType: 'human',
+          transcript: event.transcript,
+          confidence: event.confidence,
+          timestamp: event.timestamp
+        };
+        context.recentUtterances.push(utteranceEvent);
+        if (context.recentUtterances.length > 20) {
+          context.recentUtterances.shift();
+        }
+        context.turnCount++;
+      }
     });
 
-    // Listen for AI speech events (when an AI speaks via TTS)
-    // Track when speech will END to prevent interruption
-    // Route to ONE other AI using arbiter (turn-taking coordination)
-    Events.subscribe('voice:ai:speech', async (event: {
+    // Listen for mid-call participant joins
+    // When a new AI joins an active call, connect them to the appropriate audio bridge
+    Events.subscribe('live:participant:joined', async (event: {
+      sessionId: string;
+      userId: string;
+      displayName: string;
+      type: 'human' | 'persona' | 'agent';
+    }) => {
+      const sessionId = event.sessionId as UUID;
+      const participants = this.sessionParticipants.get(sessionId);
+      if (!participants) return; // Not a tracked voice session
+
+      // Check if this participant is already registered
+      if (participants.some(p => p.userId === event.userId)) return;
+
+      // Look up user to get modelId and determine audio-native status
+      if (event.type === 'persona' || event.type === 'agent') {
+        try {
+          const result = await DataList.execute<UserEntity>({
+            collection: 'users',
+            filter: { id: event.userId },
+            limit: 1,
+          });
+
+          if (result.success && result.items?.length) {
+            const user = result.items[0];
+            const metadata = user.metadata as Record<string, unknown> | undefined;
+            const modelId = metadata?.modelId as string | undefined;
+            const audioNativeBridge = getAudioNativeBridge();
+            const isAudioNative = modelId ? audioNativeBridge.isAudioNativeModel(modelId) : false;
+
+            const participant: VoiceParticipant = {
+              userId: event.userId as UUID,
+              displayName: event.displayName,
+              type: event.type,
+              expertise: metadata?.expertise as string[] | undefined,
+              modelId,
+              isAudioNative,
+            };
+
+            participants.push(participant);
+
+            // Connect to appropriate bridge
+            if (isAudioNative && modelId) {
+              console.log(`🎙️ VoiceOrchestrator: Mid-call join: ${event.displayName} (${modelId}) as AUDIO-NATIVE`);
+              const success = await audioNativeBridge.joinCall(sessionId, participant.userId, participant.displayName, modelId);
+              if (!success) {
+                const textBridge = getAIAudioBridge();
+                textBridge.joinCall(sessionId, participant.userId, participant.displayName);
+              }
+            } else {
+              console.log(`🎙️ VoiceOrchestrator: Mid-call join: ${event.displayName} as TEXT-BASED`);
+              const textBridge = getAIAudioBridge();
+              textBridge.joinCall(sessionId, participant.userId, participant.displayName);
+            }
+          }
+        } catch (error) {
+          console.warn(`🎙️ VoiceOrchestrator: Failed to add mid-call joiner ${event.displayName}:`, error);
+        }
+      }
+    });
+
+    // Listen for AI speech events — just log for visibility, no gating
+    Events.subscribe('voice:ai:speech', (event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
@@ -477,90 +401,26 @@ export class VoiceOrchestrator {
       failed?: boolean;
       timestamp: number;
     }) => {
-      console.log(`🎙️ VoiceOrchestrator: RECEIVED voice:ai:speech event from ${event.speakerName} (audioDurationMs=${event.audioDurationMs}, failed=${event.failed ?? false})`);
-
-      // Track when this speech will finish - prevents new selection until done + buffer
-      if (event.failed || !event.audioDurationMs || event.audioDurationMs === 0) {
-        // Speech FAILED (TTS timeout, AI not in call, etc.) — clear cooldown immediately
-        // This is CRITICAL: without clearing, the voice chain permanently stalls
-        this.lastSpeechEndTime.delete(event.sessionId as UUID);
-        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speech FAILED — cooldown CLEARED (chain continues)`);
+      if (event.failed) {
+        console.error(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speech FAILED`);
       } else {
-        const speechEndTime = Date.now() + event.audioDurationMs;
-        this.lastSpeechEndTime.set(event.sessionId as UUID, speechEndTime);
-        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speaking for ${Math.round(event.audioDurationMs / 1000)}s - will wait until finished`);
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke ${event.audioDurationMs ?? 0}ms`);
       }
-
-      // Get participants for this session
-      const participants = this.sessionParticipants.get(event.sessionId as UUID);
-      if (!participants || participants.length === 0) return;
-
-      // Get AI participants (excluding the speaking AI)
-      const otherAIs = participants.filter(
-        p => p.type === 'persona' && p.userId !== event.speakerId
-      );
-
-      if (otherAIs.length === 0) return;
-
-      // Get context for arbiter
-      const context = this.sessionContexts.get(event.sessionId as UUID);
-      if (!context) return;
-
-      // Create utterance event for arbiter
-      const utteranceEvent: UtteranceEvent = {
-        sessionId: event.sessionId as UUID,
-        speakerId: event.speakerId as UUID,
-        speakerName: event.speakerName,
-        speakerType: 'persona',
-        transcript: event.text,
-        confidence: 1.0,
-        timestamp: event.timestamp
-      };
-
-      // Use arbiter to select ONE responder (turn-taking)
-      const selectedResponder = this.arbiter.selectResponder(utteranceEvent, otherAIs, context);
-
-      if (!selectedResponder) {
-        console.log('🎙️ VoiceOrchestrator: No AI selected to respond to AI speech');
-        return;
-      }
-
-      // Update context
-      context.lastResponderId = selectedResponder.userId;
-
-      console.log(`🎙️ VoiceOrchestrator: ${selectedResponder.displayName} will respond to ${event.speakerName}`);
-
-      // Send to selected responder only
-      Events.emit('voice:transcription:directed', {
-        sessionId: event.sessionId,
-        speakerId: event.speakerId,
-        speakerName: event.speakerName,
-        speakerType: 'persona',
-        transcript: event.text,
-        confidence: 1.0,
-        language: 'en',
-        timestamp: event.timestamp,
-        targetPersonaId: selectedResponder.userId
-      });
     });
   }
 
   /**
    * Get session statistics
    */
-  getSessionStats(sessionId: UUID): { participants: number; turnCount: number; pendingResponses: number } | null {
+  getSessionStats(sessionId: UUID): { participants: number; turnCount: number } | null {
     const participants = this.sessionParticipants.get(sessionId);
     const context = this.sessionContexts.get(sessionId);
 
     if (!participants || !context) return null;
 
-    const pendingCount = Array.from(this.pendingResponses.values())
-      .filter(p => p.sessionId === sessionId).length;
-
     return {
       participants: participants.length,
       turnCount: context.turnCount,
-      pendingResponses: pendingCount
     };
   }
 
@@ -584,143 +444,3 @@ export class VoiceOrchestrator {
   }
 }
 
-// ============================================================================
-// Turn Arbitration Strategies
-// ============================================================================
-
-/**
- * Directed addressing arbiter - responds when directly addressed
- */
-class DirectedArbiter implements TurnArbiter {
-  selectResponder(
-    event: UtteranceEvent,
-    candidates: VoiceParticipant[],
-    _context: ConversationContext
-  ): VoiceParticipant | null {
-    const textLower = event.transcript.toLowerCase();
-
-    // Check for direct address ("Hey Teacher", "Teacher, ...", "@Teacher")
-    for (const candidate of candidates) {
-      const nameLower = candidate.displayName.toLowerCase();
-      const nameHyphen = nameLower.replace(/\s+/g, '-');
-
-      if (textLower.includes(nameLower) ||
-          textLower.includes(nameHyphen) ||
-          textLower.includes(`@${nameLower}`) ||
-          textLower.includes(`@${nameHyphen}`)) {
-        return candidate;
-      }
-    }
-
-    return null;
-  }
-}
-
-/**
- * Topic relevance arbiter - responds based on expertise match
- */
-class RelevanceArbiter implements TurnArbiter {
-  selectResponder(
-    event: UtteranceEvent,
-    candidates: VoiceParticipant[],
-    _context: ConversationContext
-  ): VoiceParticipant | null {
-    const textLower = event.transcript.toLowerCase();
-
-    // Score each candidate by expertise match
-    const scored = candidates.map(candidate => {
-      let score = 0;
-
-      if (candidate.expertise) {
-        for (const keyword of candidate.expertise) {
-          if (textLower.includes(keyword.toLowerCase())) {
-            score += 0.3;
-          }
-        }
-      }
-
-      return { candidate, score };
-    });
-
-    // Sort by score descending
-    scored.sort((a, b) => b.score - a.score);
-
-    // Return best if score is meaningful
-    if (scored.length > 0 && scored[0].score > 0.2) {
-      return scored[0].candidate;
-    }
-
-    return null;
-  }
-}
-
-/**
- * Round-robin arbiter - takes turns between AIs
- */
-class RoundRobinArbiter implements TurnArbiter {
-  selectResponder(
-    _event: UtteranceEvent,
-    candidates: VoiceParticipant[],
-    context: ConversationContext
-  ): VoiceParticipant | null {
-    if (candidates.length === 0) return null;
-
-    // Find next candidate after last responder
-    if (context.lastResponderId) {
-      const lastIndex = candidates.findIndex(c => c.userId === context.lastResponderId);
-      if (lastIndex >= 0) {
-        const nextIndex = (lastIndex + 1) % candidates.length;
-        return candidates[nextIndex];
-      }
-    }
-
-    // Default to first candidate
-    return candidates[0];
-  }
-}
-
-/**
- * Composite arbiter - tries directed first, then relevance, then round-robin
- */
-class CompositeArbiter implements TurnArbiter {
-  private directed = new DirectedArbiter();
-  private relevance = new RelevanceArbiter();
-  private roundRobin = new RoundRobinArbiter();
-
-  selectResponder(
-    event: UtteranceEvent,
-    candidates: VoiceParticipant[],
-    context: ConversationContext
-  ): VoiceParticipant | null {
-    // 1. Direct address takes precedence
-    const directed = this.directed.selectResponder(event, candidates, context);
-    if (directed) {
-      console.log(`🎙️ Arbiter: Selected ${directed.displayName} (directed)`);
-      return directed;
-    }
-
-    // 2. Topic relevance
-    const relevant = this.relevance.selectResponder(event, candidates, context);
-    if (relevant) {
-      console.log(`🎙️ Arbiter: Selected ${relevant.displayName} (relevance)`);
-      return relevant;
-    }
-
-    // 3. Fall back to round-robin for ALL utterances (questions AND statements)
-    // Voice conversations are interactive - AIs should engage, not just answer questions
-    const next = this.roundRobin.selectResponder(event, candidates, context);
-    if (next) {
-      console.log(`🎙️ Arbiter: Selected ${next.displayName} (round-robin)`);
-      return next;
-    }
-
-    // 4. No candidates available
-    console.log('🎙️ Arbiter: No responder selected (no AI candidates)');
-    return null;
-  }
-}
-
-// Export singleton accessor
-export function getVoiceOrchestrator(): VoiceOrchestrator {
-  return VoiceOrchestrator.instance;
-}

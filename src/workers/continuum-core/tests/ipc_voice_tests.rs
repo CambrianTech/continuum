@@ -22,6 +22,7 @@ fn create_test_ai(id: &str, name: &str) -> VoiceParticipant {
         display_name: name.to_string(),
         participant_type: SpeakerType::Persona,
         expertise: vec![],
+        is_audio_native: false,
     }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.8082",
+  "version": "1.0.8178",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -305,7 +305,8 @@
     "data:reseed": "npm run data:clear && npm run data:seed",
     "data:cleanup": "npx tsx scripts/cleanup-test-entities.ts",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'",
-    "python:ensure": "npx tsx scripts/ensure-python-env.ts"
+    "python:ensure": "npx tsx scripts/ensure-python-env.ts",
+    "livekit:install": "./scripts/install-livekit.sh"
   },
   "keywords": [
     "global-cli",
@@ -365,6 +366,8 @@
     "google-protobuf": "^4.0.1",
     "highlight.js": "^11.11.1",
     "lit": "^3.3.2",
+    "livekit-client": "^2.17.2",
+    "livekit-server-sdk": "^2.15.0",
     "marked": "^16.4.0",
     "minimatch": "^10.1.1",
     "nice-grpc": "^2.1.14",

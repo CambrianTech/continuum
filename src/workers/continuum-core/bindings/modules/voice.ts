@@ -13,6 +13,7 @@ export interface VoiceParticipant {
 	display_name: string;
 	participant_type: 'human' | 'persona' | 'agent';
 	expertise: string[];
+	is_audio_native: boolean;
 }
 
 export interface UtteranceEvent {
@@ -37,12 +38,59 @@ export interface VoiceSynthesizeResult {
 	adapter: string;
 }
 
+export interface SttAdapterInfo {
+	name: string;
+	initialized: boolean;
+	description: string;
+}
+
+export interface SttListResult {
+	adapters: SttAdapterInfo[];
+	active: string;
+}
+
+export interface TranscribeResult {
+	text: string;
+	language: string;
+	confidence: number;
+	adapter: string;
+	segments: Array<{ text: string; start_ms: number; end_ms: number }>;
+}
+
+export interface TestAudioGenerateResult {
+	audio: string;  // base64-encoded i16 LE PCM
+	samples: number;
+	duration_ms: number;
+	noise_type: string;
+	sample_rate: number;
+}
+
+export interface TranscriptionEntry {
+	call_id: string;
+	speaker_id: string;
+	speaker_name: string;
+	text: string;
+	timestamp_ms: number;
+}
+
+export interface PollTranscriptionsResult {
+	transcriptions: TranscriptionEntry[];
+	count: number;
+}
+
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
-	voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean>;
 	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
 	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
+	voiceInjectAudio(callId: string, userId: string, samples: number[]): Promise<void>;
+	voiceAmbientAdd(callId: string, sourceName: string): Promise<{ handle: string; source_name: string }>;
+	voiceAmbientInject(callId: string, handle: string, samples: number[]): Promise<void>;
+	voiceAmbientRemove(callId: string, handle: string): Promise<void>;
+	voiceSttList(): Promise<SttListResult>;
+	voiceTranscribeWithAdapter(audio: string, adapter: string, language?: string): Promise<TranscribeResult>;
+	voiceTestAudioGenerate(noiseType: string, durationMs: number, params?: Record<string, any>): Promise<TestAudioGenerateResult>;
+	voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -85,22 +133,6 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			return response.result?.[VOICE_RESPONSE_FIELDS.RESPONDER_IDS] || [];
 		}
 
-		/**
-		 * Check if TTS should route to a specific persona
-		 */
-		async voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean> {
-			const response = await this.request({
-				command: 'voice/should-route-tts',
-				session_id: sessionId,
-				persona_id: personaId,
-			});
-
-			if (!response.success) {
-				throw new Error(response.error || 'Failed to check TTS routing');
-			}
-
-			return response.result?.should_route ?? false;
-		}
 
 		/**
 		 * Synthesize speech from text
@@ -131,6 +163,27 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 				numSamples: response.result?.num_samples || 0,
 				adapter: response.result?.adapter || 'unknown',
 			};
+		}
+
+		/**
+		 * Inject pre-synthesized audio into a call's mixer.
+		 * Used by AudioNativeBridge to push audio-native model output into the room.
+		 */
+		async voiceInjectAudio(
+			callId: string,
+			userId: string,
+			samples: number[]
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/inject-audio',
+				call_id: callId,
+				user_id: userId,
+				samples,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to inject audio');
+			}
 		}
 
 		/**
@@ -166,6 +219,149 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 				numSamples: response.result?.num_samples || 0,
 				adapter: response.result?.adapter || 'unknown',
 			};
+		}
+
+		/**
+		 * Add an ambient audio source to a call (TV, music, background noise).
+		 * Returns a handle for injecting audio and removing the source later.
+		 */
+		async voiceAmbientAdd(
+			callId: string,
+			sourceName: string,
+		): Promise<{ handle: string; source_name: string }> {
+			const response = await this.request({
+				command: 'voice/ambient-add',
+				call_id: callId,
+				source_name: sourceName,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to add ambient source');
+			}
+
+			return response.result as { handle: string; source_name: string };
+		}
+
+		/**
+		 * Inject audio into an ambient source by handle.
+		 */
+		async voiceAmbientInject(
+			callId: string,
+			handle: string,
+			samples: number[],
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/ambient-inject',
+				call_id: callId,
+				handle,
+				samples,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to inject ambient audio');
+			}
+		}
+
+		/**
+		 * Remove an ambient audio source from a call.
+		 */
+		async voiceAmbientRemove(
+			callId: string,
+			handle: string,
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/ambient-remove',
+				call_id: callId,
+				handle,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to remove ambient source');
+			}
+		}
+
+		/**
+		 * List all registered STT adapters and the currently active one.
+		 */
+		async voiceSttList(): Promise<SttListResult> {
+			const response = await this.request({
+				command: 'voice/stt-list',
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to list STT adapters');
+			}
+
+			return response.result as SttListResult;
+		}
+
+		/**
+		 * Transcribe audio using a specific STT adapter without changing the global active adapter.
+		 * @param audio - base64-encoded i16 LE PCM at 16kHz
+		 * @param adapter - adapter name (e.g., "whisper", "moonshine")
+		 * @param language - optional language code (e.g., "en")
+		 */
+		async voiceTranscribeWithAdapter(
+			audio: string,
+			adapter: string,
+			language?: string,
+		): Promise<TranscribeResult> {
+			const response = await this.request({
+				command: 'voice/transcribe-with-adapter',
+				audio,
+				adapter,
+				language,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || `Failed to transcribe with adapter '${adapter}'`);
+			}
+
+			return response.result as TranscribeResult;
+		}
+
+		/**
+		 * Generate test audio noise via the Rust TestAudioGenerator.
+		 * Returns base64-encoded i16 LE PCM at 16kHz.
+		 * @param noiseType - noise type name (crowd, factory, gunfire, explosion, siren, music, wind, rain, tv_dialogue)
+		 * @param durationMs - duration in milliseconds
+		 * @param params - optional parameters (e.g., { voice_count: 5 } for crowd, { shots_per_second: 3 } for gunfire)
+		 */
+		async voiceTestAudioGenerate(
+			noiseType: string,
+			durationMs: number,
+			params?: Record<string, any>,
+		): Promise<TestAudioGenerateResult> {
+			const response = await this.request({
+				command: 'voice/test-audio-generate',
+				noise_type: noiseType,
+				duration_ms: durationMs,
+				params,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || `Failed to generate test audio: ${noiseType}`);
+			}
+
+			return response.result as TestAudioGenerateResult;
+		}
+
+		/**
+		 * Poll and drain transcriptions from the STT listener buffer.
+		 * Returns all transcriptions since the last poll, optionally filtered by call_id.
+		 * Used by integration tests to verify E2E audio roundtrip.
+		 */
+		async voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult> {
+			const response = await this.request({
+				command: 'voice/poll-transcriptions',
+				...(callId ? { call_id: callId } : {}),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to poll transcriptions');
+			}
+
+			return response.result as PollTranscriptionsResult;
 		}
 	};
 }

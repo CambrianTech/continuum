@@ -11,16 +11,24 @@
 import { PATHS } from '../../shared/Constants';
 
 /**
- * Database file paths - SERVER-ONLY configuration
+ * Database paths and connection strings - SERVER-ONLY configuration
  *
- * DEFAULT PATH: $HOME/.continuum/data (user's home directory)
- * Override via config.env: DATABASE_DIR, DATABASE_BACKUP_DIR, DATABASE_ARCHIVE_DIR
+ * ROUTING: ServerConfig.getDatabasePath() checks DATABASE_URL first:
+ *   - postgres:// or postgresql:// → PostgresAdapter (async pool, MVCC)
+ *   - File path or unset → SqliteAdapter (WAL mode)
+ *
+ * Override via config.env:
+ *   DATABASE_URL     — Primary connection string (postgres://user@host/db)
+ *   DATABASE_DIR     — SQLite fallback directory ($HOME/.continuum/data)
  *
  * NOTE: These are COMPILE-TIME constants for fallback only.
  * Runtime paths come from ServerConfig which checks config.env first.
  */
 export const DATABASE_PATHS = {
-  /** Main SQLite database file path (server-only) */
+  /** Default Postgres connection (system Postgres, database 'continuum') */
+  POSTGRES: 'postgres://joel@localhost:5432/continuum',
+
+  /** SQLite fallback path (used when DATABASE_URL is not set) */
   SQLITE: '$HOME/.continuum/data/database.sqlite',
 
   /** Main database directory (server-only) - SINGULAR DEFAULT */

@@ -125,10 +125,9 @@ async function main() {
 			failed++;
 		}
 
-		// Step 4: Check TTS routing if responder selected
+		// All responders get the utterance (broadcast model)
 		if (responderId) {
-			const shouldRoute = await client.voiceShouldRouteTts(sessionId, responderId);
-			console.log(`   TTS routing check: ${shouldRoute ? '✅ Would route to TTS' : '❌ Would not route'}\n`);
+			console.log(`   Responder ${responderId.slice(0, 8)} would receive utterance\n`);
 		}
 	}
 

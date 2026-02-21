@@ -25,6 +25,20 @@
 }
 
 // ========================================
+// Per-Participant Video Canvas
+// Server-rendered frames (test pattern, bgfx-rs avatar, webcam, AI-generated)
+// are routed to individual participant tiles by senderId (userId).
+// ========================================
+
+.participant-video-canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: $border-radius-lg;
+  image-rendering: auto;  // Smooth for real video (change to pixelated for test patterns)
+}
+
+// ========================================
 // Participant Grid (Teams/Discord style)
 // Fills available space intelligently based on participant count
 // ========================================
@@ -155,6 +169,13 @@
   }
   50% {
     box-shadow: 0 0 0 3px rgba($color-success, 0.6), 0 0 20px rgba($color-success, 0.4);
+  }
+}
+
+// Participant tile with active video — hide avatar, show canvas
+.participant-tile.has-video {
+  .participant-avatar {
+    display: none;
   }
 }
 
@@ -440,6 +461,45 @@
     color: $color-text-dim;
     text-align: center;
     padding: $spacing-xl;
+  }
+
+  // Spotlight video canvas fills the presenter area
+  .spotlight-canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;  // Preserve aspect ratio, letterbox if needed
+    border-radius: $border-radius-lg;
+    image-rendering: auto;
+  }
+
+  .presenter-tile.has-video {
+    .participant-avatar {
+      display: none;
+    }
+  }
+
+  // Exit spotlight button (top-right X)
+  .exit-spotlight-btn {
+    position: absolute;
+    top: $spacing-md;
+    right: $spacing-md;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all $transition-fast;
+    z-index: 10;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: scale(1.1);
+    }
   }
 
   .participant-avatar.large {

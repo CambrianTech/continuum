@@ -1,0 +1,33 @@
+{
+  "name": "migration/rollback",
+  "description": "Revert to the previous connection string after a cutover. Source data is never deleted.",
+  "params": [
+    {
+      "name": "current",
+      "type": "string",
+      "optional": false,
+      "description": "Current (target) connection string to roll back from"
+    }
+  ],
+  "results": [
+    {
+      "name": "rolledBack",
+      "type": "boolean",
+      "description": "Whether rollback was successful"
+    },
+    {
+      "name": "restoredConnection",
+      "type": "string",
+      "description": "The connection string that was restored"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Roll back to SQLite after failed cutover",
+      "command": "./jtag migration/rollback --current=\"postgres://joel@localhost:5432/continuum\"",
+      "expectedResult": "{ rolledBack: true, restoredConnection: \"/Users/joel/.continuum/data/database.sqlite\" }"
+    }
+  ],
+  "accessLevel": "system",
+  "environment": "server"
+}

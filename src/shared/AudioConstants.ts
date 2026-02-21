@@ -55,3 +55,23 @@ export const CALL_SERVER_PORT = 50053;
  * Call server URL
  */
 export const CALL_SERVER_URL = `ws://127.0.0.1:${CALL_SERVER_PORT}`;
+
+/**
+ * LiveKit SFU server port (WebRTC signaling)
+ */
+export const LIVEKIT_PORT = 7880;
+
+/**
+ * LiveKit server URL
+ */
+export const LIVEKIT_URL = `ws://127.0.0.1:${LIVEKIT_PORT}`;
+
+/**
+ * LiveKit API key (dev mode)
+ */
+export const LIVEKIT_API_KEY = 'devkey';
+
+/**
+ * LiveKit API secret (dev mode)
+ */
+export const LIVEKIT_API_SECRET = 'secret';

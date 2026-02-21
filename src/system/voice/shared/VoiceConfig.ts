@@ -4,25 +4,28 @@
  * Centralized config for TTS/STT with easy adapter swapping.
  * Adapter names MUST match Rust adapter name() returns exactly.
  *
- * TTS: Kokoro (primary), Edge (cloud), Orpheus (expressive), Piper, Silence
- * STT: Whisper (primary), Moonshine (fast), OpenAI Realtime, Stub
+ * Model metadata (HF repos, sample rates, capabilities) lives in Constants.ts TTS_MODELS.
+ * This file handles runtime configuration and user preferences.
  */
 
-// TTS Adapter Constants — names MUST match Rust adapter name() returns
+import { TTS_MODELS, STT_MODELS } from '@system/shared/Constants';
+
+// TTS Adapter Constants — derived from centralized TTS_MODELS
 export const TTS_ADAPTERS = {
-  KOKORO: 'kokoro',
-  PIPER: 'piper',
-  EDGE: 'edge',          // Rust msedge-tts crate (free Microsoft neural voices)
-  ORPHEUS: 'orpheus',    // Candle GGUF Llama-3B (expressive, emotion tags)
-  SILENCE: 'silence',
+  KOKORO: TTS_MODELS.KOKORO.id,
+  PIPER: TTS_MODELS.PIPER.id,
+  EDGE: TTS_MODELS.EDGE.id,
+  POCKET: TTS_MODELS.POCKET.id,
+  ORPHEUS: TTS_MODELS.ORPHEUS.id,
+  SILENCE: TTS_MODELS.SILENCE.id,
 } as const;
 
 export type TTSAdapter = typeof TTS_ADAPTERS[keyof typeof TTS_ADAPTERS];
 
-// STT Adapter Constants — names MUST match Rust adapter name() returns
+// STT Adapter Constants — derived from centralized STT_MODELS
 export const STT_ADAPTERS = {
-  WHISPER: 'whisper',
-  MOONSHINE: 'moonshine',  // ONNX, sub-100ms, great for live transcription
+  WHISPER: STT_MODELS.WHISPER.id,
+  MOONSHINE: STT_MODELS.MOONSHINE.id,
   OPENAI_REALTIME: 'openai-realtime',
   STUB: 'stub',
 } as const;
@@ -49,6 +52,9 @@ export interface VoiceConfig {
       orpheus?: {
         voice: string;        // e.g., 'tara', 'leo', 'zoe' (8 built-in voices)
       };
+      pocket?: {
+        voice: string;        // e.g., 'alba', or WAV file path for cloning
+      };
     };
   };
 
@@ -65,16 +71,25 @@ export interface VoiceConfig {
 // Default configuration (easily overrideable)
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   tts: {
-    adapter: TTS_ADAPTERS.KOKORO,  // Kokoro 82M — fast, high quality, local
+    adapter: TTS_ADAPTERS.EDGE,  // Edge TTS <200ms, concurrent, 300+ voices — best for live calls
 
     adapters: {
       kokoro: {
-        voice: 'af',    // American Female (default)
+        voice: TTS_MODELS.KOKORO.defaultVoice,
         speed: 1.0,
       },
       piper: {
-        voice: 'af',    // Fallback
+        voice: TTS_MODELS.PIPER.defaultVoice,
         speed: 1.0,
+      },
+      edge: {
+        voice: TTS_MODELS.EDGE.defaultVoice,
+      },
+      pocket: {
+        voice: TTS_MODELS.POCKET.defaultVoice,
+      },
+      orpheus: {
+        voice: TTS_MODELS.ORPHEUS.defaultVoice,
       },
     },
   },
@@ -121,16 +136,31 @@ export function getVoiceConfigForUser(
 }
 
 /**
- * Adapter comparison (all registered in Rust TTS registry):
- *
- * Tier 1 (Fast, local):
- * - Kokoro: 82M ONNX, ~97ms TTFB, 80.9% TTS Arena — PRIMARY
- * - Edge: Microsoft neural voices, <200ms, free cloud, no API key
- *
- * Tier 2 (Expressive, local):
- * - Orpheus: 3B Candle GGUF, emotion tags <laugh> <sigh>, ~2-5s CPU
- *
- * Tier 3 (Functional):
- * - Piper: ONNX, ~42s, local
- * - Silence: Testing only (produces zeros)
+ * Get TTS model metadata by adapter name.
+ * Returns the centralized model info from Constants.ts.
  */
+export function getTTSModelInfo(adapter: TTSAdapter) {
+  const key = Object.keys(TTS_MODELS).find(
+    k => TTS_MODELS[k as keyof typeof TTS_MODELS].id === adapter
+  ) as keyof typeof TTS_MODELS | undefined;
+
+  return key ? TTS_MODELS[key] : undefined;
+}
+
+/**
+ * Get all TTS adapters that support a capability.
+ */
+export function getTTSAdaptersWithCapability(capability: 'voiceCloning' | 'emotionTags' | 'loraTrainable'): TTSAdapter[] {
+  return Object.values(TTS_MODELS)
+    .filter(m => m[capability])
+    .map(m => m.id as TTSAdapter);
+}
+
+/**
+ * Get all local (offline) TTS adapters.
+ */
+export function getLocalTTSAdapters(): TTSAdapter[] {
+  return Object.values(TTS_MODELS)
+    .filter(m => !m.requiresInternet)
+    .map(m => m.id as TTSAdapter);
+}

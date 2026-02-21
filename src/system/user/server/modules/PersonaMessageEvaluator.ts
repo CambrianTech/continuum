@@ -440,6 +440,7 @@ export class PersonaMessageEvaluator {
       // LOG: Plan completion (fire-and-forget — no longer blocks pipeline)
       t0 = Date.now();
       CognitionLogger.logPlanCompletion(
+        this.personaUser.id,
         plan.id,
         'completed',
         plan.steps.map((s: any) => ({
@@ -467,6 +468,7 @@ export class PersonaMessageEvaluator {
 
       // LOG: Plan failure (fire-and-forget — no longer blocks pipeline)
       CognitionLogger.logPlanCompletion(
+        this.personaUser.id,
         plan.id,
         'failed',
         plan.steps.map((s: any) => ({

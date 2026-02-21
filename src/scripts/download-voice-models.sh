@@ -108,4 +108,166 @@ else
   echo -e "${GREEN}Piper TTS model already exists${NC}"
 fi
 
+# Kokoro TTS model (fast, high quality, local ONNX)
+KOKORO_DIR="$MODELS_DIR/kokoro"
+KOKORO_VOICES_DIR="$KOKORO_DIR/voices"
+KOKORO_MODEL="$KOKORO_DIR/model_quantized.onnx"
+KOKORO_TOKENIZER="$KOKORO_DIR/tokenizer.json"
+KOKORO_VOICE="$KOKORO_VOICES_DIR/af.bin"
+
+KOKORO_BASE_URL="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main"
+KOKORO_MODEL_URL="$KOKORO_BASE_URL/onnx/model_quantized.onnx"
+KOKORO_TOKENIZER_URL="$KOKORO_BASE_URL/tokenizer.json"
+KOKORO_VOICE_URL="$KOKORO_BASE_URL/voices/af.bin"
+
+mkdir -p "$KOKORO_VOICES_DIR"
+
+# Clean up stale vocab.json (wrong URL in earlier versions, produces 15-byte error file)
+if [ -f "$KOKORO_DIR/vocab.json" ] && [ "$(wc -c < "$KOKORO_DIR/vocab.json")" -lt 100 ]; then
+  rm -f "$KOKORO_DIR/vocab.json"
+fi
+
+if [ ! -f "$KOKORO_MODEL" ] || [ ! -f "$KOKORO_TOKENIZER" ] || [ ! -f "$KOKORO_VOICE" ]; then
+  echo -e "${YELLOW}Downloading Kokoro TTS model (82M, high quality, ~40-80MB)...${NC}"
+
+  if command -v curl &> /dev/null; then
+    [ ! -f "$KOKORO_MODEL" ] && curl -L --progress-bar -o "$KOKORO_MODEL" "$KOKORO_MODEL_URL"
+    [ ! -f "$KOKORO_TOKENIZER" ] && curl -L --progress-bar -o "$KOKORO_TOKENIZER" "$KOKORO_TOKENIZER_URL"
+    [ ! -f "$KOKORO_VOICE" ] && curl -L --progress-bar -o "$KOKORO_VOICE" "$KOKORO_VOICE_URL"
+  elif command -v wget &> /dev/null; then
+    [ ! -f "$KOKORO_MODEL" ] && wget -q --show-progress -O "$KOKORO_MODEL" "$KOKORO_MODEL_URL"
+    [ ! -f "$KOKORO_TOKENIZER" ] && wget -q --show-progress -O "$KOKORO_TOKENIZER" "$KOKORO_TOKENIZER_URL"
+    [ ! -f "$KOKORO_VOICE" ] && wget -q --show-progress -O "$KOKORO_VOICE" "$KOKORO_VOICE_URL"
+  fi
+
+  if [ -f "$KOKORO_MODEL" ] && [ -f "$KOKORO_TOKENIZER" ] && [ -f "$KOKORO_VOICE" ]; then
+    echo -e "${GREEN}Kokoro TTS model downloaded${NC}"
+  else
+    echo -e "${YELLOW}Kokoro TTS download incomplete${NC}"
+  fi
+else
+  echo -e "${GREEN}Kokoro TTS model already exists${NC}"
+fi
+
+# Pocket-TTS voice embeddings (voice cloning presets)
+# Model weights auto-download via HF hub on first use (~236MB, gated — requires HF_TOKEN)
+# Voice embeddings are pre-computed audio prompts for 8 preset voices
+POCKET_DIR="$MODELS_DIR/pocket-tts/voices"
+POCKET_BASE_URL="https://huggingface.co/kyutai/pocket-tts/resolve/main/embeddings"
+POCKET_VOICES="alba cosette eponine fantine javert jean marius azelma"
+
+mkdir -p "$POCKET_DIR"
+
+# Check if any voices are missing
+POCKET_MISSING=false
+for voice in $POCKET_VOICES; do
+  if [ ! -f "$POCKET_DIR/${voice}.safetensors" ]; then
+    POCKET_MISSING=true
+    break
+  fi
+done
+
+if [ "$POCKET_MISSING" = true ]; then
+  if [ -n "$HF_TOKEN" ]; then
+    echo -e "${YELLOW}Downloading Pocket-TTS voice embeddings (8 voices, ~4MB total)...${NC}"
+    for voice in $POCKET_VOICES; do
+      if [ ! -f "$POCKET_DIR/${voice}.safetensors" ]; then
+        echo -e "  Downloading ${voice}..."
+        if command -v curl &> /dev/null; then
+          curl -sL -H "Authorization: Bearer $HF_TOKEN" -o "$POCKET_DIR/${voice}.safetensors" "$POCKET_BASE_URL/${voice}.safetensors"
+        elif command -v wget &> /dev/null; then
+          wget -q --header="Authorization: Bearer $HF_TOKEN" -O "$POCKET_DIR/${voice}.safetensors" "$POCKET_BASE_URL/${voice}.safetensors"
+        fi
+      fi
+    done
+    echo -e "${GREEN}Pocket-TTS voice embeddings downloaded${NC}"
+  else
+    echo -e "${YELLOW}Pocket-TTS: Skipping voice embeddings (no HF_TOKEN in config.env)${NC}"
+    echo -e "${YELLOW}  To enable: 1) Accept terms at https://huggingface.co/kyutai/pocket-tts${NC}"
+    echo -e "${YELLOW}  2) Set HF_TOKEN in ~/.continuum/config.env${NC}"
+  fi
+else
+  echo -e "${GREEN}Pocket-TTS voice embeddings already exist${NC}"
+fi
+
+# Silero VAD model (voice activity detection)
+SILERO_DIR="$MODELS_DIR/vad"
+SILERO_MODEL="$SILERO_DIR/silero_vad.onnx"
+SILERO_URL="https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
+
+mkdir -p "$SILERO_DIR"
+
+if [ ! -f "$SILERO_MODEL" ]; then
+  echo -e "${YELLOW}Downloading Silero VAD model (~2MB)...${NC}"
+  if command -v curl &> /dev/null; then
+    curl -L --progress-bar -o "$SILERO_MODEL" "$SILERO_URL"
+  elif command -v wget &> /dev/null; then
+    wget -q --show-progress -O "$SILERO_MODEL" "$SILERO_URL"
+  fi
+  echo -e "${GREEN}Silero VAD model downloaded${NC}"
+else
+  echo -e "${GREEN}Silero VAD model already exists${NC}"
+fi
+
+# Orpheus TTS (3B, LoRA-trainable — auto-download Q4_K_M quantized)
+# Model: Llama-3B fine-tuned for expressive speech with emotion tags
+# GGUF via Candle for inference, Unsloth for LoRA training
+# 3 files needed: GGUF model (~2.4GB), tokenizer, SNAC audio codec decoder
+ORPHEUS_DIR="$MODELS_DIR/orpheus"
+ORPHEUS_GGUF="$ORPHEUS_DIR/orpheus-3b-0.1-ft-q4_k_m.gguf"
+ORPHEUS_TOKENIZER="$ORPHEUS_DIR/tokenizer.json"
+ORPHEUS_SNAC="$ORPHEUS_DIR/snac_decoder.onnx"
+
+ORPHEUS_GGUF_URL="https://huggingface.co/isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF/resolve/main/orpheus-3b-0.1-ft-q4_k_m.gguf"
+ORPHEUS_TOKENIZER_URL="https://huggingface.co/canopylabs/orpheus-3b-0.1-ft/resolve/main/tokenizer.json"
+ORPHEUS_SNAC_URL="https://huggingface.co/laion/SNAC-24khz-decoder-onnx/resolve/main/snac24_int2wav_static.onnx"
+
+mkdir -p "$ORPHEUS_DIR"
+
+# Clean up stale tokenizer (earlier versions downloaded error page instead of actual file)
+if [ -f "$ORPHEUS_TOKENIZER" ] && [ "$(wc -c < "$ORPHEUS_TOKENIZER")" -lt 10000 ]; then
+  echo -e "${YELLOW}Orpheus tokenizer is stale (error file), removing...${NC}"
+  rm -f "$ORPHEUS_TOKENIZER"
+fi
+
+if [ ! -f "$ORPHEUS_GGUF" ] || [ ! -f "$ORPHEUS_TOKENIZER" ] || [ ! -f "$ORPHEUS_SNAC" ]; then
+  echo -e "${YELLOW}Downloading Orpheus TTS (3B, LoRA-trainable, ~2.5GB total)...${NC}"
+  echo -e "${YELLOW}  GGUF model (~2.4GB) + tokenizer (~22MB, requires HF_TOKEN) + SNAC decoder (~53MB)${NC}"
+
+  if command -v curl &> /dev/null; then
+    # Tokenizer is on a gated repo — requires HF_TOKEN authentication
+    if [ ! -f "$ORPHEUS_TOKENIZER" ]; then
+      if [ -n "$HF_TOKEN" ]; then
+        echo "  Downloading tokenizer (gated, using HF_TOKEN)..."
+        curl -sL -H "Authorization: Bearer $HF_TOKEN" --progress-bar -o "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+        # Verify it's actually a tokenizer and not an error page
+        if [ -f "$ORPHEUS_TOKENIZER" ] && [ "$(wc -c < "$ORPHEUS_TOKENIZER")" -lt 10000 ]; then
+          echo -e "${RED}  Orpheus tokenizer download failed (got error page). Check HF_TOKEN has access to canopylabs/orpheus-3b-0.1-ft${NC}"
+          rm -f "$ORPHEUS_TOKENIZER"
+        fi
+      else
+        echo -e "${YELLOW}  Skipping tokenizer (requires HF_TOKEN in config.env with access to canopylabs/orpheus-3b-0.1-ft)${NC}"
+      fi
+    fi
+    [ ! -f "$ORPHEUS_SNAC" ] && echo "  Downloading SNAC audio codec (~53MB)..." && \
+      curl -L --progress-bar -o "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
+    [ ! -f "$ORPHEUS_GGUF" ] && echo "  Downloading GGUF model (~2.4GB, Q4_K_M)..." && \
+      curl -L --progress-bar -o "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
+  elif command -v wget &> /dev/null; then
+    if [ ! -f "$ORPHEUS_TOKENIZER" ] && [ -n "$HF_TOKEN" ]; then
+      wget -q --show-progress --header="Authorization: Bearer $HF_TOKEN" -O "$ORPHEUS_TOKENIZER" "$ORPHEUS_TOKENIZER_URL"
+    fi
+    [ ! -f "$ORPHEUS_SNAC" ] && wget -q --show-progress -O "$ORPHEUS_SNAC" "$ORPHEUS_SNAC_URL"
+    [ ! -f "$ORPHEUS_GGUF" ] && wget -q --show-progress -O "$ORPHEUS_GGUF" "$ORPHEUS_GGUF_URL"
+  fi
+
+  if [ -f "$ORPHEUS_GGUF" ] && [ -f "$ORPHEUS_TOKENIZER" ] && [ -f "$ORPHEUS_SNAC" ]; then
+    echo -e "${GREEN}Orpheus TTS downloaded (3B, LoRA-trainable, 8 voices + emotion tags)${NC}"
+  else
+    echo -e "${YELLOW}Orpheus TTS download incomplete (some files missing)${NC}"
+  fi
+else
+  echo -e "${GREEN}Orpheus TTS (3B, LoRA-trainable) already exists${NC}"
+fi
+
 echo -e "${GREEN}Voice model check complete${NC}"

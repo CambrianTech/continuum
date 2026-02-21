@@ -49,8 +49,15 @@ import { DataList } from '../../../../../commands/data/list/shared/DataListTypes
 import { DataUpdate } from '../../../../../commands/data/update/shared/DataUpdateTypes';
 /**
  * CognitionLogger - Static utility for logging cognition events
+ *
+ * Uses per-persona database handles for data isolation. Personas register
+ * their longterm.db handle via registerDbHandle() — all logging methods
+ * automatically route to the correct database.
  */
 export class CognitionLogger {
+  /** Per-persona database handles — maps personaId → dbHandle for longterm.db */
+  private static dbHandles = new Map<UUID, string>();
+
   private static stateSequenceCounters = new Map<UUID, number>();
   private static planSequenceCounters = new Map<UUID, number>();
   private static toolSequenceCounters = new Map<UUID, number>();
@@ -61,6 +68,21 @@ export class CognitionLogger {
   private static memoryOpSequenceCounters = new Map<UUID, number>();
   private static adapterReasoningSequenceCounters = new Map<UUID, number>();
   private static replanSequenceCounters = new Map<UUID, number>();
+
+  /** Register a persona's longterm.db handle for cognition logging */
+  static registerDbHandle(personaId: UUID, dbHandle: string): void {
+    this.dbHandles.set(personaId, dbHandle);
+  }
+
+  /** Unregister when persona is destroyed */
+  static unregisterDbHandle(personaId: UUID): void {
+    this.dbHandles.delete(personaId);
+  }
+
+  /** Get the dbHandle for a persona, if registered */
+  static getDbHandle(personaId: UUID): string | undefined {
+    return this.dbHandles.get(personaId);
+  }
 
   /**
    * Log a cognition state snapshot
@@ -131,6 +153,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
         data: entityData,
         backend: 'server',
@@ -226,6 +249,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         data: entityData,
         backend: 'server',
@@ -243,6 +267,7 @@ export class CognitionLogger {
    * Called when a plan finishes (success or failure)
    */
   static logPlanCompletion(
+    personaId: UUID,
     planId: UUID,
     status: 'completed' | 'failed' | 'aborted',
     steps: PlanStepSnapshot[],
@@ -251,8 +276,11 @@ export class CognitionLogger {
     // Fire-and-forget: run the async chain but don't block caller
     (async () => {
       try {
+        const dbHandle = this.dbHandles.get(personaId);
+
         // Find the plan record in database
         const planRecords = await DataList.execute({
+          dbHandle,
           collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
           filter: { planId },
           limit: 1,
@@ -289,6 +317,7 @@ export class CognitionLogger {
         const totalDuration = completedAt - planRecord.startedAt;
 
         await DataUpdate.execute({
+          dbHandle,
           collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
           id: planRecord.id,
           data: {
@@ -300,7 +329,8 @@ export class CognitionLogger {
           },
           backend: 'server',
           context: DataDaemon.jtagContext!,
-          sessionId: DataDaemon.jtagContext!.uuid
+          sessionId: DataDaemon.jtagContext!.uuid,
+          suppressEvents: true,
         });
       } catch (error) {
         console.error(`❌ CognitionLogger: Failed to log plan completion:`, error);
@@ -313,14 +343,18 @@ export class CognitionLogger {
    * Called when a plan is adjusted mid-execution
    */
   static logPlanAdjustment(
+    personaId: UUID,
     planId: UUID,
     adjustment: PlanAdjustment
   ): void {
     // Fire-and-forget: run the async chain but don't block caller
     (async () => {
       try {
+        const dbHandle = this.dbHandles.get(personaId);
+
         // Find the plan record in database
         const planRecords = await DataList.execute({
+          dbHandle,
           collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
           filter: { planId },
           limit: 1,
@@ -355,6 +389,7 @@ export class CognitionLogger {
         const updatedAdjustments = [...planRecord.adjustments, adjustmentSnapshot];
 
         await DataUpdate.execute({
+          dbHandle,
           collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
           id: planRecord.id,
           data: {
@@ -364,7 +399,8 @@ export class CognitionLogger {
           },
           backend: 'server',
           context: DataDaemon.jtagContext!,
-          sessionId: DataDaemon.jtagContext!.uuid
+          sessionId: DataDaemon.jtagContext!.uuid,
+          suppressEvents: true,
         });
       } catch (error) {
         console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);
@@ -437,6 +473,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entityData,
         backend: 'server',
@@ -503,6 +540,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entityData,
         backend: 'server',
@@ -588,6 +626,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entityData,
         backend: 'server',
@@ -647,6 +686,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
         data: entityData,
         backend: 'server',
@@ -702,6 +742,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
         data: entityData,
         backend: 'server',
@@ -761,6 +802,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
         data: entityData,
         backend: 'server',
@@ -818,6 +860,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
         data: entityData,
         backend: 'server',
@@ -883,6 +926,7 @@ export class CognitionLogger {
 
       // Fire-and-forget: cognition logs are observability, not user-facing
       DataCreate.execute({
+        dbHandle: this.dbHandles.get(personaId),
         collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
         data: entityData,
         backend: 'server',

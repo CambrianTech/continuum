@@ -2,9 +2,7 @@
  * Voice Synthesize Command - Server Implementation
  *
  * ALL adapters route through Rust IPC to continuum-core worker.
- * Adapters: kokoro (primary), edge, orpheus, piper, silence
- *
- * Kokoro is the default — 82M ONNX, ~97ms TTFB, natural voices.
+ * Edge (primary cloud), Pocket (primary local), Orpheus (expressive), Kokoro, Piper, Silence
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
@@ -16,10 +14,11 @@ import { createVoiceSynthesizeResultFromParams } from '../shared/VoiceSynthesize
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
+import { TTS_MODELS } from '@system/shared/Constants';
+import { DEFAULT_VOICE_CONFIG } from '@system/voice/shared/VoiceConfig';
 
-// Valid TTS adapters — ALL route through Rust IPC now.
-// Names MUST match Rust adapter name() returns exactly.
-const VALID_ADAPTERS = ['kokoro', 'edge', 'orpheus', 'piper', 'silence'];
+// Valid TTS adapters — derived from centralized TTS_MODELS (Constants.ts)
+const VALID_ADAPTERS: string[] = Object.values(TTS_MODELS).map(m => m.id);
 
 // Max queued Piper requests — Piper blocks the Rust event loop (~42s/request).
 // Kokoro is fast enough (~97ms) that queuing is unnecessary.
@@ -98,8 +97,8 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
       );
     }
 
-    // Validate adapter if provided (default: kokoro)
-    const adapter = params.adapter || 'kokoro';
+    // Validate adapter if provided (default from VoiceConfig)
+    const adapter = params.adapter || DEFAULT_VOICE_CONFIG.tts.adapter;
     if (!VALID_ADAPTERS.includes(adapter)) {
       throw new ValidationError(
         'adapter',
@@ -159,12 +158,12 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
       if (adapter === 'piper') {
         // Piper: sequential queue (blocks Rust event loop ~42s)
         response = await this.enqueuePiper(handle, () =>
-          this.voiceClient.voiceSynthesize(params.text, params.voice || 'af', adapter)
+          this.voiceClient.voiceSynthesize(params.text, params.voice || 'default', adapter)
         );
       } else {
-        // All other adapters: direct Rust IPC (kokoro ~97ms, edge <200ms, orpheus ~2-5s, silence instant)
+        // All other adapters: direct Rust IPC (pocket ~3-6s, kokoro ~97ms, edge <200ms, orpheus ~2-5s, silence instant)
         response = await this.voiceClient.voiceSynthesize(
-          params.text, params.voice || 'af', adapter
+          params.text, params.voice || 'default', adapter
         );
       }
 

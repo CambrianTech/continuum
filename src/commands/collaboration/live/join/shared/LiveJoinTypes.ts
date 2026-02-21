@@ -35,6 +35,12 @@ export interface LiveJoinResult extends CommandResult {
 
   /** The current user's participant entry */
   myParticipant: CallParticipant;
+
+  /** LiveKit JWT access token for WebRTC connection */
+  livekitToken: string;
+
+  /** LiveKit server URL (ws://host:port) */
+  livekitUrl: string;
 }
 
 /**

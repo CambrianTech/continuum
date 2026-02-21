@@ -29,6 +29,8 @@ const TEST_PHRASES: &[&str] = &[
 struct SynthesizeRequest {
     command: &'static str,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -128,6 +130,7 @@ fn test_tts_stt_roundtrip_via_ipc() {
         let synth_request = SynthesizeRequest {
             command: "voice/synthesize",
             text: phrase.to_string(),
+            adapter: Some("kokoro".to_string()),
         };
 
         let synth_result = match ipc_request(&mut stream, &synth_request) {
@@ -242,6 +245,7 @@ fn test_tts_sample_rate_via_ipc() {
     let request = SynthesizeRequest {
         command: "voice/synthesize",
         text: "Test sample rate".to_string(),
+        adapter: Some("kokoro".to_string()),
     };
 
     let result = ipc_request(&mut stream, &request).expect("IPC request failed");

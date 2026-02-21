@@ -7,6 +7,7 @@
 //! - CoreML (Apple Silicon) - macOS
 //! - CUDA (NVIDIA GPUs) - Linux/Windows
 
+use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;
 use ndarray;
@@ -108,12 +109,43 @@ impl KokoroTTS {
         candidates.into_iter().find(|path| path.is_dir())
     }
 
-    /// Load Kokoro vocab from JSON file
+    /// Load Kokoro vocab from tokenizer.json (HuggingFace format) or legacy vocab.json
     fn load_vocab() -> Result<HashMap<char, i64>, TTSError> {
+        // Try tokenizer.json first (HuggingFace format, downloaded from ONNX community repo)
+        let tokenizer_path = PathBuf::from("models/kokoro/tokenizer.json");
+        if tokenizer_path.exists() {
+            let content = std::fs::read_to_string(&tokenizer_path)
+                .map_err(TTSError::IoError)?;
+
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json: {e}")))?;
+
+            let vocab_obj = parsed
+                .get("model")
+                .and_then(|m| m.get("vocab"))
+                .ok_or_else(|| TTSError::ModelNotLoaded(
+                    "tokenizer.json missing model.vocab section".into(),
+                ))?;
+
+            let raw: HashMap<String, i64> = serde_json::from_value(vocab_obj.clone())
+                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab from tokenizer.json: {e}")))?;
+
+            let mut vocab = HashMap::new();
+            for (key, value) in raw {
+                if let Some(ch) = key.chars().next() {
+                    vocab.insert(ch, value);
+                }
+            }
+
+            info!("Kokoro vocab loaded from tokenizer.json: {} entries", vocab.len());
+            return Ok(vocab);
+        }
+
+        // Legacy fallback: standalone vocab.json
         let vocab_path = PathBuf::from("models/kokoro/vocab.json");
         if !vocab_path.exists() {
             return Err(TTSError::ModelNotLoaded(
-                "Kokoro vocab.json not found at models/kokoro/vocab.json".into(),
+                "Kokoro tokenizer not found at models/kokoro/tokenizer.json or models/kokoro/vocab.json".into(),
             ));
         }
 
@@ -123,7 +155,6 @@ impl KokoroTTS {
         let raw: HashMap<String, i64> = serde_json::from_str(&content)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
 
-        // Convert string keys to char keys
         let mut vocab = HashMap::new();
         for (key, value) in raw {
             if let Some(ch) = key.chars().next() {
@@ -131,7 +162,7 @@ impl KokoroTTS {
             }
         }
 
-        info!("Kokoro vocab loaded: {} entries", vocab.len());
+        info!("Kokoro vocab loaded from vocab.json: {} entries", vocab.len());
         Ok(vocab)
     }
 
@@ -320,55 +351,20 @@ impl KokoroTTS {
             .try_extract_raw_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
-        // Step 7: Convert f32 to i16 and resample from 24kHz to 16kHz
-        let samples_24k: Vec<i16> = audio_data
-            .iter()
-            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
-            .collect();
-
-        use crate::audio_constants::AUDIO_SAMPLE_RATE;
-        let samples_resampled = Self::resample_24k_to_target(&samples_24k, AUDIO_SAMPLE_RATE);
-
-        let duration_ms = (samples_resampled.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+        // Step 7: Normalize to standard 16kHz i16 PCM via shared audio utilities
+        let f32_samples: Vec<f32> = audio_data.to_vec();
+        let result = audio_utils::normalize_audio(&f32_samples, 24000)?;
 
         info!(
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
-            samples_resampled.len(),
-            duration_ms,
+            result.samples.len(),
+            result.duration_ms,
             super::truncate_str(text, 30)
         );
 
-        Ok(SynthesisResult {
-            samples: samples_resampled,
-            sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms,
-        })
+        Ok(result)
     }
 
-    /// Resample from 24kHz to target rate (simple linear interpolation)
-    fn resample_24k_to_target(samples: &[i16], target_rate: u32) -> Vec<i16> {
-        let ratio = 24000.0 / target_rate as f64;
-        let output_len = (samples.len() as f64 / ratio) as usize;
-        let mut output = Vec::with_capacity(output_len);
-
-        for i in 0..output_len {
-            let src_pos = i as f64 * ratio;
-            let src_idx = src_pos as usize;
-            let frac = src_pos - src_idx as f64;
-
-            let sample = if src_idx + 1 < samples.len() {
-                let s0 = samples[src_idx] as f64;
-                let s1 = samples[src_idx + 1] as f64;
-                (s0 + frac * (s1 - s0)) as i16
-            } else {
-                samples.get(src_idx).copied().unwrap_or(0)
-            };
-
-            output.push(sample);
-        }
-
-        output
-    }
 }
 
 impl Default for KokoroTTS {
@@ -452,9 +448,9 @@ impl TextToSpeech for KokoroTTS {
             sample_rate: 24000,
         };
 
-        KOKORO_SESSION
-            .set(Arc::new(Mutex::new(model)))
-            .map_err(|_| TTSError::ModelNotLoaded("Failed to set global session".into()))?;
+        // OnceLock::set returns Err if already set by another thread — that's fine,
+        // it means a concurrent request already initialized the model.
+        let _ = KOKORO_SESSION.set(Arc::new(Mutex::new(model)));
 
         info!("Kokoro model loaded successfully");
         Ok(())
@@ -529,30 +525,7 @@ mod tests {
         assert_eq!(bella.gender.as_deref(), Some("female"));
     }
 
-    #[test]
-    fn test_resample_24k_to_16k() {
-        // 24kHz -> 16kHz = ratio 1.5, so 6 input samples -> 4 output samples
-        let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = KokoroTTS::resample_24k_to_target(&input, AUDIO_SAMPLE_RATE);
-        assert_eq!(output.len(), 4);
-        // First sample should be close to input[0]
-        assert_eq!(output[0], 100);
-    }
-
-    #[test]
-    fn test_resample_preserves_silence() {
-        let silence: Vec<i16> = vec![0; 240]; // 10ms at 24kHz
-        let output = KokoroTTS::resample_24k_to_target(&silence, 16000);
-        assert_eq!(output.len(), 160); // 10ms at 16kHz
-        assert!(output.iter().all(|&s| s == 0), "Silence should remain silent");
-    }
-
-    #[test]
-    fn test_resample_empty() {
-        let empty: Vec<i16> = vec![];
-        let output = KokoroTTS::resample_24k_to_target(&empty, 16000);
-        assert!(output.is_empty());
-    }
+    // Resample tests moved to audio_utils::tests (shared across all adapters)
 
     #[test]
     fn test_tokenize_basic_vocab() {
@@ -654,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires models/kokoro/vocab.json on disk
+    #[ignore] // Requires models/kokoro/tokenizer.json on disk
     fn test_load_vocab_real() {
         let original_cwd = set_jtag_cwd();
 

@@ -22,6 +22,9 @@ interface AudioConstants {
   AUDIO_CHANNEL_CAPACITY: number;
   BYTES_PER_SAMPLE: number;
   CALL_SERVER_PORT: number;
+  LIVEKIT_PORT: number;
+  LIVEKIT_DEV_KEY: string;
+  LIVEKIT_DEV_SECRET: string;
 }
 
 function generateTypeScript(constants: AudioConstants): string {
@@ -84,6 +87,26 @@ export const CALL_SERVER_PORT = ${constants.CALL_SERVER_PORT};
  * Call server URL
  */
 export const CALL_SERVER_URL = \`ws://127.0.0.1:\${CALL_SERVER_PORT}\`;
+
+/**
+ * LiveKit SFU server port (WebRTC signaling)
+ */
+export const LIVEKIT_PORT = ${constants.LIVEKIT_PORT};
+
+/**
+ * LiveKit server URL
+ */
+export const LIVEKIT_URL = \`ws://127.0.0.1:\${LIVEKIT_PORT}\`;
+
+/**
+ * LiveKit API key (dev mode)
+ */
+export const LIVEKIT_API_KEY = '${constants.LIVEKIT_DEV_KEY}';
+
+/**
+ * LiveKit API secret (dev mode)
+ */
+export const LIVEKIT_API_SECRET = '${constants.LIVEKIT_DEV_SECRET}';
 `;
 }
 
@@ -118,6 +141,15 @@ pub const BYTES_PER_SAMPLE: usize = ${constants.BYTES_PER_SAMPLE};
 
 /// WebSocket call server port
 pub const CALL_SERVER_PORT: u16 = ${constants.CALL_SERVER_PORT};
+
+/// LiveKit SFU server port (WebRTC signaling)
+pub const LIVEKIT_PORT: u16 = ${constants.LIVEKIT_PORT};
+
+/// LiveKit API key (dev mode)
+pub const LIVEKIT_DEV_KEY: &str = "${constants.LIVEKIT_DEV_KEY}";
+
+/// LiveKit API secret (dev mode)
+pub const LIVEKIT_DEV_SECRET: &str = "${constants.LIVEKIT_DEV_SECRET}";
 `;
 }
 

@@ -7,7 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { Events } from '@system/core/shared/Events';
-// import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation
+import { getRustVoiceOrchestrator } from '@system/voice/server';
 import type { CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult } from '../shared/CollaborationLiveTranscriptionTypes';
 import { createCollaborationLiveTranscriptionResultFromParams } from '../shared/CollaborationLiveTranscriptionTypes';
 
@@ -18,13 +18,9 @@ export class CollaborationLiveTranscriptionServerCommand extends CommandBase<Col
   }
 
   async execute(params: CollaborationLiveTranscriptionParams): Promise<CollaborationLiveTranscriptionResult> {
-    console.log(`[STEP 10] 🎙️ SERVER: Relaying transcription to VoiceOrchestrator: "${params.transcript.slice(0, 50)}..."`);
-
-    // Emit the voice:transcription event on the SERVER Events bus
-    // This allows VoiceOrchestrator (server-side) to receive the transcription
-    // Use callSessionId (the call UUID) so VoiceOrchestrator can look up the session context
+    // Emit event for any subscribers (VoiceOrchestrator TS subscribes to this)
     Events.emit('voice:transcription', {
-      sessionId: params.callSessionId,  // Call session UUID
+      sessionId: params.callSessionId,
       speakerId: params.speakerId,
       speakerName: params.speakerName,
       transcript: params.transcript,
@@ -33,12 +29,33 @@ export class CollaborationLiveTranscriptionServerCommand extends CommandBase<Col
       timestamp: params.timestamp
     });
 
-    console.log(`[STEP 10] ✅ Transcription event emitted on server Events bus`);
+    // Route through Rust VoiceOrchestrator for AI participant notification
+    const responderIds = await getRustVoiceOrchestrator().onUtterance({
+      sessionId: params.callSessionId,
+      speakerId: params.speakerId,
+      speakerName: params.speakerName,
+      speakerType: 'human',
+      transcript: params.transcript,
+      confidence: params.confidence,
+      timestamp: params.timestamp,
+    });
 
-    // Return successful result
+    // Emit directed events to each AI responder
+    for (const targetId of responderIds) {
+      Events.emit('voice:transcription:directed', {
+        sessionId: params.callSessionId,
+        speakerId: params.speakerId,
+        speakerName: params.speakerName,
+        transcript: params.transcript,
+        confidence: params.confidence,
+        timestamp: params.timestamp,
+        targetPersonaId: targetId,
+      });
+    }
+
     return createCollaborationLiveTranscriptionResultFromParams(params, {
       success: true,
-      message: `Transcription relayed to VoiceOrchestrator: "${params.transcript.slice(0, 30)}..."`
+      message: `Transcription → ${responderIds.length} AI responders`
     });
   }
 }

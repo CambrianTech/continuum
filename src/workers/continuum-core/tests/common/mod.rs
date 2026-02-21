@@ -25,7 +25,22 @@ use std::io::{Read as IoRead, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-pub const IPC_SOCKET: &str = "/tmp/continuum-core.sock";
+/// Resolve the IPC socket path.
+/// Checks the project socket dir first (npm start), falls back to /tmp (manual cargo run).
+pub fn ipc_socket_path() -> String {
+    // Walk up from the cargo test working directory to find the project root
+    let project_socket = ".continuum/sockets/continuum-core.sock";
+    let mut dir = std::env::current_dir().unwrap_or_default();
+    for _ in 0..5 {
+        let candidate = dir.join(project_socket);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+        if !dir.pop() { break; }
+    }
+    // Fallback for manual `cargo run` outside project
+    "/tmp/continuum-core.sock".to_string()
+}
 
 // ============================================================================
 // Response Types
@@ -89,14 +104,15 @@ pub fn ipc_connect() -> Option<UnixStream> {
 
 /// Connect with a custom read timeout.
 pub fn ipc_connect_with_timeout(read_timeout: Duration) -> Option<UnixStream> {
-    match UnixStream::connect(IPC_SOCKET) {
+    let socket_path = ipc_socket_path();
+    match UnixStream::connect(&socket_path) {
         Ok(s) => {
             s.set_read_timeout(Some(read_timeout)).ok();
             s.set_write_timeout(Some(Duration::from_secs(5))).ok();
             Some(s)
         }
         Err(e) => {
-            println!("Cannot connect to {IPC_SOCKET}: {e}");
+            println!("Cannot connect to {socket_path}: {e}");
             println!("   Make sure server is running: npm start");
             println!("   Skipping test.\n");
             None
@@ -145,5 +161,5 @@ pub fn ipc_request<T: Serialize>(stream: &mut UnixStream, request: &T) -> Result
 /// Check if the IPC server is reachable (non-blocking probe).
 #[allow(dead_code)]
 pub fn server_is_running() -> bool {
-    UnixStream::connect(IPC_SOCKET).is_ok()
+    UnixStream::connect(ipc_socket_path()).is_ok()
 }

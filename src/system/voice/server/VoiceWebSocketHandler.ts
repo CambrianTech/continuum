@@ -15,8 +15,9 @@ import { Commands } from '@system/core/shared/Commands';
 import type { VoiceTranscribeParams, VoiceTranscribeResult } from '@commands/voice/transcribe/shared/VoiceTranscribeTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '@commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
-import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
+import { VoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
 import { getRustVoiceOrchestrator } from './VoiceOrchestratorRustBridge';
+
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { TTS_ADAPTERS } from '../shared/VoiceConfig';
 import { AUDIO_SAMPLE_RATE, BYTES_PER_SAMPLE } from '../../../shared/AudioConstants';
@@ -611,11 +612,6 @@ export function getVoiceWebSocketServer(port?: number): VoiceWebSocketServer {
 export async function startVoiceServer(port: number = 3001): Promise<VoiceWebSocketServer> {
   const server = getVoiceWebSocketServer(port);
   await server.start();
-
-  // Wire up TTS callback so VoiceOrchestrator can route responses to audio
-  getVoiceOrchestrator().setTTSCallback(async (sessionId, personaId, text) => {
-    await server.synthesizeAndSendToSession(sessionId, personaId, text);
-  });
 
   return server;
 }

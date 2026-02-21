@@ -45,6 +45,10 @@ candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 
+# Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
+# Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
+pocket-tts = { version = "0.6", default-features = false }
+
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
 hf-hub.workspace = true       # HuggingFace model downloads
@@ -59,6 +63,10 @@ ts-rs.workspace = true  # TypeScript type generation
 # Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
 fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
 
+# LiveKit WebRTC SFU — replaces custom WebSocket call server
+livekit = { version = "0.7", features = ["native-tls"] }
+livekit-api = { version = "0.4", features = ["native-tls"] }
+
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
@@ -66,6 +74,8 @@ regex = "1"                      # Regex search for code search
 
 # ORM module — database-agnostic storage with adapter traits
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
+deadpool-postgres.workspace = true                        # Postgres connection pool
+tokio-postgres.workspace = true                           # Postgres async driver
 
 [features]
 default = ["metal"]

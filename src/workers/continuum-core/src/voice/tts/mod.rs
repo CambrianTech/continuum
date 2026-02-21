@@ -1,18 +1,21 @@
 //! Text-to-Speech (TTS) Adapter System
 //!
-//! Modular TTS with swappable backends:
-//! - Kokoro (local, ONNX, 82M params - PRIMARY, fast)
-//! - Edge (Microsoft Edge neural voices - online, free, <200ms)
-//! - Orpheus (local, Candle GGUF, 3B params - expressive with emotion tags)
-//! - Piper (local, ONNX - fallback)
-//! - Silence (fallback for testing)
+//! Modular TTS with swappable backends (priority order):
+//! - Pocket (local, Candle, 117M - PRIMARY, voice cloning, 8 preset voices)
+//! - Kokoro (local, ONNX, 82M - fast fallback)
+//! - Edge (Microsoft neural voices, online, free, <200ms, 300+ voices - FLAKY)
+//! - Orpheus (local, Candle GGUF, 3B - LoRA-trainable, emotion tags)
+//! - Piper (local, ONNX - offline fallback)
+//! - Silence (testing only)
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
+pub(crate) mod audio_utils;
 mod edge;
 mod kokoro;
 mod orpheus;
 mod piper;
+mod pocket;
 mod phonemizer;
 mod silence;
 
@@ -20,6 +23,7 @@ pub use edge::EdgeTTS;
 pub use kokoro::KokoroTTS;
 pub use orpheus::OrpheusTts;
 pub use piper::PiperTTS;
+pub use pocket::PocketTTS;
 pub use silence::SilenceTTS;
 pub(crate) use phonemizer::Phonemizer;
 
@@ -179,8 +183,13 @@ pub trait TextToSpeech: Send + Sync {
 }
 
 /// TTS Registry - manages available adapters
+///
+/// Uses Vec to preserve registration order (= priority order).
+/// First registered = highest priority = tried first during init.
 pub struct TTSRegistry {
     adapters: HashMap<&'static str, Arc<dyn TextToSpeech>>,
+    /// Registration order — determines init priority (first = highest)
+    priority: Vec<&'static str>,
     active: Option<&'static str>,
 }
 
@@ -188,15 +197,17 @@ impl TTSRegistry {
     pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
+            priority: Vec::new(),
             active: None,
         }
     }
 
-    /// Register an adapter
+    /// Register an adapter (order matters — first registered = highest priority)
     pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
         let name = adapter.name();
         tracing::info!("TTS: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
+        self.priority.push(name);
 
         // Auto-select first registered adapter
         if self.active.is_none() {
@@ -227,11 +238,13 @@ impl TTSRegistry {
         self.adapters.get(name).cloned()
     }
 
-    /// List all registered adapters
+    /// List all registered adapters in priority order
     pub fn list(&self) -> Vec<(&'static str, bool)> {
-        self.adapters
+        self.priority
             .iter()
-            .map(|(name, adapter)| (*name, adapter.is_initialized()))
+            .filter_map(|name| {
+                self.adapters.get(name).map(|adapter| (*name, adapter.is_initialized()))
+            })
             .collect()
     }
 
@@ -258,22 +271,23 @@ pub fn init_registry() {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
 
-        // Register Kokoro (local, ONNX, 82M) - PRIMARY
-        // Kokoro is the default because it:
-        // - Fast (~97ms TTFB, 82M params)
-        // - High quality voices (natural sounding)
-        // - Uses espeak-ng phonemizer (deterministic)
-        reg.register(Arc::new(KokoroTTS::new()));
-
-        // Register Edge-TTS (online, Microsoft neural voices) - fast online option
-        // No model files needed, <200ms latency, 300+ voices
+        // Register Edge-TTS (online, Microsoft neural voices) - PRIMARY
+        // Best quality: 300+ unique neural voices, <200ms, each persona gets distinct voice
         reg.register(Arc::new(EdgeTTS::new()));
+
+        // Register Pocket-TTS (local, Candle, 100M) - fast CPU TTS with voice cloning
+        // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio
+        reg.register(Arc::new(PocketTTS::new()));
+
+        // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
+        // LoRA-trainable (Llama architecture), <laugh> <sigh> <gasp> emotion control
+        reg.register(Arc::new(OrpheusTts::new()));
+
+        // Register Kokoro (local, ONNX, 82M) - fast offline fallback
+        reg.register(Arc::new(KokoroTTS::new()));
 
         // Register Piper (local, ONNX) - fallback
         reg.register(Arc::new(PiperTTS::new()));
-
-        // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
-        reg.register(Arc::new(OrpheusTts::new()));
 
         // Register Silence adapter - testing fallback
         reg.register(Arc::new(SilenceTTS::new()));
@@ -316,18 +330,42 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
     adapter.synthesize(text, &resolved).await
 }
 
-/// Initialize the active adapter, falling back to next adapter on failure
-pub async fn initialize() -> Result<(), TTSError> {
+/// Initialize the active adapter, falling back to next adapter on failure.
+///
+/// Uses a defined priority order (not HashMap iteration order, which is random).
+/// If `preferred` is specified, it's tried first before the default priority.
+pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), TTSError> {
     let registry = get_registry();
-    let adapter_names: Vec<&'static str> = registry.read().list().iter().map(|(name, _)| *name).collect();
 
-    for name in &adapter_names {
+    // Priority: edge (fast, concurrent) → pocket (local, voice cloning) → kokoro (fast offline) → orpheus → piper → silence
+    // Edge: 300+ neural voices, <200ms, concurrent (no Mutex) — BEST FOR LIVE CALLS
+    // Pocket: 117M Candle, voice cloning, 8 preset voices — but 23x slower than realtime on CPU, single Mutex
+    // Kokoro: 82M ONNX, ~97ms, fast reliable fallback — SPEED
+    // Orpheus: 3B GGUF, emotion tags, LoRA-trainable — CUSTOM VOICES
+    let default_priority: Vec<&str> = vec!["edge", "pocket", "kokoro", "orpheus", "piper", "silence"];
+
+    // Build final order: preferred first (if specified and exists), then remaining in priority
+    let mut order: Vec<&str> = Vec::new();
+    if let Some(pref) = preferred {
+        if registry.read().get(pref).is_some() {
+            order.push(pref);
+        }
+    }
+    for name in &default_priority {
+        if !order.contains(name) {
+            order.push(name);
+        }
+    }
+
+    for name in &order {
         let adapter = registry.read().get(name);
         if let Some(adapter) = adapter {
             match adapter.initialize().await {
                 Ok(()) => {
-                    tracing::info!("TTS: '{}' initialized successfully", name);
-                    let _ = registry.write().set_active(name);
+                    // Use adapter.name() which returns &'static str
+                    let static_name = adapter.name();
+                    tracing::info!("TTS: '{}' initialized successfully", static_name);
+                    let _ = registry.write().set_active(static_name);
                     return Ok(());
                 }
                 Err(e) => {
@@ -338,6 +376,11 @@ pub async fn initialize() -> Result<(), TTSError> {
     }
 
     Err(TTSError::ModelNotLoaded("No TTS adapter could be initialized".into()))
+}
+
+/// Initialize the active adapter with default priority (pocket → kokoro → edge → orpheus → piper → silence)
+pub async fn initialize() -> Result<(), TTSError> {
+    initialize_with_preference(None).await
 }
 
 /// Synthesize using a specific adapter by name (bypasses active adapter)

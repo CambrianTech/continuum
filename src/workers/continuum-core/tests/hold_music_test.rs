@@ -13,8 +13,9 @@ async fn test_hold_music_plays_when_alone() {
     let manager = CallManager::new();
 
     // STEP 2: Join a call as single participant (false = not AI)
-    let (handle, mut audio_rx, _transcription_rx) =
-        manager.join_call("test-hold-music", "user-1", "Alice", false).await;
+    let join = manager.join_call("test-hold-music", "user-1", "Alice", false).await;
+    let handle = join.handle;
+    let mut audio_rx = join.audio_rx;
 
     println!("✓ Participant joined call");
 
@@ -22,22 +23,25 @@ async fn test_hold_music_plays_when_alone() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // STEP 4: Receive audio frames and verify hold music (not silence)
+    // SFU pattern: audio_rx receives (sender_handle, sender_user_id, audio)
+    // Hold music comes from a synthetic "hold-music" sender
     let mut frame_count = 0;
     let mut non_silence_count = 0;
     let max_frames = 10; // Check 10 frames (~320ms of audio)
 
     while frame_count < max_frames {
         tokio::select! {
-            Ok((target_handle, audio)) = audio_rx.recv() => {
-                if target_handle == handle {
+            Ok((sender_handle, sender_user_id, audio)) = audio_rx.recv() => {
+                // SFU: we receive frames from OTHER senders (not ourselves)
+                if sender_handle != handle {
                     frame_count += 1;
 
                     if !is_silence(&audio, 50.0) {
                         non_silence_count += 1;
-                        println!("✓ Frame {}: Non-silence audio ({} samples, RMS: {:.1})",
-                            frame_count, audio.len(), calculate_rms(&audio));
+                        println!("✓ Frame {}: Non-silence audio from '{}' ({} samples, RMS: {:.1})",
+                            frame_count, sender_user_id, audio.len(), calculate_rms(&audio));
                     } else {
-                        println!("  Frame {frame_count}: Silence");
+                        println!("  Frame {frame_count}: Silence from '{sender_user_id}'");
                     }
                 }
             }
