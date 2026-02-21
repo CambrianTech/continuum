@@ -9,14 +9,8 @@
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { UtteranceEvent } from './VoiceOrchestrator';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-
-interface VoiceParticipant {
-	userId: UUID;
-	displayName: string;
-	type: 'human' | 'persona' | 'agent';
-	expertise?: string[];
-	isAudioNative?: boolean;
-}
+import type { UserEntity } from '../../data/entities/UserEntity';
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 
 /**
  * Rust-backed VoiceOrchestrator — broadcasts to all, no gating
@@ -49,23 +43,48 @@ export class VoiceOrchestratorRustBridge {
 	}
 
 	/**
-	 * Register participants for a voice session via Rust IPC
+	 * Register participants for a voice session via Rust IPC.
+	 * Looks up user types from database to correctly classify human vs persona vs agent.
+	 * Rust orchestrator uses participant_type to route transcriptions to AI responders.
 	 */
-	async registerSession(sessionId: UUID, roomId: UUID, participants: VoiceParticipant[]): Promise<void> {
+	async registerSession(sessionId: UUID, roomId: UUID, participantIds: UUID[]): Promise<void> {
 		if (!this.connected) {
 			await this.initializeConnection();
 		}
 
-		const rustParticipants = participants.map(p => ({
-			user_id: p.userId,
-			display_name: p.displayName,
-			participant_type: p.type,
-			expertise: p.expertise || [],
-			is_audio_native: p.isAudioNative || false,
-		}));
+		// Look up actual user types from database — MUST distinguish human from AI
+		const userMap = new Map<string, UserEntity>();
+		if (participantIds.length > 0) {
+			const result = await DataList.execute<UserEntity>({
+				collection: 'users',
+				filter: { id: { $in: participantIds } },
+				limit: participantIds.length,
+			});
+			if (result.success && result.items) {
+				for (const user of result.items) {
+					userMap.set(user.id, user);
+				}
+			}
+		}
 
+		const rustParticipants = participantIds.map(id => {
+			const user = userMap.get(id);
+			// Map UserType to Rust SpeakerType: 'persona'/'agent' → AI, 'human'/'system' → human
+			let participantType: 'human' | 'persona' | 'agent' = 'human';
+			if (user?.type === 'persona') participantType = 'persona';
+			else if (user?.type === 'agent') participantType = 'agent';
+			return {
+				user_id: id,
+				display_name: user?.displayName || '',
+				participant_type: participantType,
+				expertise: [] as string[],
+				is_audio_native: false,
+			};
+		});
+
+		const aiCount = rustParticipants.filter(p => p.participant_type !== 'human').length;
 		await this.client.voiceRegisterSession(sessionId, roomId, rustParticipants);
-		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participants.length} participants`);
+		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participantIds.length} participants (${aiCount} AI)`);
 	}
 
 	/**

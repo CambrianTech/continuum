@@ -15,7 +15,7 @@ import { Commands } from '@system/core/shared/Commands';
 import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
+import { getVoiceOrchestrator } from '@system/voice/server';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';

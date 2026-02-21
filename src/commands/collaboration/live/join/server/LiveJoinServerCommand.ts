@@ -18,7 +18,9 @@ import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
+import { getVoiceOrchestrator } from '@system/voice/server';
+import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } from '@shared/AudioConstants';
+import { getSecret } from '@system/secrets/SecretManager';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
@@ -36,7 +38,9 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         callId: '' as UUID,
         existed: false,
         participants: [],
-        myParticipant: null as any
+        myParticipant: null as any,
+        livekitToken: '',
+        livekitUrl: '',
       });
     }
 
@@ -50,7 +54,9 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         callId: '' as UUID,
         existed: false,
         participants: [],
-        myParticipant: null as any
+        myParticipant: null as any,
+        livekitToken: '',
+        livekitUrl: '',
       });
     }
 
@@ -73,14 +79,16 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       participant: myParticipant
     });
 
-    // 7. Register with VoiceOrchestrator so AI participants can join the audio call
-    // This connects AI personas to the streaming-core call server
+    // 7. Register with VoiceOrchestrator — spawns STT listener in LiveKit room
     const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
-    try {
-      await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
-    } catch (error) {
-      console.warn('Failed to register voice session:', error);
-    }
+    await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
+
+    // 8. Generate LiveKit access token for WebRTC connection
+    const livekitToken = await this.generateLiveKitToken(
+      call.id,
+      user.id,
+      user.displayName
+    );
 
     const result = {
       success: true,
@@ -91,11 +99,13 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       callId: call.id,
       existed,
       participants: call.getActiveParticipants(),
-      myParticipant
+      myParticipant,
+      livekitToken,
+      livekitUrl: getSecret('LIVEKIT_URL', 'LiveJoinServerCommand') || LIVEKIT_URL,
     };
 
     // DEBUG: Log what we're returning to browser
-    console.error(`🎙️ LiveJoin RESULT: callId=${call.id.slice(0, 8)}, existed=${existed}, participants=${call.getActiveParticipants().length}, myParticipant=${myParticipant.displayName}`);
+    console.error(`🎙️ LiveJoin RESULT: callId=${call.id.slice(0, 8)}, existed=${existed}, participants=${call.getActiveParticipants().length}, myParticipant=${myParticipant.displayName}, livekitToken=${livekitToken.slice(0, 20)}...`);
 
     return transformPayload(params, result);
   }
@@ -282,6 +292,35 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         sessionId: params.sessionId
       }
     );
+  }
+
+  /**
+   * Generate a LiveKit JWT access token for a participant.
+   * Uses livekit-server-sdk to create a token granting room join + publish + subscribe.
+   */
+  private async generateLiveKitToken(
+    callId: string,
+    userId: string,
+    displayName: string
+  ): Promise<string> {
+    const { AccessToken } = await import('livekit-server-sdk');
+
+    const apiKey = getSecret('LIVEKIT_API_KEY', 'LiveJoinServerCommand') || LIVEKIT_API_KEY;
+    const apiSecret = getSecret('LIVEKIT_API_SECRET', 'LiveJoinServerCommand') || LIVEKIT_API_SECRET;
+    const token = new AccessToken(apiKey, apiSecret, {
+      identity: userId,
+      name: displayName,
+      ttl: '6h',
+    });
+    token.addGrant({
+      room: callId,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+
+    return await token.toJwt();
   }
 
   /**

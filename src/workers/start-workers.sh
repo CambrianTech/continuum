@@ -47,6 +47,37 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
+# Start LiveKit SFU server (WebRTC media transport)
+# Check brew first, then manual install location
+LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
+LIVEKIT_LOG=".continuum/jtag/logs/system/livekit-server.log"
+if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
+  # Kill existing LiveKit server
+  pkill -f "livekit-server" 2>/dev/null || true
+  sleep 0.5
+
+  echo -e "${YELLOW}🔊 Starting LiveKit SFU server...${NC}"
+  "$LIVEKIT_BIN" --dev --bind 127.0.0.1 >> "$LIVEKIT_LOG" 2>&1 &
+  LIVEKIT_PID=$!
+  disown $LIVEKIT_PID
+
+  # Wait for LiveKit to be ready (port 7880)
+  for i in {1..20}; do
+    if lsof -i :7880 -sTCP:LISTEN > /dev/null 2>&1; then
+      echo -e "${GREEN}✅ LiveKit SFU started (PID: $LIVEKIT_PID, port: 7880)${NC}"
+      break
+    fi
+    if [ $i -eq 20 ]; then
+      echo -e "${RED}⚠️  LiveKit SFU failed to start (port 7880 not listening after 10s)${NC}"
+      echo -e "${YELLOW}💡 Install with: ./scripts/install-livekit.sh${NC}"
+    fi
+    sleep 0.5
+  done
+else
+  echo -e "${RED}⚠️  LiveKit server not installed — voice/video calls will NOT work${NC}"
+  echo -e "   Install with: ./scripts/install-livekit.sh"
+fi
+
 # Build all workers from workspace (single build for all crates)
 echo -e "${YELLOW}🔨 Building Rust workers...${NC}"
 SCRIPT_DIR="$(dirname "$0")"

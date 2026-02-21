@@ -163,6 +163,22 @@ INFERENCE_MODE=auto
 WHISPER_MODEL=large-v3-turbo
 
 # ============================================
+# LIVEKIT (WebRTC SFU)
+# ============================================
+# LiveKit handles audio/video transport for live calls.
+# Dev mode uses built-in keys; override for production.
+
+# LiveKit server URL (WebSocket signaling endpoint)
+# Default: ws://127.0.0.1:7880 (local dev server)
+#LIVEKIT_URL=ws://127.0.0.1:7880
+
+# LiveKit API Key (dev mode default: devkey)
+#LIVEKIT_API_KEY=devkey
+
+# LiveKit API Secret (dev mode default: secret)
+#LIVEKIT_API_SECRET=secret
+
+# ============================================
 # FEATURE FLAGS
 # ============================================
 

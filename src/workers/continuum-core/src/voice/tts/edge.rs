@@ -67,22 +67,18 @@ impl TextToSpeech for EdgeTTS {
             return Ok(());
         }
 
-        info!("Edge-TTS: Fetching voice list from Microsoft...");
-
-        // get_voices_list() does blocking HTTP — must use spawn_blocking
-        let voices = tokio::task::spawn_blocking(|| {
-            msedge_tts::voice::get_voices_list()
-                .map_err(|e| TTSError::SynthesisFailed(format!("Failed to fetch Edge voices: {e}")))
-        })
-        .await
-        .map_err(|e| TTSError::SynthesisFailed(format!("Voice list task join: {e}")))??;
-
-        info!("Edge-TTS: {} voices available", voices.len());
+        // IMPORTANT: We intentionally DO NOT call msedge_tts::voice::get_voices_list() here.
+        // That function uses isahc→curl→openssl-sys, which causes a SIGSEGV due to symbol
+        // conflicts with LiveKit's bundled BoringSSL (both link OpenSSL into the same binary).
+        // The synthesis path (msedge_tts::tts::client::connect) uses tungstenite WebSocket
+        // which does NOT go through the conflicting OpenSSL path, so synthesis still works.
+        info!("Edge-TTS: Initializing with known voice catalog (skipping HTTP voice list)");
 
         let mut state = self.state.write().map_err(|e| {
             TTSError::SynthesisFailed(format!("Failed to acquire state lock: {e}"))
         })?;
-        *state = Some(EdgeState { voices });
+        // Use empty list — available_voices() returns hardcoded English voices as fallback
+        *state = Some(EdgeState { voices: vec![] });
 
         self.initialized.store(true, Ordering::Relaxed);
         Ok(())
@@ -190,50 +186,42 @@ impl TextToSpeech for EdgeTTS {
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
-        let state = match self.state.read() {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+        // Hardcoded catalog of commonly-used English Edge neural voices.
+        // We cannot fetch the full list at runtime because msedge_tts::voice::get_voices_list()
+        // uses isahc→curl→openssl-sys which SIGSEGVs when linked alongside LiveKit's BoringSSL.
+        // This catalog covers the primary English voices; synthesis works with ANY valid Edge
+        // voice name (e.g., "en-GB-SoniaNeural") even if it's not listed here.
+        static KNOWN_VOICES: &[(&str, &str, &str)] = &[
+            ("en-US-JennyNeural", "female", "en-US"),
+            ("en-US-GuyNeural", "male", "en-US"),
+            ("en-US-AriaNeural", "female", "en-US"),
+            ("en-US-DavisNeural", "male", "en-US"),
+            ("en-US-AmberNeural", "female", "en-US"),
+            ("en-US-AnaNeural", "female", "en-US"),
+            ("en-US-AndrewNeural", "male", "en-US"),
+            ("en-US-EmmaNeural", "female", "en-US"),
+            ("en-US-BrianNeural", "male", "en-US"),
+            ("en-US-ChristopherNeural", "male", "en-US"),
+            ("en-US-EricNeural", "male", "en-US"),
+            ("en-US-MichelleNeural", "female", "en-US"),
+            ("en-US-RogerNeural", "male", "en-US"),
+            ("en-US-SteffanNeural", "male", "en-US"),
+            ("en-GB-SoniaNeural", "female", "en-GB"),
+            ("en-GB-RyanNeural", "male", "en-GB"),
+            ("en-AU-NatashaNeural", "female", "en-AU"),
+            ("en-AU-WilliamNeural", "male", "en-AU"),
+            ("en-CA-ClaraNeural", "female", "en-CA"),
+            ("en-CA-LiamNeural", "male", "en-CA"),
+        ];
 
-        let edge_state = match state.as_ref() {
-            Some(s) => s,
-            None => {
-                return vec![VoiceInfo {
-                    id: "en-US-JennyNeural".into(),
-                    name: "Jenny (default)".into(),
-                    language: "en-US".into(),
-                    gender: Some("female".into()),
-                    description: Some("Microsoft Edge neural voice".into()),
-                }];
-            }
-        };
-
-        // Return English voices (full list is 300+, filter to manageable set)
-        edge_state
-            .voices
+        KNOWN_VOICES
             .iter()
-            .filter(|v| {
-                v.locale
-                    .as_deref()
-                    .is_some_and(|loc| loc.starts_with("en-"))
-            })
-            .map(|v| {
-                let short = v.short_name.as_deref().unwrap_or(&v.name);
-                let locale = v.locale.as_deref().unwrap_or("en-US");
-                let gender_str = v.gender.as_deref().unwrap_or_else(|| {
-                    if short.contains("Male") || short.ends_with("Guy") {
-                        "Male"
-                    } else {
-                        "Female"
-                    }
-                });
-                VoiceInfo {
-                    id: short.to_string(),
-                    name: short.to_string(),
-                    language: locale.to_string(),
-                    gender: Some(gender_str.to_lowercase()),
-                    description: Some(format!("Microsoft Edge neural voice ({locale})")),
-                }
+            .map(|(id, gender, locale)| VoiceInfo {
+                id: id.to_string(),
+                name: id.to_string(),
+                language: locale.to_string(),
+                gender: Some(gender.to_string()),
+                description: Some(format!("Microsoft Edge neural voice ({locale})")),
             })
             .collect()
     }

@@ -313,11 +313,12 @@ export class SecretManager {
    * Load from process.env
    */
   private loadFromProcessEnv(): void {
-    // Only load API key environment variables (security best practice)
-    const apiKeyPattern = /^[A-Z_]+_(API_)?KEY$/;
+    // Load secrets from environment variables matching known patterns.
+    // Covers API keys, secrets, tokens, and URLs used by adapters and services.
+    const secretPattern = /^[A-Z_]+_(API_KEY|KEY|API_SECRET|SECRET|TOKEN|URL)$/;
 
     for (const [key, value] of Object.entries(process.env)) {
-      if (apiKeyPattern.test(key) && value) {
+      if (secretPattern.test(key) && value) {
         this.secrets.set(key, value);
       }
     }

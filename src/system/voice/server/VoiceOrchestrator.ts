@@ -439,7 +439,3 @@ export class VoiceOrchestrator {
   }
 }
 
-// Export singleton accessor
-export function getVoiceOrchestrator(): VoiceOrchestrator {
-  return VoiceOrchestrator.instance;
-}

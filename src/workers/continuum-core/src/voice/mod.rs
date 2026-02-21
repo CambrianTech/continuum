@@ -3,6 +3,7 @@ pub mod audio_router;
 pub mod call_server;
 pub mod capabilities;
 pub mod handle;
+pub mod livekit_agent;
 pub mod media;
 pub mod mixer;
 pub mod orchestrator;
@@ -13,6 +14,7 @@ pub mod tts_service;
 pub mod types;
 pub mod vad;
 pub mod video_generator;
+pub mod video_source;
 pub mod voice_service;
 
 pub use audio_router::{AudioEvent, AudioRouter, RoutedParticipant};

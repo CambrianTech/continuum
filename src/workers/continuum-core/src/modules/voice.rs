@@ -3,6 +3,8 @@
 //! Handles: voice/register-session, voice/on-utterance, voice/should-route-tts,
 //!          voice/synthesize, voice/speak-in-call, voice/synthesize-handle,
 //!          voice/play-handle, voice/discard-handle, voice/transcribe,
+//!          voice/transcribe-with-adapter, voice/stt-list,
+//!          voice/test-audio-generate,
 //!          voice/inject-audio, voice/ambient-add, voice/ambient-inject,
 //!          voice/ambient-remove
 //!
@@ -11,7 +13,7 @@
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::voice::{UtteranceEvent, VoiceParticipant};
 use crate::voice::voice_service::VoiceService;
-use crate::voice::call_server::CallManager;
+use crate::voice::livekit_agent::LiveKitAgentManager;
 use crate::voice::audio_buffer::AudioBufferPool;
 use crate::logging::TimingGuard;
 use crate::utils::params::Params;
@@ -27,17 +29,17 @@ const VOICE_RESPONSE_FIELD_RESPONDER_IDS: &str = "responder_ids";
 /// Shared state for voice module.
 pub struct VoiceState {
     pub voice_service: Arc<VoiceService>,
-    pub call_manager: Arc<CallManager>,
+    pub livekit_manager: Arc<LiveKitAgentManager>,
     pub audio_pool: Arc<AudioBufferPool>,
 }
 
 impl VoiceState {
     pub fn new(
         voice_service: Arc<VoiceService>,
-        call_manager: Arc<CallManager>,
+        livekit_manager: Arc<LiveKitAgentManager>,
         audio_pool: Arc<AudioBufferPool>,
     ) -> Self {
-        Self { voice_service, call_manager, audio_pool }
+        Self { voice_service, livekit_manager, audio_pool }
     }
 }
 
@@ -84,6 +86,19 @@ impl ServiceModule for VoiceModule {
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
 
                 self.state.voice_service.register_session(session_id, room_id, participants)?;
+
+                // Spawn STT listener agent to subscribe to human audio in this call.
+                // The listener runs VAD → STT → publishes transcriptions via LiveKit.
+                let livekit_manager = self.state.livekit_manager.clone();
+                let call_id = session_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = livekit_manager.join_as_listener(&call_id).await {
+                        log_error!("module", "voice_register_session",
+                            "Failed to spawn STT listener for call {}: {}",
+                            &call_id[..8.min(call_id.len())], e);
+                    }
+                });
+
                 Ok(CommandResult::Json(serde_json::json!({ "registered": true })))
             }
 
@@ -140,7 +155,7 @@ impl ServiceModule for VoiceModule {
                 let voice = p.str_opt("voice");
                 let adapter = p.str_opt("adapter");
 
-                let (num_samples, duration_ms, sample_rate) = self.state.call_manager
+                let (num_samples, duration_ms, sample_rate) = self.state.livekit_manager
                     .speak_in_call(call_id, user_id, text, voice, adapter)
                     .await
                     .map_err(|e| {
@@ -210,7 +225,7 @@ impl ServiceModule for VoiceModule {
                 let sample_count = samples.len();
                 let duration_ms = (sample_count as u64 * 1000) / crate::audio_constants::AUDIO_SAMPLE_RATE as u64;
 
-                self.state.call_manager.inject_audio(call_id, user_id, samples).await
+                self.state.livekit_manager.inject_audio(call_id, user_id, samples).await
                     .map_err(|e| {
                         log_error!("module", "voice_play_handle", "Failed to inject audio: {}", e);
                         format!("Failed to inject audio: {}", e)
@@ -299,7 +314,7 @@ impl ServiceModule for VoiceModule {
                 let user_id = p.str("user_id")?;
                 let samples: Vec<i16> = p.json("samples")?;
 
-                self.state.call_manager.inject_audio(call_id, user_id, samples).await
+                self.state.livekit_manager.inject_audio(call_id, user_id, samples).await
                     .map_err(|e| {
                         log_error!("module", "voice_inject_audio", "inject-audio failed: {}", e);
                         format!("inject-audio failed: {}", e)
@@ -314,7 +329,7 @@ impl ServiceModule for VoiceModule {
                 let call_id = p.str("call_id")?;
                 let source_name = p.str("source_name")?;
 
-                let handle = self.state.call_manager.add_ambient_source(call_id, source_name).await
+                let handle = self.state.livekit_manager.add_ambient_source(call_id, source_name).await
                     .map_err(|e| {
                         log_error!("module", "voice_ambient_add", "ambient-add failed: {}", e);
                         format!("ambient-add failed: {}", e)
@@ -322,7 +337,7 @@ impl ServiceModule for VoiceModule {
 
                 log_info!("module", "voice_ambient_add", "Added ambient source '{}' to call {}", source_name, call_id);
                 Ok(CommandResult::Json(serde_json::json!({
-                    "handle": handle.to_string(),
+                    "handle": handle,
                     "source_name": source_name,
                 })))
             }
@@ -333,11 +348,7 @@ impl ServiceModule for VoiceModule {
                 let handle_str = p.str("handle")?;
                 let samples: Vec<i16> = p.json("samples")?;
 
-                use crate::voice::handle::Handle as VoiceHandle;
-                let handle: VoiceHandle = handle_str.parse()
-                    .map_err(|e| format!("Invalid handle UUID: {}", e))?;
-
-                self.state.call_manager.inject_audio_by_handle(call_id, &handle, samples).await
+                self.state.livekit_manager.inject_ambient(call_id, handle_str, samples).await
                     .map_err(|e| {
                         log_error!("module", "voice_ambient_inject", "ambient-inject failed: {}", e);
                         format!("ambient-inject failed: {}", e)
@@ -346,16 +357,165 @@ impl ServiceModule for VoiceModule {
                 Ok(CommandResult::Json(serde_json::json!({ "success": true })))
             }
 
+            "voice/stt-list" => {
+                let _timer = TimingGuard::new("module", "voice_stt_list");
+
+                use crate::voice::stt;
+                let registry = stt::get_registry();
+                let reg = registry.read();
+
+                let adapters: Vec<serde_json::Value> = reg.list().iter().map(|(name, initialized)| {
+                    let desc = reg.get(name)
+                        .map(|a| a.description().to_string())
+                        .unwrap_or_default();
+                    serde_json::json!({
+                        "name": name,
+                        "initialized": initialized,
+                        "description": desc,
+                    })
+                }).collect();
+
+                let active = reg.get_active()
+                    .map(|a| a.name().to_string())
+                    .unwrap_or_default();
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "adapters": adapters,
+                    "active": active,
+                })))
+            }
+
+            "voice/transcribe-with-adapter" => {
+                let _timer = TimingGuard::new("module", "voice_transcribe_with_adapter");
+                let audio = p.str("audio")?;
+                let language = p.str_opt("language");
+                let adapter_name = p.str("adapter")?;
+
+                use crate::voice::stt;
+                use crate::utils::audio::i16_to_f32;
+                use base64::Engine;
+
+                let bytes = base64::engine::general_purpose::STANDARD.decode(audio)
+                    .map_err(|e| {
+                        log_error!("module", "voice_transcribe_with_adapter", "Base64 decode failed: {}", e);
+                        format!("Base64 decode failed: {}", e)
+                    })?;
+
+                if bytes.len() % 2 != 0 {
+                    return Err("Audio data must be even length (16-bit samples)".to_string());
+                }
+
+                let samples: Vec<i16> = bytes.chunks_exact(2)
+                    .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+                    .collect();
+
+                log_info!(
+                    "module", "voice_transcribe_with_adapter",
+                    "Transcribing {} samples ({:.1}s) with adapter '{}'",
+                    samples.len(),
+                    samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64,
+                    adapter_name
+                );
+
+                // Initialize registry if needed
+                if !stt::is_initialized() {
+                    stt::init_registry();
+                }
+
+                // Get specific adapter by name
+                let adapter = {
+                    let registry = stt::get_registry();
+                    let reg = registry.read();
+                    reg.get(adapter_name).ok_or_else(|| {
+                        format!("STT adapter '{}' not found. Available: {:?}",
+                            adapter_name,
+                            reg.list().iter().map(|(n, _)| *n).collect::<Vec<_>>())
+                    })?
+                };
+
+                // Initialize if not yet ready
+                if !adapter.is_initialized() {
+                    adapter.initialize().await.map_err(|e| {
+                        log_error!("module", "voice_transcribe_with_adapter",
+                            "Failed to initialize adapter '{}': {}", adapter_name, e);
+                        format!("Failed to initialize adapter '{}': {}", adapter_name, e)
+                    })?;
+                }
+
+                let f32_samples = i16_to_f32(&samples);
+                let transcript = adapter.transcribe(f32_samples, language).await
+                    .map_err(|e| {
+                        log_error!("module", "voice_transcribe_with_adapter",
+                            "STT failed with adapter '{}': {}", adapter_name, e);
+                        format!("STT failed with adapter '{}': {}", adapter_name, e)
+                    })?;
+
+                log_info!(
+                    "module", "voice_transcribe_with_adapter",
+                    "Transcribed with '{}': \"{}\" (confidence: {:.2})",
+                    adapter_name, transcript.text, transcript.confidence
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "text": transcript.text,
+                    "language": transcript.language,
+                    "confidence": transcript.confidence,
+                    "adapter": adapter_name,
+                    "segments": transcript.segments.iter().map(|s| {
+                        serde_json::json!({
+                            "text": s.text,
+                            "start_ms": s.start_ms,
+                            "end_ms": s.end_ms
+                        })
+                    }).collect::<Vec<_>>()
+                })))
+            }
+
+            "voice/test-audio-generate" => {
+                let _timer = TimingGuard::new("module", "voice_test_audio_generate");
+                let noise_type_str = p.str("noise_type")?;
+                let duration_ms: u32 = p.json("duration_ms")?;
+                let params = p.value("params");
+
+                use crate::voice::vad::{TestAudioGenerator, NoiseType};
+                use base64::Engine;
+
+                let noise_type = NoiseType::from_name(noise_type_str, params)
+                    .map_err(|e| format!("Invalid noise type: {}", e))?;
+
+                let gen = TestAudioGenerator::default();
+                let duration_samples = (crate::audio_constants::AUDIO_SAMPLE_RATE as u64
+                    * duration_ms as u64 / 1000) as usize;
+
+                let samples = gen.generate_noise(&noise_type, duration_samples);
+
+                // Encode as base64 i16 LE PCM
+                let pcm_bytes: Vec<u8> = samples.iter()
+                    .flat_map(|s| s.to_le_bytes())
+                    .collect();
+                let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm_bytes);
+
+                log_info!(
+                    "module", "voice_test_audio_generate",
+                    "Generated {} noise: {} samples ({}ms)",
+                    noise_type.label(), samples.len(), duration_ms
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "audio": audio_b64,
+                    "samples": samples.len(),
+                    "duration_ms": duration_ms,
+                    "noise_type": noise_type.label(),
+                    "sample_rate": crate::audio_constants::AUDIO_SAMPLE_RATE,
+                })))
+            }
+
             "voice/ambient-remove" => {
                 let _timer = TimingGuard::new("module", "voice_ambient_remove");
                 let call_id = p.str("call_id")?;
                 let handle_str = p.str("handle")?;
 
-                use crate::voice::handle::Handle as VoiceHandle;
-                let handle: VoiceHandle = handle_str.parse()
-                    .map_err(|e| format!("Invalid handle UUID: {}", e))?;
-
-                self.state.call_manager.remove_ambient_source(call_id, handle).await
+                self.state.livekit_manager.remove_ambient_source(call_id, handle_str).await
                     .map_err(|e| {
                         log_error!("module", "voice_ambient_remove", "ambient-remove failed: {}", e);
                         format!("ambient-remove failed: {}", e)

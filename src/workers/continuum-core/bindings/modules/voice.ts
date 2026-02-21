@@ -38,6 +38,33 @@ export interface VoiceSynthesizeResult {
 	adapter: string;
 }
 
+export interface SttAdapterInfo {
+	name: string;
+	initialized: boolean;
+	description: string;
+}
+
+export interface SttListResult {
+	adapters: SttAdapterInfo[];
+	active: string;
+}
+
+export interface TranscribeResult {
+	text: string;
+	language: string;
+	confidence: number;
+	adapter: string;
+	segments: Array<{ text: string; start_ms: number; end_ms: number }>;
+}
+
+export interface TestAudioGenerateResult {
+	audio: string;  // base64-encoded i16 LE PCM
+	samples: number;
+	duration_ms: number;
+	noise_type: string;
+	sample_rate: number;
+}
+
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
@@ -47,6 +74,9 @@ export interface VoiceMixin {
 	voiceAmbientAdd(callId: string, sourceName: string): Promise<{ handle: string; source_name: string }>;
 	voiceAmbientInject(callId: string, handle: string, samples: number[]): Promise<void>;
 	voiceAmbientRemove(callId: string, handle: string): Promise<void>;
+	voiceSttList(): Promise<SttListResult>;
+	voiceTranscribeWithAdapter(audio: string, adapter: string, language?: string): Promise<TranscribeResult>;
+	voiceTestAudioGenerate(noiseType: string, durationMs: number, params?: Record<string, any>): Promise<TestAudioGenerateResult>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -234,6 +264,72 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to remove ambient source');
 			}
+		}
+
+		/**
+		 * List all registered STT adapters and the currently active one.
+		 */
+		async voiceSttList(): Promise<SttListResult> {
+			const response = await this.request({
+				command: 'voice/stt-list',
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to list STT adapters');
+			}
+
+			return response.result as SttListResult;
+		}
+
+		/**
+		 * Transcribe audio using a specific STT adapter without changing the global active adapter.
+		 * @param audio - base64-encoded i16 LE PCM at 16kHz
+		 * @param adapter - adapter name (e.g., "whisper", "moonshine")
+		 * @param language - optional language code (e.g., "en")
+		 */
+		async voiceTranscribeWithAdapter(
+			audio: string,
+			adapter: string,
+			language?: string,
+		): Promise<TranscribeResult> {
+			const response = await this.request({
+				command: 'voice/transcribe-with-adapter',
+				audio,
+				adapter,
+				language,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || `Failed to transcribe with adapter '${adapter}'`);
+			}
+
+			return response.result as TranscribeResult;
+		}
+
+		/**
+		 * Generate test audio noise via the Rust TestAudioGenerator.
+		 * Returns base64-encoded i16 LE PCM at 16kHz.
+		 * @param noiseType - noise type name (crowd, factory, gunfire, explosion, siren, music, wind, rain, tv_dialogue)
+		 * @param durationMs - duration in milliseconds
+		 * @param params - optional parameters (e.g., { voice_count: 5 } for crowd, { shots_per_second: 3 } for gunfire)
+		 */
+		async voiceTestAudioGenerate(
+			noiseType: string,
+			durationMs: number,
+			params?: Record<string, any>,
+		): Promise<TestAudioGenerateResult> {
+			const response = await this.request({
+				command: 'voice/test-audio-generate',
+				noise_type: noiseType,
+				duration_ms: durationMs,
+				params,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || `Failed to generate test audio: ${noiseType}`);
+			}
+
+			return response.result as TestAudioGenerateResult;
 		}
 	};
 }

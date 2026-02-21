@@ -329,7 +329,8 @@ export class CognitionLogger {
           },
           backend: 'server',
           context: DataDaemon.jtagContext!,
-          sessionId: DataDaemon.jtagContext!.uuid
+          sessionId: DataDaemon.jtagContext!.uuid,
+          suppressEvents: true,
         });
       } catch (error) {
         console.error(`❌ CognitionLogger: Failed to log plan completion:`, error);
@@ -398,7 +399,8 @@ export class CognitionLogger {
           },
           backend: 'server',
           context: DataDaemon.jtagContext!,
-          sessionId: DataDaemon.jtagContext!.uuid
+          sessionId: DataDaemon.jtagContext!.uuid,
+          suppressEvents: true,
         });
       } catch (error) {
         console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);

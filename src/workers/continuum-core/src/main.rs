@@ -7,27 +7,18 @@
 /// - EmbeddingModule (fastembed vector generation)
 /// - SearchModule (BM25, TF-IDF, vector search)
 /// - LoggerModule (structured logging)
-/// - WebSocket call server for live audio
+/// - LiveKit WebRTC agent for live audio/video
 ///
 /// Usage: continuum-core-server <socket-path>
 /// Example: continuum-core-server /tmp/continuum-core.sock
-///
-/// NOTE: LoggerModule is now internal (Phase 4a). External logger socket no longer required.
 
-use continuum_core::{start_server, CallManager};
+use continuum_core::start_server;
+use continuum_core::voice::livekit_agent::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 use std::env;
 use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
-
-/// Get WebSocket call server port from environment or default
-fn get_call_server_port() -> u16 {
-    std::env::var("CONTINUUM_CORE_WS_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(50053)
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,18 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let socket_path = args[1].clone();
 
-    // LoggerModule is now internal (Phase 4a) - no external socket needed.
-    // Rust-side logging uses tracing (FmtSubscriber above).
-    // TypeScript clients send log/write commands to this server's IPC socket.
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
-    info!("   LoggerModule: internal (Phase 4a unified runtime)");
 
-    // Create shared CallManager — used by BOTH the IPC server and WebSocket call server.
-    // This enables voice/speak-in-call: TypeScript sends text → Rust synthesizes → injects
-    // directly into the call mixer → audio streams to browsers via WebSocket.
-    // Audio never leaves the Rust process.
-    let call_manager = Arc::new(CallManager::new());
+    // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
+    // Handles speak-in-call, inject-audio, ambient, and video track publishing.
+    // URL resolved from config.env secrets (LIVEKIT_URL) with dev fallback.
+    let livekit_manager = Arc::new(LiveKitAgentManager::new());
+    info!("🔊 LiveKit agent manager ready (URL: {})", livekit_manager.url());
 
     // Initialize Hippocampus memory subsystem with shared embedding provider.
     // Uses EmbeddingModule's MODEL_CACHE for ONE fastembed model across entire runtime.
@@ -70,31 +57,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedding_provider.name(), embedding_provider.dimensions());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
-    // Capture tokio runtime handle for IPC thread to call async CallManager methods
+    // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
 
     // Start IPC server in background thread FIRST (creates socket immediately)
-    let ipc_call_manager = call_manager.clone();
+    let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
     let ipc_handle = std::thread::spawn(move || {
-        if let Err(e) = start_server(&socket_path, ipc_call_manager, rt_handle, ipc_memory_manager) {
+        if let Err(e) = start_server(&socket_path, ipc_livekit_manager, rt_handle, ipc_memory_manager) {
             tracing::error!("❌ IPC server error: {}", e);
         }
     });
 
     // Give IPC server time to create socket (satisfies start-workers.sh check)
     std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Start WebSocket call server for live audio (shares the same CallManager)
-    let call_port = get_call_server_port();
-    let call_addr = format!("127.0.0.1:{call_port}");
-    info!("🎙️  Call WebSocket server starting on ws://{call_addr}");
-    let ws_call_manager = call_manager.clone();
-    let call_server_handle = tokio::spawn(async move {
-        if let Err(e) = continuum_core::voice::call_server::start_call_server(&call_addr, ws_call_manager).await {
-            tracing::error!("❌ Call server error: {}", e);
-        }
-    });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     tokio::spawn(async {
@@ -127,11 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Wait for call server (the primary voice service)
+    // Server is ready — wait for IPC thread (runs until process exits)
     info!("✅ Continuum Core Server fully started");
-    let _ = call_server_handle.await;
-
-    // If call server exits, join IPC thread
     let _ = ipc_handle.join();
 
     Ok(())

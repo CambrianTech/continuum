@@ -631,6 +631,27 @@ impl AudioMixer {
             .find(|(_, stream)| stream.user_id == user_id)
             .map(|(handle, _)| *handle)
     }
+
+    /// Find a participant's user_id by handle
+    pub fn find_user_id_by_handle(&self, handle: &Handle) -> Option<String> {
+        self.participants.get(handle).map(|p| p.user_id.clone())
+    }
+
+    /// Pull audio from each participant individually (SFU pattern).
+    /// Returns (handle, user_id, audio_frame) for each participant that has audio.
+    /// Unlike mix_minus_all(), this does NOT mix — the browser handles mixing.
+    /// Each participant's audio is pulled ONCE (important for AI ring buffers).
+    pub fn pull_all_audio(&mut self) -> Vec<(Handle, String, Vec<i16>)> {
+        let mut result = Vec::with_capacity(self.participants.len());
+        for (handle, participant) in &mut self.participants {
+            let user_id = participant.user_id.clone();
+            let audio = participant.get_audio();
+            if !audio.is_empty() {
+                result.push((*handle, user_id, audio.to_vec()));
+            }
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -869,6 +890,46 @@ mod tests {
         assert_eq!(all_mixes.len(), 2);
         assert!(all_mixes.contains_key(&handle_a));
         assert!(all_mixes.contains_key(&handle_b));
+    }
+
+    #[tokio::test]
+    async fn test_pull_all_audio() {
+        let mut mixer = AudioMixer::default_voice();
+
+        let handle_a = Handle::new();
+        let handle_b = Handle::new();
+        let handle_c = Handle::new();
+
+        let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
+        let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+        let stream_c = ParticipantStream::new(handle_c, "user-c".into(), "Charlie".into());
+
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
+        // Charlie doesn't push audio — should not appear in result
+
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+
+        mixer.add_participant(stream_a);
+        mixer.add_participant(stream_b);
+        mixer.add_participant(stream_c);
+
+        let frames = mixer.pull_all_audio();
+
+        // Should have exactly 2 frames (Alice and Bob have audio, Charlie is silent)
+        assert_eq!(frames.len(), 2, "Expected 2 active senders, got {}", frames.len());
+
+        // Check user_ids are correct
+        let user_ids: Vec<&str> = frames.iter().map(|(_, uid, _)| uid.as_str()).collect();
+        assert!(user_ids.contains(&"user-a"), "Should contain user-a");
+        assert!(user_ids.contains(&"user-b"), "Should contain user-b");
+
+        // Check audio is not empty
+        for (_, user_id, audio) in &frames {
+            assert!(!audio.is_empty(), "Audio for {} should not be empty", user_id);
+            assert!(!is_silence(audio, 100.0), "Audio for {} should not be silence", user_id);
+        }
     }
 
     #[tokio::test]

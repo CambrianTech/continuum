@@ -9,7 +9,7 @@ use crate::voice::capabilities::ModelCapabilityRegistry;
 use crate::voice::handle::Handle;
 use crate::voice::mixer::{AudioMixer, ParticipantStream};
 use crate::voice::types::FrameKind;
-use crate::voice::video_generator::TestPatternGenerator;
+use crate::voice::video_source::{TestPatternSource, VideoSource};
 use crate::utils::audio::{base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k};
 use crate::voice::stt;
 use futures_util::{SinkExt, StreamExt};
@@ -187,18 +187,21 @@ pub struct TranscriptionEvent {
 pub struct Call {
     pub id: String,
     pub mixer: AudioMixer,
-    /// Broadcast channel for sending mixed audio to participants
-    pub audio_tx: broadcast::Sender<(Handle, Vec<i16>)>,
+    /// Broadcast channel for per-sender audio (SFU pattern: sender handle, user_id, raw audio)
+    /// Browser handles mixing — enables per-participant audio/video synchronization
+    pub audio_tx: broadcast::Sender<(Handle, String, Vec<i16>)>,
     /// Broadcast channel for sending transcriptions to participants
     pub transcription_tx: broadcast::Sender<TranscriptionEvent>,
-    /// Broadcast channel for video frames (handle identifies sender, data is raw frame)
-    pub video_tx: broadcast::Sender<(Handle, Vec<u8>)>,
+    /// Broadcast channel for video frames (handle for mix-minus, user_id for routing, data is raw frame)
+    pub video_tx: broadcast::Sender<(Handle, String, Vec<u8>)>,
     /// Broadcast channel for general JSON messages (avatar updates, video config, etc.)
     pub message_tx: broadcast::Sender<CallMessage>,
     /// Total samples processed (for stats)
     pub samples_processed: u64,
     /// Current position in hold music (sample index)
     hold_music_position: usize,
+    /// Stable handle for hold music (synthetic sender, never matches a real participant)
+    hold_music_handle: Handle,
     /// Audio configuration
     pub config: AudioConfig,
     /// Shutdown signal for the audio loop
@@ -210,9 +213,10 @@ pub struct Call {
 /// Result of joining a call — all the broadcast receivers a participant needs
 pub struct CallJoinResult {
     pub handle: Handle,
-    pub audio_rx: broadcast::Receiver<(Handle, Vec<i16>)>,
+    /// Per-sender audio (SFU): (sender_handle, sender_user_id, audio_frame)
+    pub audio_rx: broadcast::Receiver<(Handle, String, Vec<i16>)>,
     pub transcription_rx: broadcast::Receiver<TranscriptionEvent>,
-    pub video_rx: broadcast::Receiver<(Handle, Vec<u8>)>,
+    pub video_rx: broadcast::Receiver<(Handle, String, Vec<u8>)>,
     pub message_rx: broadcast::Receiver<CallMessage>,
 }
 
@@ -248,6 +252,7 @@ impl Call {
             message_tx,
             samples_processed: 0,
             hold_music_position: 0,
+            hold_music_handle: Handle::new(),
             config,
             shutdown_tx: None,
             has_video: false,
@@ -286,26 +291,27 @@ impl Call {
         }
     }
 
-    /// Generate one frame of mixed audio for all participants (called by audio loop)
-    pub fn tick(&mut self) -> Vec<(Handle, Vec<i16>)> {
+    /// Generate per-sender audio frames (SFU pattern, called by audio loop).
+    /// Returns (sender_handle, sender_user_id, audio_frame) for each active sender.
+    /// Browser handles mixing — this enables per-participant audio/video synchronization.
+    pub fn tick(&mut self) -> Vec<(Handle, String, Vec<i16>)> {
         let frame_size = self.config.frame_size;
         self.samples_processed += frame_size as u64;
 
         let is_alone = self.mixer.participant_count() == 1;
-        let mixes = self.mixer.mix_minus_all();
+        let mut frames = self.mixer.pull_all_audio();
 
-        mixes
-            .into_iter()
-            .map(|(handle, mixed_audio)| {
-                // If alone, mix in hold tone
-                let audio = if is_alone && is_silence(&mixed_audio, 50.0) {
-                    self.generate_hold_tone(frame_size)
-                } else {
-                    mixed_audio
-                };
-                (handle, audio)
-            })
-            .collect()
+        // If participant is alone and nobody is producing audio, inject hold music
+        // as a synthetic sender so the lonely participant hears something
+        if is_alone && frames.iter().all(|(_, _, audio)| is_silence(audio, 50.0)) {
+            frames.push((
+                self.hold_music_handle,
+                "hold-music".to_string(),
+                self.generate_hold_tone(frame_size),
+            ));
+        }
+
+        frames
     }
 
     /// Set shutdown sender (called by CallManager when starting audio loop)
@@ -328,8 +334,8 @@ pub struct CallManager {
     participant_calls: RwLock<HashMap<Handle, String>>,
     /// Track running audio loops
     audio_loops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
-    /// Track test video source shutdowns (for cleanup when call ends)
-    video_source_shutdowns: RwLock<HashMap<String, mpsc::Sender<()>>>,
+    /// Track video source shutdowns per call (multiple sources possible)
+    video_source_shutdowns: RwLock<HashMap<String, Vec<mpsc::Sender<()>>>>,
     /// Audio router for model-capability-based routing (heterogeneous conversations)
     audio_router: AudioRouter,
     /// Model capability registry for looking up what models can do
@@ -366,7 +372,7 @@ impl CallManager {
             let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
             {
                 let mut shutdowns = self.video_source_shutdowns.write().await;
-                shutdowns.insert(call_id.to_string(), shutdown_tx);
+                shutdowns.entry(call_id.to_string()).or_default().push(shutdown_tx);
             }
 
             call
@@ -407,7 +413,7 @@ impl CallManager {
                     _ = interval.tick() => {
                         // CRITICAL: Minimize write lock duration to prevent blocking incoming audio
                         // Only hold lock for mixing, NOT for broadcasting
-                        let (mixes, audio_tx) = {
+                        let (frames, audio_tx) = {
                             let mut c = call_clone.write().await;
 
                             // Only tick if there are participants
@@ -415,21 +421,18 @@ impl CallManager {
                                 continue;
                             }
 
-                            // Generate mixed audio for all participants
-                            let mixes = c.tick();
+                            // Pull per-sender audio frames (SFU pattern)
+                            let frames = c.tick();
                             let audio_tx = c.audio_tx.clone();
 
-                            (mixes, audio_tx)
+                            (frames, audio_tx)
                         };  // <-- Write lock released here, before broadcasting
 
-                        // Broadcast to all participants WITHOUT holding write lock
-                        // This prevents incoming audio from being blocked by slow/lagging receivers
-                        for (handle, audio) in mixes {
-                            if audio_tx.send((handle, audio)).is_err() {
-                                // Log broadcast failures (lagging receivers)
-                                // This is expected when a participant can't keep up
-                                // Note: With 2000-frame buffer (~40s), this should be extremely rare
-                                warn!("Audio broadcast to {} failed (receiver too slow, dropped frame)", handle.short());
+                        // Broadcast per-sender frames to all participants WITHOUT holding write lock
+                        // Each receiver filters out their own handle (mix-minus)
+                        for (sender_handle, user_id, audio) in frames {
+                            if audio_tx.send((sender_handle, user_id, audio)).is_err() {
+                                // No receivers — acceptable
                             }
                         }
                     }
@@ -641,11 +644,13 @@ impl CallManager {
             if should_cleanup {
                 self.stop_audio_loop(&call_id).await;
 
-                // Stop test video source if running
+                // Stop all video sources for this call
                 {
                     let mut shutdowns = self.video_source_shutdowns.write().await;
-                    if let Some(tx) = shutdowns.remove(&call_id) {
-                        let _ = tx.send(()).await;
+                    if let Some(sources) = shutdowns.remove(&call_id) {
+                        for tx in sources {
+                            let _ = tx.send(()).await;
+                        }
                     }
                 }
 
@@ -732,8 +737,11 @@ impl CallManager {
             let calls = self.calls.read().await;
             if let Some(call) = calls.get(&call_id) {
                 let call = call.read().await;
-                // Broadcast with sender handle — receivers filter out their own frames
-                if call.video_tx.send((*handle, frame_data)).is_err() {
+                // Look up user_id from mixer — the sender's identity for client-side routing
+                let user_id = call.mixer.find_user_id_by_handle(handle)
+                    .unwrap_or_else(|| "unknown".to_string());
+                // Broadcast with sender handle + user_id — receivers filter out their own frames
+                if call.video_tx.send((*handle, user_id, frame_data)).is_err() {
                     // No receivers — this is fine, means nobody has video enabled
                 }
             }
@@ -1019,7 +1027,7 @@ impl CallManager {
         Ok(())
     }
 
-    /// Start a test video source for a call.
+    /// Start a test video source for a call using the VideoSource trait.
     /// Generates SMPTE color bar frames at ~10fps to prove video streaming works.
     /// The source gets its own Handle (acts as a virtual participant for video only).
     /// Returns a shutdown sender — drop it or send () to stop the generator.
@@ -1030,51 +1038,66 @@ impl CallManager {
         call: &Arc<RwLock<Call>>,
         call_id: &str,
     ) -> mpsc::Sender<()> {
-        // Clone video_tx synchronously (broadcast::Sender is Clone + cheap)
-        // We can't await here since this is a sync helper — but we only need
-        // the Sender which doesn't require locking the Call.
-        // SAFETY: We get video_tx from the Call during construction, so the
-        // caller must ensure the Call is already initialized.
         let video_tx = {
-            // try_read is fine here — caller just created the Call, no contention
             let call_guard = call.try_read().expect("Call should be available (just created)");
             call_guard.video_tx.clone()
         };
 
-        // Test video source gets its own handle (not a real participant in the mixer)
         let source_handle = Handle::new();
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let source = Box::new(TestPatternSource::default_test());
 
-        let call_id_owned = call_id.to_string();
-        tokio::spawn(async move {
-            let mut generator = TestPatternGenerator::default_test();
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100)); // 10fps
-            let start = std::time::Instant::now();
+        info!("Starting {} for call {}", source.name(), call_id);
 
-            info!("Test video source started for call {} (160x120 @10fps)", call_id_owned);
+        source.start(video_tx, source_handle)
+    }
 
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let timestamp_ms = start.elapsed().as_millis() as u32;
-                        let frame = generator.next_frame(timestamp_ms);
-                        let frame_bytes = frame.to_bytes();
+    /// Add a video source to a call. The source starts producing frames immediately.
+    /// Returns the Handle assigned to the source (for mix-minus filtering).
+    pub async fn add_video_source(
+        &self,
+        call_id: &str,
+        source: Box<dyn VideoSource>,
+    ) -> Result<Handle, String> {
+        let call = {
+            let calls = self.calls.read().await;
+            calls.get(call_id).cloned()
+                .ok_or_else(|| format!("Call '{call_id}' not found"))?
+        };
 
-                        // Broadcast through the call's video channel
-                        if video_tx.send((source_handle, frame_bytes)).is_err() {
-                            // No receivers — call may have ended
-                            break;
-                        }
-                    }
-                    _ = shutdown_rx.recv() => {
-                        info!("Test video source stopped for call {}", call_id_owned);
-                        break;
-                    }
-                }
+        let video_tx = {
+            let call = call.read().await;
+            call.video_tx.clone()
+        };
+
+        let handle = Handle::new();
+        let source_name = source.name().to_string();
+        let source_user_id = source.user_id().to_string();
+
+        info!(
+            "Adding video source '{}' (user_id={}) to call {}",
+            source_name, source_user_id, call_id
+        );
+
+        let shutdown_tx = source.start(video_tx, handle);
+
+        {
+            let mut shutdowns = self.video_source_shutdowns.write().await;
+            shutdowns.entry(call_id.to_string()).or_default().push(shutdown_tx);
+        }
+
+        Ok(handle)
+    }
+
+    /// Remove ALL video sources for a call (cleanup)
+    pub async fn remove_video_sources(&self, call_id: &str) {
+        let mut shutdowns = self.video_source_shutdowns.write().await;
+        if let Some(sources) = shutdowns.remove(call_id) {
+            let count = sources.len();
+            for tx in sources {
+                let _ = tx.send(()).await;
             }
-        });
-
-        shutdown_tx
+            info!("Removed {} video sources from call {}", count, call_id);
+        }
     }
 
     /// Get call stats
@@ -1146,14 +1169,20 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 let mut message_rx = join.message_rx;
                                 participant_handle = Some(handle);
 
-                                // Audio forwarding: BINARY frames with FrameKind prefix
+                                // Audio forwarding: SFU per-sender with sender_id in wire format
+                                // Wire: [0x01 FrameKind::Audio][sender_id_len: u8][sender_id: UTF-8][PCM16 i16 LE]
+                                // Same pattern as video — browser routes by senderId for A/V sync
                                 let msg_tx_audio = msg_tx.clone();
                                 tokio::spawn(async move {
-                                    while let Ok((target_handle, audio)) = audio_rx.recv().await {
-                                        if target_handle == handle {
-                                            // Prepend FrameKind::Audio byte before PCM data
-                                            let mut bytes = Vec::with_capacity(1 + audio.len() * 2);
+                                    while let Ok((sender_handle, sender_user_id, audio)) = audio_rx.recv().await {
+                                        // Mix-minus: skip our own audio frames
+                                        if sender_handle != handle {
+                                            let id_bytes = sender_user_id.as_bytes();
+                                            let id_len = id_bytes.len().min(255) as u8;
+                                            let mut bytes = Vec::with_capacity(1 + 1 + id_len as usize + audio.len() * 2);
                                             bytes.push(FrameKind::Audio as u8);
+                                            bytes.push(id_len);
+                                            bytes.extend_from_slice(&id_bytes[..id_len as usize]);
                                             bytes.extend(audio.iter().flat_map(|&s| s.to_le_bytes()));
                                             if msg_tx_audio.send(Message::Binary(bytes)).await.is_err() {
                                                 break;
@@ -1186,13 +1215,18 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 });
 
                                 // Video forwarding: mix-minus (see everyone but yourself)
+                                // Wire format: [0x02 FrameKind::Video][sender_id_len: u8][sender_id: UTF-8][VideoFrameHeader 16b][pixels]
                                 let msg_tx_video = msg_tx.clone();
                                 tokio::spawn(async move {
-                                    while let Ok((sender_handle, video_data)) = video_rx.recv().await {
+                                    while let Ok((sender_handle, sender_user_id, video_data)) = video_rx.recv().await {
                                         // Mix-minus: skip our own video frames
                                         if sender_handle != handle {
-                                            let mut frame = Vec::with_capacity(1 + video_data.len());
+                                            let id_bytes = sender_user_id.as_bytes();
+                                            let id_len = id_bytes.len().min(255) as u8;
+                                            let mut frame = Vec::with_capacity(1 + 1 + id_len as usize + video_data.len());
                                             frame.push(FrameKind::Video as u8);
+                                            frame.push(id_len);
+                                            frame.extend_from_slice(&id_bytes[..id_len as usize]);
                                             frame.extend_from_slice(&video_data);
                                             if msg_tx_video.send(Message::Binary(frame)).await.is_err() {
                                                 break;
@@ -1426,8 +1460,9 @@ mod tests {
 
         // Try receiving — might be empty if broadcast hasn't delivered yet
         match join_b.video_rx.try_recv() {
-            Ok((sender, data)) => {
+            Ok((sender, user_id, data)) => {
                 assert_eq!(sender, join_a.handle);
+                assert_eq!(user_id, "user-a");
                 assert_eq!(data, fake_frame);
             }
             Err(_) => {

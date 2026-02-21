@@ -26,3 +26,12 @@ pub const BYTES_PER_SAMPLE: usize = 2;
 
 /// WebSocket call server port
 pub const CALL_SERVER_PORT: u16 = 50053;
+
+/// LiveKit SFU server port (WebRTC signaling)
+pub const LIVEKIT_PORT: u16 = 7880;
+
+/// LiveKit API key (dev mode)
+pub const LIVEKIT_DEV_KEY: &str = "devkey";
+
+/// LiveKit API secret (dev mode)
+pub const LIVEKIT_DEV_SECRET: &str = "secret";

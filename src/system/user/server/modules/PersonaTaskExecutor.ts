@@ -261,6 +261,7 @@ export class PersonaTaskExecutor {
           dbHandle: memoryDbHandle,
           collection: COLLECTIONS.MEMORIES,
           data: memory,
+          suppressEvents: true,
         } as any);
         created++;
         this.log(`💾 ${this.displayName}: Stored memory (importance=${score.toFixed(2)}): "${text.slice(0, 50)}..."`);

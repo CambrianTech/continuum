@@ -23,7 +23,7 @@ pub mod adaptive;
 pub use rms_threshold::RmsThresholdVAD;
 pub use silero::SileroVAD;
 pub use silero_raw::SileroRawVAD;
-pub use test_audio::{TestAudioGenerator, Vowel};
+pub use test_audio::{NoiseType, TestAudioGenerator, Vowel};
 pub use webrtc::WebRtcVAD;
 
 // Re-export metrics

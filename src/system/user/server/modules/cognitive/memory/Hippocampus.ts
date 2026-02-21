@@ -471,7 +471,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           const result = await DataCreate.execute<any>({
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
-            data: memory
+            data: memory,
+            suppressEvents: true,
           } as any);
 
           if (result.success) {
