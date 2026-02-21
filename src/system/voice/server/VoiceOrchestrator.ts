@@ -296,8 +296,10 @@ export class VoiceOrchestrator {
       }
     });
 
-    // Listen for transcriptions from Rust streaming-core via browser
-    // This bridges the Rust call_server's Whisper STT to the persona system
+    // Listen for transcriptions — update session context for RAG only.
+    // AI notification is handled by CollaborationLiveTranscriptionServerCommand
+    // which calls the Rust VoiceOrchestrator and emits directed events.
+    // We do NOT call onUtterance() here to avoid duplicate broadcasts.
     Events.subscribe('voice:transcription', async (event: {
       sessionId: string;
       speakerId: string;
@@ -307,21 +309,24 @@ export class VoiceOrchestrator {
       language: string;
       timestamp: number;
     }) => {
-      console.log(`[STEP 10] 🎙️ VoiceOrchestrator RECEIVED event: "${event.transcript.slice(0, 50)}..."`);
-
-      // Convert to UtteranceEvent and process
-      const utteranceEvent: UtteranceEvent = {
-        sessionId: event.sessionId as UUID,
-        speakerId: event.speakerId as UUID,
-        speakerName: event.speakerName,
-        speakerType: 'human',  // Could be enhanced to detect AI speakers
-        transcript: event.transcript,
-        confidence: event.confidence,
-        timestamp: event.timestamp
-      };
-
-      console.log(`[STEP 11] 🎯 VoiceOrchestrator broadcasting to all text-based AIs`);
-      await this.onUtterance(utteranceEvent);
+      // Update session context for RAG (getRecentUtterances)
+      const context = this.sessionContexts.get(event.sessionId as UUID);
+      if (context) {
+        const utteranceEvent: UtteranceEvent = {
+          sessionId: event.sessionId as UUID,
+          speakerId: event.speakerId as UUID,
+          speakerName: event.speakerName,
+          speakerType: 'human',
+          transcript: event.transcript,
+          confidence: event.confidence,
+          timestamp: event.timestamp
+        };
+        context.recentUtterances.push(utteranceEvent);
+        if (context.recentUtterances.length > 20) {
+          context.recentUtterances.shift();
+        }
+        context.turnCount++;
+      }
     });
 
     // Listen for mid-call participant joins

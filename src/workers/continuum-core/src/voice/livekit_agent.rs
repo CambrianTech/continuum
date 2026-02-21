@@ -823,6 +823,11 @@ impl LiveKitAgentManager {
         let agent = self.get_or_create_agent(call_id, user_id).await?;
         agent.speak(synthesis.samples).await?;
 
+        // Publish AI response text as subtitle (same data channel as human transcriptions)
+        if let Err(e) = agent.publish_transcription(text, user_id, true).await {
+            warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
+        }
+
         Ok((num_samples, duration_ms, sample_rate))
     }
 
