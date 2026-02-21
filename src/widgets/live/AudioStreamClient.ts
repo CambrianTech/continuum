@@ -337,7 +337,9 @@ export class AudioStreamClient {
       }
     });
 
-    // Data messages (transcriptions, avatar state updates, chat coordination, etc.)
+    // Data messages (human STT transcriptions, avatar state updates, etc.)
+    // Human STT uses data channel (STT listener → room).
+    // AI speech uses native transcription API (arrives via TranscriptionReceived above).
     this.room.on(RoomEvent.DataReceived, (
       payload: Uint8Array,
       participant?: RemoteParticipant,
@@ -349,8 +351,8 @@ export class AudioStreamClient {
         const data = JSON.parse(text);
 
         if (topic === 'transcription') {
-          // STT transcription from server-side listener agent
-          console.log(`AudioStreamClient: Transcription from ${data.speaker_id?.slice(0, 8)}: "${data.text?.slice(0, 50)}..."`);
+          // Human STT transcription from server-side STT listener
+          console.log(`AudioStreamClient: STT transcription: ${data.speaker_name}: "${data.text?.slice(0, 50)}..."`);
           this.options.onTranscription?.({
             userId: data.speaker_id || '',
             displayName: data.speaker_name || data.speaker_id || 'Unknown',

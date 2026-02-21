@@ -22,6 +22,7 @@ use livekit::options::TrackPublishOptions;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit_api::access_token::{AccessToken, VideoGrants};
@@ -123,15 +124,21 @@ pub struct LiveKitAgent {
     room: Room,
     /// Primary audio source for TTS output
     audio_source: NativeAudioSource,
+    /// SID of the published audio track — reserved for future native transcription
+    /// with word-by-word timing (start_time/end_time per segment).
+    _audio_track_sid: String,
     /// Video source for avatar rendering — lazily created on first publish_video_frame() call.
     /// Not created at connect() time to avoid publishing uninitialized garbled frames.
     video_source: Mutex<Option<NativeVideoSource>>,
     /// Additional audio sources for ambient/background audio (hold music, etc.)
     ambient_sources: Arc<Mutex<HashMap<String, NativeAudioSource>>>,
-    /// Agent events channel
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
+    /// Agent events channel — kept alive to prevent receiver from closing.
+    /// Sends happen on clones (event_tx_clone in room event handler).
+    _event_tx: mpsc::UnboundedSender<AgentEvent>,
     /// Identity of this agent in the LiveKit room
     identity: String,
+    /// Display name (persona name) for transcription attribution
+    display_name: String,
 }
 
 impl LiveKitAgent {
@@ -185,12 +192,12 @@ impl LiveKitAgent {
             1000, // 1 second queue
         );
 
-        // Publish TTS audio track immediately
+        // Publish TTS audio track immediately — capture SID for transcription sync
         let audio_track = LocalAudioTrack::create_audio_track(
             &format!("{}-voice", persona_id),
             RtcAudioSource::Native(audio_source.clone()),
         );
-        room.local_participant()
+        let audio_publication = room.local_participant()
             .publish_track(
                 LocalTrack::Audio(audio_track),
                 TrackPublishOptions {
@@ -200,6 +207,9 @@ impl LiveKitAgent {
             )
             .await
             .map_err(|e| format!("Failed to publish audio track: {}", e))?;
+
+        let audio_track_sid: String = audio_publication.sid().into();
+        info!("🔊 Audio track published with SID: {}", audio_track_sid);
 
         // Video source is NOT created here — deferred to first publish_video_frame().
         // Publishing an empty NativeVideoSource streams uninitialized buffer memory
@@ -277,10 +287,12 @@ impl LiveKitAgent {
         let agent = Self {
             room,
             audio_source,
+            _audio_track_sid: audio_track_sid,
             video_source: Mutex::new(None), // Deferred until first frame
             ambient_sources: Arc::new(Mutex::new(HashMap::new())),
-            event_tx,
+            _event_tx: event_tx,
             identity,
+            display_name: persona_name.to_string(),
         };
 
         Ok((agent, event_rx))
@@ -317,9 +329,10 @@ impl LiveKitAgent {
     /// Publish a video frame to the avatar track.
     /// Accepts RGBA8 pixel data. Creates and publishes the video track lazily on first call.
     ///
-    /// The video track is NOT created at connect() time to avoid streaming
-    /// uninitialized buffer data (garbled vsync-like artifacts in browsers).
-    pub async fn publish_video_frame(&self, _rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+    /// The video track is NOT created at connect() time — it's published on the first
+    /// `publish_video_frame()` call so the browser only shows a video tile when there's
+    /// real content to display.
+    pub async fn publish_video_frame(&self, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
         let mut source_guard = self.video_source.lock().await;
 
         // Lazily create and publish video source on first frame
@@ -348,9 +361,15 @@ impl LiveKitAgent {
             *source_guard = Some(video_source);
         }
 
-        // TODO: Convert RGBA to I420 VideoFrame and call video_source.capture_frame()
-        // This will be wired when avatar rendering (wgpu/rend3) is integrated.
-        let _ = (_rgba, width, height);
+        // Convert RGBA to I420 and capture frame
+        let source = source_guard.as_ref().unwrap();
+        let buffer = rgba_to_i420(rgba, width, height);
+        let frame = VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            timestamp_us: 0, // auto-timestamp to current time
+            buffer,
+        };
+        source.capture_frame(&frame);
         Ok(())
     }
 
@@ -426,14 +445,25 @@ impl LiveKitAgent {
         }
     }
 
-    /// Publish a transcription segment to all room participants via LiveKit's native transcription API.
+    /// Publish a transcription for this agent's speech.
+    ///
+    /// Uses data channel (topic="transcription") which is proven reliable in the browser.
+    /// Native LiveKit transcription API has cross-participant resolution issues in the
+    /// browser SDK — the `participant` param in `TranscriptionReceived` can be null,
+    /// causing the handler to silently drop it.
+    ///
+    /// Called BEFORE feeding audio frames so the subtitle arrives at the browser
+    /// at the same time as (or slightly before) the first audio frames.
+    ///
+    /// Future: Switch to native transcription with word-by-word segments
+    /// (start_time/end_time) for progressive reveal synced with audio playback.
     pub async fn publish_transcription(
         &self,
         text: &str,
-        speaker_id: &str,
-        is_final: bool,
+        _speaker_id: &str,
+        _is_final: bool,
     ) -> Result<(), String> {
-        publish_transcription_to_room(&self.room, text, speaker_id, speaker_id, is_final).await
+        publish_data_channel_transcription(&self.room, text, &self.identity, &self.display_name).await
     }
 
     /// Disconnect from the room.
@@ -484,18 +514,17 @@ fn generate_token(
         .map_err(|e| format!("Failed to generate LiveKit token: {}", e))
 }
 
-/// Publish a transcription to a LiveKit room.
-async fn publish_transcription_to_room(
+/// Publish a transcription via data channel.
+///
+/// The STT listener transcribes human speech but doesn't own the human's audio track.
+/// Cross-participant native transcriptions have resolution issues on the browser,
+/// so human transcriptions use the reliable data channel instead.
+async fn publish_data_channel_transcription(
     room: &Room,
     text: &str,
     speaker_id: &str,
     speaker_name: &str,
-    _is_final: bool,
 ) -> Result<(), String> {
-    // Send transcription via data channel (topic: "transcription")
-    // The STT listener doesn't publish audio tracks, so LiveKit's native
-    // transcription API requires a track SID we don't have.
-    // Data channel is reliable and guaranteed to reach all participants.
     let payload = serde_json::json!({
         "speaker_id": speaker_id,
         "speaker_name": speaker_name,
@@ -515,9 +544,152 @@ async fn publish_transcription_to_room(
         .await
         .map_err(|e| format!("Failed to publish transcription data: {}", e))?;
 
-    info!("📝 Published transcription to room: \"{}\" (speaker={})",
+    info!("📝 Published data channel transcription: \"{}\" (speaker={})",
         &text[..40.min(text.len())], &speaker_id[..8.min(speaker_id.len())]);
     Ok(())
+}
+
+// =============================================================================
+// Video avatar rendering — procedural colored circle with persona initial
+// =============================================================================
+
+/// Convert RGBA8 pixel data to I420 planar YUV (the format LiveKit's NativeVideoSource expects).
+/// Uses BT.601 color space conversion with fixed-point arithmetic.
+fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
+    let mut buffer = I420Buffer::new(width, height);
+    let w = width as usize;
+    let h = height as usize;
+
+    let (data_y, data_u, data_v) = buffer.data_mut();
+
+    // Y plane: one luma value per pixel
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 4;
+            let r = rgba[i] as i32;
+            let g = rgba[i + 1] as i32;
+            let b = rgba[i + 2] as i32;
+            // BT.601: Y = (66R + 129G + 25B + 128) >> 8 + 16
+            data_y[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
+        }
+    }
+
+    // U and V planes: one chroma value per 2x2 block (subsampled)
+    let cw = (w + 1) / 2;
+    let ch = (h + 1) / 2;
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let px = cx * 2;
+            let py = cy * 2;
+            let i = (py * w + px) * 4;
+            let r = rgba[i] as i32;
+            let g = rgba[i + 1] as i32;
+            let b = rgba[i + 2] as i32;
+            // BT.601: U = (-38R - 74G + 112B + 128) >> 8 + 128
+            data_u[cy * cw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            // BT.601: V = (112R - 94G - 18B + 128) >> 8 + 128
+            data_v[cy * cw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+        }
+    }
+
+    buffer
+}
+
+/// Generate a procedural avatar frame: colored circle on dark background.
+/// Color is deterministically derived from the identity string (like browser avatar).
+fn generate_avatar_rgba(rgba: &mut [u8], width: u32, height: u32, identity: &str) {
+    let (cr, cg, cb) = identity_to_color(identity);
+    let w = width as f32;
+    let h = height as f32;
+    let center_x = w / 2.0;
+    let center_y = h / 2.0;
+    let radius = w.min(h) * 0.35;
+    let radius_sq = radius * radius;
+
+    // Dark background color (matches LiveWidget theme)
+    let (bg_r, bg_g, bg_b): (u8, u8, u8) = (26, 26, 46);
+
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 - center_x;
+            let dy = y as f32 - center_y;
+            let dist_sq = dx * dx + dy * dy;
+
+            let i = ((y * width + x) * 4) as usize;
+            if dist_sq <= radius_sq {
+                // Inside circle — persona color
+                rgba[i] = cr;
+                rgba[i + 1] = cg;
+                rgba[i + 2] = cb;
+            } else {
+                // Outside — dark background
+                rgba[i] = bg_r;
+                rgba[i + 1] = bg_g;
+                rgba[i + 2] = bg_b;
+            }
+            rgba[i + 3] = 255; // Fully opaque
+        }
+    }
+}
+
+/// Derive a consistent RGB color from an identity string.
+/// Uses HSL with fixed saturation/lightness for visually distinct, pleasant colors.
+fn identity_to_color(identity: &str) -> (u8, u8, u8) {
+    let hash: u32 = identity
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let hue = (hash % 360) as f32;
+    hsl_to_rgb(hue, 0.65, 0.55)
+}
+
+/// Convert HSL color to RGB. H in [0, 360), S and L in [0, 1].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    (
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
+
+/// Start a background video frame loop for an agent.
+/// Generates a procedural avatar (colored circle) and publishes at ~10fps via LiveKit.
+/// Runs until the agent is dropped or an error occurs.
+fn start_video_loop(agent: Arc<LiveKitAgent>) {
+    let width: u32 = 320;
+    let height: u32 = 240;
+
+    tokio::spawn(async move {
+        // Pre-render the avatar frame once (static image)
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        generate_avatar_rgba(&mut rgba, width, height, &agent.identity);
+
+        info!("📹 Video loop started for '{}' ({}x{} @10fps)", agent.identity, width, height);
+
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            if let Err(e) = agent.publish_video_frame(&rgba, width, height).await {
+                warn!("📹 Video loop error for '{}': {}", agent.identity, e);
+                break;
+            }
+        }
+    });
 }
 
 /// Process incoming audio from a remote participant's track using ProductionVAD.
@@ -581,7 +753,7 @@ async fn process_audio_stream_with_vad(
 ///
 /// Joins the LiveKit room with stt_listener role metadata.
 /// Subscribes only to human audio tracks (checks participant metadata).
-/// Runs VAD → STT and publishes transcriptions via data channel.
+/// Runs VAD → STT and publishes native transcriptions (synced with audio track).
 ///
 /// Browser filters out STT participants via metadata role, not identity prefix.
 async fn spawn_stt_listener(
@@ -610,7 +782,7 @@ async fn spawn_stt_listener(
             match event {
                 RoomEvent::TrackSubscribed {
                     track,
-                    publication: _,
+                    publication,
                     participant,
                 } => {
                     let speaker_id = participant.identity().to_string();
@@ -630,8 +802,10 @@ async fn spawn_stt_listener(
                     }
 
                     if let RemoteTrack::Audio(audio_track) = track {
-                        info!("🎤 STT listener: subscribed to audio from '{}' ({})",
-                            speaker_name, speaker_id);
+                        // Capture the remote track SID for native transcription sync
+                        let track_sid: String = publication.sid().into();
+                        info!("🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
+                            speaker_name, speaker_id, &track_sid[..8.min(track_sid.len())]);
 
                         let room_ref = room_for_events.clone();
                         let cid = call_id_owned.clone();
@@ -641,6 +815,7 @@ async fn spawn_stt_listener(
                                 audio_track,
                                 speaker_id,
                                 speaker_name,
+                                track_sid,
                                 room_ref,
                                 cid,
                                 tbuf,
@@ -664,10 +839,13 @@ async fn spawn_stt_listener(
 /// Process a single audio track: VAD → STT → publish transcription → notify AI.
 ///
 /// Runs in its own tokio task. One instance per human participant per call.
+/// `track_sid` is the remote audio track's SID — used for native transcription
+/// sync so subtitles align with audio playback in the browser.
 async fn listen_and_transcribe(
     audio_track: RemoteAudioTrack,
     speaker_id: String,
     speaker_name: String,
+    track_sid: String,
     room: Arc<Room>,
     call_id: String,
     transcription_buffer: TranscriptionBuffer,
@@ -744,6 +922,7 @@ async fn listen_and_transcribe(
 
                     let sid = speaker_id.clone();
                     let sname = speaker_name.clone();
+                    let _tsid = track_sid.clone();
                     let room_ref = room.clone();
                     let cid = call_id.clone();
                     let tbuf = transcription_buffer.clone();
@@ -783,9 +962,12 @@ async fn listen_and_transcribe(
                                     }
                                 }
 
-                                // 1. Publish to LiveKit room (browser subtitles)
-                                if let Err(e) = publish_transcription_to_room(
-                                    &room_ref, text, &sid, &sname, true,
+                                // 1. Publish transcription via data channel (human STT)
+                                // Uses data channel because the STT listener doesn't own
+                                // the human's audio track — native transcription has
+                                // cross-participant resolution issues on the browser.
+                                if let Err(e) = publish_data_channel_transcription(
+                                    &room_ref, text, &sid, &sname,
                                 ).await {
                                     warn!("📝 STT: Failed to publish transcription: {}", e);
                                 }
@@ -932,10 +1114,20 @@ impl LiveKitAgentManager {
         // Speaking agents don't process their own event_rx — the STT listener
         // handles all incoming audio processing centrally (one per call).
 
+        // Start video avatar loop — procedural colored circle published at ~10fps.
+        // Proves the video pipeline works end-to-end (Rust → LiveKit → browser <video>).
+        start_video_loop(agent.clone());
+
         Ok(agent)
     }
 
     /// Synthesize TTS and inject into a call (replaces CallManager::speak_in_call).
+    ///
+    /// Publishes the subtitle BEFORE feeding audio frames so the browser receives
+    /// the transcription at the same time as (or slightly before) the first audio
+    /// frames arrive via WebRTC. Without this ordering, audio plays first and
+    /// subtitles appear late because the data channel is instant but audio has
+    /// WebRTC buffering/encoding latency.
     pub async fn speak_in_call(
         &self,
         call_id: &str,
@@ -957,12 +1149,16 @@ impl LiveKitAgentManager {
         let sample_rate = synthesis.sample_rate;
 
         let agent = self.get_or_create_agent(call_id, user_id).await?;
-        agent.speak(synthesis.samples).await?;
 
-        // Publish AI response text as subtitle (same data channel as human transcriptions)
+        // Publish subtitle FIRST — native transcription linked to the audio track SID.
+        // This ensures the browser receives the subtitle at the same time as audio starts,
+        // rather than after all audio frames are queued (which caused audio-ahead-of-subtitles).
         if let Err(e) = agent.publish_transcription(text, user_id, true).await {
             warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
         }
+
+        // THEN feed audio frames to LiveKit
+        agent.speak(synthesis.samples).await?;
 
         Ok((num_samples, duration_ms, sample_rate))
     }

@@ -552,6 +552,19 @@ export class LiveWidget extends ReactiveWidget {
               return;
             }
 
+            // Resolve display name from participants list (authoritative source).
+            // Data channel transcriptions may have UUID as speaker_name;
+            // participants list has the real display name from session registration.
+            const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
+              || transcription.displayName;
+
+            // Show caption and speaking indicator IMMEDIATELY — before the IPC relay.
+            // The relay call can take 200-500ms, and the caption should appear
+            // as soon as the transcription arrives (concurrent with audio start).
+            this.setCaption(resolvedName, transcription.text);
+            this.setSpeaking(transcription.userId as UUID, true);
+
+            // Relay transcription to server asynchronously (for AI response routing)
             try {
               await CollaborationLiveTranscription.execute({
                 callSessionId: this.sessionId,
@@ -565,12 +578,6 @@ export class LiveWidget extends ReactiveWidget {
             } catch (error) {
               console.error(`Failed to relay transcription:`, error);
             }
-
-            // Update caption display
-            this.setCaption(transcription.displayName, transcription.text);
-
-            // Mark user as speaking (auto-clears after 2s)
-            this.setSpeaking(transcription.userId as UUID, true);
           },
         });
 
@@ -652,9 +659,10 @@ export class LiveWidget extends ReactiveWidget {
       })
     );
 
-    // AI speech captions - when an AI speaks via TTS, show it in captions
-    // This event is emitted by AIAudioBridge AFTER TTS synthesis, when audio is sent to server
-    // audioDurationMs tells us how long the audio will play, so we can time the caption/highlight
+    // AI speech duration — extend caption/speaking timing after audio duration is known.
+    // This event fires AFTER TTS synthesis + audio frame queuing (several seconds late),
+    // so it must NOT set the caption text (onTranscription already showed it at the right time).
+    // It ONLY extends the fade timer and speaking indicator to match actual audio duration.
     this.unsubscribers.push(
       Events.subscribe('voice:ai:speech', (data: {
         sessionId: string;
@@ -664,14 +672,29 @@ export class LiveWidget extends ReactiveWidget {
         audioDurationMs?: number;
         timestamp: number;
       }) => {
-        // Only show captions for this session
         if (data.sessionId === this.sessionId) {
-          const durationMs = data.audioDurationMs || 5000;  // Default 5s if not provided
-          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..." (${durationMs}ms)`);
+          const durationMs = data.audioDurationMs || 5000;
+          console.log(`LiveWidget: AI speech duration update: ${data.speakerName} (${durationMs}ms)`);
 
-          // Show caption and speaking indicator for the duration of the audio
-          this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          // Extend the speaking indicator to match actual audio duration.
+          // Caption was already shown by onTranscription; extend its fade timer too.
           this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
+
+          // Only extend caption timeout (don't re-set text — it's already showing).
+          // If caption is already showing from onTranscription, just update the fade timer.
+          if (this.activeCaptions.has(data.speakerName)) {
+            const existingTimeout = this.captionFadeTimeouts.get(data.speakerName);
+            if (existingTimeout) clearTimeout(existingTimeout);
+            const timeout = setTimeout(() => {
+              this.activeCaptions.delete(data.speakerName);
+              this.captionFadeTimeouts.delete(data.speakerName);
+              this.requestUpdate();
+            }, durationMs + 500);
+            this.captionFadeTimeouts.set(data.speakerName, timeout);
+          } else {
+            // Caption hasn't arrived yet (transcription path failed) — show it as fallback
+            this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          }
         }
       })
     );
@@ -820,8 +843,12 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
-   * Set a caption to display (auto-fades after 5 seconds)
-   * Uses speakerName as key to support multiple simultaneous speakers
+   * Set a caption to display.
+   * Uses speakerName as key to support multiple simultaneous speakers.
+   *
+   * Default timeout is 15 seconds. For AI speech, voice:ai:speech event
+   * adjusts the timeout to match actual audio duration once it's known.
+   * For human speech, new transcription segments keep resetting the timeout.
    */
   private setCaption(speakerName: string, text: string): void {
     // Clear existing timeout for this speaker
@@ -840,12 +867,14 @@ export class LiveWidget extends ReactiveWidget {
     // Force re-render
     this.requestUpdate();
 
-    // Auto-fade after 5 seconds of no new transcription from this speaker
+    // Auto-fade after 15 seconds. For AI speech, voice:ai:speech adjusts this
+    // to match actual audio duration. For human speech, each new transcription
+    // segment resets this timeout (effectively keeping it alive while speaking).
     const timeout = setTimeout(() => {
       this.activeCaptions.delete(speakerName);
       this.captionFadeTimeouts.delete(speakerName);
       this.requestUpdate();
-    }, 5000);
+    }, 15000);
     this.captionFadeTimeouts.set(speakerName, timeout);
   }
 
