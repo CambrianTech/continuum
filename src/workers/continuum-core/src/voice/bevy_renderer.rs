@@ -100,6 +100,9 @@ pub enum AvatarCommand {
     Unload { slot: u8 },
     /// Set whether the avatar is currently speaking (for expression animation).
     SetSpeaking { slot: u8, speaking: bool },
+    /// Set mouth open weight from audio amplitude (0.0 = closed, 1.0 = fully open).
+    /// Overrides the default sine oscillation for amplitude-responsive lip sync.
+    SetMouthWeight { slot: u8, weight: f32 },
     /// Shut down the renderer gracefully.
     Shutdown,
 }
@@ -215,6 +218,23 @@ impl BevyAvatarSystem {
             false
         }
     }
+
+    /// Set mouth open weight for amplitude-responsive lip sync.
+    /// Weight should be 0.0 (closed) to 1.0 (fully open).
+    pub fn set_mouth_weight(&self, slot: u8, weight: f32) {
+        let _ = self.command_tx.send(AvatarCommand::SetMouthWeight { slot, weight });
+    }
+
+    /// Set mouth weight by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            self.set_mouth_weight(slot, weight);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ============================================================================
@@ -308,16 +328,47 @@ struct SlotBlinkState {
     blink_frames_remaining: u8,
 }
 
-/// Per-slot head bone entity for speaking head movement and camera targeting.
+/// Per-slot bone registry — tracks discovered skeleton bones for animation systems.
+/// Replaces the single-bone HeadBones with full upper-body bone tracking for
+/// idle gestures, speaking animations, and camera targeting.
 #[derive(Resource, Default)]
-struct HeadBones {
-    bones: HashMap<u8, HeadBoneInfo>,
+struct BoneRegistry {
+    slots: HashMap<u8, SlotBones>,
 }
 
-struct HeadBoneInfo {
+struct SlotBones {
+    head: Option<BoneInfo>,
+    neck: Option<BoneInfo>,
+    left_shoulder: Option<BoneInfo>,
+    right_shoulder: Option<BoneInfo>,
+}
+
+struct BoneInfo {
     entity: Entity,
-    /// Head position in local/rest space (Y coordinate used for camera targeting)
-    rest_position: Vec3,
+    /// Actual local-space rest translation (from skeleton bind pose)
+    rest_translation: Vec3,
+    /// Actual local-space rest rotation (from skeleton bind pose)
+    rest_rotation: Quat,
+}
+
+/// Per-slot idle gesture animation state.
+/// Tracks unique phase offsets per slot so avatars don't move in sync.
+#[derive(Resource, Default)]
+struct IdleGestureState {
+    slots: HashMap<u8, SlotGestureState>,
+}
+
+struct SlotGestureState {
+    /// Unique phase offset derived from slot index
+    phase: f32,
+}
+
+/// Per-slot mouth weights from audio amplitude analysis.
+/// Updated by SetMouthWeight commands from the livekit_agent audio pipeline.
+/// When present, animate_speaking() uses this instead of sine oscillation.
+#[derive(Resource, Default)]
+struct MouthWeights {
+    weights: HashMap<u8, f32>,
 }
 
 fn run_bevy_app(
@@ -345,7 +396,9 @@ fn run_bevy_app(
         .insert_resource(PendingLoads::default())
         .insert_resource(SlotMorphTargets::default())
         .insert_resource(BlinkState::default())
-        .insert_resource(HeadBones::default())
+        .insert_resource(BoneRegistry::default())
+        .insert_resource(IdleGestureState::default())
+        .insert_resource(MouthWeights::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -376,6 +429,7 @@ fn run_bevy_app(
             animate_speaking,
             animate_blinking,
             animate_breathing,
+            animate_idle_gestures,
         ))
         .run();
 }
@@ -446,10 +500,11 @@ fn setup_render_slots(
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
                 // Disable MSAA — prevents macOS Metal validation error (Issue #16590)
                 bevy::render::view::Msaa::Off,
-                // VRM models face -Z direction. Camera must be at negative Z to see
-                // the face. Head-and-shoulders framing at ~1.2m distance.
-                Transform::from_xyz(0.0, 1.4, -1.2)
-                    .looking_at(Vec3::new(0.0, 1.35, 0.0), Vec3::Y),
+                // VRM models face -Z direction. Camera at eye level, slightly above center
+                // frame (like a webcam). Eyes at ~1.47m, camera looks at ~1.42 (chin area)
+                // so eyes land slightly above frame center — natural webcam framing.
+                Transform::from_xyz(0.0, 1.50, -0.85)
+                    .looking_at(Vec3::new(0.0, 1.42, 0.0), Vec3::Y),
                 layer.clone(),
                 AvatarSlotId(slot),
             ))
@@ -621,6 +676,7 @@ fn process_commands(
     mut registry: ResMut<SlotRegistry>,
     mut cameras: Query<&mut Camera>,
     mut pending: ResMut<PendingLoads>,
+    mut mouth_weights: ResMut<MouthWeights>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -691,7 +747,7 @@ fn process_commands(
                             names: Query<&Name>,
                             mut transforms: Query<&mut Transform>,
                             mut cmds: Commands,
-                            mut head_bones: ResMut<HeadBones>,
+                            mut bone_registry: ResMut<BoneRegistry>,
                         | {
                             let root = trigger.entity();
                             let child_count = count_descendants(root, &children_query);
@@ -700,8 +756,8 @@ fn process_commands(
                             dump_bone_names(root, &children_query, &names);
                             // Fix T-pose: rotate arm bones to natural resting position
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
-                            // Discover head bone for camera targeting and speaking head movement
-                            discover_head_bone(root, slot_for_observer, &children_query, &names, &transforms, &mut head_bones);
+                            // Discover upper-body bones for animation systems (head, neck, shoulders)
+                            discover_upper_body_bones(root, slot_for_observer, &children_query, &names, &transforms, &mut bone_registry);
                             bevy_debug(&format!("SceneInstanceReady: slot {}, entity {:?}, propagated layers to {} descendants", slot_for_observer, root, child_count));
                         })
                         .id();
@@ -744,6 +800,9 @@ fn process_commands(
                     }
                 }
             }
+            AvatarCommand::SetMouthWeight { slot, weight } => {
+                mouth_weights.weights.insert(slot, weight);
+            }
             AvatarCommand::Shutdown => {
                 info!("🎨 Bevy renderer shutting down");
                 // Don't process::exit — that kills the entire Rust worker.
@@ -760,7 +819,6 @@ fn process_commands(
 fn animate_idle(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
-    head_bones: Res<HeadBones>,
     mut transforms: Query<&mut Transform, With<AvatarSlotId>>,
 ) {
     for (slot, state) in &registry.slots {
@@ -772,13 +830,9 @@ fn animate_idle(
             let sway_x = (t * 0.3).sin() * 0.02;
             let sway_y = (t * 0.2).cos() * 0.01;
 
-            // Use head bone position for tighter framing if discovered
-            let (base_y, look_y) = if let Some(info) = head_bones.bones.get(slot) {
-                // Camera slightly above head, looking at head
-                (info.rest_position.y + 0.05, info.rest_position.y)
-            } else {
-                (1.4, 1.35)
-            };
+            // Eyes slightly above center frame (webcam convention).
+            // Camera at eye level, look target at chin → eyes land above center.
+            let (base_y, look_y) = (1.50, 1.42);
 
             transform.translation.x = sway_x;
             transform.translation.y = base_y + sway_y;
@@ -925,11 +979,14 @@ fn discover_morph_targets(
 }
 
 /// Animate mouth morph targets + subtle head nod when a slot is speaking.
+/// Uses audio-amplitude MouthWeights when available for responsive lip sync,
+/// falling back to sine oscillation when no amplitude data is present.
 fn animate_speaking(
     time: Res<Time>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
     morph_targets: Res<SlotMorphTargets>,
-    head_bones: Res<HeadBones>,
+    bone_registry: Res<BoneRegistry>,
+    mouth_weights: Res<MouthWeights>,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,
 ) {
@@ -942,9 +999,15 @@ fn animate_speaking(
         if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
             let w = weights.weights_mut();
             if is_speaking {
-                let t = time.elapsed_secs();
-                // Oscillate mouth between 0.1 and 0.7 at ~2.5Hz
-                let mouth_weight = ((t * 2.5 * std::f32::consts::TAU).sin() * 0.3 + 0.4).clamp(0.1, 0.7);
+                // Prefer amplitude-based weight from audio pipeline when available
+                let mouth_weight = if let Some(&amplitude) = mouth_weights.weights.get(slot) {
+                    // Amplitude already normalized to 0.0-1.0 by the sender
+                    (amplitude * 0.7).clamp(0.05, 0.8)
+                } else {
+                    // Fallback: sine oscillation (no amplitude data)
+                    let t = time.elapsed_secs();
+                    ((t * 2.5 * std::f32::consts::TAU).sin() * 0.3 + 0.4).clamp(0.1, 0.7)
+                };
                 if let Some(idx) = layout.mouth_open_index {
                     if idx < w.len() {
                         w[idx] = mouth_weight;
@@ -960,17 +1023,21 @@ fn animate_speaking(
             }
         }
 
-        // Subtle head nod during speech (±2 degrees pitch oscillation at ~1.5Hz)
-        if let Some(info) = head_bones.bones.get(slot) {
-            if let Ok(mut transform) = transforms.get_mut(info.entity) {
-                if is_speaking {
-                    let t = time.elapsed_secs() + *slot as f32 * 1.3;
-                    let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035; // ~2 degrees
-                    let tilt = (t * 0.9).sin() * 0.02; // slight lateral tilt
-                    transform.rotation = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
-                } else {
-                    // Return to neutral (smoothly)
-                    transform.rotation = transform.rotation.slerp(Quat::IDENTITY, 0.3);
+        // Subtle head nod during speech (±2 degrees pitch oscillation at ~1.5Hz).
+        // Composes delta onto rest rotation — never replaces the bone's bind pose.
+        if let Some(slot_bones) = bone_registry.slots.get(slot) {
+            if let Some(ref head) = slot_bones.head {
+                if let Ok(mut transform) = transforms.get_mut(head.entity) {
+                    if is_speaking {
+                        let t = time.elapsed_secs() + *slot as f32 * 1.3;
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035; // ~2 degrees
+                        let tilt = (t * 0.9).sin() * 0.02; // slight lateral tilt
+                        let delta = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
+                        transform.rotation = head.rest_rotation * delta;
+                    } else {
+                        // Return to rest rotation (smoothly)
+                        transform.rotation = transform.rotation.slerp(head.rest_rotation, 0.3);
+                    }
                 }
             }
         }
@@ -1040,7 +1107,89 @@ fn animate_blinking(
     }
 }
 
-/// Subtle breathing animation — gentle spine/chest oscillation.
+/// Idle gesture system — subtle upper-body micro-movements for "alive, not static" feel.
+///
+/// Uses layered multi-frequency oscillators (like Fourier decomposition) to create
+/// organic, non-repetitive motion. Each slot gets a unique phase offset so avatars
+/// don't move in sync. Gestures pause when the avatar is speaking (speaking head nod
+/// takes priority).
+///
+/// Animations:
+/// 1. Neck micro-tilt — slow lateral and forward head movement
+/// 2. Shoulder micro-shifts — tiny alternating up/down (breathing-like)
+/// 3. Weight shift — spine lateral tilt (very slow, barely perceptible)
+fn animate_idle_gestures(
+    time: Res<Time>,
+    registry: Res<SlotRegistry>,
+    bone_registry: Res<BoneRegistry>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut gesture_state: ResMut<IdleGestureState>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+
+    for (slot, state) in &registry.slots {
+        if !state.active {
+            continue;
+        }
+
+        // Skip gestures while speaking — head nod takes priority
+        if speaking_slots.contains(slot) {
+            continue;
+        }
+
+        let slot_bones = match bone_registry.slots.get(slot) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Initialize gesture state with unique phase offset per slot
+        let gesture = gesture_state.slots.entry(*slot).or_insert_with(|| {
+            SlotGestureState {
+                phase: *slot as f32 * 2.37, // Golden ratio-ish offset for visual variety
+            }
+        });
+
+        let t = time.elapsed_secs() + gesture.phase;
+
+        // 1. Neck micro-tilt — layered frequencies for organic motion.
+        //    COMPOSES delta rotation onto the bone's rest rotation (not replacing it!)
+        //    Combines 3 sine waves at incommensurate frequencies (non-repeating pattern)
+        if let Some(ref neck) = slot_bones.neck {
+            if let Ok(mut transform) = transforms.get_mut(neck.entity) {
+                let tilt_x = (t * 0.15).sin() * 0.03           // Very slow nod
+                    + (t * 0.23).cos() * 0.02                   // Slower lateral component
+                    + (t * 0.37).sin() * 0.01;                  // Subtle high-freq detail
+                let tilt_z = (t * 0.12).cos() * 0.025           // Slow lateral head tilt
+                    + (t * 0.31).sin() * 0.015;                 // Detail frequency
+                let turn_y = (t * 0.08).sin() * 0.02;           // Very slow head turn
+
+                let delta = Quat::from_euler(EulerRot::XYZ, tilt_x, turn_y, tilt_z);
+                transform.rotation = neck.rest_rotation * delta;
+            }
+        }
+
+        // 2. Shoulder micro-shifts — opposite phase for natural weight distribution.
+        //    Adds tiny Y delta to the bone's actual local rest translation.
+        if let Some(ref left_shoulder) = slot_bones.left_shoulder {
+            if let Ok(mut transform) = transforms.get_mut(left_shoulder.entity) {
+                let shift = (t * 0.4).sin() * 0.002             // Primary breathing frequency
+                    + (t * 0.17).cos() * 0.001;                 // Slow drift
+                transform.translation.y = left_shoulder.rest_translation.y + shift;
+            }
+        }
+        if let Some(ref right_shoulder) = slot_bones.right_shoulder {
+            if let Ok(mut transform) = transforms.get_mut(right_shoulder.entity) {
+                // Opposite phase from left shoulder (natural body mechanics)
+                let shift = (t * 0.4 + std::f32::consts::PI).sin() * 0.002
+                    + (t * 0.17 + 1.0).cos() * 0.001;
+                transform.translation.y = right_shoulder.rest_translation.y + shift;
+            }
+        }
+    }
+}
+
+/// Subtle breathing animation — gentle spine/chest oscillation + weight shift.
 fn animate_breathing(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
@@ -1057,13 +1206,16 @@ fn animate_breathing(
             None => continue,
         };
 
-        // Find spine bone and apply subtle vertical oscillation
+        // Find spine bone and apply subtle vertical oscillation + lateral weight shift
         if let Some(spine_entity) = find_bone_by_name(scene_entity, &children_query, &names, &["J_Bip_C_Spine", "mixamorig:Spine", "Spine"]) {
             if let Ok(mut transform) = transforms.get_mut(spine_entity) {
                 let t = time.elapsed_secs() + *slot as f32 * 1.1; // Phase offset
                 let breath = (t * 0.8 * std::f32::consts::TAU).sin() * 0.003;
-                // Apply as Y scale variation (chest expanding)
+                // Breathing: Y scale variation (chest expanding)
                 transform.scale.y = 1.0 + breath;
+                // Weight shift: very slow lateral sway (barely perceptible)
+                let sway = (t * 0.12).sin() * 0.01;
+                transform.rotation = Quat::from_rotation_z(sway);
             }
         }
     }
@@ -1321,33 +1473,63 @@ fn find_morph_entity(
     None
 }
 
-/// Discover head bone entity from scene hierarchy.
-/// VRM naming: "J_Bip_C_Head", Mixamo: "mixamorig:Head", Generic: "Head"
+/// Discover upper-body bone entities from scene hierarchy for animation systems.
 ///
-/// Note: bone transforms are in LOCAL space (relative to parent bone), not world space.
-/// VRM head bones are typically at ~1.35-1.5m world height depending on model.
-/// We store the entity reference for speaking head movement and use a standard
-/// head height for camera targeting (actual world position computation would require
-/// walking the entire bone chain which is complex and model-specific).
-fn discover_head_bone(
+/// Finds head, neck, and shoulder bones using multiple naming conventions:
+/// - VRM/VRoid: "J_Bip_C_Head", "J_Bip_C_Neck", "J_Bip_L_Shoulder", etc.
+/// - Mixamo: "mixamorig:Head", "mixamorig:Neck", "mixamorig:LeftShoulder", etc.
+/// - Generic: "Head", "Neck", "LeftShoulder", etc.
+///
+/// Note: bone transforms are in LOCAL space. We use estimated world-space heights
+/// for camera targeting (walking the full bone chain is complex and model-specific).
+fn discover_upper_body_bones(
     root: Entity,
     slot: u8,
     children: &Query<&Children>,
     names: &Query<&Name>,
-    _transforms: &Query<&mut Transform>,
-    head_bones: &mut ResMut<HeadBones>,
+    transforms: &Query<&mut Transform>,
+    bone_registry: &mut ResMut<BoneRegistry>,
 ) {
     let head_names = ["J_Bip_C_Head", "mixamorig:Head", "Head"];
-    if let Some(head_entity) = find_bone_by_name(root, children, names, &head_names) {
-        // Use standard VRM head heights — varies slightly by model but consistent enough.
-        // VRoid models: ~1.45m, 100Avatars: ~1.35m (shorter proportions)
-        let estimated_head_y = 1.42;
-        bevy_debug(&format!("Head bone slot {}: entity {:?}, estimated height {}", slot, head_entity, estimated_head_y));
-        head_bones.bones.insert(slot, HeadBoneInfo {
-            entity: head_entity,
-            rest_position: Vec3::new(0.0, estimated_head_y, 0.0),
-        });
-    }
+    let neck_names = ["J_Bip_C_Neck", "mixamorig:Neck", "Neck"];
+    let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder"];
+    let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder"];
+
+    // Helper: find bone and capture its actual local-space rest transform.
+    // This is critical — bone transforms are LOCAL (relative to parent bone),
+    // NOT world space. Gesture animations must compose with these rest values.
+    let discover = |target_names: &[&str], label: &str| -> Option<BoneInfo> {
+        find_bone_by_name(root, children, names, target_names).and_then(|entity| {
+            if let Ok(t) = transforms.get(entity) {
+                bevy_debug(&format!("{} bone slot {}: entity {:?}, local_pos={:?}, local_rot={:?}",
+                    label, slot, entity, t.translation, t.rotation));
+                Some(BoneInfo {
+                    entity,
+                    rest_translation: t.translation,
+                    rest_rotation: t.rotation,
+                })
+            } else {
+                bevy_debug(&format!("{} bone slot {}: entity {:?} — no Transform!", label, slot, entity));
+                None
+            }
+        })
+    };
+
+    let head = discover(&head_names, "Head");
+    let neck = discover(&neck_names, "Neck");
+    let left_shoulder = discover(&left_shoulder_names, "L.Shoulder");
+    let right_shoulder = discover(&right_shoulder_names, "R.Shoulder");
+
+    let found_count = [&head, &neck, &left_shoulder, &right_shoulder].iter()
+        .filter(|b| b.is_some()).count();
+    bevy_debug(&format!("Bone discovery slot {}: {}/4 bones found", slot, found_count));
+
+    bone_registry.slots.insert(slot, SlotBones {
+        head,
+        neck,
+        left_shoulder,
+        right_shoulder,
+    });
 }
 
 /// Find a bone entity by matching against a list of known names.

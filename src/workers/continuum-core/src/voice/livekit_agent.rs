@@ -139,6 +139,11 @@ pub struct LiveKitAgent {
     identity: String,
     /// Display name (persona name) for transcription attribution
     display_name: String,
+    /// TTS voice name — set on first speak, used for gender-matched avatar selection.
+    /// First-speak-wins: once set, the avatar doesn't change mid-call.
+    voice_name: std::sync::Mutex<Option<String>>,
+    /// Whether the video loop has been started (deferred to first speak for voice-matched avatars).
+    video_started: std::sync::atomic::AtomicBool,
 }
 
 impl LiveKitAgent {
@@ -293,6 +298,8 @@ impl LiveKitAgent {
             _event_tx: event_tx,
             identity,
             display_name: persona_name.to_string(),
+            voice_name: std::sync::Mutex::new(None),
+            video_started: std::sync::atomic::AtomicBool::new(false),
         };
 
         Ok((agent, event_rx))
@@ -481,6 +488,20 @@ impl LiveKitAgent {
     pub fn identity(&self) -> &str {
         &self.identity
     }
+
+    /// Set the TTS voice name for gender-matched avatar selection.
+    /// First-speak-wins: only sets if not already set (avatar doesn't change mid-call).
+    pub fn set_voice(&self, voice: &str) {
+        let mut guard = self.voice_name.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(voice.to_string());
+        }
+    }
+
+    /// Get the current voice name, if set.
+    pub fn voice_name(&self) -> Option<String> {
+        self.voice_name.lock().unwrap().clone()
+    }
 }
 
 // =============================================================================
@@ -550,6 +571,47 @@ async fn publish_data_channel_transcription(
 }
 
 // =============================================================================
+// Audio amplitude analysis — RMS per window for mouth weight animation
+// =============================================================================
+
+/// Calculate RMS amplitude per window from PCM i16 samples.
+/// Returns a Vec of normalized weights (0.0 to 1.0) for each window.
+///
+/// Used for amplitude-responsive lip sync — each weight is sent to the Bevy
+/// renderer timed to match audio playback, replacing the default sine oscillation.
+fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> Vec<f32> {
+    let window_samples = (sample_rate as usize * window_ms as usize) / 1000;
+    if window_samples == 0 || samples.is_empty() {
+        return Vec::new();
+    }
+
+    let mut weights = Vec::new();
+    let mut max_rms: f64 = 0.0;
+
+    // First pass: calculate raw RMS per window
+    let mut raw_rms = Vec::new();
+    for chunk in samples.chunks(window_samples) {
+        let sum_sq: f64 = chunk.iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum();
+        let rms = (sum_sq / chunk.len() as f64).sqrt();
+        if rms > max_rms {
+            max_rms = rms;
+        }
+        raw_rms.push(rms);
+    }
+
+    // Second pass: normalize to 0.0-1.0 using the max RMS as reference
+    if max_rms > 0.0 {
+        for rms in raw_rms {
+            weights.push((rms / max_rms) as f32);
+        }
+    }
+
+    weights
+}
+
+// =============================================================================
 // Video avatar rendering — procedural colored circle with persona initial
 // =============================================================================
 
@@ -605,9 +667,10 @@ fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
 /// renderer was selected and publishes to LiveKit. New backends (bgfx, wgpu, etc.)
 /// plug in by implementing AvatarRenderer, not by modifying this function.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    use crate::voice::avatar_renderer::{AvatarConfig, select_avatar_by_identity, avatar_model_path};
+    use crate::voice::avatar_renderer::{AvatarConfig, select_avatar_for_agent, avatar_model_path};
 
-    let avatar = select_avatar_by_identity(&agent.identity);
+    let voice = agent.voice_name();
+    let avatar = select_avatar_for_agent(&agent.identity, voice.as_deref());
     let vrm_path = avatar_model_path(avatar.filename);
     let vrm_model_path = if vrm_path.exists() {
         Some(vrm_path.to_string_lossy().to_string())
@@ -1079,9 +1142,9 @@ impl LiveKitAgentManager {
         // Speaking agents don't process their own event_rx — the STT listener
         // handles all incoming audio processing centrally (one per call).
 
-        // Start video avatar loop — procedural colored circle published at ~10fps.
-        // Proves the video pipeline works end-to-end (Rust → LiveKit → browser <video>).
-        start_video_loop(agent.clone());
+        // Video loop is deferred to first speak_in_call() — the avatar needs
+        // the voice name to select a gender-matched 3D model. The browser shows
+        // the default avatar circle until the persona first speaks.
 
         Ok(agent)
     }
@@ -1115,10 +1178,25 @@ impl LiveKitAgentManager {
 
         let agent = self.get_or_create_agent(call_id, user_id).await?;
 
+        // Set voice name for gender-matched avatar selection (first-speak-wins)
+        if let Some(v) = voice {
+            agent.set_voice(v);
+        }
+
+        // Start video loop on first speak — deferred from get_or_create_agent()
+        // so we have the voice name for gender-matched 3D model selection.
+        if !agent.video_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            start_video_loop(agent.clone());
+        }
+
         // Signal avatar to start speaking animation (mouth movement, head nod)
         if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
             bevy_system.set_speaking_by_identity(user_id, true);
         }
+
+        // Calculate per-chunk RMS amplitude for mouth weight animation.
+        // 200ms windows at the synthesis sample rate.
+        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, 200);
 
         // Publish subtitle FIRST — native transcription linked to the audio track SID.
         // This ensures the browser receives the subtitle at the same time as audio starts,
@@ -1129,6 +1207,24 @@ impl LiveKitAgentManager {
 
         // THEN feed audio frames to LiveKit
         agent.speak(synthesis.samples).await?;
+
+        // Schedule amplitude-based mouth weights timed to audio playback.
+        // Each weight corresponds to a 200ms window of the audio.
+        let uid_for_mouth = user_id.to_string();
+        if !mouth_weights.is_empty() {
+            tokio::spawn(async move {
+                for weight in mouth_weights {
+                    if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+                        bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, weight);
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                }
+                // Reset mouth weight to 0 after audio finishes
+                if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+                    bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, 0.0);
+                }
+            });
+        }
 
         // Schedule speaking-off after audio duration elapses.
         // speak() feeds frames synchronously, so audio is queued by now.

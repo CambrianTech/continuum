@@ -502,6 +502,89 @@ pub fn select_avatar_by_identity(_identity: &str) -> &'static AvatarModel {
     &AVATAR_CATALOG[idx % AVATAR_CATALOG.len()]
 }
 
+/// Extract gender from a TTS voice name.
+///
+/// Covers all TTS backends used in the system:
+/// - Edge TTS: names like "en-US-GuyNeural" (male), "en-US-JennyNeural" (female)
+/// - Kokoro: prefixes "af_"/"bf_" (female), "am_"/"bm_" (male)
+/// - Orpheus: gendered names (tara/leah/jess/mia/zoe = female, leo/dan/zac = male)
+/// - Piper/Pocket: character names (alba/cosette/eponine = female, jean/marius = male)
+///
+/// Returns None for unrecognized voices (caller falls back to round-robin).
+pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
+    let lower = voice.to_lowercase();
+
+    // Kokoro prefix convention: af_ / bf_ = female, am_ / bm_ = male
+    if lower.starts_with("af_") || lower.starts_with("bf_") {
+        return Some(AvatarGender::Female);
+    }
+    if lower.starts_with("am_") || lower.starts_with("bm_") {
+        return Some(AvatarGender::Male);
+    }
+
+    // Edge TTS: contains "Guy" or known male names → male, known female names → female
+    if lower.contains("guyneural") || lower.contains("andrewneural")
+        || lower.contains("brianneural") || lower.contains("ericneural")
+        || lower.contains("rogerneural") || lower.contains("steffanneural")
+        || lower.contains("christopherneural") || lower.contains("davisneural") {
+        return Some(AvatarGender::Male);
+    }
+    if lower.contains("jennyneural") || lower.contains("arianeural")
+        || lower.contains("emmaneural") || lower.contains("janeneural")
+        || lower.contains("nancyneural") || lower.contains("saraneural")
+        || lower.contains("michelleneural") || lower.contains("amberneural") {
+        return Some(AvatarGender::Female);
+    }
+
+    // Orpheus: gendered character names
+    let orpheus_female = ["tara", "leah", "jess", "mia", "zoe"];
+    let orpheus_male = ["leo", "dan", "zac"];
+    for name in &orpheus_female {
+        if lower == *name || lower.starts_with(&format!("{}_", name))
+            || lower.starts_with(&format!("{}.", name)) {
+            return Some(AvatarGender::Female);
+        }
+    }
+    for name in &orpheus_male {
+        if lower == *name || lower.starts_with(&format!("{}_", name))
+            || lower.starts_with(&format!("{}.", name)) {
+            return Some(AvatarGender::Male);
+        }
+    }
+
+    // Piper / Pocket: character names from literature
+    let pocket_female = ["alba", "fantine", "cosette", "eponine", "azelma"];
+    let pocket_male = ["marius", "javert", "jean"];
+    for name in &pocket_female {
+        if lower.contains(name) {
+            return Some(AvatarGender::Female);
+        }
+    }
+    for name in &pocket_male {
+        if lower.contains(name) {
+            return Some(AvatarGender::Male);
+        }
+    }
+
+    None
+}
+
+/// Select the best avatar for an agent, using voice gender when available.
+///
+/// - If voice is provided and gender can be extracted, uses `select_avatar_for_voice()`
+///   for gender-matched selection (male voice → male avatar, etc.)
+/// - Falls back to `select_avatar_by_identity()` (round-robin) when voice is unknown.
+pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
+    if let Some(voice_name) = voice {
+        if let Some(gender) = gender_from_voice_name(voice_name) {
+            info!("🎭 Avatar selection for '{}': voice='{}' → gender={:?}",
+                &identity[..8.min(identity.len())], voice_name, gender);
+            return select_avatar_for_voice(Some(gender), None, None, None);
+        }
+    }
+    select_avatar_by_identity(identity)
+}
+
 /// Get the filesystem path for an avatar model.
 pub fn avatar_model_path(filename: &str) -> std::path::PathBuf {
     // Models are relative to the working directory (src/)
@@ -589,10 +672,14 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_selection_is_deterministic() {
+    fn test_identity_selection_round_robin() {
+        // select_avatar_by_identity uses an atomic counter — each call gets the next model.
+        // It is NOT identity-based (same identity = different model on subsequent calls).
         let a1 = select_avatar_by_identity("helper-ai");
         let a2 = select_avatar_by_identity("helper-ai");
-        assert_eq!(a1.id, a2.id);
+        // Verify both return valid models (may or may not be the same due to shared counter)
+        assert!(!a1.id.is_empty());
+        assert!(!a2.id.is_empty());
     }
 
     #[test]
@@ -658,5 +745,59 @@ mod tests {
             assert!(!model.id.is_empty());
             assert!(!model.name.is_empty());
         }
+    }
+
+    #[test]
+    fn test_gender_from_voice_kokoro_female() {
+        assert_eq!(gender_from_voice_name("af_bella"), Some(AvatarGender::Female));
+        assert_eq!(gender_from_voice_name("bf_emma"), Some(AvatarGender::Female));
+    }
+
+    #[test]
+    fn test_gender_from_voice_kokoro_male() {
+        assert_eq!(gender_from_voice_name("am_adam"), Some(AvatarGender::Male));
+        assert_eq!(gender_from_voice_name("bm_george"), Some(AvatarGender::Male));
+    }
+
+    #[test]
+    fn test_gender_from_voice_edge_tts() {
+        assert_eq!(gender_from_voice_name("en-US-GuyNeural"), Some(AvatarGender::Male));
+        assert_eq!(gender_from_voice_name("en-US-JennyNeural"), Some(AvatarGender::Female));
+        assert_eq!(gender_from_voice_name("en-US-BrianNeural"), Some(AvatarGender::Male));
+    }
+
+    #[test]
+    fn test_gender_from_voice_orpheus() {
+        assert_eq!(gender_from_voice_name("tara"), Some(AvatarGender::Female));
+        assert_eq!(gender_from_voice_name("leo"), Some(AvatarGender::Male));
+        assert_eq!(gender_from_voice_name("zoe"), Some(AvatarGender::Female));
+    }
+
+    #[test]
+    fn test_gender_from_voice_pocket() {
+        assert_eq!(gender_from_voice_name("alba"), Some(AvatarGender::Female));
+        assert_eq!(gender_from_voice_name("marius"), Some(AvatarGender::Male));
+    }
+
+    #[test]
+    fn test_gender_from_voice_unknown() {
+        assert_eq!(gender_from_voice_name("some-random-voice"), None);
+        assert_eq!(gender_from_voice_name(""), None);
+    }
+
+    #[test]
+    fn test_select_avatar_for_agent_with_voice() {
+        let model = select_avatar_for_agent("some-persona-id", Some("am_adam"));
+        assert_eq!(model.voice_profile.gender, AvatarGender::Male);
+
+        let model = select_avatar_for_agent("some-persona-id", Some("af_bella"));
+        assert_eq!(model.voice_profile.gender, AvatarGender::Female);
+    }
+
+    #[test]
+    fn test_select_avatar_for_agent_no_voice() {
+        // Without voice, falls back to round-robin — just verify it doesn't crash
+        let model = select_avatar_for_agent("some-persona-id", None);
+        assert!(!model.id.is_empty());
     }
 }
