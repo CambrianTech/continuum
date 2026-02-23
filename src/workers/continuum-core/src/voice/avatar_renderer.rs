@@ -127,8 +127,15 @@ impl BevyChannelRenderer {
     /// The caller must have already called `bevy_system.load_model(slot, ...)`.
     pub fn new(config: AvatarConfig, frame_rx: crossbeam_channel::Receiver<RgbaFrame>, slot: u8) -> Self {
         let size = (config.width * config.height * 4) as usize;
+        // Dark background fallback (no circle) — shown only until first real Bevy frame.
+        // Using the same dark color as Bevy's clear color to prevent a visible flash.
         let mut fallback_frame = vec![0u8; size];
-        generate_avatar_rgba(&mut fallback_frame, config.width, config.height, &config.identity);
+        for pixel in fallback_frame.chunks_exact_mut(4) {
+            pixel[0] = 26;   // R  (matches clear color 0.1)
+            pixel[1] = 26;   // G
+            pixel[2] = 46;   // B  (matches clear color 0.18)
+            pixel[3] = 255;  // A
+        }
         info!(
             "BevyChannelRenderer: slot {} for '{}' ({}x{} @{}fps)",
             slot, config.identity, config.width, config.height, config.fps
@@ -201,7 +208,7 @@ pub fn create_renderer(config: AvatarConfig) -> Box<dyn AvatarRenderer> {
             if ready {
                 static NEXT_SLOT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
                 let slot = NEXT_SLOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if slot < 16 {
+                if slot < super::bevy_renderer::MAX_AVATAR_SLOTS {
                     bevy_system.load_model(slot, vrm_path, &config.display_name);
                     if let Some(frame_rx) = bevy_system.frame_receiver(slot) {
                         info!(
@@ -211,7 +218,8 @@ pub fn create_renderer(config: AvatarConfig) -> Box<dyn AvatarRenderer> {
                         return Box::new(BevyChannelRenderer::new(config, frame_rx.clone(), slot));
                     }
                 } else {
-                    warn!("🎨 All 16 Bevy render slots taken, falling back to procedural for '{}'", config.identity);
+                    warn!("🎨 All {} Bevy render slots taken, falling back to procedural for '{}'",
+                        super::bevy_renderer::MAX_AVATAR_SLOTS, config.identity);
                 }
             } else {
                 warn!("🎨 Bevy renderer not ready, falling back to procedural for '{}'", config.identity);

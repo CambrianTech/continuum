@@ -48,7 +48,10 @@ fn bevy_debug(msg: &str) {
 }
 
 /// Maximum number of concurrent avatar render slots.
-const MAX_AVATAR_SLOTS: u8 = 14;
+/// 24 supports up to 24 AI personas with 3D avatars simultaneously.
+/// At 5fps × 640×480 × 4 bytes = ~6.1 MB/s readback per slot (147 MB/s total).
+/// Bevy supports 32 render layers; we use layers 1-24, leaving headroom.
+pub const MAX_AVATAR_SLOTS: u8 = 24;
 
 /// Render resolution per avatar.
 /// 640×480 balances quality vs GPU readback bandwidth.
@@ -389,8 +392,8 @@ fn setup_render_slots(
                     let pixel_bytes: &[u8] = trigger.event();
 
                     // Log first readback frame per slot + periodic updates
-                    static FRAME_COUNTS: std::sync::OnceLock<std::sync::Mutex<[u64; 16]>> = std::sync::OnceLock::new();
-                    let counts = FRAME_COUNTS.get_or_init(|| std::sync::Mutex::new([0u64; 16]));
+                    static FRAME_COUNTS: std::sync::OnceLock<std::sync::Mutex<[u64; 32]>> = std::sync::OnceLock::new();
+                    let counts = FRAME_COUNTS.get_or_init(|| std::sync::Mutex::new([0u64; 32]));
                     if let Ok(mut c) = counts.lock() {
                         c[slot_id as usize] += 1;
                         let n = c[slot_id as usize];

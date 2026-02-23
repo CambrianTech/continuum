@@ -175,6 +175,7 @@ pub struct ProductionVAD {
     config: ProductionVADConfig,
     buffer: SentenceBuffer,
     initialized: bool,
+    frame_count: u64,
 }
 
 impl ProductionVAD {
@@ -195,6 +196,7 @@ impl ProductionVAD {
             config,
             buffer,
             initialized: false,
+            frame_count: 0,
         }
     }
 
@@ -219,17 +221,30 @@ impl ProductionVAD {
             ));
         }
 
+        self.frame_count += 1;
+        let max_amp = audio.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+
         let is_speech = if self.config.use_two_stage {
             // Stage 1: Fast pre-filter (1-10μs)
             let quick_result = self.webrtc.detect(audio)?;
 
             if !quick_result.is_speech {
+                // Debug: log WebRTC rejections periodically
+                if self.frame_count % 100 == 0 {
+                    tracing::debug!("🔇 VAD frame #{}: WebRTC=silence, max_amp={}, speech_frames={}, silence_frames={}",
+                        self.frame_count, max_amp, self.buffer.speech_frames, self.buffer.silence_frames);
+                }
                 // Definite silence - skip expensive Silero check
                 false
             } else {
                 // Possible speech - confirm with Silero (54ms)
                 let accurate_result = self.silero.detect(audio)?;
-                accurate_result.confidence > self.config.silero_threshold
+                let confirmed = accurate_result.confidence > self.config.silero_threshold;
+                // Debug: log Silero decisions
+                tracing::info!("🎙️ VAD frame #{}: WebRTC=SPEECH, Silero={:.3} (threshold={:.1}), confirmed={}, max_amp={}",
+                    self.frame_count, accurate_result.confidence, self.config.silero_threshold,
+                    confirmed, max_amp);
+                confirmed
             }
         } else {
             // Single-stage: Silero only (54ms every frame)
@@ -243,6 +258,8 @@ impl ProductionVAD {
         // Check if we have a complete sentence
         if self.buffer.should_transcribe() {
             let complete_audio = self.buffer.get_audio();
+            tracing::info!("🎤 VAD: Sentence complete! speech_frames={}, total_samples={}",
+                self.buffer.speech_frames, complete_audio.len());
             self.buffer.clear();
             Ok(Some(complete_audio))
         } else {

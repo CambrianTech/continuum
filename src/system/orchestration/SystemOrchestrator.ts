@@ -485,19 +485,20 @@ export class SystemOrchestrator extends EventEmitter {
     const jtagServer = await JTAGSystemServer.connect();
     console.debug(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
 
-    // Start the example HTTP server (REQUIRED - serves the UI)
-    // NOTE: This is intentional architecture - two separate servers:
+    // Start the example HTTP server DIRECTLY (no npm-within-npm nesting).
+    // Two separate servers:
     //   1. JTAGSystemServer (WebSocket + daemons) - core backend
     //   2. minimal-server.ts (HTTP) - serves UI and static files
     const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
     const activeExamplePath = getActiveExamplePath();
+    const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
 
-    console.debug(`🎯 Starting HTTP server in: ${activeExamplePath}`);
+    console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
 
-    this.serverProcess = spawn('npm', ['start'], {
+    this.serverProcess = spawn('npx', ['tsx', serverScript], {
       cwd: activeExamplePath,
-      stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr
-      shell: true
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false
     });
 
     this.serverProcess.stdout?.on('data', (data) => {
@@ -570,42 +571,70 @@ export class SystemOrchestrator extends EventEmitter {
 
   private async executeServerReady(): Promise<boolean> {
     console.debug('⏳ Waiting for server to be ready...');
-    
-    // SIMPLIFIED READINESS CHECK: Check port availability directly
-    // This avoids complex signaling system issues while ensuring servers are actually ready
+
     const { getActivePorts } = await import('../../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
-    
-    const maxRetries = 30; // 30 seconds max wait
+
+    // Phase 1: Wait for ports to be listening (fast — usually 1-3 seconds)
+    const maxPortRetries = 30;
     let attempt = 0;
-    
-    while (attempt < maxRetries) {
+
+    while (attempt < maxPortRetries) {
       try {
-        // Quick port connectivity check instead of complex signal system
         const portChecks = await Promise.all([
           this.checkPortReady(activePorts.websocket_server),
           this.checkPortReady(activePorts.http_server)
         ]);
-        
+
         if (portChecks.every(ready => ready)) {
-          console.debug(`✅ Server ports ready: WebSocket=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+          console.debug(`✅ Ports listening: WS=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
           break;
         }
-      } catch (error) {
+      } catch {
         // Continue waiting
       }
-      
+
       attempt++;
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
-    if (attempt >= maxRetries) {
-      throw new Error(`Server failed to become ready within ${maxRetries} seconds`);
+
+    if (attempt >= maxPortRetries) {
+      throw new Error(`Server ports not listening within ${maxPortRetries} seconds`);
     }
-    
+
+    // Phase 2: Wait for server to finish bootstrapping (commands registered).
+    // This prevents the browser from opening to a white screen while the
+    // WebSocket server is still registering 261 commands and 17 daemons.
+    console.debug('⏳ Waiting for server bootstrap (commands + daemons)...');
+    const maxBootstrapRetries = 30;
+    let bootstrapAttempt = 0;
+
+    while (bootstrapAttempt < maxBootstrapRetries) {
+      try {
+        const { stdout } = await execAsync('./jtag ping --timeout=3000', { timeout: 5000 });
+        const pingResult = JSON.parse(stdout);
+
+        if (pingResult.success && pingResult.server?.health?.systemReady) {
+          const cmds = pingResult.server.health.commandsRegistered || 0;
+          const daemons = pingResult.server.health.daemonsActive || 0;
+          console.debug(`✅ Server bootstrapped: ${cmds} commands, ${daemons} daemons`);
+          break;
+        }
+      } catch {
+        // Server not ready yet
+      }
+
+      bootstrapAttempt++;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (bootstrapAttempt >= maxBootstrapRetries) {
+      console.warn('⚠️ Server bootstrap timeout — proceeding anyway (ports are listening)');
+    }
+
     console.debug('✅ Server is ready');
     await milestoneEmitter.completeMilestone(
-      SYSTEM_MILESTONES.SERVER_READY, 
+      SYSTEM_MILESTONES.SERVER_READY,
       this.currentEntryPoint
     );
     return true;

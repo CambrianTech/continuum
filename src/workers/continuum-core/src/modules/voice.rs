@@ -93,22 +93,26 @@ impl ServiceModule for VoiceModule {
 
                 self.state.voice_service.register_session(session_id, room_id, participants)?;
 
-                // Spawn STT listener agent to subscribe to human audio in this call.
-                // The listener runs VAD → STT → publishes transcriptions via LiveKit.
+                // CRITICAL: STT listener MUST connect first, before agents.
+                // With 20+ agents all connecting simultaneously, LiveKit gets overwhelmed
+                // (DTLS timeouts, pc_state failures). The STT listener is the most important
+                // participant — without it, no speech → text → no AI responses.
                 let livekit_manager = self.state.livekit_manager.clone();
                 let call_id = session_id.to_string();
+                let ambient_manager = self.state.livekit_manager.clone();
+                let ambient_call_id = session_id.to_string();
+
                 tokio::spawn(async move {
+                    // Phase 1: STT listener (highest priority — enables transcription)
                     if let Err(e) = livekit_manager.join_as_listener(&call_id).await {
                         log_error!("module", "voice_register_session",
                             "Failed to spawn STT listener for call {}: {}",
                             &call_id[..8.min(call_id.len())], e);
                     }
-                });
+                    // Give STT listener time to establish WebRTC connection
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
-                // Spawn ambient background audio (rain) for the call.
-                let ambient_manager = self.state.livekit_manager.clone();
-                let ambient_call_id = session_id.to_string();
-                tokio::spawn(async move {
+                    // Phase 2: Ambient audio
                     if let Err(e) = ambient_manager.start_ambient_audio(&ambient_call_id).await {
                         log_error!("module", "voice_register_session",
                             "Failed to start ambient audio for call {}: {}",
@@ -116,14 +120,19 @@ impl ServiceModule for VoiceModule {
                     }
                 });
 
-                // Pre-create agents for all AI persona participants so their 3D avatars
-                // appear immediately when the room loads, not when they first speak.
+                // Phase 3: Pre-create agents (staggered, lower priority)
+                // Agents provide 3D avatars but don't need to be instant.
                 if !ai_participants.is_empty() {
                     let agent_manager = self.state.livekit_manager.clone();
                     let agent_call_id = session_id.to_string();
                     tokio::spawn(async move {
-                        // Stagger agent creation: 500ms between each to avoid
-                        // overwhelming LiveKit + Bevy with 12 simultaneous connections.
+                        // Wait for STT listener + ambient to finish connecting
+                        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+
+                        // Stagger agent creation: 2s between each to avoid
+                        // overwhelming LiveKit with concurrent WebRTC connections.
+                        // With 20 agents × 2s = 40s to fully populate — acceptable since
+                        // avatars appear progressively while STT works immediately.
                         for (user_id, display_name) in &ai_participants {
                             match agent_manager.get_or_create_agent(&agent_call_id, user_id).await {
                                 Ok(_) => {
@@ -135,7 +144,7 @@ impl ServiceModule for VoiceModule {
                                         display_name, e);
                                 }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                         }
                     });
                 }

@@ -80,11 +80,17 @@ else
   echo -e "   Install with: ./scripts/install-livekit.sh"
 fi
 
-# Build all workers from workspace (single build for all crates)
-echo -e "${YELLOW}🔨 Building Rust workers...${NC}"
+# Build Rust workers — let cargo handle incremental compilation (it's smart enough)
 SCRIPT_DIR="$(dirname "$0")"
-(cd "$SCRIPT_DIR" && cargo build --release --quiet)
-echo -e "${GREEN}✅ Build complete${NC}"
+
+# Skip build if --skip-build flag passed (caller already built)
+if [[ " $* " == *" --skip-build "* ]]; then
+  echo -e "${GREEN}✅ Rust build skipped (--skip-build)${NC}"
+else
+  echo -e "${YELLOW}🔨 Building Rust workers (cargo incremental)...${NC}"
+  (cd "$SCRIPT_DIR" && cargo build --release --quiet)
+  echo -e "${GREEN}✅ Rust build complete${NC}"
+fi
 
 # Setup directories
 mkdir -p .continuum/jtag/logs/system
