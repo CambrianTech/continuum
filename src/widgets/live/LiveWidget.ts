@@ -13,6 +13,8 @@
  */
 
 import { ReactiveWidget, html, reactive, unsafeCSS, type TemplateResult, type CSSResultGroup } from '../shared/ReactiveWidget';
+import { repeat } from 'lit/directives/repeat.js';
+import { ref, createRef } from 'lit/directives/ref.js';
 import { styles as LIVE_STYLES } from './public/live-widget.styles';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
@@ -33,7 +35,6 @@ import { CollaborationLiveTranscription } from '../../commands/collaboration/liv
 import './LiveParticipantTile';
 import './LiveControls';
 import './LiveCaptions';
-import type { LiveParticipantTile } from './LiveParticipantTile';
 import type { LiveControls } from './LiveControls';
 import type { LiveCaptions } from './LiveCaptions';
 
@@ -88,6 +89,10 @@ export class LiveWidget extends ReactiveWidget {
 
   // Remote video elements from LiveKit — keyed by participant identity (userId)
   private _remoteVideoElements: Map<string, HTMLVideoElement> = new Map();
+
+  // Typed refs to child components (Lit ref directive — no querySelector)
+  private _captionsRef = createRef<LiveCaptions>();
+  private _controlsRef = createRef<LiveControls>();
 
   // Speaking state timeouts per user
   private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
@@ -159,11 +164,6 @@ export class LiveWidget extends ReactiveWidget {
   protected override updated(changedProperties: Map<string, unknown>): void {
     super.updated(changedProperties);
 
-    // Sync video elements to tile components after render
-    if (changedProperties.has('activeVideoUsers') || changedProperties.has('participants')) {
-      this._syncVideoElements();
-    }
-
     // Auto-sync mic state
     if (changedProperties.has('micEnabled') && this.audioClient && !this._applyingMicState) {
       this._applyingMicState = true;
@@ -174,9 +174,6 @@ export class LiveWidget extends ReactiveWidget {
     if ((changedProperties.has('speakerEnabled') || changedProperties.has('speakerVolume')) && this.audioClient) {
       this.applySpeakerState();
     }
-
-    // Sync control bar state
-    this._syncControlsState();
   }
 
   override disconnectedCallback(): void {
@@ -351,7 +348,7 @@ export class LiveWidget extends ReactiveWidget {
         this.audioClient = new AudioStreamClient({
           onMicLevel: (level) => {
             // Route mic level to the controls component
-            const controls = this.shadowRoot?.querySelector('live-controls') as LiveControls | null;
+            const controls = this._controlsRef.value ?? null;
             controls?.setMicLevel(level);
           },
           onParticipantJoined: (userId, displayName) => {
@@ -400,7 +397,7 @@ export class LiveWidget extends ReactiveWidget {
               || transcription.displayName;
 
             // Show caption immediately
-            const captions = this.shadowRoot?.querySelector('live-captions') as LiveCaptions | null;
+            const captions = this._captionsRef.value ?? null;
             captions?.setCaption(resolvedName, transcription.text);
 
             this.setSpeaking(transcription.userId as UUID, true);
@@ -509,7 +506,7 @@ export class LiveWidget extends ReactiveWidget {
 
           this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
 
-          const captions = this.shadowRoot?.querySelector('live-captions') as LiveCaptions | null;
+          const captions = this._captionsRef.value ?? null;
           if (captions) {
             if (captions.hasCaption(data.speakerName)) {
               captions.extendCaption(data.speakerName, durationMs + 500);
@@ -613,7 +610,7 @@ export class LiveWidget extends ReactiveWidget {
   private toggleCaptions(): void {
     this.captionsEnabled = !this.captionsEnabled;
     if (!this.captionsEnabled) {
-      const captions = this.shadowRoot?.querySelector('live-captions') as LiveCaptions | null;
+      const captions = this._captionsRef.value ?? null;
       captions?.clearAll();
     }
   }
@@ -666,39 +663,12 @@ export class LiveWidget extends ReactiveWidget {
     this.speakingTimeouts.set(userId, timeout);
   }
 
-  // ========================================
-  // Sub-Component Sync
-  // ========================================
-
   /**
-   * Push video elements to their tile components after render.
-   * Each tile owns its own shadow DOM, so the video attaches inside the tile's
-   * .video-container — fixing the CSS scoping problem.
+   * Get the video element for a participant (if any).
+   * Used in templates to pass video element as a Lit property.
    */
-  private _syncVideoElements(): void {
-    for (const [userId, element] of this._remoteVideoElements) {
-      const tile = this.shadowRoot?.querySelector(
-        `live-participant-tile[data-user-id="${userId}"]`
-      ) as LiveParticipantTile | null;
-
-      if (tile) {
-        tile.videoElement = element;
-      }
-    }
-  }
-
-  /**
-   * Sync control bar properties with orchestrator state
-   */
-  private _syncControlsState(): void {
-    const controls = this.shadowRoot?.querySelector('live-controls') as LiveControls | null;
-    if (!controls) return;
-
-    controls.micEnabled = this.micEnabled;
-    controls.speakerEnabled = this.speakerEnabled;
-    controls.cameraEnabled = this.cameraEnabled;
-    controls.screenShareEnabled = this.screenShareEnabled;
-    controls.captionsEnabled = this.captionsEnabled;
+  private _videoFor(userId: string): HTMLVideoElement | null {
+    return this._remoteVideoElements.get(userId) ?? null;
   }
 
   // ========================================
@@ -830,20 +800,27 @@ export class LiveWidget extends ReactiveWidget {
         <div class="participant-grid" data-count="${this._gridDataCount()}">
           ${this.participants.length === 0
             ? html`<div class="empty-state">Waiting for others to join...</div>`
-            : this.participants.map((p, i) => html`
+            : repeat(this.participants, p => p.userId, (p, i) => html`
                 <live-participant-tile
                   data-user-id="${p.userId}"
                   data-color="${(i % 7) + 1}"
                   .userId=${p.userId}
                   .displayName=${p.displayName}
                   .isSpeaking=${p.isSpeaking}
-                  .hasVideo=${this.activeVideoUsers.has(p.userId)}
+                  .videoElement=${this._videoFor(p.userId)}
+                  .isMuted=${!p.micEnabled}
                 ></live-participant-tile>
               `)
           }
         </div>
-        <live-captions .visible=${this.captionsEnabled}></live-captions>
-        <live-controls></live-controls>
+        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
+        <live-controls ${ref(this._controlsRef)}
+          .micEnabled=${this.micEnabled}
+          .speakerEnabled=${this.speakerEnabled}
+          .cameraEnabled=${this.cameraEnabled}
+          .screenShareEnabled=${this.screenShareEnabled}
+          .captionsEnabled=${this.captionsEnabled}
+        ></live-controls>
       </div>
     `;
   }
@@ -870,10 +847,11 @@ export class LiveWidget extends ReactiveWidget {
             .userId=${presenter.userId}
             .displayName=${presenter.displayName}
             .isSpeaking=${presenter.isSpeaking}
-            .hasVideo=${this.activeVideoUsers.has(presenter.userId)}
+            .videoElement=${this._videoFor(presenter.userId)}
             .isPresenter=${true}
             .isSpotlighted=${!!this.spotlightUserId}
             .isScreenSharing=${presenter.screenShareEnabled}
+            .isMuted=${!presenter.micEnabled}
             @click=${(e: Event) => e.stopPropagation()}
           ></live-participant-tile>
         </div>
@@ -881,7 +859,7 @@ export class LiveWidget extends ReactiveWidget {
         <!-- Other participants in strip -->
         ${otherParticipants.length > 0 ? html`
           <div class="participant-strip">
-            ${otherParticipants.map((p, i) => html`
+            ${repeat(otherParticipants, p => p.userId, (p, i) => html`
               <div class="strip-tile">
                 <live-participant-tile
                   data-user-id="${p.userId}"
@@ -889,15 +867,22 @@ export class LiveWidget extends ReactiveWidget {
                   .userId=${p.userId}
                   .displayName=${p.displayName}
                   .isSpeaking=${p.isSpeaking}
-                  .hasVideo=${this.activeVideoUsers.has(p.userId)}
+                  .videoElement=${this._videoFor(p.userId)}
+                  .isMuted=${!p.micEnabled}
                 ></live-participant-tile>
               </div>
             `)}
           </div>
         ` : ''}
 
-        <live-captions .visible=${this.captionsEnabled}></live-captions>
-        <live-controls></live-controls>
+        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
+        <live-controls ${ref(this._controlsRef)}
+          .micEnabled=${this.micEnabled}
+          .speakerEnabled=${this.speakerEnabled}
+          .cameraEnabled=${this.cameraEnabled}
+          .screenShareEnabled=${this.screenShareEnabled}
+          .captionsEnabled=${this.captionsEnabled}
+        ></live-controls>
       </div>
     `;
   }
