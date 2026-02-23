@@ -207,7 +207,7 @@ impl LayerWeights {
 
         let y = if q.device().is_metal() && seq_len == 1 {
             // Metal SDPA kernel — fast path for single-token generation.
-            candle_nn::ops::sdpa(&q, &k, &v, 1. / (self.head_dim as f32).sqrt(), 1.)?
+            candle_nn::ops::sdpa(&q, &k, &v, None, false, 1. / (self.head_dim as f32).sqrt(), 1.)?
         } else {
             // Fallback: manual Q*K^T attention with causal mask.
             // WARNING: This path creates O(seq_len^2) attention matrices that corrupt

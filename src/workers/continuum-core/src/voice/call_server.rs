@@ -1184,7 +1184,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                             bytes.push(id_len);
                                             bytes.extend_from_slice(&id_bytes[..id_len as usize]);
                                             bytes.extend(audio.iter().flat_map(|&s| s.to_le_bytes()));
-                                            if msg_tx_audio.send(Message::Binary(bytes)).await.is_err() {
+                                            if msg_tx_audio.send(Message::Binary(bytes.into())).await.is_err() {
                                                 break;
                                             }
                                         }
@@ -1206,7 +1206,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                             language: event.language,
                                         };
                                         if let Ok(json) = serde_json::to_string(&msg) {
-                                            if msg_tx_transcription.send(Message::Text(json)).await.is_err() {
+                                            if msg_tx_transcription.send(Message::Text(json.into())).await.is_err() {
                                                 warn!("[STEP 7] ❌ WebSocket send FAILED for {}", ws_display_name);
                                                 break;
                                             }
@@ -1228,7 +1228,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                             frame.push(id_len);
                                             frame.extend_from_slice(&id_bytes[..id_len as usize]);
                                             frame.extend_from_slice(&video_data);
-                                            if msg_tx_video.send(Message::Binary(frame)).await.is_err() {
+                                            if msg_tx_video.send(Message::Binary(frame.into())).await.is_err() {
                                                 break;
                                             }
                                         }
@@ -1240,7 +1240,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 tokio::spawn(async move {
                                     while let Ok(call_msg) = message_rx.recv().await {
                                         if let Ok(json) = serde_json::to_string(&call_msg) {
-                                            if msg_tx_messages.send(Message::Text(json)).await.is_err() {
+                                            if msg_tx_messages.send(Message::Text(json.into())).await.is_err() {
                                                 break;
                                             }
                                         }

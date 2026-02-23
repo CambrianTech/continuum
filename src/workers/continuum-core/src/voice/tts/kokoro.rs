@@ -331,24 +331,24 @@ impl KokoroTTS {
         let speed_tensor = ndarray::Array1::from_vec(vec![speed]);
 
         // Step 5: Run ONNX inference
+        let input_ids_tensor = ort::value::Tensor::from_array(input_ids)
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}")))?;
+        let style_tensor = ort::value::Tensor::from_array(style)
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}")))?;
+        let speed_ort_tensor = ort::value::Tensor::from_array(speed_tensor)
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create speed tensor: {e}")))?;
         let outputs = model
             .session
             .run(ort::inputs![
-                "input_ids" => input_ids,
-                "style" => style,
-                "speed" => speed_tensor
-            ]?)
+                "input_ids" => input_ids_tensor,
+                "style" => style_tensor,
+                "speed" => speed_ort_tensor
+            ])
             .map_err(|e| TTSError::SynthesisFailed(format!("ONNX inference failed: {e}")))?;
 
         // Step 6: Extract audio output
-        let audio_output = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| TTSError::SynthesisFailed("No audio output from model".into()))?
-            .1;
-
-        let (_, audio_data) = audio_output
-            .try_extract_raw_tensor::<f32>()
+        let (_, audio_data) = outputs[0]
+            .try_extract_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
         // Step 7: Normalize to standard 16kHz i16 PCM via shared audio utilities

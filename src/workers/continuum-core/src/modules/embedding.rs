@@ -183,9 +183,9 @@ pub fn generate_embedding(text: &str, model_name: &str) -> Result<Vec<f32>, Stri
 
     // Get model from cache
     let cache = get_model_cache();
-    let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+    let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
     let embedding_model = models
-        .get(model_name)
+        .get_mut(model_name)
         .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
 
     // Generate embedding for single text
@@ -210,9 +210,9 @@ pub fn generate_embeddings_batch(texts: &[&str], model_name: &str) -> Result<Vec
 
     // Get model from cache
     let cache = get_model_cache();
-    let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+    let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
     let embedding_model = models
-        .get(model_name)
+        .get_mut(model_name)
         .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
 
     // Generate embeddings
@@ -526,9 +526,9 @@ impl EmbeddingModule {
 
             // Get model from cache
             let model_cache = get_model_cache();
-            let models = model_cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let mut models = model_cache.lock().map_err(|e| format!("Lock error: {e}"))?;
             let embedding_model = models
-                .get(model_name)
+                .get_mut(model_name)
                 .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
 
             // Generate embeddings for uncached texts

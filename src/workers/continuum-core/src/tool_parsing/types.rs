@@ -58,14 +58,16 @@ mod tests {
 
     #[test]
     fn ts_binding_tool_parse_request() {
-        let _ts = ToolParseRequest::export_to_string().unwrap();
+        let cfg = ts_rs::Config::default();
+        let _ts = ToolParseRequest::export_to_string(&cfg).unwrap();
         assert!(_ts.contains("response_text"));
         assert!(_ts.contains("known_tools"));
     }
 
     #[test]
     fn ts_binding_parsed_tool_call() {
-        let _ts = ParsedToolCall::export_to_string().unwrap();
+        let cfg = ts_rs::Config::default();
+        let _ts = ParsedToolCall::export_to_string(&cfg).unwrap();
         assert!(_ts.contains("tool_name"));
         assert!(_ts.contains("parameters"));
         assert!(_ts.contains("format"));
@@ -75,7 +77,8 @@ mod tests {
 
     #[test]
     fn ts_binding_tool_parse_result() {
-        let _ts = ToolParseResult::export_to_string().unwrap();
+        let cfg = ts_rs::Config::default();
+        let _ts = ToolParseResult::export_to_string(&cfg).unwrap();
         assert!(_ts.contains("tool_calls"));
         assert!(_ts.contains("cleaned_text"));
         assert!(_ts.contains("parse_time_us"));
@@ -83,7 +86,8 @@ mod tests {
 
     #[test]
     fn ts_binding_corrected_tool_call() {
-        let _ts = CorrectedToolCall::export_to_string().unwrap();
+        let cfg = ts_rs::Config::default();
+        let _ts = CorrectedToolCall::export_to_string(&cfg).unwrap();
         assert!(_ts.contains("tool_name"));
         assert!(_ts.contains("name_changed"));
         assert!(_ts.contains("param_corrections"));

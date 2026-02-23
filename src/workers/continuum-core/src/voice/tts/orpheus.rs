@@ -29,7 +29,7 @@ use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-use ort::value::Value;
+use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -259,7 +259,7 @@ impl OrpheusTts {
         let layers = Self::redistribute_codes(&audio_tokens)?;
 
         // ── Step 4: SNAC decode → 24kHz PCM ───────────────────────────────
-        let pcm_24k = Self::snac_decode(&model.snac_decoder, &layers)?;
+        let pcm_24k = Self::snac_decode(&mut model.snac_decoder, &layers)?;
 
         info!(
             "Orpheus: SNAC decoded {} samples ({:.2}s at 24kHz)",
@@ -436,7 +436,7 @@ impl OrpheusTts {
 
     /// Decode SNAC codebook layers → 24kHz PCM audio using ONNX decoder
     fn snac_decode(
-        session: &Session,
+        session: &mut Session,
         layers: &[Vec<i64>; NUM_CODEBOOKS],
     ) -> Result<Vec<f32>, TTSError> {
         // Build input tensors for each codebook layer: [1, seq_len]
@@ -447,14 +447,14 @@ impl OrpheusTts {
             let array = Array2::from_shape_vec((1, seq_len), layer.clone()).map_err(|e| {
                 TTSError::SynthesisFailed(format!("SNAC input layer {i} reshape: {e}"))
             })?;
-            let value: Value = Value::from_array(array)
+            let value: Value = OrtTensor::from_array(array)
                 .map(|v| v.into())
                 .map_err(|e| {
                     TTSError::SynthesisFailed(format!("SNAC input layer {i} to value: {e}"))
                 })?;
 
             // Use model's input names (discovered at runtime)
-            let name = session.inputs[i].name.clone();
+            let name = session.inputs()[i].name().to_string();
             named_inputs.push((name, value));
         }
 
@@ -464,7 +464,7 @@ impl OrpheusTts {
 
         // Extract output audio waveform (f32)
         let (shape, data) = outputs[0]
-            .try_extract_raw_tensor::<f32>()
+            .try_extract_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("SNAC output extraction: {e}")))?;
 
         info!(
@@ -563,8 +563,8 @@ impl TextToSpeech for OrpheusTts {
         let snac_decoder = Self::build_snac_session(&snac_path)?;
         info!(
             "Orpheus: SNAC decoder loaded ({} inputs, {} outputs)",
-            snac_decoder.inputs.len(),
-            snac_decoder.outputs.len()
+            snac_decoder.inputs().len(),
+            snac_decoder.outputs().len()
         );
 
         let model = OrpheusModel {

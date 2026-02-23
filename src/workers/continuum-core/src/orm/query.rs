@@ -131,8 +131,8 @@ pub struct JoinSpec {
     pub local_field: String,
     /// Field in the joined collection
     pub foreign_field: String,
-    /// Join type - accepts both 'type' (TypeScript) and 'joinType' (Rust convention)
-    #[serde(alias = "type")]
+    /// Join type - wire format is 'type' (matches TS IncludeSpec)
+    #[serde(rename = "type")]
     pub join_type: JoinType,
     /// Fields to select from joined collection
     #[ts(optional)]

@@ -225,7 +225,7 @@ impl OpenAIRealtimeSTT {
         let json = serde_json::to_string(&update_event)
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-        write.send(Message::Text(json))
+        write.send(Message::Text(json.into()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 
@@ -238,7 +238,7 @@ impl OpenAIRealtimeSTT {
             let json = serde_json::to_string(&append_event)
                 .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-            write.send(Message::Text(json))
+            write.send(Message::Text(json.into()))
                 .await
                 .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
         }
@@ -248,7 +248,7 @@ impl OpenAIRealtimeSTT {
         let json = serde_json::to_string(&commit_event)
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-        write.send(Message::Text(json))
+        write.send(Message::Text(json.into()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 

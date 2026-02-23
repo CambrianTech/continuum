@@ -75,7 +75,8 @@ impl PiperTTS {
             return Err(TTSError::InvalidText("Text cannot be empty".into()));
         }
 
-        let model = session.lock();
+        let mut model = session.lock();
+        let sample_rate = model.sample_rate; // Cache before mutable borrow
 
         // Phonemize text to get phoneme IDs using model's phonemizer
         let phoneme_ids = model.phonemizer.text_to_phoneme_ids(text);
@@ -94,31 +95,34 @@ impl PiperTTS {
         // Format: [noise_scale, length_scale, noise_w]
         let scales_array = ndarray::Array1::from_vec(vec![0.333_f32, 1.0_f32, 0.333_f32]);
 
-        // Run inference
+        // Run inference — ort 2.x requires explicit Tensor/TensorRef construction
+        let input_lengths = ndarray::Array1::from_vec(vec![len as i64]);
+        let input_tensor = ort::value::TensorRef::from_array_view(text_array.view())
+            .map_err(|e| TTSError::SynthesisFailed(format!("Input tensor: {e}")))?;
+        let lengths_tensor = ort::value::TensorRef::from_array_view(input_lengths.view())
+            .map_err(|e| TTSError::SynthesisFailed(format!("Lengths tensor: {e}")))?;
+        let scales_tensor = ort::value::TensorRef::from_array_view(scales_array.view())
+            .map_err(|e| TTSError::SynthesisFailed(format!("Scales tensor: {e}")))?;
+        let sid_tensor = ort::value::TensorRef::from_array_view(sid_array.view())
+            .map_err(|e| TTSError::SynthesisFailed(format!("SID tensor: {e}")))?;
         let outputs = model
             .session
             .run(ort::inputs![
-                "input" => text_array.view(),
-                "input_lengths" => ndarray::Array1::from_vec(vec![len as i64]).view(),
-                "scales" => scales_array.view(),
-                "sid" => sid_array.view()
-            ]?)
+                "input" => input_tensor,
+                "input_lengths" => lengths_tensor,
+                "scales" => scales_tensor,
+                "sid" => sid_tensor
+            ])
             .map_err(|e| TTSError::SynthesisFailed(format!("ONNX inference failed: {e}")))?;
 
         // Extract audio
-        let audio_output = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| TTSError::SynthesisFailed("No audio output from model".into()))?
-            .1;
-
-        let (_, audio_data) = audio_output
-            .try_extract_raw_tensor::<f32>()
+        let (_, audio_data) = outputs[0]
+            .try_extract_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
         // Normalize to standard 16kHz i16 PCM via shared audio utilities
         let f32_samples: Vec<f32> = audio_data.to_vec();
-        let result = audio_utils::normalize_audio(&f32_samples, model.sample_rate)?;
+        let result = audio_utils::normalize_audio(&f32_samples, sample_rate)?;
 
         info!(
             "Piper synthesized {} samples ({}ms) for '{}...'",

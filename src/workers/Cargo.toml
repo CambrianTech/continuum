@@ -17,23 +17,23 @@ members = [
 # Candle ML framework (pin version for consistency)
 # accelerate = Apple's Accelerate framework for faster BLAS on macOS
 # metal = Apple Metal GPU acceleration
-candle-core = { version = "0.8", features = ["accelerate"] }
-candle-nn = { version = "0.8", features = ["accelerate"] }
-candle-transformers = { version = "0.8", features = ["accelerate"] }
+candle-core = { version = "0.9", features = ["accelerate"] }
+candle-nn = { version = "0.9", features = ["accelerate"] }
+candle-transformers = { version = "0.9", features = ["accelerate"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # gRPC
-tonic = "0.11"
-prost = "0.12"
+tonic = "0.14"
+prost = "0.14"
 tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
@@ -41,28 +41,28 @@ chrono = "0.4"
 uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # Safetensors for model/adapter weights
-safetensors = "0.4"
+safetensors = "0.7"
 
 # Half-precision floats (f16, bf16)
-half = "2.3"
+half = "2.7"
 
 # Byte slice casting (for safetensors -> tensor conversion)
 bytemuck = { version = "1.14", features = ["derive"] }
 
 # HuggingFace Hub for model downloads
-hf-hub = "0.4"
+hf-hub = "0.5"
 
 # Tokenization
-tokenizers = "0.20"
+tokenizers = "0.22"
 
 # Random number generation
 rand = "0.8"
 
 # Parallelism
-rayon = "1.9"
+rayon = "1.11"
 
 # Type generation (Rust → TypeScript)
-ts-rs = "9.0"
+ts-rs = "12.0"
 
 # Postgres
 deadpool-postgres = "0.14"
@@ -73,33 +73,33 @@ flate2 = "1.0"
 sha2 = "0.10"
 
 # Thread-safe primitives
-lazy_static = "1.4"
-once_cell = "1.19"
+lazy_static = "1.5"
+once_cell = "1.21"
 parking_lot = "0.12"
 
 # Async utilities
 async-trait = "0.1"
 
 # Error handling
-thiserror = "1"
+thiserror = "2"
 
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Embedding (fastembed)
-fastembed = "4"
+fastembed = "5"
 
 # ONNX Runtime - ensure all crates use download-binaries (not load-dynamic)
 # ndarray feature enables Tensor::from_array() for ndarray arrays
 # TODO: Add GPU acceleration when ort linking issues are resolved:
 #   - coreml: Apple CoreML (macOS) - linking error on arm64
 #   - cuda: NVIDIA CUDA (Linux/Windows with 5090, etc.)
-ort = { version = "2.0.0-rc.9", default-features = false, features = ["download-binaries", "ndarray"] }
-ndarray = "0.16"
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "ndarray"] }
+ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayData trait compatibility
 
 # WebSocket
-tokio-tungstenite = "0.21"
+tokio-tungstenite = "0.28"
 futures-util = "0.3"
 
 # Edge-TTS (Microsoft Edge Read Aloud API — free, no API key)

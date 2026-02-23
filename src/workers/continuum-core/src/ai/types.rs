@@ -510,30 +510,31 @@ mod tests {
     fn export_ai_types() {
         // These tests trigger ts-rs to generate TypeScript types
         // Run: cargo test --package continuum-core -- --test-threads=1
-        ChatMessage::export().expect("export ChatMessage");
-        MessageContent::export().expect("export MessageContent");
-        ContentPart::export().expect("export ContentPart");
-        ImageInput::export().expect("export ImageInput");
-        AudioInput::export().expect("export AudioInput");
-        VideoInput::export().expect("export VideoInput");
-        NativeToolSpec::export().expect("export NativeToolSpec");
-        ToolInputSchema::export().expect("export ToolInputSchema");
-        ToolCall::export().expect("export ToolCall");
-        ToolResult::export().expect("export ToolResult");
-        ToolChoice::export().expect("export ToolChoice");
-        ActiveAdapterRequest::export().expect("export ActiveAdapterRequest");
-        TextGenerationRequest::export().expect("export TextGenerationRequest");
-        TextGenerationResponse::export().expect("export TextGenerationResponse");
-        FinishReason::export().expect("export FinishReason");
-        UsageMetrics::export().expect("export UsageMetrics");
-        RoutingInfo::export().expect("export RoutingInfo");
-        HealthStatus::export().expect("export HealthStatus");
-        HealthState::export().expect("export HealthState");
-        ModelCapability::export().expect("export ModelCapability");
-        ModelInfo::export().expect("export ModelInfo");
-        CostPer1kTokens::export().expect("export CostPer1kTokens");
-        EmbeddingRequest::export().expect("export EmbeddingRequest");
-        EmbeddingInput::export().expect("export EmbeddingInput");
-        EmbeddingResponse::export().expect("export EmbeddingResponse");
+        let cfg = ts_rs::Config::default();
+        ChatMessage::export(&cfg).expect("export ChatMessage");
+        MessageContent::export(&cfg).expect("export MessageContent");
+        ContentPart::export(&cfg).expect("export ContentPart");
+        ImageInput::export(&cfg).expect("export ImageInput");
+        AudioInput::export(&cfg).expect("export AudioInput");
+        VideoInput::export(&cfg).expect("export VideoInput");
+        NativeToolSpec::export(&cfg).expect("export NativeToolSpec");
+        ToolInputSchema::export(&cfg).expect("export ToolInputSchema");
+        ToolCall::export(&cfg).expect("export ToolCall");
+        ToolResult::export(&cfg).expect("export ToolResult");
+        ToolChoice::export(&cfg).expect("export ToolChoice");
+        ActiveAdapterRequest::export(&cfg).expect("export ActiveAdapterRequest");
+        TextGenerationRequest::export(&cfg).expect("export TextGenerationRequest");
+        TextGenerationResponse::export(&cfg).expect("export TextGenerationResponse");
+        FinishReason::export(&cfg).expect("export FinishReason");
+        UsageMetrics::export(&cfg).expect("export UsageMetrics");
+        RoutingInfo::export(&cfg).expect("export RoutingInfo");
+        HealthStatus::export(&cfg).expect("export HealthStatus");
+        HealthState::export(&cfg).expect("export HealthState");
+        ModelCapability::export(&cfg).expect("export ModelCapability");
+        ModelInfo::export(&cfg).expect("export ModelInfo");
+        CostPer1kTokens::export(&cfg).expect("export CostPer1kTokens");
+        EmbeddingRequest::export(&cfg).expect("export EmbeddingRequest");
+        EmbeddingInput::export(&cfg).expect("export EmbeddingInput");
+        EmbeddingResponse::export(&cfg).expect("export EmbeddingResponse");
     }
 }
