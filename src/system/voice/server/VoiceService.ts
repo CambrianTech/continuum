@@ -109,7 +109,6 @@ export class VoiceService {
         if (settled) return;
 
         const handle = result.handle;
-        console.log(`🔊 VoiceService: Synthesis started (handle=${handle.slice(0, 8)}), adapter is generating...`);
 
         // Phase 2: Safety-only timeout — adapter is actively working
         safetyTimer = setTimeout(() => {

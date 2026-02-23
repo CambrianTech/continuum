@@ -103,6 +103,9 @@ pub struct SynthesisResult {
     pub sample_rate: u32,
     /// Duration in milliseconds
     pub duration_ms: u64,
+    /// Resolved voice name (e.g., "af_bella" after UUID→voice resolution).
+    /// Set by the top-level synthesize() wrappers, not by individual adapters.
+    pub voice_name: Option<String>,
 }
 
 /// Text-to-Speech adapter trait
@@ -327,7 +330,9 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
 
     let resolved = adapter.resolve_voice(voice);
     tracing::info!("TTS: voice '{}' resolved to '{}' for adapter '{}'", voice, resolved, adapter.name());
-    adapter.synthesize(text, &resolved).await
+    let mut result = adapter.synthesize(text, &resolved).await?;
+    result.voice_name = Some(resolved);
+    Ok(result)
 }
 
 /// Initialize the active adapter, falling back to next adapter on failure.
@@ -398,7 +403,9 @@ pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str) -> Res
 
     let resolved = adapter.resolve_voice(voice);
     tracing::info!("TTS: voice '{}' resolved to '{}' for adapter '{}'", voice, resolved, adapter_name);
-    adapter.synthesize(text, &resolved).await
+    let mut result = adapter.synthesize(text, &resolved).await?;
+    result.voice_name = Some(resolved);
+    Ok(result)
 }
 
 /// Get available voices from active adapter

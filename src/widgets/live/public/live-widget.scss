@@ -160,6 +160,11 @@
     box-shadow: 0 0 0 3px $color-success;
     animation: pulse-glow 1.5s ease-in-out infinite;
   }
+
+  .video-container {
+    width: 100%;
+    height: 100%;
+  }
 }
 
 // Pulse animation for speaking indicator
@@ -211,6 +216,8 @@
 .video-container {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   border-radius: $border-radius-lg;
   animation: video-fade-in 0.3s ease-out;
@@ -466,7 +473,6 @@
   .presenter-tile {
     width: 100%;
     height: 100%;
-    max-width: 1200px;
     background: linear-gradient(135deg, #2a2a3a 0%, #1e1e2e 100%);
     border-radius: $border-radius-lg;
     display: flex;
@@ -475,6 +481,11 @@
     justify-content: center;
     position: relative;
     overflow: hidden;
+
+    .video-container {
+      width: 100%;
+      height: 100%;
+    }
   }
 
   .screen-share-placeholder {
@@ -488,9 +499,26 @@
   .spotlight-canvas {
     width: 100%;
     height: 100%;
-    object-fit: contain;  // Preserve aspect ratio, letterbox if needed
+    object-fit: cover;  // Crop to fill — matches grid tile behavior
     border-radius: $border-radius-lg;
     image-rendering: auto;
+  }
+
+  // Ensure video-container fills the presenter tile in spotlight mode
+  .spotlight-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border-radius: $border-radius-lg;
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+    }
   }
 
   .presenter-tile.has-video {

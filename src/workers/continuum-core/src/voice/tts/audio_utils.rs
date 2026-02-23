@@ -108,6 +108,7 @@ pub fn normalize_audio(
         samples: i16_samples,
         sample_rate: AUDIO_SAMPLE_RATE,
         duration_ms: dur,
+        voice_name: None,
     })
 }
 

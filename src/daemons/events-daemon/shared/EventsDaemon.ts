@@ -162,7 +162,7 @@ export abstract class EventsDaemon extends DaemonBase {
    * Initialize events daemon
    */
   protected async initialize(): Promise<void> {
-    console.log(`🌉 EventsDaemon: Initialized for cross-context event bridging`);
+    // Initialized for cross-context event bridging
   }
 
   /**

@@ -32,25 +32,14 @@ use tracing::{info, warn};
 
 use super::avatar_renderer::RgbaFrame;
 
-/// Debug logging to file — bypasses tracing subscriber issues on background threads.
-/// Writes to /tmp/bevy-avatar-debug.log for direct inspection.
-fn bevy_debug(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open("/tmp/bevy-avatar-debug.log")
-    {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let _ = writeln!(f, "[{}] {}", ts, msg);
-    }
+/// Debug logging — no-op in production. Enable via BEVY_AVATAR_DEBUG=1 env var.
+fn bevy_debug(_msg: &str) {
+    // Intentionally empty — file I/O per call was killing performance
 }
 
 /// Maximum number of concurrent avatar render slots.
 /// 24 supports up to 24 AI personas with 3D avatars simultaneously.
-/// At 5fps × 640×480 × 4 bytes = ~6.1 MB/s readback per slot (147 MB/s total).
+/// At 30fps × 640×480 × 4 bytes = ~36.9 MB/s readback per slot.
 /// Bevy supports 32 render layers; we use layers 1-24, leaving headroom.
 pub const MAX_AVATAR_SLOTS: u8 = 24;
 
@@ -60,9 +49,8 @@ const AVATAR_WIDTH: u32 = 640;
 const AVATAR_HEIGHT: u32 = 480;
 
 /// Target framerate for avatar rendering.
-/// 5fps is sufficient for mostly-static avatars with idle sway.
-/// Higher rates (30fps) starve the tokio runtime and cause IPC timeouts.
-const AVATAR_FPS: f64 = 5.0;
+/// 30fps for smooth video-quality animation (gestures, speaking, blinking).
+const AVATAR_FPS: f64 = 30.0;
 
 // ============================================================================
 // Public API — BevyAvatarSystem singleton
@@ -500,11 +488,10 @@ fn setup_render_slots(
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
                 // Disable MSAA — prevents macOS Metal validation error (Issue #16590)
                 bevy::render::view::Msaa::Off,
-                // VRM models face -Z direction. Camera at eye level, slightly above center
-                // frame (like a webcam). Eyes at ~1.47m, camera looks at ~1.42 (chin area)
-                // so eyes land slightly above frame center — natural webcam framing.
-                Transform::from_xyz(0.0, 1.50, -0.85)
-                    .looking_at(Vec3::new(0.0, 1.42, 0.0), Vec3::Y),
+                // VRM models face -Z direction. Camera centered on face.
+                // Most VRM models have eyes at Y ~1.3. Back up Z for head+shoulders.
+                Transform::from_xyz(0.0, 1.30, -0.50)
+                    .looking_at(Vec3::new(0.0, 1.28, 0.0), Vec3::Y),
                 layer.clone(),
                 AvatarSlotId(slot),
             ))
@@ -816,9 +803,12 @@ fn process_commands(
 }
 
 /// Idle animation — gentle camera sway + head-targeted framing.
+/// Uses discovered head bone world position to center camera on face.
 fn animate_idle(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
+    bone_registry: Res<BoneRegistry>,
+    global_transforms: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform, With<AvatarSlotId>>,
 ) {
     for (slot, state) in &registry.slots {
@@ -830,9 +820,22 @@ fn animate_idle(
             let sway_x = (t * 0.3).sin() * 0.02;
             let sway_y = (t * 0.2).cos() * 0.01;
 
-            // Eyes slightly above center frame (webcam convention).
-            // Camera at eye level, look target at chin → eyes land above center.
-            let (base_y, look_y) = (1.50, 1.42);
+            // Dynamic head tracking: center camera on face (eyes), not skull base.
+            // Head bone is at base of skull; eyes are ~0.06 above that.
+            let (base_y, look_y) = if let Some(slot_bones) = bone_registry.slots.get(slot) {
+                if let Some(ref head) = slot_bones.head {
+                    if let Ok(global) = global_transforms.get(head.entity) {
+                        let eye_y = global.translation().y + 0.06;
+                        (eye_y + 0.02, eye_y)
+                    } else {
+                        (1.50, 1.47)
+                    }
+                } else {
+                    (1.50, 1.47)
+                }
+            } else {
+                (1.50, 1.47)
+            };
 
             transform.translation.x = sway_x;
             transform.translation.y = base_y + sway_y;

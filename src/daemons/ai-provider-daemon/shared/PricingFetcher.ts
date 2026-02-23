@@ -37,7 +37,6 @@ export class PricingFetcher {
         });
       }
 
-      console.log(`✅ PricingFetcher: Fetched pricing for ${pricingMap.size} models from OpenRouter`);
       return pricingMap;
     } catch (error) {
       console.error('❌ PricingFetcher: Failed to fetch from OpenRouter:', error);

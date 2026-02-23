@@ -60,7 +60,6 @@ export class AIAudioInjector {
         this.ws = new WebSocket(this.serverUrl);
 
         this.ws.on('open', () => {
-          console.log(`🎙️ ${displayName}: Connected to CallServer`);
           this.connected = true;
 
           // Send join message - is_ai: true enables server-side audio buffering
@@ -78,22 +77,17 @@ export class AIAudioInjector {
         this.ws.on('message', (data) => {
           // Handle any messages from server (transcriptions, etc.)
           try {
-            const msg = JSON.parse(data.toString());
-            if (msg.type === 'Transcription') {
-              console.log(`🎙️ ${displayName}: Transcription: "${msg.text}"`);
-            }
+            JSON.parse(data.toString());
           } catch (e) {
             // Binary audio data - AIs don't need to receive mixed audio
           }
         });
 
         this.ws.on('error', (error) => {
-          console.error(`🎙️ ${displayName}: WebSocket error:`, error);
           reject(error);
         });
 
         this.ws.on('close', () => {
-          console.log(`🎙️ ${displayName}: Disconnected from CallServer`);
           this.connected = false;
         });
       } catch (error) {
@@ -108,23 +102,15 @@ export class AIAudioInjector {
    */
   async injectAudio(audioSamples: Int16Array): Promise<void> {
     if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn(`🎙️ ${this.displayName}: Cannot inject audio - not connected`);
       return;
     }
 
     const totalSamples = audioSamples.length;
-    console.log(
-      `🎙️ ${this.displayName}: Injecting ${totalSamples} samples (${(totalSamples / this.sampleRate).toFixed(2)}s)`
-    );
 
     // SERVER-SIDE BUFFERING: Send ALL audio at once
     // Rust server has a 10-second ring buffer per AI participant
     // Server pulls frames at precise 32ms intervals (tokio::time::interval)
     // This eliminates JavaScript timing jitter from the audio pipeline
-
-    console.log(
-      `🎙️ ${this.displayName}: Sending ${totalSamples} samples (${(totalSamples / this.sampleRate).toFixed(1)}s) to server buffer`
-    );
 
     // Send entire audio as one binary WebSocket frame
     // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
@@ -144,8 +130,6 @@ export class AIAudioInjector {
       // Send raw binary - server buffers and paces playback
       this.ws.send(buffer);
     }
-
-    console.log(`🎙️ ${this.displayName}: Audio injection complete`);
   }
 
   /**
@@ -217,12 +201,9 @@ export class AIAudioInjector {
     // For now, this is a prototype - full implementation needs event naming refactor
     const unsubscribe = Events.subscribe('voice:audio:*', (data: any) => {
       (async () => {
-        console.log(`🎙️ ${personaName}: Received TTS audio event`);
-
         // Decode base64 audio to Int16Array
         const audioBase64 = data.audio;
         if (!audioBase64) {
-          console.warn(`🎙️ ${personaName}: No audio in event`);
           return;
         }
 
@@ -238,23 +219,19 @@ export class AIAudioInjector {
         // TODO: VoiceSynthesizeServerCommand needs to add callId to events
         const callId = data.callId;
         if (!callId) {
-          console.warn(`🎙️ ${personaName}: No callId in TTS event (VoiceSynthesizeServerCommand needs to include voice call ID)`);
           return;
         }
 
         // Get or create injector for this call
         let injector = activeInjectors.get(callId);
         if (!injector || !injector['connected']) {
-          console.log(`🎙️ ${personaName}: Creating new injector for call ${callId}`);
           injector = await AIAudioInjector.create(callId, personaId, personaName);
           activeInjectors.set(callId, injector);
         }
 
         // Inject audio
         await injector.injectAudio(audioSamples);
-      })().catch((error) => {
-        console.error(`🎙️ ${personaName}: Audio injection error:`, error);
-      });
+      })().catch(() => {});
     });
 
     return () => {

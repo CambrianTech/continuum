@@ -211,9 +211,7 @@ class IPCConnection {
         const totalMs = Date.now() - timing.sendTime;
         this.pendingTimings.delete(response.requestId);
 
-        if (totalMs > 1000) {
-          console.warn(`[IPC#${this.connectionIndex}] SLOW: ${timing.command} total=${totalMs}ms`);
-        }
+        // Metrics tracked in ORMLogger — no stdout spam
       }
     }
   }
@@ -324,7 +322,7 @@ export class ORMRustClient {
       }
       await Promise.all(connectPromises);
       this.poolReady = true;
-      console.log(`[ORMRustClient] IPC pool ready: ${POOL_SIZE} connections to ${SOCKET_PATH}`);
+      // Pool ready
     } finally {
       this.poolConnecting = false;
     }

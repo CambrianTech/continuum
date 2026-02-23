@@ -123,7 +123,6 @@ export class AIProviderRustClient {
       this.socket.on('connect', () => {
         this.connected = true;
         this.connecting = false;
-        console.log('[AIProviderRustClient] Connected to continuum-core');
         resolve();
       });
 

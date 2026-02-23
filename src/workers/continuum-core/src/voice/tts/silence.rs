@@ -98,6 +98,7 @@ impl TextToSpeech for SilenceTTS {
             samples,
             sample_rate: AUDIO_SAMPLE_RATE,
             duration_ms,
+            voice_name: None,
         })
     }
 

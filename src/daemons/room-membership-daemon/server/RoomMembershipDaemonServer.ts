@@ -427,7 +427,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         }, 'default');
 
         if (!queryResult.success || !queryResult.data?.length) {
-          this.log.warn(`⚠️ MembershipDaemon: Activity ${activityUniqueId} not found, skipping for ${displayName}`);
+          // Activity not yet created — expected during startup
           continue;
         }
 

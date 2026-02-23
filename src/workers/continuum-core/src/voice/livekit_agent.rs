@@ -683,7 +683,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         display_name: agent.display_name.clone(),
         width: 640,
         height: 480,
-        fps: 5.0,
+        fps: 30.0,
         vrm_model_path,
     };
 
@@ -1178,8 +1178,12 @@ impl LiveKitAgentManager {
 
         let agent = self.get_or_create_agent(call_id, user_id).await?;
 
-        // Set voice name for gender-matched avatar selection (first-speak-wins)
-        if let Some(v) = voice {
+        // Set resolved voice name for gender-matched avatar selection (first-speak-wins).
+        // Use the resolved name from TTS (e.g., "af_bella") not the input voice param
+        // (which is typically a persona UUID that doesn't encode gender).
+        if let Some(ref resolved) = synthesis.voice_name {
+            agent.set_voice(resolved);
+        } else if let Some(v) = voice {
             agent.set_voice(v);
         }
 

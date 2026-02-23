@@ -30,10 +30,7 @@ export class AIAudioBridge {
 
   private constructor() {
     this.ipcClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
-    this.ipcClient.connect().catch(err => {
-      console.error('🤖 AIAudioBridge: Failed to connect IPC to continuum-core:', err);
-    });
-    console.log('🤖 AIAudioBridge: Initialized (LiveKit via Rust IPC)');
+    this.ipcClient.connect().catch(() => {});
   }
 
   static get instance(): AIAudioBridge {
@@ -51,12 +48,10 @@ export class AIAudioBridge {
     const key = `${callId}-${userId}`;
 
     if (this.participants.has(key)) {
-      console.log(`🤖 AIAudioBridge: ${displayName} already registered for call ${callId.slice(0, 8)}`);
       return true;
     }
 
     this.participants.set(key, { callId, userId, displayName });
-    console.log(`🤖 AIAudioBridge: ${displayName} registered for call ${callId.slice(0, 8)}`);
     return true;
   }
 
@@ -68,7 +63,6 @@ export class AIAudioBridge {
     const participant = this.participants.get(key);
     if (participant) {
       this.participants.delete(key);
-      console.log(`🤖 AIAudioBridge: ${participant.displayName} left call ${callId.slice(0, 8)}`);
     }
   }
 
@@ -99,12 +93,9 @@ export class AIAudioBridge {
       const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro');
 
       const audioDurationMs = result.durationMs;
-      console.log(`🤖 AIAudioBridge: ${displayName} spoke ${audioDurationMs}ms via LiveKit: "${text.slice(0, 50)}..."`);
-
       await this.emitSpeechEvent(callId, userId, displayName, text, audioDurationMs, false);
 
-    } catch (error) {
-      console.error(`🤖 AIAudioBridge: speak failed for ${displayName}:`, error);
+    } catch {
       await this.emitSpeechEvent(callId, userId, displayName, text, 0, true);
     }
   }

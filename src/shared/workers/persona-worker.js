@@ -98,6 +98,6 @@ async function callMock(prompt, model, temperature, maxTokens) {
     }
   });
 
-  console.log(`✅ [WORKER-${threadId}] AI Worker ready`);
+  // Ready
   parentPort.postMessage({ type: 'ready', timestamp: Date.now() });
 })();

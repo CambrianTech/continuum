@@ -200,11 +200,9 @@ pub fn create_renderer(config: AvatarConfig) -> Box<dyn AvatarRenderer> {
     // Attempt 3D renderer if VRM model path is specified
     if let Some(ref vrm_path) = config.vrm_model_path {
         let exists = std::path::Path::new(vrm_path).exists();
-        eprintln!("[avatar_renderer] create_renderer: vrm_path='{}' exists={}", vrm_path, exists);
         if exists {
             let bevy_system = super::bevy_renderer::get_or_init();
             let ready = bevy_system.is_ready();
-            eprintln!("[avatar_renderer] Bevy system ready={}", ready);
             if ready {
                 static NEXT_SLOT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
                 let slot = NEXT_SLOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -571,15 +569,26 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
 
 /// Select the best avatar for an agent, using voice gender when available.
 ///
-/// - If voice is provided and gender can be extracted, uses `select_avatar_for_voice()`
-///   for gender-matched selection (male voice → male avatar, etc.)
-/// - Falls back to `select_avatar_by_identity()` (round-robin) when voice is unknown.
+/// - If voice is provided and gender can be extracted, filters the catalog by gender
+///   then round-robins among matching models for variety.
+/// - Falls back to `select_avatar_by_identity()` (round-robin over all) when voice is unknown.
 pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
     if let Some(voice_name) = voice {
         if let Some(gender) = gender_from_voice_name(voice_name) {
-            info!("🎭 Avatar selection for '{}': voice='{}' → gender={:?}",
-                &identity[..8.min(identity.len())], voice_name, gender);
-            return select_avatar_for_voice(Some(gender), None, None, None);
+            // Collect indices of models matching this gender (+ neutral as acceptable)
+            let matching: Vec<usize> = AVATAR_CATALOG.iter().enumerate()
+                .filter(|(_, m)| m.voice_profile.gender == gender || m.voice_profile.gender == AvatarGender::Neutral)
+                .map(|(i, _)| i)
+                .collect();
+
+            if !matching.is_empty() {
+                static GENDER_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let idx = GENDER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let picked = matching[idx % matching.len()];
+                info!("🎭 Avatar selection for '{}': voice='{}' → gender={:?} → model='{}'",
+                    &identity[..8.min(identity.len())], voice_name, gender, AVATAR_CATALOG[picked].id);
+                return &AVATAR_CATALOG[picked];
+            }
         }
     }
     select_avatar_by_identity(identity)
@@ -787,11 +796,17 @@ mod tests {
 
     #[test]
     fn test_select_avatar_for_agent_with_voice() {
+        // Male voice → male or neutral avatar (round-robin among matching)
         let model = select_avatar_for_agent("some-persona-id", Some("am_adam"));
-        assert_eq!(model.voice_profile.gender, AvatarGender::Male);
+        assert!(model.voice_profile.gender == AvatarGender::Male
+            || model.voice_profile.gender == AvatarGender::Neutral,
+            "Expected Male or Neutral, got {:?}", model.voice_profile.gender);
 
+        // Female voice → female or neutral avatar (round-robin among matching)
         let model = select_avatar_for_agent("some-persona-id", Some("af_bella"));
-        assert_eq!(model.voice_profile.gender, AvatarGender::Female);
+        assert!(model.voice_profile.gender == AvatarGender::Female
+            || model.voice_profile.gender == AvatarGender::Neutral,
+            "Expected Female or Neutral, got {:?}", model.voice_profile.gender);
     }
 
     #[test]

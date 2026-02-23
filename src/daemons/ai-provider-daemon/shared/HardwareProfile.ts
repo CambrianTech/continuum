@@ -98,7 +98,6 @@ export class HardwareProfile {
         const cacheAge = Date.now() - new Date(cached.benchmarkedAt).getTime();
         if (cacheAge < 24 * 60 * 60 * 1000) {
           this.capabilities = cached;
-          console.log(`📊 HardwareProfile: Loaded cached profile (${cached.device})`);
           return cached;
         }
       } catch (e) {
@@ -115,8 +114,6 @@ export class HardwareProfile {
    * Detect hardware and optionally run quick benchmark
    */
   private async detectAndBenchmark(): Promise<HardwareCapabilities> {
-    console.log('📊 HardwareProfile: Detecting hardware capabilities...');
-
     // Detect accelerator type
     const { accelerator, device, memoryGB } = this.detectHardware();
 
@@ -137,8 +134,6 @@ export class HardwareProfile {
       recommendedTimeout: this.calculateTimeout(baseProfile.tokensPerSecond || 10),
       recommendedContextWindow: this.calculateContextWindow(baseProfile.promptProcessingSpeed || 50),
     };
-
-    console.log(`📊 HardwareProfile: ${device} (${accelerator}) - ${capabilities.tokensPerSecond} tok/s`);
 
     // Save to cache
     this.saveProfile(capabilities);
@@ -296,7 +291,7 @@ export class HardwareProfile {
       }
       fs.writeFileSync(this.profilePath, JSON.stringify(capabilities, null, 2));
     } catch (e) {
-      console.warn('📊 HardwareProfile: Failed to save profile:', e);
+      // Profile save is non-critical, silently continue
     }
   }
 
@@ -320,12 +315,7 @@ export class HardwareProfile {
     }
 
     try {
-      console.log('📊 HardwareProfile: Running inference benchmark...');
-
-      // This would run actual inference through the socket
-      // For now, just return estimated capabilities
-      console.log('📊 HardwareProfile: Using estimated values (benchmark not implemented)');
-
+      // Benchmark not yet implemented - return estimated capabilities
       return this.capabilities;
     } catch (e) {
       console.error('📊 HardwareProfile: Benchmark failed:', e);

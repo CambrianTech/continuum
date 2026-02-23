@@ -37,9 +37,8 @@ export class VoiceOrchestratorRustBridge {
 		try {
 			await this.client.connect();
 			this.connected = true;
-			console.log('🦀 VoiceOrchestrator: Connected to Rust core');
-		} catch (e) {
-			console.error('🦀 VoiceOrchestrator: Failed to connect to Rust core:', e);
+		} catch {
+			// Connection to Rust core failed — will retry on next operation
 		}
 	}
 
@@ -98,7 +97,6 @@ export class VoiceOrchestratorRustBridge {
 			}
 		}
 
-		console.log(`🦀 VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participantIds.length} participants (${aiCount} AI, all registered with AIAudioBridge)`);
 	}
 
 	/**
@@ -106,11 +104,8 @@ export class VoiceOrchestratorRustBridge {
 	 */
 	async onUtterance(event: UtteranceEvent): Promise<UUID[]> {
 		if (!this.connected) {
-			console.error('🦀 VoiceOrchestrator: Not connected to Rust core');
 			return [];
 		}
-
-		const start = performance.now();
 
 		const rustEvent = {
 			session_id: event.sessionId,
@@ -123,20 +118,14 @@ export class VoiceOrchestratorRustBridge {
 		};
 
 		const responderIds = await this.client.voiceOnUtterance(rustEvent);
-		const duration = performance.now() - start;
-
-		if (duration > 5) {
-			console.warn(`🦀 VoiceOrchestrator: Slow utterance: ${duration.toFixed(2)}ms`);
-		}
-
 		return responderIds as UUID[];
 	}
 
 	/**
 	 * End a voice session
 	 */
-	async endSession(sessionId: UUID): Promise<void> {
-		console.log(`🦀 VoiceOrchestrator: Ended session ${sessionId.slice(0, 8)}`);
+	async endSession(_sessionId: UUID): Promise<void> {
+		// Session cleanup handled by Rust side
 	}
 }
 

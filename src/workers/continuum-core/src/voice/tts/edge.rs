@@ -185,6 +185,7 @@ impl TextToSpeech for EdgeTTS {
                     samples,
                     sample_rate: AUDIO_SAMPLE_RATE,
                     duration_ms: dur,
+                    voice_name: None,
                 });
             }
             unreachable!()

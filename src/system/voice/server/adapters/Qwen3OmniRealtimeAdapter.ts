@@ -83,8 +83,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
       });
 
       this.ws.on('open', () => {
-        console.log(`🔊 Qwen3-Omni: Connected to ${this.modelId}`);
-
         // Send session configuration
         this.sendEvent({
           type: 'session.update',
@@ -107,13 +105,11 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
       });
 
       this.ws.on('error', (error) => {
-        console.error('🔊 Qwen3-Omni: WebSocket error:', error);
         this.emitError(error);
         reject(error);
       });
 
-      this.ws.on('close', (code, reason) => {
-        console.log(`🔊 Qwen3-Omni: Disconnected (code: ${code}, reason: ${reason})`);
+      this.ws.on('close', () => {
         this.ws = null;
       });
     });
@@ -136,7 +132,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
    */
   sendAudio(samples: Int16Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('🔊 Qwen3-Omni: Cannot send audio - not connected');
       return;
     }
 
@@ -222,8 +217,8 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
     try {
       const event = JSON.parse(data.toString()) as AudioNativeServerEvent;
       this.handleEvent(event);
-    } catch (error) {
-      console.error('🔊 Qwen3-Omni: Failed to parse message:', error);
+    } catch {
+      // Malformed message — ignore
     }
   }
 
@@ -231,7 +226,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
     switch (event.type) {
       case 'session.created':
       case 'session.updated':
-        console.log(`🔊 Qwen3-Omni: Session ${event.type.split('.')[1]}`);
         break;
 
       case 'input_audio_buffer.speech_started':
@@ -259,7 +253,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
         break;
 
       case 'response.done':
-        console.log(`🔊 Qwen3-Omni: Response completed`);
         break;
 
       case 'error':
@@ -272,15 +265,13 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
     }
   }
 
-  private handleSpeechStarted(event: InputAudioBufferSpeechStartedEvent): void {
-    console.log(`🔊 Qwen3-Omni: Speech started at ${event.audio_start_ms}ms`);
+  private handleSpeechStarted(_event: InputAudioBufferSpeechStartedEvent): void {
     for (const callback of this.speechDetectedCallbacks) {
       callback(true);
     }
   }
 
-  private handleSpeechStopped(event: InputAudioBufferSpeechStoppedEvent): void {
-    console.log(`🔊 Qwen3-Omni: Speech stopped at ${event.audio_end_ms}ms`);
+  private handleSpeechStopped(_event: InputAudioBufferSpeechStoppedEvent): void {
     for (const callback of this.speechDetectedCallbacks) {
       callback(false);
     }
@@ -321,7 +312,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
 
   private handleTranscriptDone(event: ResponseAudioTranscriptDoneEvent): void {
     const finalTranscript = event.transcript || this.transcriptBuffer;
-    console.log(`🔊 Qwen3-Omni: Transcript: "${finalTranscript.slice(0, 50)}..."`);
 
     // Emit final transcript
     for (const callback of this.transcriptCallbacks) {
@@ -333,7 +323,6 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
 
   private handleError(event: ErrorEvent): void {
     const error = new Error(`${event.error.code}: ${event.error.message}`);
-    console.error('🔊 Qwen3-Omni: Error:', error.message);
     this.emitError(error);
   }
 

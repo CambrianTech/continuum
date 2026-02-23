@@ -108,7 +108,7 @@ export function initializeTrainingCompletionHandler(): void {
     cleanupTempFiles(ctx.configPath, ctx.datasetPath);
   });
 
-  console.log('[TrainingCompletion] Initialized — listening for training sentinel completions');
+  // Listening for completions
 }
 
 /**

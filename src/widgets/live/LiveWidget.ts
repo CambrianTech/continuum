@@ -1140,7 +1140,7 @@ export class LiveWidget extends ReactiveWidget {
         title="Click to view ${participant.displayName}'s profile"
       >
         ${hasVideo
-          ? html`<div class="video-container"></div>`
+          ? html`<div class="video-container" style="position:absolute;inset:0;width:100%;height:100%;overflow:hidden;border-radius:8px"></div>`
           : html`
                 <div class="participant-avatar">
                   ${participant.displayName.charAt(0).toUpperCase()}
@@ -1306,7 +1306,7 @@ export class LiveWidget extends ReactiveWidget {
             ${presenter.screenShareEnabled
               ? html`<div class="screen-share-placeholder">${this.renderScreenShareIcon()} ${presenter.displayName} is sharing</div>`
               : presenterHasVideo
-                ? html`<div class="video-container spotlight-video"></div>`
+                ? html`<div class="video-container spotlight-video" style="position:absolute;inset:0;width:100%;height:100%;overflow:hidden;border-radius:8px"></div>`
                 : html`
                       <div class="participant-avatar large">
                         ${presenter.displayName.charAt(0).toUpperCase()}

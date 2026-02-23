@@ -46,7 +46,7 @@ export abstract class JTAGBase extends JTAGModule {
       const router = this.getRouter();
       if (router) {
         this.scopedEventSystem = new ScopedEventSystem(router, this.sessionId, this.context);
-        console.log(`🎯 ScopedEventSystem initialized for session ${this.sessionId}`);
+        // ScopedEventSystem ready
       }
     }
   }

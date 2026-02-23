@@ -60,12 +60,10 @@ export class VoiceWebSocketServer {
       this.server = new WebSocketServer({ port: this.port });
 
       this.server.on('error', (error: Error) => {
-        console.error('🎤 Voice WebSocket server error:', error);
         reject(error);
       });
 
       this.server.on('listening', () => {
-        console.log(`🎤 Voice WebSocket server listening on port ${this.port}`);
         resolve();
       });
 
@@ -88,7 +86,6 @@ export class VoiceWebSocketServer {
 
     return new Promise((resolve) => {
       this.server?.close(() => {
-        console.log('🎤 Voice WebSocket server stopped');
         this.server = null;
         resolve();
       });
@@ -105,7 +102,6 @@ export class VoiceWebSocketServer {
     const roomId = url.searchParams.get('room') || 'general';
 
     if (!handle) {
-      console.warn('🎤 Voice connection rejected: missing handle');
       ws.close(4000, 'Missing handle parameter');
       return;
     }
@@ -113,12 +109,9 @@ export class VoiceWebSocketServer {
     // Verify session exists
     const session = VoiceSessionManager.getSession(handle);
     if (!session) {
-      console.warn(`🎤 Voice connection rejected: unknown handle ${handle.substring(0, 8)}`);
       ws.close(4001, 'Unknown session handle');
       return;
     }
-
-    console.log(`🎤 Voice connection established: ${handle.substring(0, 8)}... in room ${roomId}`);
 
     // Create connection tracking
     const connection: VoiceConnection = {
@@ -150,13 +143,11 @@ export class VoiceWebSocketServer {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`🎤 Voice connection closed: ${handle.substring(0, 8)}... (${code})`);
       this.connections.delete(handle);
       VoiceSessionManager.endSession(handle);
     });
 
-    ws.on('error', (error) => {
-      console.error(`🎤 Voice connection error: ${handle.substring(0, 8)}...`, error);
+    ws.on('error', () => {
       this.connections.delete(handle);
       VoiceSessionManager.endSession(handle);
     });
@@ -216,18 +207,14 @@ export class VoiceWebSocketServer {
 
     try {
       // Step 1: Transcribe audio to text via Rust Whisper
-      console.log(`🎤 Transcribing ${totalSamples} samples (${(totalSamples / AUDIO_SAMPLE_RATE * 1000).toFixed(0)}ms)`);
-
       const transcribeResult = await VoiceTranscribe.execute({ audio: audioBase64 }
       );
 
       if (!transcribeResult.success || !transcribeResult.text.trim()) {
-        console.log('🎤 No speech detected or transcription failed');
         return;
       }
 
       const transcribedText = transcribeResult.text;
-      console.log(`🎤 Transcribed: "${transcribedText}"`);
 
       // Send transcription to client
       this.sendJson(connection.ws, {
@@ -271,13 +258,10 @@ export class VoiceWebSocketServer {
         });
       }
 
-      console.log(`[STEP 8] 📤 Emitted voice events to ${responderIds.length} AI participants`);
-
       // Note: AI response will come back via VoiceOrchestrator.onPersonaResponse()
       // which calls our TTS callback (set in startVoiceServer)
 
     } catch (error) {
-      console.error('🎤 Voice processing error:', error);
       this.sendJson(connection.ws, {
         type: 'error',
         message: error instanceof Error ? error.message : 'Voice processing failed',
@@ -365,10 +349,7 @@ export class VoiceWebSocketServer {
 
       switch (message.type) {
         case 'Transcription':
-          // Transcription from Rust continuum-core
-          console.log(`[STEP 10] 🎙️ SERVER: Relaying transcription to VoiceOrchestrator: "${message.text?.slice(0, 50)}..."`);
-
-          // Relay to VoiceOrchestrator for turn arbitration and PersonaUser routing
+          // Transcription from Rust continuum-core — relay to VoiceOrchestrator
           const utteranceEvent: UtteranceEvent = {
             sessionId: connection.roomId as UUID,
             speakerId: connection.userId as UUID,
@@ -379,31 +360,25 @@ export class VoiceWebSocketServer {
             timestamp: Date.now()
           };
 
-          console.log(`[STEP 10] ✅ Transcription event emitted on server Events bus`);
-
-          // [STEP 10] Call Rust VoiceOrchestrator to get responder IDs
+          // Call Rust VoiceOrchestrator to get responder IDs
           const responderIds = await getRustVoiceOrchestrator().onUtterance(utteranceEvent);
-          console.log(`[STEP 10] 🎙️ VoiceOrchestrator → ${responderIds.length} AI participants`);
 
-          // [STEP 11] Emit voice:transcription:directed events for each AI
+          // Emit voice:transcription:directed events for each AI
           for (const aiId of responderIds) {
             await Events.emit('voice:transcription:directed', {
               sessionId: utteranceEvent.sessionId,
               speakerId: utteranceEvent.speakerId,
               speakerName: utteranceEvent.speakerName,
-              speakerType: utteranceEvent.speakerType,  // Pass through speaker type
+              speakerType: utteranceEvent.speakerType,
               transcript: utteranceEvent.transcript,
               confidence: utteranceEvent.confidence,
               targetPersonaId: aiId,
               timestamp: utteranceEvent.timestamp,
             });
-            console.log(`[STEP 11] 📤 Emitted voice event to AI: ${aiId.slice(0, 8)}`);
           }
           break;
 
         case 'interrupt':
-          // User wants to interrupt AI
-          console.log(`🎤 Interrupt requested: ${connection.handle.substring(0, 8)}`);
           VoiceSessionManager.setAISpeaking(connection.handle, false);
           this.sendJson(connection.ws, { type: 'interrupted' });
           break;
@@ -413,10 +388,10 @@ export class VoiceWebSocketServer {
           break;
 
         default:
-          console.log(`🎤 Unknown message type: ${message.type}`);
+          break;
       }
-    } catch (error) {
-      console.error('🎤 Failed to parse JSON message:', error);
+    } catch {
+      // Malformed JSON — ignore
     }
   }
 
@@ -445,11 +420,10 @@ export class VoiceWebSocketServer {
         // Send to browser through mixer
         if (connection.ws.readyState === WebSocket.OPEN) {
           connection.ws.send(Buffer.from(audioSamples.buffer));
-          console.log('🔊 Sent "Got it" confirmation audio to browser');
         }
       });
-    } catch (error) {
-      console.error('Failed to send confirmation audio:', error);
+    } catch {
+      // Confirmation audio is non-critical
     }
   }
 
@@ -521,11 +495,8 @@ export class VoiceWebSocketServer {
       .filter(conn => conn.roomId === sessionId);
 
     if (sessionConnections.length === 0) {
-      console.warn(`🎤 No connections found for session ${sessionId.slice(0, 8)}`);
       return;
     }
-
-    console.log(`🎤 Synthesizing for ${sessionConnections.length} clients: "${text.slice(0, 50)}..."`);
 
     // Notify clients that AI is speaking
     for (const conn of sessionConnections) {
@@ -554,8 +525,6 @@ export class VoiceWebSocketServer {
 
         // Send audio to all clients in session
         await this.sendAudioToSession(sessionConnections, audioData, synthesizeResult.sampleRate);
-      } else {
-        console.error('🎤 TTS synthesis failed:', synthesizeResult.error);
       }
     } finally {
       // Mark session as AI done speaking

@@ -598,19 +598,20 @@ export class AICapabilityRegistry {
   /**
    * Debug: Print all registered capabilities
    */
-  debugPrint(): void {
-    console.log('=== AICapabilityRegistry ===');
+  debugPrint(): string {
+    const lines: string[] = ['=== AICapabilityRegistry ==='];
     for (const [providerId, provider] of this.providers) {
-      console.log(`\n${provider.providerName} (${providerId}):`);
-      console.log(`  Default: ${provider.defaultCapabilities.join(', ')}`);
+      lines.push(`\n${provider.providerName} (${providerId}):`);
+      lines.push(`  Default: ${provider.defaultCapabilities.join(', ')}`);
       for (const model of provider.models) {
-        console.log(`  - ${model.displayName} (${model.modelId})`);
-        console.log(`    Capabilities: ${model.capabilities.join(', ')}`);
+        lines.push(`  - ${model.displayName} (${model.modelId})`);
+        lines.push(`    Capabilities: ${model.capabilities.join(', ')}`);
         if (model.contextWindow) {
-          console.log(`    Context: ${model.contextWindow.toLocaleString()}`);
+          lines.push(`    Context: ${model.contextWindow.toLocaleString()}`);
         }
       }
     }
+    return lines.join('\n');
   }
 }
 

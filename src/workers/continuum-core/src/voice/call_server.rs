@@ -821,13 +821,7 @@ impl CallManager {
                             display_name
                         );
 
-                        // This is a critical issue - log to stderr for monitoring
-                        eprintln!(
-                            "🚨 CRITICAL: Transcription dropped due to buffer overflow. \
-                            Text: \"{}...\", Speaker: {}, Buffer: 500 events",
-                            text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>(),
-                            display_name
-                        );
+                        // Critical issue already logged via tracing::error above
                     }
                 } else {
                     info!("📝 Empty transcription result from {}", display_name);

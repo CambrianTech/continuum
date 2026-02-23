@@ -40,9 +40,6 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
-    // DEBUG: Verify constructor runs
-    console.log('🚀🚀🚀 AIProviderDaemonServer CONSTRUCTOR CALLED 🚀🚀🚀');
-
     // Set up file-based logging using class name automatically
     // Logs go to .continuum/.../logs/daemons/{ClassName}.log
     const className = this.constructor.name;
@@ -77,7 +74,6 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    * Health monitoring is deferred to initializeDeferred().
    */
   protected async initialize(): Promise<void> {
-    console.log('🚀 AIProviderDaemonServer: CORE init starting...');
     const coreStart = Date.now();
 
     // Initialize SecretManager FIRST (adapters depend on it)

@@ -121,7 +121,7 @@ export class PersonaInbox {
     this.config = { ...DEFAULT_INBOX_CONFIG, ...config };
     this.signal = new EventEmitter();
 
-    this.log(`📬 Inbox initialized (maxSize=${this.config.maxSize}, signal-based wakeup)`);
+    // Inbox ready
   }
 
   /**

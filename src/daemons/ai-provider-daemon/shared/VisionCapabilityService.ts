@@ -348,17 +348,18 @@ export class VisionCapabilityService {
   }
 
   /**
-   * Debug: Print all registered models
+   * Debug: Return all registered models as string
    */
-  debugPrint(): void {
-    console.log('=== VisionCapabilityService Registry ===');
+  debugPrint(): string {
+    const lines: string[] = ['=== VisionCapabilityService Registry ==='];
     for (const [provider, entries] of this.registry) {
-      console.log(`\n${provider}:`);
+      lines.push(`\n${provider}:`);
       for (const entry of entries) {
-        console.log(`  - ${entry.modelId} ${entry.isPattern ? '(pattern)' : ''}`);
-        console.log(`    Capabilities: ${entry.capabilities.join(', ')}`);
+        lines.push(`  - ${entry.modelId} ${entry.isPattern ? '(pattern)' : ''}`);
+        lines.push(`    Capabilities: ${entry.capabilities.join(', ')}`);
       }
     }
+    return lines.join('\n');
   }
 }
 

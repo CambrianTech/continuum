@@ -211,14 +211,7 @@ export class RustCoreIPCClientBase extends EventEmitter {
 			this._pendingRequests.set(requestId, {
 				resolve: (result) => {
 					const duration = performance.now() - start;
-					if (duration > RustCoreIPCClientBase.SLOW_IPC_THRESHOLD_MS) {
-						const now = Date.now();
-						const lastWarned = RustCoreIPCClientBase.slowWarningTimestamps.get(command.command) ?? 0;
-						if (now - lastWarned > RustCoreIPCClientBase.SLOW_WARNING_COOLDOWN_MS) {
-							RustCoreIPCClientBase.slowWarningTimestamps.set(command.command, now);
-							console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(0)}ms`);
-						}
-					}
+					// Slow IPC tracked via metrics — no stdout spam
 					resolve(result);
 				},
 				reject,

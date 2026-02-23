@@ -85,7 +85,7 @@ export class PersonaWorkerThread extends EventEmitter {
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
     const workerPath = path.join(currentDir, 'persona-worker.js');
 
-    console.log(`🧵 Starting worker for persona ${this.personaId.slice(0, 8)} (${this.config.providerType})`);
+    // Starting worker
 
     this.worker = new Worker(workerPath, {
       workerData: {
@@ -107,7 +107,7 @@ export class PersonaWorkerThread extends EventEmitter {
     });
 
     this.worker.on('exit', (code) => {
-      console.log(`🧵 Worker ${this.personaId} exited with code ${code}`);
+      // Worker exited
       this.emit('exit', code);
     });
 
@@ -128,11 +128,11 @@ export class PersonaWorkerThread extends EventEmitter {
    * Handle messages received from worker thread.
    */
   private handleWorkerMessage(msg: WorkerResponse): void {
-    console.log(`📨 Main thread received from worker ${this.personaId}: type=${msg.type}`);
+    // Message received from worker
 
     if (msg.type === 'ready') {
       this.isReady = true;
-      console.log(`✅ Worker ${this.personaId} is ready`);
+      // Worker ready
       this.emit('ready');
     }
     else if (msg.type === 'pong') {
