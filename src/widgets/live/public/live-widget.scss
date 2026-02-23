@@ -1,10 +1,13 @@
 /**
- * LiveWidget - Video Call Interface (Teams/Discord style)
+ * LiveWidget - Layout-only styles (orchestrator)
  *
- * Clean, modern design matching professional video apps.
+ * Grid layout, spotlight layout, participant strip positioning, join prompt.
+ * Component-specific styles live in their own shadow DOMs:
+ * - live-participant-tile.scss (tiles, avatars, video containers)
+ * - live-controls.scss (buttons, mic level indicator)
+ * - live-captions.scss (caption overlay)
  */
 
-@use "sass:color";
 @use '../../shared/styles/variables' as *;
 
 :host {
@@ -21,26 +24,11 @@
   flex-direction: column;
   height: 100%;
   gap: 0;
-  position: relative;  // For caption overlay positioning
-}
-
-// ========================================
-// Per-Participant Video Canvas
-// Server-rendered frames (test pattern, bgfx-rs avatar, webcam, AI-generated)
-// are routed to individual participant tiles by senderId (userId).
-// ========================================
-
-.participant-video-canvas {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: $border-radius-lg;
-  image-rendering: auto;  // Smooth for real video (change to pixelated for test patterns)
+  position: relative;
 }
 
 // ========================================
 // Participant Grid (Teams/Discord style)
-// Fills available space intelligently based on participant count
 // ========================================
 
 .participant-grid {
@@ -51,10 +39,6 @@
   overflow: hidden;
   align-content: center;
   justify-content: center;
-
-  // Default: fill space with reasonable min size
-  // CSS custom property --participant-count set via JS
-  // Uses CSS container queries for responsive behavior
 
   // Single participant: full width
   &[data-count="1"] {
@@ -135,233 +119,8 @@
   }
 }
 
-// Individual participant tile
-.participant-tile {
-  // Fill grid cell, let grid control aspect ratio
-  min-height: 0;  // Allow shrinking
-  height: 100%;
-  background: linear-gradient(135deg, #2a2a3a 0%, #1e1e2e 100%);
-  border-radius: $border-radius-lg;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-  cursor: pointer;  // Clickable to open profile
-  transition: box-shadow $transition-fast, transform $transition-fast;
-
-  &:hover {
-    box-shadow: 0 0 0 2px rgba($color-primary, 0.3);
-    transform: scale(1.02);
-  }
-
-  &.speaking {
-    box-shadow: 0 0 0 3px $color-success;
-    animation: pulse-glow 1.5s ease-in-out infinite;
-  }
-
-  .video-container {
-    width: 100%;
-    height: 100%;
-  }
-}
-
-// Pulse animation for speaking indicator
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: 0 0 0 3px $color-success;
-  }
-  50% {
-    box-shadow: 0 0 0 3px rgba($color-success, 0.6), 0 0 20px rgba($color-success, 0.4);
-  }
-}
-
-// Participant tile with active video — hide avatar, show canvas
-.participant-tile.has-video {
-  .participant-avatar {
-    display: none;
-  }
-}
-
-// Participant avatar (when no video)
-// Colorful circular avatars like Discord/Teams
-.participant-avatar {
-  width: clamp(60px, 25%, 120px);  // Responsive sizing
-  aspect-ratio: 1;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: clamp(1.5rem, 5vw, 3rem);
-  font-weight: 600;
-  color: white;
-  text-transform: uppercase;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-
-  // Generate colorful backgrounds based on nth-child
-  // Creates variety like Discord's colored avatars
-  background: linear-gradient(135deg, #5865F2 0%, #3B42C8 100%);  // Discord blurple default
-
-  .participant-tile:nth-child(7n+1) & { background: linear-gradient(135deg, #ED4245 0%, #C73A3D 100%); }  // Red
-  .participant-tile:nth-child(7n+2) & { background: linear-gradient(135deg, #FEE75C 0%, #E8D54D 100%); color: #1a1a1a; }  // Yellow
-  .participant-tile:nth-child(7n+3) & { background: linear-gradient(135deg, #57F287 0%, #3FC76C 100%); }  // Green
-  .participant-tile:nth-child(7n+4) & { background: linear-gradient(135deg, #5865F2 0%, #3B42C8 100%); }  // Blurple
-  .participant-tile:nth-child(7n+5) & { background: linear-gradient(135deg, #EB459E 0%, #C73882 100%); }  // Fuchsia
-  .participant-tile:nth-child(7n+6) & { background: linear-gradient(135deg, #FA8231 0%, #D96F2A 100%); }  // Orange
-  .participant-tile:nth-child(7n+7) & { background: linear-gradient(135deg, #9B59B6 0%, #7D4899 100%); }  // Purple
-}
-
-// Video container and child elements (LiveKit track.attach() inserts <video>)
-.video-container {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  border-radius: $border-radius-lg;
-  animation: video-fade-in 0.3s ease-out;
-
-  video {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: inherit;
-  }
-}
-
-@keyframes video-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-// Participant video (legacy canvas path)
-.participant-video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-// Participant name label
-.participant-name {
-  position: absolute;
-  bottom: $spacing-sm;
-  left: $spacing-sm;
-  background: rgba(0, 0, 0, 0.7);
-  padding: $spacing-xs $spacing-sm;
-  border-radius: $border-radius-sm;
-  font-size: $font-size-sm;
-  color: $color-text;
-  max-width: calc(100% - #{$spacing-md * 2});
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-// Status indicators (muted, etc.)
-.participant-indicators {
-  position: absolute;
-  top: $spacing-sm;
-  right: $spacing-sm;
-  display: flex;
-  gap: $spacing-xs;
-}
-
-.indicator {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: $font-size-sm;
-
-  &.muted {
-    color: $color-error;
-  }
-}
-
 // ========================================
-// Controls Bar (Bottom)
-// ========================================
-
-.controls {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: $spacing-md;
-  padding: $spacing-lg;
-  background: #252525;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  position: relative;  // For caption positioning
-}
-
-.control-btn {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.25rem;
-  transition: all $transition-fast;
-  background: #3a3a3a;
-  color: $color-text;
-  position: relative;
-  overflow: hidden;
-
-  &:hover {
-    background: #4a4a4a;
-    transform: scale(1.05);
-  }
-
-  &.active {
-    background: rgba($color-primary, 0.2);
-    color: $color-primary;
-  }
-
-  &.inactive {
-    background: rgba($color-error, 0.2);
-    color: $color-error;
-  }
-
-  &.leave {
-    background: $color-error;
-    color: white;
-    width: 56px;
-    border-radius: 28px;
-    padding: 0 $spacing-lg;
-
-    &:hover {
-      background: color.adjust($color-error, $lightness: -10%);
-    }
-  }
-}
-
-// Mic level indicator - visual feedback for audio input
-.mic-level-indicator {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: linear-gradient(to top, rgba(0, 255, 100, 0.7), rgba(0, 255, 100, 0.3));
-  pointer-events: none;
-  z-index: 1;
-  border-radius: 0 0 50% 50%;
-  transition: height 50ms ease-out;
-}
-
-// Ensure icon SVG sits above the level indicator
-.control-btn svg {
-  position: relative;
-  z-index: 2;
-}
-
-// ========================================
-// Empty State
+// Empty State & Join Prompt
 // ========================================
 
 .empty-state {
@@ -381,7 +140,6 @@
   }
 }
 
-// Join prompt (when not in call)
 .join-prompt {
   flex: 1;
   display: flex;
@@ -392,32 +150,36 @@
   padding: $spacing-xl;
 }
 
-.join-btn {
-  padding: $spacing-md $spacing-xl;
-  border-radius: $border-radius-lg;
-  border: none;
-  background: $color-success;
-  color: white;
-  font-size: $font-size-lg;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all $transition-fast;
+// ========================================
+// Spotlight Mode (screen share / presenter)
+// ========================================
 
-  &:hover {
-    background: color.adjust($color-success, $lightness: -10%);
-    transform: scale(1.02);
+.spotlight-mode {
+  .spotlight-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: $spacing-md;
+    min-height: 0;
+  }
+
+  // The presenter tile fills the spotlight area
+  .spotlight-presenter {
+    width: 100%;
+    height: 100%;
   }
 }
 
 // ========================================
-// Participant Strip (bottom row, Teams style)
+// Participant Strip (horizontal, bottom)
 // ========================================
 
 .participant-strip {
   display: flex;
   justify-content: center;
   gap: $spacing-sm;
-  padding: $spacing-sm $spacing-md;
+  padding: $spacing-md;
   background: #1e1e1e;
   overflow-x: auto;
 
@@ -431,258 +193,11 @@
   }
 }
 
-.strip-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: $font-size-md;
-  font-weight: 600;
-  color: $color-text;
-  cursor: pointer;
-  transition: all $transition-fast;
+// Strip tiles are small thumbnails
+.strip-tile {
+  position: relative;
+  width: 80px;
+  height: 80px;
   flex-shrink: 0;
-
-  &:hover {
-    transform: scale(1.1);
-  }
-
-  &.speaking {
-    box-shadow: 0 0 0 2px $color-success;
-  }
-}
-
-// ========================================
-// Spotlight Mode (screen share / presenter)
-// Main presenter takes center, others in strip
-// ========================================
-
-.spotlight-mode {
-  .spotlight-main {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: $spacing-md;
-    min-height: 0;  // Allow flex shrink
-  }
-
-  .presenter-tile {
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(135deg, #2a2a3a 0%, #1e1e2e 100%);
-    border-radius: $border-radius-lg;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    overflow: hidden;
-
-    .video-container {
-      width: 100%;
-      height: 100%;
-    }
-  }
-
-  .screen-share-placeholder {
-    font-size: 3rem;
-    color: $color-text-dim;
-    text-align: center;
-    padding: $spacing-xl;
-  }
-
-  // Spotlight video canvas fills the presenter area
-  .spotlight-canvas {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;  // Crop to fill — matches grid tile behavior
-    border-radius: $border-radius-lg;
-    image-rendering: auto;
-  }
-
-  // Ensure video-container fills the presenter tile in spotlight mode
-  .spotlight-video {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    border-radius: $border-radius-lg;
-
-    video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      border-radius: inherit;
-    }
-  }
-
-  .presenter-tile.has-video {
-    .participant-avatar {
-      display: none;
-    }
-  }
-
-  // Exit spotlight button (top-right X)
-  .exit-spotlight-btn {
-    position: absolute;
-    top: $spacing-md;
-    right: $spacing-md;
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    border: none;
-    background: rgba(0, 0, 0, 0.6);
-    color: white;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all $transition-fast;
-    z-index: 10;
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.2);
-      transform: scale(1.1);
-    }
-  }
-
-  .participant-avatar.large {
-    width: 160px;
-    height: 160px;
-    font-size: 4rem;
-  }
-
-  .live-badge {
-    position: absolute;
-    top: $spacing-md;
-    right: $spacing-md;
-    background: $color-error;
-    color: white;
-    padding: $spacing-xs $spacing-sm;
-    border-radius: $border-radius-sm;
-    font-size: $font-size-sm;
-    font-weight: 700;
-    animation: pulse 2s infinite;
-  }
-
-  // Horizontal strip for other participants (Discord Go Live style)
-  .participant-strip {
-    display: flex;
-    justify-content: center;
-    gap: $spacing-sm;
-    padding: $spacing-md;
-    background: #1e1e1e;
-    overflow-x: auto;
-
-    &::-webkit-scrollbar {
-      height: 4px;
-    }
-
-    &::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 2px;
-    }
-  }
-
-  .strip-tile {
-    position: relative;
-    width: 80px;
-    height: 80px;
-    border-radius: $border-radius-md;
-    background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: all $transition-fast;
-
-    &:hover {
-      transform: scale(1.05);
-    }
-
-    &.speaking {
-      box-shadow: 0 0 0 3px $color-success;
-    }
-
-    .strip-avatar {
-      width: 48px;
-      height: 48px;
-      font-size: 1.5rem;
-    }
-
-    .strip-muted {
-      position: absolute;
-      bottom: 4px;
-      right: 4px;
-      font-size: 0.75rem;
-    }
-  }
-}
-
-// ========================================
-// Caption Display (Live Transcription)
-// Subtle captions inside controls bar
-// ========================================
-
-// Caption display: positioned between participant grid and controls
-// No longer absolutely positioned inside .controls — sits in document flow
-.caption-display {
-  background: rgba(0, 0, 0, 0.85);
-  padding: $spacing-xs $spacing-md;
-  border-radius: $border-radius-sm;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  line-height: 1.3;
-  text-align: center;
-  max-height: 80px;
-  overflow-y: auto;
-
-  .caption-speaker {
-    color: rgba(255, 255, 255, 0.6);
-    font-weight: 600;
-    margin-right: $spacing-xs;
-    font-size: 1.1em;
-  }
-
-  .caption-text {
-    color: white;
-    font-size: 1.1em;
-  }
-
-  // Multi-speaker mode: allow multiple lines stacked vertically
-  &.multi-speaker {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-
-    .caption-line {
-      display: block;
-      text-align: left;
-      padding: 4px 8px;
-      background: rgba(0, 0, 0, 0.3);
-      border-radius: 4px;
-
-      .caption-speaker {
-        display: inline;
-        color: $color-primary;
-        font-weight: 700;
-        margin-right: $spacing-xs;
-      }
-
-      .caption-text {
-        display: inline;
-        word-wrap: break-word;
-        overflow-wrap: break-word;
-      }
-    }
-  }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  cursor: pointer;
 }
