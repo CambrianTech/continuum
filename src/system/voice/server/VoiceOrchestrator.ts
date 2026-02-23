@@ -168,6 +168,13 @@ export class VoiceOrchestrator {
   }
 
   /**
+   * Get the roomId for a voice session (for message persistence)
+   */
+  getRoomIdForSession(sessionId: UUID): UUID | null {
+    return this.sessionContexts.get(sessionId)?.roomId ?? null;
+  }
+
+  /**
    * Unregister a voice session
    */
   unregisterSession(sessionId: UUID): void {
