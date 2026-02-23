@@ -595,96 +595,58 @@ fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
     buffer
 }
 
-/// Generate a procedural avatar frame: colored circle on dark background.
-/// Color is deterministically derived from the identity string (like browser avatar).
-fn generate_avatar_rgba(rgba: &mut [u8], width: u32, height: u32, identity: &str) {
-    let (cr, cg, cb) = identity_to_color(identity);
-    let w = width as f32;
-    let h = height as f32;
-    let center_x = w / 2.0;
-    let center_y = h / 2.0;
-    let radius = w.min(h) * 0.35;
-    let radius_sq = radius * radius;
-
-    // Dark background color (matches LiveWidget theme)
-    let (bg_r, bg_g, bg_b): (u8, u8, u8) = (26, 26, 46);
-
-    for y in 0..height {
-        for x in 0..width {
-            let dx = x as f32 - center_x;
-            let dy = y as f32 - center_y;
-            let dist_sq = dx * dx + dy * dy;
-
-            let i = ((y * width + x) * 4) as usize;
-            if dist_sq <= radius_sq {
-                // Inside circle — persona color
-                rgba[i] = cr;
-                rgba[i + 1] = cg;
-                rgba[i + 2] = cb;
-            } else {
-                // Outside — dark background
-                rgba[i] = bg_r;
-                rgba[i + 1] = bg_g;
-                rgba[i + 2] = bg_b;
-            }
-            rgba[i + 3] = 255; // Fully opaque
-        }
-    }
-}
-
-/// Derive a consistent RGB color from an identity string.
-/// Uses HSL with fixed saturation/lightness for visually distinct, pleasant colors.
-fn identity_to_color(identity: &str) -> (u8, u8, u8) {
-    let hash: u32 = identity
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    let hue = (hash % 360) as f32;
-    hsl_to_rgb(hue, 0.65, 0.55)
-}
-
-/// Convert HSL color to RGB. H in [0, 360), S and L in [0, 1].
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-    let (r, g, b) = if h < 60.0 {
-        (c, x, 0.0)
-    } else if h < 120.0 {
-        (x, c, 0.0)
-    } else if h < 180.0 {
-        (0.0, c, x)
-    } else if h < 240.0 {
-        (0.0, x, c)
-    } else if h < 300.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-    (
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
-}
-
 /// Start a background video frame loop for an agent.
-/// Generates a procedural avatar (colored circle) and publishes at ~10fps via LiveKit.
-/// Runs until the agent is dropped or an error occurs.
+///
+/// Uses `avatar_renderer::create_renderer()` factory to select the best backend:
+///   - BevyChannelRenderer (3D VRM) if VRM model exists and Bevy is healthy
+///   - ProceduralRenderer (colored circle) as fallback
+///
+/// The video loop is backend-agnostic — it receives RgbaFrame from whatever
+/// renderer was selected and publishes to LiveKit. New backends (bgfx, wgpu, etc.)
+/// plug in by implementing AvatarRenderer, not by modifying this function.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    let width: u32 = 320;
-    let height: u32 = 240;
+    use crate::voice::avatar_renderer::{AvatarConfig, select_avatar_by_identity, avatar_model_path};
+
+    let avatar = select_avatar_by_identity(&agent.identity);
+    let vrm_path = avatar_model_path(avatar.filename);
+    let vrm_model_path = if vrm_path.exists() {
+        Some(vrm_path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    let config = AvatarConfig {
+        identity: agent.identity.clone(),
+        display_name: agent.display_name.clone(),
+        width: 640,
+        height: 480,
+        fps: 5.0,
+        vrm_model_path,
+    };
+
+    // Factory selects the best renderer — this function doesn't know which backend
+    let frame_rx = crate::voice::avatar_renderer::spawn_renderer_loop(config);
 
     tokio::spawn(async move {
-        // Pre-render the avatar frame once (static image)
-        let mut rgba = vec![0u8; (width * height * 4) as usize];
-        generate_avatar_rgba(&mut rgba, width, height, &agent.identity);
-
-        info!("📹 Video loop started for '{}' ({}x{} @10fps)", agent.identity, width, height);
-
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+        info!("📹 Video loop started for '{}' → model '{}'", agent.identity, avatar.name);
         loop {
-            interval.tick().await;
-            if let Err(e) = agent.publish_video_frame(&rgba, width, height).await {
+            // Receive frame from renderer thread (blocking → spawn_blocking)
+            let frame = match tokio::task::spawn_blocking({
+                let rx = frame_rx.clone();
+                move || rx.recv_timeout(std::time::Duration::from_millis(500))
+            }).await {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(_)) => {
+                    // Timeout — renderer thread may be slow, keep trying
+                    continue;
+                }
+                Err(_) => {
+                    warn!("📹 Video loop spawn_blocking panicked for '{}'", agent.identity);
+                    break;
+                }
+            };
+
+            if let Err(e) = agent.publish_video_frame(&frame.data, frame.width, frame.height).await {
                 warn!("📹 Video loop error for '{}': {}", agent.identity, e);
                 break;
             }
@@ -1080,12 +1042,15 @@ impl LiveKitAgentManager {
     }
 
     /// Get or create an agent for a persona in a call.
-    /// If the agent doesn't exist yet, connects to LiveKit.
+    /// If the agent doesn't exist yet, connects to LiveKit and starts the video loop.
+    ///
+    /// Called both on room join (to show 3D avatars immediately) and on speak
+    /// (to ensure agent exists before feeding TTS audio).
     ///
     /// The agent's identity is the persona's user_id directly — no prefix mangling.
     /// Role classification uses JWT metadata (ParticipantRole::AiPersona), which
     /// the STT listener and browser both check to determine behavior.
-    async fn get_or_create_agent(
+    pub async fn get_or_create_agent(
         &self,
         call_id: &str,
         user_id: &str,

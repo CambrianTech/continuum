@@ -27,6 +27,9 @@ import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class LiveJoinServerCommand extends LiveJoinCommand {
 
+  /** Timestamp when the server process started — calls created before this are stale */
+  private static readonly SERVER_START_TIME = Date.now();
+
   protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
     // 1. Resolve the entity (room/activity)
     const room = await this.resolveRoom(params.entityId, params);
@@ -166,7 +169,8 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
   /**
    * Atomically find or create active call for room
-   * Handles race conditions when multiple participants join simultaneously
+   * Handles race conditions when multiple participants join simultaneously.
+   * Detects stale calls from before server restart and replaces them.
    */
   private async findOrCreateCall(room: RoomEntity, params: LiveJoinParams): Promise<{ call: CallEntity; existed: boolean }> {
     const maxRetries = 5;
@@ -176,7 +180,19 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       // Try to find existing call
       let call = await this.findActiveCall(room.id, params);
       if (call) {
-        return { call, existed: true };
+        // Stale call detection: if the call was created before the current server
+        // process started, the LiveKit room no longer exists (server restart clears
+        // all LiveKit rooms). End the stale call and create a fresh one.
+        const callCreatedAt = new Date(call.createdAt || 0).getTime();
+        if (callCreatedAt < LiveJoinServerCommand.SERVER_START_TIME) {
+          console.log(`🎙️ LiveJoin: Ending stale call ${call.id.slice(0, 8)} (created ${new Date(callCreatedAt).toISOString()} < server start ${new Date(LiveJoinServerCommand.SERVER_START_TIME).toISOString()})`);
+          call.status = 'ended';
+          call.endedAt = new Date();
+          await this.saveCall(call, params);
+          // Fall through to create a new call
+        } else {
+          return { call, existed: true };
+        }
       }
 
       // No call found, try to create one

@@ -85,6 +85,12 @@ impl ServiceModule for VoiceModule {
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
 
+                // Extract AI participant info BEFORE register_session consumes the vec
+                let ai_participants: Vec<(String, String)> = participants.iter()
+                    .filter(|p| matches!(p.participant_type, crate::voice::SpeakerType::Persona | crate::voice::SpeakerType::Agent))
+                    .map(|p| (p.user_id.to_string(), p.display_name.clone()))
+                    .collect();
+
                 self.state.voice_service.register_session(session_id, room_id, participants)?;
 
                 // Spawn STT listener agent to subscribe to human audio in this call.
@@ -109,6 +115,30 @@ impl ServiceModule for VoiceModule {
                             &ambient_call_id[..8.min(ambient_call_id.len())], e);
                     }
                 });
+
+                // Pre-create agents for all AI persona participants so their 3D avatars
+                // appear immediately when the room loads, not when they first speak.
+                if !ai_participants.is_empty() {
+                    let agent_manager = self.state.livekit_manager.clone();
+                    let agent_call_id = session_id.to_string();
+                    tokio::spawn(async move {
+                        // Stagger agent creation: 500ms between each to avoid
+                        // overwhelming LiveKit + Bevy with 12 simultaneous connections.
+                        for (user_id, display_name) in &ai_participants {
+                            match agent_manager.get_or_create_agent(&agent_call_id, user_id).await {
+                                Ok(_) => {
+                                    tracing::info!("🎨 Pre-created agent for '{}' in call {}", display_name, &agent_call_id[..8.min(agent_call_id.len())]);
+                                }
+                                Err(e) => {
+                                    log_error!("module", "voice_register_session",
+                                        "Failed to pre-create agent for '{}': {}",
+                                        display_name, e);
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                    });
+                }
 
                 Ok(CommandResult::Json(serde_json::json!({ "registered": true })))
             }

@@ -436,6 +436,20 @@ export class LiveWidget extends ReactiveWidget {
       await this.stateLoadedPromise;
     }
 
+    // Guard: do NOT join without a valid user identity.
+    // UserState may fail to load during startup (data/count timeout race).
+    // Retry loading once before giving up.
+    if (!this.currentUser?.id) {
+      console.warn('LiveWidget: No user identity — retrying state load...');
+      try {
+        await this.loadUserContext();
+      } catch (_) { /* ignore */ }
+    }
+    if (!this.currentUser?.id) {
+      console.error('LiveWidget: Cannot join — no user identity after retry');
+      return;
+    }
+
     // Request mic permission NOW (when user clicks Join)
     if (this.micEnabled && !this.micPermissionGranted) {
       try {

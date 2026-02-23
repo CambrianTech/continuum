@@ -26,7 +26,8 @@ console.log('📍 Using entity collection constants from:', ENTITY_DIR);
 // This was the root cause of the "orphaned memories" bug (2905 memories unreachable).
 const collections = [
   'chat_messages',  // ChatMessageEntity.collection
-  'rooms'           // RoomEntity.collection
+  'rooms',          // RoomEntity.collection
+  'calls',          // CallEntity.collection — MUST clear to avoid stale LiveKit room references
   // 'users' - INTENTIONALLY EXCLUDED to preserve persona UUIDs and their memories
 ];
 

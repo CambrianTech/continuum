@@ -67,6 +67,30 @@ fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC 
 livekit = { version = "0.7", features = ["native-tls"] }
 livekit-api = { version = "0.4", features = ["native-tls"] }
 
+# Bevy 3D engine — headless rendering for VRM avatar video frames
+# One shared Bevy instance renders all 14 avatars via RenderLayers isolation
+# GPU readback via Readback component → RGBA frames → LiveKit video tracks
+#
+# NO bevy_winit: winit requires the main thread on macOS (Cocoa/AppKit constraint).
+# Our Bevy app runs on a dedicated background thread, so winit is incompatible.
+# WindowPlugin (from bevy_window, pulled in by bevy_render) registers the
+# Events<WindowResized> that camera_system needs — no winit required.
+# ScheduleRunnerPlugin drives the headless frame loop.
+bevy = { version = "0.15", default-features = false, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_scene",
+    "bevy_gltf",
+    "bevy_animation",
+    "bevy_color",
+    "bevy_state",
+    "bevy_window",  # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
+    "png",
+] }
+crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
+
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
