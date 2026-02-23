@@ -101,6 +101,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
       // Step 2: Fetch all indexed entries from database
       // TODO: Add filters for fileType, exportType when fetching
       const listResult = await DataList.execute({
+        dbHandle: 'default',
         collection: 'code_index',
         orderBy: [{ field: 'lastIndexed', direction: 'desc' }],
         context: this.context,

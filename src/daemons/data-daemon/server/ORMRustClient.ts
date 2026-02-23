@@ -278,7 +278,7 @@ class IPCConnection {
 // Pool of IPC connections with least-busy routing.
 
 /** Number of concurrent IPC socket connections to Rust */
-const POOL_SIZE = 4;
+const POOL_SIZE = 12;
 
 export class ORMRustClient {
   private static instance: ORMRustClient | null = null;

@@ -105,6 +105,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
 
       // Find the persona
       const personaResult = await DataRead.execute<UserEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.USERS,
           id: targetPersonaId,
         }
@@ -153,6 +154,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       };
 
       const createLayerResult = await DataCreate.execute<GenomeLayerEntity>({
+          dbHandle: 'default',
           collection: 'genome_layers',
           data: layer,
         }
@@ -171,6 +173,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       if (targetPersona.genomeId) {
         // Load existing genome
         const genomeResult = await DataRead.execute<GenomeEntity>({
+            dbHandle: 'default',
             collection: 'genomes',
             id: targetPersona.genomeId,
           }
@@ -213,6 +216,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       if (!isNewGenome) {
         // Update existing genome
         const updateResult = await DataUpdate.execute<GenomeEntity>({
+            dbHandle: 'default',
             collection: 'genomes',
             id: genome.id,
             data: { layers: genome.layers, metadata: genome.metadata, updatedAt: genome.updatedAt },
@@ -223,6 +227,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
         }
       } else {
         const createGenomeResult = await DataCreate.execute<GenomeEntity>({
+            dbHandle: 'default',
             collection: 'genomes',
             data: genome,
           }
@@ -233,6 +238,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
 
         // Update persona with genome ID
         await DataUpdate.execute<UserEntity>({
+            dbHandle: 'default',
             collection: COLLECTIONS.USERS,
             id: targetPersonaId_resolved,
             data: { genomeId: genome.id },

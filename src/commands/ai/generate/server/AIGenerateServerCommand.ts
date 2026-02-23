@@ -47,7 +47,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
             collection: UserEntity.collection,
             filter: { type: 'persona' },
             limit: 1
-          });
+          }, 'default');
 
           if (!usersResult.success || !usersResult.data || usersResult.data.length === 0) {
             return createErrorResult(params, 'No personas found in system');

@@ -114,7 +114,8 @@ export class UserProfileWidget extends BaseWidget {
       // Try to find by uniqueId first, then by id
       const result = await DataRead.execute<UserEntity>({
         collection: 'users',
-        id: entityId
+        id: entityId,
+        dbHandle: 'default'
       });
 
       if (result?.data) {
@@ -124,7 +125,8 @@ export class UserProfileWidget extends BaseWidget {
         const listResult = await DataList.execute<UserEntity>({
           collection: 'users',
           filter: { uniqueId: entityId },
-          limit: 1
+          limit: 1,
+          dbHandle: 'default'
         });
 
         if (listResult?.items?.[0]) {
@@ -166,7 +168,8 @@ export class UserProfileWidget extends BaseWidget {
       await DataUpdate.execute<UserEntity>({
         collection: 'users',
         id: this.user.id,
-        data: { status: newStatus }
+        data: { status: newStatus },
+        dbHandle: 'default'
       });
 
       this.user.status = newStatus;
@@ -203,7 +206,8 @@ export class UserProfileWidget extends BaseWidget {
     try {
       await DataDelete.execute({
         collection: 'users',
-        id: this.user.id
+        id: this.user.id,
+        dbHandle: 'default'
       });
 
       // Emit event so user list can refresh

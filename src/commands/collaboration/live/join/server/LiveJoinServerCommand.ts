@@ -119,6 +119,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   private async resolveRoom(roomRef: string, params: LiveJoinParams): Promise<RoomEntity | null> {
     // Try by ID first
     let result = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { id: roomRef },
         limit: 1,
@@ -133,6 +134,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     // Try by uniqueId
     result = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { uniqueId: roomRef },
         limit: 1,
@@ -153,6 +155,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async findUserById(userId: UUID, params: LiveJoinParams): Promise<UserEntity | null> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,
@@ -242,6 +245,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async findActiveCall(roomId: UUID, params: LiveJoinParams): Promise<CallEntity | null> {
     const result = await DataList.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         filter: { roomId, status: 'active' },
         limit: 1,
@@ -273,6 +277,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     call.totalParticipants = 0;
 
     const createResult = await DataCreate.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         data: call,
         context: params.context,
@@ -295,6 +300,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async saveCall(call: CallEntity, params: LiveJoinParams): Promise<void> {
     await DataUpdate.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         id: call.id,
         data: {
@@ -349,6 +355,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     if (userIds.length === 0) return [];
 
     const result = await DataList.execute<UserEntity>({
+        dbHandle: 'default',
         collection: UserEntity.collection,
         filter: { id: { $in: userIds } },
         limit: userIds.length,

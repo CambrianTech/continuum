@@ -101,6 +101,7 @@ export class CollaborationLiveTranscriptionServerCommand extends CommandBase<Col
     };
 
     await DataCreate.execute<ChatMessageEntity>({
+      dbHandle: 'default',
       collection: ChatMessageEntity.collection,
       data: message,
       context: params.context,
@@ -116,6 +117,7 @@ export class CollaborationLiveTranscriptionServerCommand extends CommandBase<Col
     if (cached) return cached;
 
     const result = await DataList.execute<CallEntity>({
+      dbHandle: 'default',
       collection: CallEntity.collection,
       filter: { id: callSessionId },
       limit: 1,

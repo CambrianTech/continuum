@@ -832,6 +832,11 @@ export class PersonaUser extends AIUser {
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
     await this.limbic!.startMemoryConsolidation();
 
+    // CRITICAL: Propagate Hippocampus DB handle to PersonaMemory.
+    // Hippocampus opens longterm.db async during construction — we must wait for it
+    // and push the real handle to PersonaMemory, otherwise PersonaMemory hits main DB.
+    await this.limbic!.propagateDbHandle();
+
     // GENOME INTEGRATION: Load adapters from database into PersonaGenome
     // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
     await this.limbic!.loadGenomeFromDatabase();
@@ -956,24 +961,11 @@ export class PersonaUser extends AIUser {
   protected override async loadMyRooms(): Promise<void> {
     await super.loadMyRooms();
 
-    // Also populate room name cache from all rooms
-    try {
-      const roomsResult = await ORM.query<RoomEntity>({
-        collection: COLLECTIONS.ROOMS,
-        filter: {}
-      });
-
-      if (roomsResult.success && roomsResult.data) {
-        for (const roomRecord of roomsResult.data) {
-          const room = roomRecord.data;
-          const roomId = roomRecord.id || room.id;
-          this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
-        }
-        this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names for timeline events`);
-      }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Could not cache room names: ${error}`);
+    // Populate room name cache from base class cached data (no re-query)
+    for (const [roomId, room] of this._allRoomsCache) {
+      this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
     }
+    this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names`);
   }
 
   /**
@@ -1037,7 +1029,7 @@ export class PersonaUser extends AIUser {
       const queryResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data?.length) {
         this.log.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
@@ -1072,7 +1064,9 @@ export class PersonaUser extends AIUser {
       await ORM.update<RoomEntity>(
         COLLECTIONS.ROOMS,
         generalRoom.id,
-        { members: updatedMembers }
+        { members: updatedMembers },
+        true,
+        'default'
       );
 
       this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
@@ -1114,7 +1108,7 @@ export class PersonaUser extends AIUser {
           },
           sort: [{ field: 'timestamp', direction: 'asc' }],
           limit: 100 // Process up to 100 per room
-        });
+        }, 'default');
 
         if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
           continue;
@@ -1795,7 +1789,7 @@ export class PersonaUser extends AIUser {
       filter: { roomId: messageEntity.roomId },
       sort: [{ field: 'timestamp', direction: 'desc' }],
       limit: 10
-    });
+    }, 'default');
 
     const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
       ? recentMessages.data.map(record => record.data)
@@ -1949,7 +1943,9 @@ export class PersonaUser extends AIUser {
 
     const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
-      userEntity
+      userEntity,
+      false,
+      'default'
     );
 
     // STEP 2: Create UserStateEntity with persona-specific defaults
@@ -1958,7 +1954,9 @@ export class PersonaUser extends AIUser {
 
     const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
-      userState
+      userState,
+      false,
+      'default'
     );
 
     // STEP 3: Room membership now handled by RoomMembershipDaemon via events

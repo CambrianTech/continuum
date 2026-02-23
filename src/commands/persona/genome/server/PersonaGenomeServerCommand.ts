@@ -55,6 +55,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
 
       // Look up the persona
       const personaResult = await DataRead.execute<UserEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.USERS,
           id: personaId,
         }
@@ -101,6 +102,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
 
       // Load the genome
       const genomeResult = await DataRead.execute<GenomeEntity>({
+          dbHandle: 'default',
           collection: 'genomes',
           id: persona.genomeId,
         }
@@ -133,6 +135,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
 
       for (const layerRef of genome.layers) {
         const layerResult = await DataRead.execute<GenomeLayerEntity>({
+            dbHandle: 'default',
             collection: 'genome_layers',
             id: layerRef.layerId,
           }

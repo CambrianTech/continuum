@@ -18,7 +18,7 @@ export interface DataDeleteParams extends CommandParams {
   readonly collection: string;
   readonly id: UUID;
   readonly format?: 'json' | 'yaml' | 'table';
-  /** Optional database handle for multi-database operations (defaults to 'default') */
+  /** Database handle. Use 'default' for main DB, or UUID from data/open. */
   readonly dbHandle?: DbHandle;
   /** Suppress CRUD events for this operation (for internal operations like archiving) */
   readonly suppressEvents?: boolean;

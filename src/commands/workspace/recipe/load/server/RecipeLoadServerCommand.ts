@@ -74,6 +74,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
 
           // Check if recipe already exists
           const existingResult = await DataList.execute<RecipeEntity>({
+            dbHandle: 'default',
             collection: COLLECTION,
             filter: { uniqueId: definition.uniqueId }
           });
@@ -85,6 +86,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
             if (params.reload) {
               // Update existing recipe
               const updateResult = await DataUpdate.execute<RecipeEntity>({
+                dbHandle: 'default',
                 backend: 'server',
                 collection: COLLECTION,
                 id: existingResult.items[0].id,
@@ -131,6 +133,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
             });
 
             const createResult = await DataCreate.execute<RecipeEntity>({
+              dbHandle: 'default',
               backend: 'server',
               collection: COLLECTION,
               data: entity

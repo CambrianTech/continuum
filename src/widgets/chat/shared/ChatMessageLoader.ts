@@ -40,6 +40,7 @@ export class ChatMessageLoader {
       filter: { roomId },
       orderBy: [{ field: 'timestamp', direction: 'desc' }],
       limit: pageSize,
+      dbHandle: 'default',
       ...(cursor && { cursor: { timestamp: cursor } })
     });
 

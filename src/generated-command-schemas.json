@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-23T06:07:02.454Z",
+  "generated": "2026-02-23T17:20:18.696Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5107,7 +5107,7 @@
     },
     {
       "name": "data",
-      "description": "Base interface for all data command parameters Uses JTAGEnvironment for routing capability Supports optional dbHandle for multi-database operations",
+      "description": "Base interface for all data command parameters Uses JTAGEnvironment for routing capability Requires dbHandle for explicit multi-database routing",
       "params": {
         "collection": {
           "type": "string",
@@ -5171,6 +5171,11 @@
           "required": true,
           "description": "backend parameter"
         },
+        "dbHandle": {
+          "type": "string",
+          "required": true,
+          "description": "dbHandle parameter"
+        },
         "filter": {
           "type": "object",
           "required": false,
@@ -5206,6 +5211,11 @@
           "type": "string",
           "required": true,
           "description": "backend parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": true,
+          "description": "dbHandle parameter"
         }
       }
     },
@@ -5227,6 +5237,11 @@
           "type": "string",
           "required": true,
           "description": "backend parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": true,
+          "description": "dbHandle parameter"
         }
       }
     },

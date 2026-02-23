@@ -40,6 +40,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
     // Get proposal
     const proposalResult = await DataRead.execute<DecisionProposalEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId
     });
@@ -73,6 +74,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
     // Get total eligible voters (all AIs for now)
     const usersResult = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100
@@ -91,6 +93,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
     // Update proposal status to concluded
     await DataUpdate.execute<DecisionProposalEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId,
       data: {

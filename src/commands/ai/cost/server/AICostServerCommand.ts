@@ -47,6 +47,7 @@ export class AICostServerCommand extends AICostCommand {
         params.context,
         params.sessionId,
         {
+          dbHandle: 'default' as const,
           collection: 'ai_generations',
           filter,
           orderBy: [{ field: 'timestamp', direction: 'desc' }]

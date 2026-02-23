@@ -8,6 +8,7 @@ import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../..
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type {
   VectorSearchResult,
   VectorEmbedding,
@@ -22,8 +23,8 @@ import { Commands } from '../../../../system/core/shared/Commands';
 export interface VectorSearchParams extends CommandParams {
   readonly collection: string;
 
-  // Database handle for per-persona databases (optional - uses main db if not provided)
-  readonly dbHandle?: string;
+  // Database handle for per-persona databases
+  readonly dbHandle?: DbHandle;
 
   // Query can be text (will generate embedding) OR pre-computed vector
   readonly queryText?: string;

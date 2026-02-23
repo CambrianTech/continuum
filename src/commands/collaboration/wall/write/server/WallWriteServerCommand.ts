@@ -104,6 +104,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
 
       // Check if WallDocumentEntity already exists
       const existingDocs = await DataList.execute<WallDocumentEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.WALL_DOCUMENTS,
         filter: { roomId: roomInfo.roomId, name: sanitizedName },
         limit: 1
@@ -113,6 +114,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
       if (existingDocs.items && existingDocs.items.length > 0) {
         // Update existing document
         await DataUpdate.execute<WallDocumentEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.WALL_DOCUMENTS,
           id: existingDocs.items[0].id,
           data: {
@@ -137,6 +139,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
         newDoc.lastCommitHash = writeResult.commitHash;
 
         await DataCreate.execute<WallDocumentEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.WALL_DOCUMENTS,
           data: newDoc
         });

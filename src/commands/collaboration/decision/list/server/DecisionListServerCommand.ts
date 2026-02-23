@@ -38,6 +38,7 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
       }
 
       const listResult = await DataList.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter,
         limit,

@@ -91,6 +91,7 @@ export const Handles = {
     const result = await DataCreate.execute<HandleEntity>({
       collection: COLLECTIONS.HANDLES,
       data: entity as unknown as Record<string, unknown>,
+      dbHandle: 'default',
     });
 
     if (!result.success) {
@@ -120,6 +121,7 @@ export const Handles = {
       const result = await DataRead.execute<HandleEntity>({
         collection: COLLECTIONS.HANDLES,
         id: refStr,
+        dbHandle: 'default',
       });
 
       if (!result.found || !result.data) return null;
@@ -143,6 +145,7 @@ export const Handles = {
       filter: { id: { $regex: `${shortId}$` } },
       orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit: 2, // Get 2 to detect ambiguity
+      dbHandle: 'default',
     });
 
     if (!result.success || !result.items?.length) return null;
@@ -161,6 +164,7 @@ export const Handles = {
     const result = await DataRead.execute<HandleEntity>({
       collection: COLLECTIONS.HANDLES,
       id,
+      dbHandle: 'default',
     });
 
     if (!result.found || !result.data) return null;
@@ -211,6 +215,7 @@ export const Handles = {
       filter: { status },
       orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit,
+      dbHandle: 'default',
     });
 
     if (!result.success) return [];
@@ -226,6 +231,7 @@ export const Handles = {
       filter: { requestedBy },
       orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit,
+      dbHandle: 'default',
     });
 
     if (!result.success) return [];
@@ -241,6 +247,7 @@ export const Handles = {
       filter: { type },
       orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit,
+      dbHandle: 'default',
     });
 
     if (!result.success) return [];
@@ -261,6 +268,7 @@ export const Handles = {
       filter,
       orderBy: [{ field: 'createdAt', direction: 'asc' }],
       limit,
+      dbHandle: 'default',
     });
 
     if (!result.success) return [];
@@ -286,6 +294,7 @@ export const Handles = {
           expiresAt: { $lte: now },
         },
         limit: BATCH_SIZE,
+        dbHandle: 'default',
       });
 
       if (!result.success || !result.items?.length) break;
@@ -331,6 +340,7 @@ export const Handles = {
       const current = await DataRead.execute<HandleEntity>({
         collection: COLLECTIONS.HANDLES,
         id,
+        dbHandle: 'default',
       });
       if (current.found && current.data) {
         updates.retryCount = ((current.data as HandleEntity).retryCount ?? 0) + 1;
@@ -342,6 +352,7 @@ export const Handles = {
       id,
       data: updates,
       incrementVersion: true,
+      dbHandle: 'default',
     });
 
     if (!result.success || !result.data) {

@@ -225,7 +225,8 @@ export class PersonaBrainWidget extends ReactiveWidget {
       const result = await DataList.execute({
         collection: 'users',
         filter,
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (result.success && result.items?.length > 0) {
@@ -399,13 +400,15 @@ export class PersonaBrainWidget extends ReactiveWidget {
         DataList.execute({
           collection: 'memories',
           filter: { personaId: this.persona.id },
-          limit: 1  // We just need the count
+          limit: 1,  // We just need the count
+          dbHandle: 'default'
         }),
         // 3. Get tool execution count
         DataList.execute({
           collection: 'tool_execution_logs',
           filter: { personaId: this.persona.id },
-          limit: 1
+          limit: 1,
+          dbHandle: 'default'
         })
       ]);
 

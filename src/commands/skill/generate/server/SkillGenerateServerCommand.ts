@@ -33,7 +33,7 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
     }
 
     // Load skill entity
-    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID, 'default');
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -95,6 +95,8 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
         outputDir,
         generatedFiles,
       } as Partial<SkillEntity>,
+      true,
+      'default'
     );
 
     return createSkillGenerateResultFromParams(params, {

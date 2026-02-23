@@ -60,7 +60,8 @@ export class PersonaGenomeManager {
         id: entity.genomeId,
         context: client.context,
         sessionId: client.sessionId,
-        backend: 'server'
+        backend: 'server',
+        dbHandle: 'default'
       });
 
       if (!result.success || !result.found || !result.data) {
@@ -100,7 +101,8 @@ export class PersonaGenomeManager {
         data: { genomeId },
         context: client.context,
         sessionId: client.sessionId,
-        backend: 'server'
+        backend: 'server',
+        dbHandle: 'default'
       });
 
       if (!result.success) {

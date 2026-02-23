@@ -324,6 +324,7 @@ export class AIProviderDaemon extends DaemonBase {
       await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
+          dbHandle: 'default',
           data: result.entity
         }
       );
@@ -373,6 +374,7 @@ export class AIProviderDaemon extends DaemonBase {
       await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
+          dbHandle: 'default',
           data: result.entity
         }
       );

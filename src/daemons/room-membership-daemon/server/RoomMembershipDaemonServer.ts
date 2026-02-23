@@ -123,7 +123,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       const queryResult = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {}
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data?.length) {
         this.log.info('⚠️ MembershipDaemon: No existing users found, skipping catch-up');
@@ -259,7 +259,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         const queryResult = await ORM.query<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId }
-        });
+        }, 'default');
 
         if (!queryResult.success || !queryResult.data?.length) {
           this.log.warn(`⚠️ RoomMembershipDaemon: Room ${roomUniqueId} not found, skipping for ${displayName}`);
@@ -299,7 +299,9 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         await ORM.update<RoomEntity>(
           COLLECTIONS.ROOMS,
           roomRecord.id,  // Record ID, not entity ID
-          { members: updatedMembers }
+          { members: updatedMembers },
+          true,
+          'default'
         );
 
         this.log.info(`✅ RoomMembershipDaemon: Auto-joined ${displayName} to ${roomUniqueId}`);
@@ -340,7 +342,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       const queryResult = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {}
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data?.length) {
         return;
@@ -422,7 +424,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         const queryResult = await ORM.query<ActivityEntity>({
           collection: COLLECTIONS.ACTIVITIES,
           filter: { uniqueId: activityUniqueId }
-        });
+        }, 'default');
 
         if (!queryResult.success || !queryResult.data?.length) {
           this.log.warn(`⚠️ MembershipDaemon: Activity ${activityUniqueId} not found, skipping for ${displayName}`);
@@ -467,7 +469,9 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         await ORM.update<ActivityEntity>(
           COLLECTIONS.ACTIVITIES,
           activityRecord.id,  // Record ID, not entity ID
-          { participants: updatedParticipants }
+          { participants: updatedParticipants },
+          true,
+          'default'
         );
 
         this.log.info(`✅ MembershipDaemon: Auto-joined ${displayName} to activity ${activityUniqueId}`);

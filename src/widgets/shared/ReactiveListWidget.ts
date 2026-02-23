@@ -139,7 +139,8 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
           collection: this.collection,
           filter: this.loadFilter,
           orderBy: this.orderBy,
-          limit: limit ?? this.pageSize
+          limit: limit ?? this.pageSize,
+          dbHandle: 'default'
         }
       );
       if (!result?.success) {

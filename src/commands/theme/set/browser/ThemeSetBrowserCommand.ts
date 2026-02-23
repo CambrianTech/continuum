@@ -190,6 +190,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       // Update existing UserState's preferences
       const { DATA_COMMANDS } = await import('../../../data/shared/DataCommandConstants');
       await DataUpdate.execute<UserStateEntity>({
+        dbHandle: 'default',
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',

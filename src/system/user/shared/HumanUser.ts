@@ -92,7 +92,9 @@ export class HumanUser extends BaseUser {
 
     const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
-      userEntity
+      userEntity,
+      false,
+      'default'
     );
 
     // STEP 2: Create UserStateEntity (human-specific defaults)
@@ -101,7 +103,9 @@ export class HumanUser extends BaseUser {
 
     const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
-      userState
+      userState,
+      false,
+      'default'
     );
 
     // STEP 3: Room membership now handled by RoomMembershipDaemon via events

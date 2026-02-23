@@ -49,6 +49,7 @@ export class ActivityListServerCommand extends CommandBase<ActivityListParams, A
 
     // Query activities
     const result = await DataList.execute({
+      dbHandle: 'default',
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,

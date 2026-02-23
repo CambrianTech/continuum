@@ -528,6 +528,8 @@ impl StorageAdapter for PostgresAdapter {
     }
 
     async fn initialize(&mut self, config: AdapterConfig) -> Result<(), String> {
+        use crate::clog_info;
+
         if let Some(ns) = &config.namespace {
             self.schema = ns.clone();
         }
@@ -536,6 +538,11 @@ impl StorageAdapter for PostgresAdapter {
         pg_config.url = Some(config.connection_string.clone());
         pg_config.manager = Some(ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
+        });
+        // Apply max_connections to deadpool — this was previously ignored!
+        pg_config.pool = Some(deadpool_postgres::PoolConfig {
+            max_size: config.max_connections,
+            ..Default::default()
         });
 
         let pool = pg_config
@@ -557,14 +564,10 @@ impl StorageAdapter for PostgresAdapter {
             .await
             .map_err(|e| format!("Failed to create schema: {}", e))?;
 
-        // Set search_path for this connection test
-        client
-            .execute(
-                &format!("SET search_path TO {}", self.schema),
-                &[],
-            )
-            .await
-            .map_err(|e| format!("Failed to set search_path: {}", e))?;
+        clog_info!(
+            "PostgresAdapter initialized: pool_size={}, schema={}",
+            config.max_connections, self.schema
+        );
 
         self.pool = Some(pool);
         Ok(())

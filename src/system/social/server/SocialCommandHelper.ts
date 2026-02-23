@@ -70,6 +70,7 @@ export async function loadSocialContext(
     limit: 1,
     context: params.context,
     sessionId: params.sessionId,
+    dbHandle: 'default',
   });
 
   if (!userResult.success || !userResult.items?.length) {
@@ -228,6 +229,7 @@ export async function openPersonaDb(
     limit: 1,
     context: params.context,
     sessionId: params.sessionId,
+    dbHandle: 'default',
   });
 
   if (!userResult.success || !userResult.items?.length) {

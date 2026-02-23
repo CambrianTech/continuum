@@ -22,9 +22,10 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::gpu_readback::{Readback, ReadbackComplete};
 use bevy::render::view::RenderLayers;
 use bevy::asset::LoadState;
+use bevy::render::mesh::morph::MorphWeights;
 use bevy::scene::SceneInstanceReady;
 use crossbeam_channel::{Receiver, Sender};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -112,6 +113,9 @@ pub struct BevyAvatarSystem {
     frame_receivers: Vec<Receiver<RgbaFrame>>,
     /// Set to true once the Bevy app completes startup (setup_render_slots runs).
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Maps persona identity (user_id) → Bevy render slot index.
+    /// Populated by register_identity() when a renderer is created.
+    identity_to_slot: std::sync::Mutex<HashMap<String, u8>>,
 }
 
 impl BevyAvatarSystem {
@@ -157,6 +161,7 @@ impl BevyAvatarSystem {
             command_tx,
             frame_receivers,
             ready,
+            identity_to_slot: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -193,6 +198,23 @@ impl BevyAvatarSystem {
     pub fn set_speaking(&self, slot: u8, speaking: bool) {
         let _ = self.command_tx.send(AvatarCommand::SetSpeaking { slot, speaking });
     }
+
+    /// Register a persona identity → slot mapping (called when a BevyChannelRenderer is created).
+    pub fn register_identity(&self, identity: &str, slot: u8) {
+        self.identity_to_slot.lock().unwrap().insert(identity.to_string(), slot);
+        bevy_debug(&format!("Registered identity '{}' → slot {}", &identity[..8.min(identity.len())], slot));
+    }
+
+    /// Update speaking state by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            self.set_speaking(slot, speaking);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ============================================================================
@@ -223,6 +245,10 @@ struct SlotState {
     scene_entity: Option<Entity>,
     _render_target: Handle<Image>,
     active: bool,
+    /// Handle to the loaded Gltf asset — used for morph target name discovery.
+    gltf_handle: Option<Handle<bevy::gltf::Gltf>>,
+    /// Path to the model file — used for VRM extension parsing.
+    model_path: Option<String>,
 }
 
 /// Component marking which avatar slot an entity belongs to.
@@ -250,6 +276,50 @@ struct PendingLoadEntry<T: bevy::asset::Asset> {
     logged_final: bool,
 }
 
+/// Per-slot morph target layout discovered at scene load time.
+/// VRM models have blend shapes on their face mesh; we discover indices
+/// at load time so animation systems can set weights efficiently.
+#[derive(Resource, Default)]
+struct SlotMorphTargets {
+    layouts: HashMap<u8, MorphTargetLayout>,
+}
+
+struct MorphTargetLayout {
+    /// Entity that has the MorphWeights component (the face mesh)
+    mesh_entity: Entity,
+    /// Index of the "aa" / "A" mouth-open morph target
+    mouth_open_index: Option<usize>,
+    /// Index of blink morph target (both eyes)
+    blink_index: Option<usize>,
+    /// Index of left eye blink
+    blink_left_index: Option<usize>,
+    /// Index of right eye blink
+    blink_right_index: Option<usize>,
+}
+
+/// Per-slot blink animation state.
+#[derive(Resource, Default)]
+struct BlinkState {
+    slots: HashMap<u8, SlotBlinkState>,
+}
+
+struct SlotBlinkState {
+    next_blink_time: f32,
+    blink_frames_remaining: u8,
+}
+
+/// Per-slot head bone entity for speaking head movement and camera targeting.
+#[derive(Resource, Default)]
+struct HeadBones {
+    bones: HashMap<u8, HeadBoneInfo>,
+}
+
+struct HeadBoneInfo {
+    entity: Entity,
+    /// Head position in local/rest space (Y coordinate used for camera targeting)
+    rest_position: Vec3,
+}
+
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
     frame_senders: Vec<Sender<RgbaFrame>>,
@@ -273,6 +343,9 @@ fn run_bevy_app(
             slots: HashMap::new(),
         })
         .insert_resource(PendingLoads::default())
+        .insert_resource(SlotMorphTargets::default())
+        .insert_resource(BlinkState::default())
+        .insert_resource(HeadBones::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -295,7 +368,15 @@ fn run_bevy_app(
             Duration::from_secs_f64(1.0 / AVATAR_FPS),
         ))
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
-        .add_systems(Update, (process_commands, monitor_load_states, animate_idle))
+        .add_systems(Update, (
+            process_commands,
+            monitor_load_states,
+            discover_morph_targets,
+            animate_idle,
+            animate_speaking,
+            animate_blinking,
+            animate_breathing,
+        ))
         .run();
 }
 
@@ -430,6 +511,8 @@ fn setup_render_slots(
                 scene_entity: None,
                 _render_target: rt_handle,
                 active: false,
+                gltf_handle: None,
+                model_path: None,
             },
         );
     }
@@ -584,17 +667,23 @@ fn process_commands(
                     });
                     pending.gltf_handles.push(PendingLoadEntry {
                         slot,
-                        handle: gltf_handle,
+                        handle: gltf_handle.clone(),
                         path: load_path.clone(),
                         logged_final: false,
                     });
 
+                    // Store Gltf handle + model path for morph target name discovery
+                    state.gltf_handle = Some(gltf_handle);
+                    state.model_path = Some(load_path.clone());
+
                     let layer_for_observer = layer.clone();
+                    let slot_for_observer = slot;
                     let scene_entity = commands
                         .spawn((
                             SceneRoot(scene_handle),
                             Transform::default(),
                             layer,
+                            AvatarSlotId(slot),
                         ))
                         .observe(move |
                             trigger: Trigger<SceneInstanceReady>,
@@ -602,6 +691,7 @@ fn process_commands(
                             names: Query<&Name>,
                             mut transforms: Query<&mut Transform>,
                             mut cmds: Commands,
+                            mut head_bones: ResMut<HeadBones>,
                         | {
                             let root = trigger.entity();
                             let child_count = count_descendants(root, &children_query);
@@ -610,7 +700,9 @@ fn process_commands(
                             dump_bone_names(root, &children_query, &names);
                             // Fix T-pose: rotate arm bones to natural resting position
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
-                            bevy_debug(&format!("SceneInstanceReady: entity {:?}, propagated layers to {} descendants", root, child_count));
+                            // Discover head bone for camera targeting and speaking head movement
+                            discover_head_bone(root, slot_for_observer, &children_query, &names, &transforms, &mut head_bones);
+                            bevy_debug(&format!("SceneInstanceReady: slot {}, entity {:?}, propagated layers to {} descendants", slot_for_observer, root, child_count));
                         })
                         .id();
                     state.scene_entity = Some(scene_entity);
@@ -633,6 +725,8 @@ fn process_commands(
                         commands.entity(entity).despawn_recursive();
                     }
                     state.active = false;
+                    state.gltf_handle = None;
+                    state.model_path = None;
                     if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
                         camera.is_active = false;
                     }
@@ -662,10 +756,11 @@ fn process_commands(
     }
 }
 
-/// Simple idle animation — gentle camera sway for visual interest.
+/// Idle animation — gentle camera sway + head-targeted framing.
 fn animate_idle(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
+    head_bones: Res<HeadBones>,
     mut transforms: Query<&mut Transform, With<AvatarSlotId>>,
 ) {
     for (slot, state) in &registry.slots {
@@ -676,8 +771,300 @@ fn animate_idle(
             let t = time.elapsed_secs() + *slot as f32 * 0.7; // Phase offset per slot
             let sway_x = (t * 0.3).sin() * 0.02;
             let sway_y = (t * 0.2).cos() * 0.01;
+
+            // Use head bone position for tighter framing if discovered
+            let (base_y, look_y) = if let Some(info) = head_bones.bones.get(slot) {
+                // Camera slightly above head, looking at head
+                (info.rest_position.y + 0.05, info.rest_position.y)
+            } else {
+                (1.4, 1.35)
+            };
+
             transform.translation.x = sway_x;
-            transform.translation.y = 1.4 + sway_y; // Match base camera height
+            transform.translation.y = base_y + sway_y;
+            // Re-orient to look at head position (with sway applied)
+            let look_target = Vec3::new(0.0, look_y, 0.0);
+            *transform = transform.looking_at(look_target, Vec3::Y);
+        }
+    }
+}
+
+// ============================================================================
+// Animation Systems — Morph Targets, Blinking, Breathing, Speaking
+// ============================================================================
+
+/// Discover morph target indices from loaded mesh assets.
+/// Runs every frame but only acts on slots that haven't been discovered yet.
+/// Morph target names are stored on the Mesh asset via set_morph_target_names()
+/// during glTF loading — accessed via MorphWeights::first_mesh().
+fn discover_morph_targets(
+    registry: Res<SlotRegistry>,
+    meshes: Res<Assets<Mesh>>,
+    morph_query: Query<(Entity, &MorphWeights)>,
+    children_query: Query<&Children>,
+    mut morph_targets: ResMut<SlotMorphTargets>,
+) {
+    for (slot, state) in &registry.slots {
+        // Skip if already discovered or no scene loaded
+        if morph_targets.layouts.contains_key(slot) || !state.active {
+            continue;
+        }
+        let scene_entity = match state.scene_entity {
+            Some(e) => e,
+            None => continue,
+        };
+
+        // Find the first entity with MorphWeights in this slot's scene hierarchy
+        let morph_entity = find_morph_entity(scene_entity, &children_query, &morph_query);
+        let morph_entity = match morph_entity {
+            Some(e) => e,
+            None => continue,
+        };
+
+        // Get morph target names from the Mesh asset via MorphWeights::first_mesh()
+        let mesh_names: Vec<String> = morph_query.get(morph_entity).ok()
+            .and_then(|(_, weights)| weights.first_mesh())
+            .and_then(|mesh_handle| meshes.get(mesh_handle))
+            .and_then(|mesh| mesh.morph_target_names())
+            .map(|names| names.to_vec())
+            .unwrap_or_default();
+
+        // Build name → index mapping.
+        // First try standard glTF morph target names from the Mesh asset.
+        // If empty (VRM files store names in VRM extension, not glTF targetNames),
+        // fall back to parsing the VRM extension from the .glb file directly.
+        let mut mouth_open_index = None;
+        let mut blink_index = None;
+        let mut blink_left_index = None;
+        let mut blink_right_index = None;
+
+        if !mesh_names.is_empty() {
+            // Standard glTF path — match by name
+            for (i, name) in mesh_names.iter().enumerate() {
+                let lower = name.to_lowercase();
+                if mouth_open_index.is_none() && (
+                    lower == "aa" || lower == "a" ||
+                    lower.contains("mth_a") || lower.contains("v_aa") ||
+                    lower.contains("mouth_open") || lower.contains("jawopen")
+                ) {
+                    mouth_open_index = Some(i);
+                }
+                if blink_index.is_none() && (
+                    lower == "blink" ||
+                    (lower.contains("eye_close") && !lower.contains("_l") && !lower.contains("_r") && !lower.contains("left") && !lower.contains("right")) ||
+                    lower == "vrc.blink"
+                ) {
+                    blink_index = Some(i);
+                }
+                if blink_left_index.is_none() && (
+                    lower == "blinkleft" || lower == "blink_l" ||
+                    lower.contains("eye_close_l") || lower.contains("eye_close_left")
+                ) {
+                    blink_left_index = Some(i);
+                }
+                if blink_right_index.is_none() && (
+                    lower == "blinkright" || lower == "blink_r" ||
+                    lower.contains("eye_close_r") || lower.contains("eye_close_right")
+                ) {
+                    blink_right_index = Some(i);
+                }
+            }
+        } else if let Some(model_path) = &state.model_path {
+            // VRM path — parse blend shape groups from the VRM extension in the .glb file
+            if let Some(vrm_shapes) = parse_vrm_blend_shapes(model_path) {
+                for shape in &vrm_shapes {
+                    let preset = shape.preset_name.to_lowercase();
+                    if mouth_open_index.is_none() && (preset == "a" || preset == "aa") {
+                        // VRM "a" preset = mouth open. Use first bind's morph target index.
+                        if let Some(bind) = shape.binds.first() {
+                            mouth_open_index = Some(bind.index);
+                        }
+                    }
+                    if blink_index.is_none() && preset == "blink" {
+                        if let Some(bind) = shape.binds.first() {
+                            blink_index = Some(bind.index);
+                        }
+                        // Some VRM models bind L+R separately under "blink"
+                        if shape.binds.len() >= 2 {
+                            blink_left_index = Some(shape.binds[0].index);
+                            blink_right_index = Some(shape.binds[1].index);
+                        }
+                    }
+                    if blink_left_index.is_none() && (preset == "blink_l" || preset == "blinkleft") {
+                        if let Some(bind) = shape.binds.first() {
+                            blink_left_index = Some(bind.index);
+                        }
+                    }
+                    if blink_right_index.is_none() && (preset == "blink_r" || preset == "blinkright") {
+                        if let Some(bind) = shape.binds.first() {
+                            blink_right_index = Some(bind.index);
+                        }
+                    }
+                }
+                bevy_debug(&format!("VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len()));
+            }
+        }
+
+        let weight_count = morph_query.get(morph_entity).ok()
+            .map(|(_, w)| w.weights().len())
+            .unwrap_or(0);
+
+        bevy_debug(&format!(
+            "Morph discovery slot {}: {} weights, mesh_names={}, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}",
+            slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
+        ));
+
+        morph_targets.layouts.insert(*slot, MorphTargetLayout {
+            mesh_entity: morph_entity,
+            mouth_open_index,
+            blink_index,
+            blink_left_index,
+            blink_right_index,
+        });
+    }
+}
+
+/// Animate mouth morph targets + subtle head nod when a slot is speaking.
+fn animate_speaking(
+    time: Res<Time>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    morph_targets: Res<SlotMorphTargets>,
+    head_bones: Res<HeadBones>,
+    mut morph_weights: Query<&mut MorphWeights>,
+    mut transforms: Query<&mut Transform>,
+) {
+    // Collect which slots are currently speaking
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+
+    for (slot, layout) in &morph_targets.layouts {
+        let is_speaking = speaking_slots.contains(slot);
+
+        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+            let w = weights.weights_mut();
+            if is_speaking {
+                let t = time.elapsed_secs();
+                // Oscillate mouth between 0.1 and 0.7 at ~2.5Hz
+                let mouth_weight = ((t * 2.5 * std::f32::consts::TAU).sin() * 0.3 + 0.4).clamp(0.1, 0.7);
+                if let Some(idx) = layout.mouth_open_index {
+                    if idx < w.len() {
+                        w[idx] = mouth_weight;
+                    }
+                }
+            } else {
+                // Not speaking — close mouth
+                if let Some(idx) = layout.mouth_open_index {
+                    if idx < w.len() {
+                        w[idx] = 0.0;
+                    }
+                }
+            }
+        }
+
+        // Subtle head nod during speech (±2 degrees pitch oscillation at ~1.5Hz)
+        if let Some(info) = head_bones.bones.get(slot) {
+            if let Ok(mut transform) = transforms.get_mut(info.entity) {
+                if is_speaking {
+                    let t = time.elapsed_secs() + *slot as f32 * 1.3;
+                    let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035; // ~2 degrees
+                    let tilt = (t * 0.9).sin() * 0.02; // slight lateral tilt
+                    transform.rotation = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
+                } else {
+                    // Return to neutral (smoothly)
+                    transform.rotation = transform.rotation.slerp(Quat::IDENTITY, 0.3);
+                }
+            }
+        }
+    }
+}
+
+/// Animate random eye blinks across all active avatar slots.
+fn animate_blinking(
+    time: Res<Time>,
+    morph_targets: Res<SlotMorphTargets>,
+    mut blink_state: ResMut<BlinkState>,
+    mut morph_weights: Query<&mut MorphWeights>,
+) {
+    let elapsed = time.elapsed_secs();
+
+    for (slot, layout) in &morph_targets.layouts {
+        // Initialize blink state if not present
+        let state = blink_state.slots.entry(*slot).or_insert_with(|| {
+            // Randomize initial blink time per slot using slot index as seed
+            SlotBlinkState {
+                next_blink_time: elapsed + 1.0 + (*slot as f32 * 0.73) % 4.0,
+                blink_frames_remaining: 0,
+            }
+        });
+
+        let has_blink = layout.blink_index.is_some()
+            || (layout.blink_left_index.is_some() && layout.blink_right_index.is_some());
+
+        if !has_blink {
+            continue;
+        }
+
+        // Check if it's time to start a new blink
+        if state.blink_frames_remaining == 0 && elapsed >= state.next_blink_time {
+            state.blink_frames_remaining = 2; // 2 frames at 5fps ≈ 400ms blink
+            // Next blink in 2-6 seconds (pseudo-random using elapsed time)
+            let pseudo_rand = ((elapsed * 1000.0 + *slot as f32 * 137.0) % 4000.0) / 1000.0;
+            state.next_blink_time = elapsed + 2.0 + pseudo_rand;
+        }
+
+        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+            let w = weights.weights_mut();
+            let blink_weight = if state.blink_frames_remaining > 0 {
+                state.blink_frames_remaining -= 1;
+                1.0 // Eyes closed
+            } else {
+                0.0 // Eyes open
+            };
+
+            // Apply to unified blink or L/R separately
+            if let Some(idx) = layout.blink_index {
+                if idx < w.len() {
+                    w[idx] = blink_weight;
+                }
+            }
+            if let Some(idx) = layout.blink_left_index {
+                if idx < w.len() {
+                    w[idx] = blink_weight;
+                }
+            }
+            if let Some(idx) = layout.blink_right_index {
+                if idx < w.len() {
+                    w[idx] = blink_weight;
+                }
+            }
+        }
+    }
+}
+
+/// Subtle breathing animation — gentle spine/chest oscillation.
+fn animate_breathing(
+    time: Res<Time>,
+    registry: Res<SlotRegistry>,
+    children_query: Query<&Children>,
+    names: Query<&Name>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (slot, state) in &registry.slots {
+        if !state.active {
+            continue;
+        }
+        let scene_entity = match state.scene_entity {
+            Some(e) => e,
+            None => continue,
+        };
+
+        // Find spine bone and apply subtle vertical oscillation
+        if let Some(spine_entity) = find_bone_by_name(scene_entity, &children_query, &names, &["J_Bip_C_Spine", "mixamorig:Spine", "Spine"]) {
+            if let Ok(mut transform) = transforms.get_mut(spine_entity) {
+                let t = time.elapsed_secs() + *slot as f32 * 1.1; // Phase offset
+                let breath = (t * 0.8 * std::f32::consts::TAU).sin() * 0.003;
+                // Apply as Y scale variation (chest expanding)
+                transform.scale.y = 1.0 + breath;
+            }
         }
     }
 }
@@ -823,6 +1210,169 @@ fn propagate_render_layers(
             propagate_render_layers(child, layer, children, commands);
         }
     }
+}
+
+// ============================================================================
+// VRM Extension Parsing
+// ============================================================================
+
+/// A VRM blend shape group — maps a named expression to morph target indices.
+struct VrmBlendShape {
+    #[allow(dead_code)]
+    name: String,
+    preset_name: String,
+    binds: Vec<VrmBlendShapeBind>,
+}
+
+/// A single morph target binding within a VRM blend shape group.
+struct VrmBlendShapeBind {
+    #[allow(dead_code)]
+    mesh: usize,
+    index: usize,
+    #[allow(dead_code)]
+    weight: f32,
+}
+
+/// Parse VRM blend shape groups from a .glb file's JSON chunk.
+/// VRM files store blend shape definitions in extensions.VRM.blendShapeMaster.blendShapeGroups
+/// (VRM 0.x) rather than standard glTF targetNames.
+/// Returns None if the file can't be read or doesn't have VRM extensions.
+fn parse_vrm_blend_shapes(glb_path: &str) -> Option<Vec<VrmBlendShape>> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(glb_path).ok()?;
+
+    // Read glb header (12 bytes): magic(4) + version(4) + length(4)
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).ok()?;
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    if magic != 0x46546C67 {
+        // Not a valid glTF binary
+        return None;
+    }
+
+    // Read JSON chunk header: length(4) + type(4)
+    let mut chunk_header = [0u8; 8];
+    file.read_exact(&mut chunk_header).ok()?;
+    let chunk_length = u32::from_le_bytes([chunk_header[0], chunk_header[1], chunk_header[2], chunk_header[3]]) as usize;
+    let chunk_type = u32::from_le_bytes([chunk_header[4], chunk_header[5], chunk_header[6], chunk_header[7]]);
+    if chunk_type != 0x4E4F534A {
+        // Not JSON chunk
+        return None;
+    }
+
+    // Read JSON data
+    let mut json_data = vec![0u8; chunk_length];
+    file.read_exact(&mut json_data).ok()?;
+    let json_str = std::str::from_utf8(&json_data).ok()?;
+    let root: serde_json::Value = serde_json::from_str(json_str).ok()?;
+
+    // Navigate to VRM blend shape groups (VRM 0.x format)
+    let groups = root
+        .get("extensions")?
+        .get("VRM")?
+        .get("blendShapeMaster")?
+        .get("blendShapeGroups")?
+        .as_array()?;
+
+    let mut shapes = Vec::new();
+    for group in groups {
+        let name = group.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let preset_name = group.get("presetName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let binds_arr = group.get("binds").and_then(|v| v.as_array());
+        let mut binds = Vec::new();
+        if let Some(binds_arr) = binds_arr {
+            for bind in binds_arr {
+                let mesh = bind.get("mesh").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let index = bind.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let weight = bind.get("weight").and_then(|v| v.as_f64()).unwrap_or(100.0) as f32;
+                binds.push(VrmBlendShapeBind { mesh, index, weight });
+            }
+        }
+        shapes.push(VrmBlendShape { name, preset_name, binds });
+    }
+
+    bevy_debug(&format!("Parsed VRM blend shapes from '{}': {} groups — {:?}",
+        glb_path, shapes.len(),
+        shapes.iter().map(|s| format!("{}({})[{}binds]", s.name, s.preset_name, s.binds.len())).collect::<Vec<_>>()
+    ));
+
+    Some(shapes)
+}
+
+/// Find the first entity with MorphWeights in a scene hierarchy.
+fn find_morph_entity(
+    root: Entity,
+    children: &Query<&Children>,
+    morph_query: &Query<(Entity, &MorphWeights)>,
+) -> Option<Entity> {
+    // Check root itself
+    if morph_query.get(root).is_ok() {
+        return Some(root);
+    }
+    // Recurse into children
+    if let Ok(child_list) = children.get(root) {
+        for &child in child_list.iter() {
+            if let Some(found) = find_morph_entity(child, children, morph_query) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Discover head bone entity from scene hierarchy.
+/// VRM naming: "J_Bip_C_Head", Mixamo: "mixamorig:Head", Generic: "Head"
+///
+/// Note: bone transforms are in LOCAL space (relative to parent bone), not world space.
+/// VRM head bones are typically at ~1.35-1.5m world height depending on model.
+/// We store the entity reference for speaking head movement and use a standard
+/// head height for camera targeting (actual world position computation would require
+/// walking the entire bone chain which is complex and model-specific).
+fn discover_head_bone(
+    root: Entity,
+    slot: u8,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+    _transforms: &Query<&mut Transform>,
+    head_bones: &mut ResMut<HeadBones>,
+) {
+    let head_names = ["J_Bip_C_Head", "mixamorig:Head", "Head"];
+    if let Some(head_entity) = find_bone_by_name(root, children, names, &head_names) {
+        // Use standard VRM head heights — varies slightly by model but consistent enough.
+        // VRoid models: ~1.45m, 100Avatars: ~1.35m (shorter proportions)
+        let estimated_head_y = 1.42;
+        bevy_debug(&format!("Head bone slot {}: entity {:?}, estimated height {}", slot, head_entity, estimated_head_y));
+        head_bones.bones.insert(slot, HeadBoneInfo {
+            entity: head_entity,
+            rest_position: Vec3::new(0.0, estimated_head_y, 0.0),
+        });
+    }
+}
+
+/// Find a bone entity by matching against a list of known names.
+fn find_bone_by_name(
+    root: Entity,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+    target_names: &[&str],
+) -> Option<Entity> {
+    if let Ok(name) = names.get(root) {
+        let name_str = name.as_str();
+        for target in target_names {
+            if name_str.contains(target) {
+                return Some(root);
+            }
+        }
+    }
+    if let Ok(child_list) = children.get(root) {
+        for &child in child_list.iter() {
+            if let Some(found) = find_bone_by_name(child, children, names, target_names) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================

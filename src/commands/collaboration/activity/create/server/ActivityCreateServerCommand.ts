@@ -42,6 +42,7 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
 
     // Verify recipe exists
     const recipeResult = await DataList.execute({
+      dbHandle: 'default',
       collection: 'recipes',
       filter: { uniqueId: recipeId },
       limit: 1,
@@ -110,6 +111,7 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
 
     // Persist via data/create
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: 'activities',
       data: activityData,
       context: params.context,

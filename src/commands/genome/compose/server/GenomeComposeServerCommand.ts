@@ -68,6 +68,7 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
     for (let i = 0; i < layers.length; i++) {
       const layerRef = layers[i];
       const readResult = await DataRead.execute<GenomeLayerEntity>({
+        dbHandle: 'default',
         collection: GenomeLayerEntity.collection,
         id: layerRef.layerId,
       });
@@ -135,6 +136,7 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
     };
 
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: 'composed_genomes',
       data: genomeData,
     });

@@ -310,7 +310,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           collection: 'rooms',
           filter: { uniqueId: roomIdOrName },
           limit: 1,
-          backend: 'server'
+          backend: 'server',
+          dbHandle: 'default'
         });
 
         // If not found by uniqueId, try by UUID
@@ -319,7 +320,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
             collection: 'rooms',
             filter: { id: roomIdOrName },
             limit: 1,
-            backend: 'server'
+            backend: 'server',
+            dbHandle: 'default'
           });
         }
 
@@ -467,6 +469,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
         limit: limit ?? 30, // Default page size matches SCROLLER_PRESETS.CHAT
         backend: 'stale-while-revalidate', // Show cached instantly, refresh with server data
+        dbHandle: 'default',
         ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'before' } }) // 'before' = older than cursor for DESC queries
       });
 
@@ -1003,7 +1006,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const roomResult = await DataRead.execute<RoomEntity>({
         collection: RoomEntity.collection,
         id: roomId,
-        backend: 'server'
+        backend: 'server',
+        dbHandle: 'default'
       });
 
       console.log(`🔍 ChatWidget.loadRoomData: Result success=${roomResult?.success}, hasData=${!!roomResult?.data}, memberCount=${roomResult?.data?.members?.length ?? 0}`);
@@ -1043,7 +1047,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },
         limit: memberIds.length,
-        backend: 'server'
+        backend: 'server',
+        dbHandle: 'default'
       });
 
       console.log(`🔍 ChatWidget.loadRoomMembers: Result success=${result?.success}, itemCount=${result?.items?.length ?? 0}`);
@@ -1076,7 +1081,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const listResult = await DataList.execute<UserStateEntity>({
         collection: 'user_states',
         filter: { userId: sessionResult.user.id },
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (!listResult?.success || !listResult.items?.length) {
@@ -1728,7 +1734,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       await DataCreate.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         data: messageEntity,
-        backend: 'server'
+        backend: 'server',
+        dbHandle: 'default'
       });
       // Message sent - scroll handled by entity events
 

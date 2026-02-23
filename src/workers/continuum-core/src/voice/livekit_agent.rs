@@ -1115,6 +1115,11 @@ impl LiveKitAgentManager {
 
         let agent = self.get_or_create_agent(call_id, user_id).await?;
 
+        // Signal avatar to start speaking animation (mouth movement, head nod)
+        if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+            bevy_system.set_speaking_by_identity(user_id, true);
+        }
+
         // Publish subtitle FIRST — native transcription linked to the audio track SID.
         // This ensures the browser receives the subtitle at the same time as audio starts,
         // rather than after all audio frames are queued (which caused audio-ahead-of-subtitles).
@@ -1124,6 +1129,18 @@ impl LiveKitAgentManager {
 
         // THEN feed audio frames to LiveKit
         agent.speak(synthesis.samples).await?;
+
+        // Schedule speaking-off after audio duration elapses.
+        // speak() feeds frames synchronously, so audio is queued by now.
+        // Add a small buffer (200ms) for LiveKit's audio pipeline latency.
+        let uid = user_id.to_string();
+        let stop_delay = std::time::Duration::from_millis(duration_ms + 200);
+        tokio::spawn(async move {
+            tokio::time::sleep(stop_delay).await;
+            if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+                bevy_system.set_speaking_by_identity(&uid, false);
+            }
+        });
 
         Ok((num_samples, duration_ms, sample_rate))
     }

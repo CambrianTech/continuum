@@ -13,7 +13,6 @@ import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';  // Only for getDescriptionFieldForCollection
-import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';  // Only for getDbPath
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
 // Rust-style config defaults for generic data access
@@ -82,20 +81,12 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         limit
       };
 
-      // Resolve dbHandle to dbPath for per-persona databases
-      // All operations now route through ORM → Rust with the correct dbPath
-      let dbPath: string | undefined;
-      if (params.dbHandle) {
-        const registry = DatabaseHandleRegistry.getInstance();
-        dbPath = registry.getDbPath(params.dbHandle) ?? undefined;
-      }
-
-      // Use ORM for all operations (routes to Rust with correct dbPath)
-      // skipCount avoids a separate COUNT(*) round-trip when the caller only needs items
+      // Pass handle directly to ORM — ORM resolves handle → path internally
+      const handle = params.dbHandle ?? 'default';
       if (!params.skipCount) {
-        countResult = await ORM.count(countQuery, dbPath);
+        countResult = await ORM.count(countQuery, handle);
       }
-      result = await ORM.query<BaseEntity>(storageQuery, dbPath);
+      result = await ORM.query<BaseEntity>(storageQuery, handle);
 
       const totalCount = countResult?.success ? (countResult.data ?? 0) : 0;
 

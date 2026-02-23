@@ -86,6 +86,7 @@ export class DmServerCommand extends DmCommand {
    */
   private async findUserById(userId: UUID, params: DmParams): Promise<{ id: UUID; entity: UserEntity }> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,
@@ -113,6 +114,7 @@ export class DmServerCommand extends DmCommand {
     for (const ref of participantRefs) {
       // Try by ID first
       let result = await DataList.execute<UserEntity>({
+          dbHandle: 'default',
           collection: UserEntity.collection,
           filter: { id: ref },
           limit: 1,
@@ -128,6 +130,7 @@ export class DmServerCommand extends DmCommand {
 
       // Try by uniqueId
       result = await DataList.execute<UserEntity>({
+          dbHandle: 'default',
           collection: UserEntity.collection,
           filter: { uniqueId: ref },
           limit: 1,
@@ -161,6 +164,7 @@ export class DmServerCommand extends DmCommand {
   ): Promise<RoomEntity | null> {
     // Phase 1: Try by uniqueId (fast path)
     const byUniqueId = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { uniqueId },
         limit: 1,
@@ -176,6 +180,7 @@ export class DmServerCommand extends DmCommand {
     // Phase 2: Search direct/private rooms and match by member set
     // This handles cases where user UUIDs changed (e.g., after reseed)
     const directRooms = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { type: participantIds.length === 2 ? 'direct' : 'private' },
         limit: 100,
@@ -196,6 +201,7 @@ export class DmServerCommand extends DmCommand {
         if (isMatch) {
           // Found matching room - update its uniqueId to current format for future lookups
           await DataUpdate.execute({
+            dbHandle: 'default',
             collection: RoomEntity.collection,
             id: room.id,
             data: { uniqueId },
@@ -259,6 +265,7 @@ export class DmServerCommand extends DmCommand {
 
     // Store using data/create
     const createResult = await DataCreate.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         data: room,
         context: params.context,

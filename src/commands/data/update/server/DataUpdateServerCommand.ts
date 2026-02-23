@@ -10,7 +10,6 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataUpdateParams, DataUpdateResult } from '../shared/DataUpdateTypes';
 import { createDataUpdateResultFromParams } from '../shared/DataUpdateTypes';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
-import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataUpdateCommand } from '../shared/DataUpdateCommand';
 import type { CollectionName } from '../../../../shared/generated-collection-constants';
@@ -24,20 +23,13 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
   protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     const collection = params.collection;
 
-    // Resolve dbHandle to dbPath for per-persona databases
-    let dbPath: string | undefined;
-    if (params.dbHandle) {
-      const registry = DatabaseHandleRegistry.getInstance();
-      dbPath = registry.getDbPath(params.dbHandle) ?? undefined;
-    }
-
-    // Use ORM for all operations (routes to Rust with correct dbPath)
+    // Pass handle directly to ORM — ORM resolves handle → path internally
     const entity = await ORM.update(
       collection as CollectionName,
       params.id,
       params.data as Partial<BaseEntity>,
       params.incrementVersion ?? true,
-      dbPath,
+      params.dbHandle ?? 'default',
       params.suppressEvents ?? false
     );
 

@@ -85,6 +85,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
       // Query all active proposals past their deadline
       const result = await DataList.execute<DecisionProposalEntity>({
           collection: COLLECTIONS.DECISION_PROPOSALS,
+          dbHandle: 'default',
           filter: {
             status: 'voting',
             deadline: { $lte: now }
@@ -177,6 +178,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
     // Get total eligible voters (all AIs for now)
     const usersResult = await DataList.execute<UserEntity>({
       collection: COLLECTIONS.USERS,
+      dbHandle: 'default',
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100
     });
@@ -201,6 +203,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
       // Update proposal status to require manual review
       await DataUpdate.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
+        dbHandle: 'default',
         id: proposal.id,
         data: {
           status: 'manual_review',

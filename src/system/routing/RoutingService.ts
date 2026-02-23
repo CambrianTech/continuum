@@ -79,7 +79,8 @@ class RoutingServiceImpl {
         const result = await DataList.execute<RoomEntity>({
             collection: 'rooms',
             filter: { id: identifier },
-            limit: 1
+            limit: 1,
+            dbHandle: 'default'
           }
         );
 
@@ -103,7 +104,8 @@ class RoutingServiceImpl {
       const result = await DataList.execute<RoomEntity>({
           collection: 'rooms',
           filter: { uniqueId: identifier },
-          limit: 1
+          limit: 1,
+          dbHandle: 'default'
         }
       );
 
@@ -127,7 +129,8 @@ class RoutingServiceImpl {
       const nameResult = await DataList.execute<RoomEntity>({
           collection: 'rooms',
           filter: { name: identifier },
-          limit: 1
+          limit: 1,
+          dbHandle: 'default'
         }
       );
 
@@ -216,7 +219,8 @@ class RoutingServiceImpl {
         const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: identifier },
-            limit: 1
+            limit: 1,
+            dbHandle: 'default'
           }
         );
 
@@ -240,7 +244,8 @@ class RoutingServiceImpl {
       const result = await DataList.execute<UserEntity>({
           collection: 'users',
           filter: { uniqueId: identifier },
-          limit: 1
+          limit: 1,
+          dbHandle: 'default'
         }
       );
 

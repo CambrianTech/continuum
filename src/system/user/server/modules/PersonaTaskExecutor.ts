@@ -150,7 +150,9 @@ export class PersonaTaskExecutor {
               latencyMs: duration
             }
           }
-        }
+        },
+        true,
+        'default'
       );
     } catch {
       // Task was deleted between dequeue and completion — work was still done, just can't record it
@@ -183,7 +185,7 @@ export class PersonaTaskExecutor {
       },
       limit: 50,
       sort: [{ field: 'timestamp', direction: 'desc' }]
-    });
+    }, 'default');
 
     const messages = recentMessages.data || [];
     if (messages.length === 0) {
@@ -357,7 +359,7 @@ export class PersonaTaskExecutor {
         completedAt: { $gte: new Date(Date.now() - 21600000) } // Last 6 hours
       },
       limit: 100
-    });
+    }, 'default');
 
     const tasks = recentTasks.data || [];
     const domainStats: Record<string, { completed: number; failed: number }> = {};
@@ -405,7 +407,7 @@ export class PersonaTaskExecutor {
             }
           };
 
-          await ORM.store(COLLECTIONS.TASKS, improvementTask as TaskEntity);
+          await ORM.store(COLLECTIONS.TASKS, improvementTask as TaskEntity, false, 'default');
           improvementTasksCreated++;
           this.log(`📋 ${this.displayName}: Created improvement task for ${domain} domain`);
         } catch (error) {
@@ -453,7 +455,7 @@ export class PersonaTaskExecutor {
       },
       limit: 10,
       sort: [{ field: 'priority', direction: 'desc' }] // Resume highest priority first
-    });
+    }, 'default');
 
     const tasks = staleTasks.data || [];
     if (tasks.length === 0) {
@@ -474,7 +476,7 @@ export class PersonaTaskExecutor {
           priority: bumpedPriority,
           startedAt: undefined, // Clear startedAt so it can be re-measured
           description: `[Resumed] ${staleTask.description}` // Mark as resumed
-        });
+        }, true, 'default');
 
         this.log(`📋 ${this.displayName}: Resumed stale task (priority ${staleTask.priority.toFixed(2)} → ${bumpedPriority.toFixed(2)}): ${staleTask.description.slice(0, 50)}...`);
         resumed++;
@@ -661,7 +663,7 @@ export class PersonaTaskExecutor {
       },
       sort: [{ field: 'createdAt', direction: 'desc' }],
       limit: 100
-    });
+    }, 'default');
 
     const myMessages = messagesResult.data || [];
     this.log(`🧬 ${this.displayName}: Found ${myMessages.length} recent messages from this persona`);
@@ -686,7 +688,7 @@ export class PersonaTaskExecutor {
         },
         sort: [{ field: 'createdAt', direction: 'desc' }],
         limit: 1
-      });
+      }, 'default');
 
       const precedingMsg = precedingResult.data?.[0]?.data;
       if (!precedingMsg) {
@@ -760,7 +762,7 @@ export class PersonaTaskExecutor {
         },
         sort: [{ field: 'createdAt', direction: 'desc' }],
         limit: 1,
-      });
+      }, 'default');
 
       if (existing.data && existing.data.length > 0) {
         return `Skipped: academy session already in progress for this persona`;

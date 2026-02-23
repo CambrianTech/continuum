@@ -97,7 +97,8 @@ export class VoiceOrchestrator {
         const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: { $in: participantIds } },
-            limit: participantIds.length
+            limit: participantIds.length,
+            dbHandle: 'default'
           }
         );
 
@@ -358,6 +359,7 @@ export class VoiceOrchestrator {
             collection: 'users',
             filter: { id: event.userId },
             limit: 1,
+            dbHandle: 'default',
           });
 
           if (result.success && result.items?.length) {

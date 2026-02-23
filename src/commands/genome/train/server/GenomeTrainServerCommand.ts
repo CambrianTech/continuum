@@ -237,6 +237,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       try {
         const entity = AdapterPackage.toGenomeLayerEntity(result.manifest, adapterPath);
         await DataCreate.execute({
+          dbHandle: 'default',
           collection: GenomeLayerEntity.collection,
           data: entity,
         });

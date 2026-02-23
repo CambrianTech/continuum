@@ -102,7 +102,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     if (inflight) return inflight;
 
     const promise = (async () => {
-      const room = await ORM.read<RoomEntity>(RoomEntity.collection, roomId);
+      const room = await ORM.read<RoomEntity>(RoomEntity.collection, roomId, 'default');
       if (room) {
         ChatRAGBuilder._roomCache.set(roomId, { entity: room, cachedAt: Date.now() });
       }
@@ -614,7 +614,7 @@ export class ChatRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options: RAGBuildOptions): Promise<PersonaIdentity> {
     try {
-      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId, 'default');
 
       if (!user) {
         this.log(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
@@ -753,7 +753,7 @@ LIMITS:
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxMessages
-      });
+      }, 'default');
 
       if (!result.success || !result.data || result.data.length === 0) {
         return [];
@@ -844,7 +844,7 @@ LIMITS:
           filter: { roomId },
           sort: [{ field: 'timestamp', direction: 'desc' }],
           limit: maxMessages
-        });
+        }, 'default');
 
         if (!result.success || !result.data) {
           return [];
@@ -1186,7 +1186,7 @@ LIMITS:
           const cached = ChatRAGBuilder._userNameCache.get(member.userId);
           if (cached) return cached;
 
-          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId);
+          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId, 'default');
           if (user) {
             ChatRAGBuilder._userNameCache.set(member.userId, user.displayName);
             return user.displayName;

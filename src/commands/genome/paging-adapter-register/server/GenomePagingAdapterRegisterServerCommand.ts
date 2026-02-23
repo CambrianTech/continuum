@@ -45,6 +45,7 @@ export class GenomePagingAdapterRegisterServerCommand extends CommandBase<Genome
       // If layerId is provided, hydrate adapter info from persisted GenomeLayerEntity
       if (params.layerId) {
         const readResult = await DataRead.execute<GenomeLayerEntity>({
+          dbHandle: 'default',
           collection: GenomeLayerEntity.collection,
           id: params.layerId,
         });

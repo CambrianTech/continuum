@@ -86,7 +86,28 @@ interface ConsolidationMetrics {
  */
 export class Hippocampus extends PersonaContinuousSubprocess {
   // Long-Term Memory (LTM) - Database handle
-  private memoryDbHandle: DbHandle | null = null;
+  private _memoryDbHandle: DbHandle | null = null;
+
+  /**
+   * Public accessor for the longterm.db handle.
+   * Returns null if database hasn't been initialized yet.
+   * Used by LimbicSystem to propagate handle to PersonaMemory.
+   */
+  get memoryDbHandle(): DbHandle | null {
+    return this._memoryDbHandle;
+  }
+
+  /**
+   * Wait for database initialization to complete.
+   * Returns the DbHandle once longterm.db is open.
+   * Used by LimbicSystem to propagate handle to PersonaMemory after init.
+   */
+  async waitForDbInit(): Promise<DbHandle | null> {
+    if (this.initializePromise) {
+      await this.initializePromise;
+    }
+    return this._memoryDbHandle;
+  }
 
   // Adaptive consolidation threshold (sigmoid-based, activity-responsive)
   private adaptiveThreshold: AdaptiveConsolidationThreshold;
@@ -155,9 +176,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
         throw new Error(result.error || 'Failed to open memory database');
       }
 
-      this.memoryDbHandle = result.dbHandle;
-      CognitionLogger.registerDbHandle(this.persona.id, this.memoryDbHandle);
-      this.log(`LTM database opened: ${this.memoryDbHandle}`);
+      this._memoryDbHandle = result.dbHandle;
+      CognitionLogger.registerDbHandle(this.persona.id, this._memoryDbHandle);
+      this.log(`LTM database opened: ${this._memoryDbHandle}`);
       this.log('LTM database initialized successfully');
     } catch (error) {
       const errorMsg = String(error);
@@ -188,9 +209,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
             throw new Error(result.error || 'Failed to open memory database on retry');
           }
 
-          this.memoryDbHandle = result.dbHandle;
-          CognitionLogger.registerDbHandle(this.persona.id, this.memoryDbHandle);
-          this.log(`LTM database opened (after recovery): ${this.memoryDbHandle}`);
+          this._memoryDbHandle = result.dbHandle;
+          CognitionLogger.registerDbHandle(this.persona.id, this._memoryDbHandle);
+          this.log(`LTM database opened (after recovery): ${this._memoryDbHandle}`);
           this.log('✅ LTM database recovered and initialized successfully');
           return;
         } catch (recoveryError) {
@@ -215,7 +236,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     }
 
     // Search LTM (database)
-    if (!this.memoryDbHandle) {
+    if (!this._memoryDbHandle) {
       return []; // No LTM available
     }
 
@@ -246,7 +267,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       await this.initializePromise;
     }
 
-    if (!this.memoryDbHandle) {
+    if (!this._memoryDbHandle) {
       this.log('WARN: semanticRecall called without LTM database - falling back to filter-based recall');
       return this.recall(params);
     }
@@ -282,7 +303,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       const searchOptions: VectorSearchOptions = {
         collection: 'memories',
-        dbHandle: this.memoryDbHandle || undefined,  // Use per-persona database
+        dbHandle: this._memoryDbHandle || undefined,  // Use per-persona database
         queryText,
         k: params.limit || 10,
         similarityThreshold: params.semanticThreshold || 0.6,
@@ -321,7 +342,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Search long-term memory (database)
    */
   private async searchLTM(params: RecallParams): Promise<MemoryEntity[]> {
-    if (!this.memoryDbHandle) {
+    if (!this._memoryDbHandle) {
       return [];
     }
 
@@ -345,7 +366,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // Query LTM
       const result = await DataList.execute({
-        dbHandle: this.memoryDbHandle,
+        dbHandle: this._memoryDbHandle,
         collection: 'memories',
         filter,
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -402,7 +423,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Uses adaptive threshold (sigmoid + exponential decay)
    */
   private async snoopAndConsolidate(): Promise<void> {
-    if (!this.memoryDbHandle || !this.persona.sessionId) {
+    if (!this._memoryDbHandle || !this.persona.sessionId) {
       return; // Can't consolidate without LTM or session
     }
 
@@ -469,7 +490,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       for (const memory of memories) {
         try {
           const result = await DataCreate.execute<any>({
-            dbHandle: this.memoryDbHandle,
+            dbHandle: this._memoryDbHandle,
             collection: 'memories',
             data: memory,
             suppressEvents: true,
@@ -628,10 +649,10 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     // Note: No personaId filter needed - each persona has their own database file
     // This also fixes the orphaned memories bug when personas get new UUIDs on reseed
     let ltmCount = 0;
-    if (this.memoryDbHandle) {
+    if (this._memoryDbHandle) {
       try {
         const result = await DataList.execute({
-          dbHandle: this.memoryDbHandle,
+          dbHandle: this._memoryDbHandle,
           collection: 'memories',
           limit: 0  // Just get count
         });

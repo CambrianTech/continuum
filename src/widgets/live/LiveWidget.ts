@@ -229,7 +229,8 @@ export class LiveWidget extends ReactiveWidget {
       const result = await DataUpdate.execute<UserStateEntity>({
         collection: 'user_states',
         id: this.userState.id as UUID,
-        data: { callState: newCallState }
+        data: { callState: newCallState },
+        dbHandle: 'default'
       });
 
       if (!result.success) {
@@ -380,7 +381,8 @@ export class LiveWidget extends ReactiveWidget {
       const result = await DataList.execute<CallEntity>({
         collection: 'calls',
         filter: { roomId: this.entityId, status: 'active' },
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (result.success && result.items?.length > 0) {
@@ -1055,17 +1057,17 @@ export class LiveWidget extends ReactiveWidget {
               : this.participants.map(p => this.renderParticipant(p))
             }
           </div>
+          ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
+            <div class="caption-display multi-speaker">
+              ${Array.from(this.activeCaptions.values()).map(caption => html`
+                <div class="caption-line">
+                  <span class="caption-speaker">${caption.speakerName}:</span>
+                  <span class="caption-text">${caption.text}</span>
+                </div>
+              `)}
+            </div>
+          ` : ''}
           <div class="controls">
-            ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
-              <div class="caption-display multi-speaker">
-                ${Array.from(this.activeCaptions.values()).map(caption => html`
-                  <div class="caption-line">
-                    <span class="caption-speaker">${caption.speakerName}:</span>
-                    <span class="caption-text">${caption.text}</span>
-                  </div>
-                `)}
-              </div>
-            ` : ''}
             <button
               id="mic-btn"
               class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
@@ -1341,18 +1343,19 @@ export class LiveWidget extends ReactiveWidget {
           </div>
         ` : ''}
 
+        ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
+          <div class="caption-display multi-speaker">
+            ${Array.from(this.activeCaptions.values()).map(caption => html`
+              <div class="caption-line">
+                <span class="caption-speaker">${caption.speakerName}:</span>
+                <span class="caption-text">${caption.text}</span>
+              </div>
+            `)}
+          </div>
+        ` : ''}
+
         <!-- Controls -->
         <div class="controls">
-          ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
-            <div class="caption-display multi-speaker">
-              ${Array.from(this.activeCaptions.values()).map(caption => html`
-                <div class="caption-line">
-                  <span class="caption-speaker">${caption.speakerName}:</span>
-                  <span class="caption-text">${caption.text}</span>
-                </div>
-              `)}
-            </div>
-          ` : ''}
           <button
             class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
             @click=${this.toggleMic}

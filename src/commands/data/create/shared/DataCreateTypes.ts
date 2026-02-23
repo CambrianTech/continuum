@@ -36,7 +36,8 @@ export const createDataCreateParams = (
   // Use base factory to ensure backend defaults are applied
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,
-    backend: data.backend
+    backend: data.backend,
+    dbHandle: data.dbHandle
   });
 
   // Return with data property added

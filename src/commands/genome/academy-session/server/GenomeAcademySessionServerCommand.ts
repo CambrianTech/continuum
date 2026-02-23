@@ -109,6 +109,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     }
 
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: AcademySessionEntity.collection,
       data: entity,
     });
@@ -187,6 +188,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
 
     // 5. Update session with handles
     await DataUpdate.execute({
+      dbHandle: 'default',
       collection: AcademySessionEntity.collection,
       id: sessionId,
       data: {

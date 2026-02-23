@@ -56,13 +56,13 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
       const k = Math.min(params.k || DEFAULT_CONFIG.vectorSearch.defaultK, DEFAULT_CONFIG.vectorSearch.maxK);
       const similarityThreshold = params.similarityThreshold ?? DEFAULT_CONFIG.vectorSearch.defaultSimilarityThreshold;
 
-      console.debug(`🔍 VECTOR-SEARCH: k=${k}, threshold=${similarityThreshold}, model=${embeddingModel.name}, dbHandle=${params.dbHandle || 'default'}`);
+      console.debug(`🔍 VECTOR-SEARCH: k=${k}, threshold=${similarityThreshold}, model=${embeddingModel.name}, dbHandle=${params.dbHandle}`);
 
       // Use ORM for all operations (routes to Rust with correct dbPath)
       // ORM.vectorSearch resolves dbHandle to dbPath internally
       const searchResult = await ORM.vectorSearch<RecordData>({
         collection: params.collection,
-        dbHandle: params.dbHandle,  // ORM resolves this to dbPath
+        dbHandle: params.dbHandle ?? 'default',
         queryText: params.queryText,
         queryVector: params.queryVector,
         k,

@@ -454,7 +454,7 @@ export class ConversationHistorySource implements RAGSource {
         }],
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxMessages
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         return result.data.map((record: { data: MessageWithSender }) => record.data);
@@ -468,7 +468,7 @@ export class ConversationHistorySource implements RAGSource {
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxMessages
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         return result.data.map((record: { data: ChatMessageEntity }) => record.data as MessageWithSender);

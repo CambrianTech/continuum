@@ -35,7 +35,7 @@ export class TaskCreateServerCommand extends CommandBase<TaskCreateParams, TaskC
         collection: COLLECTIONS.USERS,
         filter: { id: createParams.assigneeId },
         limit: 1
-      });
+      }, 'default');
 
       if (!assigneeResult.success || !assigneeResult.data || assigneeResult.data.length === 0) {
         return transformPayload(params, {
@@ -67,7 +67,7 @@ export class TaskCreateServerCommand extends CommandBase<TaskCreateParams, TaskC
       };
 
       // Store task in database - ORM.store(collection, data)
-      const storedTask = await ORM.store(COLLECTIONS.TASKS, taskData as TaskEntity);
+      const storedTask = await ORM.store(COLLECTIONS.TASKS, taskData as TaskEntity, false, 'default');
 
       if (!storedTask) {
         return transformPayload(params, {

@@ -44,6 +44,7 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
 
     // Get all messages from room
     const listResult = await DataList.execute<ChatMessageEntity>({
+        dbHandle: 'default',
         collection: ChatMessageEntity.collection,
         filter: { roomId: resolvedRoomId },
         orderBy: [{ field: 'timestamp', direction: 'asc' }],

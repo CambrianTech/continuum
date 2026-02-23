@@ -34,6 +34,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       // 1. Load user's UserStateEntity from database
       const listResult = await DataList.execute<UserStateEntity>({
+        dbHandle: 'default',
         collection: 'user_states',
         filter: { userId },
         limit: 1
@@ -98,6 +99,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       // 7. Save updated userState to database
       await DataUpdate.execute({
+        dbHandle: 'default',
         collection: 'user_states',
         id: userState.id,
         data: userState

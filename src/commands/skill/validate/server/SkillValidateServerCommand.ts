@@ -32,7 +32,7 @@ export class SkillValidateServerCommand extends CommandBase<SkillValidateParams,
     }
 
     // Load skill entity
-    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID, 'default');
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -134,6 +134,8 @@ export class SkillValidateServerCommand extends CommandBase<SkillValidateParams,
       COLLECTIONS.SKILLS,
       skill.id as UUID,
       updateData,
+      true,
+      'default'
     );
 
     return createSkillValidateResultFromParams(params, {

@@ -45,6 +45,9 @@ export abstract class BaseUser {
 
   public myRoomIds: Set<UUID> = new Set();
 
+  /** Cached room data from loadMyRooms — avoids re-querying rooms table */
+  protected _allRoomsCache: Map<UUID, RoomEntity> = new Map();
+
   private _log?: any;
 
   /**
@@ -135,40 +138,34 @@ export abstract class BaseUser {
    */
   protected async loadMyRooms(): Promise<void> {
     try {
-      this.log.debug(`🔧 LOAD-ROOMS-START: ${this.constructor.name} ${this.displayName} (id=${this.id.slice(0,8)}), current myRoomIds.size=${this.myRoomIds.size}`);
-
-      // Query all rooms
+      // Query all rooms (rooms table is small — typically <10 rows)
       const roomsResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: {}
-      });
+      }, 'default');
 
       if (!roomsResult.success || !roomsResult.data) {
         this.log.warn(`⚠️ ${this.constructor.name} ${this.displayName}: Failed to load rooms`);
         return;
       }
 
-      this.log.debug(`🔧 LOAD-ROOMS-QUERY: ${this.constructor.name} ${this.displayName} found ${roomsResult.data.length} total rooms`);
-
-      // Filter rooms where this user is a member
+      // Filter rooms where this user is a member and cache all room data
       let memberCount = 0;
       for (const roomRecord of roomsResult.data) {
         const room = roomRecord.data;
-        this.log.debug(`🔧 ROOM-RECORD STRUCTURE: roomRecord.id=${roomRecord.id}, roomRecord.data.id=${room.id}, room.name=${room.name}`);
-
-        // Use roomRecord.id (the record ID) not room.id (might be undefined in data payload)
         const roomId = roomRecord.id || room.id;
-        this.log.debug(`🔧 ROOM-RECORD: roomId=${roomId}, room.name=${room.name}, hasMembers=${!!room.members}`);
 
-        const isMember = room.members.some((m: { userId: UUID }) => m.userId === this.id);
+        // Cache room data for subclass use (avoids re-querying)
+        this._allRoomsCache.set(roomId, room);
+
+        const isMember = room.members?.some((m: { userId: UUID }) => m.userId === this.id);
         if (isMember) {
           this.myRoomIds.add(roomId);
           memberCount++;
-          this.log.debug(`🚪 ${this.constructor.name} ${this.displayName}: Member of room "${room.name}"`);
         }
       }
 
-      this.log.debug(`🔧 LOAD-ROOMS-END: ${this.constructor.name} ${this.displayName}, found ${memberCount} memberships, myRoomIds.size=${this.myRoomIds.size}`);
+      this.log.debug(`🚪 ${this.displayName}: ${memberCount} rooms loaded`);
     } catch (error) {
       this.log.error(`❌ ${this.constructor.name} ${this.displayName}: Error loading rooms:`, error);
     }
@@ -358,7 +355,7 @@ export abstract class BaseUser {
     const roomsResult = await ORM.query<RoomEntity>({
       collection: COLLECTIONS.ROOMS,
       filter: { uniqueId: roomUniqueId }
-    });
+    }, 'default');
 
     console.log(`🔍 ${this.name}: Query result for uniqueId="${roomUniqueId}":`, JSON.stringify(roomsResult, null, 2).slice(0, 500));
 
@@ -391,7 +388,7 @@ export abstract class BaseUser {
     displayName: string
   ): Promise<void> {
     // Read current room
-    const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+    const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId, 'default');
     if (!room) {
       console.warn(`⚠️ ${this.name}.create: Room ${roomId} not found`);
       return;
@@ -417,7 +414,9 @@ export abstract class BaseUser {
     await ORM.update<RoomEntity>(
       COLLECTIONS.ROOMS,
       roomId,
-      { members: updatedMembers }
+      { members: updatedMembers },
+      true,
+      'default'
     );
 
     console.log(`✅ ${this.name}.create: Added ${displayName} to room ${room.name}`);

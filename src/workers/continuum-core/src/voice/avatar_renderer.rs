@@ -210,6 +210,8 @@ pub fn create_renderer(config: AvatarConfig) -> Box<dyn AvatarRenderer> {
                 let slot = NEXT_SLOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if slot < super::bevy_renderer::MAX_AVATAR_SLOTS {
                     bevy_system.load_model(slot, vrm_path, &config.display_name);
+                    // Register identity → slot mapping for speaking state routing
+                    bevy_system.register_identity(&config.identity, slot);
                     if let Some(frame_rx) = bevy_system.frame_receiver(slot) {
                         info!(
                             "🎨 Using BevyChannelRenderer for '{}' (slot {}, model: {})",

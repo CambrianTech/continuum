@@ -315,6 +315,7 @@ export class TerminalWidget extends ReactiveWidget {
         collection: 'users',
         filter: { type: 'ai' },
         limit: 50,
+        dbHandle: 'default',
       } as any);
 
       if (!usersResult?.items?.length) {

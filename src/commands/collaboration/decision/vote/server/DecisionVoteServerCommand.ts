@@ -93,6 +93,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
 
     // 7. Update proposal in database
     const updateResult = await DataUpdate.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: proposal.id,
         data: proposal,
@@ -121,6 +122,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
    */
   private async findProposal(params: DecisionVoteParams): Promise<DecisionProposalEntity> {
     const result = await DataList.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter: { id: params.proposalId },
         limit: 1,
@@ -165,6 +167,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
    */
   private async findUserById(userId: UUID, params: DecisionVoteParams): Promise<{ id: UUID; entity: UserEntity }> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,

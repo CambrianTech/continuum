@@ -41,7 +41,7 @@ export class SkillListServerCommand extends CommandBase<SkillListParams, SkillLi
       filter,
       sort: [{ field: 'createdAt', direction: 'desc' }],
       limit,
-    });
+    }, 'default');
 
     const skills = queryResult.success && queryResult.data
       ? queryResult.data.map(record => record.data)

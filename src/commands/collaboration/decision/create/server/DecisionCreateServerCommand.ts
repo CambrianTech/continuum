@@ -125,6 +125,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
 
     // Store in database using data/create command
     await DataCreate.execute<DecisionEntity>({
+        dbHandle: 'default',
         collection: DecisionEntity.collection,
         data: decision,
         context: params.context,
@@ -147,6 +148,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
    */
   private async findUserById(userId: UUID, params: DecisionCreateParams): Promise<{ id: UUID; displayName: string }> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,

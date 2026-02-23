@@ -60,6 +60,7 @@ export class VoiceOrchestratorRustBridge {
 				collection: 'users',
 				filter: { id: { $in: participantIds } },
 				limit: participantIds.length,
+				dbHandle: 'default',
 			});
 			if (result.success && result.items) {
 				for (const user of result.items) {

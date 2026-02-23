@@ -179,6 +179,7 @@ async function handleTrainingComplete(
     await DataCreate.execute({
       collection: GenomeLayerEntity.collection,
       data: entity,
+      dbHandle: 'default',
     });
     layerId = entity.id;
     console.log(`[TrainingCompletion] GenomeLayerEntity created: ${layerId}`);

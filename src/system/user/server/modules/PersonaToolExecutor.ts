@@ -507,7 +507,8 @@ ${result.error || 'Unknown error'}
     await DataCreate.execute<ChatMessageEntity>({
       collection: ChatMessageEntity.collection,
       backend: 'server',
-      data: message
+      data: message,
+      dbHandle: 'default'
     });
 
     this.log.debug(`Stored tool result #${message.id.slice(0, 8)} (${summary})`);

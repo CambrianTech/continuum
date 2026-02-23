@@ -52,6 +52,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       // Get creator info from params.userId (auto-injected by infrastructure)
       const creatorId: string = strokeParams.userId;
       const userResult = await DataList.execute<UserEntity>({
+        dbHandle: 'default',
         collection: UserEntity.collection,
         filter: { id: creatorId },
         limit: 1,
@@ -89,7 +90,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       }
 
       // Save to database (throws on failure, returns entity on success)
-      await ORM.store(COLLECTIONS.CANVAS_STROKES, stroke);
+      await ORM.store(COLLECTIONS.CANVAS_STROKES, stroke, false, 'default');
 
       // Emit real-time event for all clients to sync
       Events.emit(CANVAS_STROKE_EVENTS.STROKE_ADDED, {
@@ -138,6 +139,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
     try {
       // Find the canvas room
       const roomResult = await DataList.execute<RoomEntity>({
+          dbHandle: 'default',
           collection: RoomEntity.collection,
           filter: { name: ROOM_UNIQUE_IDS.CANVAS },
           limit: 1,
@@ -178,6 +180,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
 
       // Store message
       await DataCreate.execute<ChatMessageEntity>({
+          dbHandle: 'default',
           collection: ChatMessageEntity.collection,
           data: messageEntity,
           context: params.context,

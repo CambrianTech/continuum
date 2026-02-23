@@ -66,6 +66,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
 
     // Execute data/list command
     const listResult = await DataList.execute<CoordinationDecisionEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         filter: Object.keys(filter).length > 0 ? filter : undefined,
         orderBy: [{ field: 'createdAt', direction: 'desc' }],  // ✅ FIX: Order by newest first

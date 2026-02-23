@@ -11,6 +11,7 @@
 import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { UserEntity } from '@system/data/entities/UserEntity';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import * as path from 'path';
 
 /**
@@ -18,11 +19,11 @@ import * as path from 'path';
  * Looks up the user entity to get uniqueId for human-readable directory naming.
  * Falls back to userId if entity lookup fails.
  */
-export async function resolveWorkspacePathFromUserId(userId: string): Promise<string> {
-  let dirName = userId; // fallback to UUID if lookup fails
+export async function resolveWorkspacePathFromUserId(userId: UUID): Promise<string> {
+  let dirName: string = userId; // fallback to UUID if lookup fails
 
   try {
-    const entity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const entity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId, 'default');
     if (entity?.uniqueId) {
       dirName = entity.uniqueId;
     }

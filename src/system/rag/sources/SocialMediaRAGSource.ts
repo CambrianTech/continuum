@@ -234,7 +234,7 @@ export class SocialMediaRAGSource implements RAGSource {
 
     // Look up persona's uniqueId via DataDaemon
     const user = await SocialMediaRAGSource.withTimeout(
-      ORM.read<UserEntity>(UserEntity.collection, personaId),
+      ORM.read<UserEntity>(UserEntity.collection, personaId, 'default'),
       SocialMediaRAGSource.API_TIMEOUT_MS,
       'ORM.read'
     );

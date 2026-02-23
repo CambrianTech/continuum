@@ -47,7 +47,8 @@ export const createDataUpdateParams = (
 ): DataUpdateParams => {
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,
-    backend: data.backend
+    backend: data.backend,
+    dbHandle: data.dbHandle
   });
 
   return {

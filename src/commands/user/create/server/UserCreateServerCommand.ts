@@ -54,6 +54,7 @@ export class UserCreateServerCommand extends UserCreateCommand {
           this.context,
           params.sessionId,
           {
+            dbHandle: 'default' as const,
             collection: COLLECTIONS.USERS,
             filter: { uniqueId: params.uniqueId },
             limit: 1

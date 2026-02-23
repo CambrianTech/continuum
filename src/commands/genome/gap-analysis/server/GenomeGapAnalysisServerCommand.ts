@@ -38,6 +38,7 @@ export class GenomeGapAnalysisServerCommand extends CommandBase<GenomeGapAnalysi
 
     // 1. Load competition entity
     const readResult = await DataRead.execute<CompetitionEntity>({
+      dbHandle: 'default',
       collection: CompetitionEntity.collection,
       id: competitionId as UUID,
     });
@@ -98,6 +99,7 @@ export class GenomeGapAnalysisServerCommand extends CommandBase<GenomeGapAnalysi
    */
   private async loadExamResults(competitionId: string): Promise<readonly BaseEntity[]> {
     const listResult = await DataList.execute<BaseEntity>({
+      dbHandle: 'default',
       collection: 'academy_examinations',
       filter: { sessionId: competitionId },
       orderBy: [{ field: 'createdAt', direction: 'asc' }],

@@ -32,6 +32,7 @@ export class StateCreateBrowserCommand extends CommandBase<StateCreateParams, St
 
       // Delegate to the elegant data/create command
       const dataResult = await DataCreate.execute({
+        dbHandle: 'default',
         collection: params.collection,
         data: enhancedData
       });

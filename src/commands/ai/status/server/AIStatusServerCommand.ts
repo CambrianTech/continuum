@@ -64,7 +64,7 @@ export class AIStatusServerCommand extends AIStatusCommand {
     const result = await ORM.query<UserEntity>({
       collection: COLLECTIONS.USERS,
       filter: { type: 'persona' }
-    });
+    }, 'default');
 
     if (!result.success || !result.data) {
       return {

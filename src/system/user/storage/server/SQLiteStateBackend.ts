@@ -44,14 +44,14 @@ export class SQLiteStateBackend implements IUserStateStorage {
   async save(state: UserStateEntity): Promise<{ success: boolean; error?: string }> {
     try {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
-      const existing = await ORM.read<UserStateEntity>(UserStateEntity.collection, state.id);
+      const existing = await ORM.read<UserStateEntity>(UserStateEntity.collection, state.id, 'default');
 
       if (existing) {
         // Update existing state
-        await ORM.update<UserStateEntity>(UserStateEntity.collection, state.id, state);
+        await ORM.update<UserStateEntity>(UserStateEntity.collection, state.id, state, true, 'default');
       } else {
         // Create new state
-        await ORM.store<UserStateEntity>(UserStateEntity.collection, state);
+        await ORM.store<UserStateEntity>(UserStateEntity.collection, state, false, 'default');
       }
 
       return { success: true };
@@ -74,7 +74,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
         collection: UserStateEntity.collection,
         filter: { userId, deviceId },
         limit: 1
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         return result.data[0].data;
@@ -98,11 +98,11 @@ export class SQLiteStateBackend implements IUserStateStorage {
         collection: UserStateEntity.collection,
         filter: { userId, deviceId },
         limit: 1
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         const stateId = result.data[0].id;
-        await ORM.remove(UserStateEntity.collection, stateId);
+        await ORM.remove(UserStateEntity.collection, stateId, false, 'default');
       }
 
       return { success: true };

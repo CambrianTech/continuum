@@ -67,17 +67,10 @@ export class ServerConfig {
   /**
    * Get main database connection string.
    *
-   * Checks DATABASE_URL first — if set to a postgres:// URL, returns that
-   * (routes to PostgresAdapter in Rust). Otherwise falls back to the
-   * SQLite file path at $HOME/.continuum/data/database.sqlite.
+   * Returns PostgreSQL connection URL. Override via DATABASE_URL env var.
    */
   getDatabasePath(): string {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (databaseUrl && (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://'))) {
-      return databaseUrl;
-    }
-    const dir = this.getDatabaseDir();
-    return `${dir}/database.sqlite`;
+    return process.env.DATABASE_URL || DATABASE_PATHS.POSTGRES;
   }
 
   /**

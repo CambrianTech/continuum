@@ -182,7 +182,7 @@ export class UserIdentityResolver {
         collection: COLLECTIONS.USERS,
         filter: { uniqueId },
         limit: 1
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         // Extract UserEntity from DataRecord

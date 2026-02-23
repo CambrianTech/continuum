@@ -135,7 +135,8 @@ export class DiagnosticsWidget extends BasePanelWidget {
       const result = await DataList.execute({
         collection: 'users',
         filter: { type: 'persona' },
-        limit: 50
+        limit: 50,
+        dbHandle: 'default'
       });
 
       if (result.success && result.items) {

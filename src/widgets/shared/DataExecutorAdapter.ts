@@ -23,6 +23,7 @@ export function createDataExecutor<T extends BaseEntity>(
         filter: params.filter ?? {},
         orderBy: params.orderBy ? [...params.orderBy] : [],
         limit: params.limit ?? 50,
+        dbHandle: 'default' as const,
         ...(params.cursor && { cursor: params.cursor })
       } satisfies Omit<DataListParams, 'context' | 'sessionId' | 'userId'>;
 
