@@ -83,7 +83,7 @@ export class PersonaWorkerThread extends EventEmitter {
   async start(): Promise<void> {
     // Load JS worker (pragmatic: one small JS file, imports from compiled TS)
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
-    const workerPath = path.join(currentDir, 'persona-worker.js');
+    const workerPath = path.join(currentDir, 'persona-worker.mjs');
 
     // Starting worker
 

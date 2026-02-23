@@ -141,6 +141,12 @@ export class BlobStorage {
       compressedSize = originalSize;
     }
 
+    // Ensure shard directory exists (basePath/xx/)
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
     // Write atomically (write to temp, then rename)
     const tempPath = `${filePath}.tmp.${Date.now()}`;
     await fs.promises.writeFile(tempPath, content);

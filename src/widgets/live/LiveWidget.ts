@@ -992,9 +992,19 @@ export class LiveWidget extends ReactiveWidget {
         `.participant-tile[data-user-id="${userId}"] .video-container, .presenter-tile[data-user-id="${userId}"] .video-container`
       ) as HTMLElement | null;
 
-      if (container && !container.contains(element)) {
-        container.innerHTML = '';
-        container.appendChild(element);
+      if (container) {
+        // Always ensure video-container fills its parent tile
+        container.style.position = 'absolute';
+        container.style.inset = '0';
+        container.style.width = '100%';
+        container.style.height = '100%';
+        container.style.overflow = 'hidden';
+        container.style.borderRadius = '8px';
+
+        if (!container.contains(element)) {
+          container.innerHTML = '';
+          container.appendChild(element);
+        }
       }
     }
   }

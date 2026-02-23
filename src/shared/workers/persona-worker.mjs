@@ -9,7 +9,7 @@ if (!parentPort) throw new Error('Must run as Worker Thread');
 
 const { providerType = 'mock', providerConfig = {} } = workerData;
 
-console.log(`🧵 [WORKER-${threadId}] AI Worker starting (provider: ${providerType})`);
+// Worker startup — no console output (stdout is not a log destination)
 
 // Minimal Ollama API call - just forward request, return response
 async function callOllama(prompt, model, temperature, maxTokens) {

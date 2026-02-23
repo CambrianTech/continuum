@@ -237,7 +237,7 @@ export class AdapterHealthMonitor {
         const nextRetrySec = Math.round(nextRetryMs / 1000);
         // Only log on first failure and at backoff milestones (powers of 2) to reduce noise
         if (state.consecutiveFailures === 1 || (state.consecutiveFailures & (state.consecutiveFailures - 1)) === 0) {
-          log.warn(`⚠️  ${state.adapter.providerId}: Health check failed (${state.consecutiveFailures} consecutive, next retry in ${nextRetrySec}s)`);
+          log.debug(`${state.adapter.providerId}: Health check failed (${state.consecutiveFailures} consecutive, next retry in ${nextRetrySec}s)`);
         }
 
         // Get max failures threshold from SystemDaemon
