@@ -27,6 +27,16 @@
   position: relative;
 }
 
+// Captions overlay above controls — does NOT consume flex space
+live-captions {
+  position: absolute;
+  bottom: 56px; // above controls bar height
+  left: 0;
+  right: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
 // ========================================
 // Participant Grid (Teams/Discord style)
 // ========================================

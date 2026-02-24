@@ -179,3 +179,4 @@ src/commands/**/*.d.ts
 !test*output.txt
 _archive/
 src/.continuum/sessions/validation/
+/src/widgets/live/public/live-widget.css
