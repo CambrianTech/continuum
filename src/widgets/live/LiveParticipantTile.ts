@@ -25,7 +25,49 @@ export class LiveParticipantTile extends LitElement {
   // Video element from LiveKit — rendered directly in template by Lit
   @reactive() videoElement: HTMLVideoElement | null = null;
 
+  // ResizeObserver for adaptive avatar resolution
+  private _resizeObserver: ResizeObserver | null = null;
+  private _resizeDebounce: ReturnType<typeof setTimeout> | null = null;
+
   static override styles = [unsafeCSS(TILE_STYLES)] as CSSResultGroup;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+
+    this._resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width === 0 || height === 0) continue;
+
+        // Debounce 500ms to avoid thrashing during window resize
+        if (this._resizeDebounce) clearTimeout(this._resizeDebounce);
+        this._resizeDebounce = setTimeout(() => {
+          this.dispatchEvent(new CustomEvent('tile-resized', {
+            bubbles: true,
+            composed: true,
+            detail: {
+              userId: this.userId,
+              width: Math.round(width),
+              height: Math.round(height),
+            }
+          }));
+        }, 500);
+      }
+    });
+    this._resizeObserver.observe(this);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+    if (this._resizeDebounce) {
+      clearTimeout(this._resizeDebounce);
+      this._resizeDebounce = null;
+    }
+  }
 
   private get _hasVideo(): boolean {
     return !!this.videoElement;

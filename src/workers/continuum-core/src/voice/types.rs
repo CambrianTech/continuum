@@ -235,6 +235,38 @@ pub struct AvatarState {
     pub timestamp: u64,
 }
 
+// ============================================================================
+// Tile Resolution — adaptive avatar rendering (browser → Rust data channel)
+// ============================================================================
+
+/// Tile dimensions reported by the browser for a single participant.
+/// Published via LiveKit data channel (topic='tile_resolution') as:
+/// `{ [userId]: TileResolution, ... }`
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/voice/TileResolution.ts")]
+pub struct TileResolution {
+    /// Tile width in CSS pixels
+    pub w: u32,
+    /// Tile height in CSS pixels
+    pub h: u32,
+}
+
+/// Discrete resolution tier — browser tile width maps to a render target size.
+/// Prevents GPU readback thrashing from continuous resizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../shared/generated/voice/ResolutionTier.ts")]
+pub enum ResolutionTierWire {
+    /// 160x120 @15fps — thumbnails under 120px
+    Tiny,
+    /// 320x240 @20fps — small tiles 120-300px
+    Small,
+    /// 480x360 @24fps — medium tiles 300-500px
+    Medium,
+    /// 640x480 @30fps — large/spotlight tiles over 500px
+    Large,
+}
+
 #[cfg(test)]
 mod frame_tests {
     use super::*;

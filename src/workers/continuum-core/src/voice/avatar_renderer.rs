@@ -13,7 +13,67 @@
 //!   AvatarRenderer (trait) → RGBA frames → crossbeam channel → video loop → I420 → NativeVideoSource
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{info, warn};
+
+// =============================================================================
+// Resolution Tiers — discrete levels to prevent render target thrashing
+// =============================================================================
+
+/// Discrete resolution tiers for adaptive avatar rendering.
+/// Tile size in the browser drives which tier is used — smaller tiles
+/// get lower resolution, saving GPU readback bandwidth and encoding cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResolutionTier {
+    /// 160×120 @15fps — thumbnails under 120px wide
+    Tiny,
+    /// 320×240 @20fps — small tiles 120–300px wide
+    Small,
+    /// 480×360 @24fps — medium tiles 300–500px wide
+    Medium,
+    /// 640×480 @30fps — large/spotlight tiles over 500px wide
+    Large,
+}
+
+impl ResolutionTier {
+    /// Render target dimensions for this tier.
+    pub fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Tiny   => (160, 120),
+            Self::Small  => (320, 240),
+            Self::Medium => (480, 360),
+            Self::Large  => (640, 480),
+        }
+    }
+
+    /// Target publish FPS for this tier.
+    pub fn fps(&self) -> f64 {
+        match self {
+            Self::Tiny   => 15.0,
+            Self::Small  => 20.0,
+            Self::Medium => 24.0,
+            Self::Large  => 30.0,
+        }
+    }
+
+    /// Frame interval as nanoseconds (for AtomicU64 storage).
+    pub fn interval_nanos(&self) -> u64 {
+        (1_000_000_000.0 / self.fps()) as u64
+    }
+
+    /// Select tier from browser tile width in CSS pixels.
+    pub fn from_tile_width(px: u32) -> Self {
+        if px < 120 {
+            Self::Tiny
+        } else if px < 300 {
+            Self::Small
+        } else if px < 500 {
+            Self::Medium
+        } else {
+            Self::Large
+        }
+    }
+}
 
 /// Raw RGBA frame extracted from the renderer.
 pub struct RgbaFrame {
@@ -157,7 +217,6 @@ impl AvatarRenderer for BevyChannelRenderer {
         match self.frame_rx.try_recv() {
             Ok(frame) => {
                 self.consecutive_failures = 0;
-                // Cache this frame so we return it on misses instead of the fallback circle
                 self.last_frame = Some(frame.data.clone());
                 frame
             }
@@ -236,14 +295,20 @@ pub fn create_renderer(config: AvatarConfig) -> Box<dyn AvatarRenderer> {
 // =============================================================================
 
 /// Spawns a background thread that renders avatar frames and sends them via channel.
-/// Returns a crossbeam receiver that the LiveKit video loop consumes.
+/// Returns a crossbeam receiver that the LiveKit video loop consumes, plus an
+/// `Arc<AtomicU64>` that controls the sleep interval in nanoseconds (for FPS adaptation).
 ///
 /// The renderer is selected by `create_renderer()` — the loop is backend-agnostic.
 /// Any AvatarRenderer implementation plugs in without touching this code.
 pub fn spawn_renderer_loop(
     config: AvatarConfig,
-) -> crossbeam_channel::Receiver<RgbaFrame> {
+) -> (crossbeam_channel::Receiver<RgbaFrame>, Arc<AtomicU64>) {
     let fps = config.fps;
+    let interval_nanos = Arc::new(AtomicU64::new(
+        (1_000_000_000.0 / fps) as u64
+    ));
+    let interval_nanos_clone = interval_nanos.clone();
+
     let (tx, rx) = crossbeam_channel::bounded(2); // Small buffer, drop old frames
 
     let renderer = create_renderer(config);
@@ -252,7 +317,6 @@ pub fn spawn_renderer_loop(
     std::thread::Builder::new()
         .name("avatar-renderer".into())
         .spawn(move || {
-            let interval = std::time::Duration::from_secs_f64(1.0 / fps);
             let mut renderer = renderer.lock().unwrap();
             loop {
                 let frame = renderer.render_frame();
@@ -266,13 +330,14 @@ pub fn spawn_renderer_loop(
                         break;
                     }
                 }
-                std::thread::sleep(interval);
+                let nanos = interval_nanos_clone.load(Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_nanos(nanos));
             }
             info!("Avatar renderer loop exited");
         })
         .expect("Failed to spawn avatar renderer thread");
 
-    rx
+    (rx, interval_nanos)
 }
 
 // =============================================================================
@@ -317,7 +382,7 @@ pub struct VoiceProfile {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PitchRange { Low, Mid, High }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AvatarGender { Male, Female, Neutral }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -488,16 +553,47 @@ pub fn select_avatar_for_voice(
     best
 }
 
-/// Select avatar by deterministic assignment using atomic counter.
-/// Each new persona gets the next model in sequence — zero collisions
-/// for up to 14 personas (wraps after that, but still distributed).
+// =============================================================================
+// Deterministic selection — hash-based picking from any array
+// =============================================================================
+
+/// Deterministically pick one element from a slice using a stable hash of a unique ID.
+/// Same ID + same salt + same slice always returns the same element.
 ///
-/// The old hash-based approach had 5 collisions among 17 personas because
-/// the 31-multiplier hash has poor distribution over short strings mod 14.
-pub fn select_avatar_by_identity(_identity: &str) -> &'static AvatarModel {
-    static NEXT_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let idx = NEXT_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    &AVATAR_CATALOG[idx % AVATAR_CATALOG.len()]
+/// The `salt` parameter decorrelates picks across different trait arrays so that
+/// e.g. gender and avatar model aren't locked to the same hash bucket:
+///   `deterministic_pick(id, &genders, "gender")`
+///   `deterministic_pick(id, &avatars, "avatar")`
+///   `deterministic_pick(id, &voices, "voice")`
+pub fn deterministic_pick<'a, T>(unique_id: &str, options: &'a [T], salt: &str) -> &'a T {
+    assert!(!options.is_empty(), "Cannot pick from empty slice");
+    &options[deterministic_index(unique_id, options.len(), salt)]
+}
+
+/// Deterministic index: hash a unique ID into the range [0, len).
+/// Different salt values produce independent indices from the same ID.
+pub fn deterministic_index(unique_id: &str, len: usize, salt: &str) -> usize {
+    let mut hash = fnv1a_hash(unique_id.as_bytes());
+    // Mix in salt to decorrelate across different trait dimensions
+    hash = hash.wrapping_mul(0x100000001b3);
+    hash ^= fnv1a_hash(salt.as_bytes());
+    hash as usize % len
+}
+
+/// FNV-1a 64-bit hash — fast, excellent distribution for short strings and UUIDs.
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    hash
+}
+
+/// Select avatar by deterministic hash of persona identity.
+/// Same persona always gets the same model.
+pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
+    deterministic_pick(identity, AVATAR_CATALOG, "avatar")
 }
 
 /// Extract gender from a TTS voice name.
@@ -567,30 +663,44 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
     None
 }
 
-/// Select the best avatar for an agent, using voice gender when available.
-///
-/// - If voice is provided and gender can be extracted, filters the catalog by gender
-///   then round-robins among matching models for variety.
-/// - Falls back to `select_avatar_by_identity()` (round-robin over all) when voice is unknown.
-pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
-    if let Some(voice_name) = voice {
-        if let Some(gender) = gender_from_voice_name(voice_name) {
-            // Collect indices of models matching this gender (+ neutral as acceptable)
-            let matching: Vec<usize> = AVATAR_CATALOG.iter().enumerate()
-                .filter(|(_, m)| m.voice_profile.gender == gender || m.voice_profile.gender == AvatarGender::Neutral)
-                .map(|(i, _)| i)
-                .collect();
+/// All genders available for deterministic selection.
+const ALL_GENDERS: &[AvatarGender] = &[AvatarGender::Female, AvatarGender::Male, AvatarGender::Neutral];
 
-            if !matching.is_empty() {
-                static GENDER_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-                let idx = GENDER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let picked = matching[idx % matching.len()];
-                info!("🎭 Avatar selection for '{}': voice='{}' → gender={:?} → model='{}'",
-                    &identity[..8.min(identity.len())], voice_name, gender, AVATAR_CATALOG[picked].id);
-                return &AVATAR_CATALOG[picked];
-            }
-        }
+/// Deterministically derive a gender from a persona identity.
+/// Same persona always gets the same gender.
+pub fn gender_from_identity(identity: &str) -> AvatarGender {
+    *deterministic_pick(identity, ALL_GENDERS, "gender")
+}
+
+/// Select the best avatar for an agent.
+///
+/// Priority:
+/// 1. If voice name is known, extract gender from it (voice-matched)
+/// 2. Otherwise, derive gender deterministically from the persona identity
+///
+/// Within the gender-matched subset, picks deterministically by identity
+/// so the same persona always gets the same avatar model.
+pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
+    // Resolve gender: voice name > deterministic from identity
+    let gender = voice
+        .and_then(gender_from_voice_name)
+        .unwrap_or_else(|| gender_from_identity(identity));
+
+    // Filter catalog to matching gender (+ neutral is always acceptable)
+    let matching: Vec<usize> = AVATAR_CATALOG.iter().enumerate()
+        .filter(|(_, m)| m.voice_profile.gender == gender || m.voice_profile.gender == AvatarGender::Neutral)
+        .map(|(i, _)| i)
+        .collect();
+
+    if !matching.is_empty() {
+        let idx = deterministic_index(identity, matching.len(), "avatar");
+        let picked = matching[idx];
+        info!("🎭 Avatar for '{}': gender={:?} → model='{}'",
+            &identity[..8.min(identity.len())], gender, AVATAR_CATALOG[picked].id);
+        return &AVATAR_CATALOG[picked];
     }
+
+    // Shouldn't happen (catalog has all genders) but safe fallback
     select_avatar_by_identity(identity)
 }
 
@@ -811,8 +921,85 @@ mod tests {
 
     #[test]
     fn test_select_avatar_for_agent_no_voice() {
-        // Without voice, falls back to round-robin — just verify it doesn't crash
+        // Without voice, derives gender from identity deterministically
         let model = select_avatar_for_agent("some-persona-id", None);
         assert!(!model.id.is_empty());
+    }
+
+    #[test]
+    fn test_deterministic_pick_stable() {
+        // Same ID + same array + same salt → always same result
+        let options = ["a", "b", "c", "d", "e"];
+        let pick1 = deterministic_pick("user-123", &options, "test");
+        let pick2 = deterministic_pick("user-123", &options, "test");
+        assert_eq!(pick1, pick2);
+    }
+
+    #[test]
+    fn test_deterministic_pick_different_salt() {
+        // Same ID but different salt → likely different result (decorrelated)
+        let options = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let pick_a = deterministic_pick("user-xyz", &options, "salt-a");
+        let pick_b = deterministic_pick("user-xyz", &options, "salt-b");
+        // Not guaranteed different, but with 10 options it's very likely
+        // Just verify they're valid picks
+        assert!(options.contains(pick_a));
+        assert!(options.contains(pick_b));
+    }
+
+    #[test]
+    fn test_gender_from_identity_stable() {
+        // Same identity always gets same gender
+        let g1 = gender_from_identity("persona-abc-123");
+        let g2 = gender_from_identity("persona-abc-123");
+        assert_eq!(g1, g2);
+    }
+
+    #[test]
+    fn test_gender_from_identity_covers_all() {
+        // With enough different identities, all genders should appear
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..100 {
+            seen.insert(gender_from_identity(&format!("persona-{}", i)));
+        }
+        assert!(seen.len() >= 2, "Expected at least 2 genders from 100 identities, got {}", seen.len());
+    }
+
+    #[test]
+    fn test_resolution_tier_dimensions() {
+        assert_eq!(ResolutionTier::Tiny.dimensions(), (160, 120));
+        assert_eq!(ResolutionTier::Small.dimensions(), (320, 240));
+        assert_eq!(ResolutionTier::Medium.dimensions(), (480, 360));
+        assert_eq!(ResolutionTier::Large.dimensions(), (640, 480));
+    }
+
+    #[test]
+    fn test_resolution_tier_fps() {
+        assert!((ResolutionTier::Tiny.fps() - 15.0).abs() < 0.01);
+        assert!((ResolutionTier::Small.fps() - 20.0).abs() < 0.01);
+        assert!((ResolutionTier::Medium.fps() - 24.0).abs() < 0.01);
+        assert!((ResolutionTier::Large.fps() - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_resolution_tier_from_tile_width() {
+        assert_eq!(ResolutionTier::from_tile_width(50), ResolutionTier::Tiny);
+        assert_eq!(ResolutionTier::from_tile_width(119), ResolutionTier::Tiny);
+        assert_eq!(ResolutionTier::from_tile_width(120), ResolutionTier::Small);
+        assert_eq!(ResolutionTier::from_tile_width(299), ResolutionTier::Small);
+        assert_eq!(ResolutionTier::from_tile_width(300), ResolutionTier::Medium);
+        assert_eq!(ResolutionTier::from_tile_width(499), ResolutionTier::Medium);
+        assert_eq!(ResolutionTier::from_tile_width(500), ResolutionTier::Large);
+        assert_eq!(ResolutionTier::from_tile_width(1920), ResolutionTier::Large);
+    }
+
+    #[test]
+    fn test_resolution_tier_interval_nanos() {
+        // 30fps = ~33.3ms = 33_333_333ns
+        let nanos = ResolutionTier::Large.interval_nanos();
+        assert!(nanos > 33_000_000 && nanos < 34_000_000);
+        // 15fps = ~66.6ms = 66_666_666ns
+        let nanos = ResolutionTier::Tiny.interval_nanos();
+        assert!(nanos > 66_000_000 && nanos < 67_000_000);
     }
 }

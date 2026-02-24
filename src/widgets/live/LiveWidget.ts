@@ -112,6 +112,10 @@ export class LiveWidget extends ReactiveWidget {
   private _deactivateSavedMic: boolean | null = null;
   private _deactivateSavedSpeaker: boolean | null = null;
 
+  // Tile resolution tracking — collected from tile-resized events, batched to data channel
+  private _tileResolutions: Map<string, { width: number; height: number }> = new Map();
+  private _tileResDebounce: ReturnType<typeof setTimeout> | null = null;
+
   // Reentrancy guard
   private _applyingMicState = false;
 
@@ -706,6 +710,19 @@ export class LiveWidget extends ReactiveWidget {
     this.spotlightUserId = null;
   }
 
+  private _onTileResized(e: CustomEvent): void {
+    const { userId, width, height } = e.detail;
+    this._tileResolutions.set(userId, { width, height });
+
+    // Debounce 1s — batch all tile resize events into a single data channel publish
+    if (this._tileResDebounce) clearTimeout(this._tileResDebounce);
+    this._tileResDebounce = setTimeout(() => {
+      if (this.audioClient && this._tileResolutions.size > 0) {
+        this.audioClient.sendTileResolutions(this._tileResolutions);
+      }
+    }, 1000);
+  }
+
   // ========================================
   // Grid Helpers
   // ========================================
@@ -731,6 +748,11 @@ export class LiveWidget extends ReactiveWidget {
 
     this._remoteVideoElements.clear();
     this.activeVideoUsers = new Set();
+    this._tileResolutions.clear();
+    if (this._tileResDebounce) {
+      clearTimeout(this._tileResDebounce);
+      this._tileResDebounce = null;
+    }
 
     this.unsubscribers.forEach(unsub => unsub());
     this.unsubscribers = [];
@@ -796,6 +818,7 @@ export class LiveWidget extends ReactiveWidget {
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
+        @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
         <div class="participant-grid" data-count="${this._gridDataCount()}">
           ${this.participants.length === 0
@@ -838,6 +861,7 @@ export class LiveWidget extends ReactiveWidget {
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
+        @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
         <!-- Main presenter area -->
         <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>

@@ -18,7 +18,7 @@ use crate::audio_constants::{AUDIO_SAMPLE_RATE, LIVEKIT_DEV_KEY, LIVEKIT_DEV_SEC
 use crate::secrets::get_secret;
 
 use livekit::prelude::*;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{TrackPublishOptions, VideoEncoding};
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -224,12 +224,80 @@ impl LiveKitAgent {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let event_tx_clone = event_tx.clone();
         let identity = persona_id.to_string();
+        let identity_for_events = identity.clone();
 
         // Spawn event handler task — routes room events to the agent's event channel.
         // Uses participant metadata for role classification, not identity string matching.
         tokio::spawn(async move {
+            // Hysteresis state: track current tier and last downgrade request.
+            // Upgrades (larger) are immediate; downgrades require 2s of stability.
+            use crate::voice::avatar_renderer::ResolutionTier;
+            let mut current_tier: ResolutionTier = ResolutionTier::Large;
+            let mut pending_downgrade: Option<(ResolutionTier, tokio::time::Instant)> = None;
+            const DOWNGRADE_HOLDOFF: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+
             while let Some(event) = room_events.recv().await {
                 match event {
+                    RoomEvent::DataReceived { payload, topic, .. } => {
+                        if topic.as_deref() == Some("tile_resolution") {
+                            // Parse JSON: { "persona-uuid": TileResolution, ... }
+                            // TileResolution is the ts-rs shared type (voice/types.rs)
+                            if let Ok(text) = std::str::from_utf8(&payload) {
+                                if let Ok(data) = serde_json::from_str::<HashMap<String, crate::voice::types::TileResolution>>(text) {
+                                    if let Some(dims) = data.get(&identity_for_events) {
+                                        let requested_tier = ResolutionTier::from_tile_width(dims.w);
+
+                                        if requested_tier == current_tier {
+                                            pending_downgrade = None;
+                                            continue;
+                                        }
+
+                                        let requested_pixels = {
+                                            let (rw, rh) = requested_tier.dimensions();
+                                            rw * rh
+                                        };
+                                        let current_pixels = {
+                                            let (cw, ch) = current_tier.dimensions();
+                                            cw * ch
+                                        };
+
+                                        if requested_pixels >= current_pixels {
+                                            // Upgrade: apply immediately
+                                            let (rw, rh) = requested_tier.dimensions();
+                                            if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+                                                bevy_system.resize_by_identity(&identity_for_events, rw, rh);
+                                            }
+                                            current_tier = requested_tier;
+                                            pending_downgrade = None;
+                                            info!("🎨 Tier upgrade for '{}': {:?} ({}x{})",
+                                                &identity_for_events[..8.min(identity_for_events.len())],
+                                                requested_tier, rw, rh);
+                                        } else {
+                                            // Downgrade: require 2s hold-down
+                                            match &pending_downgrade {
+                                                Some((pending_tier, since)) if *pending_tier == requested_tier => {
+                                                    if since.elapsed() >= DOWNGRADE_HOLDOFF {
+                                                        let (rw, rh) = requested_tier.dimensions();
+                                                        if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
+                                                            bevy_system.resize_by_identity(&identity_for_events, rw, rh);
+                                                        }
+                                                        current_tier = requested_tier;
+                                                        pending_downgrade = None;
+                                                        info!("🎨 Tier downgrade for '{}': {:?} ({}x{})",
+                                                            &identity_for_events[..8.min(identity_for_events.len())],
+                                                            requested_tier, rw, rh);
+                                                    }
+                                                }
+                                                _ => {
+                                                    pending_downgrade = Some((requested_tier, tokio::time::Instant::now()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     RoomEvent::TrackSubscribed {
                         track,
                         publication: _,
@@ -358,6 +426,14 @@ impl LiveKitAgent {
                     LocalTrack::Video(video_track),
                     TrackPublishOptions {
                         source: TrackSource::Camera,
+                        // Avatar video: server-rendered 720p, one consumer per track.
+                        // Disable simulcast (no need for quality layers) and set
+                        // explicit bitrate to prevent WebRTC adaptive compression blur.
+                        simulcast: false,
+                        video_encoding: Some(VideoEncoding {
+                            max_bitrate: 2_500_000, // 2.5 Mbps — ample for 720p avatar
+                            max_framerate: 30.0,
+                        }),
                         ..Default::default()
                     },
                 )
@@ -681,14 +757,16 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     let config = AvatarConfig {
         identity: agent.identity.clone(),
         display_name: agent.display_name.clone(),
-        width: 640,
-        height: 480,
+        width: 1280,
+        height: 720,
         fps: 30.0,
         vrm_model_path,
     };
 
-    // Factory selects the best renderer — this function doesn't know which backend
-    let frame_rx = crate::voice::avatar_renderer::spawn_renderer_loop(config);
+    // Factory selects the best renderer — this function doesn't know which backend.
+    // _interval_nanos can be updated by the tile_resolution data channel handler
+    // to adapt FPS when the browser tile size changes.
+    let (frame_rx, _interval_nanos) = crate::voice::avatar_renderer::spawn_renderer_loop(config);
 
     tokio::spawn(async move {
         info!("📹 Video loop started for '{}' → model '{}'", agent.identity, avatar.name);
@@ -1142,9 +1220,13 @@ impl LiveKitAgentManager {
         // Speaking agents don't process their own event_rx — the STT listener
         // handles all incoming audio processing centrally (one per call).
 
-        // Video loop is deferred to first speak_in_call() — the avatar needs
-        // the voice name to select a gender-matched 3D model. The browser shows
-        // the default avatar circle until the persona first speaks.
+        // Start video loop immediately — the avatar should appear as soon as
+        // the persona connects, not wait for first speech. Voice name isn't
+        // available yet, so avatar selection uses round-robin (good enough —
+        // diverse model distribution across personas).
+        if !agent.video_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            start_video_loop(agent.clone());
+        }
 
         Ok(agent)
     }
@@ -1185,12 +1267,6 @@ impl LiveKitAgentManager {
             agent.set_voice(resolved);
         } else if let Some(v) = voice {
             agent.set_voice(v);
-        }
-
-        // Start video loop on first speak — deferred from get_or_create_agent()
-        // so we have the voice name for gender-matched 3D model selection.
-        if !agent.video_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            start_video_loop(agent.clone());
         }
 
         // Signal avatar to start speaking animation (mouth movement, head nod)

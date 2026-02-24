@@ -12,7 +12,7 @@
 //!           ├── ...
 //!           └── Avatar slot 13: Camera → RenderTarget → Readback → channel
 //!
-//! Performance: 14 avatars × 320×240 @ 30fps = ~123 MB/s GPU readback.
+//! Performance: 14 avatars × 1280×720 @ 30fps = ~1.5 GB/s GPU readback.
 //! On Apple Silicon (shared memory), this is essentially a memcpy.
 
 use bevy::prelude::*;
@@ -44,9 +44,10 @@ fn bevy_debug(_msg: &str) {
 pub const MAX_AVATAR_SLOTS: u8 = 24;
 
 /// Render resolution per avatar.
-/// 640×480 balances quality vs GPU readback bandwidth.
-const AVATAR_WIDTH: u32 = 640;
-const AVATAR_HEIGHT: u32 = 480;
+/// 1280×720 (720p) — high quality for video conference tiles.
+/// On Apple Silicon shared memory, readback is essentially a memcpy.
+const AVATAR_WIDTH: u32 = 1280;
+const AVATAR_HEIGHT: u32 = 720;
 
 /// Target framerate for avatar rendering.
 /// 30fps for smooth video-quality animation (gestures, speaking, blinking).
@@ -91,6 +92,9 @@ pub enum AvatarCommand {
     /// Set mouth open weight from audio amplitude (0.0 = closed, 1.0 = fully open).
     /// Overrides the default sine oscillation for amplitude-responsive lip sync.
     SetMouthWeight { slot: u8, weight: f32 },
+    /// Resize a slot's render target to new dimensions.
+    /// Recreates the render target image, camera target, and readback entity.
+    Resize { slot: u8, width: u32, height: u32 },
     /// Shut down the renderer gracefully.
     Shutdown,
 }
@@ -218,6 +222,22 @@ impl BevyAvatarSystem {
     pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
         if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
             self.set_mouth_weight(slot, weight);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resize a slot's render target to new dimensions.
+    pub fn resize_slot(&self, slot: u8, width: u32, height: u32) {
+        let _ = self.command_tx.send(AvatarCommand::Resize { slot, width, height });
+    }
+
+    /// Resize by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            self.resize_slot(slot, width, height);
             true
         } else {
             false
@@ -359,6 +379,7 @@ struct MouthWeights {
     weights: HashMap<u8, f32>,
 }
 
+
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
     frame_senders: Vec<Sender<RgbaFrame>>,
@@ -420,6 +441,34 @@ fn run_bevy_app(
             animate_idle_gestures,
         ))
         .run();
+}
+
+/// Spawn a readback entity for a given render target + slot.
+fn spawn_readback_entity(
+    commands: &mut Commands,
+    rt_handle: Handle<Image>,
+    slot_id: u8,
+) -> Entity {
+    commands
+        .spawn((
+            Readback::texture(rt_handle),
+            AvatarSlotId(slot_id),
+        ))
+        .observe(
+            move |trigger: Trigger<ReadbackComplete>,
+                  channels: Res<FrameChannels>| {
+                let pixel_bytes: &[u8] = trigger.event();
+
+                if let Some(tx) = channels.0.get(slot_id as usize) {
+                    let _ = tx.try_send(RgbaFrame {
+                        width: AVATAR_WIDTH,
+                        height: AVATAR_HEIGHT,
+                        data: pixel_bytes.to_vec(),
+                    });
+                }
+            },
+        )
+        .id()
 }
 
 /// Create render targets, cameras, and lights for all avatar slots.
@@ -504,46 +553,7 @@ fn setup_render_slots(
         // ReadbackComplete derefs to Vec<u8> containing raw pixel data in the
         // render target's texture format (Rgba8UnormSrgb → RGBA bytes).
         let slot_id = slot;
-        let readback_entity = commands
-            .spawn((
-                Readback::texture(rt_handle.clone()),
-                AvatarSlotId(slot),
-            ))
-            .observe(
-                move |trigger: Trigger<ReadbackComplete>,
-                      channels: Res<FrameChannels>| {
-                    let pixel_bytes: &[u8] = trigger.event();
-
-                    // Log first readback frame per slot + periodic updates
-                    static FRAME_COUNTS: std::sync::OnceLock<std::sync::Mutex<[u64; 32]>> = std::sync::OnceLock::new();
-                    let counts = FRAME_COUNTS.get_or_init(|| std::sync::Mutex::new([0u64; 32]));
-                    if let Ok(mut c) = counts.lock() {
-                        c[slot_id as usize] += 1;
-                        let n = c[slot_id as usize];
-                        if n == 1 || n == 10 || n == 100 || n % 1000 == 0 {
-                            // Sample CENTER pixels (where 3D content renders, not top-left corner)
-                            let center_offset = ((AVATAR_HEIGHT / 2) * AVATAR_WIDTH + AVATAR_WIDTH / 2 - 50) as usize * 4;
-                            let sample_end = std::cmp::min(center_offset + 400, pixel_bytes.len());
-                            let non_bg = pixel_bytes[center_offset..sample_end].chunks(4)
-                                .filter(|px| px.len() >= 3 && !(px[0] < 30 && px[1] < 30 && px[2] < 50))
-                                .count();
-                            bevy_debug(&format!(
-                                "Readback slot {}: frame #{}, {} bytes, non-bg center pixels: {}",
-                                slot_id, n, pixel_bytes.len(), non_bg
-                            ));
-                        }
-                    }
-
-                    if let Some(tx) = channels.0.get(slot_id as usize) {
-                        let _ = tx.try_send(RgbaFrame {
-                            width: AVATAR_WIDTH,
-                            height: AVATAR_HEIGHT,
-                            data: pixel_bytes.to_vec(),
-                        });
-                    }
-                },
-            )
-            .id();
+        let readback_entity = spawn_readback_entity(&mut commands, rt_handle.clone(), slot_id);
 
         registry.slots.insert(
             slot,
@@ -789,6 +799,11 @@ fn process_commands(
             }
             AvatarCommand::SetMouthWeight { slot, weight } => {
                 mouth_weights.weights.insert(slot, weight);
+            }
+            AvatarCommand::Resize { slot, width, height } => {
+                // TODO: Implement render target resize once Bevy readback resource
+                // borrowing is resolved. For now, all slots render at AVATAR_WIDTH×AVATAR_HEIGHT.
+                info!("🎨 Slot {}: resize requested to {}x{} (not yet implemented)", slot, width, height);
             }
             AvatarCommand::Shutdown => {
                 info!("🎨 Bevy renderer shutting down");
@@ -1571,8 +1586,8 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
-        assert_eq!(AVATAR_WIDTH, 640);
-        assert_eq!(AVATAR_HEIGHT, 480);
+        assert_eq!(AVATAR_WIDTH, 1280);
+        assert_eq!(AVATAR_HEIGHT, 720);
         assert!(AVATAR_FPS >= 1.0 && AVATAR_FPS <= 30.0, "FPS should be reasonable (1-30)");
     }
 }

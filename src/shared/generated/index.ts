@@ -1,0 +1,72 @@
+// Auto-generated master barrel — do not edit manually
+// Source: generator/generate-rust-bindings.ts
+// Re-generate: npx tsx generator/generate-rust-bindings.ts
+
+export * from './ai';
+export * from './code';
+// data-daemon: explicit exports (has duplicate types)
+export type { AdapterConfig } from './data-daemon';
+export type { AdapterOpenResult } from './data-daemon';
+export type { AdapterType } from './data-daemon';
+export type { BlobDeleteResult } from './data-daemon';
+export type { BlobExistsResult } from './data-daemon';
+export type { BlobStatsResult } from './data-daemon';
+export type { BlobStoreResult } from './data-daemon';
+export type { DataListResult } from './data-daemon';
+export type { DataQueryResult } from './data-daemon';
+export type { DataWriteResult } from './data-daemon';
+export type { DataWriteRowResult } from './data-daemon';
+export type { ListTablesResult } from './data-daemon';
+export type { OrderBy } from './data-daemon';
+export type { VectorSearchHit } from './data-daemon';
+export type { VectorSearchResult } from './data-daemon';
+export * from './ipc';
+export * from './logger';
+// orm: explicit exports (has duplicate types)
+export type { BackfillVectorsProgress } from './orm';
+export type { BackfillVectorsRequest } from './orm';
+export type { BatchOperation } from './orm';
+export type { BatchOperationType } from './orm';
+export type { CollectionSchema } from './orm';
+export type { CollectionStats } from './orm';
+export type { Cursor } from './orm';
+export type { CursorDirection } from './orm';
+export type { DataRecord } from './orm';
+export type { EmbeddingModel } from './orm';
+export type { EmbeddingProvider } from './orm';
+export type { FieldFilter } from './orm';
+export type { FieldType } from './orm';
+export type { GenerateEmbeddingRequest } from './orm';
+export type { GenerateEmbeddingResponse } from './orm';
+export type { HybridSearchMode } from './orm';
+export type { IndexVectorMetadata } from './orm';
+export type { IndexVectorRequest } from './orm';
+export type { JoinSpec } from './orm';
+export type { JoinType } from './orm';
+export type { MigrationStatus } from './orm';
+export type { QueryOperator } from './orm';
+export type { RecordMetadata } from './orm';
+export type { ResultMetadata } from './orm';
+export type { SchemaField } from './orm';
+export type { SchemaIndex } from './orm';
+export type { SimilarityMetric } from './orm';
+export type { SortDirection } from './orm';
+export type { SortSpec } from './orm';
+export type { StorageQuery } from './orm';
+export type { StorageResult } from './orm';
+export type { TimeRange } from './orm';
+export type { VectorIndexStats } from './orm';
+export type { VectorResponseMetadata } from './orm';
+export type { VectorResultMetadata } from './orm';
+export type { VectorSearchCapabilities } from './orm';
+export type { VectorSearchOptions } from './orm';
+export type { VectorSearchResponse } from './orm';
+export * from './persona';
+export * from './rag';
+export * from './runtime';
+export * from './search';
+export * from './sentinel';
+export * from './voice';
+export type { AvatarState } from './AvatarState';
+export type { CallMessage } from './CallMessage';
+export type { VideoPixelFormat } from './VideoPixelFormat';
