@@ -10,7 +10,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 /// Whisper model context (loaded once)
@@ -77,16 +77,16 @@ impl WhisperSTT {
                 for dir in &search_dirs {
                     let path = dir.join(file);
                     if path.exists() {
-                        info!("Whisper: Using model from WHISPER_MODEL env: {} ({:?})", model_name, path);
+                        clog_info!("Whisper: Using model from WHISPER_MODEL env: {} ({:?})", model_name, path);
                         return path;
                     }
                 }
-                warn!(
+                clog_warn!(
                     "Whisper: WHISPER_MODEL='{}' set but file not found, falling back to auto-select",
                     model_name
                 );
             } else {
-                warn!(
+                clog_warn!(
                     "Whisper: Unknown WHISPER_MODEL='{}', falling back to auto-select",
                     model_name
                 );
@@ -98,17 +98,17 @@ impl WhisperSTT {
             for dir in &search_dirs {
                 let path = dir.join(file);
                 if path.exists() {
-                    info!("Whisper: Auto-selected best available model: {} ({:?})", name, path);
+                    clog_info!("Whisper: Auto-selected best available model: {} ({:?})", name, path);
                     return path;
                 }
             }
         }
 
         // Nothing found — return default path so the error message is helpful
-        warn!("Whisper: No model files found. Download from:");
-        warn!("  https://huggingface.co/ggerganov/whisper.cpp/tree/main");
-        warn!("  Recommended: ggml-large-v3-turbo.bin (best speed/quality)");
-        warn!("  Place in: models/whisper/");
+        clog_warn!("Whisper: No model files found. Download from:");
+        clog_warn!("  https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+        clog_warn!("  Recommended: ggml-large-v3-turbo.bin (best speed/quality)");
+        clog_warn!("  Place in: models/whisper/");
         PathBuf::from("models/whisper/ggml-large-v3-turbo.bin")
     }
 
@@ -130,7 +130,7 @@ impl WhisperSTT {
             let original_len = samples.len();
             let padding = whisper_min_samples - samples.len();
             samples.resize(whisper_min_samples, 0.0); // Pad with silence
-            info!(
+            clog_info!(
                 "Whisper: Padded audio from {}ms to 1050ms ({} silence samples)",
                 (original_len * 1000) / AUDIO_SAMPLE_RATE as usize,
                 padding
@@ -140,7 +140,7 @@ impl WhisperSTT {
         // Validate sample range
         let max_sample = samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         if max_sample > 1.5 {
-            warn!(
+            clog_warn!(
                 "Audio samples out of range (max: {}), may need normalization",
                 max_sample
             );
@@ -247,17 +247,17 @@ impl SpeechToText for WhisperSTT {
 
     async fn initialize(&self) -> Result<(), STTError> {
         if WHISPER_CTX.get().is_some() {
-            info!("Whisper already initialized");
+            clog_info!("Whisper already initialized");
             return Ok(());
         }
 
         let model_path = self.find_model_path();
-        info!("Loading Whisper model from: {:?}", model_path);
+        clog_info!("Loading Whisper model from: {:?}", model_path);
 
         if !model_path.exists() {
-            warn!("Whisper model not found at {:?}", model_path);
-            warn!("Download from: https://huggingface.co/ggerganov/whisper.cpp/tree/main");
-            warn!("Place ggml-base.en.bin in models/whisper/");
+            clog_warn!("Whisper model not found at {:?}", model_path);
+            clog_warn!("Download from: https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+            clog_warn!("Place ggml-base.en.bin in models/whisper/");
 
             return Err(STTError::ModelNotLoaded(format!(
                 "Model not found: {model_path:?}. Download ggml-base.en.bin from HuggingFace whisper.cpp repo"
@@ -273,7 +273,7 @@ impl SpeechToText for WhisperSTT {
             .set(Arc::new(Mutex::new(ctx)))
             .map_err(|_| STTError::ModelNotLoaded("Failed to set global context".into()))?;
 
-        info!("Whisper model loaded successfully");
+        clog_info!("Whisper model loaded successfully");
         Ok(())
     }
 

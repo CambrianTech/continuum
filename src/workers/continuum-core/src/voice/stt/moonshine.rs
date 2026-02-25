@@ -25,7 +25,7 @@ use ort::value::{Tensor, Value};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 // Token constants (SentencePiece, same as Llama)
 const BOS_TOKEN_ID: i64 = 1;
@@ -122,14 +122,14 @@ impl MoonshineStt {
             for dir in &search_dirs {
                 let candidate = dir.join(&variant);
                 if Self::dir_has_all_files(&candidate) {
-                    info!(
+                    clog_info!(
                         "Moonshine: Using variant from MOONSHINE_MODEL env: {} ({:?})",
                         variant, candidate
                     );
                     return candidate;
                 }
             }
-            warn!(
+            clog_warn!(
                 "Moonshine: MOONSHINE_MODEL='{}' set but files not found, falling back",
                 variant
             );
@@ -139,15 +139,15 @@ impl MoonshineStt {
             for dir in &search_dirs {
                 let candidate = dir.join(subdir);
                 if Self::dir_has_all_files(&candidate) {
-                    info!("Moonshine: Auto-selected variant: {} ({:?})", name, candidate);
+                    clog_info!("Moonshine: Auto-selected variant: {} ({:?})", name, candidate);
                     return candidate;
                 }
             }
         }
 
-        warn!("Moonshine: No model files found. Download from:");
-        warn!("  https://huggingface.co/UsefulSensors/moonshine");
-        warn!("  Place onnx/tiny/ contents in: models/moonshine/tiny/");
+        clog_warn!("Moonshine: No model files found. Download from:");
+        clog_warn!("  https://huggingface.co/UsefulSensors/moonshine");
+        clog_warn!("  Place onnx/tiny/ contents in: models/moonshine/tiny/");
         PathBuf::from("models/moonshine/tiny")
     }
 
@@ -175,7 +175,7 @@ impl MoonshineStt {
             })
             .collect();
 
-        info!("Moonshine: Loaded vocabulary with {} tokens", tokens.len());
+        clog_info!("Moonshine: Loaded vocabulary with {} tokens", tokens.len());
         Ok(tokens)
     }
 
@@ -386,7 +386,7 @@ impl MoonshineStt {
         // ── Step 4: Decode tokens → text ─────────────────────────────────
         let text = Self::decode_tokens(&model.vocab, &generated_tokens);
 
-        info!(
+        clog_info!(
             "Moonshine: Transcribed {}ms audio → {} tokens → \"{}\"",
             duration_ms,
             generated_tokens.len(),
@@ -441,12 +441,12 @@ impl SpeechToText for MoonshineStt {
 
     async fn initialize(&self) -> Result<(), STTError> {
         if MOONSHINE_MODEL.get().is_some() {
-            info!("Moonshine: Already initialized");
+            clog_info!("Moonshine: Already initialized");
             return Ok(());
         }
 
         let model_dir = self.find_model_dir();
-        info!("Moonshine: Loading models from {:?}", model_dir);
+        clog_info!("Moonshine: Loading models from {:?}", model_dir);
 
         if !Self::dir_has_all_files(&model_dir) {
             let missing: Vec<&str> = Self::REQUIRED_FILES
@@ -466,7 +466,7 @@ impl SpeechToText for MoonshineStt {
         let cached_decoder =
             Self::build_session(&model_dir.join("cached_decode.int8.onnx"))?;
 
-        info!(
+        clog_info!(
             "Moonshine: Uncached decoder has {} outputs ({} KV cache tensors)",
             uncached_decoder.outputs().len(),
             uncached_decoder.outputs().len().saturating_sub(1)
@@ -486,7 +486,7 @@ impl SpeechToText for MoonshineStt {
             .set(Arc::new(model))
             .map_err(|_| STTError::ModelNotLoaded("Failed to set global model".into()))?;
 
-        info!("Moonshine: All models loaded successfully");
+        clog_info!("Moonshine: All models loaded successfully");
         Ok(())
     }
 

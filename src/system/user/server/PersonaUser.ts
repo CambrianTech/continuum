@@ -821,6 +821,21 @@ export class PersonaUser extends AIUser {
 
     this.isInitialized = true;
 
+    // STEP 3: Update status to 'online' in database.
+    // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
+    // This is the proof-of-life signal: if initialize() completes, the persona is alive.
+    try {
+      await ORM.update<UserEntity>(
+        COLLECTIONS.USERS, this.id,
+        { status: 'online' as const, lastActiveAt: new Date() },
+        false, // don't increment version for status change
+        'default'
+      );
+      this.log.info(`🟢 ${this.displayName}: Status → online`);
+    } catch (e) {
+      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to online: ${e}`);
+    }
+
     // PHASE 3: Start autonomous servicing loop (lifecycle-based)
     this.startAutonomousServicing();
 
@@ -2043,6 +2058,20 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // Update status to 'offline' FIRST, before tearing down event system.
+    // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
+    try {
+      await ORM.update<UserEntity>(
+        COLLECTIONS.USERS, this.id,
+        { status: 'offline' as const },
+        false, // don't increment version for status change
+        'default'
+      );
+      this.log.info(`🔴 ${this.displayName}: Status → offline`);
+    } catch (e) {
+      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
+    }
+
     // MEMORY LEAK FIX: Unsubscribe from all events first
     const subCount = this._eventUnsubscribes.length;
     for (const unsub of this._eventUnsubscribes) {

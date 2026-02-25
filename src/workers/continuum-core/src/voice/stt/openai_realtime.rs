@@ -14,7 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, info, warn};
+use crate::{clog_debug, clog_info, clog_warn};
 
 /// OpenAI Realtime API endpoint
 const REALTIME_API_URL: &str = "wss://api.openai.com/v1/realtime";
@@ -202,7 +202,7 @@ impl OpenAIRealtimeSTT {
         if let Some(Ok(Message::Text(text))) = read.next().await {
             match serde_json::from_str::<ServerEvent>(&text) {
                 Ok(ServerEvent::SessionCreated { .. }) => {
-                    info!("OpenAI Realtime: Session created");
+                    clog_info!("OpenAI Realtime: Session created");
                 }
                 Ok(ServerEvent::Error { error }) => {
                     return Err(STTError::InferenceFailed(format!("API error: {error:?}")));
@@ -260,7 +260,7 @@ impl OpenAIRealtimeSTT {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                warn!("OpenAI Realtime: Transcription timeout");
+                clog_warn!("OpenAI Realtime: Transcription timeout");
                 break;
             }
 
@@ -269,32 +269,32 @@ impl OpenAIRealtimeSTT {
                     match serde_json::from_str::<ServerEvent>(&text) {
                         Ok(ServerEvent::TranscriptionCompleted { transcript: t, .. }) => {
                             transcript = t;
-                            info!("OpenAI Realtime: Transcription complete: {:?}", transcript);
+                            clog_info!("OpenAI Realtime: Transcription complete: {:?}", transcript);
                             break;
                         }
                         Ok(ServerEvent::TranscriptionDelta { delta, .. }) => {
-                            debug!("OpenAI Realtime: Partial: {}", delta);
+                            clog_debug!("OpenAI Realtime: Partial: {}", delta);
                             // Could emit partial results here via callback
                         }
                         Ok(ServerEvent::Error { error }) => {
                             return Err(STTError::InferenceFailed(format!("API error: {error:?}")));
                         }
                         Ok(ServerEvent::SpeechStarted { .. }) => {
-                            debug!("OpenAI Realtime: Speech started");
+                            clog_debug!("OpenAI Realtime: Speech started");
                         }
                         Ok(ServerEvent::SpeechStopped { .. }) => {
-                            debug!("OpenAI Realtime: Speech stopped");
+                            clog_debug!("OpenAI Realtime: Speech stopped");
                         }
                         _ => {}
                     }
                 }
                 Ok(Some(Ok(Message::Close(_)))) => {
-                    debug!("OpenAI Realtime: Connection closed");
+                    clog_debug!("OpenAI Realtime: Connection closed");
                     break;
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    warn!("OpenAI Realtime: Timeout waiting for transcription");
+                    clog_warn!("OpenAI Realtime: Timeout waiting for transcription");
                     break;
                 }
                 _ => {}
@@ -341,7 +341,7 @@ impl SpeechToText for OpenAIRealtimeSTT {
         }
 
         *self.initialized.lock() = true;
-        info!("OpenAI Realtime STT: Initialized (semantic VAD enabled)");
+        clog_info!("OpenAI Realtime STT: Initialized (semantic VAD enabled)");
         Ok(())
     }
 

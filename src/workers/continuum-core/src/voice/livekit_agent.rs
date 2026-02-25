@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use crate::{clog_info, clog_warn, clog_error};
 
 // =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
@@ -184,7 +184,7 @@ impl LiveKitAgent {
             .await
             .map_err(|e| format!("Failed to connect to LiveKit room: {}", e))?;
 
-        info!(
+        clog_info!(
             "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona)",
             persona_name, call_id
         );
@@ -214,7 +214,7 @@ impl LiveKitAgent {
             .map_err(|e| format!("Failed to publish audio track: {}", e))?;
 
         let audio_track_sid: String = audio_publication.sid().into();
-        info!("🔊 Audio track published with SID: {}", audio_track_sid);
+        clog_info!("🔊 Audio track published with SID: {}", audio_track_sid);
 
         // Video source is NOT created here — deferred to first publish_video_frame().
         // Publishing an empty NativeVideoSource streams uninitialized buffer memory
@@ -231,7 +231,7 @@ impl LiveKitAgent {
         tokio::spawn(async move {
             // Hysteresis state: track current tier and last downgrade request.
             // Upgrades (larger) are immediate; downgrades require 2s of stability.
-            use crate::voice::avatar_renderer::ResolutionTier;
+            use crate::voice::avatar::ResolutionTier;
             let mut current_tier: ResolutionTier = ResolutionTier::Large;
             let mut pending_downgrade: Option<(ResolutionTier, tokio::time::Instant)> = None;
             const DOWNGRADE_HOLDOFF: tokio::time::Duration = tokio::time::Duration::from_secs(2);
@@ -269,7 +269,7 @@ impl LiveKitAgent {
                                             }
                                             current_tier = requested_tier;
                                             pending_downgrade = None;
-                                            info!("🎨 Tier upgrade for '{}': {:?} ({}x{})",
+                                            clog_info!("🎨 Tier upgrade for '{}': {:?} ({}x{})",
                                                 &identity_for_events[..8.min(identity_for_events.len())],
                                                 requested_tier, rw, rh);
                                         } else {
@@ -283,7 +283,7 @@ impl LiveKitAgent {
                                                         }
                                                         current_tier = requested_tier;
                                                         pending_downgrade = None;
-                                                        info!("🎨 Tier downgrade for '{}': {:?} ({}x{})",
+                                                        clog_info!("🎨 Tier downgrade for '{}': {:?} ({}x{})",
                                                             &identity_for_events[..8.min(identity_for_events.len())],
                                                             requested_tier, rw, rh);
                                                     }
@@ -314,7 +314,7 @@ impl LiveKitAgent {
                             continue;
                         }
 
-                        info!("🎤 Agent subscribed to track from '{}'", speaker_id);
+                        clog_info!("🎤 Agent subscribed to track from '{}'", speaker_id);
 
                         if let RemoteTrack::Audio(audio_track) = track {
                             let tx = event_tx_clone.clone();
@@ -333,7 +333,7 @@ impl LiveKitAgent {
 
                         let name = participant.name().to_string();
                         let id = participant.identity().to_string();
-                        info!("👤 Participant joined: {} ({})", name, id);
+                        clog_info!("👤 Participant joined: {} ({})", name, id);
                         let _ = event_tx_clone.send(AgentEvent::ParticipantJoined {
                             identity: id,
                             name,
@@ -347,7 +347,7 @@ impl LiveKitAgent {
                         if !is_visible { continue; }
 
                         let id = participant.identity().to_string();
-                        info!("👤 Participant left: {}", id);
+                        clog_info!("👤 Participant left: {}", id);
                         let _ = event_tx_clone.send(AgentEvent::ParticipantLeft {
                             identity: id,
                         });
@@ -426,13 +426,13 @@ impl LiveKitAgent {
                     LocalTrack::Video(video_track),
                     TrackPublishOptions {
                         source: TrackSource::Camera,
-                        // Avatar video: server-rendered 720p, one consumer per track.
+                        // Avatar video: server-rendered VGA, one consumer per track.
                         // Disable simulcast (no need for quality layers) and set
                         // explicit bitrate to prevent WebRTC adaptive compression blur.
                         simulcast: false,
                         video_encoding: Some(VideoEncoding {
-                            max_bitrate: 2_500_000, // 2.5 Mbps — ample for 720p avatar
-                            max_framerate: 30.0,
+                            max_bitrate: 1_200_000, // 1.2 Mbps — VGA@24fps avatar with lip sync
+                            max_framerate: 24.0,
                         }),
                         ..Default::default()
                     },
@@ -440,7 +440,7 @@ impl LiveKitAgent {
                 .await
                 .map_err(|e| format!("Failed to publish video track: {}", e))?;
 
-            info!("📹 Video track published for '{}' ({}x{})", self.identity, width, height);
+            clog_info!("📹 Video track published for '{}' ({}x{})", self.identity, width, height);
             *source_guard = Some(video_source);
         }
 
@@ -488,7 +488,7 @@ impl LiveKitAgent {
             .await
             .insert(handle.clone(), source);
 
-        info!("🎵 Added ambient source '{}' (handle: {})", name, &handle[..8]);
+        clog_info!("🎵 Added ambient source '{}' (handle: {})", name, &handle[..8]);
         Ok(handle)
     }
 
@@ -521,7 +521,7 @@ impl LiveKitAgent {
         let mut sources = self.ambient_sources.lock().await;
         if sources.remove(handle).is_some() {
             // Track will be unpublished when the source is dropped
-            info!("🎵 Removed ambient source (handle: {})", &handle[..8.min(handle.len())]);
+            clog_info!("🎵 Removed ambient source (handle: {})", &handle[..8.min(handle.len())]);
             Ok(())
         } else {
             Err(format!("Ambient source not found: {}", &handle[..8.min(handle.len())]))
@@ -551,7 +551,7 @@ impl LiveKitAgent {
 
     /// Disconnect from the room.
     pub async fn disconnect(self) {
-        info!("🔊 LiveKitAgent '{}' disconnecting", self.identity);
+        clog_info!("🔊 LiveKitAgent '{}' disconnecting", self.identity);
         let _ = self.room.close().await;
     }
 
@@ -641,7 +641,7 @@ async fn publish_data_channel_transcription(
         .await
         .map_err(|e| format!("Failed to publish transcription data: {}", e))?;
 
-    info!("📝 Published data channel transcription: \"{}\" (speaker={})",
+    clog_info!("📝 Published data channel transcription: \"{}\" (speaker={})",
         &text[..40.min(text.len())], &speaker_id[..8.min(speaker_id.len())]);
     Ok(())
 }
@@ -735,7 +735,7 @@ fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
 
 /// Start a background video frame loop for an agent.
 ///
-/// Uses `avatar_renderer::create_renderer()` factory to select the best backend:
+/// Uses `avatar::create_renderer()` factory to select the best backend:
 ///   - BevyChannelRenderer (3D VRM) if VRM model exists and Bevy is healthy
 ///   - ProceduralRenderer (colored circle) as fallback
 ///
@@ -743,11 +743,11 @@ fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
 /// renderer was selected and publishes to LiveKit. New backends (bgfx, wgpu, etc.)
 /// plug in by implementing AvatarRenderer, not by modifying this function.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    use crate::voice::avatar_renderer::{AvatarConfig, select_avatar_for_agent, avatar_model_path};
+    use crate::voice::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path};
 
     let voice = agent.voice_name();
-    let avatar = select_avatar_for_agent(&agent.identity, voice.as_deref());
-    let vrm_path = avatar_model_path(avatar.filename);
+    let avatar = select_dynamic_avatar(&agent.identity, voice.as_deref());
+    let vrm_path = avatar_model_path(&avatar.filename);
     let vrm_model_path = if vrm_path.exists() {
         Some(vrm_path.to_string_lossy().to_string())
     } else {
@@ -757,19 +757,21 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     let config = AvatarConfig {
         identity: agent.identity.clone(),
         display_name: agent.display_name.clone(),
-        width: 1280,
-        height: 720,
-        fps: 30.0,
+        width: 640,
+        height: 480,
+        fps: 24.0,
         vrm_model_path,
+        ..Default::default()
     };
 
     // Factory selects the best renderer — this function doesn't know which backend.
     // _interval_nanos can be updated by the tile_resolution data channel handler
     // to adapt FPS when the browser tile size changes.
-    let (frame_rx, _interval_nanos) = crate::voice::avatar_renderer::spawn_renderer_loop(config);
+    let (frame_rx, _interval_nanos) = crate::voice::avatar::spawn_renderer_loop(config);
 
     tokio::spawn(async move {
-        info!("📹 Video loop started for '{}' → model '{}'", agent.identity, avatar.name);
+        clog_info!("📹 Video loop started for '{}' → model '{}' ({})",
+            agent.identity, avatar.name, avatar.filename);
         loop {
             // Receive frame from renderer thread (blocking → spawn_blocking)
             let frame = match tokio::task::spawn_blocking({
@@ -782,13 +784,13 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                     continue;
                 }
                 Err(_) => {
-                    warn!("📹 Video loop spawn_blocking panicked for '{}'", agent.identity);
+                    clog_warn!("📹 Video loop spawn_blocking panicked for '{}'", agent.identity);
                     break;
                 }
             };
 
             if let Err(e) = agent.publish_video_frame(&frame.data, frame.width, frame.height).await {
-                warn!("📹 Video loop error for '{}': {}", agent.identity, e);
+                clog_warn!("📹 Video loop error for '{}': {}", agent.identity, e);
                 break;
             }
         }
@@ -815,11 +817,11 @@ async fn process_audio_stream_with_vad(
     // Initialize ProductionVAD for proper sentence detection
     let mut vad = ProductionVAD::new();
     if let Err(e) = vad.initialize() {
-        error!("🎤 Failed to initialize VAD for '{}': {}", speaker_id, e);
+        clog_error!("🎤 Failed to initialize VAD for '{}': {}", speaker_id, e);
         return;
     }
 
-    info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
+    clog_info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
 
     while let Some(frame) = audio_stream.next().await {
         let samples: &[i16] = frame.data.as_ref();
@@ -827,7 +829,7 @@ async fn process_audio_stream_with_vad(
         match vad.process_frame(samples) {
             Ok(Some(sentence_samples)) => {
                 // Complete sentence detected by VAD — emit for STT
-                info!(
+                clog_info!(
                     "🎤 Sentence detected from '{}' ({} samples, {:.1}s)",
                     speaker_id,
                     sentence_samples.len(),
@@ -840,12 +842,12 @@ async fn process_audio_stream_with_vad(
             }
             Ok(None) => {} // Still buffering — VAD hasn't detected sentence end yet
             Err(e) => {
-                warn!("🎤 VAD error for '{}': {}", speaker_id, e);
+                clog_warn!("🎤 VAD error for '{}': {}", speaker_id, e);
             }
         }
     }
 
-    info!("🎤 Audio stream ended for '{}'", speaker_id);
+    clog_info!("🎤 Audio stream ended for '{}'", speaker_id);
 }
 
 // =============================================================================
@@ -872,7 +874,7 @@ async fn spawn_stt_listener(
         .await
         .map_err(|e| format!("Failed to connect STT listener: {}", e))?;
 
-    info!("🎤 STT listener connected to room '{}' as '{}' (role=stt_listener)", call_id, listener_id);
+    clog_info!("🎤 STT listener connected to room '{}' as '{}' (role=stt_listener)", call_id, listener_id);
 
     let room = Arc::new(room);
     let room_for_events = room.clone();
@@ -899,7 +901,7 @@ async fn spawn_stt_listener(
                         .map(|m| m.role == ParticipantRole::Human)
                         .unwrap_or(true); // Unknown metadata = probably human
                     if !is_human {
-                        info!("🎤 STT: Skipping non-human track from '{}' (role={:?})",
+                        clog_info!("🎤 STT: Skipping non-human track from '{}' (role={:?})",
                             speaker_id, meta.as_ref().map(|m| &m.role));
                         continue;
                     }
@@ -907,7 +909,7 @@ async fn spawn_stt_listener(
                     if let RemoteTrack::Audio(audio_track) = track {
                         // Capture the remote track SID for native transcription sync
                         let track_sid: String = publication.sid().into();
-                        info!("🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
+                        clog_info!("🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
                             speaker_name, speaker_id, &track_sid[..8.min(track_sid.len())]);
 
                         let room_ref = room_for_events.clone();
@@ -927,7 +929,7 @@ async fn spawn_stt_listener(
                     }
                 }
                 RoomEvent::Disconnected { reason } => {
-                    info!("🎤 STT listener disconnected from '{}': {:?}",
+                    clog_info!("🎤 STT listener disconnected from '{}': {:?}",
                         call_id_owned, reason);
                     break;
                 }
@@ -967,11 +969,11 @@ async fn listen_and_transcribe(
     // Initialize ProductionVAD — two-stage (WebRTC fast filter → Silero confirmation)
     let mut vad = ProductionVAD::new();
     if let Err(e) = vad.initialize() {
-        error!("🎤 STT: Failed to init VAD for '{}': {}", speaker_name, e);
+        clog_error!("🎤 STT: Failed to init VAD for '{}': {}", speaker_name, e);
         return;
     }
 
-    info!("🎤 STT: VAD initialized, listening to '{}'", speaker_name);
+    clog_info!("🎤 STT: VAD initialized, listening to '{}'", speaker_name);
 
     // Transcription semaphore: max 2 concurrent STT operations per speaker
     let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
@@ -990,7 +992,7 @@ async fn listen_and_transcribe(
         // Log first frame + every 3000th frame
         if frame_count == 1 || frame_count % 3000 == 0 {
             let max_amp = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-            info!("🎤 STT: Frame #{} from '{}' — {} samples, max_amp={}, sr={}",
+            clog_info!("🎤 STT: Frame #{} from '{}' — {} samples, max_amp={}, sr={}",
                 frame_count, speaker_name, samples.len(), max_amp, frame.sample_rate);
         }
 
@@ -1008,7 +1010,7 @@ async fn listen_and_transcribe(
                 Ok(Some(sentence_samples)) => {
                     let sample_count = sentence_samples.len();
                     let duration_s = sample_count as f64 / AUDIO_SAMPLE_RATE as f64;
-                    info!(
+                    clog_info!(
                         "🎤 STT: Sentence from '{}' ({} samples, {:.1}s)",
                         speaker_name, sample_count, duration_s
                     );
@@ -1017,7 +1019,7 @@ async fn listen_and_transcribe(
                     let permit = match semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
                         Err(_) => {
-                            warn!("🎤 STT: Dropping utterance from '{}' — transcription queue full",
+                            clog_warn!("🎤 STT: Dropping utterance from '{}' — transcription queue full",
                                 speaker_name);
                             continue;
                         }
@@ -1041,7 +1043,7 @@ async fn listen_and_transcribe(
                                 }
 
                                 let display_len = 60.min(text.len());
-                                info!("📝 STT: {} said: \"{}{}\"",
+                                clog_info!("📝 STT: {} said: \"{}{}\"",
                                     sname,
                                     &text[..display_len],
                                     if text.len() > 60 { "..." } else { "" },
@@ -1072,7 +1074,7 @@ async fn listen_and_transcribe(
                                 if let Err(e) = publish_data_channel_transcription(
                                     &room_ref, text, &sid, &sname,
                                 ).await {
-                                    warn!("📝 STT: Failed to publish transcription: {}", e);
+                                    clog_warn!("📝 STT: Failed to publish transcription: {}", e);
                                 }
 
                                 // 2. Notify TS server for AI response routing
@@ -1093,28 +1095,28 @@ async fn listen_and_transcribe(
                                     "collaboration/live/transcription", ts_params
                                 ).await {
                                     Ok(result) => {
-                                        info!("📝 STT: AI routing result: {}", result);
+                                        clog_info!("📝 STT: AI routing result: {}", result);
                                     }
                                     Err(e) => {
-                                        warn!("📝 STT: Failed to route transcription to AI: {}", e);
+                                        clog_warn!("📝 STT: Failed to route transcription to AI: {}", e);
                                     }
                                 }
                             }
                             Err(e) => {
-                                warn!("📝 STT: Transcription failed for '{}': {}", sname, e);
+                                clog_warn!("📝 STT: Transcription failed for '{}': {}", sname, e);
                             }
                         }
                     });
                 }
                 Ok(None) => {} // Still buffering
                 Err(e) => {
-                    warn!("🎤 STT: VAD error for '{}': {}", speaker_name, e);
+                    clog_warn!("🎤 STT: VAD error for '{}': {}", speaker_name, e);
                 }
             }
         } // end inner while (accum_buf drain)
     } // end outer while (audio_stream)
 
-    info!("🎤 STT: Audio stream ended for '{}'", speaker_name);
+    clog_info!("🎤 STT: Audio stream ended for '{}'", speaker_name);
 }
 
 // =============================================================================
@@ -1170,7 +1172,7 @@ impl LiveKitAgentManager {
         {
             let listeners = self.listeners.read().await;
             if listeners.contains_key(call_id) {
-                info!("🎤 STT listener already active for call {}", &call_id[..8.min(call_id.len())]);
+                clog_info!("🎤 STT listener already active for call {}", &call_id[..8.min(call_id.len())]);
                 return Ok(());
             }
         }
@@ -1178,7 +1180,7 @@ impl LiveKitAgentManager {
         let room = spawn_stt_listener(&self.livekit_url, call_id, self.transcription_buffer.clone()).await?;
         self.listeners.write().await.insert(call_id.to_string(), room);
 
-        info!("🎤 STT listener registered for call {}", &call_id[..8.min(call_id.len())]);
+        clog_info!("🎤 STT listener registered for call {}", &call_id[..8.min(call_id.len())]);
         Ok(())
     }
 
@@ -1188,6 +1190,9 @@ impl LiveKitAgentManager {
     /// Called both on room join (to show 3D avatars immediately) and on speak
     /// (to ensure agent exists before feeding TTS audio).
     ///
+    /// `display_name` is shown in the browser participant grid. If None, falls back
+    /// to user_id (UUID) — callers with access to the persona name should pass it.
+    ///
     /// The agent's identity is the persona's user_id directly — no prefix mangling.
     /// Role classification uses JWT metadata (ParticipantRole::AiPersona), which
     /// the STT listener and browser both check to determine behavior.
@@ -1195,6 +1200,7 @@ impl LiveKitAgentManager {
         &self,
         call_id: &str,
         user_id: &str,
+        display_name: Option<&str>,
     ) -> Result<Arc<LiveKitAgent>, String> {
         let key = (call_id.to_string(), user_id.to_string());
 
@@ -1207,11 +1213,12 @@ impl LiveKitAgentManager {
         }
 
         // Slow path: create new agent with ai_persona role in metadata
+        let name = display_name.unwrap_or(user_id);
         let (agent, _event_rx) = LiveKitAgent::connect(
             &self.livekit_url,
             call_id,
-            user_id,    // Identity = persona's userId (unique UUID, no prefix needed)
-            user_id,    // Display name (caller should provide better name)
+            user_id,  // Identity = persona's userId (unique UUID, no prefix needed)
+            name,     // Display name shown in browser
         ).await?;
 
         let agent = Arc::new(agent);
@@ -1222,8 +1229,8 @@ impl LiveKitAgentManager {
 
         // Start video loop immediately — the avatar should appear as soon as
         // the persona connects, not wait for first speech. Voice name isn't
-        // available yet, so avatar selection uses round-robin (good enough —
-        // diverse model distribution across personas).
+        // available yet, so avatar selection uses deterministic hash (same persona
+        // always gets the same model).
         if !agent.video_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             start_video_loop(agent.clone());
         }
@@ -1247,18 +1254,29 @@ impl LiveKitAgentManager {
         adapter: Option<&str>,
     ) -> Result<(usize, u64, u32), String> {
         use crate::voice::tts_service;
+        use crate::voice::avatar::gender::gender_from_identity;
+        use crate::voice::avatar::types::AvatarGender;
+
+        // Derive gender from user_id — same function avatar selection uses.
+        // This is the single source of truth: identity → gender → avatar + voice.
+        let gender = gender_from_identity(user_id);
+        let gender_str = match gender {
+            AvatarGender::Male => "male",
+            AvatarGender::Female => "female",
+        };
 
         let synthesis = tts_service::synthesize_speech_async(
             text,
             voice,
             adapter,
+            Some(gender_str),
         ).await.map_err(|e| format!("TTS synthesis failed: {}", e))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
         let sample_rate = synthesis.sample_rate;
 
-        let agent = self.get_or_create_agent(call_id, user_id).await?;
+        let agent = self.get_or_create_agent(call_id, user_id, None).await?;
 
         // Set resolved voice name for gender-matched avatar selection (first-speak-wins).
         // Use the resolved name from TTS (e.g., "af_bella") not the input voice param
@@ -1275,21 +1293,21 @@ impl LiveKitAgentManager {
         }
 
         // Calculate per-chunk RMS amplitude for mouth weight animation.
-        // 200ms windows at the synthesis sample rate.
-        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, 200);
+        // 66ms windows (~24fps) for smooth lip sync matching the render framerate.
+        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, 66);
 
         // Publish subtitle FIRST — native transcription linked to the audio track SID.
         // This ensures the browser receives the subtitle at the same time as audio starts,
         // rather than after all audio frames are queued (which caused audio-ahead-of-subtitles).
         if let Err(e) = agent.publish_transcription(text, user_id, true).await {
-            warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
+            clog_warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
         }
 
         // THEN feed audio frames to LiveKit
         agent.speak(synthesis.samples).await?;
 
         // Schedule amplitude-based mouth weights timed to audio playback.
-        // Each weight corresponds to a 200ms window of the audio.
+        // Each weight corresponds to a 66ms window (~24fps) of the audio.
         let uid_for_mouth = user_id.to_string();
         if !mouth_weights.is_empty() {
             tokio::spawn(async move {
@@ -1297,7 +1315,7 @@ impl LiveKitAgentManager {
                     if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
                         bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, weight);
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(66)).await;
                 }
                 // Reset mouth weight to 0 after audio finishes
                 if let Some(bevy_system) = crate::voice::bevy_renderer::try_get() {
@@ -1328,7 +1346,7 @@ impl LiveKitAgentManager {
         user_id: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
-        let agent = self.get_or_create_agent(call_id, user_id).await?;
+        let agent = self.get_or_create_agent(call_id, user_id, None).await?;
         agent.inject_audio(samples).await
     }
 
@@ -1340,7 +1358,7 @@ impl LiveKitAgentManager {
     ) -> Result<String, String> {
         // Use a default agent identity for ambient sources
         let agent_id = format!("ambient-{}", call_id);
-        let agent = self.get_or_create_agent(call_id, &agent_id).await?;
+        let agent = self.get_or_create_agent(call_id, &agent_id, None).await?;
         agent.add_ambient_source(source_name).await
     }
 
@@ -1407,7 +1425,7 @@ impl LiveKitAgentManager {
 
         tokio::spawn(async move {
             if let Err(e) = run_ambient_audio_loop(&agents_ref, &url, &cid).await {
-                warn!("🎵 Ambient audio error for call {}: {}", &cid[..8.min(cid.len())], e);
+                clog_warn!("🎵 Ambient audio error for call {}: {}", &cid[..8.min(cid.len())], e);
             }
         });
 
@@ -1448,7 +1466,7 @@ async fn run_ambient_audio_loop(
         .await
         .map_err(|e| format!("Failed to publish ambient track: {}", e))?;
 
-    info!("🎵 Ambient audio started for call {} (rain)", &call_id[..8.min(call_id.len())]);
+    clog_info!("🎵 Ambient audio started for call {} (rain)", &call_id[..8.min(call_id.len())]);
 
     // Wait for other participants (human, STT listener) to join the room
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -1471,7 +1489,7 @@ async fn run_ambient_audio_loop(
             empty_checks += 1;
             // Wait for 5 consecutive empty checks (5 seconds) before stopping
             if empty_checks >= 5 {
-                info!("🎵 Ambient audio stopping — room empty for call {}", &call_id[..8.min(call_id.len())]);
+                clog_info!("🎵 Ambient audio stopping — room empty for call {}", &call_id[..8.min(call_id.len())]);
                 break;
             }
         } else {
@@ -1494,7 +1512,7 @@ async fn run_ambient_audio_loop(
                 samples_per_channel: frame_chunk.len() as u32,
             };
             if let Err(e) = source.capture_frame(&frame).await {
-                warn!("🎵 Ambient frame error: {}", e);
+                clog_warn!("🎵 Ambient frame error: {}", e);
                 break;
             }
         }
@@ -1503,6 +1521,6 @@ async fn run_ambient_audio_loop(
     }
 
     room.close().await.ok();
-    info!("🎵 Ambient audio stopped for call {}", &call_id[..8.min(call_id.len())]);
+    clog_info!("🎵 Ambient audio stopped for call {}", &call_id[..8.min(call_id.len())]);
     Ok(())
 }

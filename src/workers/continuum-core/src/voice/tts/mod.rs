@@ -27,6 +27,7 @@ pub use pocket::PocketTTS;
 pub use silence::SilenceTTS;
 pub(crate) use phonemizer::Phonemizer;
 
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
@@ -208,7 +209,7 @@ impl TTSRegistry {
     /// Register an adapter (order matters — first registered = highest priority)
     pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
         let name = adapter.name();
-        tracing::info!("TTS: Registering adapter '{}'", name);
+        clog_info!("TTS: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
         self.priority.push(name);
 
@@ -222,7 +223,7 @@ impl TTSRegistry {
     pub fn set_active(&mut self, name: &'static str) -> Result<(), TTSError> {
         if self.adapters.contains_key(name) {
             self.active = Some(name);
-            tracing::info!("TTS: Active adapter set to '{}'", name);
+            clog_info!("TTS: Active adapter set to '{}'", name);
             Ok(())
         } else {
             Err(TTSError::AdapterNotFound(name.to_string()))
@@ -298,7 +299,7 @@ pub fn init_registry() {
         Arc::new(RwLock::new(reg))
     });
 
-    tracing::info!(
+    clog_info!(
         "TTS: Registry initialized with {} adapters",
         registry.read().adapters.len()
     );
@@ -318,18 +319,60 @@ pub fn is_initialized() -> bool {
     get_registry().read().is_initialized()
 }
 
+/// Resolve a voice identifier with explicit gender filtering.
+///
+/// When `gender_hint` is provided (e.g., "male" or "female"), filters the voice list
+/// by gender before hashing. This ensures voice matches the avatar's gender.
+/// The gender hint flows from the caller who derives it from the agent's identity
+/// using `gender_from_identity()` — the same function the avatar system uses.
+fn resolve_voice_gendered(adapter: &dyn TextToSpeech, voice: &str, gender_hint: Option<&str>) -> String {
+    let voices = adapter.available_voices();
+
+    // 1. Known voice name → use directly (explicit choice overrides gender)
+    if voices.iter().any(|v| v.id == voice) {
+        return voice.to_string();
+    }
+
+    // 2. Numeric seed → modulo into voice list (legacy path)
+    if let Ok(seed) = voice.parse::<usize>() {
+        if !voices.is_empty() {
+            return voices[seed % voices.len()].id.clone();
+        }
+    }
+
+    // 3. UUID/arbitrary string → filter by gender hint, then hash.
+    if !voices.is_empty() {
+        let seed = deterministic_hash(voice);
+
+        if let Some(gender) = gender_hint {
+            let gendered: Vec<&VoiceInfo> = voices.iter()
+                .filter(|v| v.gender.as_deref() == Some(gender))
+                .collect();
+
+            if !gendered.is_empty() {
+                return gendered[seed % gendered.len()].id.clone();
+            }
+        }
+
+        return voices[seed % voices.len()].id.clone();
+    }
+
+    adapter.default_voice().to_string()
+}
+
 /// Synthesize using the active adapter (convenience function)
 ///
-/// Voice resolution: if `voice` is a numeric seed (e.g., "42" from computeVoiceFromUserId),
-/// it's mapped to an adapter-specific voice via `resolve_voice()`. Named voices pass through.
-pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+/// `gender_hint`: Optional "male" or "female" to filter voices by gender.
+/// When provided, ensures the TTS voice matches the avatar's gender.
+pub async fn synthesize(text: &str, voice: &str, gender_hint: Option<&str>) -> Result<SynthesisResult, TTSError> {
     let adapter = get_registry()
         .read()
         .get_active()
         .ok_or_else(|| TTSError::AdapterNotFound("No active TTS adapter".to_string()))?;
 
-    let resolved = adapter.resolve_voice(voice);
-    tracing::info!("TTS: voice '{}' resolved to '{}' for adapter '{}'", voice, resolved, adapter.name());
+    let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
+    clog_info!("TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        voice, resolved, gender_hint.unwrap_or("any"), adapter.name());
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)
@@ -369,12 +412,12 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
                 Ok(()) => {
                     // Use adapter.name() which returns &'static str
                     let static_name = adapter.name();
-                    tracing::info!("TTS: '{}' initialized successfully", static_name);
+                    clog_info!("TTS: '{}' initialized successfully", static_name);
                     let _ = registry.write().set_active(static_name);
                     return Ok(());
                 }
                 Err(e) => {
-                    tracing::warn!("TTS: '{}' failed to initialize: {}, trying next...", name, e);
+                    clog_warn!("TTS: '{}' failed to initialize: {}, trying next...", name, e);
                 }
             }
         }
@@ -390,8 +433,8 @@ pub async fn initialize() -> Result<(), TTSError> {
 
 /// Synthesize using a specific adapter by name (bypasses active adapter)
 ///
-/// Voice resolution: numeric seeds are mapped to adapter-specific voices via `resolve_voice()`.
-pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str) -> Result<SynthesisResult, TTSError> {
+/// `gender_hint`: Optional "male" or "female" to filter voices by gender.
+pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str, gender_hint: Option<&str>) -> Result<SynthesisResult, TTSError> {
     let adapter = get_registry()
         .read()
         .get(adapter_name)
@@ -401,8 +444,9 @@ pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str) -> Res
         adapter.initialize().await?;
     }
 
-    let resolved = adapter.resolve_voice(voice);
-    tracing::info!("TTS: voice '{}' resolved to '{}' for adapter '{}'", voice, resolved, adapter_name);
+    let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
+    clog_info!("TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        voice, resolved, gender_hint.unwrap_or("any"), adapter_name);
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)

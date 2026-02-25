@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 /// Global Kokoro session + tokenizer
 static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
@@ -137,7 +137,7 @@ impl KokoroTTS {
                 }
             }
 
-            info!("Kokoro vocab loaded from tokenizer.json: {} entries", vocab.len());
+            clog_info!("Kokoro vocab loaded from tokenizer.json: {} entries", vocab.len());
             return Ok(vocab);
         }
 
@@ -162,7 +162,7 @@ impl KokoroTTS {
             }
         }
 
-        info!("Kokoro vocab loaded from vocab.json: {} entries", vocab.len());
+        clog_info!("Kokoro vocab loaded from vocab.json: {} entries", vocab.len());
         Ok(vocab)
     }
 
@@ -178,7 +178,7 @@ impl KokoroTTS {
                     voice_path.display()
                 )));
             }
-            warn!("Voice '{}' not found, using default 'af'", voice_id);
+            clog_warn!("Voice '{}' not found, using default 'af'", voice_id);
             return Self::load_voice_embedding(voices_dir, "af");
         }
 
@@ -202,7 +202,7 @@ impl KokoroTTS {
             embeddings.push(floats[start..end].to_vec());
         }
 
-        info!(
+        clog_info!(
             "Loaded voice '{}': {} style vectors ({}x{})",
             voice_id, num_rows, num_rows, embedding_dim
         );
@@ -289,12 +289,12 @@ impl KokoroTTS {
 
         // Step 1: Phonemize text via espeak-ng
         let phonemes = Self::phonemize(text)?;
-        info!("Kokoro phonemized: '{}' -> '{}'", super::truncate_str(text, 40), super::truncate_str(&phonemes, 60));
+        clog_info!("Kokoro phonemized: '{}' -> '{}'", super::truncate_str(text, 40), super::truncate_str(&phonemes, 60));
 
         // Step 2: Tokenize using Kokoro vocab
         let tokens = Self::tokenize(&phonemes, &model.vocab);
         let token_count = tokens.len();
-        info!("Kokoro tokenized: {} tokens", token_count);
+        clog_info!("Kokoro tokenized: {} tokens", token_count);
 
         if token_count < 3 {
             return Err(TTSError::InvalidText("Text produced no valid tokens".into()));
@@ -355,7 +355,7 @@ impl KokoroTTS {
         let f32_samples: Vec<f32> = audio_data.to_vec();
         let result = audio_utils::normalize_audio(&f32_samples, 24000)?;
 
-        info!(
+        clog_info!(
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
             result.samples.len(),
             result.duration_ms,
@@ -395,7 +395,7 @@ impl TextToSpeech for KokoroTTS {
 
     async fn initialize(&self) -> Result<(), TTSError> {
         if KOKORO_SESSION.get().is_some() {
-            info!("Kokoro already initialized");
+            clog_info!("Kokoro already initialized");
             return Ok(());
         }
 
@@ -403,9 +403,9 @@ impl TextToSpeech for KokoroTTS {
         let model_path = match self.find_model_path() {
             Some(path) => path,
             None => {
-                warn!("Kokoro model not found. Download from:");
-                warn!("  https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX");
-                warn!("Place ONNX file in: models/kokoro/kokoro-v1.0-q8.onnx");
+                clog_warn!("Kokoro model not found. Download from:");
+                clog_warn!("  https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX");
+                clog_warn!("Place ONNX file in: models/kokoro/kokoro-v1.0-q8.onnx");
                 return Err(TTSError::ModelNotLoaded(
                     "Kokoro ONNX model not found".into(),
                 ));
@@ -414,7 +414,7 @@ impl TextToSpeech for KokoroTTS {
 
         // Find voices directory
         let voices_dir = Self::find_voices_dir().unwrap_or_else(|| {
-            warn!("Kokoro voices directory not found, using models/kokoro/voices");
+            clog_warn!("Kokoro voices directory not found, using models/kokoro/voices");
             PathBuf::from("models/kokoro/voices")
         });
 
@@ -429,7 +429,7 @@ impl TextToSpeech for KokoroTTS {
         // Inter-op: parallelize independent graph nodes (2 threads is optimal for Kokoro's graph)
         let inter_threads = 2;
 
-        info!(
+        clog_info!(
             "Loading Kokoro model from: {:?} (intra_threads={}, inter_threads={})",
             model_path, intra_threads, inter_threads
         );
@@ -452,7 +452,7 @@ impl TextToSpeech for KokoroTTS {
         // it means a concurrent request already initialized the model.
         let _ = KOKORO_SESSION.set(Arc::new(Mutex::new(model)));
 
-        info!("Kokoro model loaded successfully");
+        clog_info!("Kokoro model loaded successfully");
         Ok(())
     }
 

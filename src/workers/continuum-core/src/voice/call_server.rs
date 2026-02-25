@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use tracing::{error, info, warn};
+use crate::{clog_error, clog_info, clog_warn};
 use ts_rs::TS;
 
 /// Maximum characters to show in truncated text previews (logs, errors)
@@ -46,7 +46,7 @@ static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
     match hound::WavReader::new(cursor) {
         Ok(mut reader) => {
             let samples: Vec<i16> = reader.samples::<i16>().filter_map(|s| s.ok()).collect();
-            info!(
+            clog_info!(
                 "Loaded hold music: {} samples ({:.1}s at {}Hz)",
                 samples.len(),
                 samples.len() as f32 / AUDIO_SAMPLE_RATE as f32,
@@ -55,7 +55,7 @@ static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
             samples
         }
         Err(e) => {
-            error!("Failed to decode hold music WAV: {}", e);
+            clog_error!("Failed to decode hold music WAV: {}", e);
             Vec::new()
         }
     }
@@ -403,7 +403,7 @@ impl CallManager {
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_millis(frame_duration_ms));
 
-            info!(
+            clog_info!(
                 "Audio loop started for call {} ({}ms frames)",
                 call_id_clone, frame_duration_ms
             );
@@ -437,7 +437,7 @@ impl CallManager {
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        info!("Audio loop shutdown for call {}", call_id_clone);
+                        clog_info!("Audio loop shutdown for call {}", call_id_clone);
                         break;
                     }
                 }
@@ -485,7 +485,7 @@ impl CallManager {
         {
             let mut call = call.write().await;
             let stream = if is_ai {
-                info!("🤖 Creating AI participant {} with ring buffer", display_name);
+                clog_info!("🤖 Creating AI participant {} with ring buffer", display_name);
                 ParticipantStream::new_ai(handle, user_id.to_string(), display_name.to_string())
             } else {
                 ParticipantStream::new(handle, user_id.to_string(), display_name.to_string())
@@ -493,7 +493,7 @@ impl CallManager {
 
             // Initialize VAD for speech detection and transcription (humans only)
             if let Err(e) = call.mixer.add_participant_with_init(stream).await {
-                error!("Failed to initialize VAD for {}: {:?}", display_name, e);
+                clog_error!("Failed to initialize VAD for {}: {:?}", display_name, e);
             }
         }
 
@@ -514,7 +514,7 @@ impl CallManager {
             )
         };
 
-        info!(
+        clog_info!(
             "Participant {} ({}) joined call {}",
             display_name,
             handle.short(),
@@ -546,7 +546,7 @@ impl CallManager {
 
         // Log routing info
         let caps = &participant.routing.capabilities;
-        info!(
+        clog_info!(
             "🎯 Model {} joined with routing: audio_in={}, audio_out={}, needs_stt={}, needs_tts={}",
             model_id,
             caps.audio_input,
@@ -584,7 +584,7 @@ impl CallManager {
             // The mixer will include it in mix-minus for everyone else to hear
             call.mixer.push_audio(from_handle, samples.clone());
 
-            info!(
+            clog_info!(
                 "🔊 Injected TTS audio for {} into call {} ({} samples, \"{}\")",
                 display_name,
                 call_id,
@@ -618,7 +618,7 @@ impl CallManager {
                 if let Some(call) = calls.get(&call_id) {
                     let mut call = call.write().await;
                     let user_id = if let Some(stream) = call.mixer.remove_participant(handle) {
-                        info!(
+                        clog_info!(
                             "Participant {} ({}) left call {}",
                             stream.display_name,
                             handle.short(),
@@ -656,7 +656,7 @@ impl CallManager {
 
                 let mut calls = self.calls.write().await;
                 calls.remove(&call_id);
-                info!("Call {} cleaned up (no participants)", call_id);
+                clog_info!("Call {} cleaned up (no participants)", call_id);
             }
         }
     }
@@ -713,7 +713,7 @@ impl CallManager {
                             }
                             Err(_) => {
                                 // Queue full - drop this audio to stay current
-                                warn!(
+                                clog_warn!(
                                     "🚨 Dropping audio from {} - transcription queue full ({} max)",
                                     display_name, MAX_CONCURRENT_TRANSCRIPTIONS
                                 );
@@ -772,11 +772,11 @@ impl CallManager {
     ) {
         // Check if STT is initialized
         if !stt::is_initialized() {
-            warn!("STT adapter not initialized - skipping transcription");
+            clog_warn!("STT adapter not initialized - skipping transcription");
             return;
         }
 
-        info!(
+        clog_info!(
             "[STEP 5] 📝 Whisper transcription START for {} ({} samples, {:.1}s)",
             display_name,
             samples.len(),
@@ -794,7 +794,7 @@ impl CallManager {
             Ok(result) => {
                 let text = result.text.trim();
                 if !text.is_empty() {
-                    info!(
+                    clog_info!(
                         "[STEP 5] 📝 Whisper transcription DONE: \"{}\" (confidence: {:.2})",
                         text, result.confidence
                     );
@@ -808,13 +808,13 @@ impl CallManager {
                         language: result.language.clone(),
                     };
 
-                    info!("[STEP 6] 📡 Broadcasting transcription to WebSocket clients");
+                    clog_info!("[STEP 6] 📡 Broadcasting transcription to WebSocket clients");
 
                     // ERROR RECOVERY: Broadcast with detailed error logging
                     // With 500-event buffer, failures should be extremely rare
                     // If this fails, it means ALL receivers are too slow (lagging by 500+ events)
                     if transcription_tx.send(event).is_err() {
-                        error!(
+                        clog_error!(
                             "[STEP 6] ❌ TRANSCRIPTION DROPPED: \"{}...\" from {}. \
                             ALL receivers are too slow - consider increasing buffer size or investigating blocking.",
                             text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>(),
@@ -824,11 +824,11 @@ impl CallManager {
                         // Critical issue already logged via tracing::error above
                     }
                 } else {
-                    info!("📝 Empty transcription result from {}", display_name);
+                    clog_info!("📝 Empty transcription result from {}", display_name);
                 }
             }
             Err(e) => {
-                error!("Transcription failed for {}: {}", display_name, e);
+                clog_error!("Transcription failed for {}: {}", display_name, e);
             }
         }
     }
@@ -846,7 +846,7 @@ impl CallManager {
                 let mut call = call.write().await;
                 if let Some(participant) = call.mixer.get_participant_mut(handle) {
                     participant.muted = muted;
-                    info!("Participant {} muted: {}", handle.short(), muted);
+                    clog_info!("Participant {} muted: {}", handle.short(), muted);
                 }
             }
         }
@@ -880,14 +880,14 @@ impl CallManager {
         };
 
         // Step 2: Synthesize (async — runs in current tokio context)
-        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
+        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
             .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
         let sample_rate = synthesis.sample_rate;
 
-        info!(
+        clog_info!(
             "🔊 speak_in_call: Synthesized {} samples ({:.1}s) for {} in call {}",
             num_samples,
             duration_ms as f64 / 1000.0,
@@ -925,7 +925,7 @@ impl CallManager {
         let sample_count = samples.len();
         self.inject_tts_audio(call_id, &handle, &display_name, "(handle-based)", samples).await;
 
-        info!(
+        clog_info!(
             "inject_audio: {} samples into call {} for {}",
             sample_count, call_id, display_name
         );
@@ -961,7 +961,7 @@ impl CallManager {
             participant_calls.insert(handle, call_id.to_string());
         }
 
-        info!(
+        clog_info!(
             "🔊 Added ambient source '{}' ({}) to call {}",
             source_name, handle.short(), call_id
         );
@@ -991,7 +991,7 @@ impl CallManager {
             participant_calls.remove(&handle);
         }
 
-        info!(
+        clog_info!(
             "🔊 Removed ambient source ({}) from call {}",
             handle.short(), call_id
         );
@@ -1040,7 +1040,7 @@ impl CallManager {
         let source_handle = Handle::new();
         let source = Box::new(TestPatternSource::default_test());
 
-        info!("Starting {} for call {}", source.name(), call_id);
+        clog_info!("Starting {} for call {}", source.name(), call_id);
 
         source.start(video_tx, source_handle)
     }
@@ -1067,7 +1067,7 @@ impl CallManager {
         let source_name = source.name().to_string();
         let source_user_id = source.user_id().to_string();
 
-        info!(
+        clog_info!(
             "Adding video source '{}' (user_id={}) to call {}",
             source_name, source_user_id, call_id
         );
@@ -1090,7 +1090,7 @@ impl CallManager {
             for tx in sources {
                 let _ = tx.send(()).await;
             }
-            info!("Removed {} video sources from call {}", count, call_id);
+            clog_info!("Removed {} video sources from call {}", count, call_id);
         }
     }
 
@@ -1123,12 +1123,12 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
-            error!("WebSocket handshake failed for {}: {}", addr, e);
+            clog_error!("WebSocket handshake failed for {}: {}", addr, e);
             return;
         }
     };
 
-    info!("New WebSocket connection from {}", addr);
+    clog_info!("New WebSocket connection from {}", addr);
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     let mut participant_handle: Option<Handle> = None;
@@ -1190,7 +1190,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 let ws_display_name = display_name.clone();
                                 tokio::spawn(async move {
                                     while let Ok(event) = transcription_rx.recv().await {
-                                        info!("[STEP 7] 🌐 WebSocket sending transcription to {}: \"{}\"",
+                                        clog_info!("[STEP 7] 🌐 WebSocket sending transcription to {}: \"{}\"",
                                             ws_display_name, event.text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>());
                                         let msg = CallMessage::Transcription {
                                             user_id: event.user_id,
@@ -1201,7 +1201,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                         };
                                         if let Ok(json) = serde_json::to_string(&msg) {
                                             if msg_tx_transcription.send(Message::Text(json.into())).await.is_err() {
-                                                warn!("[STEP 7] ❌ WebSocket send FAILED for {}", ws_display_name);
+                                                clog_warn!("[STEP 7] ❌ WebSocket send FAILED for {}", ws_display_name);
                                                 break;
                                             }
                                         }
@@ -1263,10 +1263,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 if let Some(handle) = &participant_handle {
                                     manager.set_mute(handle, muted).await;
                                 }
-                                info!("Connection mute state set: {}", muted);
+                                clog_info!("Connection mute state set: {}", muted);
                             }
                             Ok(CallMessage::VideoConfig { width, height, fps, format }) => {
-                                info!(
+                                clog_info!(
                                     "📹 Video config from {}: {}x{} @{}fps format={}",
                                     addr, width, height, fps, format
                                 );
@@ -1289,7 +1289,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 // Ignore other message types from client
                             }
                             Err(e) => {
-                                warn!("Failed to parse message: {}", e);
+                                clog_warn!("Failed to parse message: {}", e);
                             }
                         }
                     }
@@ -1309,7 +1309,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 }
                                 Some(FrameKind::AvatarState) => {
                                     // Client should not send avatar state (server→client only)
-                                    warn!("Received AvatarState from client — ignored");
+                                    clog_warn!("Received AvatarState from client — ignored");
                                 }
                                 None => {
                                     // Legacy: no FrameKind prefix, treat entire payload as raw audio
@@ -1326,7 +1326,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                         // Ignore ping/pong
                     }
                     Some(Err(e)) => {
-                        error!("WebSocket error: {}", e);
+                        clog_error!("WebSocket error: {}", e);
                         break;
                     }
                 }
@@ -1339,7 +1339,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
         manager.leave_call(&handle).await;
     }
 
-    info!("WebSocket connection closed for {}", addr);
+    clog_info!("WebSocket connection closed for {}", addr);
     sender_task.abort();
 }
 
@@ -1348,7 +1348,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
 pub async fn start_call_server(addr: &str, manager: Arc<CallManager>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
 
-    info!("Call server listening on {}", addr);
+    clog_info!("Call server listening on {}", addr);
 
     loop {
         let (stream, addr) = listener.accept().await?;

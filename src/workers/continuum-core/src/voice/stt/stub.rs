@@ -5,6 +5,7 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_debug};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,7 +65,7 @@ impl SpeechToText for StubSTT {
     }
 
     async fn initialize(&self) -> Result<(), STTError> {
-        tracing::info!("StubSTT: Initializing (no-op)");
+        clog_info!("StubSTT: Initializing (no-op)");
         self.initialized.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -92,7 +93,7 @@ impl SpeechToText for StubSTT {
         let text = self.generate_dummy_text(duration_ms);
         let lang = language.unwrap_or(STUB_DEFAULT_LANGUAGE).to_string();
 
-        tracing::debug!(
+        clog_debug!(
             "StubSTT: Generated dummy transcription for {}ms audio: \"{}\"",
             duration_ms,
             text

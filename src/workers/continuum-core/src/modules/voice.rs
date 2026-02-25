@@ -120,9 +120,16 @@ impl ServiceModule for VoiceModule {
                     }
                 });
 
-                // Phase 3: Pre-create agents (staggered, lower priority)
-                // Agents provide 3D avatars but don't need to be instant.
+                // Phase 3: Pre-allocate avatars + create agents (staggered)
+                // Pre-allocate models for all participants at once (batch allocation
+                // ensures unique models across the group — no duplicate green dinos).
                 if !ai_participants.is_empty() {
+                    let batch: Vec<(&str, Option<&str>)> = ai_participants
+                        .iter()
+                        .map(|(id, _)| (id.as_str(), None))
+                        .collect();
+                    crate::voice::avatar::allocate_dynamic_batch(&batch);
+
                     let agent_manager = self.state.livekit_manager.clone();
                     let agent_call_id = session_id.to_string();
                     tokio::spawn(async move {
@@ -134,7 +141,7 @@ impl ServiceModule for VoiceModule {
                         // With 20 agents × 2s = 40s to fully populate — acceptable since
                         // avatars appear progressively while STT works immediately.
                         for (user_id, display_name) in &ai_participants {
-                            match agent_manager.get_or_create_agent(&agent_call_id, user_id).await {
+                            match agent_manager.get_or_create_agent(&agent_call_id, user_id, Some(display_name)).await {
                                 Ok(_) => {
                                     tracing::info!("🎨 Pre-created agent for '{}' in call {}", display_name, &agent_call_id[..8.min(agent_call_id.len())]);
                                 }
@@ -169,7 +176,7 @@ impl ServiceModule for VoiceModule {
                 let adapter = p.str_opt("adapter");
 
                 use crate::voice::tts_service;
-                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
+                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
                     .map_err(|e| {
                         log_error!("module", "voice_synthesize", "TTS failed: {}", e);
                         format!("TTS synthesis failed: {}", e)
@@ -233,7 +240,7 @@ impl ServiceModule for VoiceModule {
                 let adapter = p.str_opt("adapter");
 
                 use crate::voice::tts_service;
-                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
+                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
                     .map_err(|e| {
                         log_error!("module", "voice_synthesize_handle", "TTS failed: {}", e);
                         format!("TTS synthesis failed: {}", e)

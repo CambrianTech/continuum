@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::info;
+use crate::clog_info;
 
 /// Preset voices shipped with Pocket-TTS (Les Misérables characters)
 const PRESET_VOICES: &[(&str, &str, &str)] = &[
@@ -117,7 +117,7 @@ impl PocketTTS {
         // Resolve voice state (cached or new)
         let voice_state = Self::resolve_voice_state(state, voice, voice_wav.as_deref())?;
 
-        info!(
+        clog_info!(
             "Pocket-TTS: Synthesizing with voice '{}': '{}'",
             voice,
             super::truncate_str(text, 50)
@@ -142,7 +142,7 @@ impl PocketTTS {
         // Normalize to standard 16kHz i16 PCM via shared audio utilities
         let result = audio_utils::normalize_audio(&f32_samples, state.native_sample_rate)?;
 
-        info!(
+        clog_info!(
             "Pocket-TTS: {} samples ({}ms audio) in {}ms",
             result.samples.len(),
             result.duration_ms,
@@ -169,7 +169,7 @@ impl PocketTTS {
             .map(Ok)
             .unwrap_or_else(|| {
                 let hf_path = format!("hf://kyutai/pocket-tts/embeddings/{name}.safetensors");
-                info!("Pocket-TTS: Downloading preset voice '{}' from HF", name);
+                clog_info!("Pocket-TTS: Downloading preset voice '{}' from HF", name);
                 pocket_tts::weights::download_if_necessary(&hf_path)
                     .map_err(|e| {
                         let msg = format!("{e}");
@@ -185,7 +185,7 @@ impl PocketTTS {
                     })
             })?;
 
-        info!("Pocket-TTS: Loading preset voice '{}' from {:?}", name, file_path);
+        clog_info!("Pocket-TTS: Loading preset voice '{}' from {:?}", name, file_path);
         model
             .get_voice_state_from_prompt_file(&file_path)
             .map_err(|e| TTSError::SynthesisFailed(format!("Preset voice '{name}' load failed: {e}")))
@@ -216,7 +216,7 @@ impl PocketTTS {
 
         let voice_state = if let Some(wav_path) = voice_wav {
             // Voice cloning from reference WAV audio
-            info!(
+            clog_info!(
                 "Pocket-TTS: Cloning voice from {:?}",
                 wav_path.file_name().unwrap_or_default()
             );
@@ -229,7 +229,7 @@ impl PocketTTS {
             Self::load_preset_voice(&state.model, voice)?
         } else {
             // Unknown voice — use default preset
-            info!("Pocket-TTS: Unknown voice '{}', using 'alba'", voice);
+            clog_info!("Pocket-TTS: Unknown voice '{}', using 'alba'", voice);
             Self::load_preset_voice(&state.model, "alba")?
         };
 
@@ -299,11 +299,11 @@ impl TextToSpeech for PocketTTS {
 
     async fn initialize(&self) -> Result<(), TTSError> {
         if POCKET_MODEL.get().is_some() {
-            info!("Pocket-TTS: Already initialized");
+            clog_info!("Pocket-TTS: Already initialized");
             return Ok(());
         }
 
-        info!(
+        clog_info!(
             "Pocket-TTS: Loading model '{}' (auto-download from HuggingFace)...",
             DEFAULT_VARIANT
         );
@@ -329,7 +329,7 @@ impl TextToSpeech for PocketTTS {
         .map_err(|e| TTSError::ModelNotLoaded(format!("Task join: {e}")))??;
 
         let native_sample_rate = model.sample_rate as u32;
-        info!(
+        clog_info!(
             "Pocket-TTS: Model loaded (native rate: {}Hz, output: {}Hz)",
             native_sample_rate, AUDIO_SAMPLE_RATE
         );
@@ -344,7 +344,7 @@ impl TextToSpeech for PocketTTS {
             .set(Arc::new(Mutex::new(pocket_state)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
-        info!(
+        clog_info!(
             "Pocket-TTS: Ready — {} preset voices + WAV voice cloning",
             PRESET_VOICES.len()
         );

@@ -238,6 +238,20 @@ export class UserDaemonServer extends UserDaemon {
 
       this.log.info(`🔧 UserDaemon: Found ${personas.length} personas to initialize`);
 
+      // Clean slate: set all personas to 'offline' before initialization.
+      // Prevents stale 'online' status from previous crash/restart.
+      // Each persona's initialize() will set itself to 'online' when ready.
+      for (const persona of personas) {
+        try {
+          await ORM.update<UserEntity>(
+            COLLECTIONS.USERS, persona.id,
+            { status: 'offline' as const },
+            false, 'default', true // suppressEvents — no UI flicker during boot
+          );
+        } catch (_) { /* best-effort */ }
+      }
+      this.log.info(`🔴 UserDaemon: Reset ${personas.length} personas to 'offline' (clean slate)`);
+
       // Batched parallel initialization — 6 concurrent to avoid thundering herd on DB/Rust
       const BATCH_SIZE = 6;
       for (let i = 0; i < personas.length; i += BATCH_SIZE) {

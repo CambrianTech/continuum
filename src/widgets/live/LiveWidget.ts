@@ -70,6 +70,8 @@ export class LiveWidget extends ReactiveWidget {
 
   // Spotlight mode
   @reactive() private spotlightUserId: string | null = null;
+  /** True when spotlight was set by user click (manual pin). Auto-spotlight won't override. */
+  private _spotlightPinned: boolean = false;
 
   // Set of participant userIds with active video
   @reactive() private activeVideoUsers: Set<string> = new Set();
@@ -105,6 +107,7 @@ export class LiveWidget extends ReactiveWidget {
   private _escapeHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape' && this.spotlightUserId) {
       this.spotlightUserId = null;
+      this._spotlightPinned = false;
     }
   };
 
@@ -324,27 +327,20 @@ export class LiveWidget extends ReactiveWidget {
         this.sessionId = result.callId;
         this.isJoined = true;
 
-        if (result.participants && result.participants.length > 0) {
-          this.participants = result.participants.map((p: any) => ({
-            userId: p.userId,
-            displayName: p.displayName || 'Unknown',
-            micEnabled: p.micEnabled ?? true,
-            cameraEnabled: p.cameraEnabled ?? false,
-            screenShareEnabled: p.screenShareEnabled ?? false,
-            isSpeaking: false
-          }));
-          console.log('LiveWidget: Loaded', this.participants.length, 'participants from server');
-        } else {
-          const myInfo = result.myParticipant;
-          this.participants = [{
-            userId: myInfo?.userId || ('self' as UUID),
-            displayName: myInfo?.displayName || 'You',
-            micEnabled: true,
-            cameraEnabled: false,
-            screenShareEnabled: false,
-            isSpeaking: false
-          }];
-        }
+        // Start with just the local user. Remote participants are added
+        // incrementally via LiveKit's ParticipantConnected events as agents
+        // connect (staggered 2s apart). This prevents the grid from showing
+        // a large initial set then fluctuating as connections stabilize.
+        const myInfo = result.myParticipant;
+        this.participants = [{
+          userId: myInfo?.userId || ('self' as UUID),
+          displayName: myInfo?.displayName || 'You',
+          micEnabled: true,
+          cameraEnabled: false,
+          screenShareEnabled: false,
+          isSpeaking: false
+        }];
+        console.log('LiveWidget: Starting with self, agents will appear as they connect');
         this.requestUpdate();
 
         this.subscribeToEvents();
@@ -356,7 +352,7 @@ export class LiveWidget extends ReactiveWidget {
             controls?.setMicLevel(level);
           },
           onParticipantJoined: (userId, displayName) => {
-            console.log(`LiveWidget: ${displayName} joined the call`);
+            console.log(`LiveWidget: ${displayName} joined the call (total before: ${this.participants.length})`);
             if (!this.participants.find(p => p.userId === userId)) {
               this.participants = [...this.participants, {
                 userId: userId as UUID,
@@ -366,11 +362,18 @@ export class LiveWidget extends ReactiveWidget {
                 screenShareEnabled: false,
                 isSpeaking: false,
               }];
+              console.log(`LiveWidget: Added ${displayName}, total now: ${this.participants.length}`);
+            } else {
+              console.log(`LiveWidget: ${displayName} already in list, skipping`);
             }
           },
           onParticipantLeft: (userId) => {
-            console.log(`LiveWidget: ${userId} left the call`);
-            this.participants = this.participants.filter(p => p.userId !== userId);
+            // DON'T remove from participant grid on LiveKit disconnect.
+            // Agents connect with 2s stagger and may have temporary connection
+            // issues. Removing them causes the grid to fluctuate wildly
+            // (15→10→12→8→15). The server's initial list is the ground truth
+            // for who should be in the call. Just clean up media resources.
+            console.log(`LiveWidget: ${userId} disconnected (keeping in grid)`);
             this._remoteVideoElements.delete(userId);
             const newSet = new Set(this.activeVideoUsers);
             newSet.delete(userId);
@@ -429,6 +432,29 @@ export class LiveWidget extends ReactiveWidget {
           await this.audioClient.join(result.callId, myUserId, myDisplayName, result.livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
 
+          // Merge participants already in the LiveKit room into our grid.
+          // ParticipantConnected events handle incremental arrivals, but for
+          // participants already present when we connect, we enumerate them here.
+          const existing = this.audioClient.getConnectedParticipants();
+          if (existing.length > 0) {
+            const currentIds = new Set(this.participants.map(p => p.userId));
+            const newParticipants = [...this.participants];
+            for (const ep of existing) {
+              if (!currentIds.has(ep.userId as UUID)) {
+                newParticipants.push({
+                  userId: ep.userId as UUID,
+                  displayName: ep.displayName,
+                  micEnabled: true,
+                  cameraEnabled: false,
+                  screenShareEnabled: false,
+                  isSpeaking: false,
+                });
+              }
+            }
+            this.participants = newParticipants;
+            console.log(`LiveWidget: Added ${existing.length} existing participants (total: ${this.participants.length})`);
+          }
+
           await this.applyMicState();
           this.applySpeakerState();
           console.log(`LiveWidget: State applied from saved (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, volume=${this.speakerVolume})`);
@@ -474,17 +500,12 @@ export class LiveWidget extends ReactiveWidget {
   private subscribeToEvents(): void {
     if (!this.sessionId) return;
 
-    this.unsubscribers.push(
-      Events.subscribe(`live:joined:${this.sessionId}`, (data: any) => {
-        this.participants = [...this.participants, data.participant];
-      })
-    );
-
-    this.unsubscribers.push(
-      Events.subscribe(`live:left:${this.sessionId}`, (data: any) => {
-        this.participants = this.participants.filter(p => p.userId !== data.userId);
-      })
-    );
+    // NOTE: Participant join/leave is handled ONLY by LiveKit SDK events
+    // (onParticipantJoined/onParticipantLeft callbacks in AudioStreamClient).
+    // Server-side `live:joined`/`live:left` events are NOT subscribed here
+    // because they race with LiveKit SDK events and caused duplicate/phantom
+    // participants (the grid would fluctuate: 16→12→4→8).
+    // LiveKit SDK is the ground truth for who is actually connected.
 
     this.unsubscribers.push(
       Events.subscribe(`live:speaking:${this.sessionId}`, (data: any) => {
@@ -635,6 +656,22 @@ export class LiveWidget extends ReactiveWidget {
       isSpeaking: p.userId === userId ? isSpeaking : p.isSpeaking
     }));
 
+    // Auto-spotlight: when someone starts speaking, spotlight them.
+    // When they stop, return to grid. Manual pin overrides auto-spotlight.
+    if (!this._spotlightPinned) {
+      if (isSpeaking && userId !== this.currentUser?.id) {
+        this.spotlightUserId = userId;
+      } else if (!isSpeaking && this.spotlightUserId === userId) {
+        // Only return to grid if no one else is speaking
+        const anyoneSpeaking = this.participants.some(p =>
+          p.userId !== userId && p.isSpeaking
+        );
+        if (!anyoneSpeaking) {
+          this.spotlightUserId = null;
+        }
+      }
+    }
+
     if (isSpeaking) {
       const timeout = setTimeout(() => {
         this.setSpeaking(userId, false);
@@ -654,6 +691,12 @@ export class LiveWidget extends ReactiveWidget {
       ...p,
       isSpeaking: p.userId === userId ? true : p.isSpeaking
     }));
+
+    // Auto-spotlight while speaking (unless user manually pinned someone)
+    if (!this._spotlightPinned && userId !== this.currentUser?.id) {
+      this.spotlightUserId = userId;
+    }
+
     this.requestUpdate();
 
     const timeout = setTimeout(() => {
@@ -662,6 +705,15 @@ export class LiveWidget extends ReactiveWidget {
         isSpeaking: p.userId === userId ? false : p.isSpeaking
       }));
       this.speakingTimeouts.delete(userId);
+
+      // Return to grid when done speaking (if not pinned and no one else is speaking)
+      if (!this._spotlightPinned && this.spotlightUserId === userId) {
+        const anyoneSpeaking = this.participants.some(p => p.isSpeaking);
+        if (!anyoneSpeaking) {
+          this.spotlightUserId = null;
+        }
+      }
+
       this.requestUpdate();
     }, durationMs + 500);
     this.speakingTimeouts.set(userId, timeout);
@@ -701,13 +753,16 @@ export class LiveWidget extends ReactiveWidget {
     const userId = e.detail.userId;
     if (this.spotlightUserId === userId) {
       this.spotlightUserId = null;
+      this._spotlightPinned = false;
     } else {
       this.spotlightUserId = userId;
+      this._spotlightPinned = true; // Manual click pins the spotlight
     }
   }
 
   private _onExitSpotlight(): void {
     this.spotlightUserId = null;
+    this._spotlightPinned = false;
   }
 
   private _onTileResized(e: CustomEvent): void {

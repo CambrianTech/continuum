@@ -143,34 +143,48 @@ fn parse_model_name(name: &str) -> Result<EmbeddingModel, String> {
     }
 }
 
-/// Get or load a model by name
+/// Get or load a model by name.
+///
+/// CRITICAL: Model loading (TextEmbedding::try_new) is a blocking operation that
+/// can take seconds (ONNX init, possible HuggingFace download). We must NOT hold
+/// the mutex during loading, or all tokio worker threads pile up on the lock and
+/// the entire runtime deadlocks (no IPC processing at all).
+///
+/// Pattern: check → release lock → load → re-acquire → insert.
+/// If two threads race to load the same model, one "wastes" a load — acceptable
+/// tradeoff vs deadlocking the entire system.
 fn get_or_load_model(model_name: &str) -> Result<(), String> {
-    let cache = get_model_cache();
-    let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+    // Fast path: model already loaded
+    {
+        let models = get_model_cache().lock().map_err(|e| format!("Lock error: {e}"))?;
+        if models.contains_key(model_name) {
+            return Ok(());
+        }
+    } // Lock released here — BEFORE the expensive loading
 
-    if !models.contains_key(model_name) {
-        info!("Loading embedding model: {model_name}");
-        let start = Instant::now();
+    // Slow path: load model WITHOUT holding the mutex
+    info!("Loading embedding model: {model_name}");
+    let start = Instant::now();
 
-        let model_enum = parse_model_name(model_name)?;
-        let cache_dir = get_cache_dir();
+    let model_enum = parse_model_name(model_name)?;
+    let cache_dir = get_cache_dir();
 
-        // Ensure cache directory exists
-        std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
-        let model = TextEmbedding::try_new(
-            InitOptions::new(model_enum)
-                .with_cache_dir(cache_dir)
-                .with_show_download_progress(true),
-        )
-        .map_err(|e| format!("Failed to load model: {e}"))?;
+    let model = TextEmbedding::try_new(
+        InitOptions::new(model_enum)
+            .with_cache_dir(cache_dir)
+            .with_show_download_progress(true),
+    )
+    .map_err(|e| format!("Failed to load model: {e}"))?;
 
-        let elapsed = start.elapsed();
-        info!("Model loaded in {:.2}s: {}", elapsed.as_secs_f64(), model_name);
+    let elapsed = start.elapsed();
+    info!("Model loaded in {:.2}s: {}", elapsed.as_secs_f64(), model_name);
 
-        models.insert(model_name.to_string(), model);
-    }
+    // Re-acquire lock and insert (double-check to avoid overwriting concurrent load)
+    let mut models = get_model_cache().lock().map_err(|e| format!("Lock error: {e}"))?;
+    models.entry(model_name.to_string()).or_insert(model);
 
     Ok(())
 }

@@ -18,8 +18,9 @@ pub async fn synthesize_speech_async(
     text: &str,
     voice: Option<&str>,
     adapter: Option<&str>,
+    gender_hint: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
-    synthesize_speech_impl(text, voice, adapter).await
+    synthesize_speech_impl(text, voice, adapter, gender_hint).await
 }
 
 /// This is a synchronous wrapper that creates its own tokio runtime.
@@ -36,11 +37,12 @@ pub fn synthesize_speech_sync(
     text: &str,
     voice: Option<&str>,
     adapter: Option<&str>,
+    gender_hint: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {e}")))?;
     rt.block_on(async {
-        synthesize_speech_impl(text, voice, adapter).await
+        synthesize_speech_impl(text, voice, adapter, gender_hint).await
     })
 }
 
@@ -48,6 +50,7 @@ async fn synthesize_speech_impl(
     text: &str,
     voice: Option<&str>,
     adapter: Option<&str>,
+    gender_hint: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
     // Initialize TTS system if needed
     if !tts::is_initialized() {
@@ -59,8 +62,8 @@ async fn synthesize_speech_impl(
 
     // Use specific adapter if requested, otherwise use active adapter
     match adapter {
-        Some(name) => tts::synthesize_with(text, voice_id, name).await,
-        None => tts::synthesize(text, voice_id).await,
+        Some(name) => tts::synthesize_with(text, voice_id, name, gender_hint).await,
+        None => tts::synthesize(text, voice_id, gender_hint).await,
     }
 }
 
@@ -89,7 +92,7 @@ mod tests {
     /// Synthesize with the silence adapter (always available, no model files)
     #[test]
     fn test_synthesize_silence_adapter() {
-        let result = synthesize_speech_sync("Hello test", None, Some("silence"));
+        let result = synthesize_speech_sync("Hello test", None, Some("silence"), None);
         let synthesis = result.expect("Silence adapter should always succeed");
         assert!(synthesis.samples.len() > 0, "Should produce samples");
         assert!(synthesis.samples.iter().all(|&s| s == 0), "Silence adapter produces zeros");
@@ -101,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_synthesize_nonexistent_adapter() {
-        let result = synthesize_speech_sync("Hello", None, Some("nonexistent_adapter_xyz"));
+        let result = synthesize_speech_sync("Hello", None, Some("nonexistent_adapter_xyz"), None);
         assert!(result.is_err(), "Nonexistent adapter should fail");
         let err = result.unwrap_err();
         let msg = format!("{}", err);
@@ -130,6 +133,7 @@ mod tests {
             "This is a full integration test of the Kokoro TTS pipeline.",
             Some("af"),
             Some("kokoro"),
+            None,
         );
 
         std::env::set_current_dir(original_cwd).unwrap();
@@ -155,7 +159,7 @@ mod tests {
         // This verifies the fix for the tokio runtime panic:
         // synthesize_speech_sync should always create a NEW runtime,
         // never try to reuse an existing one.
-        let result = synthesize_speech_sync("Runtime test", None, Some("silence"));
+        let result = synthesize_speech_sync("Runtime test", None, Some("silence"), None);
         assert!(result.is_ok(), "Should succeed with own runtime");
     }
 
@@ -166,7 +170,7 @@ mod tests {
             .map(|i| {
                 std::thread::spawn(move || {
                     let text = format!("Thread {} says hello", i);
-                    synthesize_speech_sync(&text, None, Some("silence"))
+                    synthesize_speech_sync(&text, None, Some("silence"), None)
                 })
             })
             .collect();

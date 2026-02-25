@@ -5,6 +5,7 @@
 
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_debug};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -69,7 +70,7 @@ impl TextToSpeech for SilenceTTS {
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        tracing::info!("SilenceTTS: Initializing (no-op)");
+        clog_info!("SilenceTTS: Initializing (no-op)");
         self.initialized.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -88,7 +89,7 @@ impl TextToSpeech for SilenceTTS {
         let duration_ms = self.calculate_duration(text);
         let samples = self.generate_silence(duration_ms);
 
-        tracing::debug!(
+        clog_debug!(
             "SilenceTTS: Generated {}ms of silence for {} characters",
             duration_ms,
             text.len()

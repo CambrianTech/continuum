@@ -202,20 +202,31 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       try {
         call = await this.createCall(room.id, params);
 
-        // NEW CALL: Add ALL room members as participants
-        // This ensures AI personas are in the call from the start
+        // NEW CALL: Add room members who are ONLINE as participants.
+        // Only personas that successfully initialized (status='online') join the call.
+        // This prevents connecting agents whose inference is broken.
+        // Human users always join (they're initiating the call).
         if (room.members && room.members.length > 0) {
           const memberIds = room.members.map(m => m.userId);
           const membersInfo = await this.lookupUsers(memberIds, params);
 
+          let addedCount = 0;
           for (const memberUser of membersInfo) {
-            call.addParticipant(
-              memberUser.id as UUID,
-              memberUser.displayName || memberUser.uniqueId,
-              memberUser.avatar
-            );
+            // Humans always join. AI personas only join if online (healthy).
+            const isHuman = memberUser.type === 'human';
+            const isOnline = memberUser.status === 'online';
+            if (isHuman || isOnline) {
+              call.addParticipant(
+                memberUser.id as UUID,
+                memberUser.displayName || memberUser.uniqueId,
+                memberUser.avatar
+              );
+              addedCount++;
+            } else {
+              console.log(`🎙️ LiveJoin: Skipping ${memberUser.displayName} (status=${memberUser.status})`);
+            }
           }
-          console.log(`🎙️ LiveJoin: Added ${membersInfo.length} room members to new call ${call.id.slice(0, 8)}`);
+          console.log(`🎙️ LiveJoin: Added ${addedCount}/${membersInfo.length} online room members to new call ${call.id.slice(0, 8)}`);
         }
 
         return { call, existed: false };

@@ -18,19 +18,20 @@
 use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::asset::RenderAssetUsages;
 use bevy::render::gpu_readback::{Readback, ReadbackComplete};
-use bevy::render::view::RenderLayers;
+use bevy::camera::visibility::RenderLayers;
+use bevy::camera::RenderTarget;
 use bevy::asset::LoadState;
-use bevy::render::mesh::morph::MorphWeights;
+use bevy::mesh::morph::MorphWeights;
 use bevy::scene::SceneInstanceReady;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
-use super::avatar_renderer::RgbaFrame;
+use super::avatar::RgbaFrame;
 
 /// Debug logging — no-op in production. Enable via BEVY_AVATAR_DEBUG=1 env var.
 fn bevy_debug(_msg: &str) {
@@ -41,17 +42,19 @@ fn bevy_debug(_msg: &str) {
 /// 24 supports up to 24 AI personas with 3D avatars simultaneously.
 /// At 30fps × 640×480 × 4 bytes = ~36.9 MB/s readback per slot.
 /// Bevy supports 32 render layers; we use layers 1-24, leaving headroom.
-pub const MAX_AVATAR_SLOTS: u8 = 24;
+pub const MAX_AVATAR_SLOTS: u8 = 16;
 
 /// Render resolution per avatar.
-/// 1280×720 (720p) — high quality for video conference tiles.
-/// On Apple Silicon shared memory, readback is essentially a memcpy.
-const AVATAR_WIDTH: u32 = 1280;
-const AVATAR_HEIGHT: u32 = 720;
+/// 640×480 (VGA) — good quality for grid tiles, ~75% less GPU than 720p.
+/// Adaptive resolution (ResolutionTier) will eventually drive per-slot sizes,
+/// but VGA is the minimum floor. Spotlight tiles can go higher later.
+const AVATAR_WIDTH: u32 = 640;
+const AVATAR_HEIGHT: u32 = 480;
 
 /// Target framerate for avatar rendering.
-/// 30fps for smooth video-quality animation (gestures, speaking, blinking).
-const AVATAR_FPS: f64 = 30.0;
+/// 24fps — smooth enough for visible lip sync and head animation.
+/// Apple Silicon shared memory makes readback near-free (16 slots × VGA × 24fps ≈ 47 MB/s).
+const AVATAR_FPS: f64 = 24.0;
 
 // ============================================================================
 // Public API — BevyAvatarSystem singleton
@@ -65,7 +68,7 @@ static BEVY_SYSTEM: OnceLock<BevyAvatarSystem> = OnceLock::new();
 pub fn get_or_init() -> &'static BevyAvatarSystem {
     BEVY_SYSTEM.get_or_init(|| {
         bevy_debug(&format!("Starting Bevy headless renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)"));
-        info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)");
+        clog_info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)");
         BevyAvatarSystem::start()
     })
 }
@@ -84,6 +87,8 @@ pub enum AvatarCommand {
         slot: u8,
         model_path: String,
         display_name: String,
+        /// Persona identity (user_id) — used for procedural fallback color generation.
+        identity: String,
     },
     /// Remove the model from a render slot.
     Unload { slot: u8 },
@@ -139,7 +144,7 @@ impl BevyAvatarSystem {
         // Wait up to 5 seconds for Bevy to initialize
         for _ in 0..50 {
             if ready.load(std::sync::atomic::Ordering::Acquire) {
-                info!("🎨 Bevy renderer confirmed ready");
+                clog_info!("🎨 Bevy renderer confirmed ready");
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -147,7 +152,7 @@ impl BevyAvatarSystem {
 
         if !ready.load(std::sync::atomic::Ordering::Acquire) {
             bevy_debug("WARN: Bevy did not report ready within 5s — may have failed to init GPU");
-            warn!("🎨 Bevy renderer did not report ready within 5s — may have failed to init GPU");
+            clog_warn!("🎨 Bevy renderer did not report ready within 5s — may have failed to init GPU");
         } else {
             bevy_debug("Bevy confirmed READY");
         }
@@ -172,15 +177,16 @@ impl BevyAvatarSystem {
     }
 
     /// Load a VRM/glTF model into a render slot.
-    pub fn load_model(&self, slot: u8, model_path: &str, display_name: &str) {
+    pub fn load_model(&self, slot: u8, model_path: &str, display_name: &str, identity: &str) {
         if slot >= MAX_AVATAR_SLOTS {
-            warn!("Avatar slot {slot} exceeds max {MAX_AVATAR_SLOTS}");
+            clog_warn!("Avatar slot {slot} exceeds max {MAX_AVATAR_SLOTS}");
             return;
         }
         let _ = self.command_tx.send(AvatarCommand::Load {
             slot,
             model_path: model_path.to_string(),
             display_name: display_name.to_string(),
+            identity: identity.to_string(),
         });
     }
 
@@ -285,9 +291,26 @@ struct SlotState {
 #[derive(Component, Clone, Copy)]
 struct AvatarSlotId(#[allow(dead_code)] u8);
 
+/// Marker component for readback entities (distinguishes from camera/scene entities
+/// which also have AvatarSlotId). Used by `ensure_continuous_readback` to find
+/// entities that need their `Readback` component re-inserted.
+#[derive(Component)]
+struct ReadbackMarker;
+
 /// Component marking an avatar that is currently speaking.
 #[derive(Component)]
 struct Speaking;
+
+/// Tracks slot metadata for health check logging.
+#[derive(Resource, Default)]
+struct SlotHealthStatus {
+    /// Identity string per slot.
+    identities: HashMap<u8, String>,
+    /// Model path per slot.
+    model_paths: HashMap<u8, String>,
+}
+
+
 
 /// Tracks asset handles for load state monitoring.
 /// Monitors both the parent Gltf asset (parsing) and the Scene sub-asset (extraction).
@@ -408,6 +431,7 @@ fn run_bevy_app(
         .insert_resource(BoneRegistry::default())
         .insert_resource(IdleGestureState::default())
         .insert_resource(MouthWeights::default())
+        .insert_resource(SlotHealthStatus::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -417,7 +441,7 @@ fn run_bevy_app(
                 .set(bevy::window::WindowPlugin {
                     primary_window: None,
                     exit_condition: bevy::window::ExitCondition::DontExit,
-                    close_when_requested: false,
+                    ..default()
                 })
                 .set(ImagePlugin::default_nearest())
                 .set(bevy::asset::AssetPlugin {
@@ -429,9 +453,14 @@ fn run_bevy_app(
         .add_plugins(ScheduleRunnerPlugin::run_loop(
             Duration::from_secs_f64(1.0 / AVATAR_FPS),
         ))
+        // Bevy 0.18: TransformTreeChanged is a new marker component required by Transform
+        // (via #[require(TransformTreeChanged)]). Scene spawner panics if it's not registered
+        // in the type registry. reflect_auto_register should handle this but doesn't.
+        .register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(Update, (
             process_commands,
+            ensure_continuous_readback,
             monitor_load_states,
             discover_morph_targets,
             animate_idle,
@@ -444,6 +473,11 @@ fn run_bevy_app(
 }
 
 /// Spawn a readback entity for a given render target + slot.
+///
+/// CRITICAL: Bevy's `Readback` component is one-shot — it fires `ReadbackComplete`
+/// once and is consumed. For continuous video frames, we must re-insert the
+/// `Readback` component after each completion. This gives us readback every
+/// other frame (~7.5fps at 15fps Bevy) due to Commands' deferred execution.
 fn spawn_readback_entity(
     commands: &mut Commands,
     rt_handle: Handle<Image>,
@@ -453,12 +487,52 @@ fn spawn_readback_entity(
         .spawn((
             Readback::texture(rt_handle),
             AvatarSlotId(slot_id),
+            ReadbackMarker,
         ))
         .observe(
-            move |trigger: Trigger<ReadbackComplete>,
-                  channels: Res<FrameChannels>| {
-                let pixel_bytes: &[u8] = trigger.event();
+            move |event: On<ReadbackComplete>,
+                  channels: Res<FrameChannels>,
+                  health: Res<SlotHealthStatus>| {
+                let pixel_bytes: &[u8] = &event.data;
+                // Log first readback per slot + pixel diversity diagnostic
+                static FIRST_READBACK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+                static FRAME_COUNTER: [std::sync::atomic::AtomicU32; 16] = {
+                    const INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                    [INIT; 16]
+                };
+                let mask = 1u16 << slot_id;
+                let prev = FIRST_READBACK.fetch_or(mask, std::sync::atomic::Ordering::Relaxed);
+                if prev & mask == 0 {
+                    clog_info!("🎨 Slot {}: first ReadbackComplete ({} bytes)", slot_id, pixel_bytes.len());
+                }
 
+                // Health check at frame 150 and 300 — LOG ONLY, no fallback.
+                // If a model is broken, we want to SEE it and fix the root cause.
+                let frame_n = FRAME_COUNTER[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if frame_n == 150 || frame_n == 300 {
+                    let test_frame = super::avatar::RgbaFrame {
+                        width: AVATAR_WIDTH,
+                        height: AVATAR_HEIGHT,
+                        data: pixel_bytes.to_vec(),
+                    };
+                    let analysis = super::avatar::frame_analysis::analyze(&test_frame);
+                    let verdict = analysis.verdict();
+                    match verdict {
+                        super::avatar::HealthVerdict::Healthy => {
+                            clog_info!("🎨 Slot {} frame {}: ✅ HEALTHY — coverage={:.0}%, colors={}, roughness={:.1}, symmetry={:.2}",
+                                slot_id, frame_n, analysis.coverage * 100.0, analysis.color_diversity,
+                                analysis.edge_roughness, analysis.symmetry);
+                        }
+                        _ => {
+                            clog_warn!("🎨 Slot {} frame {}: ❌ {:?} — coverage={:.0}%, colors={}, roughness={:.1}, white={:.0}%, symmetry={:.2}",
+                                slot_id, frame_n, verdict, analysis.coverage * 100.0, analysis.color_diversity,
+                                analysis.edge_roughness, analysis.white_ratio * 100.0, analysis.symmetry);
+                            if let Some(model_path) = health.model_paths.get(&slot_id) {
+                                clog_warn!("🎨 Slot {}: model '{}' rendered unhealthy", slot_id, model_path);
+                            }
+                        }
+                    }
+                }
                 if let Some(tx) = channels.0.get(slot_id as usize) {
                     let _ = tx.try_send(RgbaFrame {
                         width: AVATAR_WIDTH,
@@ -466,6 +540,8 @@ fn spawn_readback_entity(
                         data: pixel_bytes.to_vec(),
                     });
                 }
+                // NOTE: Readback re-insertion is handled by ensure_continuous_readback system,
+                // NOT here. Observer Commands race with Bevy's internal Readback removal.
             },
         )
         .id()
@@ -479,9 +555,11 @@ fn setup_render_slots(
     _frame_channels: Res<FrameChannels>,
 ) {
     // Global ambient light (all layers)
-    commands.insert_resource(AmbientLight {
+    // Bevy 0.18: AmbientLight is now per-camera; GlobalAmbientLight is the resource version
+    commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 300.0,
+        affects_lightmapped_meshes: false,
     });
 
     // Single shared directional light visible on ALL render layers.
@@ -524,23 +602,24 @@ fn setup_render_slots(
         let rt_handle = images.add(rt_image);
 
         // Camera — starts inactive, activated when a model is loaded
+        // Bevy 0.18: RenderTarget is a separate component (no longer a Camera field)
         let camera_entity = commands
             .spawn((
                 Camera3d::default(),
                 Camera {
                     order: slot as isize,
                     clear_color: ClearColorConfig::Custom(Color::srgb(0.1, 0.1, 0.18)),
-                    target: bevy::render::camera::RenderTarget::Image(rt_handle.clone()),
                     is_active: false,
                     ..default()
                 },
+                RenderTarget::Image(rt_handle.clone().into()),
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
-                // Disable MSAA — prevents macOS Metal validation error (Issue #16590)
-                bevy::render::view::Msaa::Off,
+                Msaa::Off,
                 // VRM models face -Z direction. Camera centered on face.
-                // Most VRM models have eyes at Y ~1.3. Back up Z for head+shoulders.
-                Transform::from_xyz(0.0, 1.30, -0.50)
-                    .looking_at(Vec3::new(0.0, 1.28, 0.0), Vec3::Y),
+                // Initial position uses reference values; animate_idle() adjusts
+                // dynamically once the head bone is discovered.
+                Transform::from_xyz(0.0, REFERENCE_HEAD_Y, REFERENCE_CAMERA_Z)
+                    .looking_at(Vec3::new(0.0, REFERENCE_HEAD_Y - 0.02, 0.0), Vec3::Y),
                 layer.clone(),
                 AvatarSlotId(slot),
             ))
@@ -569,7 +648,7 @@ fn setup_render_slots(
         );
     }
 
-    info!(
+    clog_info!(
         "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps",
         MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS
     );
@@ -588,10 +667,10 @@ fn monitor_load_states(
     static CWD_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !CWD_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         if let Ok(cwd) = std::env::current_dir() {
-            bevy_debug(&format!("Asset server cwd: {:?}", cwd));
+            clog_info!("🎨 Asset server cwd: {:?}", cwd);
         }
         let test_path = "models/avatars/vroid-female-base.glb";
-        bevy_debug(&format!("File check '{}': exists={}", test_path, std::path::Path::new(test_path).exists()));
+        clog_info!("🎨 File check '{}': exists={}", test_path, std::path::Path::new(test_path).exists());
     }
 
     // Check parent Gltf handles (the .glb file itself)
@@ -602,24 +681,23 @@ fn monitor_load_states(
                 // Gltf parsed successfully — inspect what scenes it contains
                 if let Some(gltf) = gltf_assets.get(entry.handle.id()) {
                     let named: Vec<&Box<str>> = gltf.named_scenes.keys().collect();
-                    bevy_debug(&format!(
-                        "✅ Gltf LOADED slot {}: {} — {} scenes, named: {:?}, default_scene: {:?}",
+                    clog_info!(
+                        "🎨 ✅ Gltf LOADED slot {}: {} — {} scenes, named: {:?}",
                         entry.slot, entry.path, gltf.scenes.len(), named,
-                        gltf.default_scene.as_ref().map(|h| format!("{:?}", h.id()))
-                    ));
+                    );
                 } else {
-                    bevy_debug(&format!(
-                        "✅ Gltf LOADED slot {}: {} (not yet in Assets<Gltf>)",
+                    clog_info!(
+                        "🎨 ✅ Gltf LOADED slot {}: {} (not yet in Assets<Gltf>)",
                         entry.slot, entry.path
-                    ));
+                    );
                 }
                 entry.logged_final = true;
             }
             LoadState::Failed(ref err) => {
-                bevy_debug(&format!(
-                    "❌ Gltf FAILED slot {}: {} — error: {:?}",
+                clog_warn!(
+                    "🎨 ❌ Gltf FAILED slot {}: {} — error: {:?}",
                     entry.slot, entry.path, err
-                ));
+                );
                 entry.logged_final = true;
             }
             _ => {
@@ -638,14 +716,14 @@ fn monitor_load_states(
         if entry.logged_final { continue; }
         match asset_server.load_state(entry.handle.id()) {
             LoadState::Loaded => {
-                bevy_debug(&format!("✅ Scene LOADED slot {}: {}", entry.slot, entry.path));
+                clog_info!("🎨 ✅ Scene LOADED slot {}: {}", entry.slot, entry.path);
                 entry.logged_final = true;
             }
             LoadState::Failed(ref err) => {
-                bevy_debug(&format!(
-                    "❌ Scene FAILED slot {}: {} — error: {:?}",
+                clog_warn!(
+                    "🎨 ❌ Scene FAILED slot {}: {} — error: {:?}",
                     entry.slot, entry.path, err
-                ));
+                );
                 entry.logged_final = true;
             }
             _ => {
@@ -665,6 +743,28 @@ fn signal_ready(flag: Res<ReadyFlag>) {
     bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
 }
 
+/// Re-insert `Readback` on entities that lost it after `ReadbackComplete`.
+///
+/// Bevy's `Readback` is one-shot: the render pipeline removes the component after
+/// the GPU readback completes. This system runs every frame and re-inserts the
+/// `Readback` component on readback entities that no longer have it, enabling
+/// continuous frame delivery at ~half the Bevy loop rate (every other frame).
+///
+/// Uses `ReadbackMarker` to distinguish readback entities from cameras/scenes.
+fn ensure_continuous_readback(
+    query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
+    registry: Res<SlotRegistry>,
+    mut commands: Commands,
+) {
+    for (entity, slot_id) in &query {
+        if let Some(state) = registry.slots.get(&slot_id.0) {
+            commands.entity(entity).insert(
+                Readback::texture(state._render_target.clone())
+            );
+        }
+    }
+}
+
 /// Process commands from the main application.
 fn process_commands(
     command_channel: Res<CommandChannel>,
@@ -674,6 +774,7 @@ fn process_commands(
     mut cameras: Query<&mut Camera>,
     mut pending: ResMut<PendingLoads>,
     mut mouth_weights: ResMut<MouthWeights>,
+    mut health: ResMut<SlotHealthStatus>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -681,41 +782,41 @@ fn process_commands(
                 slot,
                 model_path,
                 display_name,
+                identity,
             } => {
+                // Record identity + model path for health check logging
+                health.identities.insert(slot, identity.clone());
+                health.model_paths.insert(slot, model_path.clone());
+
                 if let Some(state) = registry.slots.get_mut(&slot) {
                     let layer = RenderLayers::layer((slot + 1) as usize);
 
                     // Remove previous scene if any
                     if let Some(old_entity) = state.scene_entity.take() {
-                        commands.entity(old_entity).despawn_recursive();
+                        commands.entity(old_entity).despawn();
                     }
 
-                    // Load VRM/glTF model on this slot's render layer.
-                    // VRM files are binary glTF but Bevy's GltfPlugin only registers
-                    // for .gltf/.glb extensions. We use .glb symlinks (created alongside
-                    // the .vrm originals) so the asset server recognizes the format.
+                    state.gltf_handle = None;
+                    state.model_path = Some(model_path.clone());
+
+                    // Load via Bevy's standard glTF loader.
+                    // VRM 0.x files are binary glTF — Bevy's GltfPlugin only registers
+                    // for .gltf/.glb extensions. We use .glb symlinks so asset server
+                    // recognizes the format.
                     let load_path = if model_path.ends_with(".vrm") {
-                        model_path.replace(".vrm", ".glb")
+                        model_path.replacen(".vrm", ".glb", 1)
                     } else {
                         model_path.clone()
                     };
+
                     let asset_path = format!("{}#Scene0", load_path);
-
-                    // Spawn scene with an observer that propagates RenderLayers
-                    // to all descendant entities once the scene finishes loading.
-                    // Bevy does NOT inherit RenderLayers from parents — each mesh
-                    // entity needs its own RenderLayers or the camera won't see it.
-                    bevy_debug(&format!("Load slot {}: path='{}' asset_path='{}'", slot, model_path, asset_path));
-
-                    // Load scene handle AND track parent Gltf handle for diagnostics.
-                    // If parent Gltf loads but Scene fails, the label is wrong.
-                    // If parent Gltf fails, the file parsing is the issue.
                     let scene_handle: Handle<Scene> = asset_server.load(&asset_path);
                     let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load(&load_path);
+                    clog_info!("🎨 Slot {}: loading '{}' from {}", slot, display_name, load_path);
                     pending.scene_handles.push(PendingLoadEntry {
                         slot,
                         handle: scene_handle.clone(),
-                        path: asset_path.clone(),
+                        path: asset_path,
                         logged_final: false,
                     });
                     pending.gltf_handles.push(PendingLoadEntry {
@@ -724,40 +825,37 @@ fn process_commands(
                         path: load_path.clone(),
                         logged_final: false,
                     });
-
-                    // Store Gltf handle + model path for morph target name discovery
                     state.gltf_handle = Some(gltf_handle);
-                    state.model_path = Some(load_path.clone());
+                    let scene_entity = commands.spawn((
+                        SceneRoot(scene_handle),
+                        Transform::default(),
+                        layer.clone(),
+                        AvatarSlotId(slot),
+                    )).id();
 
-                    let layer_for_observer = layer.clone();
+                    // SceneInstanceReady fires once the scene is fully spawned.
+                    // Propagate RenderLayers to all descendants (Bevy doesn't inherit them).
+                    let layer_for_observer = layer;
                     let slot_for_observer = slot;
-                    let scene_entity = commands
-                        .spawn((
-                            SceneRoot(scene_handle),
-                            Transform::default(),
-                            layer,
-                            AvatarSlotId(slot),
-                        ))
-                        .observe(move |
-                            trigger: Trigger<SceneInstanceReady>,
+                    commands.entity(scene_entity).observe(
+                        move |
+                            event: On<SceneInstanceReady>,
                             children_query: Query<&Children>,
                             names: Query<&Name>,
                             mut transforms: Query<&mut Transform>,
                             mut cmds: Commands,
                             mut bone_registry: ResMut<BoneRegistry>,
                         | {
-                            let root = trigger.entity();
+                            let root = event.entity;
                             let child_count = count_descendants(root, &children_query);
                             propagate_render_layers(root, &layer_for_observer, &children_query, &mut cmds);
-                            // Dump all bone names for debugging T-pose fix coverage
                             dump_bone_names(root, &children_query, &names);
-                            // Fix T-pose: rotate arm bones to natural resting position
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
-                            // Discover upper-body bones for animation systems (head, neck, shoulders)
                             discover_upper_body_bones(root, slot_for_observer, &children_query, &names, &transforms, &mut bone_registry);
-                            bevy_debug(&format!("SceneInstanceReady: slot {}, entity {:?}, propagated layers to {} descendants", slot_for_observer, root, child_count));
-                        })
-                        .id();
+                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated", slot_for_observer, root, child_count);
+                        }
+                    );
+
                     state.scene_entity = Some(scene_entity);
                     state.active = true;
 
@@ -766,16 +864,16 @@ fn process_commands(
                         camera.is_active = true;
                     }
 
-                    info!(
+                    clog_info!(
                         "🎨 Slot {}: loaded '{}' from {}",
-                        slot, display_name, model_path
+                        slot, display_name, load_path
                     );
                 }
             }
             AvatarCommand::Unload { slot } => {
                 if let Some(state) = registry.slots.get_mut(&slot) {
                     if let Some(entity) = state.scene_entity.take() {
-                        commands.entity(entity).despawn_recursive();
+                        commands.entity(entity).despawn();
                     }
                     state.active = false;
                     state.gltf_handle = None;
@@ -783,7 +881,7 @@ fn process_commands(
                     if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
                         camera.is_active = false;
                     }
-                    info!("🎨 Slot {}: unloaded", slot);
+                    clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
             AvatarCommand::SetSpeaking { slot, speaking } => {
@@ -803,10 +901,10 @@ fn process_commands(
             AvatarCommand::Resize { slot, width, height } => {
                 // TODO: Implement render target resize once Bevy readback resource
                 // borrowing is resolved. For now, all slots render at AVATAR_WIDTH×AVATAR_HEIGHT.
-                info!("🎨 Slot {}: resize requested to {}x{} (not yet implemented)", slot, width, height);
+                clog_info!("🎨 Slot {}: resize requested to {}x{} (not yet implemented)", slot, width, height);
             }
             AvatarCommand::Shutdown => {
-                info!("🎨 Bevy renderer shutting down");
+                clog_info!("🎨 Bevy renderer shutting down");
                 // Don't process::exit — that kills the entire Rust worker.
                 // Just stop processing commands. The Bevy loop continues but
                 // inactive cameras render nothing. In practice, shutdown means
@@ -817,8 +915,32 @@ fn process_commands(
     }
 }
 
+/// Reference head Y for VRM standard models (~1.50m).
+/// Camera Z distance is scaled proportionally from this baseline.
+const REFERENCE_HEAD_Y: f32 = 1.50;
+
+/// Baseline camera Z distance for the reference head height.
+/// At this distance with Bevy's default ~45° vertical FOV, a standard VRM
+/// face fills roughly 60% of the frame vertically — good head+shoulders framing.
+const REFERENCE_CAMERA_Z: f32 = -0.55;
+
+/// Compute camera Z distance from head world-Y position.
+///
+/// Simple proportional scaling: smaller models (lower head Y) get a closer camera.
+/// This is an approximation of the full projection math:
+///   apparent_size = object_size / distance * focal_length
+/// Since all VRM models have similar head-to-body proportions, scaling Z
+/// linearly with head_y / reference_head_y gives correct framing.
+fn camera_z_for_head(head_y: f32) -> f32 {
+    // Scale factor: how big is this model relative to the VRM standard?
+    let scale = (head_y / REFERENCE_HEAD_Y).clamp(0.5, 2.0);
+    // Closer for smaller models, farther for larger — proportional
+    REFERENCE_CAMERA_Z * scale
+}
+
 /// Idle animation — gentle camera sway + head-targeted framing.
-/// Uses discovered head bone world position to center camera on face.
+/// Uses discovered head bone world position to center camera on face
+/// and dynamically adjusts Z distance based on model proportions.
 fn animate_idle(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
@@ -837,23 +959,27 @@ fn animate_idle(
 
             // Dynamic head tracking: center camera on face (eyes), not skull base.
             // Head bone is at base of skull; eyes are ~0.06 above that.
-            let (base_y, look_y) = if let Some(slot_bones) = bone_registry.slots.get(slot) {
+            // Camera Z distance scales with model size (simple proportional trig).
+            let (base_y, look_y, cam_z) = if let Some(slot_bones) = bone_registry.slots.get(slot) {
                 if let Some(ref head) = slot_bones.head {
                     if let Ok(global) = global_transforms.get(head.entity) {
-                        let eye_y = global.translation().y + 0.06;
-                        (eye_y + 0.02, eye_y)
+                        let head_world_y = global.translation().y;
+                        let eye_y = head_world_y + 0.06;
+                        let z = camera_z_for_head(head_world_y);
+                        (eye_y + 0.02, eye_y, z)
                     } else {
-                        (1.50, 1.47)
+                        (1.50, 1.47, REFERENCE_CAMERA_Z)
                     }
                 } else {
-                    (1.50, 1.47)
+                    (1.50, 1.47, REFERENCE_CAMERA_Z)
                 }
             } else {
-                (1.50, 1.47)
+                (1.50, 1.47, REFERENCE_CAMERA_Z)
             };
 
             transform.translation.x = sway_x;
             transform.translation.y = base_y + sway_y;
+            transform.translation.z = cam_z;
             // Re-orient to look at head position (with sway applied)
             let look_target = Vec3::new(0.0, look_y, 0.0);
             *transform = transform.looking_at(look_target, Vec3::Y);
@@ -911,18 +1037,21 @@ fn discover_morph_targets(
         let mut blink_right_index = None;
 
         if !mesh_names.is_empty() {
-            // Standard glTF path — match by name
+            // Standard glTF + VRoid naming conventions — match by name.
+            // VRoid Studio uses "Fcl_" prefix: Fcl_MTH_A (mouth), Fcl_EYE_Close (blink), etc.
             for (i, name) in mesh_names.iter().enumerate() {
                 let lower = name.to_lowercase();
                 if mouth_open_index.is_none() && (
                     lower == "aa" || lower == "a" ||
                     lower.contains("mth_a") || lower.contains("v_aa") ||
-                    lower.contains("mouth_open") || lower.contains("jawopen")
+                    lower.contains("mouth_open") || lower.contains("jawopen") ||
+                    lower == "fcl_mth_a"
                 ) {
                     mouth_open_index = Some(i);
                 }
                 if blink_index.is_none() && (
                     lower == "blink" ||
+                    lower == "fcl_eye_close" ||
                     (lower.contains("eye_close") && !lower.contains("_l") && !lower.contains("_r") && !lower.contains("left") && !lower.contains("right")) ||
                     lower == "vrc.blink"
                 ) {
@@ -930,12 +1059,14 @@ fn discover_morph_targets(
                 }
                 if blink_left_index.is_none() && (
                     lower == "blinkleft" || lower == "blink_l" ||
+                    lower == "fcl_eye_close_l" ||
                     lower.contains("eye_close_l") || lower.contains("eye_close_left")
                 ) {
                     blink_left_index = Some(i);
                 }
                 if blink_right_index.is_none() && (
                     lower == "blinkright" || lower == "blink_r" ||
+                    lower == "fcl_eye_close_r" ||
                     lower.contains("eye_close_r") || lower.contains("eye_close_right")
                 ) {
                     blink_right_index = Some(i);
@@ -1019,12 +1150,13 @@ fn animate_speaking(
             if is_speaking {
                 // Prefer amplitude-based weight from audio pipeline when available
                 let mouth_weight = if let Some(&amplitude) = mouth_weights.weights.get(slot) {
-                    // Amplitude already normalized to 0.0-1.0 by the sender
-                    (amplitude * 0.7).clamp(0.05, 0.8)
+                    // Amplitude already normalized to 0.0-1.0 by the sender.
+                    // Full range for clearly visible mouth movement.
+                    amplitude.clamp(0.0, 1.0)
                 } else {
                     // Fallback: sine oscillation (no amplitude data)
                     let t = time.elapsed_secs();
-                    ((t * 2.5 * std::f32::consts::TAU).sin() * 0.3 + 0.4).clamp(0.1, 0.7)
+                    ((t * 3.0 * std::f32::consts::TAU).sin() * 0.4 + 0.5).clamp(0.1, 0.9)
                 };
                 if let Some(idx) = layout.mouth_open_index {
                     if idx < w.len() {
@@ -1247,7 +1379,7 @@ fn animate_breathing(
 fn count_descendants(entity: Entity, children: &Query<&Children>) -> usize {
     let mut count = 0;
     if let Ok(child_list) = children.get(entity) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             count += 1 + count_descendants(child, children);
         }
     }
@@ -1278,7 +1410,7 @@ fn collect_names(entity: Entity, children: &Query<&Children>, names: &Query<&Nam
         out.push(name.as_str().to_string());
     }
     if let Ok(child_list) = children.get(entity) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             collect_names(child, children, names, out);
         }
     }
@@ -1359,7 +1491,7 @@ fn collect_arm_adjustments(
     }
 
     if let Ok(child_list) = children.get(entity) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             collect_arm_adjustments(child, children, names, adjustments);
         }
     }
@@ -1375,12 +1507,16 @@ fn propagate_render_layers(
     commands: &mut Commands,
 ) {
     if let Ok(child_list) = children.get(entity) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             commands.entity(child).insert(layer.clone());
             propagate_render_layers(child, layer, children, commands);
         }
     }
 }
+
+// ============================================================================
+// VRM Version Detection
+// ============================================================================
 
 // ============================================================================
 // VRM Extension Parsing
@@ -1404,40 +1540,57 @@ struct VrmBlendShapeBind {
 }
 
 /// Parse VRM blend shape groups from a .glb file's JSON chunk.
-/// VRM files store blend shape definitions in extensions.VRM.blendShapeMaster.blendShapeGroups
-/// (VRM 0.x) rather than standard glTF targetNames.
+/// Supports both VRM 0.x (extensions.VRM.blendShapeMaster) and
+/// VRM 1.0 (extensions.VRMC_vrm.expressions.preset).
 /// Returns None if the file can't be read or doesn't have VRM extensions.
 fn parse_vrm_blend_shapes(glb_path: &str) -> Option<Vec<VrmBlendShape>> {
+    let root = read_glb_json(glb_path)?;
+
+    // Try VRM 0.x first (extensions.VRM.blendShapeMaster.blendShapeGroups)
+    if let Some(shapes) = parse_vrm0x_blend_shapes(&root, glb_path) {
+        return Some(shapes);
+    }
+
+    // Try VRM 1.0 (extensions.VRMC_vrm.expressions.preset)
+    if let Some(shapes) = parse_vrmc_expressions(&root, glb_path) {
+        return Some(shapes);
+    }
+
+    None
+}
+
+/// Read the JSON chunk from a .glb file.
+fn read_glb_json(glb_path: &str) -> Option<serde_json::Value> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(glb_path).ok()?;
 
-    // Read glb header (12 bytes): magic(4) + version(4) + length(4)
+    // GLB header: magic(4) + version(4) + length(4)
     let mut header = [0u8; 12];
     file.read_exact(&mut header).ok()?;
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     if magic != 0x46546C67 {
-        // Not a valid glTF binary
         return None;
     }
 
-    // Read JSON chunk header: length(4) + type(4)
+    // JSON chunk header: length(4) + type(4)
     let mut chunk_header = [0u8; 8];
     file.read_exact(&mut chunk_header).ok()?;
     let chunk_length = u32::from_le_bytes([chunk_header[0], chunk_header[1], chunk_header[2], chunk_header[3]]) as usize;
     let chunk_type = u32::from_le_bytes([chunk_header[4], chunk_header[5], chunk_header[6], chunk_header[7]]);
     if chunk_type != 0x4E4F534A {
-        // Not JSON chunk
         return None;
     }
 
-    // Read JSON data
     let mut json_data = vec![0u8; chunk_length];
     file.read_exact(&mut json_data).ok()?;
     let json_str = std::str::from_utf8(&json_data).ok()?;
-    let root: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    serde_json::from_str(json_str).ok()
+}
 
-    // Navigate to VRM blend shape groups (VRM 0.x format)
+/// Parse VRM 0.x blend shape groups (extensions.VRM.blendShapeMaster.blendShapeGroups).
+/// Used by older VRoid Studio exports and most existing VRM models.
+fn parse_vrm0x_blend_shapes(root: &serde_json::Value, glb_path: &str) -> Option<Vec<VrmBlendShape>> {
     let groups = root
         .get("extensions")?
         .get("VRM")?
@@ -1462,9 +1615,48 @@ fn parse_vrm_blend_shapes(glb_path: &str) -> Option<Vec<VrmBlendShape>> {
         shapes.push(VrmBlendShape { name, preset_name, binds });
     }
 
-    bevy_debug(&format!("Parsed VRM blend shapes from '{}': {} groups — {:?}",
+    bevy_debug(&format!("VRM 0.x blend shapes from '{}': {} groups — {:?}",
         glb_path, shapes.len(),
         shapes.iter().map(|s| format!("{}({})[{}binds]", s.name, s.preset_name, s.binds.len())).collect::<Vec<_>>()
+    ));
+
+    Some(shapes)
+}
+
+/// Parse VRM 1.0 expressions (extensions.VRMC_vrm.expressions.preset).
+/// Used by VRoid Hub exports and newer VRoid Studio models.
+/// Maps VRMC preset expressions to the same VrmBlendShape format as VRM 0.x.
+fn parse_vrmc_expressions(root: &serde_json::Value, glb_path: &str) -> Option<Vec<VrmBlendShape>> {
+    let preset = root
+        .get("extensions")?
+        .get("VRMC_vrm")?
+        .get("expressions")?
+        .get("preset")?
+        .as_object()?;
+
+    let mut shapes = Vec::new();
+    for (preset_name, expr) in preset {
+        let morph_binds = expr.get("morphTargetBinds").and_then(|v| v.as_array());
+        let mut binds = Vec::new();
+        if let Some(morph_binds) = morph_binds {
+            for bind in morph_binds {
+                // VRM 1.0 uses "node" (mesh node index) and "index" (morph target index)
+                let mesh = bind.get("node").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let index = bind.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let weight = bind.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                binds.push(VrmBlendShapeBind { mesh, index, weight });
+            }
+        }
+        shapes.push(VrmBlendShape {
+            name: preset_name.clone(),
+            preset_name: preset_name.clone(),
+            binds,
+        });
+    }
+
+    bevy_debug(&format!("VRM 1.0 expressions from '{}': {} presets — {:?}",
+        glb_path, shapes.len(),
+        shapes.iter().map(|s| format!("{}[{}binds]", s.preset_name, s.binds.len())).collect::<Vec<_>>()
     ));
 
     Some(shapes)
@@ -1482,7 +1674,7 @@ fn find_morph_entity(
     }
     // Recurse into children
     if let Ok(child_list) = children.get(root) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             if let Some(found) = find_morph_entity(child, children, morph_query) {
                 return Some(found);
             }
@@ -1566,7 +1758,7 @@ fn find_bone_by_name(
         }
     }
     if let Ok(child_list) = children.get(root) {
-        for &child in child_list.iter() {
+        for child in child_list.iter() {
             if let Some(found) = find_bone_by_name(child, children, names, target_names) {
                 return Some(found);
             }
@@ -1586,8 +1778,8 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
-        assert_eq!(AVATAR_WIDTH, 1280);
-        assert_eq!(AVATAR_HEIGHT, 720);
+        assert_eq!(AVATAR_WIDTH, 640);
+        assert_eq!(AVATAR_HEIGHT, 480);
         assert!(AVATAR_FPS >= 1.0 && AVATAR_FPS <= 30.0, "FPS should be reasonable (1-30)");
     }
 }

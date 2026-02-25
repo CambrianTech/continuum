@@ -270,4 +270,43 @@ else
   echo -e "${GREEN}Orpheus TTS (3B, LoRA-trainable) already exists${NC}"
 fi
 
+# Avatar VRM models — all high-quality VRoid Studio models (35-50k triangles)
+# 13 models: 8 original VRoid anime (OpenGameArt CC0) + 5 VRoid Hub AvatarSample series
+# Note: VRoid Hub models are bundled in the repo (too large for auto-download).
+# If missing, the system falls back to procedural (colored circle) rendering.
+AVATARS_DIR="$MODELS_DIR/avatars"
+mkdir -p "$AVATARS_DIR"
+
+# All 13 VRoid model filenames (checked for existence, not downloaded)
+VROID_MODELS=(
+  "vroid-female-base" "vroid-male-base" "vroid-sakurada" "vroid-shino"
+  "vroid-darkness" "vroid-sample-d" "vroid-sample-e" "vroid-sample-f"
+  "vroid-sample-r" "vroid-sample-t" "vroid-sample-v" "vroid-sample-x" "vroid-sample-z"
+)
+
+AVATARS_PRESENT=0
+AVATARS_MISSING=0
+for name in "${VROID_MODELS[@]}"; do
+  if [ -f "$AVATARS_DIR/${name}.vrm" ]; then
+    AVATARS_PRESENT=$((AVATARS_PRESENT + 1))
+  else
+    AVATARS_MISSING=$((AVATARS_MISSING + 1))
+  fi
+done
+
+if [ "$AVATARS_MISSING" -gt 0 ]; then
+  echo -e "${YELLOW}Avatar models: ${AVATARS_PRESENT}/${#VROID_MODELS[@]} present (${AVATARS_MISSING} missing — will use procedural fallback)${NC}"
+else
+  echo -e "${GREEN}All ${#VROID_MODELS[@]} avatar models present${NC}"
+fi
+
+# Ensure .glb symlinks exist for all .vrm files (Bevy requires .glb extension)
+for vrm in "$AVATARS_DIR"/*.vrm; do
+  [ -f "$vrm" ] || continue
+  glb="${vrm%.vrm}.glb"
+  if [ ! -e "$glb" ]; then
+    ln -s "$(basename "$vrm")" "$glb"
+  fi
+done
+
 echo -e "${GREEN}Voice model check complete${NC}"

@@ -82,6 +82,9 @@ export class AudioStreamClient {
   // Hidden audio container (remote audio tracks auto-play here)
   private audioContainer: HTMLDivElement | null = null;
 
+  // DIAGNOSTIC: Track event log for debugging video subscription
+  public _trackDiagLog: string[] = [];
+
   // Transcription deduplication — multiple LiveKit event paths can deliver the same
   // utterance (TranscriptionReceived + DataReceived topic='transcription').
   // Track recent fingerprints (userId + text hash) with timestamps to suppress duplicates.
@@ -133,7 +136,11 @@ export class AudioStreamClient {
     token: string,
   ): Promise<void> {
     this.room = new Room({
-      adaptiveStream: true,
+      // adaptiveStream disabled: the video elements are created detached by
+      // track.attach() then inserted into Shadow DOM by Lit. IntersectionObserver
+      // (used by adaptiveStream) sees detached elements as invisible and pauses
+      // video delivery. Re-enable after implementing proper element lifecycle.
+      adaptiveStream: false,
       dynacast: true,
     });
 
@@ -147,6 +154,61 @@ export class AudioStreamClient {
 
     await this.room.connect(livekitUrl, token);
     console.log(`AudioStreamClient: Connected to LiveKit room (call=${callId}, identity=${userId})`);
+
+    // Process participants already in the room when we join.
+    // ParticipantConnected should fire for them during connect, but if it doesn't
+    // (race condition, SDK version behavior), this ensures we catch them.
+    this.processExistingParticipants();
+  }
+
+  /**
+   * Enumerate remote participants and their tracks that already exist when we connect.
+   * Fires the same callbacks as the event-driven path so the UI is consistent.
+   */
+  private processExistingParticipants(): void {
+    if (!this.room) return;
+
+    const remoteCount = this.room.remoteParticipants.size;
+    console.log(`AudioStreamClient: Processing ${remoteCount} existing remote participants`);
+
+    for (const [, participant] of this.room.remoteParticipants) {
+      const meta = this.getParticipantRole(participant);
+
+      if (isVisibleParticipant(meta)) {
+        this._trackDiagLog.push(`EXIST:${participant.identity.substring(0, 8)}:${meta?.role ?? '?'}`);
+        this.options.onParticipantJoined?.(participant.identity, participant.name || participant.identity);
+      }
+
+      // Process already-subscribed tracks for this participant
+      for (const [, publication] of participant.trackPublications) {
+        const track = publication.track;
+        if (!track || !publication.isSubscribed) continue;
+
+        if (!isVisibleParticipant(meta)) continue;
+
+        const userId = participant.identity;
+
+        if (track.kind === Track.Kind.Audio) {
+          if (!this.remoteAudioElements.has(userId)) {
+            const element = track.attach() as HTMLAudioElement;
+            element.volume = this.speakerMuted ? 0 : this.speakerVolume;
+            this.audioContainer?.appendChild(element);
+            this.remoteAudioElements.set(userId, element);
+            this._trackDiagLog.push(`EXIST_AUD:${userId.substring(0, 8)}`);
+          }
+        }
+
+        if (track.kind === Track.Kind.Video) {
+          const element = track.attach() as HTMLVideoElement;
+          element.style.width = '100%';
+          element.style.height = '100%';
+          element.style.objectFit = 'cover';
+          this.options.onVideoTrackAdded?.(userId, element);
+          this._trackDiagLog.push(`EXIST_VID:${userId.substring(0, 8)}`);
+          console.log(`AudioStreamClient: Existing video track from ${userId}`);
+        }
+      }
+    }
   }
 
   /**
@@ -244,6 +306,25 @@ export class AudioStreamClient {
   }
 
   /**
+   * Get all currently connected visible remote participants.
+   * Used to sync the participant list from LiveKit ground truth after connection.
+   */
+  getConnectedParticipants(): Array<{ userId: string; displayName: string }> {
+    if (!this.room) return [];
+
+    const result: Array<{ userId: string; displayName: string }> = [];
+    for (const [, participant] of this.room.remoteParticipants) {
+      const meta = this.getParticipantRole(participant);
+      if (!isVisibleParticipant(meta)) continue;
+      result.push({
+        userId: participant.identity,
+        displayName: participant.name || participant.identity,
+      });
+    }
+    return result;
+  }
+
+  /**
    * Publish tile resolution data to the LiveKit room via data channel.
    * The Rust agent reads this (topic='tile_resolution') to resize avatar render targets.
    * Uses unreliable (lossy) delivery — stale data is fine, we just want the latest.
@@ -304,16 +385,31 @@ export class AudioStreamClient {
       this.options.onParticipantLeft?.(participant.identity);
     });
 
+    // DIAGNOSTIC: Track published (signaling — before subscription)
+    this.room.on(RoomEvent.TrackPublished, (
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant,
+    ) => {
+      console.log(`AudioStreamClient: TRACK_PUBLISHED from ${participant.identity}: kind=${publication.kind} source=${publication.source} subscribed=${publication.isSubscribed} sid=${publication.trackSid}`);
+      this._trackDiagLog.push(`PUB:${participant.identity.substring(0,8)}:${publication.kind}`);
+    });
+
     // Remote track subscribed — audio or video from another participant
     this.room.on(RoomEvent.TrackSubscribed, (
       track: RemoteTrack,
       publication: RemoteTrackPublication,
       participant: RemoteParticipant,
     ) => {
+      console.log(`AudioStreamClient: TRACK_SUBSCRIBED from ${participant.identity}: kind=${track.kind} source=${publication.source} sid=${publication.trackSid}`);
+      this._trackDiagLog.push(`SUB:${participant.identity.substring(0,8)}:${track.kind}`);
+
       const meta = this.getParticipantRole(participant);
 
       // Skip tracks from invisible system participants (STT listeners, ambient audio)
-      if (!isVisibleParticipant(meta)) return;
+      if (!isVisibleParticipant(meta)) {
+        this._trackDiagLog.push(`SKIP:${participant.identity.substring(0,8)}:invisible`);
+        return;
+      }
 
       // Identity IS the userId — no prefix stripping needed.
       // AI agents use their persona userId directly; role is in metadata.

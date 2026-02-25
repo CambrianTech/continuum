@@ -14,7 +14,7 @@ use ort::session::Session;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 /// Global Piper session
 static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
@@ -124,7 +124,7 @@ impl PiperTTS {
         let f32_samples: Vec<f32> = audio_data.to_vec();
         let result = audio_utils::normalize_audio(&f32_samples, sample_rate)?;
 
-        info!(
+        clog_info!(
             "Piper synthesized {} samples ({}ms) for '{}...'",
             result.samples.len(),
             result.duration_ms,
@@ -160,22 +160,22 @@ impl TextToSpeech for PiperTTS {
 
     async fn initialize(&self) -> Result<(), TTSError> {
         if PIPER_SESSION.get().is_some() {
-            info!("Piper already initialized");
+            clog_info!("Piper already initialized");
             return Ok(());
         }
 
         let model_path = match self.find_model_path() {
             Some(path) => path,
             None => {
-                warn!("Piper model not found. Should be auto-downloaded at:");
-                warn!("  models/piper/en_US-libritts_r-medium.onnx");
+                clog_warn!("Piper model not found. Should be auto-downloaded at:");
+                clog_warn!("  models/piper/en_US-libritts_r-medium.onnx");
                 return Err(TTSError::ModelNotLoaded(
                     "Piper ONNX model not found".into(),
                 ));
             }
         };
 
-        info!("Loading Piper model from: {:?}", model_path);
+        clog_info!("Loading Piper model from: {:?}", model_path);
 
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
@@ -198,7 +198,7 @@ impl TextToSpeech for PiperTTS {
             .set(Arc::new(Mutex::new(model)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
-        info!("Piper model loaded successfully");
+        clog_info!("Piper model loaded successfully");
         Ok(())
     }
 
