@@ -52,9 +52,10 @@ const AVATAR_WIDTH: u32 = 640;
 const AVATAR_HEIGHT: u32 = 480;
 
 /// Target framerate for avatar rendering.
-/// 24fps — smooth enough for visible lip sync and head animation.
-/// Apple Silicon shared memory makes readback near-free (16 slots × VGA × 24fps ≈ 47 MB/s).
-const AVATAR_FPS: f64 = 24.0;
+/// 15fps — adequate for lip sync and head animation while reducing GPU load ~40%.
+/// 16 slots × VGA × 15fps ≈ 29 MB/s readback (vs 47 MB/s at 24fps).
+/// Prevents sustained-load CPU/GPU saturation with 15+ concurrent avatars.
+const AVATAR_FPS: f64 = 15.0;
 
 // ============================================================================
 // Public API — BevyAvatarSystem singleton

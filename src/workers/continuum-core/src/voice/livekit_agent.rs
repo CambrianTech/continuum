@@ -119,6 +119,19 @@ pub enum AgentEvent {
     },
 }
 
+/// Lazily-initialized video publishing state.
+/// Holds the NativeVideoSource, created on first frame to avoid streaming
+/// uninitialized buffer data before the renderer is ready.
+struct VideoPublishState {
+    source: Option<NativeVideoSource>,
+}
+
+impl VideoPublishState {
+    fn new() -> Self {
+        Self { source: None }
+    }
+}
+
 /// Server-side LiveKit participant that bridges our AI pipeline to WebRTC.
 pub struct LiveKitAgent {
     room: Room,
@@ -129,7 +142,7 @@ pub struct LiveKitAgent {
     _audio_track_sid: String,
     /// Video source for avatar rendering — lazily created on first publish_video_frame() call.
     /// Not created at connect() time to avoid publishing uninitialized garbled frames.
-    video_source: Mutex<Option<NativeVideoSource>>,
+    video_state: Mutex<VideoPublishState>,
     /// Additional audio sources for ambient/background audio (hold music, etc.)
     ambient_sources: Arc<Mutex<HashMap<String, NativeAudioSource>>>,
     /// Agent events channel — kept alive to prevent receiver from closing.
@@ -359,7 +372,7 @@ impl LiveKitAgent {
             room,
             audio_source,
             _audio_track_sid: audio_track_sid,
-            video_source: Mutex::new(None), // Deferred until first frame
+            video_state: Mutex::new(VideoPublishState::new()),
             ambient_sources: Arc::new(Mutex::new(HashMap::new())),
             _event_tx: event_tx,
             identity,
@@ -406,10 +419,10 @@ impl LiveKitAgent {
     /// `publish_video_frame()` call so the browser only shows a video tile when there's
     /// real content to display.
     pub async fn publish_video_frame(&self, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
-        let mut source_guard = self.video_source.lock().await;
+        let mut state = self.video_state.lock().await;
 
         // Lazily create and publish video source on first frame
-        if source_guard.is_none() {
+        if state.source.is_none() {
             let video_source = NativeVideoSource::new(
                 VideoResolution { width, height },
                 false, // is_screencast
@@ -429,8 +442,8 @@ impl LiveKitAgent {
                         // explicit bitrate to prevent WebRTC adaptive compression blur.
                         simulcast: false,
                         video_encoding: Some(VideoEncoding {
-                            max_bitrate: 1_200_000, // 1.2 Mbps — VGA@24fps avatar with lip sync
-                            max_framerate: 24.0,
+                            max_bitrate: 800_000, // 800 kbps — VGA@15fps avatar with lip sync
+                            max_framerate: 15.0,
                         }),
                         ..Default::default()
                     },
@@ -439,12 +452,15 @@ impl LiveKitAgent {
                 .map_err(|e| format!("Failed to publish video track: {}", e))?;
 
             clog_info!("📹 Video track published for '{}' ({}x{})", self.identity, width, height);
-            *source_guard = Some(video_source);
+            state.source = Some(video_source);
         }
 
-        // Convert RGBA to I420 and capture frame
-        let source = source_guard.as_ref().unwrap();
-        let buffer = rgba_to_i420(rgba, width, height);
+        // Convert RGBA to I420 and capture frame.
+        // I420Buffer wraps C++ UniquePtr — not reusable across VideoFrame submissions.
+        // Phase 2 (FramePublisher) will eliminate this per-agent overhead entirely.
+        let source = state.source.as_ref().unwrap();
+        let mut buffer = I420Buffer::new(width, height);
+        rgba_to_i420_into(rgba, &mut buffer, width, height);
         let frame = VideoFrame {
             rotation: VideoRotation::VideoRotation0,
             timestamp_us: 0, // auto-timestamp to current time
@@ -689,125 +705,147 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
 // Video avatar rendering — procedural colored circle with persona initial
 // =============================================================================
 
-/// Convert RGBA8 pixel data to I420 planar YUV (the format LiveKit's NativeVideoSource expects).
-/// Uses BT.601 color space conversion with fixed-point arithmetic.
-fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
-    let mut buffer = I420Buffer::new(width, height);
-    let w = width as usize;
-    let h = height as usize;
-
-    let (data_y, data_u, data_v) = buffer.data_mut();
-
-    // Y plane: one luma value per pixel
-    for y in 0..h {
-        for x in 0..w {
-            let i = (y * w + x) * 4;
-            let r = rgba[i] as i32;
-            let g = rgba[i + 1] as i32;
-            let b = rgba[i + 2] as i32;
-            // BT.601: Y = (66R + 129G + 25B + 128) >> 8 + 16
-            data_y[y * w + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16).clamp(0, 255) as u8;
-        }
-    }
-
-    // U and V planes: one chroma value per 2x2 block (subsampled)
-    let cw = (w + 1) / 2;
-    let ch = (h + 1) / 2;
-    for cy in 0..ch {
-        for cx in 0..cw {
-            let px = cx * 2;
-            let py = cy * 2;
-            let i = (py * w + px) * 4;
-            let r = rgba[i] as i32;
-            let g = rgba[i + 1] as i32;
-            let b = rgba[i + 2] as i32;
-            // BT.601: U = (-38R - 74G + 112B + 128) >> 8 + 128
-            data_u[cy * cw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
-            // BT.601: V = (112R - 94G - 18B + 128) >> 8 + 128
-            data_v[cy * cw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
-        }
-    }
-
-    buffer
-}
+// RGBA → I420 conversion moved to frame_publisher.rs (single source of truth).
+// Used by both CpuI420Publisher and the direct publish_video_frame path below.
+use crate::voice::avatar::frame_publisher::rgba_to_i420_into;
 
 /// Start a background video frame loop for an agent.
 ///
-/// Uses `avatar::spawn_renderer_loop()` which creates a BevyChannelRenderer (3D VRM).
-/// No fallback — agents without VRM models simply don't publish video.
+/// Uses `avatar::spawn_renderer_loop()` to create a BevyChannelRenderer (3D VRM)
+/// and `frame_publisher::create_publisher()` to select the best frame publishing
+/// strategy for the current platform.
 ///
-/// The video loop is backend-agnostic — it receives RgbaFrame from whatever
-/// renderer was selected and publishes to LiveKit. New backends (bgfx, wgpu, etc.)
-/// plug in by implementing AvatarRenderer, not by modifying this function.
+/// The video loop is both renderer-agnostic AND publisher-agnostic:
+///   Renderer (Bevy/procedural/...) → RgbaFrame → channel → FramePublisher → LiveKit
+///
+/// New renderers plug in via AvatarRenderer trait (render_loop.rs).
+/// New publishers plug in via FramePublisher trait (frame_publisher.rs).
+///
+/// spawn_renderer_loop() acquires std::sync::Mutex locks (slot pool, active renderers)
+/// that can block for up to 5s waiting for slots. Wrapped in spawn_blocking to avoid
+/// starving the tokio runtime.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    use crate::voice::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path};
+    use crate::voice::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path, create_publisher};
 
-    let voice = agent.voice_name();
-    let avatar = select_dynamic_avatar(&agent.identity, voice.as_deref());
-    let vrm_path = avatar_model_path(&avatar.filename);
-    let vrm_model_path = if vrm_path.exists() {
-        Some(vrm_path.to_string_lossy().to_string())
-    } else {
-        clog_warn!("📹 VRM model not found for '{}': {}", agent.identity, vrm_path.display());
-        None
-    };
+    let agent_clone = agent.clone();
+    tokio::spawn(async move {
+        let agent = agent_clone;
+        let voice = agent.voice_name();
+        let avatar = select_dynamic_avatar(&agent.identity, voice.as_deref());
+        let vrm_path = avatar_model_path(&avatar.filename);
+        let vrm_model_path = if vrm_path.exists() {
+            Some(vrm_path.to_string_lossy().to_string())
+        } else {
+            clog_warn!("📹 VRM model not found for '{}': {}", agent.identity, vrm_path.display());
+            None
+        };
 
-    // Skip video loop if no VRM model — only the human user should lack a model
-    if vrm_model_path.is_none() {
-        clog_info!("📹 No VRM model for '{}', skipping video loop", agent.identity);
-        return;
-    }
-
-    let config = AvatarConfig {
-        identity: agent.identity.clone(),
-        display_name: agent.display_name.clone(),
-        width: 640,
-        height: 480,
-        fps: 24.0,
-        vrm_model_path,
-        ..Default::default()
-    };
-
-    // Factory selects the best renderer — returns None if identity already has a loop
-    // or if renderer creation failed. No circles, no fallbacks.
-    let (frame_rx, _interval_nanos) = match crate::voice::avatar::spawn_renderer_loop(config) {
-        Some(result) => result,
-        None => {
-            clog_warn!("📹 No renderer available for '{}', skipping video", agent.identity);
+        // Skip video loop if no VRM model — only the human user should lack a model
+        if vrm_model_path.is_none() {
+            clog_info!("📹 No VRM model for '{}', skipping video loop", agent.identity);
             return;
         }
-    };
 
-    tokio::spawn(async move {
-        clog_info!("📹 Video loop started for '{}' → model '{}' ({})",
-            agent.identity, avatar.name, avatar.filename);
-        loop {
-            // Receive frame from renderer thread (blocking → spawn_blocking)
-            let frame = match tokio::task::spawn_blocking({
-                let rx = frame_rx.clone();
-                move || rx.recv_timeout(std::time::Duration::from_millis(500))
-            }).await {
-                Ok(Ok(frame)) => frame,
-                Ok(Err(_)) => {
-                    // Timeout — renderer thread may be slow, keep trying
-                    continue;
+        let width = 640u32;
+        let height = 480u32;
+
+        let config = AvatarConfig {
+            identity: agent.identity.clone(),
+            display_name: agent.display_name.clone(),
+            width,
+            height,
+            fps: 15.0,
+            vrm_model_path,
+            ..Default::default()
+        };
+
+        // spawn_renderer_loop acquires std::sync::Mutex locks (slot pool, active renderers)
+        // which can block up to 5s waiting for slot availability. Run off the tokio runtime.
+        let renderer_result = tokio::task::spawn_blocking(move || {
+            crate::voice::avatar::spawn_renderer_loop(config)
+        }).await;
+
+        let (frame_rx, _interval_nanos) = match renderer_result {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                clog_warn!("📹 No renderer available for '{}', skipping video", agent.identity);
+                return;
+            }
+            Err(e) => {
+                clog_warn!("📹 spawn_renderer_loop panicked for '{}': {}", agent.identity, e);
+                return;
+            }
+        };
+
+        // Lazily create video source on first frame (avoid garbled uninitialized frames).
+        // The FramePublisher handles format conversion; we just need the NativeVideoSource.
+        let video_source = {
+            let mut state = agent.video_state.lock().await;
+            if state.source.is_none() {
+                let vs = NativeVideoSource::new(
+                    VideoResolution { width, height },
+                    false,
+                );
+                let video_track = LocalVideoTrack::create_video_track(
+                    &format!("{}-avatar", agent.identity),
+                    RtcVideoSource::Native(vs.clone()),
+                );
+                if let Err(e) = agent.room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Video(video_track),
+                        TrackPublishOptions {
+                            source: TrackSource::Camera,
+                            simulcast: false,
+                            video_encoding: Some(VideoEncoding {
+                                max_bitrate: 800_000,
+                                max_framerate: 15.0,
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    clog_warn!("📹 Failed to publish video track for '{}': {}", agent.identity, e);
+                    return;
                 }
+                clog_info!("📹 Video track published for '{}' ({}x{})", agent.identity, width, height);
+                state.source = Some(vs);
+            }
+            state.source.clone().unwrap()
+        };
+
+        // Create platform-appropriate frame publisher.
+        // Currently: CpuI420Publisher (all platforms).
+        // Phase 3: NativeBufferPublisher (macOS) selected automatically.
+        let mut publisher = create_publisher(frame_rx, width, height);
+        clog_info!("📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
+            agent.identity, avatar.name, avatar.filename, publisher.name());
+
+        let frame_interval = std::time::Duration::from_nanos((1_000_000_000.0 / 15.0) as u64);
+        loop {
+            // try_publish is non-blocking (try_recv + ~1ms I420 conversion).
+            // Short enough for a tokio worker — no need for spawn_blocking.
+            match publisher.try_publish(&video_source) {
+                Ok(true) => {} // Frame published
+                Ok(false) => {} // No frame ready
                 Err(_) => {
-                    clog_warn!("📹 Video loop spawn_blocking panicked for '{}'", agent.identity);
+                    // Channel closed — renderer thread exited
+                    clog_info!("📹 Video publisher channel closed for '{}'", agent.identity);
                     break;
                 }
-            };
-
-            if let Err(e) = agent.publish_video_frame(&frame.data, frame.width, frame.height).await {
-                clog_warn!("📹 Video loop error for '{}': {}", agent.identity, e);
-                break;
             }
+
+            tokio::time::sleep(frame_interval).await;
         }
     });
 }
 
 /// Process incoming audio from a remote participant's track using ProductionVAD.
 /// Detects sentence boundaries and emits Utterance events for STT processing.
+///
+/// LiveKit sends 10ms frames (160 samples at 16kHz), but earshot WebRTC VAD
+/// requires minimum 240 samples. We accumulate to 480-sample (30ms) chunks.
 async fn process_audio_stream_with_vad(
     audio_track: RemoteAudioTrack,
     speaker_id: String,
@@ -832,26 +870,42 @@ async fn process_audio_stream_with_vad(
 
     clog_info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
 
+    // Frame accumulation: LiveKit sends 10ms (160 samples) frames,
+    // but earshot WebRTC VAD requires >=240 samples per call.
+    // Accumulate to 480 samples (30ms) before feeding to VAD.
+    const VAD_FRAME_SIZE: usize = 480;
+    let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
+
     while let Some(frame) = audio_stream.next().await {
         let samples: &[i16] = frame.data.as_ref();
 
-        match vad.process_frame(samples) {
-            Ok(Some(sentence_samples)) => {
-                // Complete sentence detected by VAD — emit for STT
-                clog_info!(
-                    "🎤 Sentence detected from '{}' ({} samples, {:.1}s)",
-                    speaker_id,
-                    sentence_samples.len(),
-                    sentence_samples.len() as f64 / AUDIO_SAMPLE_RATE as f64,
-                );
-                let _ = event_tx.send(AgentEvent::Utterance {
-                    speaker_id: speaker_id.clone(),
-                    samples: sentence_samples,
-                });
-            }
-            Ok(None) => {} // Still buffering — VAD hasn't detected sentence end yet
-            Err(e) => {
-                clog_warn!("🎤 VAD error for '{}': {}", speaker_id, e);
+        accum_buf.extend_from_slice(samples);
+        if accum_buf.len() < VAD_FRAME_SIZE {
+            continue;
+        }
+
+        // Drain accumulated buffer in VAD_FRAME_SIZE chunks
+        while accum_buf.len() >= VAD_FRAME_SIZE {
+            let vad_frame: Vec<i16> = accum_buf.drain(..VAD_FRAME_SIZE).collect();
+
+            match vad.process_frame(&vad_frame) {
+                Ok(Some(sentence_samples)) => {
+                    // Complete sentence detected by VAD — emit for STT
+                    clog_info!(
+                        "🎤 Sentence detected from '{}' ({} samples, {:.1}s)",
+                        speaker_id,
+                        sentence_samples.len(),
+                        sentence_samples.len() as f64 / AUDIO_SAMPLE_RATE as f64,
+                    );
+                    let _ = event_tx.send(AgentEvent::Utterance {
+                        speaker_id: speaker_id.clone(),
+                        samples: sentence_samples,
+                    });
+                }
+                Ok(None) => {} // Still buffering — VAD hasn't detected sentence end yet
+                Err(e) => {
+                    clog_warn!("🎤 VAD error for '{}': {}", speaker_id, e);
+                }
             }
         }
     }
@@ -1324,7 +1378,7 @@ impl LiveKitAgentManager {
         }
 
         // Calculate per-chunk RMS amplitude for mouth weight animation.
-        // 66ms windows (~24fps) for smooth lip sync matching the render framerate.
+        // 66ms windows (~15fps) for smooth lip sync matching the render framerate.
         let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, 66);
 
         // Publish subtitle FIRST — native transcription linked to the audio track SID.
@@ -1338,7 +1392,7 @@ impl LiveKitAgentManager {
         agent.speak(synthesis.samples).await?;
 
         // Schedule amplitude-based mouth weights timed to audio playback.
-        // Each weight corresponds to a 66ms window (~24fps) of the audio.
+        // Each weight corresponds to a 66ms window (~15fps) of the audio.
         let uid_for_mouth = user_id.to_string();
         if !mouth_weights.is_empty() {
             tokio::spawn(async move {

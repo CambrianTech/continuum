@@ -25,6 +25,7 @@
 
 pub mod types;
 pub mod frame;
+pub mod frame_publisher;
 pub mod renderer;
 pub mod catalog;
 pub mod selection;
@@ -35,6 +36,7 @@ pub mod backend;
 pub mod registry;
 pub mod backends;
 pub mod frame_analysis;
+pub mod publishers;
 
 // Re-export everything at the module level for backward compatibility.
 // Call sites use `crate::voice::avatar::RgbaFrame`, etc.
@@ -53,6 +55,7 @@ pub use selection::{
 pub use gender::{gender_from_voice_name, gender_from_identity};
 pub use hash::{fnv1a_hash, deterministic_pick, deterministic_index};
 pub use render_loop::{create_renderer, spawn_renderer_loop};
+pub use frame_publisher::{FramePublisher, CpuI420Publisher, PublishError, create_publisher};
 pub use backends::{
     ProceduralRenderer, BevyChannelRenderer, ProceduralBackend, Bevy3DBackend,
     Live2DRenderer, Live2DBackend,
