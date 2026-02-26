@@ -226,11 +226,13 @@ fn infer_gender_from_stem(stem: &str) -> AvatarGender {
         "vroid-sakurada" => AvatarGender::Male,
         // External CC0/permissive models (webaverse/avatar-models)
         "gsan" => AvatarGender::Male,
-        "wv-male16" => AvatarGender::Male,   // M00_ VRoid male template
-        "wv-ruike" => AvatarGender::Female,   // quappa-el, armor girl
-        "wv-yagato" => AvatarGender::Female,  // F00_ VRoid female template
-        "wv-miku" => AvatarGender::Female,    // Hatsune Miku, F00_ female
-        "wv-kanji" => AvatarGender::Male,     // KasamotoKanji, male character
+        "wv-male16" => AvatarGender::Male,      // M00_ VRoid male template
+        "wv-sakurada2" => AvatarGender::Male,   // Sakurada Fumiriya variant, M00_ materials, 107 joints
+        "wv-shilo" => AvatarGender::Male,       // Hand-rigged male, sideburn bones, 85 joints
+        "wv-ruike" => AvatarGender::Female,     // quappa-el, armor girl
+        "wv-yagato" => AvatarGender::Female,    // F00_ VRoid female template
+        "wv-miku" => AvatarGender::Female,      // Hatsune Miku, F00_ female
+        "wv-kanji" => AvatarGender::Male,       // KasamotoKanji, male character
         _ => super::gender::gender_from_identity(stem),
     }
 }

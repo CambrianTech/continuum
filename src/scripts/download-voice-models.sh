@@ -339,10 +339,12 @@ fi
 # Non-OpenGameArt CC0/permissive models (direct VRM downloads, no zip)
 # Format: "url:target_name"
 # Sources: webaverse/avatar-models (permissive VRM 0.x, all <=128 joints)
-# Gender distribution: gsan(M), wv-male16(M), wv-ruike(F?), wv-yagato(F), wv-miku(F), wv-kanji(M)
+# Gender distribution: gsan(M), wv-male16(M), wv-sakurada2(M), wv-shilo(M), wv-ruike(F), wv-yagato(F), wv-miku(F), wv-kanji(M)
 EXTRA_DOWNLOADS=(
   "https://raw.githubusercontent.com/webaverse/avatar-models/master/model45.vrm:gsan.vrm"
   "https://raw.githubusercontent.com/webaverse/avatar-models/master/model16.vrm:wv-male16.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model8.vrm:wv-sakurada2.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model55.vrm:wv-shilo.vrm"
   "https://raw.githubusercontent.com/webaverse/avatar-models/master/model41.vrm:wv-ruike.vrm"
   "https://raw.githubusercontent.com/webaverse/avatar-models/master/model42.vrm:wv-yagato.vrm"
   "https://raw.githubusercontent.com/webaverse/avatar-models/master/model48.vrm:wv-miku.vrm"
