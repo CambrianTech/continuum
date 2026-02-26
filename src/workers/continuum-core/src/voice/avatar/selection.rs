@@ -129,7 +129,7 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
 
     // Phase B: gender pool exhausted — share least-used SAME-GENDER model.
     // Gender coherence (avatar looks like the voice sounds) > visual diversity.
-    // With 7F:1M in the catalog, male agents share the one male model.
+    // With 6F:2M in the catalog, male agents share the 2 male models.
     let mut usage_count: HashMap<usize, usize> = HashMap::new();
     for &idx in allocation.values() {
         *usage_count.entry(idx).or_insert(0) += 1;
@@ -344,7 +344,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
 
     // Phase B: gender pool exhausted — share least-used SAME-GENDER model.
     // Gender coherence (avatar looks like the voice sounds) > visual diversity.
-    // With 7F:1M in the catalog, male agents share the one male model.
+    // With 6F:2M in the catalog, male agents share the 2 male models.
     let mut usage_count: HashMap<usize, usize> = HashMap::new();
     for &idx in allocation.values() {
         *usage_count.entry(idx).or_insert(0) += 1;
@@ -485,9 +485,9 @@ mod tests {
             assigned_models.push(model.id);
         }
 
-        // With 8 personas and 8 models (7F, 1M), gender-coherent allocation means:
-        // - Males all share the 1 male model (vroid-male-base)
-        // - Females get unique models from the 7 female models
+        // With 8 personas and 8 models (6F, 2M), gender-coherent allocation means:
+        // - Males share the 2 male models (vroid-male-base, vroid-sakurada)
+        // - Females get unique models from the 6 female models
         // So we won't get 8 unique — we get as many unique as there are unique genders × models.
         // Verify: all males get a male model, all females get a female model.
         for (id, model_id) in identities.iter().zip(assigned_models.iter()) {
@@ -528,7 +528,7 @@ mod tests {
             assigned.push(model.id);
         }
 
-        // 12 personas with 8 models (7F, 1M): gender coherence means males share the 1 male model.
+        // 12 personas with 8 models (6F, 2M): gender coherence means males share the 2 male models.
         // Verify: every persona's avatar matches its seeded gender.
         for (id, model_id) in identities.iter().zip(assigned.iter()) {
             let model = AVATAR_CATALOG.iter().find(|m| m.id == *model_id).unwrap();

@@ -142,8 +142,6 @@ pub struct LiveKitAgent {
     /// TTS voice name — set on first speak, used for gender-matched avatar selection.
     /// First-speak-wins: once set, the avatar doesn't change mid-call.
     voice_name: std::sync::Mutex<Option<String>>,
-    /// Whether the video loop has been started (deferred to first speak for voice-matched avatars).
-    video_started: std::sync::atomic::AtomicBool,
 }
 
 impl LiveKitAgent {
@@ -367,7 +365,7 @@ impl LiveKitAgent {
             identity,
             display_name: persona_name.to_string(),
             voice_name: std::sync::Mutex::new(None),
-            video_started: std::sync::atomic::AtomicBool::new(false),
+
         };
 
         Ok((agent, event_rx))
@@ -735,9 +733,8 @@ fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
 
 /// Start a background video frame loop for an agent.
 ///
-/// Uses `avatar::create_renderer()` factory to select the best backend:
-///   - BevyChannelRenderer (3D VRM) if VRM model exists and Bevy is healthy
-///   - ProceduralRenderer (colored circle) as fallback
+/// Uses `avatar::spawn_renderer_loop()` which creates a BevyChannelRenderer (3D VRM).
+/// No fallback — agents without VRM models simply don't publish video.
 ///
 /// The video loop is backend-agnostic — it receives RgbaFrame from whatever
 /// renderer was selected and publishes to LiveKit. New backends (bgfx, wgpu, etc.)
@@ -751,8 +748,15 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     let vrm_model_path = if vrm_path.exists() {
         Some(vrm_path.to_string_lossy().to_string())
     } else {
+        clog_warn!("📹 VRM model not found for '{}': {}", agent.identity, vrm_path.display());
         None
     };
+
+    // Skip video loop if no VRM model — only the human user should lack a model
+    if vrm_model_path.is_none() {
+        clog_info!("📹 No VRM model for '{}', skipping video loop", agent.identity);
+        return;
+    }
 
     let config = AvatarConfig {
         identity: agent.identity.clone(),
@@ -764,10 +768,15 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         ..Default::default()
     };
 
-    // Factory selects the best renderer — this function doesn't know which backend.
-    // _interval_nanos can be updated by the tile_resolution data channel handler
-    // to adapt FPS when the browser tile size changes.
-    let (frame_rx, _interval_nanos) = crate::voice::avatar::spawn_renderer_loop(config);
+    // Factory selects the best renderer — returns None if identity already has a loop
+    // or if renderer creation failed. No circles, no fallbacks.
+    let (frame_rx, _interval_nanos) = match crate::voice::avatar::spawn_renderer_loop(config) {
+        Some(result) => result,
+        None => {
+            clog_warn!("📹 No renderer available for '{}', skipping video", agent.identity);
+            return;
+        }
+    };
 
     tokio::spawn(async move {
         clog_info!("📹 Video loop started for '{}' → model '{}' ({})",
@@ -1212,7 +1221,31 @@ impl LiveKitAgentManager {
             }
         }
 
-        // Slow path: create new agent with ai_persona role in metadata
+        // Acquire per-identity creation lock to prevent TOCTOU race.
+        // Without this, 3 concurrent callers can all pass the fast path check,
+        // then all call connect(), creating 3 agents and 3 video loops
+        // that burn 3 Bevy render slots for the same identity.
+        let creation_lock = {
+            static CREATION_LOCKS: std::sync::Mutex<Option<std::collections::HashMap<
+                (String, String), Arc<tokio::sync::Mutex<()>>
+            >>> = std::sync::Mutex::new(None);
+            let mut locks = CREATION_LOCKS.lock().unwrap();
+            let map = locks.get_or_insert_with(std::collections::HashMap::new);
+            map.entry(key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = creation_lock.lock().await;
+
+        // Re-check after acquiring lock — another task may have created the agent
+        {
+            let agents = self.agents.read().await;
+            if let Some(agent) = agents.get(&key) {
+                return Ok(agent.clone());
+            }
+        }
+
+        // Create new agent with ai_persona role in metadata
         let name = display_name.unwrap_or(user_id);
         let (agent, _event_rx) = LiveKitAgent::connect(
             &self.livekit_url,
@@ -1231,9 +1264,7 @@ impl LiveKitAgentManager {
         // the persona connects, not wait for first speech. Voice name isn't
         // available yet, so avatar selection uses deterministic hash (same persona
         // always gets the same model).
-        if !agent.video_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            start_video_loop(agent.clone());
-        }
+        start_video_loop(agent.clone());
 
         Ok(agent)
     }

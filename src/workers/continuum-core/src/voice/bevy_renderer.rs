@@ -206,6 +206,11 @@ impl BevyAvatarSystem {
         bevy_debug(&format!("Registered identity '{}' → slot {}", &identity[..8.min(identity.len())], slot));
     }
 
+    /// Get a snapshot of the identity → slot map (for dedup checks in render_loop).
+    pub fn identity_to_slot_map(&self) -> HashMap<String, u8> {
+        self.identity_to_slot.lock().unwrap().clone()
+    }
+
     /// Update speaking state by persona identity (user_id).
     /// Returns false if identity has no registered slot.
     pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
@@ -1039,12 +1044,14 @@ fn discover_morph_targets(
         if !mesh_names.is_empty() {
             // Standard glTF + VRoid naming conventions — match by name.
             // VRoid Studio uses "Fcl_" prefix: Fcl_MTH_A (mouth), Fcl_EYE_Close (blink), etc.
+            // CRITICAL: Use ends_with, not contains, to avoid "mth_angry" matching before "mth_a".
             for (i, name) in mesh_names.iter().enumerate() {
                 let lower = name.to_lowercase();
                 if mouth_open_index.is_none() && (
                     lower == "aa" || lower == "a" ||
-                    lower.contains("mth_a") || lower.contains("v_aa") ||
-                    lower.contains("mouth_open") || lower.contains("jawopen") ||
+                    lower.ends_with("_mth_a") || lower.ends_with("mth_a") ||
+                    lower.ends_with("_v_aa") || lower == "v_aa" ||
+                    lower.ends_with("mouth_open") || lower.ends_with("jawopen") ||
                     lower == "fcl_mth_a"
                 ) {
                     mouth_open_index = Some(i);
@@ -1104,7 +1111,7 @@ fn discover_morph_targets(
                         }
                     }
                 }
-                bevy_debug(&format!("VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len()));
+                clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
             }
         }
 
@@ -1112,10 +1119,10 @@ fn discover_morph_targets(
             .map(|(_, w)| w.weights().len())
             .unwrap_or(0);
 
-        bevy_debug(&format!(
-            "Morph discovery slot {}: {} weights, mesh_names={}, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}",
+        clog_info!(
+            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}",
             slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
-        ));
+        );
 
         morph_targets.layouts.insert(*slot, MorphTargetLayout {
             mesh_entity: morph_entity,

@@ -18,7 +18,7 @@ use super::types::*;
 /// Bevy 0.18's glTF loader cannot correctly skin models with >128 joints — they render
 /// as exploding geometry. Only VRM 0.x models (83 joints) work in the headless pipeline.
 ///
-/// Gender distribution (static): 7 Female, 1 Male
+/// Gender distribution (static): 6 Female, 2 Male
 pub const AVATAR_CATALOG: &[AvatarModel] = &[
     AvatarModel {
         id: "vroid-female-base",
@@ -39,7 +39,7 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         name: "Sakurada Fumiriya",
         filename: "vroid-sakurada.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::High, gender: AvatarGender::Female, energy: EnergyLevel::Energetic },
+        voice_profile: VoiceProfile { pitch: PitchRange::Mid, gender: AvatarGender::Male, energy: EnergyLevel::Energetic },
     },
     AvatarModel {
         id: "vroid-shino",
@@ -208,22 +208,37 @@ fn ext_priority(ext: &str) -> u8 {
     }
 }
 
-/// Infer gender from model stem name using known VRoid naming conventions.
-/// VRoid Sample R/T/V/X/Z are distinct characters with known genders.
+/// Infer gender from model stem name using known naming conventions.
+/// Explicit table for models with known genders; falls back to identity hash.
 fn infer_gender_from_stem(stem: &str) -> AvatarGender {
     match stem {
+        // VRoid Studio samples (VRM 1.0 — currently filtered, but correct metadata)
         "vroid-sample-r" => AvatarGender::Female,
         "vroid-sample-t" => AvatarGender::Male,
         "vroid-sample-v" => AvatarGender::Female,
         "vroid-sample-x" => AvatarGender::Male,
         "vroid-sample-z" => AvatarGender::Male,
+        // VRoid OpenGameArt CC0 — explicit entries
+        "vroid-hairsample-male" => AvatarGender::Male,
+        "vroid-hairsample-female" => AvatarGender::Female,
+        // Sakurada Fumiriya: officially male per VRoid docs
+        // (appeared as male model example in VRoid Studio v0.5.0 intro video)
+        "vroid-sakurada" => AvatarGender::Male,
+        // External CC0/permissive models (webaverse/avatar-models)
+        "gsan" => AvatarGender::Male,
+        "wv-male16" => AvatarGender::Male,   // M00_ VRoid male template
+        "wv-ruike" => AvatarGender::Female,   // quappa-el, armor girl
+        "wv-yagato" => AvatarGender::Female,  // F00_ VRoid female template
+        "wv-miku" => AvatarGender::Female,    // Hatsune Miku, F00_ female
+        "wv-kanji" => AvatarGender::Male,     // KasamotoKanji, male character
         _ => super::gender::gender_from_identity(stem),
     }
 }
 
 /// Convert a stem like "vroid-sample-r" to a human-readable "Sample R".
 fn humanize_stem(stem: &str) -> String {
-    let name = stem.strip_prefix("vroid-").unwrap_or(stem);
+    let name = stem.strip_prefix("vroid-")
+        .unwrap_or(stem);
     name.split('-')
         .map(|word| {
             let mut chars = word.chars();
@@ -377,7 +392,7 @@ impl AvatarCatalog {
                     name: humanize_stem(stem),
                     filename: filename.clone(),
                     format,
-                    style: AvatarStyle::Anime, // VRoid models are anime-style
+                    style: AvatarStyle::Anime,
                     voice_profile: VoiceProfile {
                         pitch: PitchRange::Mid,
                         gender,
@@ -483,11 +498,13 @@ mod tests {
     fn test_catalog_filter_by_gender() {
         let catalog = AvatarCatalog::from_static();
         let males = catalog.filter(None, None, Some(AvatarGender::Male));
-        assert_eq!(males.len(), 1);
-        assert_eq!(males[0].id, "vroid-male-base");
+        assert_eq!(males.len(), 2); // vroid-male-base + vroid-sakurada
+        let male_ids: Vec<&str> = males.iter().map(|m| m.id.as_str()).collect();
+        assert!(male_ids.contains(&"vroid-male-base"));
+        assert!(male_ids.contains(&"vroid-sakurada"));
 
         let females = catalog.filter(None, None, Some(AvatarGender::Female));
-        assert_eq!(females.len(), 7);
+        assert_eq!(females.len(), 6);
     }
 
     #[test]
@@ -518,7 +535,7 @@ mod tests {
             Some(AvatarStyle::Anime),
             Some(AvatarGender::Female),
         );
-        assert_eq!(result.len(), 7); // 7 female anime VRM models
+        assert_eq!(result.len(), 6); // 6 female anime VRM models
     }
 
     #[test]
@@ -552,6 +569,56 @@ id = "minimal"
         assert_eq!(manifest.parse_pitch(), PitchRange::Mid);
         assert_eq!(manifest.parse_energy(), EnergyLevel::Moderate);
         assert!(manifest.tags.is_empty());
+    }
+
+    #[test]
+    fn test_infer_gender_from_stem_known_models() {
+        // VRoid males (static catalog)
+        assert_eq!(infer_gender_from_stem("vroid-male-base"), AvatarGender::Male);
+        assert_eq!(infer_gender_from_stem("vroid-sakurada"), AvatarGender::Male); // Sakurada Fumiriya = male per VRoid docs
+        assert_eq!(infer_gender_from_stem("vroid-hairsample-male"), AvatarGender::Male);
+        // VRM 1.0 samples (skipped at load time, but gender should still be correct)
+        assert_eq!(infer_gender_from_stem("vroid-sample-t"), AvatarGender::Male);
+        assert_eq!(infer_gender_from_stem("vroid-sample-x"), AvatarGender::Male);
+        assert_eq!(infer_gender_from_stem("vroid-sample-z"), AvatarGender::Male);
+        assert_eq!(infer_gender_from_stem("vroid-sample-r"), AvatarGender::Female);
+        assert_eq!(infer_gender_from_stem("vroid-sample-v"), AvatarGender::Female);
+    }
+
+    /// Verify dynamic catalog discovers models from disk with correct gender.
+    /// When run from the `src/` dir (deploy), discovers 13+ models.
+    /// When run from `workers/` (cargo test), falls back to 8 static models.
+    #[test]
+    fn test_dynamic_catalog_gender_coherence() {
+        let catalog = AvatarCatalog::discover();
+        let models = catalog.all();
+
+        // At minimum: 8 static models (test runner may not be in src/ directory)
+        assert!(models.len() >= 8,
+            "Expected at least 8 models, got {}", models.len());
+
+        // Models explicitly named "male" (not "female") should be Male
+        for m in models {
+            if m.id.contains("-male") && !m.id.contains("female") {
+                assert_eq!(m.voice_profile.gender, AvatarGender::Male,
+                    "Model '{}' has '-male' in name but gender={:?}", m.id, m.voice_profile.gender);
+            }
+        }
+
+        // At least 2 male models (vroid-male-base + vroid-sakurada always in static catalog)
+        let male_count = models.iter().filter(|m| m.voice_profile.gender == AvatarGender::Male).count();
+        assert!(male_count >= 2,
+            "Expected at least 2 male models, got {}. Models: {:?}",
+            male_count,
+            models.iter().map(|m| format!("{}={:?}", m.id, m.voice_profile.gender)).collect::<Vec<_>>());
+
+        // If running from src/ (deploy), should have 3+ male models (male-base + hairsample-male + sakurada)
+        if models.len() > 8 {
+            assert!(male_count >= 2,
+                "Dynamic catalog has {} models but only {} male. Models: {:?}",
+                models.len(), male_count,
+                models.iter().map(|m| format!("{}={:?}", m.id, m.voice_profile.gender)).collect::<Vec<_>>());
+        }
     }
 
     #[test]

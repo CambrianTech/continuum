@@ -99,6 +99,7 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_window",        # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
     "reflect_auto_register",  # Auto-register ALL Reflect types in TypeRegistry (scene spawning needs this)
     "png",
+    "jpeg",                   # JPEG texture format — required by webaverse VRM models (wv-kanji, wv-ruike)
     "ktx2",                   # KTX2 texture format — required for VRM 1.0 models
     "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
 ] }

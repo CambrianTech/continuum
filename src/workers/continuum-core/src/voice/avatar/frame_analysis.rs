@@ -58,11 +58,21 @@ impl FrameAnalysis {
         if self.white_ratio > 0.7 && self.color_diversity < 10 {
             return HealthVerdict::MissingTextures;
         }
-        // Jagged boundary = exploding mesh / broken geometry
-        // Healthy humanoid: 2-6 transitions per scanline
-        // Broken: 10+ transitions per scanline
+        // Jagged boundary = exploding mesh / broken geometry.
+        // Healthy humanoid silhouette: 2-6 transitions per scanline.
+        // Complex models (detailed hair, accessories): 8-15 transitions — still correct.
+        // Truly broken geometry: 10-30+ transitions with FEW colors and LOW symmetry.
+        //
+        // Key insight: broken skinning scatters triangles → chaotic edges with few colors.
+        // A well-textured model with detailed hair → many edges but RICH colors and symmetry.
         if self.edge_roughness > 8.0 {
-            return HealthVerdict::BrokenGeometry;
+            let well_textured = self.color_diversity > 100;
+            let reasonably_symmetric = self.symmetry > 0.70;
+            // Well-textured + symmetric = detailed model, not broken.
+            // Missing either signal = genuine broken geometry.
+            if !(well_textured && reasonably_symmetric) {
+                return HealthVerdict::BrokenGeometry;
+            }
         }
         HealthVerdict::Healthy
     }
@@ -453,6 +463,67 @@ mod tests {
         assert!(analysis.is_healthy(),
             "Textured smooth model should be healthy. roughness={:.1}, white={:.2}, diversity={}, verdict={:?}",
             analysis.edge_roughness, analysis.white_ratio, analysis.color_diversity, analysis.verdict());
+    }
+
+    #[test]
+    fn test_detailed_model_not_false_positive() {
+        // Directly test the verdict logic with metrics matching vroid-hairsample-male:
+        // roughness=13.7, colors=647, symmetry=0.88 → should be HEALTHY.
+        // The old threshold (roughness > 8.0 alone) would false-positive this.
+        let detailed_model = FrameAnalysis {
+            coverage: 0.33,
+            symmetry: 0.88,
+            color_diversity: 647,
+            is_solid: false,
+            is_background_only: false,
+            edge_roughness: 13.7,
+            white_ratio: 0.07,
+        };
+        assert_eq!(detailed_model.verdict(), HealthVerdict::Healthy,
+            "Detailed model (roughness={:.1}, colors={}, sym={:.2}) should be HEALTHY",
+            detailed_model.edge_roughness, detailed_model.color_diversity, detailed_model.symmetry);
+
+        // Truly broken geometry: high roughness + low colors + low symmetry
+        let broken_model = FrameAnalysis {
+            coverage: 0.25,
+            symmetry: 0.55,
+            color_diversity: 30,
+            is_solid: false,
+            is_background_only: false,
+            edge_roughness: 15.8,
+            white_ratio: 0.15,
+        };
+        assert_eq!(broken_model.verdict(), HealthVerdict::BrokenGeometry,
+            "Broken geometry (roughness={:.1}, colors={}, sym={:.2}) should be BrokenGeometry",
+            broken_model.edge_roughness, broken_model.color_diversity, broken_model.symmetry);
+
+        // Edge case: high roughness + high colors but LOW symmetry = still broken
+        // (asymmetric chaos with varied colors from random triangle faces)
+        let chaotic_model = FrameAnalysis {
+            coverage: 0.40,
+            symmetry: 0.50,
+            color_diversity: 300,
+            is_solid: false,
+            is_background_only: false,
+            edge_roughness: 20.0,
+            white_ratio: 0.10,
+        };
+        assert_eq!(chaotic_model.verdict(), HealthVerdict::BrokenGeometry,
+            "Chaotic asymmetric model should still be BrokenGeometry");
+
+        // Edge case: high roughness + low colors but HIGH symmetry = still broken
+        // (symmetric exploding mesh with uniform color)
+        let uniform_broken = FrameAnalysis {
+            coverage: 0.30,
+            symmetry: 0.90,
+            color_diversity: 20,
+            is_solid: false,
+            is_background_only: false,
+            edge_roughness: 12.0,
+            white_ratio: 0.05,
+        };
+        assert_eq!(uniform_broken.verdict(), HealthVerdict::BrokenGeometry,
+            "Uniform-color high-roughness model should still be BrokenGeometry");
     }
 
     #[test]

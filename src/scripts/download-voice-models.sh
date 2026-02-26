@@ -270,35 +270,109 @@ else
   echo -e "${GREEN}Orpheus TTS (3B, LoRA-trainable) already exists${NC}"
 fi
 
-# Avatar VRM models — all high-quality VRoid Studio models (35-50k triangles)
-# 13 models: 8 original VRoid anime (OpenGameArt CC0) + 5 VRoid Hub AvatarSample series
-# Note: VRoid Hub models are bundled in the repo (too large for auto-download).
-# If missing, the system falls back to procedural (colored circle) rendering.
+# Avatar VRM models — CC0/permissive anime models for video conferencing avatars
+# Sources: OpenGameArt.org (CC0), webaverse/avatar-models (permissive)
+# 16 VRM 0.x models auto-downloaded: 10 Female, 6 Male (all <=128 joints)
+# VRM 1.0 models (sample-r/t/v/x/z) have 169 joints — Bevy 0.18 can't skin them.
+# They're still on disk for future VRM 1.0 support but filtered at runtime.
 AVATARS_DIR="$MODELS_DIR/avatars"
 mkdir -p "$AVATARS_DIR"
 
-# All 13 VRoid model filenames (checked for existence, not downloaded)
-VROID_MODELS=(
-  "vroid-female-base" "vroid-male-base" "vroid-sakurada" "vroid-shino"
-  "vroid-darkness" "vroid-sample-d" "vroid-sample-e" "vroid-sample-f"
-  "vroid-sample-r" "vroid-sample-t" "vroid-sample-v" "vroid-sample-x" "vroid-sample-z"
+OGA_BASE="https://opengameart.org/sites/default/files"
+
+# Map: OpenGameArt zip name → target VRM filename → inner zip filename
+# Format: "zip_name:target_name:inner_filename"
+VROID_DOWNLOADS=(
+  "base_female.zip:vroid-female-base.vrm:base_female.vrm"
+  "base_male.zip:vroid-male-base.vrm:base_male.vrm"
+  "sakurada_fumiriya.zip:vroid-sakurada.vrm:sakurada_fumiriya.vrm"
+  "sendagaya_shino.zip:vroid-shino.vrm:sendagaya_shino.vrm"
+  "avatarsample_d_darkness.zip:vroid-darkness.vrm:AvatarSample_D_darkness.vrm"
+  "avatarsample_d_0.zip:vroid-sample-d.vrm:AvatarSample_D.vrm"
+  "avatarsample_e.zip:vroid-sample-e.vrm:AvatarSample_E.vrm"
+  "avatarsample_f.zip:vroid-sample-f.vrm:AvatarSample_F.vrm"
+  "hairsample_male.zip:vroid-hairsample-male.vrm:hairsample_male.vrm"
+  "hairsample_female.zip:vroid-hairsample-female.vrm:HairSample_Female.vrm"
 )
 
+AVATARS_DOWNLOADED=0
 AVATARS_PRESENT=0
-AVATARS_MISSING=0
-for name in "${VROID_MODELS[@]}"; do
-  if [ -f "$AVATARS_DIR/${name}.vrm" ]; then
+for entry in "${VROID_DOWNLOADS[@]}"; do
+  IFS=':' read -r zip_name target_name inner_name <<< "$entry"
+  target_path="$AVATARS_DIR/$target_name"
+
+  if [ -f "$target_path" ]; then
     AVATARS_PRESENT=$((AVATARS_PRESENT + 1))
-  else
-    AVATARS_MISSING=$((AVATARS_MISSING + 1))
+    continue
+  fi
+
+  echo -e "${YELLOW}Downloading $target_name from OpenGameArt...${NC}"
+  TMP_ZIP="/tmp/vroid_dl_$zip_name"
+  if command -v curl &> /dev/null; then
+    curl -sL --progress-bar -o "$TMP_ZIP" "$OGA_BASE/$zip_name"
+  elif command -v wget &> /dev/null; then
+    wget -q --show-progress -O "$TMP_ZIP" "$OGA_BASE/$zip_name"
+  fi
+
+  if [ -f "$TMP_ZIP" ]; then
+    # Extract the VRM from the zip, rename to our convention
+    unzip -o -j "$TMP_ZIP" "$inner_name" -d "$AVATARS_DIR" > /dev/null 2>&1
+    if [ -f "$AVATARS_DIR/$inner_name" ]; then
+      mv "$AVATARS_DIR/$inner_name" "$target_path"
+      AVATARS_DOWNLOADED=$((AVATARS_DOWNLOADED + 1))
+    else
+      echo -e "${RED}Failed to extract $inner_name from $zip_name${NC}"
+    fi
+    rm -f "$TMP_ZIP"
   fi
 done
 
-if [ "$AVATARS_MISSING" -gt 0 ]; then
-  echo -e "${YELLOW}Avatar models: ${AVATARS_PRESENT}/${#VROID_MODELS[@]} present (${AVATARS_MISSING} missing — will use procedural fallback)${NC}"
+TOTAL=$((AVATARS_PRESENT + AVATARS_DOWNLOADED))
+if [ "$AVATARS_DOWNLOADED" -gt 0 ]; then
+  echo -e "${GREEN}Downloaded $AVATARS_DOWNLOADED avatar models ($TOTAL/${#VROID_DOWNLOADS[@]} total)${NC}"
+elif [ "$TOTAL" -eq "${#VROID_DOWNLOADS[@]}" ]; then
+  echo -e "${GREEN}All ${#VROID_DOWNLOADS[@]} avatar models present${NC}"
 else
-  echo -e "${GREEN}All ${#VROID_MODELS[@]} avatar models present${NC}"
+  echo -e "${YELLOW}Avatar models: $TOTAL/${#VROID_DOWNLOADS[@]} present${NC}"
 fi
+
+# Non-OpenGameArt CC0/permissive models (direct VRM downloads, no zip)
+# Format: "url:target_name"
+# Sources: webaverse/avatar-models (permissive VRM 0.x, all <=128 joints)
+# Gender distribution: gsan(M), wv-male16(M), wv-ruike(F?), wv-yagato(F), wv-miku(F), wv-kanji(M)
+EXTRA_DOWNLOADS=(
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model45.vrm:gsan.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model16.vrm:wv-male16.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model41.vrm:wv-ruike.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model42.vrm:wv-yagato.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model48.vrm:wv-miku.vrm"
+  "https://raw.githubusercontent.com/webaverse/avatar-models/master/model54.vrm:wv-kanji.vrm"
+)
+
+for entry in "${EXTRA_DOWNLOADS[@]}"; do
+  # Target name is everything after the last colon (filenames have no colons)
+  target_name="${entry##*:}"
+  url="${entry%:$target_name}"
+  target_path="$AVATARS_DIR/$target_name"
+
+  if [ -f "$target_path" ]; then
+    continue
+  fi
+
+  echo -e "${YELLOW}Downloading $target_name...${NC}"
+  if command -v curl &> /dev/null; then
+    curl -sL --progress-bar -o "$target_path" "$url"
+  elif command -v wget &> /dev/null; then
+    wget -q --show-progress -O "$target_path" "$url"
+  fi
+
+  if [ -f "$target_path" ] && [ "$(wc -c < "$target_path")" -gt 100000 ]; then
+    AVATARS_DOWNLOADED=$((AVATARS_DOWNLOADED + 1))
+  else
+    echo -e "${RED}Failed to download $target_name (file too small or missing)${NC}"
+    rm -f "$target_path"
+  fi
+done
 
 # Ensure .glb symlinks exist for all .vrm files (Bevy requires .glb extension)
 for vrm in "$AVATARS_DIR"/*.vrm; do
