@@ -41,6 +41,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
     try {
       // Read the entity
       const result = await DataRead.execute({
+        dbHandle: 'default',
         collection,
         id: params.id
       });
@@ -142,6 +143,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
       // Thread context (replyTo field)
       if (data.replyTo) {
         const parentResult = await DataRead.execute({
+          dbHandle: 'default',
           collection,
           id: data.replyTo
         });
@@ -157,6 +159,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
       if (relatedIdsField && data[relatedIdsField].length > 0) {
         for (const relatedId of data[relatedIdsField].slice(0, limit)) {
           const relatedResult = await DataRead.execute({
+            dbHandle: 'default',
             collection,
             id: relatedId
           });

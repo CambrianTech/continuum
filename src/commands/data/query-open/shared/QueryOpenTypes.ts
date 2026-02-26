@@ -7,11 +7,13 @@
 
 import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DataQueryOpenParams extends CommandParams {
   readonly collection: string;
   readonly backend: JTAGEnvironment;
+  readonly dbHandle: DbHandle;
   readonly filter?: Record<string, any>;
   readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
   readonly pageSize?: number;

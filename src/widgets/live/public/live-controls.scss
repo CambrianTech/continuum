@@ -1,0 +1,85 @@
+/**
+ * LiveControls - Media control bar styles
+ * Bottom bar with mic/speaker/camera/screenshare/captions/leave buttons
+ */
+
+@use "sass:color";
+@use '../../shared/styles/variables' as *;
+
+:host {
+  display: block;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: $spacing-md;
+  padding: $spacing-lg;
+  background: #252525;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+}
+
+.control-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  transition: all $transition-fast;
+  background: #3a3a3a;
+  color: $color-text;
+  position: relative;
+  overflow: hidden;
+
+  &:hover {
+    background: #4a4a4a;
+    transform: scale(1.05);
+  }
+
+  &.active {
+    background: rgba($color-primary, 0.2);
+    color: $color-primary;
+  }
+
+  &.inactive {
+    background: rgba($color-error, 0.2);
+    color: $color-error;
+  }
+
+  &.leave {
+    background: $color-error;
+    color: white;
+    width: 56px;
+    border-radius: 28px;
+    padding: 0 $spacing-lg;
+
+    &:hover {
+      background: color.adjust($color-error, $lightness: -10%);
+    }
+  }
+}
+
+// Mic level indicator - visual feedback for audio input
+.mic-level-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0, 255, 100, 0.7), rgba(0, 255, 100, 0.3));
+  pointer-events: none;
+  z-index: 1;
+  border-radius: 0 0 50% 50%;
+  transition: height 50ms ease-out;
+}
+
+// Ensure icon SVG sits above the level indicator
+.control-btn svg {
+  position: relative;
+  z-index: 2;
+}

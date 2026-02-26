@@ -40,7 +40,7 @@ export class ActivityContextSource implements RAGSource {
 
     try {
       // Load room to check for active recipe
-      const room = await ORM.read<RoomEntity>(RoomEntity.collection, context.roomId);
+      const room = await ORM.read<RoomEntity>(RoomEntity.collection, context.roomId, 'default');
       if (!room?.recipeId) {
         return {
           sourceName: this.name,

@@ -46,6 +46,7 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
 
       // 2. Get persona user entity to get display name and email
       const userResult = await DataRead.execute<UserEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.USERS,
         id: personaId
       });

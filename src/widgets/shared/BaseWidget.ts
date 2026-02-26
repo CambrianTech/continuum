@@ -314,7 +314,8 @@ export abstract class BaseWidget extends HTMLElement {
       const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.USER_STATES,
         filter: { userId },
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (stateResult.success && stateResult.items && stateResult.items.length > 0) {

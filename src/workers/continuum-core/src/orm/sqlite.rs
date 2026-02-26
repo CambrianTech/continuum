@@ -1,14 +1,20 @@
 //! SQLite Storage Adapter
 //!
 //! Implements the StorageAdapter trait for SQLite databases.
-//! Uses a dedicated thread for SQLite operations since rusqlite::Connection
-//! is not Send+Sync.
+//! Uses reader pool + dedicated writer for concurrent reads (WAL mode).
+//!
+//! Architecture:
+//! - 1 writer thread: handles mutations (create, update, delete, schema, truncate)
+//! - N reader threads: handle concurrent reads (query, count, read, list)
+//! - WAL mode: readers never block writers, writers never block readers
+//! - Round-robin dispatch across reader pool
 
 use crate::{clog_info, clog_error, clog_warn};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
 use super::adapter::{
@@ -19,6 +25,9 @@ use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
     RecordMetadata, StorageResult, UUID,
 };
+
+// No artificial cap on reader pool — AdapterConfig.max_connections controls it.
+// WAL mode supports unlimited concurrent readers.
 
 /// Commands sent to the SQLite worker thread
 enum SqliteCommand {
@@ -71,28 +80,46 @@ enum SqliteCommand {
     Close,
 }
 
-/// SQLite storage adapter - uses a dedicated worker thread
+/// SQLite storage adapter with reader pool + dedicated writer.
+///
+/// Reads are dispatched round-robin across N reader connections.
+/// Writes go to a single dedicated writer connection.
+/// WAL mode ensures readers and writers never block each other.
 pub struct SqliteAdapter {
-    /// Command sender to worker thread
-    sender: Option<mpsc::Sender<SqliteCommand>>,
-    /// Worker thread handle
-    _handle: Option<std::thread::JoinHandle<()>>,
+    /// Single writer connection for mutations
+    writer: Option<mpsc::Sender<SqliteCommand>>,
+    /// Pool of reader connections for concurrent reads
+    readers: Vec<mpsc::Sender<SqliteCommand>>,
+    /// Round-robin counter for reader selection
+    reader_index: AtomicUsize,
+    /// Worker thread handles
+    _handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl SqliteAdapter {
-    /// Create a new SQLite adapter
     pub fn new() -> Self {
         Self {
-            sender: None,
-            _handle: None,
+            writer: None,
+            readers: Vec::new(),
+            reader_index: AtomicUsize::new(0),
+            _handles: Vec::new(),
         }
     }
 
-    /// Get sender, returning error if not initialized
-    fn get_sender(&self) -> Result<&mpsc::Sender<SqliteCommand>, String> {
-        self.sender
+    /// Get writer channel for mutations
+    fn get_writer(&self) -> Result<&mpsc::Sender<SqliteCommand>, String> {
+        self.writer
             .as_ref()
             .ok_or_else(|| "SQLite adapter not initialized".to_string())
+    }
+
+    /// Get next reader channel via round-robin
+    fn get_reader(&self) -> Result<&mpsc::Sender<SqliteCommand>, String> {
+        if self.readers.is_empty() {
+            return Err("SQLite adapter not initialized".to_string());
+        }
+        let idx = self.reader_index.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        Ok(&self.readers[idx])
     }
 }
 
@@ -102,49 +129,48 @@ impl Default for SqliteAdapter {
     }
 }
 
-/// Worker thread that owns the SQLite connection
-fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
-    clog_info!("Starting worker for path: {}", path);
+/// Worker thread that owns a SQLite connection.
+/// Used for both reader and writer workers — each gets its own connection.
+fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role: &str) {
+    clog_info!("SQLite {} worker starting for: {}", role, path);
 
-    // Open connection
-    let conn = match Connection::open_with_flags(
-        &path,
+    // Open connection — readers use read-only flag for safety
+    let flags = if role == "reader" {
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    } else {
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    };
+
+    let conn = match Connection::open_with_flags(&path, flags) {
         Ok(c) => c,
         Err(e) => {
-            clog_error!("SQLite open failed: {}", e);
+            clog_error!("SQLite {} open failed: {}", role, e);
             return;
         }
     };
-    clog_info!("Connection opened successfully");
 
-    // Enable WAL mode for better concurrency
-    if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;") {
-        clog_error!("PRAGMA error: {}", e);
+    // Performance PRAGMAs — applied to every connection
+    let pragmas = "\
+        PRAGMA journal_mode=WAL;\
+        PRAGMA synchronous=NORMAL;\
+        PRAGMA busy_timeout=5000;\
+        PRAGMA cache_size=-65536;\
+        PRAGMA mmap_size=268435456;\
+        PRAGMA temp_store=MEMORY;\
+    ";
+    if let Err(e) = conn.execute_batch(pragmas) {
+        clog_error!("SQLite {} PRAGMA error: {}", role, e);
     }
+
+    clog_info!("SQLite {} worker ready", role);
 
     let mut query_count = 0u64;
 
     // Process commands until channel closes
     while let Some(cmd) = receiver.blocking_recv() {
         query_count += 1;
-        let _cmd_type = match &cmd {
-            SqliteCommand::Create { .. } => "create",
-            SqliteCommand::Read { .. } => "read",
-            SqliteCommand::Query { .. } => "query",
-            SqliteCommand::Count { .. } => "count",
-            SqliteCommand::Update { .. } => "update",
-            SqliteCommand::Delete { .. } => "delete",
-            SqliteCommand::EnsureSchema { .. } => "ensure_schema",
-            SqliteCommand::ListCollections { .. } => "list_collections",
-            SqliteCommand::Truncate { .. } => "truncate",
-            SqliteCommand::ClearAll { .. } => "clear_all",
-            SqliteCommand::Cleanup { .. } => "cleanup",
-            SqliteCommand::Close => "close",
-        };
         let start = std::time::Instant::now();
 
         match cmd {
@@ -160,7 +186,7 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
                 let collection = query.collection.clone();
                 let result = do_query(&conn, query);
                 if start.elapsed().as_millis() > 100 {
-                    clog_warn!("SLOW query #{} on {}: {}ms", query_count, collection, start.elapsed().as_millis());
+                    clog_warn!("SLOW query #{} on {}: {}ms ({})", query_count, collection, start.elapsed().as_millis(), role);
                 }
                 let _ = reply.send(result);
             }
@@ -201,6 +227,7 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
             }
         }
     }
+    clog_info!("SQLite {} worker shutting down (processed {} commands)", role, query_count);
 }
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
@@ -490,7 +517,7 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
         return StorageResult::err(format!("Create table failed: {}", e));
     }
 
-    // Create indexes
+    // Create single-field indexes from schema
     for field in &schema.fields {
         if field.indexed {
             let col_name = naming::to_snake_case(&field.name);
@@ -502,6 +529,22 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
             if let Err(e) = conn.execute(&idx_sql, []) {
                 return StorageResult::err(format!("Create index failed: {}", e));
             }
+        }
+    }
+
+    // Create composite indexes from schema
+    for index in &schema.indexes {
+        let cols: Vec<String> = index.fields.iter().map(|f| naming::to_snake_case(f)).collect();
+        let unique = if index.unique { "UNIQUE " } else { "" };
+        let idx_sql = format!(
+            "CREATE {}INDEX IF NOT EXISTS {} ON {} ({})",
+            unique,
+            naming::to_snake_case(&index.name),
+            table,
+            cols.join(", ")
+        );
+        if let Err(e) = conn.execute(&idx_sql, []) {
+            return StorageResult::err(format!("Create composite index failed: {}", e));
         }
     }
 
@@ -797,39 +840,49 @@ impl StorageAdapter for SqliteAdapter {
 
     async fn initialize(&mut self, config: AdapterConfig) -> Result<(), String> {
         let path = config.connection_string.clone();
-        let (tx, rx) = mpsc::channel(100);
+        let reader_count = config.max_connections.saturating_sub(1).max(1);
 
-        // Spawn worker thread
-        let handle = std::thread::spawn(move || {
-            sqlite_worker(path, rx);
+        // Spawn writer thread (handles mutations)
+        let (writer_tx, writer_rx) = mpsc::channel(256);
+        let writer_path = path.clone();
+        let writer_handle = std::thread::spawn(move || {
+            sqlite_worker(writer_path, writer_rx, "writer");
         });
+        self.writer = Some(writer_tx);
+        self._handles.push(writer_handle);
 
-        self.sender = Some(tx);
-        self._handle = Some(handle);
+        // Spawn reader pool (handles concurrent reads)
+        for _i in 0..reader_count {
+            let (reader_tx, reader_rx) = mpsc::channel(256);
+            let reader_path = path.clone();
+            let handle = std::thread::spawn(move || {
+                sqlite_worker(reader_path, reader_rx, "reader");
+            });
+            self.readers.push(reader_tx);
+            self._handles.push(handle);
+        }
+
+        clog_info!(
+            "SQLite adapter initialized: 1 writer + {} readers for {}",
+            reader_count, path
+        );
         Ok(())
     }
 
     async fn close(&mut self) -> Result<(), String> {
-        if let Some(sender) = self.sender.take() {
-            let _ = sender.send(SqliteCommand::Close).await;
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.send(SqliteCommand::Close).await;
+        }
+        for reader in self.readers.drain(..) {
+            let _ = reader.send(SqliteCommand::Close).await;
         }
         Ok(())
     }
 
-    async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        let sender = match self.get_sender() {
-            Ok(s) => s,
-            Err(e) => return StorageResult::err(e),
-        };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Create { record, reply: reply_tx }).await.is_err() {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
-    }
+    // ─── READ operations → reader pool (concurrent) ─────────────────────────
 
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_reader() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -845,7 +898,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_reader() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -858,18 +911,62 @@ impl StorageAdapter for SqliteAdapter {
 
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         // TODO: Implement proper JOIN handling in Rust
-        // For now, reuse the basic query (joins are ignored)
-        // TypeScript SqliteStorageAdapter handles joins properly when TS backend is enabled
         self.query(query).await
     }
 
     async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_reader() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
         if sender.send(SqliteCommand::Count { query, reply: reply_tx }).await.is_err() {
+            return StorageResult::err("Channel closed");
+        }
+        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+    }
+
+    async fn list_collections(&self) -> StorageResult<Vec<String>> {
+        let sender = match self.get_reader() {
+            Ok(s) => s,
+            Err(e) => return StorageResult::err(e),
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if sender.send(SqliteCommand::ListCollections { reply: reply_tx }).await.is_err() {
+            return StorageResult::err("Channel closed");
+        }
+        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+    }
+
+    async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
+        let count_result = self
+            .count(StorageQuery {
+                collection: collection.to_string(),
+                ..Default::default()
+            })
+            .await;
+
+        let record_count = count_result.data.unwrap_or(0);
+
+        StorageResult::ok(CollectionStats {
+            name: collection.to_string(),
+            record_count,
+            total_size: 0,
+            last_modified: chrono::Utc::now().to_rfc3339(),
+            schema: None,
+            indices: None,
+        })
+    }
+
+    // ─── WRITE operations → dedicated writer (serialized) ───────────────────
+
+    async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
+        let sender = match self.get_writer() {
+            Ok(s) => s,
+            Err(e) => return StorageResult::err(e),
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if sender.send(SqliteCommand::Create { record, reply: reply_tx }).await.is_err() {
             return StorageResult::err("Channel closed");
         }
         reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
@@ -882,7 +979,7 @@ impl StorageAdapter for SqliteAdapter {
         data: Value,
         increment_version: bool,
     ) -> StorageResult<DataRecord> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_writer() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -900,7 +997,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_writer() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -916,7 +1013,6 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
-        // Execute sequentially through the worker
         let mut results = Vec::with_capacity(operations.len());
         for op in operations {
             let result = match op.operation_type {
@@ -965,7 +1061,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_writer() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -976,40 +1072,8 @@ impl StorageAdapter for SqliteAdapter {
         reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
-    async fn list_collections(&self) -> StorageResult<Vec<String>> {
-        let sender = match self.get_sender() {
-            Ok(s) => s,
-            Err(e) => return StorageResult::err(e),
-        };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::ListCollections { reply: reply_tx }).await.is_err() {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
-    }
-
-    async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
-        let count_result = self
-            .count(StorageQuery {
-                collection: collection.to_string(),
-                ..Default::default()
-            })
-            .await;
-
-        let record_count = count_result.data.unwrap_or(0);
-
-        StorageResult::ok(CollectionStats {
-            name: collection.to_string(),
-            record_count,
-            total_size: 0,
-            last_modified: chrono::Utc::now().to_rfc3339(),
-            schema: None,
-            indices: None,
-        })
-    }
-
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_writer() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -1024,7 +1088,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
-        let sender = match self.get_sender() {
+        let sender = match self.get_writer() {
             Ok(s) => s,
             Err(e) => return StorageResult::err(e),
         };
@@ -1036,7 +1100,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn cleanup(&self) -> Result<(), String> {
-        let sender = self.get_sender()?;
+        let sender = self.get_writer()?;
         let (reply_tx, reply_rx) = oneshot::channel();
         sender.send(SqliteCommand::Cleanup { reply: reply_tx }).await
             .map_err(|_| "Channel closed".to_string())?;
@@ -1098,5 +1162,39 @@ mod tests {
         assert!(read_result.success);
         let data = read_result.data.unwrap();
         assert_eq!(data.data["name"], "Joel");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_reads() {
+        let (adapter, _dir) = setup_adapter().await;
+
+        // Create test data
+        for i in 0..20 {
+            let record = DataRecord {
+                id: format!("item-{}", i),
+                collection: "items".to_string(),
+                data: json!({"value": i}),
+                metadata: RecordMetadata::default(),
+            };
+            adapter.create(record).await;
+        }
+
+        // Fire off concurrent reads — these should go to different reader threads
+        let mut handles = Vec::new();
+        let adapter = std::sync::Arc::new(adapter);
+        for i in 0..20 {
+            let adapter = adapter.clone();
+            handles.push(tokio::spawn(async move {
+                adapter.read("items", &format!("item-{}", i)).await
+            }));
+        }
+
+        let mut success_count = 0;
+        for handle in handles {
+            if let Ok(result) = handle.await {
+                if result.success { success_count += 1; }
+            }
+        }
+        assert_eq!(success_count, 20, "All concurrent reads should succeed");
     }
 }

@@ -1194,7 +1194,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // ✅ Post response via ORM.store() — direct path, no command routing overhead.
       // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → ORM.store().
       const postStartTime = Date.now();
-      const postedEntity = await ORM.store(ChatMessageEntity.collection, responseMessage);
+      const postedEntity = await ORM.store(ChatMessageEntity.collection, responseMessage, false, 'default');
       pipelineTiming['3.5_post'] = Date.now() - postStartTime;
       const postDuration = pipelineTiming['3.5_post'];
       this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${postDuration}ms, ID: ${postedEntity.id})`);

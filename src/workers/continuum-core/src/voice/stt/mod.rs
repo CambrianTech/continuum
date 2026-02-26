@@ -19,6 +19,7 @@ pub use openai_realtime::{OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
 pub use stub::StubSTT;
 pub use whisper::WhisperSTT;
 
+use crate::clog_info;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
@@ -126,7 +127,7 @@ impl STTRegistry {
     /// Register an adapter
     pub fn register(&mut self, adapter: Arc<dyn SpeechToText>) {
         let name = adapter.name();
-        tracing::info!("STT: Registering adapter '{}'", name);
+        clog_info!("STT: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
 
         // Auto-select first registered adapter
@@ -139,7 +140,7 @@ impl STTRegistry {
     pub fn set_active(&mut self, name: &'static str) -> Result<(), STTError> {
         if self.adapters.contains_key(name) {
             self.active = Some(name);
-            tracing::info!("STT: Active adapter set to '{}'", name);
+            clog_info!("STT: Active adapter set to '{}'", name);
             Ok(())
         } else {
             Err(STTError::AdapterNotFound(name.to_string()))
@@ -205,7 +206,7 @@ pub fn init_registry() {
         Arc::new(RwLock::new(reg))
     });
 
-    tracing::info!(
+    clog_info!(
         "STT: Registry initialized with {} adapters",
         registry.read().adapters.len()
     );

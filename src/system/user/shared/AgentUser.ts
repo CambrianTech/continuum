@@ -76,7 +76,9 @@ export class AgentUser extends AIUser {
 
     const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
-      userEntity
+      userEntity,
+      false,
+      'default'
     );
 
     // STEP 2: Create UserStateEntity (agent-specific defaults - ephemeral)
@@ -85,7 +87,9 @@ export class AgentUser extends AIUser {
 
     const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
-      userState
+      userState,
+      false,
+      'default'
     );
 
     // STEP 3: Create AgentUser instance with SQLite storage (persistent)

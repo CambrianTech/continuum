@@ -28,6 +28,7 @@ import type { DataReadParams, DataReadResult } from '../../../../../commands/dat
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
+import type { DbHandle } from '../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -120,6 +121,7 @@ export class LimbicSystem {
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
+      'default',
       {
         baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
         memoryBudgetMB: 200,
@@ -182,6 +184,29 @@ export class LimbicSystem {
   // ===== PUBLIC INTERFACE =====
 
   /**
+   * Set the database handle for persona-private data operations.
+   * Called after Hippocampus opens longterm.db and obtains the real handle.
+   * Propagates to PersonaMemory so RAG context storage uses the right DB.
+   */
+  setDbHandle(handle: DbHandle): void {
+    this.logger.info(`Database handle set: ${handle}`);
+    this.memory.dbHandle = handle;
+  }
+
+  /**
+   * Wait for Hippocampus DB initialization and propagate handle to PersonaMemory.
+   * Must be called after startMemoryConsolidation() to ensure the DB is open.
+   */
+  async propagateDbHandle(): Promise<void> {
+    const handle = await this.hippocampus.waitForDbInit();
+    if (handle) {
+      this.setDbHandle(handle);
+    } else {
+      this.logger.warn('Hippocampus DB handle is null — PersonaMemory will use initial handle');
+    }
+  }
+
+  /**
    * Load genome layers from database into PersonaGenome
    *
    * This bridges the database (GenomeEntity + GenomeLayerEntity) with the runtime
@@ -225,7 +250,8 @@ export class LimbicSystem {
             id: layerRef.layerId,
             context: client.context,
             sessionId: client.sessionId,
-            backend: 'server'
+            backend: 'server',
+            dbHandle: 'default'
           }
         );
 

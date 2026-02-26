@@ -76,7 +76,8 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
           // Query data daemon for the message
           const msg = await ORM.read<ChatMessageEntity>(
             COLLECTIONS.CHAT_MESSAGES,
-            stream.messageId
+            stream.messageId,
+            'default'
           );
 
           if (msg) {
@@ -507,7 +508,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
         collection: COLLECTIONS.USERS,
         filter: { displayName: name },
         limit: 1
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         const personaId = result.data[0].id;
@@ -591,7 +592,8 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
     try {
       const user = await ORM.read<UserEntity>(
         COLLECTIONS.USERS,
-        personaId
+        personaId,
+        'default'
       );
 
       if (user) {

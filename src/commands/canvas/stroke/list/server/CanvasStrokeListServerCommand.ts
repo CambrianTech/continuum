@@ -46,6 +46,7 @@ export class CanvasStrokeListServerCommand extends CommandBase<CanvasStrokeListP
 
       // Query strokes (oldest first for proper replay)
       const result = await DataList.execute({
+        dbHandle: 'default',
         collection: COLLECTIONS.CANVAS_STROKES,
         filter,
         orderBy: [{ field: 'timestamp', direction: 'asc' }],

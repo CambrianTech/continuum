@@ -82,8 +82,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
       });
 
       this.ws.on('open', () => {
-        console.log(`🔊 GPT-4o Realtime: Connected to ${this.modelId}`);
-
         // Send session configuration
         this.sendEvent({
           type: 'session.update',
@@ -112,7 +110,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
       });
 
       this.ws.on('close', (code, reason) => {
-        console.log(`🔊 GPT-4o Realtime: Disconnected (code: ${code}, reason: ${reason})`);
         this.ws = null;
       });
     });
@@ -135,7 +132,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
    */
   sendAudio(samples: Int16Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('🔊 GPT-4o Realtime: Cannot send audio - not connected');
       return;
     }
 
@@ -230,7 +226,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
     switch (event.type) {
       case 'session.created':
       case 'session.updated':
-        console.log(`🔊 GPT-4o Realtime: Session ${event.type.split('.')[1]}`);
         break;
 
       case 'input_audio_buffer.speech_started':
@@ -258,7 +253,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
         break;
 
       case 'response.done':
-        console.log(`🔊 GPT-4o Realtime: Response completed`);
         break;
 
       case 'error':
@@ -272,14 +266,12 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
   }
 
   private handleSpeechStarted(event: InputAudioBufferSpeechStartedEvent): void {
-    console.log(`🔊 GPT-4o Realtime: Speech started at ${event.audio_start_ms}ms`);
     for (const callback of this.speechDetectedCallbacks) {
       callback(true);
     }
   }
 
   private handleSpeechStopped(event: InputAudioBufferSpeechStoppedEvent): void {
-    console.log(`🔊 GPT-4o Realtime: Speech stopped at ${event.audio_end_ms}ms`);
     for (const callback of this.speechDetectedCallbacks) {
       callback(false);
     }
@@ -320,7 +312,6 @@ export class GPT4oRealtimeAdapter implements IAudioNativeAdapter {
 
   private handleTranscriptDone(event: ResponseAudioTranscriptDoneEvent): void {
     const finalTranscript = event.transcript || this.transcriptBuffer;
-    console.log(`🔊 GPT-4o Realtime: Transcript: "${finalTranscript.slice(0, 50)}..."`);
 
     // Emit final transcript
     for (const callback of this.transcriptCallbacks) {

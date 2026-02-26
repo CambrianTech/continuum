@@ -273,8 +273,7 @@ export class DatabaseHandleRegistry {
    * @returns null - No adapters exist, use getDbPath() instead
    */
   getAdapter(handle?: DbHandle): null {
-    console.warn(`⚠️  DatabaseHandleRegistry.getAdapter() is DEPRECATED. Use getDbPath() instead.`);
-    console.warn(`    All database I/O now goes through ORM → ORMRustClient → Rust DataModule.`);
+    // DEPRECATED: All database I/O now goes through ORM → ORMRustClient → Rust DataModule.
 
     // Update last used timestamp
     const actualHandle = handle || DEFAULT_HANDLE;
@@ -309,9 +308,6 @@ export class DatabaseHandleRegistry {
     const metadata = this.handleMetadata.get(handle);
     if (metadata) {
       this.handleMetadata.delete(handle);
-      console.log(`🔌 DatabaseHandleRegistry: Closed handle ${handle.substring(0, 8)}...`);
-    } else {
-      console.warn(`⚠️  Database handle '${handle}' not found (already closed?)`);
     }
   }
 

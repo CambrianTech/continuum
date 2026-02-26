@@ -92,7 +92,7 @@ export class SystemDaemon {
       limit: 1
     };
 
-    const result = await ORM.query<SystemConfigEntity>(query);
+    const result = await ORM.query<SystemConfigEntity>(query, 'default');
 
     if (!result.success || !result.data || result.data.length === 0) {
       // Config doesn't exist - create with factory defaults
@@ -138,7 +138,9 @@ export class SystemDaemon {
     // Store in database
     const storedConfig = await ORM.store<SystemConfigEntity>(
       SystemConfigEntity.collection,
-      config
+      config,
+      false,
+      'default'
     );
 
     log.info('Created default system configuration with factory defaults');
@@ -202,7 +204,9 @@ export class SystemDaemon {
     await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
-      this.configCache
+      this.configCache,
+      true,
+      'default'
     );
 
     log.info(`Updated setting ${path} = ${value} (reason: ${reason || 'none'})`);
@@ -222,7 +226,9 @@ export class SystemDaemon {
     await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
-      this.configCache
+      this.configCache,
+      true,
+      'default'
     );
 
     log.info(`Reset setting ${path} to factory default`);
@@ -242,7 +248,9 @@ export class SystemDaemon {
     await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
-      this.configCache
+      this.configCache,
+      true,
+      'default'
     );
 
     log.info(`Reset group ${groupPath} to factory defaults`);
@@ -280,7 +288,9 @@ export class SystemDaemon {
     await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
-      { systemState: this.configCache.systemState }
+      { systemState: this.configCache.systemState },
+      true,
+      'default'
     );
   }
 

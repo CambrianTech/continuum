@@ -12,7 +12,7 @@ use super::capabilities::{AudioCapabilities, AudioRouting, InputRoute, ModelCapa
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, info, warn};
+use crate::{clog_debug, clog_info, clog_warn};
 
 /// Participant in a voice conversation with routing info
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -147,7 +147,7 @@ impl AudioRouter {
         let user_id = participant.user_id.clone();
         let caps = &participant.routing.capabilities;
 
-        info!(
+        clog_info!(
             "AudioRouter: Adding {} ({}) - audio_in:{}, audio_out:{}, needs_stt:{}, needs_tts:{}",
             participant.display_name,
             participant.model_id.as_deref().unwrap_or("human"),
@@ -182,7 +182,7 @@ impl AudioRouter {
         let sender = match participants.get(from_user_id) {
             Some(p) => p,
             None => {
-                warn!("AudioRouter: Unknown sender {}", from_user_id);
+                clog_warn!("AudioRouter: Unknown sender {}", from_user_id);
                 return;
             }
         };
@@ -220,7 +220,7 @@ impl AudioRouter {
         // Transcription will be handled by the caller (VAD + STT pipeline)
         // We just note that it's needed
         if need_transcription {
-            debug!(
+            clog_debug!(
                 "AudioRouter: Audio from {} needs transcription for text models",
                 from_display_name
             );
@@ -256,7 +256,7 @@ impl AudioRouter {
         samples: Vec<i16>,
         sample_rate: u32,
     ) {
-        info!(
+        clog_info!(
             "AudioRouter: TTS from {} ({} samples) - routing to audio-capable participants",
             from_display_name,
             samples.len()
@@ -284,7 +284,7 @@ impl AudioRouter {
         samples: Vec<f32>,
         sample_rate: u32,
     ) {
-        info!(
+        clog_info!(
             "AudioRouter: Native audio from {} ({} samples) - routing + transcribing",
             from_display_name,
             samples.len()

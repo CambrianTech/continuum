@@ -32,6 +32,7 @@ export class StateGetBrowserCommand extends CommandBase<StateGetParams, StateGet
 
       // Delegate to the elegant data/list command
       const dataResult = await DataList.execute({
+        dbHandle: 'default',
         collection: params.collection,
         filter,
         limit: params.limit,

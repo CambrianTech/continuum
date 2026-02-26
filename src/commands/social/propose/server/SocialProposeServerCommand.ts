@@ -515,6 +515,7 @@ export class SocialProposeServerCommand extends SocialProposeBaseCommand {
     params: SocialProposeParams,
   ): Promise<{ displayName: string; uniqueId: string }> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: personaId },
       limit: 1,

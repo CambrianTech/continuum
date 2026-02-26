@@ -175,7 +175,7 @@ export class TrainingDatasetBuilder {
       collection: 'chat_messages',
       filter: { roomId },
       limit: this.config.maxMessages
-    });
+    }, 'default');
 
     if (!result.success || !result.data) {
       throw new Error('Failed to load messages from room');

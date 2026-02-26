@@ -94,6 +94,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // 4. Store message using data/create command (proper delegation)
     // data/create handles validation, storage, and event broadcast
     const createResult = await DataCreate.execute<ChatMessageEntity>({
+        dbHandle: 'default',
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         context: params.context,
@@ -126,6 +127,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
    */
   private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
     const result = await DataList.execute<UserEntity>({
+        dbHandle: 'default',
         collection: UserEntity.collection,
         filter: { id: userId },
         limit: 1,

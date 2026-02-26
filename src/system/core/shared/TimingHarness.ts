@@ -335,16 +335,8 @@ export class TimingCollector {
       }
     }
 
-    // Console debug log for slow operations (>500ms, excluding fire-and-forget operations)
-    // log/write-batch has a 10s timeout by design — not a real slowness indicator
-    if (timing.totalMs > 500 && !timing.operation.includes('log/write-batch')) {
-      const phases = Object.entries(timing.phases)
-        .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}ms`)
-        .join(', ');
-      console.debug(
-        `\u23F1\uFE0F TIMING [${timing.category}] ${timing.operation}: ${timing.totalMs.toFixed(1)}ms (${phases})`
-      );
-    }
+    // Timing data goes to file (when JTAG_TIMING_ENABLED=true) and in-memory buffer.
+    // No console output — stdout is not a log destination.
   }
 
   /**

@@ -45,6 +45,7 @@ export class GenomeJobStatusServerCommand extends CommandBase<
 
       // 2. Query database for job
       const result = await DataRead.execute<FineTuningJobEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: statusParams.jobId
       });

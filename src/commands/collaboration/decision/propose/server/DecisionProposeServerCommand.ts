@@ -92,6 +92,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
     }
 
     const result = await DataList.execute<DecisionProposalEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.DECISION_PROPOSALS,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }],
       limit: 100
@@ -141,6 +142,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
 async function getUsersInScope(scope: string): Promise<UserEntity[]> {
   try {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.USERS,
       limit: 100
     });
@@ -292,6 +294,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
     // Get proposer info from params.userId (auto-injected by infrastructure)
     const proposerResult = await DataRead.execute<UserEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.USERS,
       id: params.userId
     });
@@ -327,6 +330,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
     // Get next sequence number
     const countResult = await DataList.execute<DecisionProposalEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.DECISION_PROPOSALS,
       limit: 1,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }]
@@ -359,6 +363,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
     };
 
     const createResult = await DataCreate.execute<DecisionProposalEntity>({
+      dbHandle: 'default',
       collection: COLLECTIONS.DECISION_PROPOSALS,
       data: proposalData
     });

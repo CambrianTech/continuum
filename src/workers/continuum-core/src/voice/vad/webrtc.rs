@@ -36,12 +36,20 @@ impl WebRtcVAD {
         }
     }
 
-    /// Create with specific aggressiveness level
+    /// Create with specific aggressiveness level (0-3)
+    ///
+    /// Earshot profiles differ dramatically in threshold sensitivity:
+    /// - QUALITY: thresholds [57, 48, 57] — catches quiet speech, more false positives
+    /// - LBR: thresholds [100, 80, 100] — balanced
+    /// - AGGRESSIVE: thresholds [285, 260, 285] — filters moderate noise
+    /// - VERY_AGGRESSIVE: thresholds [1100, 1050, 1100] — rejects everything except loud speech
     pub fn with_aggressiveness(aggressiveness: u8) -> Self {
         let aggressiveness = aggressiveness.min(3);
 
         let profile = match aggressiveness {
-            0..=2 => VoiceActivityProfile::VERY_AGGRESSIVE, // For now, always use aggressive
+            0 => VoiceActivityProfile::QUALITY,
+            1 => VoiceActivityProfile::LBR,
+            2 => VoiceActivityProfile::AGGRESSIVE,
             _ => VoiceActivityProfile::VERY_AGGRESSIVE,
         };
 

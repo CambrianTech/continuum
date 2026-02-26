@@ -65,8 +65,6 @@ export class GeminiLiveAdapter implements IAudioNativeAdapter {
       this.ws = new WebSocket(endpoint);
 
       this.ws.on('open', () => {
-        console.log(`🔊 Gemini Live: Connected`);
-
         // Send setup message with model and config
         this.sendSetup(config);
         resolve();
@@ -83,7 +81,6 @@ export class GeminiLiveAdapter implements IAudioNativeAdapter {
       });
 
       this.ws.on('close', (code, reason) => {
-        console.log(`🔊 Gemini Live: Disconnected (${code}: ${reason})`);
         this.ws = null;
       });
     });
@@ -125,7 +122,6 @@ export class GeminiLiveAdapter implements IAudioNativeAdapter {
 
       // Setup complete
       if (message.setupComplete) {
-        console.log('🔊 Gemini Live: Session configured');
         return;
       }
 
@@ -162,13 +158,12 @@ export class GeminiLiveAdapter implements IAudioNativeAdapter {
         // Input transcription (what user said)
         if (content.inputTranscription?.text) {
           // Could emit this for display purposes
-          console.log(`🔊 Gemini Live: User said: ${content.inputTranscription.text}`);
         }
       }
 
       // Tool calls (if we implement tools later)
       if (message.toolCall) {
-        console.log('🔊 Gemini Live: Tool call received:', message.toolCall);
+        // Handle tool calls when implemented
       }
 
     } catch (error) {

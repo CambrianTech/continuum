@@ -130,6 +130,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
     }
 
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: CompetitionEntity.collection,
       data: entity,
     });
@@ -200,6 +201,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
       sessionEntity.config = academyConfig;
 
       await DataCreate.execute({
+        dbHandle: 'default',
         collection: AcademySessionEntity.collection,
         data: sessionEntity,
       });
@@ -238,6 +240,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
 
       // Update session with handle
       await DataUpdate.execute({
+        dbHandle: 'default',
         collection: AcademySessionEntity.collection,
         id: studentSessionId,
         data: { studentHandle, status: 'curriculum' },
@@ -267,6 +270,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
 
     // --- 5. Update competition entity with handles ---
     await DataUpdate.execute({
+      dbHandle: 'default',
       collection: CompetitionEntity.collection,
       id: competitionId as UUID,
       data: {

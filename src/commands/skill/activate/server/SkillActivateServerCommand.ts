@@ -29,7 +29,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     }
 
     // Load skill entity
-    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID, 'default');
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -46,7 +46,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     // For team-scoped skills, verify governance approval
     if (skill.scope === 'team' && skill.proposalId) {
       try {
-        const proposal = await ORM.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId);
+        const proposal = await ORM.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId, 'default');
         if (proposal) {
           if (proposal.status !== 'approved' && proposal.status !== 'concluded') {
             throw new ValidationError('skillId',
@@ -82,6 +82,8 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
           status: 'failed',
           failureReason: `Activation failed: ${e instanceof Error ? e.message : String(e)}`,
         } as Partial<SkillEntity>,
+        true,
+        'default'
       );
 
       throw new ValidationError('skillId',
@@ -96,6 +98,8 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
         status: 'active',
         activatedAt: now,
       } as Partial<SkillEntity>,
+      true,
+      'default'
     );
 
     return createSkillActivateResultFromParams(params, {

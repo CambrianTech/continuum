@@ -34,7 +34,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
 
     try {
       // Get record count before truncating for reporting
-      const statsResult = await ORM.listCollections();
+      const statsResult = await ORM.listCollections('default');
       let recordCount = 0;
 
       if (statsResult.success && statsResult.data?.includes(validCollection)) {
@@ -44,7 +44,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
       }
 
       // Use adapter truncate() method - proper abstraction layer
-      const result = await ORM.truncate(validCollection);
+      const result = await ORM.truncate(validCollection, 'default');
 
       if (result.success) {
 

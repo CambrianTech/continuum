@@ -107,7 +107,8 @@ export class WallManager {
       const result = await DataList.execute<RoomEntity>({
         collection: 'rooms',
         filter: { id: roomNameOrId },
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (!result.items || result.items.length === 0) {
@@ -120,7 +121,8 @@ export class WallManager {
       const result = await DataList.execute<RoomEntity>({
         collection: 'rooms',
         filter: { name: roomNameOrId },
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (!result.items || result.items.length === 0) {
@@ -270,7 +272,8 @@ export class WallManager {
     // Query WallDocumentEntity for this room
     const result = await DataList.execute<WallDocumentEntity>({
       collection: COLLECTIONS.WALL_DOCUMENTS,
-      filter: { roomId: roomInfo.roomId }
+      filter: { roomId: roomInfo.roomId },
+      dbHandle: 'default'
     });
 
     let documents = result.items.map((data: WallDocumentEntity) => {

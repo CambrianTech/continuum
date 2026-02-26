@@ -223,7 +223,7 @@ REASONING: <brief explanation>`;
     timestamp: Date.now()
   });
 
-  console.log(`✅ PersonaWorker[${personaId}]: Initialized and ready`);
+  // Ready
 })().catch((error) => {
   console.error(`❌ PersonaWorker[${personaId}]: Initialization failed:`, error);
   process.exit(1);

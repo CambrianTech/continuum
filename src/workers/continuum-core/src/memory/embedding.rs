@@ -10,6 +10,7 @@
 //! - Remote embedding APIs (OpenAI, Cohere)
 
 use std::fmt;
+use std::sync::Mutex;
 
 // ─── Trait: EmbeddingProvider ──────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ impl std::error::Error for EmbeddingError {}
 /// - ~5ms per embed (in-process ONNX, no network)
 /// - Model cached at ~/.cache/fastembed or $FASTEMBED_CACHE_PATH
 pub struct FastEmbedProvider {
-    model: fastembed::TextEmbedding,
+    model: Mutex<fastembed::TextEmbedding>,
 }
 
 impl FastEmbedProvider {
@@ -58,7 +59,7 @@ impl FastEmbedProvider {
         let model = fastembed::TextEmbedding::try_new(options)
             .map_err(|e| EmbeddingError(format!("Failed to load AllMiniLML6V2: {e}")))?;
 
-        Ok(Self { model })
+        Ok(Self { model: Mutex::new(model) })
     }
 }
 
@@ -72,8 +73,9 @@ impl EmbeddingProvider for FastEmbedProvider {
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let results = self
-            .model
+        let mut model = self.model.lock()
+            .map_err(|e| EmbeddingError(format!("Model lock poisoned: {e}")))?;
+        let results = model
             .embed(vec![text], None)
             .map_err(|e| EmbeddingError(format!("Embed failed: {e}")))?;
         results
@@ -86,7 +88,9 @@ impl EmbeddingProvider for FastEmbedProvider {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        self.model
+        let mut model = self.model.lock()
+            .map_err(|e| EmbeddingError(format!("Model lock poisoned: {e}")))?;
+        model
             .embed(texts.to_vec(), None)
             .map_err(|e| EmbeddingError(format!("Batch embed failed: {e}")))
     }

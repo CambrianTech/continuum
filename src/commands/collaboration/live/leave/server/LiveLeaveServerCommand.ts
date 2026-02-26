@@ -91,6 +91,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
    */
   private async findUserById(userId: UUID, params: LiveLeaveParams): Promise<UserEntity | null> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,
@@ -110,6 +111,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
    */
   private async findCall(callId: string, params: LiveLeaveParams): Promise<CallEntity | null> {
     const result = await DataList.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         filter: { id: callId },
         limit: 1,
@@ -134,6 +136,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
    */
   private async saveCall(call: CallEntity, params: LiveLeaveParams): Promise<void> {
     await DataUpdate.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         id: call.id,
         data: {

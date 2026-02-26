@@ -51,6 +51,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
 
         // Query for proposals ending with this short ID
         const proposalsResult = await DataList.execute<DecisionProposalEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -65,6 +66,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
       }
 
       const proposalResult = await DataRead.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });

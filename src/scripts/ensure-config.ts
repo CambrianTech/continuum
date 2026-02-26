@@ -53,8 +53,8 @@ LOG_TIMESTAMPS=1
 
 # Console Logging - Output logs to stdout/stderr
 # Values: 0 (disabled), 1 (enabled)
-# Default: 1 (enabled for visibility)
-LOG_TO_CONSOLE=1
+# Default: 0 (logs go to files only — stdout is not a log destination)
+LOG_TO_CONSOLE=0
 
 # File Logging - Write logs to .continuum/*/logs/
 # Values: 0 (disabled), 1 (enabled)

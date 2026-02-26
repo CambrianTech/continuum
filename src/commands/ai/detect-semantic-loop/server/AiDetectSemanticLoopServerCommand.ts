@@ -174,6 +174,7 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
     let recentMessages: RawChatMessage[];
     try {
       const result = await DataList.execute({
+        dbHandle: 'default',
         collection: 'chat_messages',
         filter,
         limit: lookbackCount,

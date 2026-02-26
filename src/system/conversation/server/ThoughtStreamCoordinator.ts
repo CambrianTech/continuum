@@ -68,9 +68,7 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       this.cleanup();
     }, 30000);
 
-    // ALWAYS enable ThoughtStream debugging
-    console.log('🧠 ThoughtStreamCoordinator: Initialized');
-    console.log(`🎚️ Using moderator: ${this.moderator.constructor.name}`);
+    // Coordinator initialized
   }
 
   /**
@@ -92,10 +90,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     const randomDelay = Math.random() * 50;
     await new Promise(resolve => setTimeout(resolve, randomDelay));
 
-    if (this.config.enableLogging) {
-      console.log(`⚡ ${personaId.slice(0, 8)}: Parallel evaluation (${randomDelay.toFixed(0)}ms delay)`);
-    }
-
     // Return no-op resolver (no queue to release)
     return () => {};
   }
@@ -106,7 +100,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
    */
   async broadcastThought(messageId: string, contextId: UUID, thought: Thought): Promise<void> {
     try {
-      console.log(`🔧 RACE-CONDITION-FIX: broadcastThought(msg=${messageId.slice(0, 8)}, ctx=${contextId.slice(0, 8)}, persona=${thought.personaId.slice(0, 8)})`);
       const stream = this.getOrCreateStream(messageId, contextId);
 
       // Add to immutable log
@@ -115,12 +108,8 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       // Update mutable state
       stream.considerations.set(thought.personaId, thought);
 
-      // ALWAYS log thoughts for debugging
-      const elapsedMs = Date.now() - stream.startTime;
-      console.log(`🧠 Thought #${stream.thoughts.length}: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence.toFixed(2)}) [+${elapsedMs}ms]`);
-      console.log(`   Reasoning: ${thought.reasoning.slice(0, 100)}${thought.reasoning.length > 100 ? '...' : ''}`);
-
       // Record evaluation time for adaptive cadence
+      const elapsedMs = Date.now() - stream.startTime;
       const heartbeat = this.heartbeatManager.getHeartbeat(stream.contextId);
       heartbeat.recordEvaluation(thought.personaId, elapsedMs);
 
@@ -141,11 +130,8 @@ export class ThoughtStreamCoordinator extends EventEmitter {
         const heartbeat = this.heartbeatManager.getHeartbeat(stream.contextId);
         const adaptiveWindow = heartbeat.getAdaptiveCadence();
 
-        console.log(`🫀 Adaptive cadence: ${adaptiveWindow}ms (was ${this.config.intentionWindowMs}ms fixed)`);
-
         stream.decisionTimer = setTimeout(async () => {
           if (stream.phase === 'gathering') {
-            console.log(`⏰ Adaptive window expired for ${messageId.slice(0, 8)}, making decision...`);
             await this.makeDecision(stream);
           }
         }, adaptiveWindow);
@@ -171,14 +157,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     if (stream.availableSlots > 0) {
       stream.availableSlots--;
       stream.claimedBy.add(thought.personaId);
-
-      if (this.config.enableLogging) {
-        console.log(`🔒 Claim: ${thought.personaId.slice(0, 8)} acquired slot (${stream.availableSlots} remaining)`);
-      }
-    } else {
-      if (this.config.enableLogging) {
-        console.log(`❌ Claim: ${thought.personaId.slice(0, 8)} no slots available`);
-      }
     }
   }
 
@@ -189,10 +167,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     if (stream.claimedBy.has(thought.personaId)) {
       stream.claimedBy.delete(thought.personaId);
       stream.availableSlots++;
-
-      if (this.config.enableLogging) {
-        console.log(`🔓 Defer: ${thought.personaId.slice(0, 8)} released slot (${stream.availableSlots} available)`);
-      }
     }
   }
 
@@ -203,9 +177,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   async waitForDecision(messageId: string, timeoutMs: number = 5000): Promise<CoordinationDecision | null> {
     const stream = this.streams.get(messageId);
     if (!stream) {
-      if (this.config.enableLogging) {
-        console.log(`🧠 WaitForDecision: No stream for ${messageId.slice(0, 8)} - fallback`);
-      }
       return null; // Graceful degradation
     }
 
@@ -225,13 +196,7 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       setTimeout(() => resolve(null), timeoutMs);
     });
 
-    const result = await Promise.race([stream.decisionSignal, timeoutPromise]);
-
-    if (!result && this.config.enableLogging) {
-      console.log(`⏰ WaitForDecision: Timeout for ${messageId.slice(0, 8)} - fallback`);
-    }
-
-    return result;
+    return await Promise.race([stream.decisionSignal, timeoutPromise]);
   }
 
   /**
@@ -399,9 +364,7 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     stream.decision = decision;
     stream.phase = 'decided';
 
-    // Log decision timing
     const totalMs = Date.now() - stream.startTime;
-    console.log(`⏱️  Decision made after ${totalMs}ms with ${stream.thoughts.length} thoughts (${granted.length} granted, ${denied.length} denied)`);
 
     // Emit cognition event for coordination stage (for all personas who evaluated)
     for (const thought of stream.thoughts) {
@@ -436,20 +399,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     // Update moderator's recency tracking (if using PolynomialDecayModerator)
     if ('updateRecency' in this.moderator && typeof (this.moderator as any).updateRecency === 'function') {
       (this.moderator as any).updateRecency(stream.contextId, granted);
-    }
-
-    // ALWAYS log final decision for debugging
-    console.log(`🎯 Decision: ${stream.messageId.slice(0, 8)} → ${granted.length} granted, ${denied.length} denied (${decision.coordinationDurationMs}ms)`);
-    console.log(`   Moderator: threshold=${(moderatorDecision.confidenceThreshold * 100).toFixed(0)}%, maxResponders=${moderatorDecision.maxResponders}`);
-    console.log(`   Health: silence=${health.consecutiveSilence}, recent=${health.recentMessageCount}`);
-    if (granted.length > 0) {
-      console.log(`   ✅ Granted: ${granted.map(id => id.slice(0, 8)).join(', ')}`);
-    }
-    if (denied.length > 0) {
-      console.log(`   ❌ Denied: ${denied.map(id => id.slice(0, 8)).join(', ')}`);
-    }
-    if (reasoning.length > 0) {
-      console.log(`   Reasoning: ${reasoning.join('; ')}`);
     }
 
     // CONDITION VARIABLE: Signal all waiters
@@ -514,10 +463,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       };
 
       this.streams.set(messageId, stream);
-
-      if (this.config.enableLogging) {
-        console.log(`🧠 Stream: Created for message ${messageId.slice(0, 8)} (slots=${maxResponders})`);
-      }
     }
 
     return stream;
@@ -626,16 +571,10 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       // FAST CLEANUP: Decided streams cleaned up after 5 seconds (prevent deadlock)
       if (stream.phase === 'decided' && now - stream.startTime > decidedStreamMaxAge) {
         this.streams.delete(messageId);
-        if (this.config.enableLogging) {
-          console.log(`🧹 Cleanup: Removed decided stream ${messageId.slice(0, 8)} (${now - stream.startTime}ms old)`);
-        }
       }
       // SLOW CLEANUP: Gathering streams cleaned up after 60 seconds (stuck evaluations)
       else if (now - stream.startTime > streamMaxAge) {
         this.streams.delete(messageId);
-        if (this.config.enableLogging) {
-          console.log(`🧹 Cleanup: Removed stale stream ${messageId.slice(0, 8)} (${now - stream.startTime}ms old, phase=${stream.phase})`);
-        }
       }
     }
 
@@ -664,14 +603,7 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       // If stream is gone but evaluation still queued, AI is dead/stuck
       if (!stream || now - stream.startTime > streamMaxAge) {
         this.evaluationQueue.delete(messageId);
-        if (this.config.enableLogging) {
-          console.log(`🚨 Cleanup: Removed dead evaluation queue for ${messageId.slice(0, 8)}`);
-        }
       }
-    }
-
-    if (this.config.enableLogging && (this.streams.size > 0 || this.conversationHealth.size > 0)) {
-      console.log(`🧠 Cleanup: ${this.streams.size} active streams, ${this.conversationHealth.size} tracked contexts, ${this.evaluationQueue.size} queued evaluations`);
     }
   }
 
@@ -704,10 +636,6 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     this.conversationHealth.clear();
     this.recentMessages.clear();
     this.removeAllListeners();
-
-    if (this.config.enableLogging) {
-      console.log('🧠 ThoughtStreamCoordinator: Shutdown complete - all state cleared');
-    }
   }
 }
 

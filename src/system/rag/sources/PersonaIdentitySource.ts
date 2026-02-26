@@ -64,7 +64,7 @@ export class PersonaIdentitySource implements RAGSource {
           collection: UserEntity.collection,
           filter: { type: 'persona' },
           limit: 100
-        });
+        }, 'default');
         if (result.success && result.data) {
           for (const record of result.data) {
             const user = record.data;
@@ -104,7 +104,7 @@ export class PersonaIdentitySource implements RAGSource {
       }
       if (!user) {
         // Still not found after batch load — try individual read (edge case: new persona)
-        user = await ORM.read<UserEntity>(UserEntity.collection, context.personaId);
+        user = await ORM.read<UserEntity>(UserEntity.collection, context.personaId, 'default');
         if (user) {
           PersonaIdentitySource._identityCache.set(context.personaId, user);
           PersonaIdentitySource._userNameCache.set(context.personaId, user.displayName);
@@ -307,7 +307,7 @@ LIMITS:
 
     const promise = (async () => {
       try {
-        const room = await ORM.read<RoomEntity>(RoomEntity.collection, roomId);
+        const room = await ORM.read<RoomEntity>(RoomEntity.collection, roomId, 'default');
         if (room) {
           PersonaIdentitySource._roomCache.set(roomId, { entity: room, cachedAt: Date.now() });
         }
@@ -349,7 +349,7 @@ LIMITS:
 
         // DB query (should only happen for human users on first call)
         try {
-          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId);
+          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId, 'default');
           if (user) {
             PersonaIdentitySource._userNameCache.set(member.userId, user.displayName);
             return user.displayName;

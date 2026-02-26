@@ -76,6 +76,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
 
     // Update activity with new participant
     const updateResult = await DataUpdate.execute({
+      dbHandle: 'default',
       collection: 'activities',
       id: activity.id,
       data: {

@@ -83,7 +83,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
         collection: ChatMessageEntity.collection,
         filter: { roomId },
         limit: 100 // Cap at 100 for safety
-      });
+      }, 'default');
 
       if (!result.success || !result.data) {
         return {
@@ -211,7 +211,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       collection: 'rooms',
       filter: { id: roomIdOrName },
       limit: 1
-    });
+    }, 'default');
 
     if (byIdResult.success && byIdResult.data && byIdResult.data.length > 0) {
       const record = byIdResult.data[0];
@@ -223,7 +223,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       collection: 'rooms',
       filter: { name: roomIdOrName },
       limit: 1
-    });
+    }, 'default');
 
     if (byNameResult.success && byNameResult.data && byNameResult.data.length > 0) {
       const record = byNameResult.data[0];

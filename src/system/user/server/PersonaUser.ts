@@ -821,6 +821,21 @@ export class PersonaUser extends AIUser {
 
     this.isInitialized = true;
 
+    // STEP 3: Update status to 'online' in database.
+    // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
+    // This is the proof-of-life signal: if initialize() completes, the persona is alive.
+    try {
+      await ORM.update<UserEntity>(
+        COLLECTIONS.USERS, this.id,
+        { status: 'online' as const, lastActiveAt: new Date() },
+        false, // don't increment version for status change
+        'default'
+      );
+      this.log.info(`🟢 ${this.displayName}: Status → online`);
+    } catch (e) {
+      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to online: ${e}`);
+    }
+
     // PHASE 3: Start autonomous servicing loop (lifecycle-based)
     this.startAutonomousServicing();
 
@@ -831,6 +846,11 @@ export class PersonaUser extends AIUser {
 
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
     await this.limbic!.startMemoryConsolidation();
+
+    // CRITICAL: Propagate Hippocampus DB handle to PersonaMemory.
+    // Hippocampus opens longterm.db async during construction — we must wait for it
+    // and push the real handle to PersonaMemory, otherwise PersonaMemory hits main DB.
+    await this.limbic!.propagateDbHandle();
 
     // GENOME INTEGRATION: Load adapters from database into PersonaGenome
     // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
@@ -956,24 +976,11 @@ export class PersonaUser extends AIUser {
   protected override async loadMyRooms(): Promise<void> {
     await super.loadMyRooms();
 
-    // Also populate room name cache from all rooms
-    try {
-      const roomsResult = await ORM.query<RoomEntity>({
-        collection: COLLECTIONS.ROOMS,
-        filter: {}
-      });
-
-      if (roomsResult.success && roomsResult.data) {
-        for (const roomRecord of roomsResult.data) {
-          const room = roomRecord.data;
-          const roomId = roomRecord.id || room.id;
-          this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
-        }
-        this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names for timeline events`);
-      }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Could not cache room names: ${error}`);
+    // Populate room name cache from base class cached data (no re-query)
+    for (const [roomId, room] of this._allRoomsCache) {
+      this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
     }
+    this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names`);
   }
 
   /**
@@ -1037,7 +1044,7 @@ export class PersonaUser extends AIUser {
       const queryResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data?.length) {
         this.log.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
@@ -1072,7 +1079,9 @@ export class PersonaUser extends AIUser {
       await ORM.update<RoomEntity>(
         COLLECTIONS.ROOMS,
         generalRoom.id,
-        { members: updatedMembers }
+        { members: updatedMembers },
+        true,
+        'default'
       );
 
       this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
@@ -1114,7 +1123,7 @@ export class PersonaUser extends AIUser {
           },
           sort: [{ field: 'timestamp', direction: 'asc' }],
           limit: 100 // Process up to 100 per room
-        });
+        }, 'default');
 
         if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
           continue;
@@ -1795,7 +1804,7 @@ export class PersonaUser extends AIUser {
       filter: { roomId: messageEntity.roomId },
       sort: [{ field: 'timestamp', direction: 'desc' }],
       limit: 10
-    });
+    }, 'default');
 
     const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
       ? recentMessages.data.map(record => record.data)
@@ -1949,7 +1958,9 @@ export class PersonaUser extends AIUser {
 
     const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
-      userEntity
+      userEntity,
+      false,
+      'default'
     );
 
     // STEP 2: Create UserStateEntity with persona-specific defaults
@@ -1958,7 +1969,9 @@ export class PersonaUser extends AIUser {
 
     const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
-      userState
+      userState,
+      false,
+      'default'
     );
 
     // STEP 3: Room membership now handled by RoomMembershipDaemon via events
@@ -2045,6 +2058,20 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // Update status to 'offline' FIRST, before tearing down event system.
+    // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
+    try {
+      await ORM.update<UserEntity>(
+        COLLECTIONS.USERS, this.id,
+        { status: 'offline' as const },
+        false, // don't increment version for status change
+        'default'
+      );
+      this.log.info(`🔴 ${this.displayName}: Status → offline`);
+    } catch (e) {
+      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
+    }
+
     // MEMORY LEAK FIX: Unsubscribe from all events first
     const subCount = this._eventUnsubscribes.length;
     for (const unsub of this._eventUnsubscribes) {

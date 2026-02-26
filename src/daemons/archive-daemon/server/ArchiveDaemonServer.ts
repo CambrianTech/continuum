@@ -174,6 +174,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
           // Count rows in active table
           const countResult = await DataList.execute({
             collection: collectionName,
+            dbHandle: 'default',
             limit: 0
           });
 

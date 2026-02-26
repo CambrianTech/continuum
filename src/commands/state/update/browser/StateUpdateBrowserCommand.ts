@@ -33,6 +33,7 @@ export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, St
 
       // Delegate to the elegant data/update command
       const dataResult = await DataUpdate.execute({
+        dbHandle: 'default',
         collection: params.collection,
         id: params.id,
         data: enhancedData

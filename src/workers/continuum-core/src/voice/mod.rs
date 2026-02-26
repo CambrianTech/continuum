@@ -1,3 +1,5 @@
+pub mod avatar;
+pub mod bevy_renderer;
 pub mod audio_buffer;
 pub mod audio_router;
 pub mod call_server;

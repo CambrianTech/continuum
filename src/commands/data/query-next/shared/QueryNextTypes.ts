@@ -7,6 +7,7 @@
 
 import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
 
@@ -14,6 +15,7 @@ export interface DataQueryNextParams extends CommandParams {
   readonly queryHandle: UUID; // Handle from query-open
   readonly collection: string; // Required by BaseDataParams
   readonly backend: JTAGEnvironment; // Required by BaseDataParams
+  readonly dbHandle: DbHandle;
 }
 
 export interface DataQueryNextResult<T extends BaseEntity = BaseEntity> extends JTAGPayload {

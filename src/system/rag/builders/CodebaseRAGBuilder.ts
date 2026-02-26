@@ -101,7 +101,7 @@ export class CodebaseRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID): Promise<PersonaIdentity> {
     try {
-      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId, 'default');
 
       if (!user) {
         console.warn(`⚠️ CodebaseRAGBuilder: Could not load persona ${personaId}, using defaults`);
@@ -166,7 +166,7 @@ A: "Commands.execute() (Commands.ts:89-156) uses TypeScript inference to provide
         filter: {}, // TODO: Add vector similarity filter
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxResults
-      });
+      }, 'default');
 
       if (!result.success || !result.data || result.data.length === 0) {
         console.log(`ℹ️ CodebaseRAGBuilder: No results for query "${query.slice(0, 50)}..."`);

@@ -83,6 +83,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       // Get voter info from params.userId (auto-injected by infrastructure)
       const voterResult = await DataRead.execute<UserEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.USERS,
         id: params.userId
       });
@@ -104,6 +105,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
         // Query for proposals ending with this short ID
         const proposalsResult = await DataList.execute<DecisionProposalEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -119,6 +121,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       // Get proposal
       const proposalResult = await DataRead.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });
@@ -158,6 +161,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       if (proposal.deadline && now > proposal.deadline) {
         // Proposal expired - mark as expired and don't accept vote
         await DataUpdate.execute<DecisionProposalEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.DECISION_PROPOSALS,
           id: resolvedProposalId,
           data: { status: 'expired' }
@@ -207,6 +211,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       // Update proposal with vote
       await DataUpdate.execute<DecisionProposalEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId,
         data: { votes }
@@ -244,6 +249,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         if (winner) {
           // Update proposal status
           await DataUpdate.execute<DecisionProposalEntity>({
+            dbHandle: 'default',
             collection: COLLECTIONS.DECISION_PROPOSALS,
             id: resolvedProposalId,
             data: { status: 'complete' }

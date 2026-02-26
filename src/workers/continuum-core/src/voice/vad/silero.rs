@@ -22,7 +22,7 @@ use ort::session::Session;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 /// Silero VAD model session (loaded once)
 static SILERO_SESSION: OnceCell<Arc<Mutex<Session>>> = OnceCell::new();
@@ -123,53 +123,58 @@ impl SileroVAD {
 
     /// Run inference on blocking thread
     fn infer_sync(
-        session: &Session,
+        session: &mut Session,
         audio: Array2<f32>,
         h: Array2<f32>,
         c: Array2<f32>,
         sr: i64,
     ) -> Result<(f32, Array2<f32>, Array2<f32>), VADError> {
-        // Prepare inputs
+        // Prepare inputs — ort 2.x requires explicit TensorRef for views
+        let sr_array = Array1::from_vec(vec![sr]);
+        let input_tensor = ort::value::TensorRef::from_array_view(audio.view())
+            .map_err(|e| VADError::InferenceFailed(format!("Audio tensor: {e}")))?;
+        let h_tensor = ort::value::TensorRef::from_array_view(h.view())
+            .map_err(|e| VADError::InferenceFailed(format!("H tensor: {e}")))?;
+        let c_tensor = ort::value::TensorRef::from_array_view(c.view())
+            .map_err(|e| VADError::InferenceFailed(format!("C tensor: {e}")))?;
+        let sr_tensor = ort::value::TensorRef::from_array_view(sr_array.view())
+            .map_err(|e| VADError::InferenceFailed(format!("SR tensor: {e}")))?;
         let inputs = ort::inputs![
-            "input" => audio.view(),
-            "h" => h.view(),
-            "c" => c.view(),
-            "sr" => Array1::from_vec(vec![sr]).view()
-        ]
-        .map_err(|e| VADError::InferenceFailed(format!("Failed to create inputs: {e}")))?;
+            "input" => input_tensor,
+            "h" => h_tensor,
+            "c" => c_tensor,
+            "sr" => sr_tensor
+        ];
 
         // Run inference
         let outputs = session
             .run(inputs)
             .map_err(|e| VADError::InferenceFailed(format!("Inference failed: {e}")))?;
 
-        // Extract outputs
+        // Extract outputs (try_extract_array returns ndarray::ArrayViewD)
         let output = outputs["output"]
-            .try_extract_tensor::<f32>()
+            .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract output: {e}")))?;
         let hn = outputs["hn"]
-            .try_extract_tensor::<f32>()
+            .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract hn: {e}")))?;
         let cn = outputs["cn"]
-            .try_extract_tensor::<f32>()
+            .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract cn: {e}")))?;
 
         // Get speech probability (output is [1, 1])
         let speech_prob = output
-            .view()
             .into_dimensionality::<ndarray::Ix2>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?
             [[0, 0]];
 
         // Convert h and c to owned arrays for next iteration
         let h_3d = hn
-            .view()
             .into_dimensionality::<ndarray::Ix3>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid h shape: {e}")))?;
         let h_next = h_3d.index_axis(ndarray::Axis(1), 0).to_owned();
 
         let c_3d = cn
-            .view()
             .into_dimensionality::<ndarray::Ix3>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid c shape: {e}")))?;
         let c_next = c_3d.index_axis(ndarray::Axis(1), 0).to_owned();
@@ -199,17 +204,17 @@ impl VoiceActivityDetection for SileroVAD {
 
     fn initialize(&self) -> Result<(), VADError> {
         if SILERO_SESSION.get().is_some() {
-            info!("Silero VAD already initialized");
+            clog_info!("Silero VAD already initialized");
             return Ok(());
         }
 
         let model_path = self.find_model_path();
-        info!("Loading Silero VAD model from: {:?}", model_path);
+        clog_info!("Loading Silero VAD model from: {:?}", model_path);
 
         if !model_path.exists() {
-            warn!("Silero VAD model not found at {:?}", model_path);
-            warn!("Download from: https://github.com/snakers4/silero-vad/blob/master/files/silero_vad.onnx");
-            warn!("Place silero_vad.onnx in models/vad/");
+            clog_warn!("Silero VAD model not found at {:?}", model_path);
+            clog_warn!("Download from: https://github.com/snakers4/silero-vad/blob/master/files/silero_vad.onnx");
+            clog_warn!("Place silero_vad.onnx in models/vad/");
 
             return Err(VADError::ModelNotLoaded(format!(
                 "Model not found: {model_path:?}. Download silero_vad.onnx from GitHub"
@@ -230,7 +235,7 @@ impl VoiceActivityDetection for SileroVAD {
             .set(Arc::new(Mutex::new(session)))
             .map_err(|_| VADError::ModelNotLoaded("Failed to set global session".into()))?;
 
-        info!("Silero VAD model loaded successfully");
+        clog_info!("Silero VAD model loaded successfully");
         Ok(())
     }
 
@@ -262,8 +267,8 @@ impl VoiceActivityDetection for SileroVAD {
 
         // Run inference directly (CPU-bound, ~54ms)
         // This is called only when WebRTC pre-filter detects possible speech
-        let session_guard = session.lock();
-        let (speech_prob, h_next, c_next) = Self::infer_sync(&session_guard, audio, h, c, sr)?;
+        let mut session_guard = session.lock();
+        let (speech_prob, h_next, c_next) = Self::infer_sync(&mut session_guard, audio, h, c, sr)?;
         drop(session_guard);
 
         // Update state for next frame

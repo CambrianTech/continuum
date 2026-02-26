@@ -114,6 +114,20 @@ function checkGeneratedFiles(): BuildCheck {
   return { name: 'Generated files', needed: false, reason: 'Generated files up to date' };
 }
 
+function checkBrowserBundle(): BuildCheck {
+  const bundlePath = 'examples/widget-ui/dist/index.js';
+  const bundleTime = getFileModTime(bundlePath);
+  const compiledJs = getNewestFileTime('dist/**/*.js');
+
+  if (bundleTime === 0) {
+    return { name: 'Browser bundle', needed: true, reason: 'Browser bundle does not exist' };
+  }
+  if (compiledJs > bundleTime) {
+    return { name: 'Browser bundle', needed: true, reason: 'Compiled JS newer than browser bundle' };
+  }
+  return { name: 'Browser bundle', needed: false, reason: 'Browser bundle up to date' };
+}
+
 function checkTarball(): BuildCheck {
   const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   const version = packageJson.version;
@@ -171,7 +185,8 @@ async function smartBuild(): Promise<void> {
   
   const checks: BuildCheck[] = [
     checkGeneratedFiles(),
-    checkTypeScriptBuild()
+    checkTypeScriptBuild(),
+    checkBrowserBundle()
     // Tarball check disabled for development - only pack for releases with: npm run pack
     // checkTarball()
   ];
@@ -208,6 +223,9 @@ async function smartBuild(): Promise<void> {
         if (fs.existsSync(cleanConfigPath)) {
           runBuildStep('Post-build processing', 'npm run postbuild');
         }
+        break;
+      case 'Browser bundle':
+        runBuildStep('Browser esbuild bundle', 'cd examples/widget-ui && node ../../scripts/build-browser-example.js');
         break;
       case 'Tarball':
         runBuildStep('Package creation', 'npm run pack');

@@ -89,7 +89,7 @@ export class UserEntityCache {
     const cached = this.get(userId);
     if (cached) return cached;
 
-    const entity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const entity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId, 'default');
     if (entity) {
       this.set(userId, entity);
     }

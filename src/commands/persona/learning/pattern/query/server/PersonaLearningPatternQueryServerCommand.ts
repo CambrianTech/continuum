@@ -53,6 +53,7 @@ export class PersonaLearningPatternQueryServerCommand extends CommandBase<Person
 
     // Execute database query
     const listResult = await DataList.execute<FeedbackEntity>({
+      dbHandle: 'default',
       collection: FeedbackEntity.collection,
       filter,
       orderBy,

@@ -20,7 +20,7 @@
 use crate::voice::handle::Handle;
 use crate::voice::video_generator::TestPatternGenerator;
 use tokio::sync::{broadcast, mpsc};
-use tracing::info;
+use crate::clog_info;
 
 /// Pluggable video source — anything that produces frames for a participant.
 ///
@@ -88,7 +88,7 @@ impl VideoSource for TestPatternSource {
             );
             let start = std::time::Instant::now();
 
-            info!(
+            clog_info!(
                 "{} video source started ({}x{} @{}fps, user_id={})",
                 self.name(), self.width, self.height, self.fps, user_id
             );
@@ -106,7 +106,7 @@ impl VideoSource for TestPatternSource {
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        info!("{} video source stopped (user_id={})", "TestPattern", user_id);
+                        clog_info!("{} video source stopped (user_id={})", "TestPattern", user_id);
                         break;
                     }
                 }

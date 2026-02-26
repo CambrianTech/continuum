@@ -150,7 +150,8 @@ export class RoomResolver {
     // Fetch from database
     const result = await DataList.execute<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
-        filter: {}
+        filter: {},
+        dbHandle: 'default'
       }
     );
 

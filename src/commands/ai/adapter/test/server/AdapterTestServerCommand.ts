@@ -77,6 +77,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
 
     // Save to database using data/create command
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: TestExecutionEntity.collection,
       data: { ...execution, id: testId },
     });
@@ -175,6 +176,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
    */
   private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
     await DataUpdate.execute({
+      dbHandle: 'default',
       collection: TestExecutionEntity.collection,
       id: testId,
       data: {

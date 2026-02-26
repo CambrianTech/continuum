@@ -65,7 +65,7 @@ export class TaskListServerCommand extends CommandBase<TaskListParams, TaskListR
         collection: COLLECTIONS.TASKS,
         filter,
         limit: listParams.limit ?? 50
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data) {
         return transformPayload(params, {

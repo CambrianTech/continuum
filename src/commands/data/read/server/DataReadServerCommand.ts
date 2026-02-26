@@ -50,7 +50,7 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
     try {
       // Use DataDaemon for consistent storage access
-      const entity = await ORM.read<BaseEntity>(validCollection, params.id);
+      const entity = await ORM.read<BaseEntity>(validCollection, params.id, params.dbHandle ?? 'default');
 
       if (entity) {
 

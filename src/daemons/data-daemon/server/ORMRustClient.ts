@@ -1,14 +1,19 @@
 /**
  * ORM Rust Client - IPC bridge to continuum-core DataModule
  *
- * Single-purpose client for data/* commands to the Rust continuum-core process.
- * Uses the same IPC protocol as RustCoreIPCClient but focused on ORM operations.
+ * Pooled IPC client for data/* commands to the Rust continuum-core process.
+ * Uses multiple socket connections for concurrent throughput.
  *
  * ARCHITECTURE:
  * - TypeScript ORM.ts delegates to this client when shouldUseRust() returns true
- * - This client sends JSON requests to continuum-core socket (from shared/config.ts)
- * - Rust DataModule handles all database I/O with connection pooling
+ * - This client maintains a POOL of socket connections to continuum-core
+ * - Each request is dispatched to the least-busy connection
+ * - Rust DataModule handles all database I/O with its own connection pooling
  * - NO FALLBACKS: If Rust fails, we fail. Period.
+ *
+ * WHY POOL: A single socket serializes ALL data operations from ALL agents,
+ * widgets, and daemons. The Rust side (rayon thread pool) can handle
+ * concurrent requests, but it's starved by one pipe. Multiple pipes = parallel I/O.
  *
  * CRITICAL: dbPath is REQUIRED for all operations - no defaults.
  */
@@ -80,100 +85,86 @@ interface RustIPCResponse<T = unknown> {
 interface IPCTiming {
   requestId: number;
   command: string;
-  sendTime: number;      // hrtime when request sent
-  stringifyMs: number;   // JSON.stringify duration
-  writeMs: number;       // Socket write duration
+  sendTime: number;
+  stringifyMs: number;
+  writeMs: number;
 }
 
-/**
- * ORMRustClient - Singleton IPC client for data operations
- */
-export class ORMRustClient {
-  private static instance: ORMRustClient | null = null;
+// ─── IPCConnection ──────────────────────────────────────────────────────────
+// Single socket connection to continuum-core.
+// Handles framing, multiplexing, and response parsing for one pipe.
+
+class IPCConnection {
   private socket: net.Socket | null = null;
   private buffer: Buffer = Buffer.alloc(0);
   private pendingRequests: Map<number, (result: RustIPCResponse<unknown>) => void> = new Map();
   private pendingTimings: Map<number, IPCTiming> = new Map();
-  private nextRequestId = 1;
-  private connected = false;
-  private connecting = false;
-  private dbPath: string;
+  private nextRequestId: number;
+  private _connected = false;
+  private _connecting = false;
 
-  private constructor() {
-    // Get database path from config - REQUIRED, no fallback
-    this.dbPath = getServerConfig().getDatabasePath();
+  constructor(
+    private socketPath: string,
+    private connectionIndex: number,
+  ) {
+    // Offset request IDs per connection to avoid confusion in logs
+    this.nextRequestId = connectionIndex * 1_000_000 + 1;
   }
 
-  /**
-   * Get singleton instance
-   */
-  static getInstance(): ORMRustClient {
-    if (!ORMRustClient.instance) {
-      ORMRustClient.instance = new ORMRustClient();
-    }
-    return ORMRustClient.instance;
-  }
+  get connected(): boolean { return this._connected; }
+  get pendingCount(): number { return this.pendingRequests.size; }
 
-  /**
-   * Ensure connected to continuum-core
-   */
-  private async ensureConnected(): Promise<void> {
-    if (this.connected) return;
-    if (this.connecting) {
-      // Wait for connection in progress
+  async connect(): Promise<void> {
+    if (this._connected) return;
+    if (this._connecting) {
       await new Promise<void>((resolve, reject) => {
         const check = setInterval(() => {
-          if (this.connected) {
-            clearInterval(check);
-            resolve();
-          } else if (!this.connecting) {
-            clearInterval(check);
-            reject(new Error('Connection failed'));
-          }
+          if (this._connected) { clearInterval(check); resolve(); }
+          else if (!this._connecting) { clearInterval(check); reject(new Error('Connection failed')); }
         }, 10);
       });
       return;
     }
 
-    this.connecting = true;
+    this._connecting = true;
 
     return new Promise((resolve, reject) => {
-      this.socket = net.createConnection(SOCKET_PATH);
+      this.socket = net.createConnection(this.socketPath);
 
       this.socket.on('connect', () => {
-        this.connected = true;
-        this.connecting = false;
+        this._connected = true;
+        this._connecting = false;
         resolve();
       });
 
-      this.socket.on('data', (data: Buffer) => {
-        this.onData(data);
-      });
+      this.socket.on('data', (data: Buffer) => this.onData(data));
 
       this.socket.on('error', (err) => {
-        this.connecting = false;
+        this._connecting = false;
         reject(err);
       });
 
       this.socket.on('close', () => {
-        this.connected = false;
-        this.connecting = false;
+        this._connected = false;
+        this._connecting = false;
         this.socket = null;
+        // Reject all pending requests on this connection
+        for (const [id, callback] of this.pendingRequests) {
+          callback({ success: false, error: 'Connection closed' });
+        }
+        this.pendingRequests.clear();
+        this.pendingTimings.clear();
       });
 
-      // Connection timeout
       setTimeout(() => {
-        if (!this.connected) {
-          this.connecting = false;
-          reject(new Error(`Connection timeout to ${SOCKET_PATH}`));
+        if (!this._connected) {
+          this._connecting = false;
+          reject(new Error(`Connection timeout to ${this.socketPath} (conn #${this.connectionIndex})`));
         }
       }, 5000);
     });
   }
 
-  /**
-   * Process incoming binary data with length-prefixed framing
-   */
   private onData(data: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, data]);
 
@@ -186,7 +177,6 @@ export class ORMRustClient {
       const payload = this.buffer.subarray(4, frameEnd);
       this.buffer = this.buffer.subarray(frameEnd);
 
-      // Find null separator for binary data
       const separatorIndex = payload.indexOf(0);
       const jsonBytes = separatorIndex !== -1
         ? payload.subarray(0, separatorIndex)
@@ -198,11 +188,11 @@ export class ORMRustClient {
         const response = JSON.parse(jsonStr) as RustIPCResponse;
         const parseMs = Date.now() - parseStart;
         if (!response.success) {
-          console.error(`[ORMRustClient] ERROR response: ${response.error}`);
+          console.error(`[IPC#${this.connectionIndex}] ERROR response: ${response.error}`);
         }
         this.handleResponse(response, parseMs);
       } catch (e) {
-        console.error('[ORMRustClient] Failed to parse response:', e, 'raw:', jsonBytes.toString('utf8').substring(0, 200));
+        console.error(`[IPC#${this.connectionIndex}] Failed to parse response:`, e);
       }
     }
   }
@@ -219,41 +209,27 @@ export class ORMRustClient {
 
       if (timing) {
         const totalMs = Date.now() - timing.sendTime;
-        const networkAndRustMs = totalMs - timing.stringifyMs - timing.writeMs - parseMs;
         this.pendingTimings.delete(response.requestId);
 
-        // Log slow operations (>1000ms — raised from 50ms to reduce startup noise)
-        if (totalMs > 1000) {
-          console.warn(`[ORMRustClient] SLOW IPC: ${timing.command} total=${totalMs}ms (stringify=${timing.stringifyMs}ms write=${timing.writeMs}ms network+rust=${networkAndRustMs}ms parse=${parseMs}ms)`);
-        }
+        // Metrics tracked in ORMLogger — no stdout spam
       }
     }
   }
 
-  /**
-   * Send request to Rust and wait for response
-   * Includes timing instrumentation to identify IPC bottlenecks
-   */
-  private async request<T>(command: Record<string, unknown>): Promise<RustIPCResponse<T>> {
-    const connectStart = Date.now();
-    await this.ensureConnected();
-    const connectMs = Date.now() - connectStart;
-
-    if (!this.socket) {
-      throw new Error('Not connected to continuum-core');
+  async request<T>(command: Record<string, unknown>): Promise<RustIPCResponse<T>> {
+    if (!this.socket || !this._connected) {
+      throw new Error(`IPC connection #${this.connectionIndex} not connected`);
     }
 
     const requestId = this.nextRequestId++;
     const requestWithId = { ...command, requestId };
     const cmdName = command.command as string;
 
-    // Time JSON.stringify
     const stringifyStart = Date.now();
     const json = JSON.stringify(requestWithId) + '\n';
     const stringifyMs = Date.now() - stringifyStart;
 
     return new Promise((resolve, reject) => {
-      // Track timing for this request
       const timing: IPCTiming = {
         requestId,
         command: cmdName,
@@ -263,39 +239,133 @@ export class ORMRustClient {
       };
 
       this.pendingTimings.set(requestId, timing);
+      this.pendingRequests.set(requestId, (result) => resolve(result as RustIPCResponse<T>));
 
-      this.pendingRequests.set(requestId, (result) => {
-        resolve(result as RustIPCResponse<T>);
-      });
-
-      // Time socket write
       const writeStart = Date.now();
       this.socket!.write(json, (err) => {
         timing.writeMs = Date.now() - writeStart;
 
         if (err) {
-          console.error(`[ORMRustClient] Write error for ${cmdName}:`, err);
           this.pendingRequests.delete(requestId);
           this.pendingTimings.delete(requestId);
           reject(err);
         }
-
-        // Log slow connect/stringify/write (these should be <1ms each)
-        if (connectMs > 5 || stringifyMs > 5 || timing.writeMs > 5) {
-          console.warn(`[ORMRustClient] IPC overhead: ${cmdName} connect=${connectMs}ms stringify=${stringifyMs}ms write=${timing.writeMs}ms`);
-        }
       });
 
-      // Timeout after 30 seconds
       setTimeout(() => {
         if (this.pendingRequests.has(requestId)) {
-          console.error(`[ORMRustClient] TIMEOUT for ${cmdName} (id=${requestId})`);
+          console.error(`[IPC#${this.connectionIndex}] TIMEOUT for ${cmdName} (id=${requestId}, pending=${this.pendingCount})`);
           this.pendingRequests.delete(requestId);
           this.pendingTimings.delete(requestId);
           reject(new Error(`Request timeout: ${cmdName}`));
         }
       }, 30000);
     });
+  }
+
+  disconnect(): void {
+    if (this.socket) {
+      this.socket.end();
+      this.socket = null;
+      this._connected = false;
+    }
+  }
+}
+
+// ─── ORMRustClient ──────────────────────────────────────────────────────────
+// Pool of IPC connections with least-busy routing.
+
+/** Number of concurrent IPC socket connections to Rust */
+const POOL_SIZE = 12;
+
+export class ORMRustClient {
+  private static instance: ORMRustClient | null = null;
+  private connections: IPCConnection[] = [];
+  private poolReady = false;
+  private poolConnecting = false;
+  private dbPath: string;
+
+  private constructor() {
+    this.dbPath = getServerConfig().getDatabasePath();
+  }
+
+  static getInstance(): ORMRustClient {
+    if (!ORMRustClient.instance) {
+      ORMRustClient.instance = new ORMRustClient();
+    }
+    return ORMRustClient.instance;
+  }
+
+  /**
+   * Create and connect the pool of IPC connections.
+   * All connections are opened in parallel on first use.
+   */
+  private async ensurePool(): Promise<void> {
+    if (this.poolReady) return;
+    if (this.poolConnecting) {
+      await new Promise<void>((resolve, reject) => {
+        const check = setInterval(() => {
+          if (this.poolReady) { clearInterval(check); resolve(); }
+          else if (!this.poolConnecting) { clearInterval(check); reject(new Error('Pool creation failed')); }
+        }, 10);
+      });
+      return;
+    }
+
+    this.poolConnecting = true;
+    try {
+      const connectPromises: Promise<void>[] = [];
+      for (let i = 0; i < POOL_SIZE; i++) {
+        const conn = new IPCConnection(SOCKET_PATH, i);
+        this.connections.push(conn);
+        connectPromises.push(conn.connect());
+      }
+      await Promise.all(connectPromises);
+      this.poolReady = true;
+      // Pool ready
+    } finally {
+      this.poolConnecting = false;
+    }
+  }
+
+  /**
+   * Pick the least-busy connected connection.
+   * Reconnects dropped connections lazily.
+   */
+  private async getConnection(): Promise<IPCConnection> {
+    let best: IPCConnection | null = null;
+
+    for (const conn of this.connections) {
+      if (!conn.connected) {
+        // Reconnect in background — don't block this request
+        conn.connect().catch(() => {});
+        continue;
+      }
+      if (!best || conn.pendingCount < best.pendingCount) {
+        best = conn;
+      }
+    }
+
+    if (best) return best;
+
+    // All disconnected — try to reconnect one synchronously
+    for (const conn of this.connections) {
+      try {
+        await conn.connect();
+        return conn;
+      } catch { continue; }
+    }
+
+    throw new Error('All IPC connections to continuum-core failed');
+  }
+
+  /**
+   * Send request to Rust via the least-busy connection
+   */
+  private async request<T>(command: Record<string, unknown>): Promise<RustIPCResponse<T>> {
+    await this.ensurePool();
+    const conn = await this.getConnection();
+    return conn.request(command);
   }
 
   // ─── CRUD Operations ────────────────────────────────────────────────────────
@@ -310,13 +380,12 @@ export class ORMRustClient {
     data: T,
     dbPath?: string
   ): Promise<StorageResult<T>> {
-    // Pass data as-is - Rust SqliteAdapter converts camelCase to snake_case
     const response = await this.request<RustDataRecord>({
       command: 'data/create',
       dbPath: dbPath ?? this.dbPath,
-      collection,  // Rust converts to snake_case table name
-      id: data.id,  // BaseEntity guarantees id field
-      data,         // Rust converts field names to snake_case
+      collection,
+      id: data.id,
+      data,
     });
 
     if (!response.success) {
@@ -324,8 +393,6 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Store failed' };
     }
 
-    // Merge Rust-generated fields (id, metadata) into the returned entity
-    // Rust auto-generates the UUID if not provided; the original `data` may lack it
     const rustRecord = response.result?.data;
     const mergedData = rustRecord
       ? { ...data, id: rustRecord.id ?? data.id } as T
@@ -347,9 +414,9 @@ export class ORMRustClient {
     const response = await this.request<RustDataRecord[]>({
       command: 'data/query',
       dbPath: dbPath ?? this.dbPath,
-      collection: query.collection,  // Rust converts to snake_case table name
-      filter: query.filter,          // Rust accepts $eq/$gt format directly
-      sort: query.sort,              // Rust converts sort field names
+      collection: query.collection,
+      filter: query.filter,
+      sort: query.sort,
       limit: query.limit,
       offset: query.offset,
     });
@@ -358,7 +425,6 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Query failed' };
     }
 
-    // Rust returns: { result: { data: [...records...], success: true } }
     const rustResult = response.result;
     const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
 
@@ -370,12 +436,10 @@ export class ORMRustClient {
       } else if (item.data && typeof item.data === 'object') {
         entityData = item.data as T;
       } else {
-        // Extract entity data from flattened record
         const { id: _id, created_at: _ca, updated_at: _ua, version: _v, collection: _c, metadata: _m, ...rest } = item as unknown as Record<string, unknown>;
         entityData = this.toCamelCaseObject(rest) as T;
       }
 
-      // Ensure id is set on entity data
       if (!entityData.id) {
         (entityData as BaseEntity).id = item.id as UUID;
       }
@@ -424,7 +488,6 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Query with join failed' };
     }
 
-    // Rust returns: { result: { data: [...records...], success: true } }
     const rustResult = response.result;
     const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
 
@@ -473,15 +536,14 @@ export class ORMRustClient {
     const response = await this.request<number>({
       command: 'data/count',
       dbPath: dbPath ?? this.dbPath,
-      collection: query.collection,  // Rust converts to snake_case
-      filter: query.filter,          // Rust accepts $eq/$gt format directly
+      collection: query.collection,
+      filter: query.filter,
     });
 
     if (!response.success) {
       return { success: false, error: response.error || 'Count failed' };
     }
 
-    // Rust returns: { result: { data: number, success: true } }
     const count = response.result?.data ?? 0;
     return { success: true, data: count };
   }
@@ -499,7 +561,7 @@ export class ORMRustClient {
     const response = await this.request<RustDataRecord>({
       command: 'data/read',
       dbPath: dbPath ?? this.dbPath,
-      collection,  // Rust converts to snake_case table name
+      collection,
       id,
     });
 
@@ -515,12 +577,10 @@ export class ORMRustClient {
     } else if (item.data && typeof item.data === 'object') {
       entityData = item.data as T;
     } else {
-      // Extract entity data from flattened record
       const { id: _id, created_at: _ca, updated_at: _ua, version: _v, ...rest } = item as unknown as Record<string, unknown>;
       entityData = this.toCamelCaseObject(rest) as T;
     }
 
-    // Ensure id is set on entity data
     if (!entityData.id) {
       (entityData as BaseEntity).id = id;
     }
@@ -543,9 +603,9 @@ export class ORMRustClient {
     const response = await this.request<RustDataRecord>({
       command: 'data/update',
       dbPath: dbPath ?? this.dbPath,
-      collection,  // Rust converts to snake_case table name
+      collection,
       id,
-      data,        // Rust converts field names to snake_case
+      data,
       incrementVersion,
     });
 
@@ -569,7 +629,7 @@ export class ORMRustClient {
     const response = await this.request<boolean>({
       command: 'data/delete',
       dbPath: dbPath ?? this.dbPath,
-      collection,  // Rust converts to snake_case table name
+      collection,
       id,
     });
 
@@ -586,12 +646,11 @@ export class ORMRustClient {
    * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async batch(operations: StorageOperation[], dbPath?: string): Promise<StorageResult<unknown[]>> {
-    // Pass operations as-is - Rust converts collection and field names
     const rustOps = operations.map(op => ({
       type: op.type,
-      collection: op.collection,  // Rust converts to snake_case
+      collection: op.collection,
       id: op.id,
-      data: op.data,              // Rust converts field names
+      data: op.data,
     }));
 
     const response = await this.request<unknown[]>({
@@ -662,7 +721,7 @@ export class ORMRustClient {
     const response = await this.request<boolean>({
       command: 'data/truncate',
       dbPath: dbPath ?? this.dbPath,
-      collection,  // Rust converts to snake_case table name
+      collection,
     });
 
     if (!response.success) {
@@ -727,7 +786,6 @@ export class ORMRustClient {
       return { success: true, data: [] };
     }
 
-    // Convert Rust results to TypeScript VectorSearchResult format
     const results: VectorSearchResult<T>[] = rustResult.results.map((r) => ({
       id: r.id as UUID,
       data: (r.data ? this.toCamelCaseObject(r.data) : {}) as T,
@@ -928,7 +986,6 @@ export class ORMRustClient {
       return { success: false, error: 'No result returned' };
     }
 
-    // Convert items - extract entity data and convert to camelCase
     const items: T[] = result.items.map((item) => {
       const entityData = this.toCamelCaseObject(item.data as Record<string, unknown>) as T;
       if (!(entityData as Record<string, unknown>).id) {
@@ -1018,9 +1075,6 @@ export class ORMRustClient {
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
   // NOTE: Only used for Rust response parsing (Rust returns snake_case, we need camelCase)
 
-  /**
-   * Convert snake_case object keys to camelCase for TypeScript consumption
-   */
   private toCamelCaseObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
@@ -1030,16 +1084,10 @@ export class ORMRustClient {
     return result;
   }
 
-  /**
-   * Convert snake_case string to camelCase
-   */
   private snakeToCamel(s: string): string {
     return s.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
   }
 
-  /**
-   * Parse JSON strings that were stored as text in SQLite
-   */
   private hydrateValue(value: unknown): unknown {
     if (typeof value !== 'string') return value;
     const trimmed = value.trim();
@@ -1057,21 +1105,21 @@ export class ORMRustClient {
   }
 
   /**
-   * Close connection
+   * Close all connections in the pool
    */
   disconnect(): void {
-    if (this.socket) {
-      this.socket.end();
-      this.socket = null;
-      this.connected = false;
+    for (const conn of this.connections) {
+      conn.disconnect();
     }
+    this.connections = [];
+    this.poolReady = false;
     ORMRustClient.instance = null;
   }
 
   /**
-   * Check if connected
+   * Check if at least one connection in the pool is active
    */
   isConnected(): boolean {
-    return this.connected;
+    return this.poolReady && this.connections.some(conn => conn.connected);
   }
 }

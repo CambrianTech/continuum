@@ -105,6 +105,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
         // Use Commands.execute instead of ORM.query for reliability
         const result = await DataList.execute<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
+          dbHandle: 'default',
           filter: { uniqueId: roomUniqueId },
           limit: 1
         });
@@ -206,7 +207,9 @@ export class TrainingDaemonServer extends TrainingDaemon {
       // Store training example
       const storedEntity = await ORM.store<TrainingExampleEntity>(
         TrainingExampleEntity.collection,
-        trainingExample
+        trainingExample,
+        false,
+        'default'
       );
 
       this.log.info(`✅ TrainingDaemon: Created training example (${messageCount} messages, ~${totalTokens} tokens)`);
@@ -232,7 +235,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: windowSize + 1  // Include current message + context
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data) {
         return [];
@@ -289,7 +292,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    */
   private async fetchUser(userId: UUID): Promise<UserEntity | null> {
     try {
-      return await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+      return await ORM.read<UserEntity>(COLLECTIONS.USERS, userId, 'default');
     } catch (error) {
       this.log.error(`❌ TrainingDaemon: Failed to fetch user ${userId}:`, error);
       return null;
@@ -314,7 +317,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
         collection: TrainingExampleEntity.collection,
         filter: {},
         limit: 1  // Just need count
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.metadata?.totalCount) return;
 

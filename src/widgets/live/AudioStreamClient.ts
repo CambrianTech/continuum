@@ -33,6 +33,9 @@ import {
   isVisibleParticipant,
 } from '../../shared/LiveKitTypes';
 
+import type { TileResolution } from '../../shared/generated/voice';
+import type { AvatarState } from '../../shared/generated/AvatarState';
+
 /** Transcription result from STT pipeline */
 export interface TranscriptionResult {
   userId: string;
@@ -42,17 +45,8 @@ export interface TranscriptionResult {
   language: string;
 }
 
-/** Avatar state update (received via LiveKit data messages) */
-export interface AvatarUpdateEvent {
-  persona_id: string;
-  speaking: boolean;
-  listening: boolean;
-  emotion: string;
-  viseme: number;
-  viseme_weight: number;
-  head_rotation: [number, number, number];
-  gaze_target: [number, number];
-}
+/** Re-export generated AvatarState as the avatar update event type */
+export type AvatarUpdateEvent = AvatarState;
 
 interface AudioStreamClientOptions {
   /** Callback when participant joins */
@@ -88,8 +82,41 @@ export class AudioStreamClient {
   // Hidden audio container (remote audio tracks auto-play here)
   private audioContainer: HTMLDivElement | null = null;
 
+  // DIAGNOSTIC: Track event log for debugging video subscription
+  public _trackDiagLog: string[] = [];
+
+  // Transcription deduplication — multiple LiveKit event paths can deliver the same
+  // utterance (TranscriptionReceived + DataReceived topic='transcription').
+  // Track recent fingerprints (userId + text hash) with timestamps to suppress duplicates.
+  private _recentTranscriptions: Map<string, number> = new Map();
+  private static readonly DEDUP_WINDOW_MS = 3000;
+
   constructor(options: AudioStreamClientOptions = {}) {
     this.options = options;
+  }
+
+  /**
+   * Deduplicate transcription events across multiple delivery paths.
+   * Returns true if the transcription should be emitted (first occurrence).
+   * Returns false if it's a duplicate within the dedup window.
+   */
+  private _shouldEmitTranscription(userId: string, text: string): boolean {
+    const key = `${userId}:${text.trim().toLowerCase()}`;
+    const now = Date.now();
+
+    // Prune old entries
+    for (const [k, ts] of this._recentTranscriptions) {
+      if (now - ts > AudioStreamClient.DEDUP_WINDOW_MS) {
+        this._recentTranscriptions.delete(k);
+      }
+    }
+
+    if (this._recentTranscriptions.has(key)) {
+      return false; // Duplicate within window
+    }
+
+    this._recentTranscriptions.set(key, now);
+    return true;
   }
 
   /**
@@ -109,7 +136,11 @@ export class AudioStreamClient {
     token: string,
   ): Promise<void> {
     this.room = new Room({
-      adaptiveStream: true,
+      // adaptiveStream disabled: the video elements are created detached by
+      // track.attach() then inserted into Shadow DOM by Lit. IntersectionObserver
+      // (used by adaptiveStream) sees detached elements as invisible and pauses
+      // video delivery. Re-enable after implementing proper element lifecycle.
+      adaptiveStream: false,
       dynacast: true,
     });
 
@@ -123,6 +154,61 @@ export class AudioStreamClient {
 
     await this.room.connect(livekitUrl, token);
     console.log(`AudioStreamClient: Connected to LiveKit room (call=${callId}, identity=${userId})`);
+
+    // Process participants already in the room when we join.
+    // ParticipantConnected should fire for them during connect, but if it doesn't
+    // (race condition, SDK version behavior), this ensures we catch them.
+    this.processExistingParticipants();
+  }
+
+  /**
+   * Enumerate remote participants and their tracks that already exist when we connect.
+   * Fires the same callbacks as the event-driven path so the UI is consistent.
+   */
+  private processExistingParticipants(): void {
+    if (!this.room) return;
+
+    const remoteCount = this.room.remoteParticipants.size;
+    console.log(`AudioStreamClient: Processing ${remoteCount} existing remote participants`);
+
+    for (const [, participant] of this.room.remoteParticipants) {
+      const meta = this.getParticipantRole(participant);
+
+      if (isVisibleParticipant(meta)) {
+        this._trackDiagLog.push(`EXIST:${participant.identity.substring(0, 8)}:${meta?.role ?? '?'}`);
+        this.options.onParticipantJoined?.(participant.identity, participant.name || participant.identity);
+      }
+
+      // Process already-subscribed tracks for this participant
+      for (const [, publication] of participant.trackPublications) {
+        const track = publication.track;
+        if (!track || !publication.isSubscribed) continue;
+
+        if (!isVisibleParticipant(meta)) continue;
+
+        const userId = participant.identity;
+
+        if (track.kind === Track.Kind.Audio) {
+          if (!this.remoteAudioElements.has(userId)) {
+            const element = track.attach() as HTMLAudioElement;
+            element.volume = this.speakerMuted ? 0 : this.speakerVolume;
+            this.audioContainer?.appendChild(element);
+            this.remoteAudioElements.set(userId, element);
+            this._trackDiagLog.push(`EXIST_AUD:${userId.substring(0, 8)}`);
+          }
+        }
+
+        if (track.kind === Track.Kind.Video) {
+          const element = track.attach() as HTMLVideoElement;
+          element.style.width = '100%';
+          element.style.height = '100%';
+          element.style.objectFit = 'cover';
+          this.options.onVideoTrackAdded?.(userId, element);
+          this._trackDiagLog.push(`EXIST_VID:${userId.substring(0, 8)}`);
+          console.log(`AudioStreamClient: Existing video track from ${userId}`);
+        }
+      }
+    }
   }
 
   /**
@@ -219,6 +305,47 @@ export class AudioStreamClient {
     return this.room?.state === ConnectionState.Connected;
   }
 
+  /**
+   * Get all currently connected visible remote participants.
+   * Used to sync the participant list from LiveKit ground truth after connection.
+   */
+  getConnectedParticipants(): Array<{ userId: string; displayName: string }> {
+    if (!this.room) return [];
+
+    const result: Array<{ userId: string; displayName: string }> = [];
+    for (const [, participant] of this.room.remoteParticipants) {
+      const meta = this.getParticipantRole(participant);
+      if (!isVisibleParticipant(meta)) continue;
+      result.push({
+        userId: participant.identity,
+        displayName: participant.name || participant.identity,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Publish tile resolution data to the LiveKit room via data channel.
+   * The Rust agent reads this (topic='tile_resolution') to resize avatar render targets.
+   * Uses unreliable (lossy) delivery — stale data is fine, we just want the latest.
+   */
+  sendTileResolutions(resolutions: Map<string, { width: number; height: number }>): void {
+    if (!this.room || !this.isConnected) return;
+
+    const payload: Record<string, TileResolution> = {};
+    for (const [userId, dims] of resolutions) {
+      payload[userId] = { w: dims.width, h: dims.height };
+    }
+
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    this.room.localParticipant.publishData(bytes, {
+      topic: 'tile_resolution',
+      reliable: false,
+    }).catch(err => {
+      console.warn('AudioStreamClient: Failed to send tile resolutions:', err);
+    });
+  }
+
   // --- Event handlers ---
 
   /**
@@ -258,16 +385,31 @@ export class AudioStreamClient {
       this.options.onParticipantLeft?.(participant.identity);
     });
 
+    // DIAGNOSTIC: Track published (signaling — before subscription)
+    this.room.on(RoomEvent.TrackPublished, (
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant,
+    ) => {
+      console.log(`AudioStreamClient: TRACK_PUBLISHED from ${participant.identity}: kind=${publication.kind} source=${publication.source} subscribed=${publication.isSubscribed} sid=${publication.trackSid}`);
+      this._trackDiagLog.push(`PUB:${participant.identity.substring(0,8)}:${publication.kind}`);
+    });
+
     // Remote track subscribed — audio or video from another participant
     this.room.on(RoomEvent.TrackSubscribed, (
       track: RemoteTrack,
       publication: RemoteTrackPublication,
       participant: RemoteParticipant,
     ) => {
+      console.log(`AudioStreamClient: TRACK_SUBSCRIBED from ${participant.identity}: kind=${track.kind} source=${publication.source} sid=${publication.trackSid}`);
+      this._trackDiagLog.push(`SUB:${participant.identity.substring(0,8)}:${track.kind}`);
+
       const meta = this.getParticipantRole(participant);
 
       // Skip tracks from invisible system participants (STT listeners, ambient audio)
-      if (!isVisibleParticipant(meta)) return;
+      if (!isVisibleParticipant(meta)) {
+        this._trackDiagLog.push(`SKIP:${participant.identity.substring(0,8)}:invisible`);
+        return;
+      }
 
       // Identity IS the userId — no prefix stripping needed.
       // AI agents use their persona userId directly; role is in metadata.
@@ -326,6 +468,11 @@ export class AudioStreamClient {
       for (const segment of segments) {
         if (!segment.final) continue; // Only report final transcriptions
 
+        if (!this._shouldEmitTranscription(participant.identity, segment.text)) {
+          console.log(`AudioStreamClient: Dedup suppressed native transcription from ${participant.name}`);
+          continue;
+        }
+
         console.log(`AudioStreamClient: Transcription from ${participant.name}: "${segment.text.slice(0, 50)}..."`);
         this.options.onTranscription?.({
           userId: participant.identity,
@@ -352,14 +499,21 @@ export class AudioStreamClient {
 
         if (topic === 'transcription') {
           // Human STT transcription from server-side STT listener
-          console.log(`AudioStreamClient: STT transcription: ${data.speaker_name}: "${data.text?.slice(0, 50)}..."`);
-          this.options.onTranscription?.({
-            userId: data.speaker_id || '',
-            displayName: data.speaker_name || data.speaker_id || 'Unknown',
-            text: data.text || '',
-            confidence: 1.0,
-            language: data.language || 'en',
-          });
+          const speakerId = data.speaker_id || '';
+          const transcriptText = data.text || '';
+
+          if (!this._shouldEmitTranscription(speakerId, transcriptText)) {
+            console.log(`AudioStreamClient: Dedup suppressed STT transcription from ${data.speaker_name}`);
+          } else {
+            console.log(`AudioStreamClient: STT transcription: ${data.speaker_name}: "${transcriptText.slice(0, 50)}..."`);
+            this.options.onTranscription?.({
+              userId: speakerId,
+              displayName: data.speaker_name || data.speaker_id || 'Unknown',
+              text: transcriptText,
+              confidence: 1.0,
+              language: data.language || 'en',
+            });
+          }
         } else if (topic === 'avatar_state') {
           this.options.onAvatarUpdate?.(data as AvatarUpdateEvent);
         }
@@ -427,5 +581,7 @@ export class AudioStreamClient {
       this.audioContainer.remove();
       this.audioContainer = null;
     }
+
+    this._recentTranscriptions.clear();
   }
 }

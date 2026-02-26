@@ -31,7 +31,7 @@ export class QueryOpenServerCommand extends QueryOpenCommand {
         filter: params.filter,
         orderBy: params.orderBy,
         pageSize: params.pageSize
-      });
+      }, params.dbHandle);
 
       console.debug(`✅ QUERY-OPEN SERVER: Opened query ${handle.queryId} (${handle.totalCount} total records)`);
 

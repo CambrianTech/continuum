@@ -35,7 +35,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     // First read the entity before deletion for the event
     let entityBeforeDelete: BaseEntity | null;
     try {
-      entityBeforeDelete = await ORM.read(validCollection, params.id);
+      entityBeforeDelete = await ORM.read(validCollection, params.id, params.dbHandle ?? 'default');
     } catch (error: any) {
       return createDataDeleteResultFromParams(params, {
         error: `Record not found: ${collection}/${params.id}`,
@@ -46,7 +46,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     // DataDaemon throws on failure, returns success result on success
     // Events are emitted by DataDaemon.remove() via universal Events system
     // Pass suppressEvents flag to prevent events during internal operations (e.g., archiving)
-    const result = await ORM.remove(validCollection, params.id, params.suppressEvents);
+    const result = await ORM.remove(validCollection, params.id, params.suppressEvents, params.dbHandle ?? 'default');
 
     if (!result.success) {
       throw new Error(result.error ?? 'Unknown error during data delete');

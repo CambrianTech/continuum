@@ -61,9 +61,11 @@ pub enum PipelineStep {
         cmd: String,
         #[serde(default)]
         args: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutSecs")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "workingDir")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "workingDir")]
         working_dir: Option<String>,
     },
 
@@ -78,20 +80,24 @@ pub enum PipelineStep {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxTokens")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxTokens")]
         max_tokens: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         temperature: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "systemPrompt")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "systemPrompt")]
         system_prompt: Option<String>,
         /// Tool subset for agent mode (undefined = all public, [] = none)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tools: Option<Vec<String>>,
         /// Enable agentic loop: LLM can call tools, see results, re-generate
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentMode")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "agentMode")]
         agent_mode: Option<bool>,
         /// Override safety cap for tool iterations in agent mode
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxIterations")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxIterations")]
         max_iterations: Option<u32>,
     },
 
@@ -109,7 +115,8 @@ pub enum PipelineStep {
         condition: String,
         #[serde(rename = "then")]
         then_steps: Vec<PipelineStep>,
-        #[serde(default, rename = "else")]
+        #[serde(default)]
+        #[serde(rename = "else")]
         else_steps: Vec<PipelineStep>,
     },
 
@@ -127,11 +134,13 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         count: Option<usize>,
         steps: Vec<PipelineStep>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "while")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "while")]
         while_condition: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxIterations")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxIterations")]
         max_iterations: Option<usize>,
     },
 
@@ -143,7 +152,8 @@ pub enum PipelineStep {
         /// Each branch is a sequence of steps executed in order
         branches: Vec<Vec<PipelineStep>>,
         /// If true, cancel remaining branches on first failure (default: false)
-        #[serde(default, rename = "failFast")]
+        #[serde(default)]
+        #[serde(rename = "failFast")]
         fail_fast: bool,
     },
 
@@ -162,7 +172,8 @@ pub enum PipelineStep {
         /// Event name pattern to match
         event: String,
         /// Timeout in seconds (default: 300)
-        #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutSecs")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
     },
 

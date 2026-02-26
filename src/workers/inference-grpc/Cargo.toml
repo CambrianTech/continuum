@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 # gRPC
 tonic.workspace = true
+tonic-prost = "0.14"
 prost.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
@@ -32,7 +33,7 @@ serde_json.workspace = true
 # Utilities
 once_cell.workspace = true
 rand.workspace = true
-half = "2.4"
+half.workspace = true
 dirs = "5.0"
 sys-info = "0.9"
 
@@ -46,4 +47,4 @@ metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [build-dependencies]
-tonic-build = "0.11"
+tonic-prost-build = "0.14"

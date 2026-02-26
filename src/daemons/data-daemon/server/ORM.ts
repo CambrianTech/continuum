@@ -3,19 +3,14 @@
  *
  * Single entry point for ALL data operations. Routes to Rust DataModule.
  *
- * CURRENT STATE (2026-02-09):
- * ✅ ALL operations route to Rust DataModule via ORMRustClient:
- *    - store, query, count, queryWithJoin, read, update, remove
- *    - batch, listCollections, clear, clearAll, truncate
- *    - vectorSearch (embedding + similarity search)
- *
- * 📝 Only remaining TypeScript code:
- *    - Paginated queries (stateful, requires TypeScript cursor management)
- *    - Event emission context (DataDaemon.jtagContext for browser routing)
+ * HANDLE-BASED API:
+ * Every operation requires a DbHandle. No implicit defaults.
+ * - 'default' handle → main database
+ * - UUID handles → per-persona or per-module databases (from data/open)
+ * Handle → path resolution happens HERE, in ONE place.
  *
  * ⚠️  NO FALLBACKS POLICY ⚠️
  * ALL operations go to Rust. If Rust fails, it FAILS LOUDLY.
- * There is NO "try Rust, catch, use TypeScript" pattern.
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -59,6 +54,10 @@ import {
 // Import type-safe collection names
 import type { CollectionName } from '../../../shared/generated-collection-constants';
 
+// Import handle types
+import type { DbHandle } from './DatabaseHandleRegistry';
+import { DatabaseHandleRegistry } from './DatabaseHandleRegistry';
+
 // Lazy import for Rust client (avoid circular deps)
 let _rustClient: import('./ORMRustClient').ORMRustClient | null = null;
 async function getRustClient(): Promise<import('./ORMRustClient').ORMRustClient> {
@@ -92,31 +91,43 @@ import {
  * ```typescript
  * import { ORM } from '@daemons/data-daemon/server/ORM';
  *
- * // Store entity
- * const user = await ORM.store<UserEntity>('users', userData);
+ * // Main database (explicit 'default' handle)
+ * const user = await ORM.store<UserEntity>('users', userData, false, 'default');
  *
- * // Query entities
- * const messages = await ORM.query<ChatMessageEntity>({
- *   collection: 'chatMessages',
- *   filter: { roomId: 'general' },
- *   limit: 50
- * });
+ * // Per-persona database (handle from data/open)
+ * const memories = await ORM.query<MemoryEntity>({ collection: 'memories' }, personaDbHandle);
  * ```
  */
 export class ORM {
+
+  /**
+   * Resolve DbHandle → database file path.
+   * SINGLE SOURCE OF TRUTH for handle resolution.
+   * Throws if handle is invalid or unresolvable.
+   */
+  private static resolveHandle(handle: DbHandle): string {
+    const registry = DatabaseHandleRegistry.getInstance();
+    const dbPath = registry.getDbPath(handle);
+    if (!dbPath) {
+      throw new Error(`ORM: Invalid database handle '${handle}' — not found in DatabaseHandleRegistry. Did you call data/open first?`);
+    }
+    return dbPath;
+  }
+
   // ─── CRUD Operations ────────────────────────────────────────────────────────
 
   /**
    * Store entity in collection
    * Emits data:{collection}:created event via DataDaemon's jtagContext for browser routing
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async store<T extends BaseEntity>(
     collection: CollectionName,
     data: T,
     suppressEvents: boolean = false,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<T> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('store', collection, { id: (data as any).id });
 
     try {
@@ -143,12 +154,13 @@ export class ORM {
 
   /**
    * Query entities from collection
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async query<T extends BaseEntity>(
     query: StorageQuery,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<StorageResult<DataRecord<T>[]>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('query', query.collection, {
       filter: query.filter,
       limit: query.limit,
@@ -167,12 +179,12 @@ export class ORM {
 
   /**
    * Count entities matching query (uses SQL COUNT, not fetch-all)
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
-  static async count(query: StorageQuery, dbPath?: string): Promise<StorageResult<number>> {
+  static async count(query: StorageQuery, handle: DbHandle): Promise<StorageResult<number>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('count', query.collection, { filter: query.filter });
 
-    // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
       const result = await client.count(query, dbPath);
@@ -186,15 +198,15 @@ export class ORM {
 
   /**
    * Query with JOINs for optimal loading
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async queryWithJoin<T extends RecordData>(
     query: StorageQueryWithJoin,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<StorageResult<DataRecord<T>[]>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('query', query.collection, { joins: query.joins?.length });
 
-    // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
       const result = await client.queryWithJoin<T & BaseEntity>(query, dbPath);
@@ -208,16 +220,16 @@ export class ORM {
 
   /**
    * Read single entity by ID
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async read<T extends BaseEntity>(
     collection: CollectionName,
     id: UUID,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<T | null> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('read', collection, { id });
 
-    // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
       const result = await client.read<T>(collection, id, dbPath);
@@ -232,21 +244,19 @@ export class ORM {
   /**
    * Update entity
    * Emits data:{collection}:updated event with FULL entity (fetched after update)
-   * @param incrementVersion - If true, increment version on update (default: true)
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
-   * @param suppressEvents - If true, skip event emission (useful for bulk updates like seeding)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async update<T extends BaseEntity>(
     collection: CollectionName,
     id: UUID,
     data: Partial<T>,
     incrementVersion: boolean = true,
-    dbPath?: string,
+    handle: DbHandle,
     suppressEvents: boolean = false
   ): Promise<T> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('update', collection, { id, fields: Object.keys(data) });
 
-    // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
       await client.update<T>(collection, id, data, incrementVersion, dbPath);
@@ -275,17 +285,17 @@ export class ORM {
 
   /**
    * Remove entity
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async remove(
     collection: CollectionName,
     id: UUID,
     suppressEvents: boolean = false,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<StorageResult<boolean>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('remove', collection, { id });
 
-    // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
       const result = await client.remove(collection, id, dbPath);
@@ -309,13 +319,13 @@ export class ORM {
 
   /**
    * Execute batch operations
-   * FORCED RUST PATH - no fallback
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async batch(
     operations: StorageOperation[],
-    dbPath?: string
+    handle: DbHandle
   ): Promise<StorageResult<any[]>> {
+    const dbPath = ORM.resolveHandle(handle);
     const collections = [...new Set(operations.map(op => op.collection))];
     const done = logOperationStart('batch', collections.join(','), { count: operations.length });
 
@@ -334,10 +344,10 @@ export class ORM {
 
   /**
    * List all collections
-   * FORCED RUST PATH - no fallback
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
-  static async listCollections(dbPath?: string): Promise<StorageResult<string[]>> {
+  static async listCollections(handle: DbHandle): Promise<StorageResult<string[]>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('listCollections', '*', {});
     try {
       const client = await getRustClient();
@@ -354,10 +364,10 @@ export class ORM {
 
   /**
    * Clear all data from all collections
-   * FORCED RUST PATH - no fallback
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
-  static async clear(dbPath?: string): Promise<StorageResult<boolean>> {
+  static async clear(handle: DbHandle): Promise<StorageResult<boolean>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('clear', '*', {});
     try {
       const client = await getRustClient();
@@ -372,12 +382,12 @@ export class ORM {
 
   /**
    * Clear all data with detailed reporting
-   * FORCED RUST PATH - no fallback
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
-  static async clearAll(dbPath?: string): Promise<
+  static async clearAll(handle: DbHandle): Promise<
     StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>
   > {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('clearAll', '*', {});
     try {
       const client = await getRustClient();
@@ -392,10 +402,10 @@ export class ORM {
 
   /**
    * Truncate specific collection
-   * FORCED RUST PATH - no fallback
-   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
-  static async truncate(collection: CollectionName, dbPath?: string): Promise<StorageResult<boolean>> {
+  static async truncate(collection: CollectionName, handle: DbHandle): Promise<StorageResult<boolean>> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('truncate', collection, {});
     try {
       const client = await getRustClient();
@@ -412,16 +422,13 @@ export class ORM {
 
   /**
    * Open paginated query
-   *
-   * ✅ NOW ROUTED TO RUST
-   *
-   * Server-side cursor management eliminates IPC overhead per page.
-   * Rust DashMap provides lock-free concurrent query state.
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async openPaginatedQuery(
     params: OpenPaginatedQueryParams,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<PaginatedQueryHandle> {
+    const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('query', params.collection, { pageSize: params.pageSize });
 
     try {
@@ -455,8 +462,6 @@ export class ORM {
 
   /**
    * Get next page from paginated query
-   *
-   * ✅ NOW ROUTED TO RUST
    */
   static async getNextPage<T extends BaseEntity>(
     queryId: UUID
@@ -487,8 +492,6 @@ export class ORM {
 
   /**
    * Close paginated query
-   *
-   * ✅ NOW ROUTED TO RUST
    */
   static async closePaginatedQuery(queryId: UUID): Promise<void> {
     try {
@@ -501,9 +504,6 @@ export class ORM {
 
   /**
    * Get active query handles (for debugging)
-   *
-   * Note: This still uses TypeScript for backward compatibility.
-   * Rust query state is managed separately.
    */
   static getActiveQueries(): UUID[] {
     return DataDaemon.getActiveQueries();
@@ -514,18 +514,13 @@ export class ORM {
   /**
    * Perform vector similarity search via Rust DataModule
    *
-   * ✅ NOW ROUTED TO RUST (Phase 4e completion)
-   *
-   * Rust advantages:
-   * - In-memory vector caching (no re-query on repeated searches)
-   * - Rayon parallel cosine similarity (multi-threaded)
-   * - SIMD-like loop unrolling for fast distance computation
-   *
-   * If queryText is provided (no queryVector), generates embedding via Rust EmbeddingModule first.
+   * Uses options.dbHandle for database routing (resolved via DatabaseHandleRegistry).
+   * dbHandle is REQUIRED — no fallbacks.
    */
   static async vectorSearch<T extends RecordData>(
-    options: VectorSearchOptions
+    options: VectorSearchOptions & { dbHandle: DbHandle }
   ): Promise<StorageResult<VectorSearchResponse<T>>> {
+    const dbPath = ORM.resolveHandle(options.dbHandle);
     const done = logOperationStart('vectorSearch', options.collection, { k: options.k });
 
     try {
@@ -535,12 +530,10 @@ export class ORM {
       let queryVector: number[];
 
       if (options.queryVector) {
-        // Use provided vector (convert Float32Array if needed)
         queryVector = Array.isArray(options.queryVector)
           ? options.queryVector
           : Array.from(options.queryVector);
       } else if (options.queryText) {
-        // Generate embedding via Rust EmbeddingModule
         const embeddingResult = await ORM.generateEmbedding({ text: options.queryText });
         if (!embeddingResult.success || !embeddingResult.data) {
           done();
@@ -554,7 +547,6 @@ export class ORM {
         return { success: false, error: 'vectorSearch requires queryText or queryVector' };
       }
 
-      // Call Rust vector/search (dbPath resolved by caller)
       const result = await client.vectorSearch<T>(
         options.collection,
         queryVector,
@@ -562,7 +554,7 @@ export class ORM {
           k: options.k ?? 10,
           threshold: options.similarityThreshold ?? 0.0,
           includeData: true,
-          dbPath: options.dbPath,
+          dbPath,
         }
       );
 
@@ -572,7 +564,6 @@ export class ORM {
         return { success: false, error: result.error };
       }
 
-      // Wrap in VectorSearchResponse format for compatibility
       return {
         success: true,
         data: {
@@ -582,8 +573,8 @@ export class ORM {
           metadata: {
             collection: options.collection,
             searchMode: 'semantic',
-            embeddingModel: 'all-minilm',  // Rust EmbeddingModule default
-            queryTime: 0,  // Rust logs this internally
+            embeddingModel: 'all-minilm',
+            queryTime: 0,
           },
         },
       };
@@ -595,9 +586,6 @@ export class ORM {
 
   /**
    * Generate embedding for text via Rust EmbeddingModule
-   *
-   * Routes to continuum-core's fastembed (ONNX-based) for fast native embeddings.
-   * ~5ms per embedding via native ONNX runtime.
    */
   static async generateEmbedding(
     request: GenerateEmbeddingRequest
@@ -608,7 +596,6 @@ export class ORM {
       const client = await getEmbeddingClient();
       const startTime = Date.now();
 
-      // Map model name if provided (TypeScript EmbeddingModel → Rust model name)
       const embedding = await client.embed(request.text);
 
       const generationTime = Date.now() - startTime;
@@ -621,7 +608,7 @@ export class ORM {
           model: request.model ?? {
             name: 'all-minilm',
             dimensions: embedding.length,
-            provider: 'fastembed' as const,  // ONNX-based native embeddings via Rust
+            provider: 'fastembed' as const,
           },
           generationTime,
         },
@@ -637,11 +624,6 @@ export class ORM {
 
   /**
    * Index vector for a record
-   *
-   * ✅ NOW ROUTED TO RUST
-   *
-   * Stores the embedding in the record's 'embedding' field via Rust DataModule.
-   * Also invalidates the Rust vector cache for the collection.
    */
   static async indexVector(
     request: IndexVectorRequest
@@ -651,7 +633,6 @@ export class ORM {
     try {
       const client = await getRustClient();
 
-      // Convert embedding to number[] if needed
       const embedding = Array.isArray(request.embedding)
         ? request.embedding
         : Array.from(request.embedding);
@@ -672,11 +653,6 @@ export class ORM {
 
   /**
    * Backfill vectors for existing records
-   *
-   * ✅ NOW ROUTED TO RUST
-   *
-   * Uses batch embedding generation via EmbeddingModule for efficiency.
-   * Note: Progress callback not supported in Rust implementation.
    */
   static async backfillVectors(
     request: BackfillVectorsRequest,
@@ -700,7 +676,6 @@ export class ORM {
         return { success: false, error: result.error };
       }
 
-      // Map Rust result to BackfillVectorsProgress format
       return {
         success: true,
         data: {
@@ -718,16 +693,14 @@ export class ORM {
 
   /**
    * Get vector index statistics
-   *
-   * ✅ NOW ROUTED TO RUST
-   *
-   * Returns stats about the vector index for a collection.
+   * @param handle - Database handle (REQUIRED). Use 'default' for main DB.
    */
   static async getVectorIndexStats(
     collection: CollectionName,
-    dbPath?: string
+    handle: DbHandle
   ): Promise<StorageResult<VectorIndexStats>> {
-    const done = logOperationStart('vectorSearch', collection, {}); // Using vectorSearch op for stats
+    const dbPath = ORM.resolveHandle(handle);
+    const done = logOperationStart('vectorSearch', collection, {});
 
     try {
       const client = await getRustClient();
@@ -739,7 +712,6 @@ export class ORM {
         return { success: false, error: result.error };
       }
 
-      // Map Rust stats to VectorIndexStats format
       return {
         success: true,
         data: {

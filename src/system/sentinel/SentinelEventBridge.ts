@@ -102,7 +102,7 @@ class SentinelEventBridge {
    * Initialize the bridge (called at server startup).
    */
   initialize(): void {
-    console.log('[SentinelEventBridge] Initialized — ready to bridge Rust sentinel events');
+    // Ready
   }
 
   /**

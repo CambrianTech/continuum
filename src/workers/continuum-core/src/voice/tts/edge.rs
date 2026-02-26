@@ -14,7 +14,7 @@ use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 /// Cached voice list (fetched once on init)
 struct EdgeState {
@@ -72,7 +72,7 @@ impl TextToSpeech for EdgeTTS {
         // conflicts with LiveKit's bundled BoringSSL (both link OpenSSL into the same binary).
         // The synthesis path (msedge_tts::tts::client::connect) uses tungstenite WebSocket
         // which does NOT go through the conflicting OpenSSL path, so synthesis still works.
-        info!("Edge-TTS: Initializing with known voice catalog (skipping HTTP voice list)");
+        clog_info!("Edge-TTS: Initializing with known voice catalog (skipping HTTP voice list)");
 
         let mut state = self.state.write().map_err(|e| {
             TTSError::SynthesisFailed(format!("Failed to acquire state lock: {e}"))
@@ -122,7 +122,7 @@ impl TextToSpeech for EdgeTTS {
                 .unwrap_or_else(|| "en-US-JennyNeural".to_string())
         };
 
-        info!(
+        clog_info!(
             "Edge-TTS: Synthesizing with voice '{}': '{}'",
             voice_name,
             super::truncate_str(text, 50)
@@ -161,7 +161,7 @@ impl TextToSpeech for EdgeTTS {
                 let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
 
                 if samples.is_empty() {
-                    warn!(
+                    clog_warn!(
                         "Edge-TTS: empty audio on attempt {}/{} (audio_bytes={} bytes, metadata_count={})",
                         attempt, max_attempts, audio.audio_bytes.len(), audio.audio_metadata.len()
                     );
@@ -176,7 +176,7 @@ impl TextToSpeech for EdgeTTS {
                 }
 
                 let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
-                info!(
+                clog_info!(
                     "Edge-TTS: {} samples ({}ms audio) in {}ms network",
                     samples.len(), dur, network_ms
                 );
@@ -185,6 +185,7 @@ impl TextToSpeech for EdgeTTS {
                     samples,
                     sample_rate: AUDIO_SAMPLE_RATE,
                     duration_ms: dur,
+                    voice_name: None,
                 });
             }
             unreachable!()

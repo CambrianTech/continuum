@@ -512,17 +512,20 @@ mod tests {
 
     #[test]
     fn export_bindings_domain_classification() {
-        DomainClassification::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        DomainClassification::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_quality_score() {
-        QualityScore::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        QualityScore::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_quality_factors() {
-        QualityFactors::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        QualityFactors::export_all(&cfg).unwrap();
     }
 
     // ── Quality Scoring ─────────────────────────────────────────────

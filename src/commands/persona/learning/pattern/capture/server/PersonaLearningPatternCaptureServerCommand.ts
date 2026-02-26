@@ -117,6 +117,7 @@ export class PersonaLearningPatternCaptureServerCommand extends CommandBase<Pers
 
     // Store in database
     const storeResult = await DataCreate.execute<FeedbackEntity>({
+      dbHandle: 'default',
       collection: FeedbackEntity.collection,
       data: entity,
       context: params.context,

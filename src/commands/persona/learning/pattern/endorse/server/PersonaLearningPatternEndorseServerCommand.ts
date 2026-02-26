@@ -43,6 +43,7 @@ export class PersonaLearningPatternEndorseServerCommand extends CommandBase<Pers
 
     // Fetch the pattern from database
     const readResult = await DataRead.execute<FeedbackEntity>({
+      dbHandle: 'default',
       collection: FeedbackEntity.collection,
       id: params.patternId as UUID,
       context: params.context,
@@ -71,6 +72,7 @@ export class PersonaLearningPatternEndorseServerCommand extends CommandBase<Pers
 
     // Update the pattern in database
     const updateResult = await DataUpdate.execute<FeedbackEntity>({
+      dbHandle: 'default',
       collection: FeedbackEntity.collection,
       id: params.patternId as UUID,
       data: {

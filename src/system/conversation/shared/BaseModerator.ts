@@ -132,10 +132,6 @@ export abstract class BaseModerator {
     const claims = Array.from(stream.considerations.values())
       .filter(t => t.type === 'claiming');
 
-    // ALWAYS log moderator decisions (critical for debugging)
-    console.log(`🎯 Moderator (Conflict Resolver): ${claims.length} AIs want to respond (messageId: ${stream.messageId.slice(0, 8)})`);
-    console.log(`   Claims: ${claims.map(c => `${c.personaId.slice(0, 8)} (conf=${c.confidence.toFixed(2)})`).join(', ')}`);
-
     // PHILOSOPHY: AIs are autonomous citizens who self-regulate using recipe rules
     // - Recipe defines the rules ("ONE AI responds to human questions")
     // - AIs read recipe in RAG context and decide themselves
@@ -147,10 +143,6 @@ export abstract class BaseModerator {
 
     // SPAM PREVENTION: If too many claims (>5), prevent flooding
     if (claims.length > 5) {
-      if (config.enableLogging) {
-        console.log(`⚠️ Moderator: Spam prevention (${claims.length} claims), selecting top 3 by diversity`);
-      }
-
       // Use diversity ranking to pick top 3 most diverse voices
       const ranked = this.rankThoughts(claims, context);
       for (let i = 0; i < Math.min(3, ranked.length); i++) {
@@ -158,10 +150,6 @@ export abstract class BaseModerator {
       }
       for (let i = 3; i < ranked.length; i++) {
         rejected.set(ranked[i].personaId, 'Spam prevention: too many simultaneous claims');
-      }
-
-      if (config.enableLogging) {
-        console.log(`✅ Moderator: Granted ${granted.length} diverse voices (spam-limited)`);
       }
 
       return {
@@ -177,10 +165,6 @@ export abstract class BaseModerator {
     for (const claim of claims) {
       granted.push(claim.personaId);
     }
-
-    // ALWAYS log grant decisions (critical for debugging)
-    console.log(`✅ Moderator: Granted ALL ${granted.length} claimants (autonomous self-regulation)`);
-    console.log(`   Granted: ${granted.map(id => id.slice(0, 8)).join(', ')}`);
 
     return {
       granted,
@@ -225,13 +209,6 @@ export class PolynomialDecayModerator extends BaseModerator {
     // Polynomial decay: threshold = base * (1 - (silence/max)²)
     const decayFactor = 1 - Math.pow(silenceCount / this.maxSilence, 2);
     const threshold = this.baseThreshold * decayFactor;
-
-    if (context.config.enableLogging) {
-      console.log(
-        `🎚️ Moderator: Confidence threshold ${(threshold * 100).toFixed(0)}% ` +
-        `(silence: ${silenceCount}, decay: ${(decayFactor * 100).toFixed(0)}%)`
-      );
-    }
 
     return Math.max(0, threshold); // Never negative
   }

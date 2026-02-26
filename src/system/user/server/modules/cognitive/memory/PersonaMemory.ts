@@ -14,10 +14,10 @@
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
-import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from '../../QueueItemTypes';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
 import { ORM } from '../../../../../../daemons/data-daemon/server/ORM';
+import type { DbHandle } from '../../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { COLLECTIONS } from '../../../../../../shared/generated-collection-constants';
 
 /**
@@ -40,23 +40,29 @@ export interface PersonaRAGContext {
 
 /**
  * PersonaMemory - Manages knowledge, context, and skills for a PersonaUser
+ *
+ * All ORM operations use the persona's dedicated DbHandle (per-persona database).
+ * Handle is REQUIRED — passed at construction from PersonaUser.personaDbHandle.
  */
 export class PersonaMemory {
   private client: JTAGClient | undefined;
   private personaId: UUID;
   private displayName: string;
+  private _dbHandle: DbHandle;
   public genome: PersonaGenome;
   private log: (message: string) => void;
 
   constructor(
     personaId: UUID,
     displayName: string,
+    dbHandle: DbHandle,
     genomeConfig: PersonaGenomeConfig,
     client?: JTAGClient,
     logger?: (message: string) => void
   ) {
     this.personaId = personaId;
     this.displayName = displayName;
+    this._dbHandle = dbHandle;
     this.client = client;
     this.log = logger || (() => {});
 
@@ -65,10 +71,24 @@ export class PersonaMemory {
   }
 
   /**
+   * Update the database handle after Hippocampus opens longterm.db.
+   * Called by LimbicSystem.setDbHandle() during persona initialization.
+   */
+  set dbHandle(handle: DbHandle) {
+    this.log(`Database handle updated: ${this._dbHandle} → ${handle}`);
+    this._dbHandle = handle;
+  }
+
+  /** Current database handle */
+  get dbHandle(): DbHandle {
+    return this._dbHandle;
+  }
+
+  /**
    * RAG Context Storage - Store conversation context for a room
    * Enables persona to maintain context across sessions
    *
-   * Uses DataDaemon for persistence in per-persona database
+   * Uses persona's dedicated database via DbHandle
    */
   async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
     // Create record ID from persona+room for upsert pattern
@@ -84,14 +104,14 @@ export class PersonaMemory {
 
     try {
       // Check if record exists
-      const existing = await ORM.read(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId);
+      const existing = await ORM.read(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, this._dbHandle);
 
       if (existing) {
         // Update existing record (DataDaemon handles updatedAt)
-        await ORM.update(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, record as any);
+        await ORM.update(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, record as any, true, this._dbHandle);
       } else {
         // Create new record
-        await ORM.store(COLLECTIONS.PERSONA_RAG_CONTEXTS, record as any);
+        await ORM.store(COLLECTIONS.PERSONA_RAG_CONTEXTS, record as any, false, this._dbHandle);
       }
     } catch (error) {
       this.log(`❌ Failed to store RAG context: ${error}`);
@@ -102,13 +122,13 @@ export class PersonaMemory {
    * RAG Context Loading - Load conversation context for a room
    * Returns null if no context exists yet
    *
-   * Uses DataDaemon for persistence in per-persona database
+   * Uses persona's dedicated database via DbHandle
    */
   async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      const entity = await ORM.read(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId);
+      const entity = await ORM.read(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, this._dbHandle);
 
       if (!entity) {
         return null;
@@ -187,7 +207,7 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      await ORM.remove(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId);
+      await ORM.remove(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, false, this._dbHandle);
       this.log(`🗑️ Cleared memory for room ${roomId}`);
     } catch (error) {
       this.log(`❌ Failed to clear room memory: ${error}`);

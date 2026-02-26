@@ -85,30 +85,76 @@ impl ServiceModule for VoiceModule {
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
 
+                // Extract AI participant info BEFORE register_session consumes the vec
+                let ai_participants: Vec<(String, String)> = participants.iter()
+                    .filter(|p| matches!(p.participant_type, crate::voice::SpeakerType::Persona | crate::voice::SpeakerType::Agent))
+                    .map(|p| (p.user_id.to_string(), p.display_name.clone()))
+                    .collect();
+
                 self.state.voice_service.register_session(session_id, room_id, participants)?;
 
-                // Spawn STT listener agent to subscribe to human audio in this call.
-                // The listener runs VAD → STT → publishes transcriptions via LiveKit.
+                // CRITICAL: STT listener MUST connect first, before agents.
+                // With 20+ agents all connecting simultaneously, LiveKit gets overwhelmed
+                // (DTLS timeouts, pc_state failures). The STT listener is the most important
+                // participant — without it, no speech → text → no AI responses.
                 let livekit_manager = self.state.livekit_manager.clone();
                 let call_id = session_id.to_string();
+                let ambient_manager = self.state.livekit_manager.clone();
+                let ambient_call_id = session_id.to_string();
+
                 tokio::spawn(async move {
+                    // Phase 1: STT listener (highest priority — enables transcription)
                     if let Err(e) = livekit_manager.join_as_listener(&call_id).await {
                         log_error!("module", "voice_register_session",
                             "Failed to spawn STT listener for call {}: {}",
                             &call_id[..8.min(call_id.len())], e);
                     }
-                });
+                    // Give STT listener time to establish WebRTC connection
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
-                // Spawn ambient background audio (rain) for the call.
-                let ambient_manager = self.state.livekit_manager.clone();
-                let ambient_call_id = session_id.to_string();
-                tokio::spawn(async move {
+                    // Phase 2: Ambient audio
                     if let Err(e) = ambient_manager.start_ambient_audio(&ambient_call_id).await {
                         log_error!("module", "voice_register_session",
                             "Failed to start ambient audio for call {}: {}",
                             &ambient_call_id[..8.min(ambient_call_id.len())], e);
                     }
                 });
+
+                // Phase 3: Pre-allocate avatars + create agents (staggered)
+                // Pre-allocate models for all participants at once (batch allocation
+                // ensures unique models across the group — no duplicate green dinos).
+                if !ai_participants.is_empty() {
+                    let batch: Vec<(&str, Option<&str>)> = ai_participants
+                        .iter()
+                        .map(|(id, _)| (id.as_str(), None))
+                        .collect();
+                    crate::voice::avatar::allocate_dynamic_batch(&batch);
+
+                    let agent_manager = self.state.livekit_manager.clone();
+                    let agent_call_id = session_id.to_string();
+                    tokio::spawn(async move {
+                        // Wait for STT listener + ambient to finish connecting
+                        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+
+                        // Stagger agent creation: 2s between each to avoid
+                        // overwhelming LiveKit with concurrent WebRTC connections.
+                        // With 20 agents × 2s = 40s to fully populate — acceptable since
+                        // avatars appear progressively while STT works immediately.
+                        for (user_id, display_name) in &ai_participants {
+                            match agent_manager.get_or_create_agent(&agent_call_id, user_id, Some(display_name)).await {
+                                Ok(_) => {
+                                    tracing::info!("🎨 Pre-created agent for '{}' in call {}", display_name, &agent_call_id[..8.min(agent_call_id.len())]);
+                                }
+                                Err(e) => {
+                                    log_error!("module", "voice_register_session",
+                                        "Failed to pre-create agent for '{}': {}",
+                                        display_name, e);
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                        }
+                    });
+                }
 
                 Ok(CommandResult::Json(serde_json::json!({ "registered": true })))
             }
@@ -130,7 +176,7 @@ impl ServiceModule for VoiceModule {
                 let adapter = p.str_opt("adapter");
 
                 use crate::voice::tts_service;
-                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
+                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
                     .map_err(|e| {
                         log_error!("module", "voice_synthesize", "TTS failed: {}", e);
                         format!("TTS synthesis failed: {}", e)
@@ -194,7 +240,7 @@ impl ServiceModule for VoiceModule {
                 let adapter = p.str_opt("adapter");
 
                 use crate::voice::tts_service;
-                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
+                let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
                     .map_err(|e| {
                         log_error!("module", "voice_synthesize_handle", "TTS failed: {}", e);
                         format!("TTS synthesis failed: {}", e)

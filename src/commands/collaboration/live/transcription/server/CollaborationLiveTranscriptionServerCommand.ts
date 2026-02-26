@@ -1,7 +1,9 @@
 /**
  * Collaboration Live Transcription Command - Server Implementation
  *
- * Relay voice transcription from browser to server for AI processing
+ * Relay voice transcription from browser to server for AI processing.
+ * Transcriptions are a LIVE modality — they show as captions in the live view,
+ * NOT as chat messages. Call transcripts are a separate export concern.
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';

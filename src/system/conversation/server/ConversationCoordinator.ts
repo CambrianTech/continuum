@@ -33,9 +33,7 @@ export class ConversationCoordinator {
       this.cleanup();
     }, 30000);
 
-    if (this.config.enableLogging) {
-      console.log('🎭 ConversationCoordinator: Initialized', this.config);
-    }
+    // Coordinator initialized
   }
 
   /**
@@ -64,18 +62,10 @@ export class ConversationCoordinator {
         }, this.config.intentionWindowMs);
 
         this.coordinationStates.set(messageId, state);
-
-        if (this.config.enableLogging) {
-          console.log(`🎭 Coordination: Started for message ${messageId.slice(0, 8)}`);
-        }
       }
 
       // Store intention
       state.intentions.set(personaId, intention);
-
-      if (this.config.enableLogging) {
-        console.log(`🎭 Intention: ${intention.personaId.slice(0, 8)} → confidence=${intention.confidence}, urgency=${intention.urgency}, type=${intention.responseType}`);
-      }
 
     } catch (error) {
       console.error('❌ ConversationCoordinator.submitIntention: Error (non-fatal):', error);
@@ -91,29 +81,15 @@ export class ConversationCoordinator {
       const state = this.coordinationStates.get(messageId);
 
       if (!state) {
-        // No coordination state = fall back to independent logic
-        if (this.config.enableLogging) {
-          console.log(`🎭 Permission: ${personaId.slice(0, 8)} → FALLBACK (no state)`);
-        }
-        return true; // Graceful degradation
+        return true; // Graceful degradation - no coordination state
       }
 
       if (!state.resolved) {
-        // Coordination not resolved yet = wait is not over
-        if (this.config.enableLogging) {
-          console.log(`🎭 Permission: ${personaId.slice(0, 8)} → WAIT (not resolved)`);
-        }
-        return false;
+        return false; // Coordination not resolved yet
       }
 
       // Check decision
-      const granted = state.decision?.granted.includes(personaId) ?? false;
-
-      if (this.config.enableLogging) {
-        console.log(`🎭 Permission: ${personaId.slice(0, 8)} → ${granted ? 'GRANTED ✅' : 'DENIED ❌'}`);
-      }
-
-      return granted;
+      return state.decision?.granted.includes(personaId) ?? false;
 
     } catch (error) {
       console.error('❌ ConversationCoordinator.checkPermission: Error (non-fatal):', error);
@@ -148,12 +124,7 @@ export class ConversationCoordinator {
       delay = Math.min(delay * 1.5, 500); // Cap at 500ms
     }
 
-    // Timeout - fall back to independent logic
-    if (this.config.enableLogging) {
-      console.log(`🎭 WaitPermission: ${personaId.slice(0, 8)} → TIMEOUT (fallback)`);
-    }
-
-    return true; // Graceful degradation
+    return true; // Timeout - graceful degradation
   }
 
   /**
@@ -168,7 +139,6 @@ export class ConversationCoordinator {
         return; // Already resolved or missing
       }
 
-      const startTime = Date.now();
       const intentions = Array.from(state.intentions.values());
 
       if (intentions.length === 0) {
@@ -186,12 +156,6 @@ export class ConversationCoordinator {
       if (state.timeoutHandle) {
         clearTimeout(state.timeoutHandle);
         state.timeoutHandle = undefined;
-      }
-
-      if (this.config.enableLogging) {
-        const duration = Date.now() - startTime;
-        console.log(`🎭 Decision: Message ${messageId.slice(0, 8)} → ${decision.granted.length} granted, ${decision.denied.length} denied (${duration}ms)`);
-        console.log(`   Reasoning: ${decision.reasoning}`);
       }
 
     } catch (error) {
@@ -291,9 +255,6 @@ export class ConversationCoordinator {
       }
     }
 
-    if (this.config.enableLogging && this.coordinationStates.size > 0) {
-      console.log(`🎭 Cleanup: ${this.coordinationStates.size} active coordination states`);
-    }
   }
 
   /**
@@ -328,10 +289,6 @@ export class ConversationCoordinator {
     }
 
     this.coordinationStates.clear();
-
-    if (this.config.enableLogging) {
-      console.log('🎭 ConversationCoordinator: Shutdown complete');
-    }
   }
 }
 

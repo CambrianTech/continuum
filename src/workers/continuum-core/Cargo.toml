@@ -11,6 +11,14 @@ crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
 name = "continuum-core-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "vrm-convert-textures"
+path = "src/bin/vrm_convert_textures.rs"
+
+[[bin]]
+name = "vrm-inspect"
+path = "src/bin/vrm_inspect.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
@@ -19,6 +27,7 @@ uuid.workspace = true
 reqwest = { version = "0.12", features = ["json"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
+toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 async-trait.workspace = true
 chrono.workspace = true
@@ -66,6 +75,36 @@ fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC 
 # LiveKit WebRTC SFU — replaces custom WebSocket call server
 livekit = { version = "0.7", features = ["native-tls"] }
 livekit-api = { version = "0.4", features = ["native-tls"] }
+
+# Bevy 3D engine — headless rendering for VRM avatar video frames
+# One shared Bevy instance renders all 14 avatars via RenderLayers isolation
+# GPU readback via Readback component → RGBA frames → LiveKit video tracks
+#
+# NO bevy_winit: winit requires the main thread on macOS (Cocoa/AppKit constraint).
+# Our Bevy app runs on a dedicated background thread, so winit is incompatible.
+# WindowPlugin (from bevy_window, pulled in by bevy_render) registers the
+# Events<WindowResized> that camera_system needs — no winit required.
+# ScheduleRunnerPlugin drives the headless frame loop.
+bevy = { version = "0.18", default-features = false, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_scene",
+    "bevy_gltf",
+    "bevy_animation",
+    "bevy_mesh",          # Split from bevy_render in 0.17 — MorphWeights, mesh types
+    "bevy_color",
+    "bevy_state",
+    "bevy_window",        # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
+    "reflect_auto_register",  # Auto-register ALL Reflect types in TypeRegistry (scene spawning needs this)
+    "png",
+    "jpeg",                   # JPEG texture format — required by webaverse VRM models (wv-kanji, wv-ruike)
+    "ktx2",                   # KTX2 texture format — required for VRM 1.0 models
+    "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
+] }
+
+crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation

@@ -45,7 +45,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
       collection: COLLECTIONS.SKILLS,
       filter: { name, status: 'active' },
       limit: 1,
-    });
+    }, 'default');
     if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
       throw new ValidationError('name', `A skill named '${name}' is already active.`);
     }
@@ -82,7 +82,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     }
 
     // Persist
-    const stored = await ORM.store<SkillEntity>(COLLECTIONS.SKILLS, entity);
+    const stored = await ORM.store<SkillEntity>(COLLECTIONS.SKILLS, entity, false, 'default');
 
     // For team-scoped skills, create a governance proposal via the decision/propose command
     let proposalId = '';
@@ -109,6 +109,8 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
             COLLECTIONS.SKILLS,
             stored.id,
             { proposalId: proposalId as UUID } as Partial<SkillEntity>,
+            true,
+            'default'
           );
         }
       } catch {

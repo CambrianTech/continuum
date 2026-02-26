@@ -27,7 +27,7 @@ export class SessionStateHelper {
    */
   static async getUserState(userId: UUID): Promise<UserStateEntity | null> {
     try {
-      const userStateData = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const userStateData = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId, 'default');
 
       if (!userStateData) {
         this.log.warn(`UserState not found for userId: ${userId}`);

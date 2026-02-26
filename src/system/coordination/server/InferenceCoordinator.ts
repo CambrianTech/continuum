@@ -108,7 +108,6 @@ class InferenceCoordinatorImpl {
 
     // The one rule: hardware capacity
     if (slots.length >= maxConcurrent) {
-      console.log(`🎰 InferenceCoordinator: ${personaId.slice(0, 8)} denied — ${slotKey} at hardware capacity (${slots.length}/${maxConcurrent})`);
       return false;
     }
 
@@ -121,8 +120,6 @@ class InferenceCoordinatorImpl {
     };
     slots.push(slot);
     this.activeSlots.set(slotKey, slots);
-
-    console.log(`🎰 InferenceCoordinator: ${personaId.slice(0, 8)} GRANTED ${slotKey} slot (${slots.length}/${maxConcurrent})`);
     return true;
   }
 
@@ -137,12 +134,8 @@ class InferenceCoordinatorImpl {
 
     const index = slots.findIndex(s => s.personaId === personaId);
     if (index !== -1) {
-      const slot = slots[index];
-      const duration = Date.now() - slot.acquiredAt;
       slots.splice(index, 1);
       this.activeSlots.set(slotKey, slots);
-
-      console.log(`🎰 InferenceCoordinator: ${personaId.slice(0, 8)} RELEASED ${slotKey} slot after ${duration}ms (${slots.length} remaining)`);
     }
   }
 
@@ -173,7 +166,6 @@ class InferenceCoordinatorImpl {
     for (const [provider, slots] of this.activeSlots) {
       const validSlots = slots.filter(slot => {
         if (now - slot.acquiredAt > maxAgeMs) {
-          console.log(`🎰 InferenceCoordinator: Cleaning stale slot for ${slot.personaId.slice(0, 8)} (${provider}, age ${Math.round((now - slot.acquiredAt) / 1000)}s)`);
           cleaned++;
           return false;
         }

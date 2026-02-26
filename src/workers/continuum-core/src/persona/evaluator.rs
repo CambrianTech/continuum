@@ -892,6 +892,7 @@ mod tests {
 
     #[test]
     fn export_bindings_adequacyresult() {
-        AdequacyResult::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        AdequacyResult::export_all(&cfg).unwrap();
     }
 }

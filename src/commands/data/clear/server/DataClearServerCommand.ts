@@ -21,11 +21,11 @@ export class DataClearServerCommand extends CommandBase<DataClearParams, DataCle
 
     try {
       // Get collections before clearing for reporting
-      const collectionsResult = await ORM.listCollections();
+      const collectionsResult = await ORM.listCollections('default');
       const collectionCount = collectionsResult.success && collectionsResult.data ? collectionsResult.data.length : 0;
 
       // Use adapter clear() method - proper abstraction layer
-      const result = await ORM.clear();
+      const result = await ORM.clear('default');
 
       if (result.success) {
 

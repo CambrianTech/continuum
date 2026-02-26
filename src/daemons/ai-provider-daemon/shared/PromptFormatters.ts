@@ -102,8 +102,6 @@ export function formatPrompt(messages: readonly ChatMessage[], format: PromptFor
       return formatAlpaca(messages);
 
     default:
-      // Fallback to base format for unknown types
-      console.warn(`Unknown prompt format: ${format}, falling back to base format`);
       return formatBaseModel(messages);
   }
 }
@@ -272,8 +270,7 @@ export function truncateMessages(
 
   // Check if we're already over budget with just system + last message
   if (usedTokens > availableTokens) {
-    console.warn(`⚠️  System + last message (${usedTokens} tokens) exceeds context window (${availableTokens} tokens)`);
-    // Return minimal set: system (truncated if needed) + last message (truncated if needed)
+    // System + last message exceeds context window — return minimal truncated set
     const result: ChatMessage[] = [];
     if (systemMsg) {
       const maxSystemTokens = Math.floor(availableTokens * 0.3); // 30% for system
@@ -321,11 +318,6 @@ export function truncateMessages(
   result.push(...historyMsgs);
   if (lastUserMsg) {
     result.push(lastUserMsg);
-  }
-
-  const droppedCount = conversationMsgs.length - historyMsgs.length - (lastUserMsg ? 1 : 0);
-  if (droppedCount > 0) {
-    console.log(`📏 Truncated ${droppedCount} messages to fit ${contextWindow} token context window (using ${usedTokens} tokens)`);
   }
 
   return result;

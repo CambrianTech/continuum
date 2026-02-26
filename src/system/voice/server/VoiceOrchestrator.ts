@@ -74,8 +74,6 @@ export class VoiceOrchestrator {
 
     // Register with VoiceConversationSource for RAG context building
     registerVoiceOrchestrator(this);
-
-    console.log('🎙️ VoiceOrchestrator: Initialized');
   }
 
   static get instance(): VoiceOrchestrator {
@@ -97,7 +95,8 @@ export class VoiceOrchestrator {
         const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: { $in: participantIds } },
-            limit: participantIds.length
+            limit: participantIds.length,
+            dbHandle: 'default'
           }
         );
 
@@ -118,8 +117,8 @@ export class VoiceOrchestrator {
             });
           }
         }
-      } catch (error) {
-        console.warn('🎙️ VoiceOrchestrator: Failed to load participants:', error);
+      } catch {
+        // Failed to load participants — continue with empty list
       }
     }
 
@@ -131,8 +130,6 @@ export class VoiceOrchestrator {
       turnCount: 0
     });
 
-    console.log(`🎙️ VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} for room ${roomId.slice(0, 8)} with ${participants.length} participants`);
-
     // Connect AI participants to the appropriate audio bridge
     const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
     if (aiParticipants.length > 0) {
@@ -142,29 +139,25 @@ export class VoiceOrchestrator {
       for (const ai of aiParticipants) {
         if (ai.isAudioNative && ai.modelId) {
           // Audio-native models: connect via AudioNativeBridge (direct audio I/O)
-          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} (${ai.modelId}) as AUDIO-NATIVE...`);
           audioNativeBridge.joinCall(sessionId, ai.userId, ai.displayName, ai.modelId).then(success => {
-            if (success) {
-              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected as audio-native`);
-            } else {
-              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect (falling back to text)`);
-              // Fallback to text-based bridge
+            if (!success) {
+              // Audio-native connection failed — use text-based bridge
               textBridge.joinCall(sessionId, ai.userId, ai.displayName);
             }
           });
         } else {
-          // Text-based models: connect via AIAudioBridge (STT → LLM → TTS)
-          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} as TEXT-BASED...`);
-          textBridge.joinCall(sessionId, ai.userId, ai.displayName).then(success => {
-            if (success) {
-              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected to audio`);
-            } else {
-              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect to audio`);
-            }
-          });
+          // Text-based models: connect via AIAudioBridge (STT -> LLM -> TTS)
+          textBridge.joinCall(sessionId, ai.userId, ai.displayName);
         }
       }
     }
+  }
+
+  /**
+   * Get the roomId for a voice session (for message persistence)
+   */
+  getRoomIdForSession(sessionId: UUID): UUID | null {
+    return this.sessionContexts.get(sessionId)?.roomId ?? null;
   }
 
   /**
@@ -189,7 +182,6 @@ export class VoiceOrchestrator {
 
     this.sessionParticipants.delete(sessionId);
     this.sessionContexts.delete(sessionId);
-    console.log(`🎙️ VoiceOrchestrator: Unregistered session ${sessionId.slice(0, 8)}`);
   }
 
   /**
@@ -201,17 +193,13 @@ export class VoiceOrchestrator {
   async onUtterance(event: UtteranceEvent): Promise<void> {
     const { sessionId, speakerId, transcript, speakerName } = event;
 
-    console.log(`🎙️ VoiceOrchestrator: Utterance from ${speakerName}: "${transcript.slice(0, 50)}..."`);
-
     const context = this.sessionContexts.get(sessionId);
     if (!context) {
-      console.error(`🎙️ VoiceOrchestrator: No context for session ${sessionId.slice(0, 8)} — was registerSession() called?`);
       return;
     }
 
     const participants = this.sessionParticipants.get(sessionId);
     if (!participants || participants.length === 0) {
-      console.error(`🎙️ VoiceOrchestrator: No participants for session ${sessionId.slice(0, 8)}`);
       return;
     }
 
@@ -229,12 +217,10 @@ export class VoiceOrchestrator {
     );
 
     if (textAIs.length === 0) {
-      console.log('🎙️ VoiceOrchestrator: No text-based AIs to notify');
       return;
     }
 
     // Broadcast to ALL text-based AIs — each gets the utterance
-    console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${textAIs.length} text-based AIs`);
     for (const ai of textAIs) {
       Events.emit('voice:transcription:directed', {
         sessionId: event.sessionId,
@@ -267,7 +253,6 @@ export class VoiceOrchestrator {
 
     const bridge = getAIAudioBridge();
     if (!bridge.isInCall(sessionId, personaId)) {
-      console.error(`🎙️ VoiceOrchestrator: AI ${personaId.slice(0, 8)} NOT in call ${sessionId.slice(0, 8)} — cannot speak. WebSocket connection failed or was never established.`);
       return;
     }
 
@@ -351,6 +336,7 @@ export class VoiceOrchestrator {
             collection: 'users',
             filter: { id: event.userId },
             limit: 1,
+            dbHandle: 'default',
           });
 
           if (result.success && result.items?.length) {
@@ -373,26 +359,24 @@ export class VoiceOrchestrator {
 
             // Connect to appropriate bridge
             if (isAudioNative && modelId) {
-              console.log(`🎙️ VoiceOrchestrator: Mid-call join: ${event.displayName} (${modelId}) as AUDIO-NATIVE`);
               const success = await audioNativeBridge.joinCall(sessionId, participant.userId, participant.displayName, modelId);
               if (!success) {
                 const textBridge = getAIAudioBridge();
                 textBridge.joinCall(sessionId, participant.userId, participant.displayName);
               }
             } else {
-              console.log(`🎙️ VoiceOrchestrator: Mid-call join: ${event.displayName} as TEXT-BASED`);
               const textBridge = getAIAudioBridge();
               textBridge.joinCall(sessionId, participant.userId, participant.displayName);
             }
           }
-        } catch (error) {
-          console.warn(`🎙️ VoiceOrchestrator: Failed to add mid-call joiner ${event.displayName}:`, error);
+        } catch {
+          // Failed to add mid-call joiner
         }
       }
     });
 
-    // Listen for AI speech events — just log for visibility, no gating
-    Events.subscribe('voice:ai:speech', (event: {
+    // Listen for AI speech events (no gating, event subscription kept for future use)
+    Events.subscribe('voice:ai:speech', (_event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
@@ -401,11 +385,7 @@ export class VoiceOrchestrator {
       failed?: boolean;
       timestamp: number;
     }) => {
-      if (event.failed) {
-        console.error(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speech FAILED`);
-      } else {
-        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke ${event.audioDurationMs ?? 0}ms`);
-      }
+      // Event consumed — no action needed (turn-taking is not gated)
     });
   }
 

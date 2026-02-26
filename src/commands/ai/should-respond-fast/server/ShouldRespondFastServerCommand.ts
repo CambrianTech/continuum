@@ -252,6 +252,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
 
       const result = await DataList.execute<ChatMessageEntity>({
+        dbHandle: 'default',
         collection: 'chat_messages',
         filter: {
           roomId: contextId,
@@ -282,6 +283,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
       const result = await DataList.execute<ChatMessageEntity>({
+        dbHandle: 'default',
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -317,6 +319,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
       const result = await DataList.execute<ChatMessageEntity>({
+        dbHandle: 'default',
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -346,6 +349,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
 
     try {
       const result = await DataList.execute<any>({
+        dbHandle: 'default',
         collection: 'users',
         filter: { id: senderId },
         limit: 1

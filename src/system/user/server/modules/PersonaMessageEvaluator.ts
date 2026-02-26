@@ -201,7 +201,7 @@ export class PersonaMessageEvaluator {
         },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: 1
-      });
+      }, 'default');
 
       if (result.success && result.data && result.data.length > 0) {
         // Only return if it's from THIS persona (we're learning from our own corrections)
@@ -227,7 +227,7 @@ export class PersonaMessageEvaluator {
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit
-      });
+      }, 'default');
 
       if (result.success && result.data) {
         return result.data.map(record => record.data).reverse();  // Chronological order

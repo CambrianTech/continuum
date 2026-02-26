@@ -205,7 +205,7 @@ export class UserDaemonServer extends UserDaemon {
       }
 
       // Delete UserState (cascade)
-      await ORM.remove(COLLECTIONS.USER_STATES, userEntity.id);
+      await ORM.remove(COLLECTIONS.USER_STATES, userEntity.id, false, 'default');
 
     } catch (error) {
       this.log.error(`❌ UserDaemon: Failed to cleanup user ${userEntity.displayName}:`, error);
@@ -223,7 +223,7 @@ export class UserDaemonServer extends UserDaemon {
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'persona' }
-      });
+      }, 'default');
 
       if (!result.success || !result.data) {
         this.log.warn('⚠️ UserDaemon: No personas found or query failed');
@@ -237,6 +237,20 @@ export class UserDaemonServer extends UserDaemon {
       } as UserEntity));
 
       this.log.info(`🔧 UserDaemon: Found ${personas.length} personas to initialize`);
+
+      // Clean slate: set all personas to 'offline' before initialization.
+      // Prevents stale 'online' status from previous crash/restart.
+      // Each persona's initialize() will set itself to 'online' when ready.
+      for (const persona of personas) {
+        try {
+          await ORM.update<UserEntity>(
+            COLLECTIONS.USERS, persona.id,
+            { status: 'offline' as const },
+            false, 'default', true // suppressEvents — no UI flicker during boot
+          );
+        } catch (_) { /* best-effort */ }
+      }
+      this.log.info(`🔴 UserDaemon: Reset ${personas.length} personas to 'offline' (clean slate)`);
 
       // Batched parallel initialization — 6 concurrent to avoid thundering herd on DB/Rust
       const BATCH_SIZE = 6;
@@ -292,7 +306,7 @@ export class UserDaemonServer extends UserDaemon {
   private async createPersonaClient(userEntity: UserEntity): Promise<void> {
     try {
       // Load UserStateEntity (must exist - created by user/create command)
-      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
+      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id, 'default');
 
       if (!userState) {
         throw new Error(`UserStateEntity not found for persona ${userEntity.displayName} (${userEntity.id}) - user must be created via user/create command`);
@@ -336,7 +350,7 @@ export class UserDaemonServer extends UserDaemon {
   protected async ensureUserHasState(userId: UUID): Promise<boolean> {
     try {
       // Check if UserState exists
-      const existingState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const existingState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId, 'default');
 
       if (existingState) {
         return true; // UserState exists
@@ -357,7 +371,7 @@ export class UserDaemonServer extends UserDaemon {
   private async createUserState(userId: UUID): Promise<boolean> {
     try {
       // Load user entity to get type
-      const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+      const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId, 'default');
       if (!user) {
         this.log.error(`❌ UserDaemon: User ${userId} not found`);
         return false;
@@ -373,7 +387,9 @@ export class UserDaemonServer extends UserDaemon {
       // Store UserState
       const storeResult = await ORM.store<UserStateEntity>(
         COLLECTIONS.USER_STATES,
-        userState
+        userState,
+        false,
+        'default'
       );
 
       return !!storeResult;
@@ -419,7 +435,7 @@ export class UserDaemonServer extends UserDaemon {
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {} // ALL users
-      });
+      }, 'default');
 
       if (!result.success || !result.data) {
         return;
@@ -456,7 +472,7 @@ export class UserDaemonServer extends UserDaemon {
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'persona' }
-      });
+      }, 'default');
 
       if (!result.success || !result.data) {
         return;

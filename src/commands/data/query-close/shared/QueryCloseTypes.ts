@@ -7,12 +7,14 @@
 
 import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DataQueryCloseParams extends CommandParams {
   readonly queryHandle: UUID;
   readonly collection: string; // Required by BaseDataParams
   readonly backend: JTAGEnvironment; // Required by BaseDataParams
+  readonly dbHandle: DbHandle;
 }
 
 export interface DataQueryCloseResult extends JTAGPayload {

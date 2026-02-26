@@ -277,7 +277,8 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
           processId: handle.processId,
           traitType: request.traitType
         }
-      }
+      },
+      dbHandle: 'default'
     });
     return result.data!.id;
   }
@@ -301,7 +302,8 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
 
     const result = await DataRead.execute<TrainingSessionEntity>({
       collection: 'training_sessions',
-      id: sessionId
+      id: sessionId,
+      dbHandle: 'default'
     });
     return {
       providerJobId: result.data!.providerJobId as string,
@@ -349,7 +351,8 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     await DataUpdate.execute({
       collection: 'training_sessions',
       id: sessionId,
-      data: updateData
+      data: updateData,
+      dbHandle: 'default'
     });
   }
   /* eslint-enable @typescript-eslint/naming-convention */

@@ -73,11 +73,6 @@ function timeFfiCall<T>(operation: string, fn: () => T): T {
 	} finally {
 		const durationMs = performance.now() - start;
 
-		// Log slow FFI calls
-		if (durationMs > 10) {
-			console.warn(`⚠️  Slow FFI call: ${operation} took ${durationMs.toFixed(2)}ms`);
-		}
-
 		// Record timing
 		timingHistory.push({
 			operation,
@@ -116,7 +111,6 @@ export class RustCore {
 		}
 
 		this.initialized = true;
-		console.log('✅ Continuum core initialized');
 	}
 
 	/**

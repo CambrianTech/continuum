@@ -102,10 +102,7 @@ export class AudioNativeBridge {
 
   private constructor() {
     this.ipcClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
-    this.ipcClient.connect().catch(err => {
-      console.error('🎙️ AudioNativeBridge: Failed to connect IPC:', err);
-    });
-    console.log('🎙️ AudioNativeBridge: Initialized (WebSocket stream + IPC injection)');
+    this.ipcClient.connect().catch(() => {});
   }
 
   static get instance(): AudioNativeBridge {
@@ -153,7 +150,6 @@ export class AudioNativeBridge {
     const key = `${callId}-${userId}`;
 
     if (this.connections.has(key)) {
-      console.log(`🎙️ AudioNativeBridge: ${displayName} already in call`);
       return true;
     }
 
@@ -161,7 +157,6 @@ export class AudioNativeBridge {
                     ADAPTER_FACTORIES[this.normalizeModelId(modelId)];
 
     if (!factory) {
-      console.error(`🎙️ AudioNativeBridge: No adapter for model ${modelId}`);
       return false;
     }
 
@@ -202,11 +197,9 @@ export class AudioNativeBridge {
       // Connect WebSocket to call server for streaming room audio
       await this.connectCallServerStream(key, connection);
 
-      console.log(`🎙️ AudioNativeBridge: ${displayName} (${modelId}) joined call ${callId.slice(0, 8)} with bidirectional audio stream`);
       return true;
 
-    } catch (error) {
-      console.error(`🎙️ AudioNativeBridge: Failed to connect ${displayName}:`, error);
+    } catch {
       return false;
     }
   }
@@ -222,8 +215,6 @@ export class AudioNativeBridge {
       connection.ws = ws;
 
       ws.on('open', () => {
-        console.log(`🎙️ AudioNativeBridge: ${connection.displayName} connected to call server stream`);
-
         // Join as AI participant — server creates ring buffer for audio buffering
         const joinMsg: JoinMessage = {
           type: 'Join',
@@ -247,12 +238,10 @@ export class AudioNativeBridge {
       });
 
       ws.on('error', (error) => {
-        console.error(`🎙️ AudioNativeBridge: Stream error for ${connection.displayName}:`, error);
         reject(error);
       });
 
-      ws.on('close', (code, reason) => {
-        console.log(`🎙️ AudioNativeBridge: Stream closed for ${connection.displayName} (${code}: ${reason})`);
+      ws.on('close', () => {
         connection.ws = null;
       });
     });
@@ -289,11 +278,7 @@ export class AudioNativeBridge {
     // Convert bytes to Int16Array (little-endian PCM from call server)
     const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength / 2);
 
-    // Periodic logging: every 250 frames (~5 seconds at 20ms/frame) confirm audio is flowing
     connection.roomAudioFrameCount++;
-    if (connection.roomAudioFrameCount === 1 || connection.roomAudioFrameCount % 250 === 0) {
-      console.log(`🎙️ AudioNativeBridge: Room audio → ${connection.displayName}: frame #${connection.roomAudioFrameCount} (${samples.length} samples)`);
-    }
 
     // Resample if adapter expects different rate than call server (16kHz)
     if (connection.inputSampleRate !== CALL_SERVER_SAMPLE_RATE) {
@@ -323,7 +308,6 @@ export class AudioNativeBridge {
       }
 
       this.connections.delete(key);
-      console.log(`🎙️ AudioNativeBridge: ${connection.displayName} left call`);
     }
   }
 
@@ -416,8 +400,8 @@ export class AudioNativeBridge {
       });
     });
 
-    adapter.onError((error) => {
-      console.error(`🎙️ AudioNativeBridge: Error from ${displayName}:`, error);
+    adapter.onError(() => {
+      // Adapter error — handled by caller
     });
   }
 
@@ -447,17 +431,13 @@ export class AudioNativeBridge {
       // Inject via IPC — audio goes directly into the Rust mixer
       await this.ipcClient.voiceInjectAudio(callId, userId, Array.from(resampled));
 
-      // Periodic logging: first chunk + every 50th chunk (~1 per second of speech)
       const key = `${callId}-${userId}`;
       const conn = this.connections.get(key);
       if (conn) {
         conn.injectedAudioChunkCount++;
-        if (conn.injectedAudioChunkCount === 1 || conn.injectedAudioChunkCount % 50 === 0) {
-          console.log(`🎙️ AudioNativeBridge: ${displayName} → mixer: chunk #${conn.injectedAudioChunkCount} (${resampled.length} samples at ${CALL_SERVER_SAMPLE_RATE}Hz)`);
-        }
       }
-    } catch (error) {
-      console.error(`🎙️ AudioNativeBridge: inject failed for ${displayName}:`, error);
+    } catch {
+      // Injection failed — audio frame dropped
     }
   }
 
@@ -471,8 +451,6 @@ export class AudioNativeBridge {
     text: string,
     audioDurationMs: number
   ): Promise<void> {
-    console.log(`🎙️ AudioNativeBridge: ${displayName} said: "${text.slice(0, 50)}..." (${audioDurationMs}ms audio)`);
-
     if (DataDaemon.jtagContext) {
       await Events.emit(
         DataDaemon.jtagContext,

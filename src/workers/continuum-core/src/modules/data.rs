@@ -160,11 +160,17 @@ impl DataModule {
             return Ok(adapter.clone());
         }
 
+        // Scale pool size based on database role:
+        // Main DB: full pool (high concurrency from all users/daemons)
+        // Per-persona DBs: small pool (occasional queries from one persona)
+        let is_main_db = db_path.contains("database/main.db") || db_path.contains("database\\main.db");
+        let max_connections = if is_main_db { 20 } else { 4 };
+
         let config = AdapterConfig {
             connection_string: db_path.to_string(),
             namespace: None,
             timeout_ms: 30_000,
-            max_connections: 20,
+            max_connections,
         };
 
         // Route based on connection string

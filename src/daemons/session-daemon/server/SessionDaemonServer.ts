@@ -356,7 +356,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { uniqueId }
-      });
+      }, 'default');
 
       if (!result.success || !result.data || result.data.length === 0) {
         return null;
@@ -428,7 +428,7 @@ export class SessionDaemonServer extends SessionDaemon {
       }
 
       // Load UserStateEntity from database
-      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId, 'default');
       if (!userState) {
         throw new Error(`UserState for ${userId} not found in database`);
       }
@@ -476,7 +476,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'human' }
-      });
+      }, 'default');
 
       if (!result.success || !result.data || result.data.length === 0) {
         return null;

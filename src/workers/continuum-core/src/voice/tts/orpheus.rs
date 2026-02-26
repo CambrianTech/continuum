@@ -29,13 +29,13 @@ use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-use ort::value::Value;
+use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 // ─── Orpheus Token Constants ──────────────────────────────────────────────────
 // Audio tokens extend the Llama 3 vocabulary starting at this offset.
@@ -128,23 +128,23 @@ impl OrpheusTts {
         if let Ok(dir) = std::env::var("ORPHEUS_MODEL_DIR") {
             let p = PathBuf::from(&dir);
             if Self::dir_has_required_files(&p) {
-                info!("Orpheus: Using model dir from ORPHEUS_MODEL_DIR: {:?}", p);
+                clog_info!("Orpheus: Using model dir from ORPHEUS_MODEL_DIR: {:?}", p);
                 return p;
             }
-            warn!("Orpheus: ORPHEUS_MODEL_DIR='{}' set but files not found", dir);
+            clog_warn!("Orpheus: ORPHEUS_MODEL_DIR='{}' set but files not found", dir);
         }
 
         for dir in &search_dirs {
             if Self::dir_has_required_files(dir) {
-                info!("Orpheus: Found model dir: {:?}", dir);
+                clog_info!("Orpheus: Found model dir: {:?}", dir);
                 return dir.clone();
             }
         }
 
-        warn!("Orpheus: No model files found. Download from:");
-        warn!("  Model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft");
-        warn!("  SNAC:  https://huggingface.co/hubertsiuzdak/snac_24khz");
-        warn!("  Place files in: models/orpheus/");
+        clog_warn!("Orpheus: No model files found. Download from:");
+        clog_warn!("  Model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft");
+        clog_warn!("  SNAC:  https://huggingface.co/hubertsiuzdak/snac_24khz");
+        clog_warn!("  Place files in: models/orpheus/");
         PathBuf::from("models/orpheus")
     }
 
@@ -172,11 +172,11 @@ impl OrpheusTts {
         // Try Metal GPU first (Apple Silicon) — candle handles availability at runtime
         match Device::new_metal(0) {
             Ok(device) => {
-                info!("Orpheus: Using Metal GPU");
+                clog_info!("Orpheus: Using Metal GPU");
                 device
             }
             Err(_) => {
-                info!("Orpheus: Using CPU (with Accelerate BLAS)");
+                clog_info!("Orpheus: Using CPU (with Accelerate BLAS)");
                 Device::Cpu
             }
         }
@@ -234,7 +234,7 @@ impl OrpheusTts {
 
         let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
         let prompt_len = prompt_tokens.len();
-        info!(
+        clog_info!(
             "Orpheus: Prompt tokenized to {} tokens for voice '{}'",
             prompt_len, voice
         );
@@ -249,7 +249,7 @@ impl OrpheusTts {
             ));
         }
 
-        info!(
+        clog_info!(
             "Orpheus: Generated {} audio tokens ({} frames)",
             audio_tokens.len(),
             audio_tokens.len() / TOKENS_PER_FRAME
@@ -259,9 +259,9 @@ impl OrpheusTts {
         let layers = Self::redistribute_codes(&audio_tokens)?;
 
         // ── Step 4: SNAC decode → 24kHz PCM ───────────────────────────────
-        let pcm_24k = Self::snac_decode(&model.snac_decoder, &layers)?;
+        let pcm_24k = Self::snac_decode(&mut model.snac_decoder, &layers)?;
 
-        info!(
+        clog_info!(
             "Orpheus: SNAC decoded {} samples ({:.2}s at 24kHz)",
             pcm_24k.len(),
             pcm_24k.len() as f64 / SNAC_SAMPLE_RATE as f64
@@ -270,7 +270,7 @@ impl OrpheusTts {
         // ── Step 5: Normalize to standard 16kHz i16 PCM ──────────────────
         let result = audio_utils::normalize_audio(&pcm_24k, SNAC_SAMPLE_RATE)?;
 
-        info!(
+        clog_info!(
             "Orpheus: Synthesized \"{}\" → {}ms audio",
             super::truncate_str(text, 50),
             result.duration_ms
@@ -436,7 +436,7 @@ impl OrpheusTts {
 
     /// Decode SNAC codebook layers → 24kHz PCM audio using ONNX decoder
     fn snac_decode(
-        session: &Session,
+        session: &mut Session,
         layers: &[Vec<i64>; NUM_CODEBOOKS],
     ) -> Result<Vec<f32>, TTSError> {
         // Build input tensors for each codebook layer: [1, seq_len]
@@ -447,14 +447,14 @@ impl OrpheusTts {
             let array = Array2::from_shape_vec((1, seq_len), layer.clone()).map_err(|e| {
                 TTSError::SynthesisFailed(format!("SNAC input layer {i} reshape: {e}"))
             })?;
-            let value: Value = Value::from_array(array)
+            let value: Value = OrtTensor::from_array(array)
                 .map(|v| v.into())
                 .map_err(|e| {
                     TTSError::SynthesisFailed(format!("SNAC input layer {i} to value: {e}"))
                 })?;
 
             // Use model's input names (discovered at runtime)
-            let name = session.inputs[i].name.clone();
+            let name = session.inputs()[i].name().to_string();
             named_inputs.push((name, value));
         }
 
@@ -464,10 +464,10 @@ impl OrpheusTts {
 
         // Extract output audio waveform (f32)
         let (shape, data) = outputs[0]
-            .try_extract_raw_tensor::<f32>()
+            .try_extract_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("SNAC output extraction: {e}")))?;
 
-        info!(
+        clog_info!(
             "Orpheus: SNAC output shape: {:?} ({} samples)",
             shape,
             data.len()
@@ -500,12 +500,12 @@ impl TextToSpeech for OrpheusTts {
 
     async fn initialize(&self) -> Result<(), TTSError> {
         if ORPHEUS_MODEL.get().is_some() {
-            info!("Orpheus: Already initialized");
+            clog_info!("Orpheus: Already initialized");
             return Ok(());
         }
 
         let model_dir = self.find_model_dir();
-        info!("Orpheus: Loading models from {:?}", model_dir);
+        clog_info!("Orpheus: Loading models from {:?}", model_dir);
 
         // Check required files
         if !Self::dir_has_required_files(&model_dir) {
@@ -527,11 +527,11 @@ impl TextToSpeech for OrpheusTts {
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             TTSError::ModelNotLoaded(format!("Tokenizer load failed: {e}"))
         })?;
-        info!("Orpheus: Tokenizer loaded ({} tokens)", tokenizer.get_vocab_size(true));
+        clog_info!("Orpheus: Tokenizer loaded ({} tokens)", tokenizer.get_vocab_size(true));
 
         // Look up special token IDs
         let audio_end_token_id = Self::find_token_id(&tokenizer, "<|audio_end|>")?;
-        info!("Orpheus: audio_end token ID = {}", audio_end_token_id);
+        clog_info!("Orpheus: audio_end token ID = {}", audio_end_token_id);
 
         // Select compute device
         let device = Self::select_device();
@@ -540,7 +540,7 @@ impl TextToSpeech for OrpheusTts {
         let gguf_path = Self::find_gguf_file(&model_dir).ok_or_else(|| {
             TTSError::ModelNotLoaded("No .gguf file found in model directory".into())
         })?;
-        info!("Orpheus: Loading GGUF model from {:?}", gguf_path);
+        clog_info!("Orpheus: Loading GGUF model from {:?}", gguf_path);
 
         let mut gguf_file = std::fs::File::open(&gguf_path).map_err(|e| {
             TTSError::ModelNotLoaded(format!("Failed to open GGUF file: {e}"))
@@ -556,15 +556,15 @@ impl TextToSpeech for OrpheusTts {
         let llm = ModelWeights::from_gguf(gguf_content, &mut reader, &device).map_err(|e| {
             TTSError::ModelNotLoaded(format!("GGUF model load failed: {e}"))
         })?;
-        info!("Orpheus: Llama model loaded on {:?}", device);
+        clog_info!("Orpheus: Llama model loaded on {:?}", device);
 
         // Load SNAC decoder
         let snac_path = model_dir.join("snac_decoder.onnx");
         let snac_decoder = Self::build_snac_session(&snac_path)?;
-        info!(
+        clog_info!(
             "Orpheus: SNAC decoder loaded ({} inputs, {} outputs)",
-            snac_decoder.inputs.len(),
-            snac_decoder.outputs.len()
+            snac_decoder.inputs().len(),
+            snac_decoder.outputs().len()
         );
 
         let model = OrpheusModel {
@@ -579,7 +579,7 @@ impl TextToSpeech for OrpheusTts {
             .set(Arc::new(Mutex::new(model)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
-        info!("Orpheus: All models loaded successfully");
+        clog_info!("Orpheus: All models loaded successfully");
         Ok(())
     }
 
@@ -598,7 +598,7 @@ impl TextToSpeech for OrpheusTts {
             voice.to_string()
         } else {
             // Use default voice for unknown voice IDs
-            info!(
+            clog_info!(
                 "Orpheus: Unknown voice '{}', using default 'tara'",
                 voice
             );

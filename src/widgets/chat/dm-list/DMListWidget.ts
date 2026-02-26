@@ -379,7 +379,8 @@ export class DMListWidget extends ReactiveListWidget<RoomEntity> {
       const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: { $in: Array.from(userIds) } },
-          limit: userIds.size
+          limit: userIds.size,
+          dbHandle: 'default'
         }
       );
 

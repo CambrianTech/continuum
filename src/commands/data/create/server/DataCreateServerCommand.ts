@@ -11,7 +11,6 @@ import { DataCreateCommand } from '../shared/DataCreateCommand';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
-import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { CollectionName } from '../../../../shared/generated-collection-constants';
 
@@ -28,19 +27,12 @@ export class DataCreateServerCommand extends DataCreateCommand {
   protected async executeDataCommand(params: DataCreateParams): Promise<DataCreateResult> {
     const collection = params.collection;
 
-    // Resolve dbHandle to dbPath for per-persona databases
-    let dbPath: string | undefined;
-    if (params.dbHandle) {
-      const registry = DatabaseHandleRegistry.getInstance();
-      dbPath = registry.getDbPath(params.dbHandle) ?? undefined;
-    }
-
-    // Use ORM for all operations (routes to Rust with correct dbPath)
+    // Pass handle directly to ORM — ORM resolves handle → path internally
     const entity = await ORM.store(
       collection as CollectionName,
       params.data as BaseEntity,
       params.suppressEvents ?? false,
-      dbPath
+      params.dbHandle ?? 'default'
     );
 
     return createDataCreateResultFromParams(params, {

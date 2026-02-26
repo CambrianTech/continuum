@@ -34,7 +34,7 @@ export class ChatPollServerCommand extends ChatPollCommand {
         collection: 'chat_messages',
         filter: { id: params.afterMessageId },
         limit: 1
-      });
+      }, 'default');
 
       if (!originalMessageResult.success || !originalMessageResult.data || originalMessageResult.data.length === 0) {
         return {
@@ -72,7 +72,7 @@ export class ChatPollServerCommand extends ChatPollCommand {
         filter,
         sort: [{ field: 'timestamp', direction: 'asc' }],
         limit: params.limit || 50
-      });
+      }, 'default');
 
       if (!result.success || !result.data) {
         return {

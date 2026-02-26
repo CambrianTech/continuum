@@ -108,7 +108,7 @@ export function initializeTrainingCompletionHandler(): void {
     cleanupTempFiles(ctx.configPath, ctx.datasetPath);
   });
 
-  console.log('[TrainingCompletion] Initialized — listening for training sentinel completions');
+  // Listening for completions
 }
 
 /**
@@ -179,6 +179,7 @@ async function handleTrainingComplete(
     await DataCreate.execute({
       collection: GenomeLayerEntity.collection,
       data: entity,
+      dbHandle: 'default',
     });
     layerId = entity.id;
     console.log(`[TrainingCompletion] GenomeLayerEntity created: ${layerId}`);

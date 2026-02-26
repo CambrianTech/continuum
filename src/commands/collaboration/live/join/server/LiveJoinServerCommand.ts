@@ -27,6 +27,9 @@ import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class LiveJoinServerCommand extends LiveJoinCommand {
 
+  /** Timestamp when the server process started — calls created before this are stale */
+  private static readonly SERVER_START_TIME = Date.now();
+
   protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
     // 1. Resolve the entity (room/activity)
     const room = await this.resolveRoom(params.entityId, params);
@@ -116,6 +119,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   private async resolveRoom(roomRef: string, params: LiveJoinParams): Promise<RoomEntity | null> {
     // Try by ID first
     let result = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { id: roomRef },
         limit: 1,
@@ -130,6 +134,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     // Try by uniqueId
     result = await DataList.execute<RoomEntity>({
+        dbHandle: 'default',
         collection: RoomEntity.collection,
         filter: { uniqueId: roomRef },
         limit: 1,
@@ -150,6 +155,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async findUserById(userId: UUID, params: LiveJoinParams): Promise<UserEntity | null> {
     const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
       collection: UserEntity.collection,
       filter: { id: userId },
       limit: 1,
@@ -166,7 +172,8 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
   /**
    * Atomically find or create active call for room
-   * Handles race conditions when multiple participants join simultaneously
+   * Handles race conditions when multiple participants join simultaneously.
+   * Detects stale calls from before server restart and replaces them.
    */
   private async findOrCreateCall(room: RoomEntity, params: LiveJoinParams): Promise<{ call: CallEntity; existed: boolean }> {
     const maxRetries = 5;
@@ -176,27 +183,50 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       // Try to find existing call
       let call = await this.findActiveCall(room.id, params);
       if (call) {
-        return { call, existed: true };
+        // Stale call detection: if the call was created before the current server
+        // process started, the LiveKit room no longer exists (server restart clears
+        // all LiveKit rooms). End the stale call and create a fresh one.
+        const callCreatedAt = new Date(call.createdAt || 0).getTime();
+        if (callCreatedAt < LiveJoinServerCommand.SERVER_START_TIME) {
+          console.log(`🎙️ LiveJoin: Ending stale call ${call.id.slice(0, 8)} (created ${new Date(callCreatedAt).toISOString()} < server start ${new Date(LiveJoinServerCommand.SERVER_START_TIME).toISOString()})`);
+          call.status = 'ended';
+          call.endedAt = new Date();
+          await this.saveCall(call, params);
+          // Fall through to create a new call
+        } else {
+          return { call, existed: true };
+        }
       }
 
       // No call found, try to create one
       try {
         call = await this.createCall(room.id, params);
 
-        // NEW CALL: Add ALL room members as participants
-        // This ensures AI personas are in the call from the start
+        // NEW CALL: Add room members who are ONLINE as participants.
+        // Only personas that successfully initialized (status='online') join the call.
+        // This prevents connecting agents whose inference is broken.
+        // Human users always join (they're initiating the call).
         if (room.members && room.members.length > 0) {
           const memberIds = room.members.map(m => m.userId);
           const membersInfo = await this.lookupUsers(memberIds, params);
 
+          let addedCount = 0;
           for (const memberUser of membersInfo) {
-            call.addParticipant(
-              memberUser.id as UUID,
-              memberUser.displayName || memberUser.uniqueId,
-              memberUser.avatar
-            );
+            // Humans always join. AI personas only join if online (healthy).
+            const isHuman = memberUser.type === 'human';
+            const isOnline = memberUser.status === 'online';
+            if (isHuman || isOnline) {
+              call.addParticipant(
+                memberUser.id as UUID,
+                memberUser.displayName || memberUser.uniqueId,
+                memberUser.avatar
+              );
+              addedCount++;
+            } else {
+              console.log(`🎙️ LiveJoin: Skipping ${memberUser.displayName} (status=${memberUser.status})`);
+            }
           }
-          console.log(`🎙️ LiveJoin: Added ${membersInfo.length} room members to new call ${call.id.slice(0, 8)}`);
+          console.log(`🎙️ LiveJoin: Added ${addedCount}/${membersInfo.length} online room members to new call ${call.id.slice(0, 8)}`);
         }
 
         return { call, existed: false };
@@ -226,6 +256,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async findActiveCall(roomId: UUID, params: LiveJoinParams): Promise<CallEntity | null> {
     const result = await DataList.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         filter: { roomId, status: 'active' },
         limit: 1,
@@ -257,6 +288,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     call.totalParticipants = 0;
 
     const createResult = await DataCreate.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         data: call,
         context: params.context,
@@ -279,6 +311,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async saveCall(call: CallEntity, params: LiveJoinParams): Promise<void> {
     await DataUpdate.execute<CallEntity>({
+        dbHandle: 'default',
         collection: CallEntity.collection,
         id: call.id,
         data: {
@@ -333,6 +366,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     if (userIds.length === 0) return [];
 
     const result = await DataList.execute<UserEntity>({
+        dbHandle: 'default',
         collection: UserEntity.collection,
         filter: { id: { $in: userIds } },
         limit: userIds.length,

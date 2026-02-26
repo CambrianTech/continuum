@@ -40,7 +40,7 @@ export interface DataListParams extends CommandParams {
   readonly fields?: readonly string[];
   /** Verbose mode - if false, returns lean data */
   readonly verbose?: boolean;
-  /** Database handle for multi-database operations */
+  /** Database handle. Use 'default' for main DB, or UUID from data/open. */
   readonly dbHandle?: DbHandle;
   /** Skip the separate COUNT query (saves one IPC round-trip per call).
    *  When true, result.count will be 0. Use when you only need the items. */

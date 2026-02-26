@@ -15,7 +15,7 @@ use super::handle::Handle;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 /// Default time-to-live for audio buffers (5 minutes)
 const DEFAULT_TTL: Duration = Duration::from_secs(300);
@@ -93,7 +93,7 @@ impl AudioBufferPool {
         buffers.retain(|_, buf| !buf.is_expired());
         let evicted = before - buffers.len();
         if evicted > 0 {
-            info!("AudioBufferPool: Evicted {} expired buffers", evicted);
+            clog_info!("AudioBufferPool: Evicted {} expired buffers", evicted);
         }
 
         // If still over limit, evict oldest by creation time
@@ -104,7 +104,7 @@ impl AudioBufferPool {
                 .map(|(h, _)| *h);
             if let Some(oldest_handle) = oldest {
                 buffers.remove(&oldest_handle);
-                warn!(
+                clog_warn!(
                     "AudioBufferPool: Evicted oldest buffer {} (at capacity {})",
                     oldest_handle.short(),
                     MAX_BUFFERS
@@ -114,7 +114,7 @@ impl AudioBufferPool {
 
         buffers.insert(handle, buffer);
 
-        info!(
+        clog_info!(
             "AudioBufferPool: Stored {} ({} samples, {}ms, {}) — {} total",
             handle.short(),
             sample_count,
@@ -141,7 +141,7 @@ impl AudioBufferPool {
 
         if buffer.is_expired() {
             buffers.remove(handle);
-            info!("AudioBufferPool: Handle {} expired on access", handle.short());
+            clog_info!("AudioBufferPool: Handle {} expired on access", handle.short());
             return None;
         }
 
@@ -171,7 +171,7 @@ impl AudioBufferPool {
     pub fn discard(&self, handle: &Handle) -> bool {
         let removed = self.buffers.write().remove(handle).is_some();
         if removed {
-            info!("AudioBufferPool: Discarded {}", handle.short());
+            clog_info!("AudioBufferPool: Discarded {}", handle.short());
         }
         removed
     }

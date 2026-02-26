@@ -21,10 +21,11 @@ use ndarray::{Array2, ArrayD, IxDyn};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-use ort::value::Value;
+use ort::value::{Tensor, Value};
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{info, warn};
+use crate::{clog_info, clog_warn};
 
 // Token constants (SentencePiece, same as Llama)
 const BOS_TOKEN_ID: i64 = 1;
@@ -35,11 +36,12 @@ const MAX_TOKENS: usize = 194; // max_position_embeddings
 static MOONSHINE_MODEL: OnceCell<Arc<MoonshineModel>> = OnceCell::new();
 
 /// Loaded Moonshine ONNX pipeline (4 sessions + vocabulary)
+/// Sessions wrapped in Mutex because ort 2.x `run()` requires `&mut self`.
 struct MoonshineModel {
-    preprocess: Session,
-    encoder: Session,
-    uncached_decoder: Session,
-    cached_decoder: Session,
+    preprocess: Mutex<Session>,
+    encoder: Mutex<Session>,
+    uncached_decoder: Mutex<Session>,
+    cached_decoder: Mutex<Session>,
     vocab: Vec<String>,
 }
 
@@ -56,8 +58,8 @@ impl CacheTensor {
     fn to_value(&self) -> Result<Value, STTError> {
         let array = ArrayD::from_shape_vec(IxDyn(&self.shape), self.data.clone())
             .map_err(|e| STTError::InferenceFailed(format!("KV cache reshape failed: {e}")))?;
-        Value::from_array(array)
-            .map(|v| v.into()) // upcast typed Value → DynValue
+        Tensor::from_array(array)
+            .map(|v| v.into()) // upcast typed Tensor → DynValue
             .map_err(|e| STTError::InferenceFailed(format!("KV cache to Value failed: {e}")))
     }
 }
@@ -120,14 +122,14 @@ impl MoonshineStt {
             for dir in &search_dirs {
                 let candidate = dir.join(&variant);
                 if Self::dir_has_all_files(&candidate) {
-                    info!(
+                    clog_info!(
                         "Moonshine: Using variant from MOONSHINE_MODEL env: {} ({:?})",
                         variant, candidate
                     );
                     return candidate;
                 }
             }
-            warn!(
+            clog_warn!(
                 "Moonshine: MOONSHINE_MODEL='{}' set but files not found, falling back",
                 variant
             );
@@ -137,15 +139,15 @@ impl MoonshineStt {
             for dir in &search_dirs {
                 let candidate = dir.join(subdir);
                 if Self::dir_has_all_files(&candidate) {
-                    info!("Moonshine: Auto-selected variant: {} ({:?})", name, candidate);
+                    clog_info!("Moonshine: Auto-selected variant: {} ({:?})", name, candidate);
                     return candidate;
                 }
             }
         }
 
-        warn!("Moonshine: No model files found. Download from:");
-        warn!("  https://huggingface.co/UsefulSensors/moonshine");
-        warn!("  Place onnx/tiny/ contents in: models/moonshine/tiny/");
+        clog_warn!("Moonshine: No model files found. Download from:");
+        clog_warn!("  https://huggingface.co/UsefulSensors/moonshine");
+        clog_warn!("  Place onnx/tiny/ contents in: models/moonshine/tiny/");
         PathBuf::from("models/moonshine/tiny")
     }
 
@@ -173,7 +175,7 @@ impl MoonshineStt {
             })
             .collect();
 
-        info!("Moonshine: Loaded vocabulary with {} tokens", tokens.len());
+        clog_info!("Moonshine: Loaded vocabulary with {} tokens", tokens.len());
         Ok(tokens)
     }
 
@@ -238,7 +240,7 @@ impl MoonshineStt {
         index: usize,
     ) -> Result<CacheTensor, STTError> {
         let (shape, data) = outputs[index]
-            .try_extract_raw_tensor::<f32>()
+            .try_extract_tensor::<f32>()
             .map_err(|e| STTError::InferenceFailed(format!("Tensor extraction at [{index}]: {e}")))?;
         Ok(CacheTensor {
             shape: shape.iter().map(|&s| s as usize).collect(),
@@ -268,25 +270,27 @@ impl MoonshineStt {
         let audio_input = Array2::from_shape_vec((1, num_samples), samples)
             .map_err(|e| STTError::InferenceFailed(format!("Audio input reshape: {e}")))?;
 
-        let preprocess_out = model
-            .preprocess
-            .run(ort::inputs![audio_input].map_err(|e| {
-                STTError::InferenceFailed(format!("Preprocess inputs: {e}"))
-            })?)
+        let audio_tensor = Tensor::from_array(audio_input)
+            .map_err(|e| STTError::InferenceFailed(format!("Preprocess input tensor: {e}")))?;
+        let mut preprocess_session = model.preprocess.lock();
+        let preprocess_out = preprocess_session
+            .run(ort::inputs![audio_tensor])
             .map_err(|e| STTError::InferenceFailed(format!("Preprocess run: {e}")))?;
-
         let features = Self::extract_f32(&preprocess_out, 0)?;
+        drop(preprocess_out);
+        drop(preprocess_session);
         let features_array = Self::cache_to_array(&features)?;
 
         // ── Step 2: Encode ─ features → hidden states ────────────────────
-        let encoder_out = model
-            .encoder
-            .run(ort::inputs![features_array].map_err(|e| {
-                STTError::InferenceFailed(format!("Encoder inputs: {e}"))
-            })?)
+        let features_tensor = Tensor::from_array(features_array)
+            .map_err(|e| STTError::InferenceFailed(format!("Encoder input tensor: {e}")))?;
+        let mut encoder_session = model.encoder.lock();
+        let encoder_out = encoder_session
+            .run(ort::inputs![features_tensor])
             .map_err(|e| STTError::InferenceFailed(format!("Encoder run: {e}")))?;
-
         let encoder_hidden = Self::extract_f32(&encoder_out, 0)?;
+        drop(encoder_out);
+        drop(encoder_session);
 
         // ── Step 3: Autoregressive decoding ──────────────────────────────
         let mut generated_tokens: Vec<i64> = Vec::with_capacity(MAX_TOKENS);
@@ -297,11 +301,13 @@ impl MoonshineStt {
                 .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
         let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
-        let uncached_out = model
-            .uncached_decoder
-            .run(ort::inputs![token_input, enc_array].map_err(|e| {
-                STTError::InferenceFailed(format!("Uncached decoder inputs: {e}"))
-            })?)
+        let token_tensor = Tensor::from_array(token_input)
+            .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder token tensor: {e}")))?;
+        let enc_tensor = Tensor::from_array(enc_array)
+            .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}")))?;
+        let mut uncached_session = model.uncached_decoder.lock();
+        let uncached_out = uncached_session
+            .run(ort::inputs![token_tensor, enc_tensor])
             .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder run: {e}")))?;
 
         // Logits = output[0], KV cache = output[1..]
@@ -323,6 +329,8 @@ impl MoonshineStt {
         let mut kv_cache: Vec<CacheTensor> = (1..num_outputs)
             .map(|i| Self::extract_f32(&uncached_out, i))
             .collect::<Result<Vec<_>, _>>()?;
+        drop(uncached_out);
+        drop(uncached_session);
 
         // Subsequent decode steps (cached — with KV cache)
         for _step in 1..MAX_TOKENS {
@@ -331,11 +339,11 @@ impl MoonshineStt {
             let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
             // Build named inputs: [token, encoder_hidden, kv_0, kv_1, ...]
-            // ort v2: Value::from_array returns typed Value — .into() upcasts to DynValue
-            let token_val: Value = Value::from_array(token_input)
+            // ort v2: Tensor::from_array returns typed Tensor — .into() upcasts to DynValue
+            let token_val: Value = Tensor::from_array(token_input)
                 .map(|v| v.into())
                 .map_err(|e| STTError::InferenceFailed(format!("Token value: {e}")))?;
-            let enc_val: Value = Value::from_array(enc_array)
+            let enc_val: Value = Tensor::from_array(enc_array)
                 .map(|v| v.into())
                 .map_err(|e| STTError::InferenceFailed(format!("Encoder value: {e}")))?;
 
@@ -347,16 +355,15 @@ impl MoonshineStt {
             }
 
             // ort v2: session.run() needs named inputs — pair with model's input names
-            let named_inputs: Vec<(String, Value)> = model
-                .cached_decoder
-                .inputs
+            let mut cached_session = model.cached_decoder.lock();
+            let named_inputs: Vec<(String, Value)> = cached_session
+                .inputs()
                 .iter()
-                .map(|i| i.name.clone())
+                .map(|i| i.name().to_string())
                 .zip(input_values)
                 .collect();
 
-            let cached_out = model
-                .cached_decoder
+            let cached_out = cached_session
                 .run(named_inputs)
                 .map_err(|e| STTError::InferenceFailed(format!("Cached decoder run: {e}")))?;
 
@@ -373,12 +380,13 @@ impl MoonshineStt {
             kv_cache = (1..num_outputs)
                 .map(|i| Self::extract_f32(&cached_out, i))
                 .collect::<Result<Vec<_>, _>>()?;
+            // cached_out and cached_session dropped at end of loop iteration
         }
 
         // ── Step 4: Decode tokens → text ─────────────────────────────────
         let text = Self::decode_tokens(&model.vocab, &generated_tokens);
 
-        info!(
+        clog_info!(
             "Moonshine: Transcribed {}ms audio → {} tokens → \"{}\"",
             duration_ms,
             generated_tokens.len(),
@@ -433,12 +441,12 @@ impl SpeechToText for MoonshineStt {
 
     async fn initialize(&self) -> Result<(), STTError> {
         if MOONSHINE_MODEL.get().is_some() {
-            info!("Moonshine: Already initialized");
+            clog_info!("Moonshine: Already initialized");
             return Ok(());
         }
 
         let model_dir = self.find_model_dir();
-        info!("Moonshine: Loading models from {:?}", model_dir);
+        clog_info!("Moonshine: Loading models from {:?}", model_dir);
 
         if !Self::dir_has_all_files(&model_dir) {
             let missing: Vec<&str> = Self::REQUIRED_FILES
@@ -458,19 +466,19 @@ impl SpeechToText for MoonshineStt {
         let cached_decoder =
             Self::build_session(&model_dir.join("cached_decode.int8.onnx"))?;
 
-        info!(
+        clog_info!(
             "Moonshine: Uncached decoder has {} outputs ({} KV cache tensors)",
-            uncached_decoder.outputs.len(),
-            uncached_decoder.outputs.len().saturating_sub(1)
+            uncached_decoder.outputs().len(),
+            uncached_decoder.outputs().len().saturating_sub(1)
         );
 
         let vocab = Self::load_vocab(&model_dir)?;
 
         let model = MoonshineModel {
-            preprocess,
-            encoder,
-            uncached_decoder,
-            cached_decoder,
+            preprocess: Mutex::new(preprocess),
+            encoder: Mutex::new(encoder),
+            uncached_decoder: Mutex::new(uncached_decoder),
+            cached_decoder: Mutex::new(cached_decoder),
             vocab,
         };
 
@@ -478,7 +486,7 @@ impl SpeechToText for MoonshineStt {
             .set(Arc::new(model))
             .map_err(|_| STTError::ModelNotLoaded("Failed to set global model".into()))?;
 
-        info!("Moonshine: All models loaded successfully");
+        clog_info!("Moonshine: All models loaded successfully");
         Ok(())
     }
 

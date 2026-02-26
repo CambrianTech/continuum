@@ -32,7 +32,7 @@ export class TaskCompleteServerCommand extends CommandBase<TaskCompleteParams, T
         collection: COLLECTIONS.TASKS,
         filter: { id: completeParams.taskId },
         limit: 1
-      });
+      }, 'default');
 
       if (!queryResult.success || !queryResult.data || queryResult.data.length === 0) {
         return transformPayload(params, {
@@ -79,7 +79,8 @@ export class TaskCompleteServerCommand extends CommandBase<TaskCompleteParams, T
         COLLECTIONS.TASKS,
         completeParams.taskId,
         updatedTask,
-        true
+        true,
+        'default'
       );
 
       if (!updatedTaskEntity) {

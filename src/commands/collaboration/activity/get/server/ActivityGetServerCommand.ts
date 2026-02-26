@@ -37,6 +37,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
     if (id) {
       // Get by primary key
       const result = await DataRead.execute({
+        dbHandle: 'default',
         collection: 'activities',
         id,
         context: params.context,
@@ -49,6 +50,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
     } else if (uniqueId) {
       // Get by uniqueId
       const result = await DataList.execute({
+        dbHandle: 'default',
         collection: 'activities',
         filter: { uniqueId },
         limit: 1,

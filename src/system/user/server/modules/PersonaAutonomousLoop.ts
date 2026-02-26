@@ -136,7 +136,9 @@ export class PersonaAutonomousLoop {
         await ORM.update<TaskEntity>(
           COLLECTIONS.TASKS,
           item.taskId,
-          { status: 'in_progress', startedAt: new Date() }
+          { status: 'in_progress', startedAt: new Date() },
+          true,
+          'default'
         );
       } catch {
         // Task was deleted between dequeue and execution — skip it
@@ -209,7 +211,7 @@ export class PersonaAutonomousLoop {
    */
   private async resolveRoomSlug(roomId: UUID): Promise<string> {
     try {
-      const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+      const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId, 'default');
       if (room?.uniqueId) return room.uniqueId;
     } catch {
       // Room lookup failed — use truncated UUID

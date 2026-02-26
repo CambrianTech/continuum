@@ -203,7 +203,8 @@ export class CoordinationDecisionLogger {
         data: entity,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
+        sessionId: DataDaemon.jtagContext!.uuid,
+        dbHandle: 'default'
       });
 
       this.logger.info(`📊 CoordinationDecisionLogger: Logged ${params.action} decision (seq=${sequenceNumber}, conf=${params.confidence.toFixed(2)}, temp=${ambientState.temperature.toFixed(2)})`);

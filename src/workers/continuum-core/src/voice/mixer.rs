@@ -7,7 +7,7 @@ use crate::audio_constants::AUDIO_FRAME_SIZE;
 use crate::voice::handle::Handle;
 use crate::voice::vad::{ProductionVAD, VADError};
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use crate::{clog_debug, clog_info, clog_warn};
 
 /// Audio test utilities for generating synthetic audio
 pub mod test_utils {
@@ -203,10 +203,10 @@ impl ParticipantStream {
         if let Some(ref mut vad) = self.vad {
             match vad.initialize() {
                 Ok(_) => {
-                    info!("🎯 ProductionVAD initialized for {}", self.display_name);
+                    clog_info!("🎯 ProductionVAD initialized for {}", self.display_name);
                 }
                 Err(e) => {
-                    warn!("⚠️ VAD init failed for {}: {:?}", self.display_name, e);
+                    clog_warn!("⚠️ VAD init failed for {}: {:?}", self.display_name, e);
                     // In tests, VAD may not be available - gracefully disable
                     self.vad = None;
                 }
@@ -228,7 +228,7 @@ impl ParticipantStream {
                 let samples_to_write = samples.len().min(AI_RING_BUFFER_SIZE - self.ai_ring_available);
 
                 if samples_to_write < samples.len() {
-                    warn!(
+                    clog_warn!(
                         "⚠️ AI ring buffer overflow for {}: dropping {} of {} samples (buffer: {}/{}s used)",
                         self.display_name,
                         samples.len() - samples_to_write,
@@ -246,7 +246,7 @@ impl ParticipantStream {
                 self.ai_ring_available += samples_to_write;
 
                 if samples_to_write > 0 {
-                    debug!(
+                    clog_debug!(
                         "🤖 AI {} buffered {} samples (total: {} = {:.1}s)",
                         self.display_name,
                         samples_to_write,
@@ -284,7 +284,7 @@ impl ParticipantStream {
                 Ok(Some(complete_sentence)) => {
                     // Complete sentence ready for transcription
                     let duration_ms = (complete_sentence.len() as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32) * 1000.0;
-                    info!(
+                    clog_info!(
                         "📤 Complete sentence ready for {} ({} samples, {:.0}ms)",
                         self.display_name,
                         complete_sentence.len(),
@@ -307,7 +307,7 @@ impl ParticipantStream {
                     }
                 }
                 Err(e) => {
-                    debug!("VAD error for {}: {:?}", self.display_name, e);
+                    clog_debug!("VAD error for {}: {:?}", self.display_name, e);
                     PushAudioResult {
                         speech_ended: false,
                         speech_samples: None,

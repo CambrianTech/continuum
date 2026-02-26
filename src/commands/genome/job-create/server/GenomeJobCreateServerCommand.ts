@@ -235,6 +235,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       // 6. Save to database
       const createResult = await DataCreate.execute<FineTuningJobEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         data: jobEntity
       });
@@ -275,6 +276,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       if (!trainingResult.success) {
         // Training failed - update job status
         await DataUpdate.execute<FineTuningJobEntity>({
+          dbHandle: 'default',
           collection: COLLECTIONS.FINE_TUNING_JOBS,
           id: jobId,
           data: {
@@ -298,6 +300,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       // Update job entity with training session info
       await DataUpdate.execute<FineTuningJobEntity>({
+        dbHandle: 'default',
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: jobId,
         data: {

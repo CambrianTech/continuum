@@ -61,6 +61,7 @@ export class DatasetCreateServerCommand {
 
     // Save to database
     const createResult = await DataCreate.execute({
+      dbHandle: 'default',
       collection: DatasetExecutionEntity.collection,
       data: { ...execution, id: jobId },
     });
@@ -195,6 +196,7 @@ export class DatasetCreateServerCommand {
    */
   private async updateJobStatus(jobId: string, updates: Partial<DatasetExecutionEntity>): Promise<void> {
     await DataUpdate.execute({
+      dbHandle: 'default',
       collection: DatasetExecutionEntity.collection,
       id: jobId,
       data: updates,

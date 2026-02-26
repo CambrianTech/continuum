@@ -108,6 +108,7 @@ export class ActivityUpdateServerCommand extends CommandBase<ActivityUpdateParam
 
     // Persist updates
     const updateResult = await DataUpdate.execute({
+      dbHandle: 'default',
       collection: 'activities',
       id: activity.id,
       data: updates,

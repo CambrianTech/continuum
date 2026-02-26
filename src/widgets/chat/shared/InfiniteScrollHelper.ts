@@ -228,6 +228,7 @@ export class InfiniteScrollHelper {
         value: this.state.oldestTimestamp,
         direction: 'before' // Load messages older than cursor
       } : undefined,
+      dbHandle: 'default',
       context: {} as any,
       sessionId: '' as any, // These will be filled by the widget
       userId: SYSTEM_SCOPES.SYSTEM

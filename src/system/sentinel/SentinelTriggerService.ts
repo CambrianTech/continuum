@@ -79,7 +79,7 @@ export async function initializeSentinelTriggers(): Promise<void> {
     }
   });
 
-  console.log(`[SentinelTrigger] Initialized — ${activeTriggers.size} trigger(s) registered`);
+  // Triggers registered
 }
 
 /**

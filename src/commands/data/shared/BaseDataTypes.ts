@@ -16,7 +16,7 @@ import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandl
 /**
  * Base interface for all data command parameters
  * Uses JTAGEnvironment for routing capability
- * Supports optional dbHandle for multi-database operations
+ * Requires dbHandle for explicit multi-database routing
  */
 export interface BaseDataParams extends CommandParams {
   /**
@@ -24,7 +24,7 @@ export interface BaseDataParams extends CommandParams {
    */
   readonly collection: string;
   readonly backend: JTAGEnvironment;
-  /** Optional database handle for multi-database operations (defaults to 'default') */
+  /** Database handle — 'default' for main DB, or UUID from data/open. */
   readonly dbHandle?: DbHandle;
   /** Suppress CRUD events for this operation (for internal operations like archiving) */
   readonly suppressEvents?: boolean;
@@ -54,7 +54,8 @@ export const createBaseDataParams = (
 ): BaseDataParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
   ...data,
-  backend: data.backend ?? 'server'
+  backend: data.backend ?? 'server',
+  dbHandle: data.dbHandle ?? 'default'
 });
 
 /**

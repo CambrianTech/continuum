@@ -42,7 +42,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     try {
       // Get singleton IPC client (auto-connects)
       this.client = await RustCoreIPCClient.getInstanceAsync();
-      console.log(`[CandleAdapter] Connected to continuum-core via IPC`);
+      // Connected
     } catch (err) {
       console.error(`[CandleAdapter] Failed to connect to continuum-core:`, err);
       throw err;

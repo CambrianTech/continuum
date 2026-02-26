@@ -632,7 +632,8 @@ export abstract class ReactiveWidget extends LitElement {
               collection,
               filter: dbFilter,
               orderBy: dbOrderBy,
-              limit: limit ? limit * 2 : 100 // Load extra for filtering headroom
+              limit: limit ? limit * 2 : 100, // Load extra for filtering headroom
+              dbHandle: 'default'
             }
           );
 
@@ -1035,7 +1036,8 @@ export abstract class ReactiveWidget extends LitElement {
         collection: COLLECTIONS.USER_STATES,
         filter: { userId },
         limit: 1,
-        backend: 'server'  // Bypass localStorage cache for fresh data
+        backend: 'server',  // Bypass localStorage cache for fresh data
+        dbHandle: 'default'
       });
 
       console.log(`🔍 ${this.config.widgetName}.loadUserContext: Query result - success=${stateResult.success}, items=${stateResult.items?.length || 0}, hasContentState=${!!stateResult.items?.[0]?.contentState}, openItems=${stateResult.items?.[0]?.contentState?.openItems?.length || 0}`);

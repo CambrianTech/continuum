@@ -709,26 +709,31 @@ mod tests {
 
     #[test]
     fn export_bindings_genomeadapterinfo() {
-        GenomeAdapterInfo::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        GenomeAdapterInfo::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_genomepagingstate() {
-        GenomePagingState::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        GenomePagingState::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_activateskillresult() {
-        ActivateSkillResult::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        ActivateSkillResult::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_domainactivity() {
-        DomainActivity::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        DomainActivity::export_all(&cfg).unwrap();
     }
 
     #[test]
     fn export_bindings_coveragereport() {
-        CoverageReport::export_all().unwrap();
+        let cfg = ts_rs::Config::default();
+        CoverageReport::export_all(&cfg).unwrap();
     }
 }

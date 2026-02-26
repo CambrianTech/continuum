@@ -89,6 +89,7 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
 
       // Store in database using Commands.execute
       const result = await DataCreate.execute({
+        dbHandle: 'default',
         collection: CodeIndexEntity.collection,
         data: entry,
         context: this.context,

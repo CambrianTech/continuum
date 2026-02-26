@@ -38,6 +38,7 @@ export class StateContentSwitchServerCommand extends CommandBase<StateContentSwi
     try {
       // 1. Load user's UserStateEntity from database
       const listResult = await DataList.execute<UserStateEntity>({
+        dbHandle: 'default',
         collection: 'user_states',
         filter: { userId: params.userId },
         limit: 1
@@ -66,6 +67,7 @@ export class StateContentSwitchServerCommand extends CommandBase<StateContentSwi
 
       // 3. Save updated userState to database
       await DataUpdate.execute({
+        dbHandle: 'default',
         collection: 'user_states',
         id: userState.id,
         data: userState

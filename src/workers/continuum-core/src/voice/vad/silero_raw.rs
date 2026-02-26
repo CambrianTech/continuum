@@ -75,40 +75,46 @@ impl SileroRawVAD {
 
     /// Run inference (blocking)
     fn infer_sync(
-        session: &Session,
+        session: &mut Session,
         audio: Array2<f32>,
         state: VadState,
         sr: i64,
     ) -> Result<(f32, VadState), VADError> {
-        // Create inputs (HuggingFace model uses combined "state" input)
+        // Create inputs — ort 2.x requires explicit TensorRef for views
+        let sr_array = Array1::from_vec(vec![sr]);
+        let input_tensor = ort::value::TensorRef::from_array_view(audio.view())
+            .map_err(|e| VADError::InferenceFailed(format!("Audio tensor: {e}")))?;
+        let state_tensor = ort::value::TensorRef::from_array_view(state.state.view())
+            .map_err(|e| VADError::InferenceFailed(format!("State tensor: {e}")))?;
+        let sr_tensor = ort::value::TensorRef::from_array_view(sr_array.view())
+            .map_err(|e| VADError::InferenceFailed(format!("SR tensor: {e}")))?;
         let inputs = ort::inputs![
-            "input" => audio.view(),
-            "state" => state.state.view(),
-            "sr" => Array1::from_vec(vec![sr]).view()
-        ]
-        .map_err(|e| VADError::InferenceFailed(format!("Failed to create inputs: {e}")))?;
+            "input" => input_tensor,
+            "state" => state_tensor,
+            "sr" => sr_tensor
+        ];
 
         // Run inference
         let outputs = session
             .run(inputs)
             .map_err(|e| VADError::InferenceFailed(format!("Inference failed: {e}")))?;
 
-        // Extract speech probability
+        // Extract speech probability (try_extract_array returns ndarray::ArrayViewD)
         let output = outputs["output"]
-            .try_extract_tensor::<f32>()
+            .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract output: {e}")))?;
 
-        let speech_prob = output.view().into_dimensionality::<ndarray::Ix2>()
+        let speech_prob = output.into_dimensionality::<ndarray::Ix2>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?
             [[0, 0]];
 
         // Extract new state (HuggingFace model outputs "stateN")
         let state_n = outputs["stateN"]
-            .try_extract_tensor::<f32>()
+            .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract stateN: {e}")))?;
 
         // Convert to 3D array (2x1x128)
-        let state_next = state_n.view().into_dimensionality::<ndarray::Ix3>()
+        let state_next = state_n.into_dimensionality::<ndarray::Ix3>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid stateN shape: {e}")))?
             .to_owned();
 
@@ -189,8 +195,8 @@ impl VoiceActivityDetection for SileroRawVAD {
 
         // Run inference directly (CPU-bound, ~54ms)
         // This is called only when WebRTC pre-filter detects possible speech
-        let session_guard = session.lock();
-        let (speech_prob, new_state) = Self::infer_sync(&session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)?;
+        let mut session_guard = session.lock();
+        let (speech_prob, new_state) = Self::infer_sync(&mut session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)?;
         drop(session_guard);
 
         // Update state

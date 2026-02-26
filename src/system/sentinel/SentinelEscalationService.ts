@@ -107,7 +107,7 @@ export function initializeSentinelEscalation(): void {
     await handleSentinelLifecycle(payload, 'cancelled');
   });
 
-  console.log('[SentinelEscalation] Initialized — listening for sentinel lifecycle events');
+  // Listening for lifecycle events
 }
 
 /**

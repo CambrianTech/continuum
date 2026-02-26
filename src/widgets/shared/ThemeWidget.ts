@@ -353,6 +353,7 @@ export class ThemeWidget extends BaseWidget {
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',
+        dbHandle: 'default',
         data: {
           preferences: {
             theme: themeName
@@ -401,7 +402,8 @@ export class ThemeWidget extends BaseWidget {
           deviceId: identity.deviceId
         },
         orderBy: [{ field: 'updatedAt', direction: 'desc' }],
-        limit: 1
+        limit: 1,
+        dbHandle: 'default'
       });
 
       if (userStates.success && userStates.items && userStates.items.length > 0) {

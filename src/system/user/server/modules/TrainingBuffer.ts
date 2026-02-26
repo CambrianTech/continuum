@@ -318,7 +318,7 @@ export class TrainingBuffer {
         trainingData: trainingExamples as unknown[],
       };
 
-      await ORM.store(TaskEntity.collection, task);
+      await ORM.store(TaskEntity.collection, task, false, 'default');
       this.logger(`✅ Created fine-tune-lora task for ${trait}`);
     } catch (error) {
       this.logger(`❌ Failed to create training task: ${error}`);
