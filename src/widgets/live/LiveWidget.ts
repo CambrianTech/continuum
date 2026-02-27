@@ -244,6 +244,7 @@ export class LiveWidget extends ReactiveWidget {
       this.speakerVolume = callState.speakerVolume ?? 1.0;
       this.cameraEnabled = callState.cameraEnabled ?? false;
       this.screenShareEnabled = callState.screenShareEnabled ?? false;
+      this.captionsEnabled = callState.captionsEnabled ?? true;
     }
   }
 
@@ -259,6 +260,7 @@ export class LiveWidget extends ReactiveWidget {
       speakerVolume: this.speakerVolume,
       cameraEnabled: this.cameraEnabled,
       screenShareEnabled: this.screenShareEnabled,
+      captionsEnabled: this.captionsEnabled,
       currentCallId: this.sessionId || undefined
     };
 
