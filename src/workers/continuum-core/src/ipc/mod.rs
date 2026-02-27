@@ -18,7 +18,7 @@ use crate::modules::cognition::{CognitionModule, CognitionState};
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::models::ModelsModule;
 use crate::modules::memory::{MemoryModule, MemoryState};
-use crate::modules::voice::{VoiceModule, VoiceState};
+use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::rag::{RagModule, RagState};
 use crate::modules::data::DataModule;
@@ -115,12 +115,12 @@ impl Response {
 /// The fields are kept here to ensure the Arc lifetimes outlive the modules.
 #[allow(dead_code)]
 struct ServerState {
-    voice_service: Arc<crate::voice::voice_service::VoiceService>,
+    voice_service: Arc<crate::live::session::voice_service::VoiceService>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
     channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
     rag_engine: Arc<RagEngine>,
     /// Server-side audio buffer pool for handle-based synthesis.
-    audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
+    audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
     /// Tokio runtime handle for async operations from IPC threads.
     rt_handle: tokio::runtime::Handle,
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
@@ -141,8 +141,8 @@ impl ServerState {
         runtime: Arc<Runtime>,
         channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
         rag_engine: Arc<RagEngine>,
-        voice_service: Arc<crate::voice::voice_service::VoiceService>,
-        audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
+        voice_service: Arc<crate::live::session::voice_service::VoiceService>,
+        audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
         file_engines: Arc<DashMap<String, FileEngine>>,
         shell_sessions: Arc<DashMap<String, ShellSession>>,
     ) -> Self {
@@ -557,7 +557,7 @@ mod tests {
 
 pub fn start_server(
     socket_path: &str,
-    livekit_manager: Arc<crate::voice::livekit_agent::LiveKitAgentManager>,
+    livekit_manager: Arc<crate::live::transport::livekit_agent::LiveKitAgentManager>,
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
 ) -> std::io::Result<()> {
@@ -601,8 +601,8 @@ pub fn start_server(
     runtime.register(Arc::new(RagModule::new(rag_state)));
 
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
-    let voice_service = Arc::new(crate::voice::voice_service::VoiceService::new());
-    let audio_pool = Arc::new(crate::voice::audio_buffer::AudioBufferPool::new());
+    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
         livekit_manager.clone(),

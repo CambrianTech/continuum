@@ -144,7 +144,7 @@ macro_rules! log_error {
 // No need to specify category/component - just log!
 //
 // Category routing examples:
-// - continuum_core::voice::orchestrator → modules/voice
+// - continuum_core::live::session::orchestrator → modules/live
 // - continuum_core::modules::data → modules/data
 // - continuum_core::orm::sqlite → modules/orm
 // - continuum_core::ipc::* → system/ipc
@@ -152,7 +152,7 @@ macro_rules! log_error {
 /// Convert module_path!() to a log category.
 ///
 /// Maps Rust module paths to concern-based log categories:
-/// - `continuum_core::voice::*` → `modules/voice`
+/// - `continuum_core::live::*` → `modules/live`
 /// - `continuum_core::modules::data` → `modules/data`
 /// - `continuum_core::orm::*` → `modules/orm`
 /// - `continuum_core::ipc::*` → `system/ipc`
@@ -171,8 +171,8 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "modules/search"
     } else if path.starts_with("modules::logger") {
         "modules/logger"
-    } else if path.starts_with("modules::voice") {
-        "modules/voice"
+    } else if path.starts_with("modules::live") {
+        "modules/live"
     } else if path.starts_with("modules::memory") {
         "modules/memory"
     } else if path.starts_with("modules::code") {
@@ -187,8 +187,8 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "modules/health"
     } else if path.starts_with("modules::models") {
         "modules/models"
-    } else if path.starts_with("voice::") {
-        "modules/voice"
+    } else if path.starts_with("live::") {
+        "modules/live"
     } else if path.starts_with("orm::") {
         "modules/orm"
     } else if path.starts_with("ai::") || path.starts_with("inference::") {
@@ -324,8 +324,8 @@ mod tests {
     #[test]
     fn test_module_path_conversion() {
         assert_eq!(
-            module_path_to_category("continuum_core::voice::orchestrator"),
-            "modules/voice"
+            module_path_to_category("continuum_core::live::session::orchestrator"),
+            "modules/live"
         );
         assert_eq!(
             module_path_to_category("continuum_core::modules::data"),
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_extract_component() {
-        assert_eq!(extract_component("continuum_core::voice::orchestrator"), "orchestrator");
+        assert_eq!(extract_component("continuum_core::live::session::orchestrator"), "orchestrator");
         assert_eq!(extract_component("my_module"), "my_module");
     }
 }

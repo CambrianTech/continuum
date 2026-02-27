@@ -1,7 +1,7 @@
 /// IPC Layer Unit Tests for Voice Operations
 /// Tests constants, concurrency, and correct IPC protocol
 
-use continuum_core::voice::{VoiceOrchestrator, VoiceParticipant, SpeakerType, UtteranceEvent};
+use continuum_core::live::{VoiceOrchestrator, VoiceParticipant, SpeakerType, UtteranceEvent};
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;

@@ -25,7 +25,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "models",     // Phase 3: async model discovery
     "memory",     // Phase 3: persona memory manager
     "rag",        // Phase 3: batched RAG composition
-    "voice",      // Phase 3: voice service, call manager
+    "live",       // Phase 3: live experience (voice, video, transport)
     "code",       // Phase 3: file engines, shell sessions
     "data",       // Phase 4: database ORM operations
     "logger",     // Phase 4a: structured logging
@@ -83,7 +83,9 @@ impl Runtime {
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
                 match module.initialize(&ctx).await {
-                    Ok(_) => info!("  {} initialized", name),
+                    Ok(_) => {
+                        info!("  {} initialized", name);
+                    }
                     Err(e) => {
                         error!("  {} initialization failed: {}", name, e);
                         return Err(format!("Module '{}' failed to initialize: {}", name, e));

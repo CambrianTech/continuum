@@ -13,7 +13,7 @@
 /// Example: continuum-core-server /tmp/continuum-core.sock
 
 use continuum_core::start_server;
-use continuum_core::voice::livekit_agent::LiveKitAgentManager;
+use continuum_core::live::transport::livekit_agent::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 use std::env;
 use std::sync::Arc;
@@ -76,9 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     tokio::spawn(async {
         // Initialize STT registry and adapters
-        continuum_core::voice::stt::init_registry();
-        match continuum_core::voice::stt::initialize().await {
-            Ok(_) => info!("✅ STT adapter initialized successfully"),
+        continuum_core::live::audio::stt::init_registry();
+        match continuum_core::live::audio::stt::initialize().await {
+            Ok(_) => {
+                info!("✅ STT adapter initialized successfully");
+            }
             Err(e) => {
                 tracing::warn!(
                     "⚠️  STT adapter not available: {}. STT will return errors until model is loaded.",
@@ -90,9 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Initialize TTS registry and adapters
-        continuum_core::voice::tts::init_registry();
-        match continuum_core::voice::tts::initialize().await {
-            Ok(_) => info!("✅ TTS adapter initialized successfully"),
+        continuum_core::live::audio::tts::init_registry();
+        match continuum_core::live::audio::tts::initialize().await {
+            Ok(_) => {
+                info!("✅ TTS adapter initialized successfully");
+            }
             Err(e) => {
                 tracing::warn!(
                     "⚠️  TTS adapter not available: {}. TTS will use fallback (silence).",

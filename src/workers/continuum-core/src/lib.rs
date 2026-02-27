@@ -13,7 +13,7 @@
 pub mod ai;
 pub mod audio_constants;
 pub mod concurrent;
-pub mod voice;
+pub mod live;
 pub mod persona;
 pub mod logging;
 pub mod ipc;
@@ -32,7 +32,7 @@ pub mod tool_parsing;
 
 pub use audio_constants::*;
 
-pub use voice::VoiceOrchestrator;
+pub use live::VoiceOrchestrator;
 pub use persona::{
     PersonaInbox, PersonaCognitionEngine, PersonaState,
     CognitionDecision, PriorityScore, InboxMessage, InboxTask,

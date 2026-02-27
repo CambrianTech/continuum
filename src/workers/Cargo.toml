@@ -106,6 +106,14 @@ futures-util = "0.3"
 msedge-tts = "0.3"
 
 
+# Defense-in-depth for protobuf symbol conflicts between ort and webrtc-sys.
+# Both statically link DIFFERENT versions of protobuf C++. Multiple codegen units
+# can change linker symbol resolution order unpredictably. codegen-units=1 reduces
+# (but doesn't eliminate) this risk. The primary fix is module declaration order
+# in live/mod.rs — webrtc modules MUST be declared before ort/fastembed modules.
+[profile.release]
+codegen-units = 1
+
 [workspace.package]
 edition = "2021"
 version = "0.1.0"

@@ -9,7 +9,7 @@
 //! - Human speaks → GPT-4o gets audio, Claude gets transcription
 //! - Claude responds via TTS → GPT-4o should hear it
 
-use continuum_core::voice::call_server::CallManager;
+use continuum_core::live::transport::call_server::CallManager;
 
 /// Test: Join participants with model info, verify routing setup
 #[tokio::test]

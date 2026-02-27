@@ -1,9 +1,8 @@
 /// Integration tests for CallServer → VoiceOrchestrator flow
 /// Tests the complete path from audio transcription to AI participant selection
 
-use continuum_core::voice::{
-    call_server::CallManager, VoiceOrchestrator, VoiceParticipant, SpeakerType,
-};
+use continuum_core::live::{VoiceOrchestrator, VoiceParticipant, SpeakerType};
+use continuum_core::live::transport::call_server::CallManager;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -104,7 +103,7 @@ async fn test_orchestrator_registered_before_call() {
         .await;
 
     // Manually test orchestrator with utterance
-    let utterance = continuum_core::voice::UtteranceEvent {
+    let utterance = continuum_core::live::UtteranceEvent {
         session_id,
         speaker_id: Uuid::parse_str(TEST_HUMAN_USER).unwrap(),
         speaker_name: "Human User".to_string(),
@@ -152,7 +151,7 @@ async fn test_multiple_participants_orchestrator_filtering() {
         .await;
 
     // Simulate AI 1 speaking (should only notify AI 2)
-    let utterance = continuum_core::voice::UtteranceEvent {
+    let utterance = continuum_core::live::UtteranceEvent {
         session_id,
         speaker_id: ai1_id, // AI 1 is the speaker
         speaker_name: "Helper AI".to_string(),
@@ -195,7 +194,7 @@ async fn test_orchestrator_performance_target() {
         ],
     );
 
-    let utterance = continuum_core::voice::UtteranceEvent {
+    let utterance = continuum_core::live::UtteranceEvent {
         session_id,
         speaker_id: Uuid::parse_str(TEST_HUMAN_USER).unwrap(),
         speaker_name: "Human".to_string(),
@@ -279,7 +278,7 @@ async fn test_concurrent_calls_different_sessions() {
 
     // Simulate utterances in all sessions concurrently
     for (session_id, _) in &sessions {
-        let utterance = continuum_core::voice::UtteranceEvent {
+        let utterance = continuum_core::live::UtteranceEvent {
             session_id: *session_id,
             speaker_id: Uuid::parse_str(TEST_HUMAN_USER).unwrap(),
             speaker_name: "Human".to_string(),
