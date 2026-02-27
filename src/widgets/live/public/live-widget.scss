@@ -27,10 +27,22 @@
   position: relative;
 }
 
-// Captions overlay above controls — does NOT consume flex space
+// Content area — wraps the main video area (grid or spotlight-main).
+// Captions overlay the bottom of this area, like Zoom/Teams/Meet.
+.content-area {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+// Captions overlay — positioned at the bottom of the video content area,
+// floating over the video/grid, never overlapping the strip or controls.
 live-captions {
   position: absolute;
-  bottom: 56px; // above controls bar height
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 10;
@@ -165,7 +177,7 @@ live-captions {
 // ========================================
 
 .spotlight-mode {
-  .spotlight-main {
+  .content-area .spotlight-main {
     flex: 1;
     display: flex;
     align-items: center;

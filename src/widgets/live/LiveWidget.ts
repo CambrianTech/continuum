@@ -875,23 +875,25 @@ export class LiveWidget extends ReactiveWidget {
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
-        <div class="participant-grid" data-count="${this._gridDataCount()}">
-          ${this.participants.length === 0
-            ? html`<div class="empty-state">Waiting for others to join...</div>`
-            : repeat(this.participants, p => p.userId, (p, i) => html`
-                <live-participant-tile
-                  data-user-id="${p.userId}"
-                  data-color="${(i % 7) + 1}"
-                  .userId=${p.userId}
-                  .displayName=${p.displayName}
-                  .isSpeaking=${p.isSpeaking}
-                  .videoElement=${this._videoFor(p.userId)}
-                  .isMuted=${!p.micEnabled}
-                ></live-participant-tile>
-              `)
-          }
+        <div class="content-area">
+          <div class="participant-grid" data-count="${this._gridDataCount()}">
+            ${this.participants.length === 0
+              ? html`<div class="empty-state">Waiting for others to join...</div>`
+              : repeat(this.participants, p => p.userId, (p, i) => html`
+                  <live-participant-tile
+                    data-user-id="${p.userId}"
+                    data-color="${(i % 7) + 1}"
+                    .userId=${p.userId}
+                    .displayName=${p.displayName}
+                    .isSpeaking=${p.isSpeaking}
+                    .videoElement=${this._videoFor(p.userId)}
+                    .isMuted=${!p.micEnabled}
+                  ></live-participant-tile>
+                `)
+            }
+          </div>
+          <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
-        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         <live-controls ${ref(this._controlsRef)}
           .micEnabled=${this.micEnabled}
           .speakerEnabled=${this.speakerEnabled}
@@ -918,21 +920,24 @@ export class LiveWidget extends ReactiveWidget {
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
-        <!-- Main presenter area -->
-        <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>
-          <live-participant-tile
-            class="spotlight-presenter"
-            data-user-id="${presenter.userId}"
-            .userId=${presenter.userId}
-            .displayName=${presenter.displayName}
-            .isSpeaking=${presenter.isSpeaking}
-            .videoElement=${this._videoFor(presenter.userId)}
-            .isPresenter=${true}
-            .isSpotlighted=${!!this.spotlightUserId}
-            .isScreenSharing=${presenter.screenShareEnabled}
-            .isMuted=${!presenter.micEnabled}
-            @click=${(e: Event) => e.stopPropagation()}
-          ></live-participant-tile>
+        <!-- Main presenter area with caption overlay -->
+        <div class="content-area">
+          <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>
+            <live-participant-tile
+              class="spotlight-presenter"
+              data-user-id="${presenter.userId}"
+              .userId=${presenter.userId}
+              .displayName=${presenter.displayName}
+              .isSpeaking=${presenter.isSpeaking}
+              .videoElement=${this._videoFor(presenter.userId)}
+              .isPresenter=${true}
+              .isSpotlighted=${!!this.spotlightUserId}
+              .isScreenSharing=${presenter.screenShareEnabled}
+              .isMuted=${!presenter.micEnabled}
+              @click=${(e: Event) => e.stopPropagation()}
+            ></live-participant-tile>
+          </div>
+          <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
 
         <!-- Other participants in strip -->
@@ -954,7 +959,6 @@ export class LiveWidget extends ReactiveWidget {
           </div>
         ` : ''}
 
-        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         <live-controls ${ref(this._controlsRef)}
           .micEnabled=${this.micEnabled}
           .speakerEnabled=${this.speakerEnabled}
