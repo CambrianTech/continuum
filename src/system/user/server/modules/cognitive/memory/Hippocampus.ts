@@ -177,6 +177,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       this._memoryDbHandle = result.dbHandle;
+      this.persona.personalDbHandle = this._memoryDbHandle;
       CognitionLogger.registerDbHandle(this.persona.id, this._memoryDbHandle);
       this.log(`LTM database opened: ${this._memoryDbHandle}`);
       this.log('LTM database initialized successfully');
@@ -210,6 +211,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           }
 
           this._memoryDbHandle = result.dbHandle;
+          this.persona.personalDbHandle = this._memoryDbHandle;
           CognitionLogger.registerDbHandle(this.persona.id, this._memoryDbHandle);
           this.log(`LTM database opened (after recovery): ${this._memoryDbHandle}`);
           this.log('✅ LTM database recovered and initialized successfully');
@@ -219,9 +221,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
         }
       }
 
-      // If not corruption or recovery failed, log and continue in STM-only mode
-      this.log(`❌ Failed to initialize LTM database: ${error}`);
-      // Continue without LTM (STM-only mode)
+      // No fallback — persona cannot operate without longterm.db
+      throw error;
     }
   }
 

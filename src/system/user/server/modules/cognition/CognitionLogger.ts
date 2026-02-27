@@ -16,15 +16,10 @@
  */
 
 import type { UUID } from '../../../../core/types/CrossPlatformUUID';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { Commands } from '../../../../core/shared/Commands';
 import { COLLECTIONS } from '../../../../shared/Constants';
 import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
 import { generateUUID } from '../../../../core/types/CrossPlatformUUID';
-import type { DataCreateParams, DataCreateResult } from '../../../../../commands/data/create/shared/DataCreateTypes';
-import type { DataListParams, DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
-import type { BaseEntity } from '../../../../data/entities/BaseEntity';
-import type { DataUpdateParams, DataUpdateResult } from '../../../../../commands/data/update/shared/DataUpdateTypes';
+import type { DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
 import type {
   CognitionStateEntity,
   FocusSnapshot,
@@ -53,6 +48,10 @@ import { DataUpdate } from '../../../../../commands/data/update/shared/DataUpdat
  * Uses per-persona database handles for data isolation. Personas register
  * their longterm.db handle via registerDbHandle() — all logging methods
  * automatically route to the correct database.
+ *
+ * Handle registration happens during persona init (Hippocampus.start() calls
+ * registerDbHandle()) BEFORE any work begins (startAutonomousServicing() is last).
+ * The init order in PersonaUser guarantees handles are populated before use.
  */
 export class CognitionLogger {
   /** Per-persona database handles — maps personaId → dbHandle for longterm.db */
@@ -694,8 +693,6 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid,
         suppressEvents: true
       }).catch(err => console.error('CognitionLogger plan step write failed:', err));
-
-      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan step execution:`, error);
     }
@@ -750,8 +747,6 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid,
         suppressEvents: true
       }).catch(err => console.error('CognitionLogger self-state update write failed:', err));
-
-      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log self-state update:`, error);
     }
@@ -810,8 +805,6 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid,
         suppressEvents: true
       }).catch(err => console.error('CognitionLogger memory operation write failed:', err));
-
-      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log memory operation:`, error);
     }
@@ -868,8 +861,6 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid,
         suppressEvents: true
       }).catch(err => console.error('CognitionLogger adapter reasoning write failed:', err));
-
-      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log adapter reasoning:`, error);
     }
@@ -934,8 +925,6 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid,
         suppressEvents: true
       }).catch(err => console.error('CognitionLogger plan replan write failed:', err));
-
-      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan replan:`, error);
     }
