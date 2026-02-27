@@ -21,6 +21,7 @@ export class LiveParticipantTile extends LitElement {
   @reactive() isSpotlighted: boolean = false;
   @reactive() isScreenSharing: boolean = false;
   @reactive() isMuted: boolean = false;
+  @reactive() isPinned: boolean = false;
 
   // Video element from LiveKit — rendered directly in template by Lit
   @reactive() videoElement: HTMLVideoElement | null = null;
@@ -79,6 +80,7 @@ export class LiveParticipantTile extends LitElement {
       this.isSpeaking ? 'speaking' : '',
       this._hasVideo ? 'has-video' : '',
       this.isPresenter ? 'presenter' : '',
+      this.isPinned ? 'pinned' : '',
     ].filter(Boolean).join(' ');
 
     return html`
@@ -94,6 +96,12 @@ export class LiveParticipantTile extends LitElement {
               `
         }
         <div class="participant-name">${this.displayName}</div>
+        <div class="hover-overlay">
+          <span class="overlay-name">${this.displayName}</span>
+          <button class="pin-btn ${this.isPinned ? 'pinned' : ''}" @click=${this._onPin} title="${this.isPinned ? 'Unpin' : 'Pin'}">
+            ${this._renderPinIcon()}
+          </button>
+        </div>
         ${this.isMuted ? html`
           <div class="participant-indicators">
             <div class="indicator muted">${this._renderMutedIcon()}</div>
@@ -121,6 +129,15 @@ export class LiveParticipantTile extends LitElement {
     }));
   }
 
+  private _onPin(e: Event): void {
+    e.stopPropagation();
+    this.dispatchEvent(new CustomEvent('pin-participant', {
+      bubbles: true,
+      composed: true,
+      detail: { userId: this.userId }
+    }));
+  }
+
   private _onExitSpotlight(e: Event): void {
     e.stopPropagation();
     this.dispatchEvent(new CustomEvent('exit-spotlight', {
@@ -138,6 +155,15 @@ export class LiveParticipantTile extends LitElement {
         <line x1="12" x2="12" y1="17" y2="21"></line>
         <path d="m9 10 3-3 3 3"></path>
         <path d="M12 7v7"></path>
+      </svg>
+    `;
+  }
+
+  private _renderPinIcon(): TemplateResult {
+    return html`
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="${this.isPinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 17v5"></path>
+        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>
       </svg>
     `;
   }

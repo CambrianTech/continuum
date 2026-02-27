@@ -123,6 +123,7 @@ export class LiveWidget extends ReactiveWidget {
   private _applyingMicState = false;
 
   // State loading tracking
+  @reactive() private _stateLoaded: boolean = false;
   private stateLoadedPromise: Promise<void> | null = null;
 
   static override styles = [
@@ -141,10 +142,12 @@ export class LiveWidget extends ReactiveWidget {
 
     this.stateLoadedPromise = this.loadUserContext().then(() => {
       this.loadCallState();
-      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled})`);
+      this._stateLoaded = true;
+      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, captions=${this.captionsEnabled})`);
       this.requestUpdate();
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
+      this._stateLoaded = true; // Unblock UI — use defaults
     });
 
     this.visibilityObserver = new IntersectionObserver((entries) => {
@@ -634,12 +637,13 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
-  private toggleCaptions(): void {
+  private async toggleCaptions(): Promise<void> {
     this.captionsEnabled = !this.captionsEnabled;
     if (!this.captionsEnabled) {
       const captions = this._captionsRef.value ?? null;
       captions?.clearAll();
     }
+    await this.saveCallState();
   }
 
   // ========================================
@@ -754,11 +758,26 @@ export class LiveWidget extends ReactiveWidget {
   private _onParticipantClick(e: CustomEvent): void {
     const userId = e.detail.userId;
     if (this.spotlightUserId === userId) {
+      // Already spotlighted — exit back to grid
       this.spotlightUserId = null;
       this._spotlightPinned = false;
     } else {
+      // Temporary spotlight — auto-speaker can still override
       this.spotlightUserId = userId;
-      this._spotlightPinned = true; // Manual click pins the spotlight
+      // Do NOT set _spotlightPinned — only the pin icon does that
+    }
+  }
+
+  private _onPinParticipant(e: CustomEvent): void {
+    const userId = e.detail.userId;
+    if (this.spotlightUserId === userId && this._spotlightPinned) {
+      // Already pinned on this user — unpin
+      this.spotlightUserId = null;
+      this._spotlightPinned = false;
+    } else {
+      // Pin to this user
+      this.spotlightUserId = userId;
+      this._spotlightPinned = true;
     }
   }
 
@@ -800,6 +819,8 @@ export class LiveWidget extends ReactiveWidget {
       this.audioClient = null;
     }
 
+    this._stateLoaded = false;
+
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
     this.speakingTimeouts.clear();
 
@@ -840,7 +861,7 @@ export class LiveWidget extends ReactiveWidget {
   // ========================================
 
   protected override render(): TemplateResult {
-    if (this.isJoined) {
+    if (this.isJoined && this._stateLoaded) {
       const presenter = this.spotlightUserId
         ? this.participants.find(p => p.userId === this.spotlightUserId)
         : this.participants.find(p => p.screenShareEnabled);
@@ -850,6 +871,19 @@ export class LiveWidget extends ReactiveWidget {
       }
 
       return this._renderGridView();
+    }
+
+    if (this.isJoined && !this._stateLoaded) {
+      // Joined but state still loading — show connecting state, not stale defaults
+      return html`
+        <div class="live-container">
+          <div class="join-prompt">
+            <div class="empty-state">
+              <p>Connecting...</p>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     // Not joined
@@ -874,6 +908,7 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-captions=${() => this.toggleCaptions()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
+        @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
@@ -890,6 +925,7 @@ export class LiveWidget extends ReactiveWidget {
                     .isSpeaking=${p.isSpeaking}
                     .videoElement=${this._videoFor(p.userId)}
                     .isMuted=${!p.micEnabled}
+                    .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
                   ></live-participant-tile>
                 `)
             }
@@ -919,12 +955,13 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-captions=${() => this.toggleCaptions()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
+        @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
         <!-- Main presenter area with caption overlay -->
         <div class="content-area">
-          <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>
+          <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; this._spotlightPinned = false; }}>
             <live-participant-tile
               class="spotlight-presenter"
               data-user-id="${presenter.userId}"
@@ -936,6 +973,7 @@ export class LiveWidget extends ReactiveWidget {
               .isSpotlighted=${!!this.spotlightUserId}
               .isScreenSharing=${presenter.screenShareEnabled}
               .isMuted=${!presenter.micEnabled}
+              .isPinned=${this.spotlightUserId === presenter.userId && this._spotlightPinned}
               @click=${(e: Event) => e.stopPropagation()}
             ></live-participant-tile>
           </div>
@@ -955,6 +993,7 @@ export class LiveWidget extends ReactiveWidget {
                   .isSpeaking=${p.isSpeaking}
                   .videoElement=${this._videoFor(p.userId)}
                   .isMuted=${!p.micEnabled}
+                  .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
                 ></live-participant-tile>
               </div>
             `)}
