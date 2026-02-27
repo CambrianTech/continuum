@@ -41,6 +41,8 @@ export interface PersonaUserForLimbic {
   readonly client?: JTAGClient;
   readonly state: UserStateEntity;
   readonly homeDirectory: string;
+  /** Personal database handle (longterm.db) — set by Hippocampus, read by subsystems */
+  personalDbHandle: DbHandle | null;
   saveState(): Promise<void>;
 }
 
@@ -121,7 +123,7 @@ export class LimbicSystem {
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
-      'default',
+      () => personaUser.personalDbHandle,
       {
         baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
         memoryBudgetMB: 200,
@@ -184,26 +186,17 @@ export class LimbicSystem {
   // ===== PUBLIC INTERFACE =====
 
   /**
-   * Set the database handle for persona-private data operations.
-   * Called after Hippocampus opens longterm.db and obtains the real handle.
-   * Propagates to PersonaMemory so RAG context storage uses the right DB.
+   * Wait for Hippocampus DB initialization to complete.
+   * THROWS if handle is null — persona cannot operate without longterm.db.
+   * The handle is set on BaseUser.personalDbHandle by Hippocampus directly;
+   * PersonaMemory reads it via a live reference — no propagation needed.
    */
-  setDbHandle(handle: DbHandle): void {
-    this.logger.info(`Database handle set: ${handle}`);
-    this.memory.dbHandle = handle;
-  }
-
-  /**
-   * Wait for Hippocampus DB initialization and propagate handle to PersonaMemory.
-   * Must be called after startMemoryConsolidation() to ensure the DB is open.
-   */
-  async propagateDbHandle(): Promise<void> {
+  async ensureDbReady(): Promise<DbHandle> {
     const handle = await this.hippocampus.waitForDbInit();
-    if (handle) {
-      this.setDbHandle(handle);
-    } else {
-      this.logger.warn('Hippocampus DB handle is null — PersonaMemory will use initial handle');
+    if (!handle) {
+      throw new Error(`${this.displayName}: Hippocampus DB init failed — cannot start persona without longterm.db`);
     }
+    return handle;
   }
 
   /**
