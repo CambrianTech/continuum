@@ -163,6 +163,18 @@ impl NativeBufferPublisher {
 impl FramePublisher for NativeBufferPublisher {
     fn name(&self) -> &'static str { "native-nv12" }
 
+    fn resize(&mut self, width: u32, height: u32) {
+        if width == self.width && height == self.height {
+            return;
+        }
+        crate::clog_info!("📹 NativeBufferPublisher: resize {}×{} → {}×{}",
+            self.width, self.height, width, height);
+        self.width = width;
+        self.height = height;
+        // NativeBufferPublisher allocates per-frame, so no pre-allocated buffers to recreate.
+        // The next try_publish will use the new dimensions for CVPixelBufferCreate.
+    }
+
     fn try_publish(&mut self, source: &NativeVideoSource) -> Result<bool, PublishError> {
         let frame = match self.frame_rx.try_recv() {
             Ok(f) => f,

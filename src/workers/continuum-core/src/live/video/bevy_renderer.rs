@@ -39,17 +39,19 @@ fn bevy_debug(_msg: &str) {
 }
 
 /// Maximum number of concurrent avatar render slots.
-/// 24 supports up to 24 AI personas with 3D avatars simultaneously.
-/// At 30fps × 640×480 × 4 bytes = ~36.9 MB/s readback per slot.
-/// Bevy supports 32 render layers; we use layers 1-24, leaving headroom.
+/// 16 supports up to 16 AI personas with 3D avatars simultaneously.
+/// At 15fps × 1280×720 × 4 bytes = ~52.7 MB/s readback per slot.
+/// On Apple Silicon shared memory this is essentially a memcpy.
+/// Bevy supports 32 render layers; we use layers 1-16, leaving headroom.
 pub const MAX_AVATAR_SLOTS: u8 = 16;
 
-/// Render resolution per avatar.
-/// 640×480 (VGA) — good quality for grid tiles, ~75% less GPU than 720p.
-/// Adaptive resolution (ResolutionTier) will eventually drive per-slot sizes,
-/// but VGA is the minimum floor. Spotlight tiles can go higher later.
-const AVATAR_WIDTH: u32 = 640;
-const AVATAR_HEIGHT: u32 = 480;
+/// Default render resolution per avatar.
+/// 1280×720 (HD) — sharp quality for spotlight/expanded tiles. The GPU bridge
+/// makes this nearly free (pre-allocated IOSurface, zero-copy). Adaptive
+/// resolution (ResolutionTier) drives per-slot sizes at runtime: smaller tiles
+/// get downgraded via the hysteresis protocol, larger tiles can go up to FullHD.
+pub const AVATAR_WIDTH: u32 = 1280;
+pub const AVATAR_HEIGHT: u32 = 720;
 
 /// Target framerate for avatar rendering.
 /// 15fps — adequate for lip sync and head animation while reducing GPU load ~40%.
@@ -406,6 +408,24 @@ struct SlotGestureState {
     phase: f32,
 }
 
+/// Per-slot render target dimensions. Updated when a slot is resized.
+/// The ReadbackComplete observer reads from this instead of using constants,
+/// allowing each slot to have a different resolution after adaptive resize.
+#[derive(Resource)]
+struct SlotDimensions {
+    dims: HashMap<u8, (u32, u32)>,
+}
+
+impl Default for SlotDimensions {
+    fn default() -> Self {
+        let mut dims = HashMap::new();
+        for slot in 0..MAX_AVATAR_SLOTS {
+            dims.insert(slot, (AVATAR_WIDTH, AVATAR_HEIGHT));
+        }
+        Self { dims }
+    }
+}
+
 /// Per-slot mouth weights from audio amplitude analysis.
 /// Updated by SetMouthWeight commands from the livekit_agent audio pipeline.
 /// When present, animate_speaking() uses this instead of sine oscillation.
@@ -443,6 +463,7 @@ fn run_bevy_app(
         .insert_resource(BoneRegistry::default())
         .insert_resource(IdleGestureState::default())
         .insert_resource(MouthWeights::default())
+        .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
@@ -504,8 +525,16 @@ fn spawn_readback_entity(
         .observe(
             move |event: On<ReadbackComplete>,
                   channels: Res<FrameChannels>,
-                  health: Res<SlotHealthStatus>| {
+                  health: Res<SlotHealthStatus>,
+                  slot_dims: Res<SlotDimensions>| {
                 let pixel_bytes: &[u8] = &event.data;
+
+                // Look up this slot's current dimensions (may have been resized)
+                let (slot_w, slot_h) = slot_dims.dims
+                    .get(&slot_id)
+                    .copied()
+                    .unwrap_or((AVATAR_WIDTH, AVATAR_HEIGHT));
+
                 // Log first readback per slot + pixel diversity diagnostic
                 static FIRST_READBACK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
                 static FRAME_COUNTER: [std::sync::atomic::AtomicU32; 16] = {
@@ -515,7 +544,7 @@ fn spawn_readback_entity(
                 let mask = 1u16 << slot_id;
                 let prev = FIRST_READBACK.fetch_or(mask, std::sync::atomic::Ordering::Relaxed);
                 if prev & mask == 0 {
-                    clog_info!("🎨 Slot {}: first ReadbackComplete ({} bytes)", slot_id, pixel_bytes.len());
+                    clog_info!("🎨 Slot {}: first ReadbackComplete ({} bytes, {}×{})", slot_id, pixel_bytes.len(), slot_w, slot_h);
                 }
 
                 // Health check at frame 150 and 300 — LOG ONLY, no fallback.
@@ -523,8 +552,8 @@ fn spawn_readback_entity(
                 let frame_n = FRAME_COUNTER[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if frame_n == 150 || frame_n == 300 {
                     let test_frame = crate::live::avatar::RgbaFrame {
-                        width: AVATAR_WIDTH,
-                        height: AVATAR_HEIGHT,
+                        width: slot_w,
+                        height: slot_h,
                         data: pixel_bytes.to_vec(),
                     };
                     let analysis = crate::live::avatar::frame_analysis::analyze(&test_frame);
@@ -558,8 +587,8 @@ fn spawn_readback_entity(
                 // Channel path (non-macOS, or no GPU bridge registered for this slot)
                 if let Some(tx) = channels.0.get(slot_id as usize) {
                     let _ = tx.try_send(RgbaFrame {
-                        width: AVATAR_WIDTH,
-                        height: AVATAR_HEIGHT,
+                        width: slot_w,
+                        height: slot_h,
                         data: pixel_bytes.to_vec(),
                     });
                 }
@@ -798,6 +827,8 @@ fn process_commands(
     mut pending: ResMut<PendingLoads>,
     mut mouth_weights: ResMut<MouthWeights>,
     mut health: ResMut<SlotHealthStatus>,
+    mut images: ResMut<Assets<Image>>,
+    mut slot_dims: ResMut<SlotDimensions>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -922,9 +953,49 @@ fn process_commands(
                 mouth_weights.weights.insert(slot, weight);
             }
             AvatarCommand::Resize { slot, width, height } => {
-                // TODO: Implement render target resize once Bevy readback resource
-                // borrowing is resolved. For now, all slots render at AVATAR_WIDTH×AVATAR_HEIGHT.
-                clog_info!("🎨 Slot {}: resize requested to {}x{} (not yet implemented)", slot, width, height);
+                if let Some(state) = registry.slots.get_mut(&slot) {
+                    // Create new render target at requested dimensions
+                    let size = Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    };
+                    let mut rt_image = Image::new_fill(
+                        size,
+                        TextureDimension::D2,
+                        &[26, 26, 46, 255],
+                        TextureFormat::Rgba8UnormSrgb,
+                        RenderAssetUsages::default(),
+                    );
+                    rt_image.texture_descriptor.usage =
+                        TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::COPY_SRC
+                        | TextureUsages::COPY_DST
+                        | TextureUsages::TEXTURE_BINDING;
+                    let new_rt_handle = images.add(rt_image);
+
+                    // Update camera render target
+                    commands.entity(state.camera_entity).insert(
+                        RenderTarget::Image(new_rt_handle.clone().into()),
+                    );
+
+                    // Despawn old readback entity and spawn new one with new handle
+                    commands.entity(state._readback_entity).despawn();
+                    let new_readback = spawn_readback_entity(
+                        &mut commands,
+                        new_rt_handle.clone(),
+                        slot,
+                    );
+
+                    // Update slot state
+                    state._readback_entity = new_readback;
+                    state._render_target = new_rt_handle;
+
+                    // Update per-slot dimensions
+                    slot_dims.dims.insert(slot, (width, height));
+
+                    clog_info!("🎨 Slot {}: resized to {}×{}", slot, width, height);
+                }
             }
             AvatarCommand::Shutdown => {
                 clog_info!("🎨 Bevy renderer shutting down");
@@ -1803,8 +1874,8 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
-        assert_eq!(AVATAR_WIDTH, 640);
-        assert_eq!(AVATAR_HEIGHT, 480);
+        assert_eq!(AVATAR_WIDTH, 1280);
+        assert_eq!(AVATAR_HEIGHT, 720);
         assert!(AVATAR_FPS >= 1.0 && AVATAR_FPS <= 30.0, "FPS should be reasonable (1-30)");
     }
 }

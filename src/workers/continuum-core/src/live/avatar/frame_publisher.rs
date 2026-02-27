@@ -34,6 +34,12 @@ pub trait FramePublisher: Send {
     /// Try to publish the next available frame. Non-blocking.
     /// Returns Ok(true) if a frame was published, Ok(false) if none ready.
     fn try_publish(&mut self, source: &NativeVideoSource) -> Result<bool, PublishError>;
+
+    /// Resize the publisher's internal buffers to new dimensions.
+    /// Called when the adaptive resolution system changes the render target size.
+    /// Publishers must update their stored width/height and reallocate any
+    /// dimension-dependent resources (e.g. IOSurface pairs).
+    fn resize(&mut self, width: u32, height: u32);
 }
 
 /// Errors from frame publishing.
@@ -79,8 +85,11 @@ impl FramePublisher for CpuI420Publisher {
     fn try_publish(&mut self, source: &NativeVideoSource) -> Result<bool, PublishError> {
         match self.frame_rx.try_recv() {
             Ok(frame) => {
-                let mut buffer = I420Buffer::new(self.width, self.height);
-                rgba_to_i420_into(&frame.data, &mut buffer, self.width, self.height);
+                // Use frame's embedded dimensions (may differ from stored if resize is in flight)
+                let w = frame.width;
+                let h = frame.height;
+                let mut buffer = I420Buffer::new(w, h);
+                rgba_to_i420_into(&frame.data, &mut buffer, w, h);
                 let video_frame = VideoFrame {
                     rotation: VideoRotation::VideoRotation0,
                     timestamp_us: 0, // auto-timestamp
@@ -93,7 +102,7 @@ impl FramePublisher for CpuI420Publisher {
                 if self.frame_count == 1 || self.frame_count % 450 == 0 {
                     crate::clog_info!(
                         "📹 CpuI420Publisher: {} frames published ({}×{})",
-                        self.frame_count, self.width, self.height
+                        self.frame_count, w, h
                     );
                 }
 
@@ -102,6 +111,12 @@ impl FramePublisher for CpuI420Publisher {
             Err(TryRecvError::Empty) => Ok(false),
             Err(TryRecvError::Disconnected) => Err(PublishError::ChannelClosed),
         }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        crate::clog_info!("📹 CpuI420Publisher: resize {}×{} → {}×{}", self.width, self.height, width, height);
+        self.width = width;
+        self.height = height;
     }
 }
 

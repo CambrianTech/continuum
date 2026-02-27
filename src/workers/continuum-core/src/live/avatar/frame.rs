@@ -18,8 +18,12 @@ pub enum ResolutionTier {
     Small,
     /// 480×360 @24fps — medium tiles 300–500px wide
     Medium,
-    /// 640×480 @30fps — large/spotlight tiles over 500px wide
+    /// 640×480 @30fps — large tiles 500–799px wide
     Large,
+    /// 1280×720 @30fps — HD tiles 800–1199px wide (spotlight, expanded view)
+    HD,
+    /// 1920×1080 @30fps — Full HD tiles ≥1200px wide (full-screen, photorealistic)
+    FullHD,
 }
 
 impl ResolutionTier {
@@ -30,6 +34,8 @@ impl ResolutionTier {
             Self::Small  => (320, 240),
             Self::Medium => (480, 360),
             Self::Large  => (640, 480),
+            Self::HD     => (1280, 720),
+            Self::FullHD => (1920, 1080),
         }
     }
 
@@ -40,6 +46,8 @@ impl ResolutionTier {
             Self::Small  => 20.0,
             Self::Medium => 24.0,
             Self::Large  => 30.0,
+            Self::HD     => 30.0,
+            Self::FullHD => 30.0,
         }
     }
 
@@ -56,8 +64,12 @@ impl ResolutionTier {
             Self::Small
         } else if px < 500 {
             Self::Medium
-        } else {
+        } else if px < 800 {
             Self::Large
+        } else if px < 1200 {
+            Self::HD
+        } else {
+            Self::FullHD
         }
     }
 }
@@ -112,6 +124,8 @@ mod tests {
         assert_eq!(ResolutionTier::Small.dimensions(), (320, 240));
         assert_eq!(ResolutionTier::Medium.dimensions(), (480, 360));
         assert_eq!(ResolutionTier::Large.dimensions(), (640, 480));
+        assert_eq!(ResolutionTier::HD.dimensions(), (1280, 720));
+        assert_eq!(ResolutionTier::FullHD.dimensions(), (1920, 1080));
     }
 
     #[test]
@@ -120,6 +134,8 @@ mod tests {
         assert!((ResolutionTier::Small.fps() - 20.0).abs() < 0.01);
         assert!((ResolutionTier::Medium.fps() - 24.0).abs() < 0.01);
         assert!((ResolutionTier::Large.fps() - 30.0).abs() < 0.01);
+        assert!((ResolutionTier::HD.fps() - 30.0).abs() < 0.01);
+        assert!((ResolutionTier::FullHD.fps() - 30.0).abs() < 0.01);
     }
 
     #[test]
@@ -131,7 +147,11 @@ mod tests {
         assert_eq!(ResolutionTier::from_tile_width(300), ResolutionTier::Medium);
         assert_eq!(ResolutionTier::from_tile_width(499), ResolutionTier::Medium);
         assert_eq!(ResolutionTier::from_tile_width(500), ResolutionTier::Large);
-        assert_eq!(ResolutionTier::from_tile_width(1920), ResolutionTier::Large);
+        assert_eq!(ResolutionTier::from_tile_width(799), ResolutionTier::Large);
+        assert_eq!(ResolutionTier::from_tile_width(800), ResolutionTier::HD);
+        assert_eq!(ResolutionTier::from_tile_width(1199), ResolutionTier::HD);
+        assert_eq!(ResolutionTier::from_tile_width(1200), ResolutionTier::FullHD);
+        assert_eq!(ResolutionTier::from_tile_width(1920), ResolutionTier::FullHD);
     }
 
     #[test]
@@ -139,6 +159,11 @@ mod tests {
         // 30fps = ~33.3ms = 33_333_333ns
         let nanos = ResolutionTier::Large.interval_nanos();
         assert!(nanos > 33_000_000 && nanos < 34_000_000);
+        // HD and FullHD also 30fps
+        let nanos_hd = ResolutionTier::HD.interval_nanos();
+        assert!(nanos_hd > 33_000_000 && nanos_hd < 34_000_000);
+        let nanos_fhd = ResolutionTier::FullHD.interval_nanos();
+        assert!(nanos_fhd > 33_000_000 && nanos_fhd < 34_000_000);
         // 15fps = ~66.6ms = 66_666_666ns
         let nanos = ResolutionTier::Tiny.interval_nanos();
         assert!(nanos > 66_000_000 && nanos < 67_000_000);

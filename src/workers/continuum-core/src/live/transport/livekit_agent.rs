@@ -155,6 +155,10 @@ pub struct LiveKitAgent {
     /// TTS voice name — set on first speak, used for gender-matched avatar selection.
     /// First-speak-wins: once set, the avatar doesn't change mid-call.
     voice_name: std::sync::Mutex<Option<String>>,
+    /// Watch channel for adaptive resolution changes from the hysteresis logic.
+    /// The event handler sends new (width, height) when the tier changes;
+    /// the video loop receives and calls publisher.resize().
+    resolution_rx: tokio::sync::watch::Receiver<(u32, u32)>,
 }
 
 impl LiveKitAgent {
@@ -237,13 +241,18 @@ impl LiveKitAgent {
         let identity = persona_id.to_string();
         let identity_for_events = identity.clone();
 
+        // Watch channel for adaptive resolution — event handler sends, video loop receives.
+        let initial_width = crate::live::video::bevy_renderer::AVATAR_WIDTH;
+        let initial_height = crate::live::video::bevy_renderer::AVATAR_HEIGHT;
+        let (resolution_tx, resolution_rx) = tokio::sync::watch::channel((initial_width, initial_height));
+
         // Spawn event handler task — routes room events to the agent's event channel.
         // Uses participant metadata for role classification, not identity string matching.
         tokio::spawn(async move {
             // Hysteresis state: track current tier and last downgrade request.
             // Upgrades (larger) are immediate; downgrades require 2s of stability.
             use crate::live::avatar::ResolutionTier;
-            let mut current_tier: ResolutionTier = ResolutionTier::Large;
+            let mut current_tier: ResolutionTier = ResolutionTier::HD;
             let mut pending_downgrade: Option<(ResolutionTier, tokio::time::Instant)> = None;
             const DOWNGRADE_HOLDOFF: tokio::time::Duration = tokio::time::Duration::from_secs(2);
 
@@ -278,6 +287,7 @@ impl LiveKitAgent {
                                             if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
                                                 bevy_system.resize_by_identity(&identity_for_events, rw, rh);
                                             }
+                                            let _ = resolution_tx.send((rw, rh));
                                             current_tier = requested_tier;
                                             pending_downgrade = None;
                                             clog_info!("🎨 Tier upgrade for '{}': {:?} ({}x{})",
@@ -292,6 +302,7 @@ impl LiveKitAgent {
                                                         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
                                                             bevy_system.resize_by_identity(&identity_for_events, rw, rh);
                                                         }
+                                                        let _ = resolution_tx.send((rw, rh));
                                                         current_tier = requested_tier;
                                                         pending_downgrade = None;
                                                         clog_info!("🎨 Tier downgrade for '{}': {:?} ({}x{})",
@@ -378,7 +389,7 @@ impl LiveKitAgent {
             identity,
             display_name: persona_name.to_string(),
             voice_name: std::sync::Mutex::new(None),
-
+            resolution_rx,
         };
 
         Ok((agent, event_rx))
@@ -746,8 +757,8 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
             return;
         }
 
-        let width = 640u32;
-        let height = 480u32;
+        let width = crate::live::video::bevy_renderer::AVATAR_WIDTH;
+        let height = crate::live::video::bevy_renderer::AVATAR_HEIGHT;
 
         let config = AvatarConfig {
             identity: agent.identity.clone(),
@@ -804,7 +815,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                             source: TrackSource::Camera,
                             simulcast: false,
                             video_encoding: Some(VideoEncoding {
-                                max_bitrate: 800_000,
+                                max_bitrate: 1_500_000,
                                 max_framerate: 15.0,
                             }),
                             ..Default::default()
@@ -827,8 +838,19 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         clog_info!("📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
             agent.identity, avatar.name, avatar.filename, publisher.name());
 
+        // Watch channel for adaptive resolution — check for tier changes each iteration.
+        let mut resolution_rx = agent.resolution_rx.clone();
+
         let frame_interval = std::time::Duration::from_nanos((1_000_000_000.0 / 15.0) as u64);
         loop {
+            // Check for resolution changes from the hysteresis logic.
+            // has_changed() is non-blocking and only returns true when the value differs
+            // from the last time we marked it as seen.
+            if resolution_rx.has_changed().unwrap_or(false) {
+                let (new_w, new_h) = *resolution_rx.borrow_and_update();
+                publisher.resize(new_w, new_h);
+            }
+
             // try_publish is non-blocking (try_recv + ~1ms I420 conversion).
             // Short enough for a tokio worker — no need for spawn_blocking.
             match publisher.try_publish(&video_source) {

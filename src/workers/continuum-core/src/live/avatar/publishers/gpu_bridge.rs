@@ -11,8 +11,8 @@
 //!
 //! Architecture:
 //!   IoSurfacePair (double-buffered, one per slot)
-//!     ├── surface[0]: IOSurface-backed NV12 CVPixelBuffer (640×480)
-//!     └── surface[1]: IOSurface-backed NV12 CVPixelBuffer (640×480)
+//!     ├── surface[0]: IOSurface-backed NV12 CVPixelBuffer (adaptive resolution)
+//!     └── surface[1]: IOSurface-backed NV12 CVPixelBuffer (adaptive resolution)
 //!
 //!   Bevy thread:  write_frame(rgba) → lock masters[N%2] → RGBA→NV12 → unlock → N++
 //!   Tokio thread: take_frame() → surface[(N-1)%2] → CVPixelBufferCreateWithIOSurface → publish
@@ -456,6 +456,33 @@ impl Drop for GpuBridgePublisher {
 
 impl FramePublisher for GpuBridgePublisher {
     fn name(&self) -> &'static str { "gpu-bridge" }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        if width == self.width && height == self.height {
+            return;
+        }
+        clog_info!("📹 GpuBridgePublisher: resize {}×{} → {}×{} (slot {})",
+            self.width, self.height, width, height, self.slot);
+
+        // Create new IoSurfacePair at the new dimensions
+        match IoSurfacePair::new(width, height) {
+            Ok(new_pair) => {
+                let new_pair = Arc::new(new_pair);
+                // Register new pair (replaces old in global bridge registry)
+                register_bridge(self.slot, new_pair.clone());
+                // Old pair is dropped when Arc refcount reaches zero
+                self.pair = new_pair;
+                self.width = width;
+                self.height = height;
+                self.last_published = 0; // Reset counter for new pair
+                clog_info!("📹 GpuBridgePublisher: resize complete (slot {})", self.slot);
+            }
+            Err(e) => {
+                clog_warn!("📹 GpuBridgePublisher: resize failed: {} — keeping {}×{}",
+                    e, self.width, self.height);
+            }
+        }
+    }
 
     fn try_publish(&mut self, source: &NativeVideoSource) -> Result<bool, PublishError> {
         // Check for new frame via atomic counter (no channel overhead)

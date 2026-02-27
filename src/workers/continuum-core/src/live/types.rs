@@ -263,8 +263,12 @@ pub enum ResolutionTierWire {
     Small,
     /// 480x360 @24fps — medium tiles 300-500px
     Medium,
-    /// 640x480 @30fps — large/spotlight tiles over 500px
+    /// 640x480 @30fps — large tiles 500-799px
     Large,
+    /// 1280x720 @30fps — HD tiles 800-1199px (spotlight, expanded view)
+    Hd,
+    /// 1920x1080 @30fps — Full HD tiles ≥1200px (full-screen, photorealistic)
+    FullHd,
 }
 
 #[cfg(test)]
