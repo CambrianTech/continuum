@@ -404,6 +404,7 @@ export class LiveWidget extends ReactiveWidget {
           },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) return;
+            if (!this.captionsEnabled) return;
 
             const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
               || transcription.displayName;
@@ -535,6 +536,8 @@ export class LiveWidget extends ReactiveWidget {
           console.log(`LiveWidget: AI speech duration update: ${data.speakerName} (${durationMs}ms)`);
 
           this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
+
+          if (!this.captionsEnabled) return;
 
           const captions = this._captionsRef.value ?? null;
           if (captions) {
