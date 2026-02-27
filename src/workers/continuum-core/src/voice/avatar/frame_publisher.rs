@@ -111,10 +111,12 @@ impl FramePublisher for CpuI420Publisher {
 
 /// Create the best available FramePublisher for the current platform.
 ///
-/// Currently uses CpuI420Publisher on all platforms (proven stable).
-/// NativeBufferPublisher (macOS CVPixelBuffer) is implemented but disabled —
-/// WebRTC's encoder may not handle BGRA CVPixelBuffers correctly (dark frames).
-/// Enable via CONTINUUM_NATIVE_VIDEO=1 environment variable for testing.
+/// On macOS: NativeBufferPublisher (NV12 CVPixelBuffer) is the default.
+/// NV12 is VideoToolbox's native format — no pixel format conversion in the encoder.
+/// Falls back to CpuI420Publisher if CVPixelBuffer creation fails.
+/// Force CPU path via CONTINUUM_CPU_VIDEO=1 environment variable.
+///
+/// On all other platforms: CpuI420Publisher (RGBA → I420 BT.601).
 pub fn create_publisher(
     frame_rx: Receiver<RgbaFrame>,
     width: u32,
@@ -122,17 +124,20 @@ pub fn create_publisher(
 ) -> Box<dyn FramePublisher> {
     #[cfg(target_os = "macos")]
     {
-        if std::env::var("CONTINUUM_NATIVE_VIDEO").map(|v| v == "1").unwrap_or(false) {
+        // CONTINUUM_CPU_VIDEO=1 forces CpuI420Publisher on macOS (escape hatch)
+        if !std::env::var("CONTINUUM_CPU_VIDEO").map(|v| v == "1").unwrap_or(false) {
             use super::publishers::native_buffer::NativeBufferPublisher;
             match NativeBufferPublisher::try_new(frame_rx.clone(), width, height) {
                 Ok(publisher) => {
-                    crate::clog_info!("📹 NativeBufferPublisher enabled via CONTINUUM_NATIVE_VIDEO=1");
+                    crate::clog_info!("📹 Using NativeBufferPublisher (NV12 CVPixelBuffer)");
                     return Box::new(publisher);
                 }
                 Err(e) => {
-                    crate::clog_warn!("📹 NativeBufferPublisher failed: {}, falling back to CPU I420", e);
+                    crate::clog_warn!("📹 NativeBufferPublisher failed: {}, using CPU I420", e);
                 }
             }
+        } else {
+            crate::clog_info!("📹 CONTINUUM_CPU_VIDEO=1: forcing CpuI420Publisher");
         }
     }
     Box::new(CpuI420Publisher::new(frame_rx, width, height))

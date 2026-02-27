@@ -54,7 +54,7 @@ pub use selection::{
 };
 pub use gender::{gender_from_voice_name, gender_from_identity};
 pub use hash::{fnv1a_hash, deterministic_pick, deterministic_index};
-pub use render_loop::{create_renderer, spawn_renderer_loop};
+pub use render_loop::{create_renderer, spawn_renderer_loop, allocate_bevy_slot, BevySlotAllocation, SlotGuard};
 pub use frame_publisher::{FramePublisher, CpuI420Publisher, PublishError, create_publisher};
 pub use backends::{
     ProceduralRenderer, BevyChannelRenderer, ProceduralBackend, Bevy3DBackend,

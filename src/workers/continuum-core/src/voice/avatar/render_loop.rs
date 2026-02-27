@@ -56,6 +56,143 @@ fn release_slot(slot: u8) {
 }
 
 // =============================================================================
+// SlotGuard — RAII cleanup for Bevy slots (used by allocate_bevy_slot path)
+// =============================================================================
+
+/// RAII guard for a Bevy render slot. When dropped, unloads the model,
+/// removes the identity mapping, and returns the slot to the pool.
+///
+/// Used by `allocate_bevy_slot()` where there is no render thread to handle
+/// cleanup on exit. The video loop holds the guard; when the tokio task exits,
+/// the guard drops and the slot is recycled.
+pub struct SlotGuard {
+    slot: u8,
+    identity: String,
+    released: bool,
+}
+
+impl SlotGuard {
+    fn new(slot: u8, identity: String) -> Self {
+        Self { slot, identity, released: false }
+    }
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            self.released = true;
+            if let Some(bevy) = crate::voice::bevy_renderer::try_get() {
+                bevy.unregister_identity(&self.identity);
+            }
+            release_slot(self.slot);
+            clog_info!(
+                "🎨 SlotGuard: released slot {} for '{}'",
+                self.slot, &self.identity[..8.min(self.identity.len())]
+            );
+        }
+    }
+}
+
+// =============================================================================
+// allocate_bevy_slot — direct Bevy slot allocation (no render thread)
+// =============================================================================
+
+/// Result of `allocate_bevy_slot`: everything the video loop needs.
+pub struct BevySlotAllocation {
+    /// Bevy's FrameChannels receiver — video loop reads frames directly from GPU readback.
+    pub frame_rx: crossbeam_channel::Receiver<RgbaFrame>,
+    /// The allocated slot number (for speaking control, logging, etc.).
+    pub slot: u8,
+    /// RAII guard — hold alive for the duration of the video loop. Dropping releases the slot.
+    pub guard: SlotGuard,
+}
+
+/// Allocate a Bevy render slot directly, without spawning a render thread.
+///
+/// Returns the Bevy FrameChannels receiver so the caller (video loop) can
+/// read frames directly from GPU readback, eliminating the BevyChannelRenderer
+/// middleman and its redundant Vec<u8> clone per frame.
+///
+/// Identity dedup: if this identity already has a Bevy slot, returns the
+/// existing slot's receiver (no duplicate allocation).
+///
+/// The returned `SlotGuard` MUST be held alive for the duration of the video loop.
+/// Dropping it unloads the model, unregisters the identity, and returns the slot to the pool.
+///
+/// This function acquires std::sync::Mutex locks and may block for up to 5s
+/// waiting for slot availability. Call from `tokio::task::spawn_blocking`.
+pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, String> {
+    let identity = config.identity.clone();
+    let vrm_path = config.vrm_model_path.as_ref()
+        .ok_or_else(|| format!("No VRM model for '{}'", identity))?;
+
+    if !std::path::Path::new(vrm_path).exists() {
+        return Err(format!("VRM model not found: {}", vrm_path));
+    }
+
+    let bevy_system = crate::voice::bevy_renderer::get_or_init();
+    if !bevy_system.is_ready() {
+        return Err(format!("Bevy renderer not ready for '{}'", identity));
+    }
+
+    // Identity dedup: reuse existing slot if this persona already has one
+    {
+        let identity_map = bevy_system.identity_to_slot_map();
+        if let Some(&existing_slot) = identity_map.get(&identity) {
+            if let Some(frame_rx) = bevy_system.frame_receiver(existing_slot) {
+                clog_info!(
+                    "🎨 allocate_bevy_slot: reusing slot {} for '{}' (identity dedup)",
+                    existing_slot, &identity[..8.min(identity.len())]
+                );
+                return Ok(BevySlotAllocation {
+                    frame_rx: frame_rx.clone(),
+                    slot: existing_slot,
+                    // No-op guard for reused slots — original owner manages lifecycle
+                    guard: SlotGuard { slot: existing_slot, identity: identity.clone(), released: true },
+                });
+            }
+        }
+    }
+
+    // Allocate new slot from pool (with 5s retry for slot availability)
+    let mut slot_opt = allocate_slot();
+    if slot_opt.is_none() {
+        clog_warn!(
+            "🎨 allocate_bevy_slot: all slots occupied for '{}', waiting up to 5s...",
+            &identity[..8.min(identity.len())]
+        );
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            slot_opt = allocate_slot();
+            if slot_opt.is_some() { break; }
+        }
+    }
+
+    let slot = slot_opt.ok_or_else(|| {
+        format!("No Bevy slots available for '{}' after 5s wait", identity)
+    })?;
+
+    bevy_system.load_model(slot, vrm_path, &config.display_name, &identity);
+    bevy_system.register_identity(&identity, slot);
+
+    let frame_rx = bevy_system.frame_receiver(slot).ok_or_else(|| {
+        release_slot(slot);
+        format!("frame_receiver failed for slot {}", slot)
+    })?;
+
+    clog_info!(
+        "🎨 allocate_bevy_slot: slot {} for '{}' (model: {})",
+        slot, &identity[..8.min(identity.len())], vrm_path
+    );
+
+    Ok(BevySlotAllocation {
+        frame_rx: frame_rx.clone(),
+        slot,
+        guard: SlotGuard::new(slot, identity),
+    })
+}
+
+// =============================================================================
 // Active renderer registry — identity-based deduplication
 // =============================================================================
 

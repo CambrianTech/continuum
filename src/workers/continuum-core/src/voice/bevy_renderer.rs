@@ -207,6 +207,12 @@ impl BevyAvatarSystem {
         bevy_debug(&format!("Registered identity '{}' → slot {}", &identity[..8.min(identity.len())], slot));
     }
 
+    /// Remove a persona identity from the slot map (called when SlotGuard drops).
+    pub fn unregister_identity(&self, identity: &str) {
+        self.identity_to_slot.lock().unwrap().remove(identity);
+        bevy_debug(&format!("Unregistered identity '{}'", &identity[..8.min(identity.len())]));
+    }
+
     /// Get a snapshot of the identity → slot map (for dedup checks in render_loop).
     pub fn identity_to_slot_map(&self) -> HashMap<String, u8> {
         self.identity_to_slot.lock().unwrap().clone()

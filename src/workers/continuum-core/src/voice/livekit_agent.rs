@@ -711,21 +711,21 @@ use crate::voice::avatar::frame_publisher::rgba_to_i420_into;
 
 /// Start a background video frame loop for an agent.
 ///
-/// Uses `avatar::spawn_renderer_loop()` to create a BevyChannelRenderer (3D VRM)
-/// and `frame_publisher::create_publisher()` to select the best frame publishing
-/// strategy for the current platform.
+/// Uses `allocate_bevy_slot()` to get a Bevy render slot and reads frames directly
+/// from the GPU readback channel — no intermediate render thread, no redundant
+/// Vec<u8> clone. `create_publisher()` selects the best frame publishing strategy
+/// for the current platform (CpuI420Publisher everywhere, NativeBufferPublisher on macOS).
 ///
-/// The video loop is both renderer-agnostic AND publisher-agnostic:
-///   Renderer (Bevy/procedural/...) → RgbaFrame → channel → FramePublisher → LiveKit
+/// The video loop is publisher-agnostic:
+///   Bevy GPU readback → FrameChannels → FramePublisher → LiveKit NativeVideoSource
 ///
-/// New renderers plug in via AvatarRenderer trait (render_loop.rs).
 /// New publishers plug in via FramePublisher trait (frame_publisher.rs).
 ///
-/// spawn_renderer_loop() acquires std::sync::Mutex locks (slot pool, active renderers)
+/// allocate_bevy_slot() acquires std::sync::Mutex locks (slot pool, identity map)
 /// that can block for up to 5s waiting for slots. Wrapped in spawn_blocking to avoid
 /// starving the tokio runtime.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    use crate::voice::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path, create_publisher};
+    use crate::voice::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path, allocate_bevy_slot, create_publisher};
 
     let agent_clone = agent.clone();
     tokio::spawn(async move {
@@ -759,23 +759,28 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
             ..Default::default()
         };
 
-        // spawn_renderer_loop acquires std::sync::Mutex locks (slot pool, active renderers)
+        // allocate_bevy_slot acquires std::sync::Mutex locks (slot pool, identity map)
         // which can block up to 5s waiting for slot availability. Run off the tokio runtime.
-        let renderer_result = tokio::task::spawn_blocking(move || {
-            crate::voice::avatar::spawn_renderer_loop(config)
+        let alloc_result = tokio::task::spawn_blocking(move || {
+            allocate_bevy_slot(config)
         }).await;
 
-        let (frame_rx, _interval_nanos) = match renderer_result {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                clog_warn!("📹 No renderer available for '{}', skipping video", agent.identity);
+        let allocation = match alloc_result {
+            Ok(Ok(alloc)) => alloc,
+            Ok(Err(e)) => {
+                clog_warn!("📹 allocate_bevy_slot failed for '{}': {}", agent.identity, e);
                 return;
             }
             Err(e) => {
-                clog_warn!("📹 spawn_renderer_loop panicked for '{}': {}", agent.identity, e);
+                clog_warn!("📹 allocate_bevy_slot panicked for '{}': {}", agent.identity, e);
                 return;
             }
         };
+
+        let frame_rx = allocation.frame_rx;
+        // RAII: SlotGuard held alive until this async block exits.
+        // On drop: unloads model, unregisters identity, returns slot to pool.
+        let _slot_guard = allocation.guard;
 
         // Lazily create video source on first frame (avoid garbled uninitialized frames).
         // The FramePublisher handles format conversion; we just need the NativeVideoSource.
@@ -816,8 +821,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         };
 
         // Create platform-appropriate frame publisher.
-        // Currently: CpuI420Publisher (all platforms).
-        // Phase 3: NativeBufferPublisher (macOS) selected automatically.
+        // Reads directly from Bevy's FrameChannels (no render thread middleman).
         let mut publisher = create_publisher(frame_rx, width, height);
         clog_info!("📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
             agent.identity, avatar.name, avatar.filename, publisher.name());
@@ -830,7 +834,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                 Ok(true) => {} // Frame published
                 Ok(false) => {} // No frame ready
                 Err(_) => {
-                    // Channel closed — renderer thread exited
+                    // Channel closed — Bevy readback channel disconnected
                     clog_info!("📹 Video publisher channel closed for '{}'", agent.identity);
                     break;
                 }
@@ -838,6 +842,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
 
             tokio::time::sleep(frame_interval).await;
         }
+        // _slot_guard drops here → slot released back to pool
     });
 }
 
