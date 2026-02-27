@@ -545,6 +545,17 @@ fn spawn_readback_entity(
                         }
                     }
                 }
+                // GPU bridge zero-copy path (macOS only): write RGBA→NV12 directly
+                // to pre-allocated IOSurface. Eliminates pixel_bytes.to_vec() (1.2MB)
+                // and per-frame CVPixelBufferCreate (460KB).
+                #[cfg(target_os = "macos")]
+                {
+                    if crate::voice::avatar::publishers::gpu_bridge::try_write_bridge(slot_id, pixel_bytes) {
+                        return; // Frame written to IOSurface, skip channel
+                    }
+                }
+
+                // Channel path (non-macOS, or no GPU bridge registered for this slot)
                 if let Some(tx) = channels.0.get(slot_id as usize) {
                     let _ = tx.try_send(RgbaFrame {
                         width: AVATAR_WIDTH,

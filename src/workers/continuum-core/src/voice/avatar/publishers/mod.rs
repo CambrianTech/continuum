@@ -5,3 +5,6 @@
 
 #[cfg(target_os = "macos")]
 pub mod native_buffer;
+
+#[cfg(target_os = "macos")]
+pub mod gpu_bridge;

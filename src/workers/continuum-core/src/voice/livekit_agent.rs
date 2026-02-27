@@ -778,6 +778,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         };
 
         let frame_rx = allocation.frame_rx;
+        let slot = allocation.slot;
         // RAII: SlotGuard held alive until this async block exits.
         // On drop: unloads model, unregisters identity, returns slot to pool.
         let _slot_guard = allocation.guard;
@@ -822,7 +823,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
 
         // Create platform-appropriate frame publisher.
         // Reads directly from Bevy's FrameChannels (no render thread middleman).
-        let mut publisher = create_publisher(frame_rx, width, height);
+        let mut publisher = create_publisher(frame_rx, width, height, slot);
         clog_info!("📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
             agent.identity, avatar.name, avatar.filename, publisher.name());
 

@@ -302,7 +302,7 @@ impl FramePublisher for NativeBufferPublisher {
 ///   - Y plane has at least `height` rows of `y_stride` bytes each
 ///   - UV plane has at least `height/2` rows of `uv_stride` bytes each
 ///   - `rgba` has exactly `width * height * 4` bytes
-unsafe fn rgba_to_nv12(
+pub(crate) unsafe fn rgba_to_nv12(
     rgba: &[u8],
     width: usize,
     height: usize,

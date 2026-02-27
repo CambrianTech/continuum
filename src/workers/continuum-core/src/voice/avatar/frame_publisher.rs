@@ -7,10 +7,10 @@
 //! The video loop calls `try_publish()` each iteration — it doesn't know or care
 //! what format conversion (I420, CVPixelBuffer, NativeBuffer) happens inside.
 //!
-//! Implementations:
-//!   - CpuI420Publisher: RGBA → I420 (BT.601), works everywhere (default)
-//!   - NativeBufferPublisher: RGBA → CVPixelBuffer (macOS only, skips I420)
-//!   - GpuBridgePublisher: IOSurface zero-copy (macOS, future — Phase 4)
+//! Implementations (macOS cascade, first success wins):
+//!   1. GpuBridgePublisher: IOSurface zero-copy (pre-allocated, ~40 byte wrapper per frame)
+//!   2. NativeBufferPublisher: RGBA → NV12 CVPixelBuffer (per-frame kernel alloc)
+//!   3. CpuI420Publisher: RGBA → I420 (BT.601), works everywhere (default)
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
@@ -111,21 +111,41 @@ impl FramePublisher for CpuI420Publisher {
 
 /// Create the best available FramePublisher for the current platform.
 ///
-/// On macOS: NativeBufferPublisher (NV12 CVPixelBuffer) is the default.
-/// NV12 is VideoToolbox's native format — no pixel format conversion in the encoder.
-/// Falls back to CpuI420Publisher if CVPixelBuffer creation fails.
+/// On macOS (cascade, first success wins):
+///   1. GpuBridgePublisher — IOSurface zero-copy (pre-allocated, ~40 byte wrapper per frame)
+///   2. NativeBufferPublisher — NV12 CVPixelBuffer (per-frame kernel alloc)
+///   3. CpuI420Publisher — RGBA → I420 BT.601 (cross-platform fallback)
+///
 /// Force CPU path via CONTINUUM_CPU_VIDEO=1 environment variable.
 ///
-/// On all other platforms: CpuI420Publisher (RGBA → I420 BT.601).
+/// On all other platforms: CpuI420Publisher directly.
 pub fn create_publisher(
     frame_rx: Receiver<RgbaFrame>,
     width: u32,
     height: u32,
+    slot: u8,
 ) -> Box<dyn FramePublisher> {
+    // slot is only used on macOS (GpuBridgePublisher needs it)
+    #[cfg(not(target_os = "macos"))]
+    let _ = slot;
+
     #[cfg(target_os = "macos")]
     {
         // CONTINUUM_CPU_VIDEO=1 forces CpuI420Publisher on macOS (escape hatch)
         if !std::env::var("CONTINUUM_CPU_VIDEO").map(|v| v == "1").unwrap_or(false) {
+            // Tier 1: GpuBridgePublisher (IOSurface zero-copy)
+            use super::publishers::gpu_bridge::GpuBridgePublisher;
+            match GpuBridgePublisher::try_new(frame_rx.clone(), width, height, slot) {
+                Ok(publisher) => {
+                    crate::clog_info!("📹 Using GpuBridgePublisher (IOSurface zero-copy)");
+                    return Box::new(publisher);
+                }
+                Err(e) => {
+                    crate::clog_warn!("📹 GpuBridgePublisher failed: {}, trying NativeBuffer", e);
+                }
+            }
+
+            // Tier 2: NativeBufferPublisher (per-frame NV12 CVPixelBuffer)
             use super::publishers::native_buffer::NativeBufferPublisher;
             match NativeBufferPublisher::try_new(frame_rx.clone(), width, height) {
                 Ok(publisher) => {
@@ -140,6 +160,8 @@ pub fn create_publisher(
             crate::clog_info!("📹 CONTINUUM_CPU_VIDEO=1: forcing CpuI420Publisher");
         }
     }
+
+    // Tier 3: CpuI420Publisher (cross-platform, always works)
     Box::new(CpuI420Publisher::new(frame_rx, width, height))
 }
 
