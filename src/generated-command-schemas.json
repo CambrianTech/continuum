@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-28T00:04:50.111Z",
+  "generated": "2026-02-28T16:33:40.925Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1802,6 +1802,77 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/coding-agent",
+      "description": "Sentinel Coding Agent Command — Types Execute external coding agents (Claude Code, Codex, etc.) as sentinel pipeline steps. Provider architecture: each agent SDK is wrapped as a CodingAgentProvider.",
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": true,
+          "description": "prompt parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "allowedTools": {
+          "type": "array",
+          "required": false,
+          "description": "allowedTools parameter"
+        },
+        "maxTurns": {
+          "type": "number",
+          "required": false,
+          "description": "maxTurns parameter"
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "required": false,
+          "description": "maxBudgetUsd parameter"
+        },
+        "permissionMode": {
+          "type": "string",
+          "required": false,
+          "description": "permissionMode parameter"
+        },
+        "resumeSessionId": {
+          "type": "string",
+          "required": false,
+          "description": "resumeSessionId parameter"
+        },
+        "sentinelHandle": {
+          "type": "string",
+          "required": false,
+          "description": "sentinelHandle parameter"
+        },
+        "captureTraining": {
+          "type": "boolean",
+          "required": false,
+          "description": "captureTraining parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     },

@@ -10,18 +10,18 @@
 
 set -e
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+source "$SCRIPT_DIR/shared/preflight.sh"
 
 cd "$PROJECT_DIR"
 
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
+
+# Pre-flight: catch Xcode issues NOW, not buried in build output 30 lines deep
+preflight_check_xcode
 
 # Phase 1: Detect existing system state
 # If the system is already running, we do a HOT RESTART:
@@ -77,12 +77,19 @@ TS_PID=$!
   # Suppress ts-rs serde parse warnings (harmless, just noisy)
   cd workers
   echo -e "  [Rust] Building workers (cargo incremental)..."
-  cargo build --release --quiet 2>&1 | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
-  RESULT=${PIPESTATUS[0]}
+  BUILD_OUTPUT=$(cargo build --release --quiet 2>&1)
+  RESULT=$?
+  # Filter ts-rs noise and display
+  echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
   if [ $RESULT -eq 0 ]; then
     echo -e "  [Rust] ${GREEN}✅ Build complete${NC}"
   else
-    echo -e "  [Rust] ${RED}❌ Build failed${NC}"
+    # Detect specific failures with actionable messages
+    if preflight_check_cargo_xcode "$BUILD_OUTPUT"; then
+      : # Xcode issue detected — message already printed
+    else
+      echo -e "  [Rust] ${RED}❌ Build failed${NC}"
+    fi
     exit $RESULT
   fi
 

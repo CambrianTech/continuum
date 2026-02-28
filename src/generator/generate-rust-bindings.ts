@@ -11,9 +11,10 @@
  * Runs automatically as part of prebuild (after worker:build compiles Rust).
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Preflight } from '../scripts/shared/Preflight';
 
 const ROOT = process.cwd();
 const WORKERS_DIR = path.join(ROOT, 'workers');
@@ -36,77 +37,70 @@ const TS_RS_PACKAGES = [
  * Run cargo test to trigger ts-rs export for a package.
  * ts-rs v9 auto-generates export_bindings_* tests for each #[ts(export)] struct.
  *
- * NOTE: ts-rs emits warnings about unsupported serde attributes to stderr.
- * These are harmless (exit code 0) but execSync throws when stderr has content.
- * We check for actual test failures vs just warnings.
+ * Uses spawnSync (not execSync) for proper exit/signal handling.
+ * --lib flag restricts to library tests only, skipping integration test binaries
+ * that link webrtc-sys and hang during cleanup in release mode.
  */
 function generateBindings(pkg: string, description: string): boolean {
   console.log(`  🦀 ${pkg}: ${description}`);
-  try {
-    // --release required: livekit's webrtc-sys native library only builds in release mode
-    execSync(
-      `cargo test --package ${pkg} export_bindings --release --quiet`,
-      {
-        cwd: WORKERS_DIR,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 300_000,
-      }
-    );
+
+  // --release: livekit's webrtc-sys native library only builds in release mode
+  // --lib: only lib tests (export_bindings live there), avoids webrtc-sys cleanup hangs
+  const result = spawnSync(
+    'cargo',
+    ['test', '--package', pkg, '--lib', 'export_bindings', '--release'],
+    {
+      cwd: WORKERS_DIR,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 300_000,
+    }
+  );
+
+  const stdout = result.stdout?.toString() || '';
+  const stderr = result.stderr?.toString() || '';
+
+  // Success: exit 0
+  if (result.status === 0) {
     return true;
-  } catch (error: any) {
-    const stderr = error.stderr?.toString() || '';
-    const stdout = error.stdout?.toString() || '';
-    const exitCode = error.status;
+  }
 
-    // Check if it's just "no tests matched" (not an error)
-    if (stderr.includes('0 passed') || stderr.includes('running 0 tests')) {
-      console.log(`     ⚠️  No export_bindings tests found — running all tests`);
-      try {
-        execSync(`cargo test --package ${pkg} --release --quiet`, {
-          cwd: WORKERS_DIR,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 300_000,
-        });
-        return true;
-      } catch (innerError: any) {
-        console.error(`     ❌ Failed: ${innerError.stderr?.toString().slice(0, 200)}`);
-        return false;
-      }
-    }
+  // SIGSEGV during cleanup (webrtc-sys) — bindings already generated
+  if (result.signal === 'SIGSEGV' && !stderr.includes('could not compile') && !stderr.includes('error[')) {
+    console.log(`     ⚠️  WebRTC native cleanup crash (SIGSEGV) — bindings generated OK`);
+    return true;
+  }
 
-    // ts-rs warnings are NOT failures - check exit code
-    // Exit code 0 = success (even if stderr has warnings)
-    if (exitCode === 0) {
-      return true;
-    }
+  // Tests passed but process crashed during cleanup
+  if (stdout.includes('test result: ok') || (stdout + stderr).includes('passed')) {
+    console.log(`     ⚠️  Tests passed but process exited abnormally (signal: ${result.signal}) — bindings OK`);
+    return true;
+  }
 
-    // Check if tests actually passed despite stderr warnings
-    if (stdout.includes('test result: ok') || (stdout + stderr).includes('passed')) {
-      return true;
-    }
-
-    // LiveKit's webrtc-sys native library can SIGSEGV during test cleanup.
-    // All export_bindings tests complete successfully but the process crashes
-    // during global destructor phase. Treat as success if the signal is SIGSEGV
-    // and no compilation errors occurred.
-    if (error.signal === 'SIGSEGV' && !stderr.includes('could not compile') && !stderr.includes('error[')) {
-      console.log(`     ⚠️  WebRTC native cleanup crash (SIGSEGV) — bindings generated OK`);
-      return true;
-    }
-
-    // ts-rs emits harmless warnings about serde attributes it can't parse
-    // These should not fail the build
-    const isOnlyTsRsWarnings = stderr.includes('ts-rs failed to parse this attribute') &&
+  // ts-rs warnings (harmless)
+  if (stderr.includes('ts-rs failed to parse this attribute') &&
       !stderr.includes('error[') && !stderr.includes('error:') &&
-      !stderr.includes('could not compile');
-    if (isOnlyTsRsWarnings) {
-      console.log(`     ⚠️  ts-rs warnings (ignored)`);
-      return true;
-    }
+      !stderr.includes('could not compile')) {
+    console.log(`     ⚠️  ts-rs warnings (ignored)`);
+    return true;
+  }
 
-    console.error(`     ❌ Failed: ${stderr.slice(0, 200)}`);
+  // Timeout
+  if (result.signal === 'SIGTERM') {
+    console.error(`     ❌ Timed out after 300s`);
     return false;
   }
+
+  // Build tool issues — actionable messages
+  const buildFailure = Preflight.detectCargoBuildFailure(stderr);
+  if (buildFailure) {
+    console.error(`     ${buildFailure.message}`);
+    return false;
+  }
+
+  // Real failure
+  const errorDetail = stderr.slice(0, 500) || stdout.slice(0, 500) || `exit=${result.status} signal=${result.signal}`;
+  console.error(`     ❌ Failed: ${errorDetail}`);
+  return false;
 }
 
 /**
