@@ -1,5 +1,7 @@
 # Sentinel Architecture: Universal Stream Processing for Autonomous Agents
 
+> **SUPERSEDED**: This is an early design document. The sentinel system has been fully re-architected as a Rust pipeline engine with 10 step types (Shell, LLM, Command, Condition, Loop, Parallel, Emit, Watch, Sentinel, CodingAgent), 103 tests, and full TypeScript lifecycle integration (persistence, triggers, escalation, event bridge). See **[src/docs/SENTINEL-ARCHITECTURE.md](src/docs/SENTINEL-ARCHITECTURE.md)** for the canonical, up-to-date documentation.
+
 ## Executive Summary
 
 Sentinels are **programmable stream observers** that watch any process, match patterns, classify output, and route events to persona inboxes. They solve the "last mile" problem preventing AI personas from effectively coding.

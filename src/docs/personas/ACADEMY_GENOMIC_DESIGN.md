@@ -1,5 +1,7 @@
 # Academy Genomic System Design - Current Implementation & Future Evolution
 
+> **Status**: The "Phase 1 Complete" described here refers to an earlier entity architecture (`TrainingSessionEntity`). The Academy has since been **re-implemented** using sentinel-based dual-teacher/student pipelines with new entities (`AcademySessionEntity`, `AcademyCurriculumEntity`, `AcademyExaminationEntity`). See **[ACADEMY-DOJO-ARCHITECTURE.md](ACADEMY-DOJO-ARCHITECTURE.md)** for the current implementation. The 512-vector genomic search and P2P mesh features described here remain **Phase 2-4 future work**.
+
 ## 🎯 **EXECUTIVE SUMMARY**
 
 The Academy system has been successfully integrated into the dynamic content system as **specialized chat rooms with genomic evolution capability**. The current implementation provides the foundational entity architecture that will evolve into the full genomic LoRA layer assembly system using 512-vector cosine similarity matching across the P2P network.

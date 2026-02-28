@@ -1,19 +1,23 @@
 # Sentinel Pipeline Architecture
 
-## Problem Statement
+> **SUPERSEDED**: This was the initial design document for the Rust pipeline interpreter. The pipeline engine is now fully implemented with **10 step types** and **103 tests**. See **[SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md)** for the canonical, up-to-date documentation.
 
-The current SentinelModule only executes shell commands. Pipeline interpretation (multi-step with LLM, conditions, loops) was attempted in TypeScript but:
+## Problem Statement (Historical)
+
+The original SentinelModule only executed shell commands. Pipeline interpretation (multi-step with LLM, conditions, loops) was attempted in TypeScript but:
 1. **IPC deadlock**: TypeScript calling `./jtag inference/generate` blocks the server waiting for itself
 2. **Fragile**: Each step type requires TypeScript-to-Rust IPC round-trips
 3. **Wrong layer**: Rust modules can call each other DIRECTLY via ModuleRegistry
 
-## Solution: Rust Pipeline Interpreter
+## Solution: Rust Pipeline Interpreter (Implemented)
 
-Move pipeline interpretation INTO the Rust SentinelModule. The sentinel can:
-- Execute shell steps (existing capability)
+Pipeline interpretation was moved INTO the Rust SentinelModule. The sentinel can:
+- Execute shell steps with process isolation (`kill_on_drop`)
 - Call `ai/generate` via `registry.route_command()` (no IPC, direct call)
-- Call any command via `registry.route_command()` (DataModule, CodeModule, etc.)
+- Call any command via `CommandExecutor` (routes to Rust OR TypeScript)
 - Evaluate conditions and loops locally
+- Run agentic LLM loops via `ai/agent` (agent mode)
+- Execute external coding agents (CodingAgent step)
 
 ## Pipeline Schema
 

@@ -353,6 +353,8 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 | Capability | Status | Where |
 |-----------|--------|-------|
 | Pipeline steps: Shell, LLM, Command, Condition | ✅ Implemented | Rust `sentinel/steps/` |
+| LLM agentMode (tool-calling loop via ai/agent) | ✅ Implemented | Rust `steps/llm.rs` → TypeScript `ai/agent` |
+| CodingAgent step (Claude Code SDK, etc.) | ✅ Implemented | Rust `steps/coding_agent.rs` → TypeScript provider |
 | Variable interpolation (`{{steps.0.output}}`) | ✅ Implemented | Rust `interpolation.rs` |
 | Multi-pass nested interpolation | ✅ Implemented | Rust `interpolation.rs` (5-pass, innermost-first) |
 | JSON path traversal with array indexing | ✅ Implemented | Rust `interpolation.rs` `traverse_json_path()` |
@@ -372,13 +374,17 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 | Watch step (await MessageBus events) | ✅ Implemented | Rust `steps/watch.rs` |
 | Sentinel step (nested pipelines) | ✅ Implemented | Rust `steps/sentinel.rs` |
 | Uniform step signatures (PipelineContext) | ✅ Implemented | All steps receive `PipelineContext` |
-| **Persona ownership** | ❌ Needed | TypeScript + data layer |
-| **Escalation → inbox** | ❌ Needed | TypeScript integration |
-| **SentinelEntity persistence** | ✅ Done | `SentinelEntity` class + EntityRegistry |
+| **Persona ownership** | ✅ Done | `SentinelEntity.parentPersonaId` + `SentinelEscalationService` |
+| **Escalation → persona inbox** | ✅ Done | `SentinelEscalationService` → `InboxTask` events |
+| **Escalation rules** | ✅ Done | Per-sentinel `{ condition, action, priority }` with defaults |
+| **Execution result persistence** | ✅ Done | `registerSentinelHandle()` → entity update on completion |
+| **SentinelEntity persistence** | ✅ Done | `SentinelEntity` class + `sentinel/save` + `sentinel/load` |
 | **Memory/recall integration** | ✅ Done | `MemoryType.SENTINEL` + `recallSentinelPatterns()` |
 | **Triggers (event, schedule)** | ✅ Done | `SentinelTriggerService` (immediate/event/cron/manual) |
+| **Event bridge (Rust→TypeScript)** | ✅ Done | `SentinelEventBridge` polls handles, emits TS Events |
+| **Coding agent providers** | ✅ Done | `CodingAgentRegistry` + `ClaudeCodeProvider` |
 
-The Rust pipeline engine is ~90% complete. 9 step types implemented across all composition patterns (sequential, conditional, looping, parallel, event-driven, nested). The remaining work is the lifecycle/integration layer (persona ownership, persistence, triggers).
+The Rust pipeline engine has 10 step types across all composition patterns (sequential, conditional, looping, parallel, event-driven, nested, agentic). The TypeScript lifecycle layer (persistence, triggers, escalation, event bridge) is complete. 103 Rust tests pass.
 
 ## Architecture
 
@@ -423,89 +429,88 @@ interface SentinelDefinition {
 }
 ```
 
-### Step Types
+### Step Types (10 total)
 
-```typescript
-/**
- * Each step in the pipeline is one of:
- * - command:  Execute a command (scripted, deterministic)
- * - llm:      Run LLM inference with accumulated context
- * - watch:    Block until classified output arrives
- * - condition: Branch based on prior step output
- * - sentinel:  Spawn a nested sentinel (recursive)
- * - emit:     Fire an event (for composition between sentinels)
- */
-type SentinelStep =
-  | CommandStep
-  | LLMStep
-  | WatchStep
-  | ConditionStep
-  | SentinelSpawnStep
-  | EmitStep;
+All step types are defined in Rust (`types.rs`) as a tagged enum `PipelineStep` with `#[serde(tag = "type")]`. Steps compose recursively — condition, loop, parallel, and sentinel all contain nested steps.
 
-/** Execute a command. Output stored in variables[outputTo]. */
-interface CommandStep {
-  type: 'command';
-  command: string;                     // e.g., 'code/read', 'code/verify', 'data/list'
-  params: Record<string, unknown>;     // Supports $variable references
-  outputTo?: string;                   // Variable name for result
-  onError?: 'fail' | 'skip' | 'retry';
-}
+Variable interpolation uses `{{variable}}` syntax (see Interpolation section below).
 
-/** Run LLM inference. Accumulated variables injected as context. */
-interface LLMStep {
-  type: 'llm';
-  prompt?: string;                     // Template with $variable references
-  model?: string;                      // Model selection (or 'auto' for recipe-based)
-  temperature?: number;
-  tools?: string[];                    // Tool subset for this step
-  outputTo?: string;                   // Variable name for LLM response
-  parseToolCalls?: boolean;            // Extract and execute tool calls from response
-}
+```json5
+// 1. Shell — Execute a shell command as an isolated child process (kill_on_drop)
+{ "type": "shell", "cmd": "npm run build", "args": [], "timeoutSecs": 60, "workingDir": "/path" }
 
-/** Block until classified output lines arrive (shell or any stream). */
-interface WatchStep {
-  type: 'watch';
-  executionId: string;                 // $variable reference to running process
-  rules?: SentinelRule[];              // Classification rules (or use pre-configured)
-  outputTo?: string;                   // Variable name for ClassifiedLine[]
-  until?: 'finished' | 'error' | 'match'; // When to stop watching
-}
+// 2. LLM — In-process Rust inference OR agentic tool-calling loop
+{ "type": "llm", "prompt": "Analyze: {{steps.0.output}}", "model": "auto",
+  "systemPrompt": "You are a code reviewer.", "maxTokens": 2000, "temperature": 0.3 }
+// Agent mode: routes to TypeScript ai/agent for full tool-calling loop (243+ tools)
+{ "type": "llm", "prompt": "Fix these errors: {{steps.1.output}}", "agentMode": true,
+  "tools": ["code/read", "code/edit"], "maxIterations": 25 }
 
-/** Conditional branching. */
-interface ConditionStep {
-  type: 'condition';
-  check: string;                       // JS expression with $variable access
-  then: SentinelStep[];                // Steps if true
-  else?: SentinelStep[];               // Steps if false
-}
+// 3. Command — Route to any Rust or TypeScript command via CommandExecutor
+{ "type": "command", "command": "code/verify", "params": { "fullTest": true } }
 
-/** Spawn a nested sentinel (recursive composition). */
-interface SentinelSpawnStep {
-  type: 'sentinel';
-  definition: SentinelDefinition;      // Inline definition
-  outputTo?: string;                   // Variable name for sentinel result
-  await?: boolean;                     // Wait for completion or fire-and-forget
-}
+// 4. Condition — Branch based on interpolated expression
+{ "type": "condition", "if": "{{steps.0.exit_code}} == 0",
+  "then": [/* steps if true */], "else": [/* steps if false */] }
 
-/** Emit an event (for cross-sentinel composition). */
-interface EmitStep {
-  type: 'emit';
-  event: string;                       // Event name
-  data?: string;                       // $variable reference for payload
-}
+// 5. Loop — Iterate sub-steps with 4 termination modes
+{ "type": "loop", "count": 3, "steps": [/* repeated steps */] }
+{ "type": "loop", "while": "{{steps.0.success}}", "maxIterations": 100, "steps": [/*...*/] }
+{ "type": "loop", "until": "{{steps.0.exit_code}} == 0", "maxIterations": 50, "steps": [/*...*/] }
+{ "type": "loop", "maxIterations": 1000, "steps": [/*...*/] }  // continuous with safety limit
+
+// 6. Parallel — Execute branch pipelines concurrently
+{ "type": "parallel", "failFast": true,
+  "branches": [ [/* branch A steps */], [/* branch B steps */] ] }
+
+// 7. Emit — Publish event on MessageBus for inter-sentinel composition
+{ "type": "emit", "event": "build:complete", "payload": { "result": "{{steps.0.output}}" } }
+
+// 8. Watch — Block until matching event arrives on MessageBus
+{ "type": "watch", "event": "dataset:ready:*", "timeoutSecs": 300 }
+
+// 9. Sentinel — Execute nested pipeline inline (recursive composition)
+{ "type": "sentinel", "pipeline": { "name": "sub-task", "steps": [/*...*/] } }
+
+// 10. CodingAgent — External coding agent (Claude Code SDK, etc.)
+{ "type": "codingagent", "prompt": "Refactor the auth module",
+  "provider": "claude-code", "workingDir": "/project",
+  "model": "sonnet", "maxTurns": 50, "maxBudgetUsd": 5.0,
+  "permissionMode": "acceptEdits", "captureTraining": true, "personaId": "helper-ai" }
 ```
+
+**LLM Dual Mode** (critical distinction):
+- `agentMode: false` (default): Fast in-process Rust call to `ai/generate` via `ModuleRegistry`
+- `agentMode: true`: Routes to TypeScript `ai/agent` via `execute_ts_json()`, bypassing the Rust `ai/` prefix collision. Full agentic loop with tool discovery, execution, and re-generation.
+
+**CodingAgent** delegates to a pluggable provider system (`CodingAgentRegistry`). Currently implemented: `ClaudeCodeProvider` (wraps `@anthropic-ai/claude-agent-sdk`). Sessions can be resumed, interactions captured for LoRA training.
 
 ### Loop Control
 
-```typescript
-type LoopConfig =
-  | { type: 'once' }                           // Recipe behavior: run pipeline, done
-  | { type: 'count'; max: number }             // Run N iterations
-  | { type: 'until'; check: string }           // Run until condition is true
-  | { type: 'while'; check: string }           // Run while condition is true
-  | { type: 'continuous'; intervalMs?: number } // Keep running (with optional pause)
-  | { type: 'event'; event: string }           // Re-run on each event
+The `Loop` step has 4 termination modes, selected by which field is set:
+
+| Mode | Field | Behavior |
+|------|-------|----------|
+| Count | `count: N` | Fixed N iterations |
+| While | `while: "expr"` | Condition checked before each iteration; continues while truthy |
+| Until | `until: "expr"` | Condition checked after each iteration; stops when truthy |
+| Continuous | (none of above) | Runs until `maxIterations` safety limit (default: 10,000) |
+
+`maxIterations` provides a safety cap for while/until/continuous modes. Omit it on count-based loops.
+
+Conditions use the same `{{variable}}` interpolation and truthy/falsy evaluation as `Condition` steps.
+
+```json5
+// Count: run exactly 3 times
+{ "type": "loop", "count": 3, "steps": [/*...*/] }
+
+// Until: retry build until exit code is 0 (max 10 attempts)
+{ "type": "loop", "until": "{{steps.0.exit_code}} == 0", "maxIterations": 10,
+  "steps": [{ "type": "shell", "cmd": "npm run build" }] }
+
+// While: process items while queue is non-empty
+{ "type": "loop", "while": "{{named.queue.length}} > 0", "maxIterations": 100,
+  "steps": [{ "type": "command", "command": "task/process-next", "params": {} }] }
 ```
 
 ### Triggers
@@ -518,82 +523,85 @@ type SentinelTrigger =
   | { type: 'manual' }                         // Started by command
 ```
 
+### Variable Interpolation
+
+The pipeline engine resolves `{{variable}}` references in step fields before execution. Multi-pass (up to 5 passes) with innermost-first resolution.
+
+| Pattern | Resolves To | Example |
+|---------|-------------|---------|
+| `{{steps.N.output}}` | Step N's stdout/output | `{{steps.0.output}}` → build output |
+| `{{steps.N.exit_code}}` | Step N's exit code | `{{steps.1.exit_code}}` → 0 |
+| `{{steps.N.data.field}}` | Field from step N's structured result | `{{steps.2.data.score}}` |
+| `{{input.name}}` | Pipeline input variable | `{{input.query}}` |
+| `{{named.label.output}}` | Named step output | `{{named.build.output}}` |
+| `{{loop.N.field}}` | Loop-relative step reference | `{{loop.0.output}}` → current iteration's step 0 |
+| `{{env.VAR}}` | Environment variable | `{{env.HOME}}` |
+
+**JSON path traversal**: Supports array indexing (`{{steps.0.data.items.2.name}}`), auto-parses JSON strings during traversal, and preserves types in `interpolate_value()` (objects/arrays stay structured, not stringified).
+
+**Condition expressions**: `{{steps.0.exit_code}} == 0` — interpolated first, then evaluated for truthiness. Supports `==`, `!=`, `>`, `<`, `>=`, `<=`. Non-zero numbers and non-empty strings are truthy.
+
+Implementation: `interpolation.rs` (749 lines, 46 tests).
+
 ## Examples
 
-### 1. Build-Fix Loop (What Personas Use for Coding)
+All examples use the actual Rust `Pipeline` JSON format.
+
+### 1. Build-Fix Loop (Persona Coding Sentinel)
 
 ```json
 {
   "name": "build-fix-loop",
-  "recipe": "coding",
+  "timeoutSecs": 300,
   "steps": [
-    { "type": "command", "command": "code/shell/execute",
-      "params": { "command": "npm run build", "wait": false },
-      "outputTo": "build" },
-    { "type": "command", "command": "code/shell/sentinel",
-      "params": { "executionId": "$build.executionId", "rules": [
-        { "pattern": "error TS\\d+", "classification": "error", "action": "Emit" },
-        { "pattern": "warning TS\\d+", "classification": "warning", "action": "Emit" },
-        { "pattern": "Successfully compiled", "classification": "success", "action": "Emit" }
-      ]}},
-    { "type": "watch", "executionId": "$build.executionId",
-      "until": "finished", "outputTo": "buildOutput" },
-    { "type": "condition", "check": "$buildOutput.exitCode === 0",
+    { "type": "shell", "cmd": "npm run build", "timeoutSecs": 60 },
+    { "type": "condition", "if": "{{steps.0.exit_code}} == 0",
       "then": [
-        { "type": "command", "command": "code/git",
-          "params": { "operation": "add", "paths": ["."] }},
-        { "type": "command", "command": "code/git",
-          "params": { "operation": "commit", "message": "Build passes" }}
+        { "type": "shell", "cmd": "git add -A" },
+        { "type": "shell", "cmd": "git commit -m 'Build passes'" }
       ],
       "else": [
-        { "type": "llm", "prompt": "Fix these build errors:\n$buildOutput.lines",
-          "tools": ["code/read", "code/edit", "code/write"],
-          "parseToolCalls": true, "outputTo": "fix" }
-      ]}
-  ],
-  "loop": { "type": "until", "check": "$buildOutput.exitCode === 0" },
-  "timeoutMs": 300000
+        { "type": "llm", "prompt": "Fix these build errors:\n{{steps.0.output}}",
+          "agentMode": true,
+          "tools": ["code/read", "code/edit", "code/write"] }
+      ]
+    }
+  ]
 }
 ```
 
-### 2. Code Review Sentinel
+Wrap in a loop step for retry: `{ "type": "loop", "until": "{{steps.0.exit_code}} == 0", "maxIterations": 5, "steps": [/* above steps */] }`
+
+### 2. Code Review (Event-Triggered)
 
 ```json
 {
   "name": "code-review",
-  "recipe": "coding",
-  "trigger": { "type": "event", "event": "git:push" },
   "steps": [
-    { "type": "command", "command": "code/git",
-      "params": { "operation": "diff" }, "outputTo": "diff" },
-    { "type": "llm", "prompt": "Review this diff for bugs, security issues, and style:\n$diff.diff",
-      "model": "auto", "outputTo": "review" },
+    { "type": "shell", "cmd": "git diff HEAD~1" },
+    { "type": "llm", "prompt": "Review this diff for bugs, security issues, and style:\n{{steps.0.output}}" },
     { "type": "command", "command": "collaboration/chat/send",
-      "params": { "room": "general", "message": "$review" }}
-  ],
-  "loop": { "type": "once" }
+      "params": { "room": "general", "message": "{{steps.1.output}}" } }
+  ]
 }
 ```
 
-### 3. Explore Agent (Replaces Hard-Coded Agent)
+Triggered by `SentinelTriggerService` with `trigger: { type: "event", event: "git:push" }` on the `SentinelEntity`.
+
+### 3. Explore Agent (LLM Agentic Mode)
 
 ```json
 {
   "name": "explore-codebase",
-  "recipe": "coding",
+  "timeoutSecs": 60,
+  "inputs": { "query": "How does authentication work?" },
   "steps": [
-    { "type": "llm", "prompt": "Search for: $query. Use code/search and code/tree to find relevant files. Use code/read to understand them. Report findings.",
+    { "type": "llm",
+      "prompt": "Search for: {{input.query}}. Use code/search and code/tree to find relevant files. Use code/read to understand them. Report findings.",
+      "agentMode": true,
       "tools": ["code/search", "code/tree", "code/read"],
-      "parseToolCalls": true, "outputTo": "findings" },
-    { "type": "condition", "check": "$findings.complete",
-      "else": [
-        { "type": "llm", "prompt": "Continue searching. Previous findings: $findings",
-          "tools": ["code/search", "code/tree", "code/read"],
-          "parseToolCalls": true, "outputTo": "findings" }
-      ]}
-  ],
-  "loop": { "type": "until", "check": "$findings.complete" },
-  "timeoutMs": 60000
+      "maxIterations": 15 }
+  ]
 }
 ```
 
@@ -603,22 +611,66 @@ type SentinelTrigger =
 {
   "name": "ship-it",
   "steps": [
-    { "type": "sentinel", "await": true,
-      "definition": { "name": "run-tests", "steps": [
-        { "type": "command", "command": "code/verify", "params": { "fullTest": true }, "outputTo": "tests" }
-      ], "loop": { "type": "once" }},
-      "outputTo": "testResult" },
-    { "type": "condition", "check": "$testResult.success",
+    { "type": "sentinel", "pipeline": {
+      "name": "run-tests",
+      "steps": [
+        { "type": "shell", "cmd": "npm test", "timeoutSecs": 120 }
+      ]
+    }},
+    { "type": "condition", "if": "{{steps.0.exit_code}} == 0",
       "then": [
-        { "type": "command", "command": "code/git",
-          "params": { "operation": "push" }, "outputTo": "push" },
-        { "type": "emit", "event": "sentinel:deployed", "data": "$push" }
+        { "type": "shell", "cmd": "git push origin main" },
+        { "type": "emit", "event": "sentinel:deployed",
+          "payload": { "result": "{{steps.1.output}}" } }
       ],
       "else": [
-        { "type": "emit", "event": "sentinel:test-failure", "data": "$testResult" }
-      ]}
-  ],
-  "loop": { "type": "once" }
+        { "type": "emit", "event": "sentinel:test-failure",
+          "payload": { "output": "{{steps.0.output}}" } }
+      ]
+    }
+  ]
+}
+```
+
+### 5. CodingAgent — External AI Agent
+
+```json
+{
+  "name": "refactor-auth",
+  "steps": [
+    { "type": "codingagent",
+      "prompt": "Refactor the authentication module to use JWT instead of session cookies. Update all tests.",
+      "provider": "claude-code",
+      "workingDir": "/project/src",
+      "model": "sonnet",
+      "maxTurns": 50,
+      "maxBudgetUsd": 10.0,
+      "permissionMode": "acceptEdits",
+      "personaId": "{{input.personaId}}",
+      "captureTraining": true }
+  ]
+}
+```
+
+### 6. Inter-Sentinel Coordination (Emit/Watch)
+
+```json
+{
+  "name": "teacher-student-coordination",
+  "steps": [
+    { "type": "parallel", "branches": [
+      [
+        { "type": "llm", "prompt": "Generate training data for {{input.skill}}" },
+        { "type": "emit", "event": "dataset:ready",
+          "payload": { "data": "{{steps.0.output}}" } }
+      ],
+      [
+        { "type": "watch", "event": "dataset:ready", "timeoutSecs": 120 },
+        { "type": "command", "command": "genome/train",
+          "params": { "dataset": "{{steps.0.output}}" } }
+      ]
+    ]}
+  ]
 }
 ```
 
@@ -657,23 +709,29 @@ class SentinelEntity extends BaseEntity {
 
 **Operations:**
 ```bash
-# Create from JSON file
-./jtag sentinel/create --file="sentinels/build-fix.json"
+# Save a sentinel definition to database
+./jtag sentinel/save --file="sentinels/build-fix.json"
 
-# Create inline
-./jtag sentinel/create --name="quick-test" --steps='[...]' --loop='{"type":"count","max":3}'
+# Load a saved sentinel definition
+./jtag sentinel/load --name="build-fix"
 
-# List all sentinels
+# Run a pipeline directly (ephemeral, not saved)
+./jtag sentinel/run --type=pipeline --pipeline='{"steps":[...]}'
+
+# List active handles
 ./jtag sentinel/list
 
-# Export to JSON
-./jtag data/read --collection=sentinels --filter='{"uniqueId":"build-fix"}' > build-fix.json
+# Check handle status
+./jtag sentinel/status --handle="sentinel-abc123"
 
-# Import from another project
-./jtag sentinel/create --file="/path/to/other-project/.continuum/sentinels/ci-pipeline.json"
+# View logs
+./jtag sentinel/logs/tail --handle="sentinel-abc123" --lines=50
+
+# Export from database to JSON
+./jtag data/read --collection=sentinels --filter='{"uniqueId":"build-fix"}' > build-fix.json
 ```
 
-**Sentinels travel with projects.** Store them in `.continuum/sentinels/*.json` — same as recipes in `system/recipes/*.json`. The `sentinel/create` command loads them into the database on first run.
+**Sentinels travel with projects.** Store them in `.continuum/sentinels/*.json`. The `sentinel/save` command loads them into the database. `SentinelTriggerService` auto-loads saved sentinels with triggers on startup.
 
 ## How This Maps to Code Collaboration
 
@@ -699,20 +757,34 @@ PersonaA sentinel emits "git:push"
 
 ### Dynamic Creation by AIs
 
-A persona can create a sentinel on the fly:
+A persona can create and run a sentinel on the fly:
 
 ```typescript
-// AI decides it needs a build watcher for this task
-const sentinel = await Commands.execute('sentinel/create', {
-  name: 'watch-my-build',
-  steps: [ /* ... */ ],
-  loop: { type: 'until', check: '$build.exitCode === 0' }
+// AI runs a pipeline directly (ephemeral — not saved to DB)
+const result = await Commands.execute('sentinel/run', {
+  type: 'pipeline',
+  pipeline: {
+    name: 'watch-my-build',
+    steps: [
+      { type: 'shell', cmd: 'npm run build', timeoutSecs: 60 },
+      { type: 'condition', if: '{{steps.0.exit_code}} == 0',
+        then: [{ type: 'emit', event: 'build:success', payload: {} }],
+        else: [{ type: 'llm', prompt: 'Fix: {{steps.0.output}}', agentMode: true }]
+      }
+    ]
+  }
 });
 
-// Later, another AI can inspect or modify it
-const sentinels = await Commands.execute('sentinel/list', {
-  personaId: 'helper-ai'
+// Or save a sentinel definition to DB for trigger-based execution
+await Commands.execute('sentinel/save', {
+  name: 'build-watcher',
+  definition: { /* pipeline JSON */ },
+  trigger: { type: 'event', event: 'file:changed' },
+  parentPersonaId: 'helper-ai'
 });
+
+// List active sentinel handles
+const sentinels = await Commands.execute('sentinel/list', {});
 ```
 
 ### Deployable Into Projects
@@ -741,81 +813,85 @@ Migration path: extend `RecipeStep` to support the additional step types (`llm`,
 
 ## Runtime: Handles and State
 
-A running sentinel is a **handle** — like a workspace handle. Managed by Rust (continuum-core).
+A running sentinel is a **handle** managed by Rust (`continuum-core`). The `SentinelModule` tracks active handles in a `DashMap` with configurable concurrency limit (default: 4).
 
-```
+```rust
+// Actual Rust types (auto-exported to TypeScript via ts-rs)
 SentinelHandle {
-  id: UUID
-  definition: SentinelDefinition   // The JSON definition
-  state: SentinelState             // Runtime mutable state
+    id: String,              // Unique handle ID (e.g., "sentinel-abc123")
+    sentinel_type: String,   // "pipeline" | "shell"
+    status: SentinelStatus,  // Running | Completed | Failed | Cancelled
+    progress: u8,            // 0-100
+    start_time: u64,         // Unix timestamp ms
+    end_time: Option<u64>,
+    exit_code: Option<i32>,
+    error: Option<String>,
+    working_dir: String,
+    logs_dir: String,
 }
 
-SentinelState {
-  status: 'running' | 'paused' | 'completed' | 'failed'
-  iteration: number                // Current loop iteration
-  variables: Map<string, any>      // Step outputs (persisted across iterations)
-  currentStepIndex: number         // Where in the pipeline we are
-  trace: StepTrace[]               // Execution history
-  startedAt: number
-  lastStepAt: number
+// Step-by-step execution context (carried through pipeline)
+ExecutionContext {
+    step_results: Vec<StepResult>,           // Results indexed by step number
+    inputs: HashMap<String, Value>,          // Pipeline inputs + loop variables
+    working_dir: PathBuf,                    // Working directory for shell steps
+    named_outputs: HashMap<String, StepResult>, // Named outputs for {{named.label.field}}
 }
 ```
 
-### Live CRUD on Steps
+**Lifecycle**: `SentinelEventBridge` polls Rust handles and emits TypeScript Events:
+- `sentinel:{handle}:complete` / `:error` / `:output` — per-handle events
+- `sentinel:complete` / `:error` / `:cancelled` — generic events with handle ID
 
-Steps are index-addressable. You can CRUD them while a sentinel is running — the next iteration picks up the changes:
-
-```bash
-# Add a step at index 2
-./jtag sentinel/step/add --sentinelId="abc" --index=2 --step='{"command":"code/verify","outputTo":"result"}'
-
-# Update step 1
-./jtag sentinel/step/update --sentinelId="abc" --index=1 --params='{"command":"cargo test"}'
-
-# Remove step 3
-./jtag sentinel/step/remove --sentinelId="abc" --index=3
-
-# List current steps
-./jtag sentinel/step/list --sentinelId="abc"
-```
-
-This makes sentinels debuggable and tunable at runtime — like editing a running program.
+**Escalation**: `SentinelEscalationService` links ephemeral Rust handles to durable `SentinelEntity` records, persists execution results, and routes failures to the owning persona's inbox as `InboxTask` events.
 
 ### Safety Controls
 
-```typescript
-interface SentinelSafety {
-  maxIterations?: number;        // Hard limit on loop count
-  timeoutMs?: number;            // Hard limit on total runtime
-  maxStepTimeoutMs?: number;     // Per-step timeout
-  maxMemoryMb?: number;          // Memory budget
-  onTimeout: 'stop' | 'pause';  // What to do when limits hit
-}
-```
+Safety is enforced at multiple levels:
 
-Every sentinel MUST have either `maxIterations` or `timeoutMs` (or both). No unbounded loops.
+| Level | Mechanism | Default |
+|-------|-----------|---------|
+| Pipeline | `Pipeline.timeout_secs` | None (no global timeout) |
+| Shell step | `Shell.timeout_secs` | None (runs until completion) |
+| Loop step | `Loop.max_iterations` | 10,000 for while/until/continuous |
+| Watch step | `Watch.timeout_secs` | 300 seconds |
+| Concurrent limit | `SentinelModule` config | 4 concurrent sentinels |
+| Cancellation | `sentinel/cancel` command | Sends signal via `cancel_tx` channel |
 
-## Commands (Unix-Style, Small and Composable)
+Shell steps use `kill_on_drop` process isolation — if the sentinel is cancelled or crashes, child processes are cleaned up.
+
+## Commands
+
+### Rust Commands (continuum-core SentinelModule)
 
 | Command | Purpose |
 |---------|---------|
-| `sentinel/create` | Define a sentinel from JSON definition |
-| `sentinel/start` | Start running a defined sentinel |
-| `sentinel/stop` | Stop a running sentinel |
-| `sentinel/pause` | Pause a sentinel (resume later) |
-| `sentinel/resume` | Resume a paused sentinel |
-| `sentinel/status` | Get state of a running sentinel |
-| `sentinel/list` | List all defined + running sentinels |
-| `sentinel/step/add` | Add a step at index |
-| `sentinel/step/update` | Update a step's params |
-| `sentinel/step/remove` | Remove a step by index |
-| `sentinel/step/list` | List current steps with state |
+| `sentinel/run` | Execute a pipeline or shell command with isolation. Returns handle ID. |
+| `sentinel/execute` | Alias for `sentinel/run` |
+| `sentinel/pipeline` | Execute pipeline synchronously (direct path, no handle management) |
+| `sentinel/status` | Get handle state (Running/Completed/Failed/Cancelled) |
+| `sentinel/list` | List all active handles |
+| `sentinel/cancel` | Cancel a running sentinel via cancel channel |
+| `sentinel/logs/list` | List log streams for a handle |
+| `sentinel/logs/read` | Read log stream with offset/limit |
+| `sentinel/logs/tail` | Tail last N lines of a stream |
 
-Everything else composes from existing commands:
-- `ai/generate` IS the LLM step (it's already a command)
-- `code/shell/execute` + `code/shell/sentinel` + `code/shell/watch` handle process I/O
-- `Events.emit/subscribe` handles cross-sentinel composition
-- `data/*` handles persistence
+### TypeScript Commands
+
+| Command | Purpose |
+|---------|---------|
+| `sentinel/save` | Save sentinel definition to database (`SentinelEntity`) |
+| `sentinel/load` | Load saved sentinel definition from database |
+| `sentinel/coding-agent` | Execute external coding agent (routes to `CodingAgentRegistry`) |
+
+### Composition with Existing Commands
+
+Sentinels compose with the full command system — any command is callable from a `Command` step:
+- `ai/generate` — LLM inference (used internally by LLM step in non-agent mode)
+- `ai/agent` — Agentic tool-calling loop (used by LLM step in agent mode)
+- `genome/train`, `genome/dataset-synthesize`, etc. — LoRA training pipeline
+- `collaboration/chat/send` — Post results to chat
+- `data/*` — Persistence
 
 ## Implementation Path
 
@@ -864,7 +940,7 @@ This means the system can build itself. An AI can observe a manual workflow, enc
 | **Auto-compaction** | At 95% context | Planned |
 | **Remote Operation** | Client/server split | Commands over WebSocket |
 | **Dynamic Creation** | N/A | AIs create sentinels as JSON entities |
-| **Live Mutation** | N/A | `sentinel/step/*` CRUD while running |
+| **Live Mutation** | N/A | Planned: `sentinel/step/*` CRUD while running |
 
 ### What OpenCode Does Well (Consider Adopting)
 
@@ -881,8 +957,8 @@ This means the system can build itself. An AI can observe a manual workflow, enc
    ```
 
 3. **LSP Integration**: OpenCode surfaces diagnostics from language servers. We should add:
-   ```typescript
-   { "type": "command", "command": "code/diagnostics", "outputTo": "errors" }
+   ```json
+   { "type": "command", "command": "code/diagnostics", "params": {} }
    ```
 
 4. **Auto-compaction**: At 95% context utilization, OpenCode auto-summarizes. We should add to LLMStep:
@@ -898,7 +974,7 @@ This means the system can build itself. An AI can observe a manual workflow, enc
 
 3. **Event-Driven Composition**: Our `emit` step + event triggers enable multi-sentinel coordination without tight coupling.
 
-4. **Live Step Mutation**: `sentinel/step/*` commands let you debug/tune a running sentinel like editing a live program.
+4. **CodingAgent Step**: Pluggable external coding agent providers (Claude Code SDK, future: Codex, Aider). LoRA training data capture built in.
 
 5. **Recursive Nesting**: `type: 'sentinel'` step enables arbitrary composition depth.
 
@@ -1205,6 +1281,8 @@ See related documentation:
 ---
 
 ## The Olympics: Architecture Validation Through Real Tasks
+
+> **Note**: Examples in this section use conceptual/aspirational JSON syntax (`$variable` references, `outputTo`, `recipe` fields, `parseToolCalls`). These demonstrate the VISION of what sentinels should enable but are NOT directly runnable with the current Rust pipeline engine. For actual runnable examples using `{{variable}}` interpolation, see the **Examples** section earlier in this document.
 
 These are non-trivial, real-world tasks that validate the sentinel architecture across different model sizes, execution patterns, and integration points. Each task tests specific capabilities.
 
@@ -2516,7 +2594,7 @@ The Rust `SentinelModule` in `continuum-core` handles ALL pipeline execution:
 ```
 workers/continuum-core/src/modules/sentinel/
 ├── mod.rs              # SentinelModule: command routing, handle management, concurrency
-├── types.rs            # PipelineStep (9 variants), Pipeline, SentinelHandle, ExecutionContext (ts-rs exports)
+├── types.rs            # PipelineStep (10 variants), Pipeline, SentinelHandle, ExecutionContext (ts-rs exports)
 ├── executor.rs         # Pipeline executor: step dispatch, variable propagation, logging
 ├── interpolation.rs    # Variable interpolation: {{steps.N.output}}, {{named.x.data}}, {{env.HOME}}
 ├── logs.rs             # Log stream management: list, read, tail
@@ -2530,15 +2608,16 @@ workers/continuum-core/src/modules/sentinel/
     ├── parallel.rs      # Parallel: concurrent branch execution, fail_fast, context snapshot
     ├── emit.rs          # Emit: publish interpolated events on MessageBus
     ├── watch.rs         # Watch: block until matching event arrives (glob patterns, timeout)
-    └── sentinel.rs      # Sentinel: execute nested pipeline inline (recursive composition)
+    ├── sentinel.rs      # Sentinel: execute nested pipeline inline (recursive composition)
+    └── coding_agent.rs  # CodingAgent: external AI agent via TypeScript provider system
 ```
 
-**All 9 Pipeline Step Types:**
+**All 10 Pipeline Step Types:**
 
 | Step Type | Status | Description |
 |-----------|--------|-------------|
 | `Shell` | ✅ | Process execution with `kill_on_drop` isolation, cmd interpolation, timeout |
-| `Llm` | ✅ | LLM inference via `registry.route_command("ai/generate")` — no IPC deadlock |
+| `Llm` | ✅ | Dual mode: in-process via `ai/generate` OR agentic loop via `ai/agent` |
 | `Command` | ✅ | Any command via `CommandExecutor` — routes to Rust OR TypeScript |
 | `Condition` | ✅ | `if`/`then`/`else` branching with interpolated condition expressions |
 | `Loop` | ✅ | Four modes: `count`, `while`, `until`, `continuous` with `maxIterations` safety limit |
@@ -2546,6 +2625,7 @@ workers/continuum-core/src/modules/sentinel/
 | `Emit` | ✅ | Publish interpolated events on MessageBus for inter-sentinel composition |
 | `Watch` | ✅ | Block until matching event (glob patterns) with configurable timeout |
 | `Sentinel` | ✅ | Execute nested pipeline inline — recursive composition with inherited context |
+| `CodingAgent` | ✅ | External AI agent (Claude Code SDK, etc.) via `CodingAgentRegistry` providers |
 
 **Key Rust Capabilities:**
 1. **Process Isolation**: Child processes with `kill_on_drop` — crashes don't cascade
@@ -2575,6 +2655,12 @@ TypeScript provides the command interface and definition tooling:
 | File | Purpose |
 |------|---------|
 | `system/sentinel/SentinelDefinition.ts` | JSON-serializable definitions, `SentinelBuilder` fluent API, validation |
+| `system/sentinel/SentinelEventBridge.ts` | Polls Rust handles, emits TypeScript Events (`sentinel:{handle}:*`) |
+| `system/sentinel/SentinelTriggerService.ts` | Loads saved sentinels from DB, registers event/cron/manual triggers |
+| `system/sentinel/SentinelEscalationService.ts` | Routes lifecycle events to persona inbox, persists execution results |
+| `system/sentinel/coding-agents/CodingAgentProvider.ts` | Provider interface for external coding agents |
+| `system/sentinel/coding-agents/CodingAgentRegistry.ts` | Dynamic registry — providers register by ID |
+| `system/sentinel/coding-agents/ClaudeCodeProvider.ts` | Claude Agent SDK wrapper (streams messages, captures interactions) |
 | `system/sentinel/ModelProvider.ts` | Model selection abstraction (LOCAL, OLLAMA, ANTHROPIC, OPENAI) |
 | `commands/sentinel/run/` | CLI command wrapping Rust `sentinel/run` |
 | `commands/sentinel/status/` | CLI command wrapping Rust `sentinel/status` |
@@ -2587,15 +2673,24 @@ TypeScript provides the command interface and definition tooling:
 ```
 TypeScript calls: Commands.execute('sentinel/run', { type: 'pipeline', steps: [...] })
                         ↓
-              Rust SentinelModule executes pipeline
+              Rust SentinelModule spawns async task, returns handle ID
                         ↓
-              Each step: Shell → spawn process | LLM → route to ai/generate | Command → route to module
+              Pipeline executor runs steps sequentially:
+                Shell → spawn process (kill_on_drop)
+                LLM   → route to ai/generate (or ai/agent in agentMode)
+                Command → route to any Rust/TypeScript command
+                CodingAgent → execute_ts_json("sentinel/coding-agent")
                         ↓
               Logs streamed via: sentinel:{handle}:log events
                         ↓
-              Completion via: sentinel:{handle}:status event
+              SentinelEventBridge polls handle status, emits:
+                sentinel:{handle}:complete / :error / :output
                         ↓
-              TypeScript receives result with step traces
+              SentinelEscalationService receives lifecycle event:
+                → Persists execution result to SentinelEntity
+                → Checks escalation rules (error/timeout/complete)
+                → Creates InboxTask for owning persona
+                → Stores sentinel memory for future pattern recall
 ```
 
 ---
@@ -2616,11 +2711,13 @@ These are the foundation — everything else builds on them.
 - [x] **`Watch` step type** — Block until matching event arrives on MessageBus (glob patterns, timeout)
 - [x] **Named step outputs** — `{{named.label.output}}` via `ExecutionContext.named_outputs`
 - [ ] **Expression evaluator** — Evaluate `{{steps.0.exit_code}} == 0` and `{{buildResult.success}}` in condition/loop checks
-- [x] **Uniform step signatures** — All 9 step types receive `PipelineContext` for consistent access to registry/bus
+- [x] **Uniform step signatures** — All 10 step types receive `PipelineContext` for consistent access to registry/bus
 - [x] **Multi-pass nested interpolation** — Regex `[^{}\n]+` resolves innermost `{{}}` first, up to 5 passes for `{{steps.0.output.topics.{{input.iteration}}.name}}`
 - [x] **JSON path traversal** — `traverse_json_path()` supports array indexing (numeric path parts) and auto-parses JSON strings during traversal
 - [x] **Loop-relative referencing** — `{{loop.N.field}}` resolves to `step_results[_loop_base + N]` for stable intra-loop references
 - [x] **Command routing bypass** — Pipeline command steps use `execute_ts_json()` to route directly to TypeScript, bypassing Rust module prefix collisions
+- [x] **LLM agentMode** — Dual-mode LLM step: `agentMode: false` = in-process Rust `ai/generate`; `agentMode: true` = TypeScript `ai/agent` via `execute_ts_json()` for full tool-calling loop
+- [x] **CodingAgent step type** — External AI agent step: delegates to TypeScript `sentinel/coding-agent` command, which resolves provider from `CodingAgentRegistry`. `ClaudeCodeProvider` wraps Claude Agent SDK.
 - [ ] **Per-step retry** — Configurable retry with exponential backoff for transient API errors
 - [ ] **Step timeout** — Per-step timeout separate from watch event timeout
 
