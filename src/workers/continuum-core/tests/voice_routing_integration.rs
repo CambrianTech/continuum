@@ -7,7 +7,7 @@
 //!
 //! TDD: Write tests first, then implement the integration.
 
-use continuum_core::voice::{
+use continuum_core::live::{
     AudioEvent, AudioRouter,
     ModelCapabilityRegistry, RoutedParticipant,
 };

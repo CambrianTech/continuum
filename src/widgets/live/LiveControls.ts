@@ -203,10 +203,7 @@ export class LiveControls extends LitElement {
     return html`
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="2" y="4" width="20" height="16" rx="2"></rect>
-        <path d="M7 10h1.5"></path>
-        <path d="M7 14h5"></path>
-        <path d="M15 10h2"></path>
-        <path d="M15 14h2"></path>
+        <text x="12" y="15" text-anchor="middle" fill="currentColor" stroke="none" font-size="9" font-weight="700" font-family="sans-serif">CC</text>
       </svg>
     `;
   }

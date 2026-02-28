@@ -124,8 +124,14 @@ function generateBarrelExport(dir: string): void {
   const dirName = path.basename(dir);
   const exports = files
     .map(f => {
-      const typeName = f.replace('.ts', '');
-      return `export type { ${typeName} } from './${typeName}';`;
+      const moduleName = f.replace('.ts', '');
+      const exportedTypes = parseExportedTypes(path.join(dir, f));
+      // Use the ACTUAL exported type names from the file, not the filename
+      if (exportedTypes.length > 0) {
+        return exportedTypes.map(t => `export type { ${t} } from './${moduleName}';`).join('\n');
+      }
+      // Fallback: assume filename matches type name (legacy behavior)
+      return `export type { ${moduleName} } from './${moduleName}';`;
     })
     .join('\n');
 

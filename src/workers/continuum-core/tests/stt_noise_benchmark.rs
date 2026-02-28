@@ -18,7 +18,7 @@ mod common;
 
 use base64::Engine;
 use common::{ipc_connect, ipc_request, IpcResult};
-use continuum_core::voice::vad::{NoiseType, TestAudioGenerator};
+use continuum_core::live::audio::vad::{NoiseType, TestAudioGenerator};
 use serde::Serialize;
 
 const TEST_PHRASE: &str = "The quick brown fox jumps over the lazy dog";

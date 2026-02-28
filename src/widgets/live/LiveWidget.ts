@@ -123,6 +123,7 @@ export class LiveWidget extends ReactiveWidget {
   private _applyingMicState = false;
 
   // State loading tracking
+  @reactive() private _stateLoaded: boolean = false;
   private stateLoadedPromise: Promise<void> | null = null;
 
   static override styles = [
@@ -141,10 +142,12 @@ export class LiveWidget extends ReactiveWidget {
 
     this.stateLoadedPromise = this.loadUserContext().then(() => {
       this.loadCallState();
-      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled})`);
+      this._stateLoaded = true;
+      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, captions=${this.captionsEnabled})`);
       this.requestUpdate();
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
+      this._stateLoaded = true; // Unblock UI — use defaults
     });
 
     this.visibilityObserver = new IntersectionObserver((entries) => {
@@ -244,6 +247,7 @@ export class LiveWidget extends ReactiveWidget {
       this.speakerVolume = callState.speakerVolume ?? 1.0;
       this.cameraEnabled = callState.cameraEnabled ?? false;
       this.screenShareEnabled = callState.screenShareEnabled ?? false;
+      this.captionsEnabled = callState.captionsEnabled ?? true;
     }
   }
 
@@ -259,6 +263,7 @@ export class LiveWidget extends ReactiveWidget {
       speakerVolume: this.speakerVolume,
       cameraEnabled: this.cameraEnabled,
       screenShareEnabled: this.screenShareEnabled,
+      captionsEnabled: this.captionsEnabled,
       currentCallId: this.sessionId || undefined
     };
 
@@ -399,6 +404,7 @@ export class LiveWidget extends ReactiveWidget {
           },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) return;
+            if (!this.captionsEnabled) return;
 
             const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
               || transcription.displayName;
@@ -531,6 +537,8 @@ export class LiveWidget extends ReactiveWidget {
 
           this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
 
+          if (!this.captionsEnabled) return;
+
           const captions = this._captionsRef.value ?? null;
           if (captions) {
             if (captions.hasCaption(data.speakerName)) {
@@ -632,12 +640,13 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
-  private toggleCaptions(): void {
+  private async toggleCaptions(): Promise<void> {
     this.captionsEnabled = !this.captionsEnabled;
     if (!this.captionsEnabled) {
       const captions = this._captionsRef.value ?? null;
       captions?.clearAll();
     }
+    await this.saveCallState();
   }
 
   // ========================================
@@ -752,11 +761,26 @@ export class LiveWidget extends ReactiveWidget {
   private _onParticipantClick(e: CustomEvent): void {
     const userId = e.detail.userId;
     if (this.spotlightUserId === userId) {
+      // Already spotlighted — exit back to grid
       this.spotlightUserId = null;
       this._spotlightPinned = false;
     } else {
+      // Temporary spotlight — auto-speaker can still override
       this.spotlightUserId = userId;
-      this._spotlightPinned = true; // Manual click pins the spotlight
+      // Do NOT set _spotlightPinned — only the pin icon does that
+    }
+  }
+
+  private _onPinParticipant(e: CustomEvent): void {
+    const userId = e.detail.userId;
+    if (this.spotlightUserId === userId && this._spotlightPinned) {
+      // Already pinned on this user — unpin
+      this.spotlightUserId = null;
+      this._spotlightPinned = false;
+    } else {
+      // Pin to this user
+      this.spotlightUserId = userId;
+      this._spotlightPinned = true;
     }
   }
 
@@ -798,6 +822,8 @@ export class LiveWidget extends ReactiveWidget {
       this.audioClient = null;
     }
 
+    this._stateLoaded = false;
+
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
     this.speakingTimeouts.clear();
 
@@ -838,7 +864,7 @@ export class LiveWidget extends ReactiveWidget {
   // ========================================
 
   protected override render(): TemplateResult {
-    if (this.isJoined) {
+    if (this.isJoined && this._stateLoaded) {
       const presenter = this.spotlightUserId
         ? this.participants.find(p => p.userId === this.spotlightUserId)
         : this.participants.find(p => p.screenShareEnabled);
@@ -848,6 +874,19 @@ export class LiveWidget extends ReactiveWidget {
       }
 
       return this._renderGridView();
+    }
+
+    if (this.isJoined && !this._stateLoaded) {
+      // Joined but state still loading — show connecting state, not stale defaults
+      return html`
+        <div class="live-container">
+          <div class="join-prompt">
+            <div class="empty-state">
+              <p>Connecting...</p>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     // Not joined
@@ -872,26 +911,30 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-captions=${() => this.toggleCaptions()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
+        @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
-        <div class="participant-grid" data-count="${this._gridDataCount()}">
-          ${this.participants.length === 0
-            ? html`<div class="empty-state">Waiting for others to join...</div>`
-            : repeat(this.participants, p => p.userId, (p, i) => html`
-                <live-participant-tile
-                  data-user-id="${p.userId}"
-                  data-color="${(i % 7) + 1}"
-                  .userId=${p.userId}
-                  .displayName=${p.displayName}
-                  .isSpeaking=${p.isSpeaking}
-                  .videoElement=${this._videoFor(p.userId)}
-                  .isMuted=${!p.micEnabled}
-                ></live-participant-tile>
-              `)
-          }
+        <div class="content-area">
+          <div class="participant-grid" data-count="${this._gridDataCount()}">
+            ${this.participants.length === 0
+              ? html`<div class="empty-state">Waiting for others to join...</div>`
+              : repeat(this.participants, p => p.userId, (p, i) => html`
+                  <live-participant-tile
+                    data-user-id="${p.userId}"
+                    data-color="${(i % 7) + 1}"
+                    .userId=${p.userId}
+                    .displayName=${p.displayName}
+                    .isSpeaking=${p.isSpeaking}
+                    .videoElement=${this._videoFor(p.userId)}
+                    .isMuted=${!p.micEnabled}
+                    .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
+                  ></live-participant-tile>
+                `)
+            }
+          </div>
+          <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
-        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         <live-controls ${ref(this._controlsRef)}
           .micEnabled=${this.micEnabled}
           .speakerEnabled=${this.speakerEnabled}
@@ -915,24 +958,29 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-captions=${() => this.toggleCaptions()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
+        @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
         @exit-spotlight=${() => this._onExitSpotlight()}
         @tile-resized=${(e: CustomEvent) => this._onTileResized(e)}
       >
-        <!-- Main presenter area -->
-        <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; }}>
-          <live-participant-tile
-            class="spotlight-presenter"
-            data-user-id="${presenter.userId}"
-            .userId=${presenter.userId}
-            .displayName=${presenter.displayName}
-            .isSpeaking=${presenter.isSpeaking}
-            .videoElement=${this._videoFor(presenter.userId)}
-            .isPresenter=${true}
-            .isSpotlighted=${!!this.spotlightUserId}
-            .isScreenSharing=${presenter.screenShareEnabled}
-            .isMuted=${!presenter.micEnabled}
-            @click=${(e: Event) => e.stopPropagation()}
-          ></live-participant-tile>
+        <!-- Main presenter area with caption overlay -->
+        <div class="content-area">
+          <div class="spotlight-main" @click=${() => { this.spotlightUserId = null; this._spotlightPinned = false; }}>
+            <live-participant-tile
+              class="spotlight-presenter"
+              data-user-id="${presenter.userId}"
+              .userId=${presenter.userId}
+              .displayName=${presenter.displayName}
+              .isSpeaking=${presenter.isSpeaking}
+              .videoElement=${this._videoFor(presenter.userId)}
+              .isPresenter=${true}
+              .isSpotlighted=${!!this.spotlightUserId}
+              .isScreenSharing=${presenter.screenShareEnabled}
+              .isMuted=${!presenter.micEnabled}
+              .isPinned=${this.spotlightUserId === presenter.userId && this._spotlightPinned}
+              @click=${(e: Event) => e.stopPropagation()}
+            ></live-participant-tile>
+          </div>
+          <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
 
         <!-- Other participants in strip -->
@@ -948,13 +996,13 @@ export class LiveWidget extends ReactiveWidget {
                   .isSpeaking=${p.isSpeaking}
                   .videoElement=${this._videoFor(p.userId)}
                   .isMuted=${!p.micEnabled}
+                  .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
                 ></live-participant-tile>
               </div>
             `)}
           </div>
         ` : ''}
 
-        <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         <live-controls ${ref(this._controlsRef)}
           .micEnabled=${this.micEnabled}
           .speakerEnabled=${this.speakerEnabled}

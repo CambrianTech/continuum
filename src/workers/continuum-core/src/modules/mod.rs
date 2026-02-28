@@ -13,7 +13,7 @@ pub mod cognition;
 pub mod channel;
 pub mod models;
 pub mod memory;
-pub mod voice;
+pub mod live;
 pub mod code;
 pub mod rag;
 pub mod data;

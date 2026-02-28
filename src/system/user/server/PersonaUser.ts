@@ -836,25 +836,27 @@ export class PersonaUser extends AIUser {
       this.log.warn(`⚠️ ${this.displayName}: Failed to update status to online: ${e}`);
     }
 
-    // PHASE 3: Start autonomous servicing loop (lifecycle-based)
-    this.startAutonomousServicing();
-
     // Start RTOS subprocesses
-    // Logger MUST start first - other subprocesses depend on it for logging
-    await this.logger.start();
-    this.log.info(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
-
-    // Start soul memory consolidation (Hippocampus subprocess via soul interface)
+    // Hippocampus MUST init first — it opens longterm.db and provides the DB handle.
+    // Everything else (logger, genome, autonomous loop) depends on having the real handle.
     await this.limbic!.startMemoryConsolidation();
 
-    // CRITICAL: Propagate Hippocampus DB handle to PersonaMemory.
-    // Hippocampus opens longterm.db async during construction — we must wait for it
-    // and push the real handle to PersonaMemory, otherwise PersonaMemory hits main DB.
-    await this.limbic!.propagateDbHandle();
+    // CRITICAL: Ensure Hippocampus has opened longterm.db before any work begins.
+    // Throws if the handle is null — persona cannot start without longterm.db.
+    // Hippocampus sets PersonaUser.personaDbHandle directly; PersonaMemory reads it
+    // via live reference, CognitionLogger has it via registerDbHandle().
+    await this.limbic!.ensureDbReady();
 
     // GENOME INTEGRATION: Load adapters from database into PersonaGenome
     // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
     await this.limbic!.loadGenomeFromDatabase();
+
+    // Logger starts after DB handle is propagated so CognitionLogger has its handle
+    await this.logger.start();
+    this.log.info(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
+
+    // PHASE 3: Start autonomous servicing loop LAST — everything it touches is initialized
+    this.startAutonomousServicing();
   }
 
   // ════════════════════════════════════════════════════════════════════════════

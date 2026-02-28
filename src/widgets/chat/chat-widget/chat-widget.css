@@ -146,6 +146,32 @@
   color: var(--text-secondary, rgba(255, 255, 255, 0.8));
 }
 
+/* Call button - transparent icon button in header */
+.call-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.call-btn:hover {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.call-btn:active {
+  transform: scale(0.95);
+}
+
 .no-members {
   font-size: var(--font-xs, 0.6875rem);
   color: var(--text-tertiary, rgba(255, 255, 255, 0.5));

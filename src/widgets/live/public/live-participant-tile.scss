@@ -40,6 +40,23 @@
     display: none;
   }
 
+  // Pinned state: cyan border
+  &.pinned {
+    box-shadow: 0 0 0 2px rgba($color-primary, 0.4);
+  }
+
+  // Hover: hide name label, show overlay
+  &:hover {
+    .participant-name {
+      opacity: 0;
+    }
+    .hover-overlay {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+  }
+
   // Presenter mode: full-size, no hover transform
   &.presenter {
     cursor: default;
@@ -101,7 +118,8 @@
   height: 100%;
   overflow: hidden;
   border-radius: $border-radius-lg;
-  animation: video-fade-in 0.3s ease-out;
+  z-index: 1; // Base layer — overlay (z-index: 5) sits above
+  animation: video-fade-in 0.6s ease-out;
 
   video {
     width: 100%;
@@ -130,6 +148,70 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: opacity 0.2s ease;
+  z-index: 3; // Above video (1), below overlay (5)
+}
+
+// Hover overlay bar — always in DOM, CSS-controlled visibility
+.hover-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: $spacing-md;
+  padding-top: $spacing-xl * 2;
+  background: linear-gradient(transparent 0%, rgba(0, 0, 0, 0.8) 100%);
+  border-radius: 0 0 $border-radius-lg $border-radius-lg;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.overlay-name {
+  font-size: $font-size-sm;
+  font-weight: 500;
+  color: white;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.pin-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  margin-left: $spacing-sm;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.45);
+    transform: scale(1.15);
+  }
+
+  &.pinned {
+    color: $color-primary;
+    background: rgba($color-primary, 0.3);
+
+    &:hover {
+      background: rgba($color-primary, 0.45);
+      color: lighten($color-primary, 10%);
+    }
+  }
 }
 
 // Status indicators (muted, etc.)

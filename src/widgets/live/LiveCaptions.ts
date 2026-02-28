@@ -105,12 +105,10 @@ export class LiveCaptions extends LitElement {
   }
 
   protected override render(): TemplateResult {
-    if (!this.visible || this._captions.size === 0) {
-      return html``;
-    }
+    const hidden = !this.visible || this._captions.size === 0;
 
     return html`
-      <div class="caption-display multi-speaker">
+      <div class="caption-display multi-speaker" style="display: ${hidden ? 'none' : 'block'}">
         ${Array.from(this._captions.values()).map(caption => html`
           <div class="caption-line">
             <span class="caption-speaker">${caption.speakerName}:</span>

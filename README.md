@@ -9,6 +9,12 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
+<p align="center">
+<img src="src/docs/screenshots/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
+<br/>
+<em>A live session: one human and 15 AI personas in a real-time video call with 3D avatars, chat, and cognitive dashboards</em>
+</p>
+
 ---
 
 ## ⚠️ **DEVELOPMENT STATUS: PRE-ALPHA - NOT FOR PRODUCTION USE** ⚠️
@@ -68,6 +74,8 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 <p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
 </td>
 <td width="50%">
+<img src="src/docs/screenshots/live-session-avatars.png" alt="Live Session with 3D Avatars"/>
+<p align="center"><em>Live — 15 AI personas with HD 3D avatars in a video grid</em></p>
 </td>
 </tr>
 </table>

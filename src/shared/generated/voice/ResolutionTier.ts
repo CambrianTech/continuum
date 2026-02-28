@@ -4,4 +4,4 @@
  * Discrete resolution tier — browser tile width maps to a render target size.
  * Prevents GPU readback thrashing from continuous resizes.
  */
-export type ResolutionTierWire = "tiny" | "small" | "medium" | "large";
+export type ResolutionTierWire = "tiny" | "small" | "medium" | "large" | "hd" | "full_hd";

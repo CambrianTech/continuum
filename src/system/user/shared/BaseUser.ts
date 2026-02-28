@@ -30,6 +30,7 @@ import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import { DataEventNames } from '../../events/shared/EventSystemConstants';
 import { Events } from '../../core/shared/Events';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
+import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 /**
  * BaseUser abstract class
@@ -42,6 +43,13 @@ export abstract class BaseUser {
     protected readonly storage: IUserStateStorage,
     public readonly client?: JTAGClient
   ) {}
+
+  /**
+   * Personal database handle (longterm.db).
+   * Every citizen — human or AI — can have their own persistent storage.
+   * Set during initialization by the subsystem that opens the DB (e.g. Hippocampus).
+   */
+  public personalDbHandle: DbHandle | null = null;
 
   public myRoomIds: Set<UUID> = new Set();
 

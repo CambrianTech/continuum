@@ -11,7 +11,7 @@
 //! Performance:
 //! - All FFI calls are timed and logged
 //! - Timing thresholds: >10ms = warn, >1ms = info, <1ms = debug
-use crate::voice::{VoiceOrchestrator, UtteranceEvent, VoiceParticipant};
+use crate::live::{VoiceOrchestrator, UtteranceEvent, VoiceParticipant};
 use crate::persona::PersonaInbox;
 use crate::logging::{init_logger, logger, TimingGuard};
 use std::ffi::{CStr, CString};

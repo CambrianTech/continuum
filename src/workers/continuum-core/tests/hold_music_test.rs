@@ -3,7 +3,7 @@
 //! Tests that hold music plays when a participant joins a call alone.
 //! This is the SIMPLEST test - no TTS, no AI, just verify audio mixing works.
 
-use continuum_core::voice::call_server::CallManager;
+use continuum_core::live::transport::call_server::CallManager;
 use continuum_core::utils::audio::{is_silence, calculate_rms};
 use std::time::Duration;
 

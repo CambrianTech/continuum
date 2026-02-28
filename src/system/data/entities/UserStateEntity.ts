@@ -156,6 +156,7 @@ export class UserStateEntity extends BaseEntity {
     speakerVolume: number;         // 0.0 to 1.0
     cameraEnabled: boolean;        // User's camera enabled
     screenShareEnabled: boolean;   // User is screen sharing
+    captionsEnabled: boolean;      // Closed captions enabled
     currentCallId?: string;        // Active call ID (if in a call)
   };
 
@@ -189,7 +190,8 @@ export class UserStateEntity extends BaseEntity {
       speakerEnabled: true,
       speakerVolume: 1.0,
       cameraEnabled: false,
-      screenShareEnabled: false
+      screenShareEnabled: false,
+      captionsEnabled: true
     };
   }
 
