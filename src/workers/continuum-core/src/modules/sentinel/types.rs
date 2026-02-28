@@ -182,6 +182,59 @@ pub enum PipelineStep {
         /// The nested pipeline to execute
         pipeline: Box<Pipeline>,
     },
+
+    /// Execute an external coding agent (Claude Code, Codex, etc.)
+    ///
+    /// Provider selection via `provider` param. Delegates entirely to TypeScript
+    /// via `execute_ts_json("sentinel/coding-agent", ...)`.
+    /// Every session captures interactions for LoRA training when personaId is set.
+    #[serde(rename = "codingagent")]
+    CodingAgent {
+        /// Task prompt — what the agent should do (interpolated)
+        prompt: String,
+        /// Which provider: "claude-code" (default), future: "codex", "aider"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        /// Working directory
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "workingDir")]
+        working_dir: Option<String>,
+        /// System prompt override
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "systemPrompt")]
+        system_prompt: Option<String>,
+        /// Model override (e.g., "sonnet", "opus")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Allowed tools (provider-specific names)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "allowedTools")]
+        allowed_tools: Option<Vec<String>>,
+        /// Max conversation turns
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxTurns")]
+        max_turns: Option<u32>,
+        /// Max budget in USD
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxBudgetUsd")]
+        max_budget_usd: Option<f64>,
+        /// Permission mode: "default", "acceptEdits", "bypassPermissions"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "permissionMode")]
+        permission_mode: Option<String>,
+        /// Resume a prior session
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "resumeSessionId")]
+        resume_session_id: Option<String>,
+        /// Capture interactions for LoRA training (default: true if personaId set)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "captureTraining")]
+        capture_training: Option<bool>,
+        /// Persona ID for training attribution
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "personaId")]
+        persona_id: Option<String>,
+    },
 }
 
 /// A complete pipeline definition
@@ -284,5 +337,6 @@ pub fn step_type_name(step: &PipelineStep) -> &'static str {
         PipelineStep::Emit { .. } => "emit",
         PipelineStep::Watch { .. } => "watch",
         PipelineStep::Sentinel { .. } => "sentinel",
+        PipelineStep::CodingAgent { .. } => "codingagent",
     }
 }

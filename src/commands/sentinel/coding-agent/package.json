@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-coding-agent",
+  "version": "1.0.0",
+  "description": "Execute external coding agents (Claude Code, Codex, etc.) via provider architecture"
+}

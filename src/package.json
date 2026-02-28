@@ -352,6 +352,7 @@
     "node": ">=16.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.62",
     "@anthropic-ai/sdk": "^0.71.2",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",

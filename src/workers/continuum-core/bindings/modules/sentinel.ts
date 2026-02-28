@@ -123,7 +123,8 @@ export type PipelineStep =
 	| { type: 'emit'; event: string; payload?: Record<string, unknown> }
 	| { type: 'watch'; event: string; timeoutSecs?: number }
 	| { type: 'parallel'; branches: PipelineStep[][]; failFast?: boolean }
-	| { type: 'sentinel'; pipeline: Pipeline };
+	| { type: 'sentinel'; pipeline: Pipeline }
+	| { type: 'codingagent'; prompt: string; provider?: string; workingDir?: string; systemPrompt?: string; model?: string; allowedTools?: string[]; maxTurns?: number; maxBudgetUsd?: number; permissionMode?: string; resumeSessionId?: string; captureTraining?: boolean; personaId?: string };
 
 /**
  * Pipeline definition
