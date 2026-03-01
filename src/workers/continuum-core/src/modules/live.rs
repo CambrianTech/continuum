@@ -211,9 +211,10 @@ impl ServiceModule for VoiceModule {
                 let text = p.str("text")?;
                 let voice = p.str_opt("voice");
                 let adapter = p.str_opt("adapter");
+                let display_name = p.str_opt("display_name");
 
                 let (num_samples, duration_ms, sample_rate) = self.state.livekit_manager
-                    .speak_in_call(call_id, user_id, text, voice, adapter)
+                    .speak_in_call(call_id, user_id, text, voice, adapter, display_name)
                     .await
                     .map_err(|e| {
                         log_error!("module", "voice_speak_in_call", "Speak-in-call failed: {}", e);

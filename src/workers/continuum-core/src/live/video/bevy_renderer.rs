@@ -46,12 +46,12 @@ fn bevy_debug(_msg: &str) {
 pub const MAX_AVATAR_SLOTS: u8 = 16;
 
 /// Default render resolution per avatar.
-/// 1280×720 (HD) — sharp quality for spotlight/expanded tiles. The GPU bridge
-/// makes this nearly free (pre-allocated IOSurface, zero-copy). Adaptive
-/// resolution (ResolutionTier) drives per-slot sizes at runtime: smaller tiles
-/// get downgraded via the hysteresis protocol, larger tiles can go up to FullHD.
-pub const AVATAR_WIDTH: u32 = 1280;
-pub const AVATAR_HEIGHT: u32 = 720;
+/// 640×360 for grid tiles — matches typical display size (small thumbnails).
+/// The adaptive resize system scales spotlight/active speaker to HD (1280×720)
+/// via the ResolutionTier data channel from the browser. Starting low keeps GPU
+/// load manageable with 14+ simultaneous avatars on a single GPU.
+pub const AVATAR_WIDTH: u32 = 640;
+pub const AVATAR_HEIGHT: u32 = 360;
 
 /// Target framerate for avatar rendering.
 /// 30fps Bevy tick → ~15fps effective readback (Readback is one-shot, re-inserted
@@ -97,6 +97,19 @@ pub struct SpeechAnimationClip {
     pub duration_ms: u64,
 }
 
+/// Emotional expression state for avatar facial animation.
+/// Maps to VRM expression blend shape presets. Neutral = no expression active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Emotion {
+    #[default]
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Surprised,
+    Relaxed,
+}
+
 /// Commands sent to the Bevy renderer thread.
 #[derive(Debug)]
 pub enum AvatarCommand {
@@ -128,6 +141,9 @@ pub enum AvatarCommand {
     },
     /// Stop a speech animation immediately (e.g. interrupted by new speech).
     StopSpeech { slot: u8 },
+    /// Set emotional expression on an avatar. Weight controls intensity (0.0-1.0).
+    /// Transition smooths over transition_ms. Auto-decays to neutral after ~5s.
+    SetEmotion { slot: u8, emotion: Emotion, weight: f32, transition_ms: u32 },
     /// Resize a slot's render target to new dimensions.
     /// Recreates the render target image, camera target, and readback entity.
     Resize { slot: u8, width: u32, height: u32 },
@@ -342,6 +358,28 @@ impl BevyAvatarSystem {
         let _ = self.command_tx.send(AvatarCommand::Resize { slot, width, height });
     }
 
+    /// Set emotional expression by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_emotion_by_identity(
+        &self,
+        identity: &str,
+        emotion: Emotion,
+        weight: f32,
+        transition_ms: u32,
+    ) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetEmotion {
+                slot,
+                emotion,
+                weight,
+                transition_ms,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     /// Resize by persona identity (user_id).
     /// Returns false if identity has no registered slot.
     pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
@@ -386,8 +424,16 @@ struct SlotState {
     camera_entity: Entity,
     _readback_entity: Entity,
     scene_entity: Option<Entity>,
+    /// Currently active render target (either default low-res or borrowed HD from pool).
     _render_target: Handle<Image>,
+    /// The slot's own low-res render target (640×360). Always retained for fallback
+    /// when an HD target is returned to the pool.
+    default_render_target: Handle<Image>,
     active: bool,
+    /// True once SceneInstanceReady fires — model meshes are spawned and the camera
+    /// has rendered at least one valid frame. Readback only starts after this flag is set,
+    /// preventing the bright-green uninitialized-texture flash on slot activation.
+    model_loaded: bool,
     /// Handle to the loaded Gltf asset — used for morph target name discovery.
     gltf_handle: Option<Handle<bevy::gltf::Gltf>>,
     /// Path to the model file — used for VRM extension parsing.
@@ -455,6 +501,12 @@ struct MorphTargetLayout {
     blink_left_index: Option<usize>,
     /// Index of right eye blink
     blink_right_index: Option<usize>,
+    // VRM expression presets — emotional blend shapes
+    happy_index: Option<usize>,
+    sad_index: Option<usize>,
+    angry_index: Option<usize>,
+    surprised_index: Option<usize>,
+    relaxed_index: Option<usize>,
 }
 
 /// Per-slot blink animation state.
@@ -557,6 +609,94 @@ struct LegacyMouthWeights {
     weights: HashMap<u8, f32>,
 }
 
+/// Per-slot emotional expression state with smooth transitions and auto-decay.
+#[derive(Resource, Default)]
+struct EmotionState {
+    slots: HashMap<u8, SlotEmotionState>,
+}
+
+struct SlotEmotionState {
+    current: Emotion,
+    current_weight: f32,
+    target: Emotion,
+    target_weight: f32,
+    /// Weight change per second (derived from transition_ms)
+    transition_rate: f32,
+    /// Seconds remaining until fade to neutral (~5s auto-decay)
+    decay_timer: f32,
+}
+
+impl Default for SlotEmotionState {
+    fn default() -> Self {
+        Self {
+            current: Emotion::Neutral,
+            current_weight: 0.0,
+            target: Emotion::Neutral,
+            target_weight: 0.0,
+            transition_rate: 3.0, // default: 333ms transition
+            decay_timer: 0.0,
+        }
+    }
+}
+
+/// Auto-decay duration — emotion fades to neutral after this many seconds without refresh.
+const EMOTION_DECAY_SECS: f32 = 5.0;
+/// During active speech, expression weight is attenuated to this fraction
+/// to avoid fighting mouth animation (mouth shapes + full expression looks wrong).
+const SPEECH_ATTENUATION: f32 = 0.3;
+
+/// Render cadence — staggered camera activation for GPU load distribution.
+///
+/// Game engine LOD principle: not every object renders every frame.
+/// - Speaking slots: camera active every frame (30fps → 15fps effective readback)
+/// - Idle slots: camera active every Nth frame, staggered by slot index
+///
+/// This distributes GPU render passes across frames. With 14 idle slots and
+/// cadence=3, each frame only renders ~5 idle + speaking slots (~6-7 total),
+/// cutting GPU work in half while maintaining visible animation quality.
+///
+/// Animation systems (blinking, breathing, gestures) still run every frame,
+/// updating bone transforms and morph weights. The camera just captures the
+/// accumulated state less frequently for idle slots.
+#[derive(Resource)]
+struct RenderSchedule {
+    frame_count: u32,
+    /// How many frames between renders for idle slots. Lower = smoother but more GPU work.
+    /// 3 = 10fps idle rendering at 30fps Bevy tick. Enough for blinking/breathing.
+    idle_cadence: u32,
+}
+
+impl Default for RenderSchedule {
+    fn default() -> Self {
+        Self {
+            frame_count: 0,
+            // 1 = all slots render every frame (animation smooth for blinking/breathing).
+            // The 640→360 default resolution already provides 4x GPU reduction.
+            // Increase to 2-3 if GPU is still saturated on lower-end hardware.
+            idle_cadence: 1,
+        }
+    }
+}
+
+/// HD render target resolution (for spotlight / active speaker).
+const HD_WIDTH: u32 = 1280;
+const HD_HEIGHT: u32 = 720;
+/// Maximum number of simultaneous HD render targets. Like Nintendo cartridge RAM —
+/// pre-allocate a fixed budget, swap pointers, never allocate at runtime.
+const MAX_HD_SLOTS: usize = 3;
+
+/// Pre-allocated pool of HD render targets. Only MAX_HD_SLOTS exist at any time.
+/// When a slot needs HD (spotlight/active speaker), it borrows from the pool.
+/// When demoted, it returns the target and falls back to its default low-res target.
+/// No runtime texture allocation — just pointer swaps.
+#[derive(Resource)]
+struct HdRenderTargetPool {
+    /// Available HD targets not currently assigned to any slot.
+    available: Vec<Handle<Image>>,
+    /// Which slot is borrowing which HD target. When the slot is done, the
+    /// target goes back to `available`.
+    assigned: HashMap<u8, Handle<Image>>,
+}
 
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
@@ -589,8 +729,10 @@ fn run_bevy_app(
         .insert_resource(IdleGestureState::default())
         .insert_resource(ActiveSpeechClips::default())
         .insert_resource(LegacyMouthWeights::default())
+        .insert_resource(EmotionState::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
+        .insert_resource(RenderSchedule::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -619,11 +761,13 @@ fn run_bevy_app(
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(Update, (
             process_commands,
+            manage_render_cadence,
             ensure_continuous_readback,
             monitor_load_states,
             discover_morph_targets,
             animate_idle,
             animate_speaking,
+            animate_expression,
             animate_blinking,
             animate_breathing,
             animate_idle_gestures,
@@ -637,17 +781,39 @@ fn run_bevy_app(
 /// once and is consumed. For continuous video frames, we must re-insert the
 /// `Readback` component after each completion. This gives us readback every
 /// other frame (~15fps at 30fps Bevy) due to Commands' deferred execution.
+///
+/// If `start_active` is true, the `Readback` component is inserted immediately
+/// (for resize/reload scenarios where the slot is already active).
+/// If false, only the marker + observer are spawned — `ensure_continuous_readback`
+/// inserts `Readback` once the slot becomes active. This prevents wasted GPU
+/// readback on inactive slots at boot.
 fn spawn_readback_entity(
     commands: &mut Commands,
     rt_handle: Handle<Image>,
     slot_id: u8,
 ) -> Entity {
-    commands
-        .spawn((
+    spawn_readback_entity_opt(commands, rt_handle, slot_id, true)
+}
+
+fn spawn_readback_entity_opt(
+    commands: &mut Commands,
+    rt_handle: Handle<Image>,
+    slot_id: u8,
+    start_active: bool,
+) -> Entity {
+    let mut entity_cmds = if start_active {
+        commands.spawn((
             Readback::texture(rt_handle),
             AvatarSlotId(slot_id),
             ReadbackMarker,
         ))
+    } else {
+        commands.spawn((
+            AvatarSlotId(slot_id),
+            ReadbackMarker,
+        ))
+    };
+    entity_cmds
         .observe(
             move |event: On<ReadbackComplete>,
                   channels: Res<FrameChannels>,
@@ -829,11 +995,14 @@ fn setup_render_slots(
         // No per-slot directional light — shared light above handles all layers.
         // This avoids Bevy's 10 directional light limit.
 
-        // GPU readback — fires ReadbackComplete observer every rendered frame.
-        // ReadbackComplete derefs to Vec<u8> containing raw pixel data in the
-        // render target's texture format (Rgba8UnormSrgb → RGBA bytes).
+        // GPU readback entity — spawned WITHOUT Readback component initially.
+        // Inactive slots (no model loaded) should not trigger GPU readback.
+        // ensure_continuous_readback inserts Readback when the slot becomes active.
+        // The ReadbackComplete observer IS attached now (for when readback fires later).
         let slot_id = slot;
-        let readback_entity = spawn_readback_entity(&mut commands, rt_handle.clone(), slot_id);
+        let readback_entity = spawn_readback_entity_opt(
+            &mut commands, rt_handle.clone(), slot_id, false,
+        );
 
         registry.slots.insert(
             slot,
@@ -841,17 +1010,48 @@ fn setup_render_slots(
                 camera_entity,
                 _readback_entity: readback_entity,
                 scene_entity: None,
-                _render_target: rt_handle,
+                _render_target: rt_handle.clone(),
+                default_render_target: rt_handle,
                 active: false,
+                model_loaded: false,
                 gltf_handle: None,
                 model_path: None,
             },
         );
     }
 
+    // Pre-allocate HD render target pool — Nintendo-style fixed memory budget.
+    // Only MAX_HD_SLOTS HD textures exist. Spotlight borrows one; rest stay at low-res.
+    let mut hd_targets = Vec::with_capacity(MAX_HD_SLOTS);
+    for _ in 0..MAX_HD_SLOTS {
+        let hd_size = Extent3d {
+            width: HD_WIDTH,
+            height: HD_HEIGHT,
+            depth_or_array_layers: 1,
+        };
+        let mut hd_image = Image::new_fill(
+            hd_size,
+            TextureDimension::D2,
+            &[26, 26, 46, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        hd_image.texture_descriptor.usage =
+            TextureUsages::RENDER_ATTACHMENT
+            | TextureUsages::COPY_SRC
+            | TextureUsages::COPY_DST
+            | TextureUsages::TEXTURE_BINDING;
+        hd_targets.push(images.add(hd_image));
+    }
+    commands.insert_resource(HdRenderTargetPool {
+        available: hd_targets,
+        assigned: HashMap::new(),
+    });
+
     clog_info!(
-        "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps",
-        MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS
+        "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps ({} HD targets pooled at {}×{})",
+        MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS,
+        MAX_HD_SLOTS, HD_WIDTH, HD_HEIGHT
     );
 }
 
@@ -944,6 +1144,43 @@ fn signal_ready(flag: Res<ReadyFlag>) {
     bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
 }
 
+/// Staggered render cadence — controls which cameras render each frame.
+///
+/// Game engine LOD: active speakers render every frame (smooth lip sync),
+/// idle slots render every Nth frame (staggered by slot index for even distribution).
+/// Animation systems still run every frame for all slots (bone/morph updates are cheap).
+/// Only the GPU render pass (rasterization) is staggered.
+///
+/// With 14 slots and cadence=3: ~5 idle + speaking = 6-7 render passes per frame
+/// (vs 14 previously). Combined with lower default resolution (640×360), total
+/// GPU work drops ~5-8x.
+fn manage_render_cadence(
+    mut schedule: ResMut<RenderSchedule>,
+    registry: Res<SlotRegistry>,
+    speech_clips: Res<ActiveSpeechClips>,
+    mut cameras: Query<&mut Camera>,
+) {
+    schedule.frame_count = schedule.frame_count.wrapping_add(1);
+    let frame = schedule.frame_count;
+    let cadence = schedule.idle_cadence;
+
+    for (slot, state) in &registry.slots {
+        if !state.active || !state.model_loaded {
+            continue;
+        }
+
+        let is_speaking = speech_clips.clips.contains_key(slot);
+
+        // Speaking slots always render. Idle slots render every Nth frame,
+        // staggered by slot index so render load distributes evenly.
+        let should_render = is_speaking || (frame % cadence == (*slot as u32 % cadence));
+
+        if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
+            camera.is_active = should_render;
+        }
+    }
+}
+
 /// Re-insert `Readback` on entities that lost it after `ReadbackComplete`.
 ///
 /// Bevy's `Readback` is one-shot: the render pipeline removes the component after
@@ -951,14 +1188,30 @@ fn signal_ready(flag: Res<ReadyFlag>) {
 /// `Readback` component on readback entities that no longer have it, enabling
 /// continuous frame delivery at ~half the Bevy loop rate (every other frame).
 ///
+/// Only readbacks slots whose camera is active this frame (per render cadence).
 /// Uses `ReadbackMarker` to distinguish readback entities from cameras/scenes.
 fn ensure_continuous_readback(
     query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
     registry: Res<SlotRegistry>,
+    cameras: Query<&Camera>,
     mut commands: Commands,
 ) {
     for (entity, slot_id) in &query {
         if let Some(state) = registry.slots.get(&slot_id.0) {
+            // Skip slots that aren't ready for readback:
+            // - !active: no Load command received yet
+            // - !model_loaded: SceneInstanceReady hasn't fired yet
+            // - camera not active this frame (render cadence says skip)
+            if !state.active || !state.model_loaded {
+                continue;
+            }
+            // Only readback if the camera rendered this frame (per render cadence).
+            // Reading back a stale render target wastes GPU bandwidth for no new data.
+            if let Ok(camera) = cameras.get(state.camera_entity) {
+                if !camera.is_active {
+                    continue;
+                }
+            }
             commands.entity(entity).insert(
                 Readback::texture(state._render_target.clone())
             );
@@ -977,9 +1230,10 @@ fn process_commands(
     mut pending: ResMut<PendingLoads>,
     mut speech_clips: ResMut<ActiveSpeechClips>,
     mut legacy_mouth: ResMut<LegacyMouthWeights>,
+    mut emotion_state: ResMut<EmotionState>,
     mut health: ResMut<SlotHealthStatus>,
-    mut images: ResMut<Assets<Image>>,
     mut slot_dims: ResMut<SlotDimensions>,
+    mut hd_pool: ResMut<HdRenderTargetPool>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -1050,6 +1304,7 @@ fn process_commands(
                             mut transforms: Query<&mut Transform>,
                             mut cmds: Commands,
                             mut bone_registry: ResMut<BoneRegistry>,
+                            mut slot_registry: ResMut<SlotRegistry>,
                         | {
                             let root = event.entity;
                             let child_count = count_descendants(root, &children_query);
@@ -1057,7 +1312,15 @@ fn process_commands(
                             dump_bone_names(root, &children_query, &names);
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
                             discover_upper_body_bones(root, slot_for_observer, &children_query, &names, &transforms, &mut bone_registry);
-                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated", slot_for_observer, root, child_count);
+
+                            // Mark model as loaded — readback can now begin for this slot.
+                            // Scene meshes are spawned, camera has rendered at least one frame
+                            // with the clear color. No more green-flash from uninitialized textures.
+                            if let Some(state) = slot_registry.slots.get_mut(&slot_for_observer) {
+                                state.model_loaded = true;
+                            }
+
+                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated, readback enabled", slot_for_observer, root, child_count);
                         }
                     );
 
@@ -1081,11 +1344,24 @@ fn process_commands(
                         commands.entity(entity).despawn();
                     }
                     state.active = false;
+                    state.model_loaded = false;
                     state.gltf_handle = None;
                     state.model_path = None;
                     if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
                         camera.is_active = false;
                     }
+                    // Return HD target to pool if this slot had one
+                    if let Some(hd_target) = hd_pool.assigned.remove(&slot) {
+                        hd_pool.available.push(hd_target);
+                        // Restore camera to default low-res target
+                        commands.entity(state.camera_entity).insert(
+                            RenderTarget::Image(state.default_render_target.clone().into()),
+                        );
+                        state._render_target = state.default_render_target.clone();
+                        slot_dims.dims.insert(slot, (AVATAR_WIDTH, AVATAR_HEIGHT));
+                    }
+                    // Clean up animation state for this slot
+                    emotion_state.slots.remove(&slot);
                     clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
@@ -1147,29 +1423,52 @@ fn process_commands(
                     }
                 }
             }
+            AvatarCommand::SetEmotion { slot, emotion, weight, transition_ms } => {
+                let rate = if transition_ms > 0 {
+                    1.0 / (transition_ms as f32 / 1000.0)
+                } else {
+                    100.0 // instant
+                };
+                let state = emotion_state.slots.entry(slot).or_insert_with(SlotEmotionState::default);
+                state.target = emotion;
+                state.target_weight = weight.clamp(0.0, 1.0);
+                state.transition_rate = rate;
+                state.decay_timer = EMOTION_DECAY_SECS;
+            }
             AvatarCommand::Resize { slot, width, height } => {
                 if let Some(state) = registry.slots.get_mut(&slot) {
-                    // Create new render target at requested dimensions
-                    let size = Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    };
-                    let mut rt_image = Image::new_fill(
-                        size,
-                        TextureDimension::D2,
-                        &[26, 26, 46, 255],
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-                    rt_image.texture_descriptor.usage =
-                        TextureUsages::RENDER_ATTACHMENT
-                        | TextureUsages::COPY_SRC
-                        | TextureUsages::COPY_DST
-                        | TextureUsages::TEXTURE_BINDING;
-                    let new_rt_handle = images.add(rt_image);
+                    let is_hd_request = width >= HD_WIDTH && height >= HD_HEIGHT;
+                    let currently_hd = hd_pool.assigned.contains_key(&slot);
 
-                    // Update camera render target
+                    let new_rt_handle = if is_hd_request && !currently_hd {
+                        // Promote to HD — borrow from pool
+                        if let Some(hd_target) = hd_pool.available.pop() {
+                            hd_pool.assigned.insert(slot, hd_target.clone());
+                            clog_info!("🎨 Slot {}: promoted to HD ({}×{}, {} HD targets remaining)",
+                                slot, HD_WIDTH, HD_HEIGHT, hd_pool.available.len());
+                            hd_target
+                        } else {
+                            clog_warn!("🎨 Slot {}: HD pool exhausted ({} already assigned), staying at current res",
+                                slot, hd_pool.assigned.len());
+                            continue;
+                        }
+                    } else if !is_hd_request && currently_hd {
+                        // Demote from HD — return target to pool, use default
+                        if let Some(hd_target) = hd_pool.assigned.remove(&slot) {
+                            hd_pool.available.push(hd_target);
+                            clog_info!("🎨 Slot {}: demoted to low-res ({}×{}, {} HD targets available)",
+                                slot, AVATAR_WIDTH, AVATAR_HEIGHT, hd_pool.available.len());
+                        }
+                        state.default_render_target.clone()
+                    } else if is_hd_request && currently_hd {
+                        // Already HD — no change needed
+                        continue;
+                    } else {
+                        // Low-res to low-res — use default target (no allocation)
+                        state.default_render_target.clone()
+                    };
+
+                    // Swap camera to the new render target
                     commands.entity(state.camera_entity).insert(
                         RenderTarget::Image(new_rt_handle.clone().into()),
                     );
@@ -1187,9 +1486,14 @@ fn process_commands(
                     state._render_target = new_rt_handle;
 
                     // Update per-slot dimensions
-                    slot_dims.dims.insert(slot, (width, height));
+                    let (effective_w, effective_h) = if is_hd_request {
+                        (HD_WIDTH, HD_HEIGHT)
+                    } else {
+                        (AVATAR_WIDTH, AVATAR_HEIGHT)
+                    };
+                    slot_dims.dims.insert(slot, (effective_w, effective_h));
 
-                    clog_info!("🎨 Slot {}: resized to {}×{}", slot, width, height);
+                    clog_info!("🎨 Slot {}: resized to {}×{}", slot, effective_w, effective_h);
                 }
             }
             AvatarCommand::Shutdown => {
@@ -1324,6 +1628,11 @@ fn discover_morph_targets(
         let mut blink_index = None;
         let mut blink_left_index = None;
         let mut blink_right_index = None;
+        let mut happy_index = None;
+        let mut sad_index = None;
+        let mut angry_index = None;
+        let mut surprised_index = None;
+        let mut relaxed_index = None;
 
         if !mesh_names.is_empty() {
             // Standard glTF + VRoid naming conventions — match by name.
@@ -1362,6 +1671,44 @@ fn discover_morph_targets(
                 ) {
                     blink_right_index = Some(i);
                 }
+                // VRM expression presets — emotional blend shapes
+                // VRoid: Fcl_EYE_Joy, Fcl_MTH_Angry, Fcl_ALL_Fun, etc.
+                // Standard glTF / VRM: happy, joy, sad, sorrow, angry, surprised, fun, relaxed
+                if happy_index.is_none() && (
+                    lower == "happy" || lower == "joy" ||
+                    lower.ends_with("_joy") || lower.ends_with("_happy") ||
+                    lower == "fcl_all_joy" || lower == "fcl_eye_joy"
+                ) {
+                    happy_index = Some(i);
+                }
+                if sad_index.is_none() && (
+                    lower == "sad" || lower == "sorrow" ||
+                    lower.ends_with("_sad") || lower.ends_with("_sorrow") ||
+                    lower == "fcl_all_sorrow" || lower == "fcl_eye_sorrow"
+                ) {
+                    sad_index = Some(i);
+                }
+                if angry_index.is_none() && (
+                    lower == "angry" ||
+                    lower.ends_with("_angry") ||
+                    lower == "fcl_all_angry" || lower == "fcl_mth_angry"
+                ) {
+                    angry_index = Some(i);
+                }
+                if surprised_index.is_none() && (
+                    lower == "surprised" || lower == "fun" ||
+                    lower.ends_with("_surprised") || lower.ends_with("_fun") ||
+                    lower == "fcl_all_fun" || lower == "fcl_brw_surprised"
+                ) {
+                    surprised_index = Some(i);
+                }
+                if relaxed_index.is_none() && (
+                    lower == "relaxed" ||
+                    lower.ends_with("_relaxed") ||
+                    lower == "fcl_all_relaxed"
+                ) {
+                    relaxed_index = Some(i);
+                }
             }
         } else if let Some(model_path) = &state.model_path {
             // VRM path — parse blend shape groups from the VRM extension in the .glb file
@@ -1394,6 +1741,34 @@ fn discover_morph_targets(
                             blink_right_index = Some(bind.index);
                         }
                     }
+                    // VRM expression presets — emotional blend shapes
+                    // VRM 0.x presets: "joy"/"happy", "sorrow"/"sad", "angry", "fun"/"surprised", "relaxed"
+                    // VRM 1.0 presets: "happy", "sad", "angry", "surprised", "relaxed"
+                    if happy_index.is_none() && (preset == "joy" || preset == "happy") {
+                        if let Some(bind) = shape.binds.first() {
+                            happy_index = Some(bind.index);
+                        }
+                    }
+                    if sad_index.is_none() && (preset == "sorrow" || preset == "sad") {
+                        if let Some(bind) = shape.binds.first() {
+                            sad_index = Some(bind.index);
+                        }
+                    }
+                    if angry_index.is_none() && preset == "angry" {
+                        if let Some(bind) = shape.binds.first() {
+                            angry_index = Some(bind.index);
+                        }
+                    }
+                    if surprised_index.is_none() && (preset == "fun" || preset == "surprised") {
+                        if let Some(bind) = shape.binds.first() {
+                            surprised_index = Some(bind.index);
+                        }
+                    }
+                    if relaxed_index.is_none() && preset == "relaxed" {
+                        if let Some(bind) = shape.binds.first() {
+                            relaxed_index = Some(bind.index);
+                        }
+                    }
                 }
                 clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
             }
@@ -1403,9 +1778,12 @@ fn discover_morph_targets(
             .map(|(_, w)| w.weights().len())
             .unwrap_or(0);
 
+        let emotion_count = [happy_index, sad_index, angry_index, surprised_index, relaxed_index]
+            .iter().filter(|i| i.is_some()).count();
         clog_info!(
-            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}",
+            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5 (happy={:?} sad={:?} angry={:?} surprised={:?} relaxed={:?})",
             slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
+            emotion_count, happy_index, sad_index, angry_index, surprised_index, relaxed_index,
         );
 
         morph_targets.layouts.insert(*slot, MorphTargetLayout {
@@ -1414,6 +1792,11 @@ fn discover_morph_targets(
             blink_index,
             blink_left_index,
             blink_right_index,
+            happy_index,
+            sad_index,
+            angry_index,
+            surprised_index,
+            relaxed_index,
         });
     }
 }
@@ -1541,6 +1924,90 @@ fn animate_speaking(
     }
 }
 
+
+/// Animate emotional expressions via discovered VRM blend shapes.
+///
+/// Smoothly transitions between emotions with lerp. Auto-decays to neutral
+/// after EMOTION_DECAY_SECS without refresh. During active speech, expression
+/// weight is attenuated to SPEECH_ATTENUATION to avoid fighting mouth animation.
+fn animate_expression(
+    time: Res<Time>,
+    morph_targets: Res<SlotMorphTargets>,
+    mut emotion_state: ResMut<EmotionState>,
+    speech_clips: Res<ActiveSpeechClips>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut morph_weights: Query<&mut MorphWeights>,
+) {
+    let dt = time.delta_secs();
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+
+    for (slot, layout) in &morph_targets.layouts {
+        let state = match emotion_state.slots.get_mut(slot) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Auto-decay: count down timer, then fade to neutral
+        if state.decay_timer > 0.0 {
+            state.decay_timer -= dt;
+            if state.decay_timer <= 0.0 {
+                state.target = Emotion::Neutral;
+                state.target_weight = 0.0;
+                state.transition_rate = 1.0; // gentle 1s fade-out
+            }
+        }
+
+        // Cross-fade: if switching to a different emotion, fade old out first
+        if state.target != state.current && state.current_weight > 0.01 {
+            // Fade current emotion out
+            state.current_weight = (state.current_weight - state.transition_rate * dt).max(0.0);
+            if state.current_weight <= 0.01 {
+                state.current_weight = 0.0;
+                state.current = state.target;
+            }
+        } else {
+            // Same emotion (or old is faded) — lerp toward target
+            state.current = state.target;
+            if state.current_weight < state.target_weight {
+                state.current_weight = (state.current_weight + state.transition_rate * dt)
+                    .min(state.target_weight);
+            } else if state.current_weight > state.target_weight {
+                state.current_weight = (state.current_weight - state.transition_rate * dt)
+                    .max(state.target_weight);
+            }
+        }
+
+        // Speech attenuation: reduce expression during active speech
+        let is_speaking = speaking_slots.contains(slot) || speech_clips.clips.contains_key(slot);
+        let effective_weight = if is_speaking {
+            state.current_weight * SPEECH_ATTENUATION
+        } else {
+            state.current_weight
+        };
+
+        if state.current == Emotion::Neutral || effective_weight < 0.001 {
+            continue;
+        }
+
+        // Apply the blend shape weight for the current emotion
+        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+            let w = weights.weights_mut();
+            let idx = match state.current {
+                Emotion::Happy => layout.happy_index,
+                Emotion::Sad => layout.sad_index,
+                Emotion::Angry => layout.angry_index,
+                Emotion::Surprised => layout.surprised_index,
+                Emotion::Relaxed => layout.relaxed_index,
+                Emotion::Neutral => None,
+            };
+            if let Some(i) = idx {
+                if i < w.len() {
+                    w[i] = effective_weight;
+                }
+            }
+        }
+    }
+}
 
 /// Animate random eye blinks across all active avatar slots.
 fn animate_blinking(

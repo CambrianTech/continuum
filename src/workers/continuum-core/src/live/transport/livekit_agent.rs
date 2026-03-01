@@ -59,6 +59,20 @@ const LIP_SYNC_WINDOW_MS: u32 = 66;
 /// even if frames stop arriving.
 const VIDEO_LOOP_TIMEOUT_MS: u64 = 100;
 
+/// Map requested resize dimensions to what Bevy's renderer actually applies.
+/// Bevy uses a two-tier system: HD from a pre-allocated pool, or default low-res.
+/// The publisher MUST match the Bevy render target size — mismatched dimensions
+/// cause `write_frame` to silently drop every frame (size check fails).
+fn bevy_effective_dimensions(requested_w: u32, requested_h: u32) -> (u32, u32) {
+    use crate::live::video::bevy_renderer::{AVATAR_WIDTH, AVATAR_HEIGHT};
+    // HD pool threshold matches bevy_renderer's HD_WIDTH/HD_HEIGHT (1280×720).
+    if requested_w >= 1280 && requested_h >= 720 {
+        (1280, 720)
+    } else {
+        (AVATAR_WIDTH, AVATAR_HEIGHT)
+    }
+}
+
 // =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
 // Serialized as JSON in the LiveKit JWT token's metadata field.
@@ -312,12 +326,17 @@ impl LiveKitAgent {
                                             if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
                                                 bevy_system.resize_by_identity(&identity_for_events, rw, rh);
                                             }
-                                            let _ = resolution_tx.send((rw, rh));
+                                            // Publisher must match Bevy's ACTUAL render target dimensions.
+                                            // Bevy snaps to HD pool (1280×720) or default (640×360).
+                                            // Sending mismatched dimensions causes silent frame drops
+                                            // in GPU bridge (write_frame size check fails).
+                                            let effective = bevy_effective_dimensions(rw, rh);
+                                            let _ = resolution_tx.send(effective);
                                             current_tier = requested_tier;
                                             pending_downgrade = None;
-                                            clog_info!("🎨 Tier upgrade for '{}': {:?} ({}x{})",
+                                            clog_info!("🎨 Tier upgrade for '{}': {:?} (requested {}x{}, effective {}x{})",
                                                 &identity_for_events[..8.min(identity_for_events.len())],
-                                                requested_tier, rw, rh);
+                                                requested_tier, rw, rh, effective.0, effective.1);
                                         } else {
                                             // Downgrade: require 2s hold-down
                                             match &pending_downgrade {
@@ -327,12 +346,13 @@ impl LiveKitAgent {
                                                         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
                                                             bevy_system.resize_by_identity(&identity_for_events, rw, rh);
                                                         }
-                                                        let _ = resolution_tx.send((rw, rh));
+                                                        let effective = bevy_effective_dimensions(rw, rh);
+                                                        let _ = resolution_tx.send(effective);
                                                         current_tier = requested_tier;
                                                         pending_downgrade = None;
-                                                        clog_info!("🎨 Tier downgrade for '{}': {:?} ({}x{})",
+                                                        clog_info!("🎨 Tier downgrade for '{}': {:?} (requested {}x{}, effective {}x{})",
                                                             &identity_for_events[..8.min(identity_for_events.len())],
-                                                            requested_tier, rw, rh);
+                                                            requested_tier, rw, rh, effective.0, effective.1);
                                                     }
                                                 }
                                                 _ => {
@@ -1413,6 +1433,7 @@ impl LiveKitAgentManager {
         text: &str,
         voice: Option<&str>,
         adapter: Option<&str>,
+        display_name: Option<&str>,
     ) -> Result<(usize, u64, u32), String> {
         use crate::live::audio::tts_service;
         use crate::live::avatar::gender::gender_from_identity;
@@ -1437,7 +1458,7 @@ impl LiveKitAgentManager {
         let duration_ms = synthesis.duration_ms;
         let sample_rate = synthesis.sample_rate;
 
-        let agent = self.get_or_create_agent(call_id, user_id, None).await?;
+        let agent = self.get_or_create_agent(call_id, user_id, display_name).await?;
 
         // Set resolved voice name for gender-matched avatar selection (first-speak-wins).
         // Use the resolved name from TTS (e.g., "af_bella") not the input voice param
@@ -1452,12 +1473,28 @@ impl LiveKitAgentManager {
         // 66ms windows = ~15Hz update rate, matching effective readback cadence.
         let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, LIP_SYNC_WINDOW_MS);
 
+        // Extract sentiment from text for emotional expression BEFORE sending to Bevy.
+        // Sub-microsecond: emoji/keyword pattern matching, no ML model.
+        let sentiment = crate::live::session::sentiment::extract_sentiment(text);
+
         // Send unified speech animation clip BEFORE audio starts playing.
         // ONE command bundles: Speaking flag + mouth weights + auto-stop duration.
         // Bevy plays the clip on its own timeline and auto-stops when done —
         // no tokio::spawn needed for speaking-off (eliminates starvation risk).
         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
             use crate::live::video::bevy_renderer::SpeechAnimationClip;
+
+            // Set emotion BEFORE speech clip so expression is already transitioning
+            // as the first audio frames arrive. 300ms transition for natural onset.
+            if sentiment.emotion != crate::live::video::bevy_renderer::Emotion::Neutral {
+                bevy_system.set_emotion_by_identity(
+                    user_id,
+                    sentiment.emotion,
+                    sentiment.intensity,
+                    300, // 300ms smooth transition
+                );
+            }
+
             if !bevy_system.play_speech_by_identity(user_id, SpeechAnimationClip {
                 mouth_weights,
                 interval_ms: LIP_SYNC_WINDOW_MS,
