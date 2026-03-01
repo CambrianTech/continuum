@@ -26,8 +26,8 @@ pub fn execute_step<'a>(
 ) -> BoxFuture<'a, Result<StepResult, String>> {
     async move {
         match step {
-            PipelineStep::Shell { cmd, args, timeout_secs, working_dir } => {
-                shell::execute(cmd, args, timeout_secs.unwrap_or(300), working_dir.as_ref(), index, ctx, pipeline_ctx).await
+            PipelineStep::Shell { cmd, args, timeout_secs, working_dir, allow_failure } => {
+                shell::execute(cmd, args, timeout_secs.unwrap_or(300), working_dir.as_ref(), allow_failure.unwrap_or(false), index, ctx, pipeline_ctx).await
             }
             PipelineStep::Llm { prompt, model, provider, max_tokens, temperature, system_prompt, tools, agent_mode, max_iterations } => {
                 llm::execute(llm::LlmStepParams {

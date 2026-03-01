@@ -67,6 +67,11 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "workingDir")]
         working_dir: Option<String>,
+        /// If true, non-zero exit code doesn't mark the step as failed.
+        /// The exit code is still recorded in data.exitCode for condition steps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "allowFailure")]
+        allow_failure: Option<bool>,
     },
 
     /// LLM inference via AIProviderModule (default) or agentic loop via ai/agent command

@@ -1,0 +1,75 @@
+{
+  "name": "task-tracker",
+  "description": "Build a Task Tracker REST API with Express and SQLite. Supports creating, reading, updating, and deleting tasks with filtering, pagination, and sorting.",
+  "skill": "rest-api-development",
+  "difficulty": "intermediate",
+  "milestones": [
+    {
+      "index": 0,
+      "name": "Express server + SQLite schema",
+      "description": "Create an Express server listening on port 3460 with a SQLite database (better-sqlite3). Create a 'tasks' table with columns: id (integer primary key autoincrement), title (text not null), description (text default ''), status (text default 'pending', one of 'pending','in_progress','done'), priority (integer default 0, range 0-3 where 0=low,3=critical), createdAt (text, ISO 8601), updatedAt (text, ISO 8601). Implement GET /health returning {status:'ok', dbReady:true}. Export the Express app as named export 'app' from src/index.ts.",
+      "learningObjectives": [
+        "Express server setup",
+        "SQLite database initialization",
+        "Schema design with constraints",
+        "Health endpoint with DB readiness check"
+      ],
+      "testFile": "tests/milestone-0.test.ts",
+      "testCommand": "npx tsx tests/milestone-0.test.ts",
+      "acceptanceCriteria": [
+        "Server listens on port 3460",
+        "GET /health returns 200 with {status:'ok', dbReady:true}",
+        "SQLite database file exists after server starts",
+        "tasks table exists with correct columns"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Task CRUD operations",
+      "description": "Implement full CRUD for tasks: POST /tasks creates a task (requires title, optional description/status/priority), returns 201 with the created task including auto-generated id and timestamps. GET /tasks returns array of all tasks. GET /tasks/:id returns single task or 404. PUT /tasks/:id updates task fields (partial update), updates updatedAt, returns updated task or 404. DELETE /tasks/:id removes task, returns 204 or 404. Validate: title required and non-empty on POST, status must be valid enum, priority must be 0-3.",
+      "learningObjectives": [
+        "RESTful CRUD implementation",
+        "Input validation",
+        "HTTP status codes (201, 204, 400, 404)",
+        "SQL INSERT/SELECT/UPDATE/DELETE",
+        "Timestamp management"
+      ],
+      "testFile": "tests/milestone-1.test.ts",
+      "testCommand": "npx tsx tests/milestone-1.test.ts",
+      "acceptanceCriteria": [
+        "POST /tasks with {title} creates task and returns 201",
+        "POST /tasks without title returns 400",
+        "POST /tasks with invalid status returns 400",
+        "GET /tasks returns array of all tasks",
+        "GET /tasks/:id returns single task",
+        "GET /tasks/:id with unknown id returns 404",
+        "PUT /tasks/:id updates fields and returns updated task",
+        "DELETE /tasks/:id returns 204 and removes task"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Filtering, pagination, and sorting",
+      "description": "Add query parameter support to GET /tasks: filter by status (?status=pending), filter by priority (?priority=2), filter by minimum priority (?minPriority=1), search title by substring (?search=deploy, case-insensitive). Add pagination: ?page=1&limit=10 (default page=1, limit=20). Response format becomes {tasks:[...], pagination:{page,limit,total,totalPages}}. Add sorting: ?sort=createdAt_asc, ?sort=priority_desc, ?sort=title_asc (default: createdAt_desc). Multiple filters combine with AND logic.",
+      "learningObjectives": [
+        "Query parameter parsing and validation",
+        "SQL WHERE clause composition",
+        "Pagination with LIMIT/OFFSET",
+        "ORDER BY with dynamic columns",
+        "Combined filter logic"
+      ],
+      "testFile": "tests/milestone-2.test.ts",
+      "testCommand": "npx tsx tests/milestone-2.test.ts",
+      "acceptanceCriteria": [
+        "GET /tasks?status=pending filters by status",
+        "GET /tasks?priority=2 filters by exact priority",
+        "GET /tasks?search=deploy does case-insensitive title search",
+        "GET /tasks?page=1&limit=2 returns paginated results",
+        "Response includes pagination metadata",
+        "GET /tasks?sort=priority_desc sorts by priority descending",
+        "Multiple filters combine correctly",
+        "Previous milestone tests still pass"
+      ]
+    }
+  ]
+}

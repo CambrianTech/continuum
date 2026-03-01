@@ -13,8 +13,9 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import { Events } from '../../../../system/core/shared/Events';
 import type { SentinelCodingAgentParams, SentinelCodingAgentResult } from '../shared/SentinelCodingAgentTypes';
-import { CodingAgentRegistry } from '../../../../system/sentinel/coding-agents/CodingAgentRegistry';
-import type { CodingAgentConfig, CodingAgentProgressEvent } from '../../../../system/sentinel/coding-agents/CodingAgentProvider';
+// Import from barrel — triggers self-registration of built-in providers (ClaudeCodeProvider, etc.)
+import { CodingAgentRegistry } from '../../../../system/sentinel/coding-agents';
+import type { CodingAgentConfig, CodingAgentProgressEvent } from '../../../../system/sentinel/coding-agents';
 
 export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCodingAgentParams, SentinelCodingAgentResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

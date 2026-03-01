@@ -8,6 +8,8 @@
  * isAvailable() returns false and the system degrades gracefully.
  */
 
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import type {
   CodingAgentConfig,
   CodingAgentInteraction,
@@ -52,6 +54,13 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
     // Map our permission mode to SDK PermissionMode
     const permissionMode = this.mapPermissionMode(config.permissionMode);
 
+    // Ensure PATH includes standard locations — nohup/daemon contexts can strip PATH.
+    // CRITICAL: Must set process.env.PATH directly because the SDK uses the PARENT
+    // process's PATH to locate the node binary BEFORE spawning the child process.
+    // The env option only controls the child's environment, not the SDK's lookup.
+    const ensuredPath = this.ensurePath(process.env.PATH || '');
+    process.env.PATH = ensuredPath;
+
     // Build SDK options
     const options: Record<string, unknown> = {
       cwd: config.cwd,
@@ -62,6 +71,55 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       systemPrompt: config.systemPrompt
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: config.systemPrompt }
         : { type: 'preset' as const, preset: 'claude_code' as const },
+      env: {
+        ...process.env,
+        PATH: ensuredPath,
+        // Strip CLAUDECODE to prevent "nested session" detection.
+        // The daemon inherits this env var when launched from a Claude Code session.
+        CLAUDECODE: undefined,
+        // Strip ANTHROPIC_API_KEY so Claude Code uses its own auth (Max subscription = unlimited).
+        // API key is for base model inference (ai/generate); coding agents use OAuth from `claude login`.
+        // Users who want API key billing can set apiKey on the CodingAgentConfig explicitly.
+        ANTHROPIC_API_KEY: config.apiKey || undefined,
+      },
+      // Capture stderr for diagnostics
+      stderr: (data: string) => {
+        console.error(`[ClaudeCodeProvider] stderr: ${data.substring(0, 500)}`);
+      },
+      // Custom spawn: resolve 'node' to absolute path via process.execPath.
+      // In daemon contexts (nohup), PATH is minimal and spawn('node', ...) fails
+      // with ENOENT. Using process.execPath gives the absolute path to the running
+      // node binary, completely bypassing PATH resolution.
+      spawnClaudeCodeProcess: (spawnOpts: {
+        command: string; args: string[]; cwd?: string;
+        env: Record<string, string | undefined>; signal: AbortSignal;
+      }) => {
+        const command = spawnOpts.command === 'node'
+          ? process.execPath
+          : spawnOpts.command;
+        const hasApiKey = !!spawnOpts.env.ANTHROPIC_API_KEY;
+        console.log(`[ClaudeCodeProvider] Spawning: ${command} ${spawnOpts.args.slice(0, 3).join(' ')}... (cwd: ${spawnOpts.cwd}, hasApiKey: ${hasApiKey})`);
+        const proc = spawn(command, spawnOpts.args, {
+          cwd: spawnOpts.cwd,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: spawnOpts.env as NodeJS.ProcessEnv,
+          signal: spawnOpts.signal,
+        });
+        // Capture stderr for debugging
+        proc.stderr?.on('data', (chunk: Buffer) => {
+          console.error(`[ClaudeCodeProvider] proc.stderr: ${chunk.toString().substring(0, 500)}`);
+        });
+        return {
+          stdin: proc.stdin,
+          stdout: proc.stdout,
+          get killed() { return proc.killed; },
+          get exitCode() { return proc.exitCode; },
+          kill: (signal: NodeJS.Signals) => proc.kill(signal),
+          on: proc.on.bind(proc) as any,
+          once: proc.once.bind(proc) as any,
+          off: proc.off.bind(proc) as any,
+        };
+      },
     };
 
     if (config.model) {
@@ -87,12 +145,17 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       timestamp: Date.now(),
     });
 
-    // Stream SDK messages
+    // Stream SDK messages.
+    // The SDK's async iterator yields all messages, then calls waitForExit() which
+    // throws if the process exit code is non-zero. Claude Code can exit with code 1
+    // even when the conversation succeeded (e.g., after a result:success message).
+    // We catch this and check if we already have a valid result.
     const conversation = query({
       prompt: config.prompt,
       options: options as any,
     });
 
+    try {
     for await (const message of conversation) {
       switch (message.type) {
         case 'system': {
@@ -190,11 +253,26 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
           } else {
             isError = true;
             errorMessage = result.errors?.join('; ') || `Agent ended with: ${result.subtype}`;
-            resultText = errorMessage;
+            resultText = errorMessage ?? '';
           }
           break;
         }
       }
+    }
+    } catch (iterError: any) {
+      // The SDK throws when the process exits with non-zero code, even after
+      // yielding a successful result. If we captured a result, use it.
+      const msg = iterError?.message || String(iterError);
+      if (resultText && !isError) {
+        // We have a successful result — the exit code mismatch is harmless
+        console.log(`[ClaudeCodeProvider] Process exit error after successful result (ignoring): ${msg}`);
+      } else if (!resultText && !isError) {
+        // No result captured yet — this is a real failure
+        isError = true;
+        errorMessage = msg;
+        resultText = msg;
+      }
+      // If isError is already true, we already captured the error from the result message
     }
 
     const durationMs = Date.now() - startTime;
@@ -229,5 +307,33 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       case 'dontAsk': return 'dontAsk';
       default: return 'default';
     }
+  }
+
+  /**
+   * Ensure PATH includes standard binary locations.
+   * When the server runs as a nohup daemon, PATH can be minimal.
+   * The SDK spawns `node` as a child process and needs to find it.
+   *
+   * CRITICAL: process.execPath resolves symlinks, so /opt/homebrew/bin/node
+   * becomes /opt/homebrew/Cellar/node/25.2.1/bin/node — a directory NOT in
+   * the standard PATH dirs. We must include the resolved directory explicitly.
+   */
+  private ensurePath(currentPath: string): string {
+    const nodeDir = path.dirname(process.execPath);
+    const requiredDirs = [
+      nodeDir,                   // Resolved node binary directory (MUST be first)
+      '/opt/homebrew/bin',       // macOS ARM homebrew
+      '/usr/local/bin',          // macOS Intel homebrew / standard
+      '/usr/bin',                // System binaries
+      `${process.env.HOME}/.local/bin`, // User-local (claude CLI)
+      `${process.env.HOME}/.nvm/current/bin`, // nvm users
+    ];
+    const pathDirs = new Set(currentPath.split(':'));
+    for (const dir of requiredDirs) {
+      if (dir && !pathDirs.has(dir)) {
+        pathDirs.add(dir);
+      }
+    }
+    return Array.from(pathDirs).join(':');
   }
 }

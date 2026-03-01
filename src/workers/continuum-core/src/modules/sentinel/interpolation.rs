@@ -114,18 +114,26 @@ fn resolve_path(path: &str, ctx: &ExecutionContext) -> String {
 }
 
 /// Resolve steps.N.field paths
+///
+/// Searches by `step_index` rather than array position because loop sub-steps
+/// push results to the shared `step_results` array, shifting positions. Top-level
+/// pipeline steps always have `step_index` matching their pipeline definition order.
+/// Search from the end (`.rev()`) so top-level results (pushed after sub-steps)
+/// take priority over sub-steps that may share the same index value.
 fn resolve_steps_path(parts: &[&str], ctx: &ExecutionContext) -> String {
     if parts.is_empty() {
         return "".to_string();
     }
 
-    let index: usize = parts[0].parse().unwrap_or(usize::MAX);
-    if index >= ctx.step_results.len() {
-        return "".to_string();
-    }
+    let target_index: usize = parts[0].parse().unwrap_or(usize::MAX);
 
-    let result = &ctx.step_results[index];
-    resolve_step_result_field(result, &parts[1..])
+    // Search from end so top-level pipeline results shadow loop sub-step results
+    let result = ctx.step_results.iter().rev().find(|r| r.step_index == target_index);
+
+    match result {
+        Some(r) => resolve_step_result_field(r, &parts[1..]),
+        None => "".to_string(),
+    }
 }
 
 /// Resolve named.label.field paths

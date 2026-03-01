@@ -14,6 +14,7 @@ pub async fn execute(
     args: &[String],
     timeout_secs: u64,
     working_dir_override: Option<&String>,
+    allow_failure: bool,
     index: usize,
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
@@ -57,7 +58,7 @@ pub async fn execute(
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let exit_code = output.status.code().unwrap_or(-1);
-            let success = exit_code == 0;
+            let success = if allow_failure { true } else { exit_code == 0 };
 
             Ok(StepResult {
                 step_index: index,
@@ -117,7 +118,7 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute("echo", &["hello".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("echo", &["hello".into()], 10, None, false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.output.as_deref(), Some("hello\n"));
@@ -130,9 +131,23 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute("/bin/sh", &["-c".into(), "exit 42".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("/bin/sh", &["-c".into(), "exit 42".into()], 10, None, false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_allow_failure() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // With allow_failure, non-zero exit code still marks success=true
+        let result = execute("/bin/sh", &["-c".into(), "exit 42".into()], 10, None, true, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(result.success); // success=true despite exit code 42
+        assert_eq!(result.exit_code, Some(42)); // exit code still recorded
+        assert_eq!(result.data["exitCode"], 42); // also in data
     }
 
     #[tokio::test]
@@ -143,7 +158,7 @@ mod tests {
         let mut ctx = test_ctx();
 
         // cmd with spaces and no args should be passed through /bin/sh -c
-        let result = execute("echo hello world", &[], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("echo hello world", &[], 10, None, false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("hello world\n"));
     }
@@ -155,7 +170,7 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute("sleep", &["10".into()], 1, None, 0, &mut ctx, &pipeline_ctx).await;
+        let result = execute("sleep", &["10".into()], 1, None, false, 0, &mut ctx, &pipeline_ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("timed out"));
     }
@@ -167,7 +182,7 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute("/nonexistent/binary", &[], 10, None, 0, &mut ctx, &pipeline_ctx).await;
+        let result = execute("/nonexistent/binary", &[], 10, None, false, 0, &mut ctx, &pipeline_ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to execute"));
     }
@@ -180,7 +195,7 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.inputs.insert("msg".to_string(), serde_json::json!("interpolated"));
 
-        let result = execute("echo", &["{{input.msg}}".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("echo", &["{{input.msg}}".into()], 10, None, false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("interpolated\n"));
     }
@@ -192,7 +207,7 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute("echo", &["data-test".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("echo", &["data-test".into()], 10, None, false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
         assert_eq!(result.data["stdout"], "data-test\n");
         assert_eq!(result.data["exitCode"], 0);
     }

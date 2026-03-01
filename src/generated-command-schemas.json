@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-28T16:33:40.925Z",
+  "generated": "2026-03-01T00:44:05.568Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3627,6 +3627,32 @@
       }
     },
     {
+      "name": "genome/training-export",
+      "description": "Export accumulated training data from a PersonaUser's in-memory buffer to a JSONL file.",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        }
+      }
+    },
+    {
       "name": "genome/train",
       "description": "Execute LoRA fine-tuning on a JSONL dataset using PEFTLoRAAdapter. Wraps trainLoRA() as a command for Sentinel pipeline orchestration",
       "params": {
@@ -3989,6 +4015,62 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/demo-run",
+      "description": "Run a sentinel demo pipeline where Claude Code builds real software from a project spec, capturing all interactions for LoRA training.",
+      "params": {
+        "project": {
+          "type": "string",
+          "required": true,
+          "description": "project parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "maxRetries": {
+          "type": "number",
+          "required": false,
+          "description": "maxRetries parameter"
+        },
+        "maxBudget": {
+          "type": "number",
+          "required": false,
+          "description": "maxBudget parameter"
+        },
+        "maxTurns": {
+          "type": "number",
+          "required": false,
+          "description": "maxTurns parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
         }
       }
     },

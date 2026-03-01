@@ -80,21 +80,34 @@ pub async fn execute(
         ctx.inputs.insert("_loop_base".to_string(), json!(ctx.step_results.len()));
 
         // Execute sub-steps
-        for step in steps {
+        for (sub_idx, step) in steps.iter().enumerate() {
             let sub_result = super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
             if !sub_result.success {
+                log.error(&format!(
+                    "[{}] Loop iteration {} sub-step {}/{} ({}) failed: error={:?}, output={:?}, exitCode={:?}",
+                    pipeline_ctx.handle_id, iteration, sub_idx, steps.len(),
+                    sub_result.step_type, sub_result.error, sub_result.output, sub_result.exit_code
+                ));
                 return Ok(StepResult {
                     step_index: index,
                     step_type: "loop".to_string(),
                     success: false,
                     duration_ms: start.elapsed().as_millis() as u64,
                     output: None,
-                    error: sub_result.error,
+                    error: sub_result.error.clone(),
                     exit_code: None,
                     data: json!({
                         "mode": mode.name(),
                         "iteration": iteration,
                         "iterationsCompleted": iteration,
+                        "failedSubStep": {
+                            "subIndex": sub_idx,
+                            "stepType": sub_result.step_type,
+                            "error": sub_result.error,
+                            "output": sub_result.output,
+                            "exitCode": sub_result.exit_code,
+                            "durationMs": sub_result.duration_ms,
+                        },
                     }),
                 });
             }
@@ -180,6 +193,7 @@ mod tests {
             args: vec![msg.to_string()],
             timeout_secs: Some(10),
             working_dir: None,
+            allow_failure: None,
         }
     }
 
@@ -189,6 +203,7 @@ mod tests {
             args: vec!["iter-{{input.iteration}}".to_string()],
             timeout_secs: Some(10),
             working_dir: None,
+            allow_failure: None,
         }
     }
 
@@ -198,6 +213,7 @@ mod tests {
             args: vec!["-c".to_string(), "exit 1".to_string()],
             timeout_secs: Some(10),
             working_dir: None,
+            allow_failure: None,
         }
     }
 

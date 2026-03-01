@@ -34,6 +34,8 @@ export interface CodingAgentConfig {
   sentinelHandle?: string;
   captureTraining?: boolean;
   personaId?: string;
+  /** Explicit API key for billing. If omitted, Claude Code uses its own auth (Max subscription). */
+  apiKey?: string;
 }
 
 export interface CodingAgentResult {
