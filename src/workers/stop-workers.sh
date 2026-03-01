@@ -51,7 +51,7 @@ sleep 0.5
 
 # Verify workers are stopped by checking binary names from config
 STILL_RUNNING=false
-jq -r '.workers[].binary' "$CONFIG_FILE" | while read -r binary_path; do
+while read -r binary_path; do
   binary_name=$(basename "$binary_path")
   if pgrep -f "$binary_name" > /dev/null; then
     echo -e "${RED}❌ ${binary_name} still running${NC}"
@@ -60,7 +60,7 @@ jq -r '.workers[].binary' "$CONFIG_FILE" | while read -r binary_path; do
     done
     STILL_RUNNING=true
   fi
-done
+done < <(jq -r '.workers[].binary' "$CONFIG_FILE")
 
 if [ "$STILL_RUNNING" = true ]; then
   exit 1

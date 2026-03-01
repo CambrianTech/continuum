@@ -691,8 +691,10 @@ async fn publish_data_channel_transcription(
         .await
         .map_err(|e| format!("Failed to publish transcription data: {}", e))?;
 
+    let text_preview: String = text.chars().take(40).collect();
+    let speaker_preview: String = speaker_id.chars().take(8).collect();
     clog_info!("📝 Published data channel transcription: \"{}\" (speaker={})",
-        &text[..40.min(text.len())], &speaker_id[..8.min(speaker_id.len())]);
+        text_preview, speaker_preview);
     Ok(())
 }
 
@@ -729,8 +731,18 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
 
     // Second pass: normalize to 0.0-1.0 using the max RMS as reference
     if max_rms > 0.0 {
-        for rms in raw_rms {
+        for rms in &raw_rms {
             weights.push((rms / max_rms) as f32);
+        }
+    }
+
+    // Third pass: exponential moving average for smooth transitions.
+    // Without smoothing, mouth jumps between RMS values every 66ms.
+    // Alpha=0.4 balances responsiveness with smooth cadence.
+    if weights.len() > 1 {
+        let alpha: f32 = 0.4;
+        for i in 1..weights.len() {
+            weights[i] = alpha * weights[i] + (1.0 - alpha) * weights[i - 1];
         }
     }
 
@@ -1143,13 +1155,6 @@ async fn listen_and_transcribe(
 
             match vad.process_frame(&vad_frame) {
                 Ok(Some(sentence_samples)) => {
-                    let sample_count = sentence_samples.len();
-                    let duration_s = sample_count as f64 / AUDIO_SAMPLE_RATE as f64;
-                    clog_info!(
-                        "🎤 STT: Sentence from '{}' ({} samples, {:.1}s)",
-                        speaker_name, sample_count, duration_s
-                    );
-
                     // Acquire semaphore (non-blocking — drop if at capacity)
                     let permit = match semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
@@ -1177,11 +1182,10 @@ async fn listen_and_transcribe(
                                     return;
                                 }
 
-                                let display_len = 60.min(text.len());
+                                let text_preview: String = text.chars().take(60).collect();
+                                let ellipsis = if text.chars().count() > 60 { "..." } else { "" };
                                 clog_info!("📝 STT: {} said: \"{}{}\"",
-                                    sname,
-                                    &text[..display_len],
-                                    if text.len() > 60 { "..." } else { "" },
+                                    sname, text_preview, ellipsis,
                                 );
 
                                 // Store in transcription buffer (for test polling via voice/poll-transcriptions)
@@ -1444,55 +1448,36 @@ impl LiveKitAgentManager {
             agent.set_voice(v);
         }
 
-        // Signal avatar to start speaking animation (mouth movement, head nod)
-        if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-            bevy_system.set_speaking_by_identity(user_id, true);
-        }
-
         // Calculate per-chunk RMS amplitude for mouth weight animation.
         // 66ms windows = ~15Hz update rate, matching effective readback cadence.
-        // Shorter windows pick up individual wave cycles (too noisy for phoneme-level sync).
         let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, LIP_SYNC_WINDOW_MS);
 
-        // Publish subtitle FIRST — native transcription linked to the audio track SID.
-        // This ensures the browser receives the subtitle at the same time as audio starts,
-        // rather than after all audio frames are queued (which caused audio-ahead-of-subtitles).
+        // Send unified speech animation clip BEFORE audio starts playing.
+        // ONE command bundles: Speaking flag + mouth weights + auto-stop duration.
+        // Bevy plays the clip on its own timeline and auto-stops when done —
+        // no tokio::spawn needed for speaking-off (eliminates starvation risk).
+        if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
+            use crate::live::video::bevy_renderer::SpeechAnimationClip;
+            if !bevy_system.play_speech_by_identity(user_id, SpeechAnimationClip {
+                mouth_weights,
+                interval_ms: LIP_SYNC_WINDOW_MS,
+                duration_ms,
+            }) {
+                clog_warn!("🤖 play_speech failed for '{}' — identity not registered",
+                    &user_id[..8.min(user_id.len())]);
+            }
+        }
+
+        // Publish subtitle BEFORE audio — browser receives text at the same time as
+        // (or slightly before) the first audio frames arrive via WebRTC.
         if let Err(e) = agent.publish_transcription(text, user_id, true).await {
             clog_warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
         }
 
-        // THEN feed audio frames to LiveKit
+        // Feed audio frames to LiveKit. Speech clip is already queued in Bevy,
+        // so mouth + head nod play in sync as audio starts.
+        // Bevy auto-stops the clip when duration_ms expires — no tokio::spawn needed.
         agent.speak(synthesis.samples).await?;
-
-        // Schedule amplitude-based mouth weights timed to audio playback.
-        // Each weight corresponds to a 66ms window of the audio.
-        let uid_for_mouth = user_id.to_string();
-        if !mouth_weights.is_empty() {
-            tokio::spawn(async move {
-                for weight in mouth_weights {
-                    if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                        bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, weight);
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(LIP_SYNC_WINDOW_MS as u64)).await;
-                }
-                // Reset mouth weight to 0 after audio finishes
-                if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                    bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, 0.0);
-                }
-            });
-        }
-
-        // Schedule speaking-off after audio duration elapses.
-        // speak() feeds frames synchronously, so audio is queued by now.
-        // Add a small buffer (200ms) for LiveKit's audio pipeline latency.
-        let uid = user_id.to_string();
-        let stop_delay = std::time::Duration::from_millis(duration_ms + 200);
-        tokio::spawn(async move {
-            tokio::time::sleep(stop_delay).await;
-            if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                bevy_system.set_speaking_by_identity(&uid, false);
-            }
-        });
 
         Ok((num_samples, duration_ms, sample_rate))
     }

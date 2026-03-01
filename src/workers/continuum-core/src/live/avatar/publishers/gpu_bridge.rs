@@ -357,7 +357,6 @@ fn register_bridge(slot: u8, pair: Arc<IoSurfacePair>) {
     let mut guard = bridges().write().unwrap();
     if let Some(entry) = guard.get_mut(slot as usize) {
         *entry = Some(pair);
-        clog_info!("📹 GPU bridge registered for slot {}", slot);
     }
 }
 
@@ -478,7 +477,6 @@ impl FramePublisher for GpuBridgePublisher {
                 self.width = width;
                 self.height = height;
                 self.last_published = 0; // Reset counter for new pair
-                clog_info!("📹 GpuBridgePublisher: resize complete (slot {})", self.slot);
             }
             Err(e) => {
                 clog_warn!("📹 GpuBridgePublisher: resize failed: {} — keeping {}×{}",

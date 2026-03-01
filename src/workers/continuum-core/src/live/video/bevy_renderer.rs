@@ -82,6 +82,21 @@ pub fn try_get() -> Option<&'static BevyAvatarSystem> {
     BEVY_SYSTEM.get()
 }
 
+/// A complete speech animation clip — the synchronized package.
+///
+/// Bundles mouth weights + duration into one unit so all animation attributes
+/// (mouth, head nod, future: gestures) play from a single timeline.
+/// Like a game engine animation clip — queued, played, auto-stopped.
+#[derive(Debug, Clone)]
+pub struct SpeechAnimationClip {
+    /// Per-window mouth open weights (lerped between consecutive samples).
+    pub mouth_weights: Vec<f32>,
+    /// Interval between mouth weight samples (ms). Typically 66ms (~15Hz).
+    pub interval_ms: u32,
+    /// Total audio duration (ms). Bevy auto-clears Speaking flag when this expires.
+    pub duration_ms: u64,
+}
+
 /// Commands sent to the Bevy renderer thread.
 #[derive(Debug)]
 pub enum AvatarCommand {
@@ -100,6 +115,19 @@ pub enum AvatarCommand {
     /// Set mouth open weight from audio amplitude (0.0 = closed, 1.0 = fully open).
     /// Overrides the default sine oscillation for amplitude-responsive lip sync.
     SetMouthWeight { slot: u8, weight: f32 },
+    /// Set a pre-computed sequence of mouth weights for amplitude-responsive lip sync.
+    /// Bevy samples from this sequence on its own clock — no tokio timing dependency.
+    /// This eliminates starvation from tokio runtime contention (14+ concurrent agents).
+    SetMouthWeightSequence { slot: u8, weights: Vec<f32>, interval_ms: u32 },
+    /// Play a complete speech animation clip — unified package for synchronized playback.
+    /// Bundles speaking flag + mouth weights + duration into ONE command.
+    /// Bevy auto-stops when duration expires (no tokio::spawn needed).
+    PlaySpeech {
+        slot: u8,
+        clip: SpeechAnimationClip,
+    },
+    /// Stop a speech animation immediately (e.g. interrupted by new speech).
+    StopSpeech { slot: u8 },
     /// Resize a slot's render target to new dimensions.
     /// Recreates the render target image, camera target, and readback entity.
     Resize { slot: u8, width: u32, height: u32 },
@@ -245,6 +273,9 @@ impl BevyAvatarSystem {
             self.set_speaking(slot, speaking);
             true
         } else {
+            if speaking {
+                clog_warn!("🎨 set_speaking: identity '{}' not registered (no slot)", &identity[..8.min(identity.len())]);
+            }
             false
         }
     }
@@ -260,6 +291,46 @@ impl BevyAvatarSystem {
     pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
         if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
             self.set_mouth_weight(slot, weight);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Send a pre-computed sequence of mouth weights to Bevy.
+    /// Bevy samples from this on its own clock — immune to tokio runtime starvation.
+    /// This is the preferred path: all weights computed upfront, timing is Bevy's problem.
+    pub fn set_mouth_weight_sequence_by_identity(&self, identity: &str, weights: Vec<f32>, interval_ms: u32) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetMouthWeightSequence {
+                slot,
+                weights,
+                interval_ms,
+            });
+            true
+        } else {
+            clog_warn!("🎨 set_mouth_weight_sequence: identity '{}' not registered", &identity[..8.min(identity.len())]);
+            false
+        }
+    }
+
+    /// Play a complete speech animation clip — the unified path.
+    /// ONE command bundles speaking flag + mouth weights + auto-stop duration.
+    /// Returns false if identity has no registered slot.
+    pub fn play_speech_by_identity(&self, identity: &str, clip: SpeechAnimationClip) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::PlaySpeech { slot, clip });
+            true
+        } else {
+            clog_warn!("🎨 play_speech: identity '{}' not registered (no slot)", &identity[..8.min(identity.len())]);
+            false
+        }
+    }
+
+    /// Stop a speech animation immediately (e.g. new utterance interrupts old one).
+    pub fn stop_speech_by_identity(&self, identity: &str) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::StopSpeech { slot });
             true
         } else {
             false
@@ -408,6 +479,7 @@ struct BoneRegistry {
 struct SlotBones {
     head: Option<BoneInfo>,
     neck: Option<BoneInfo>,
+    spine: Option<BoneInfo>,
     left_shoulder: Option<BoneInfo>,
     right_shoulder: Option<BoneInfo>,
 }
@@ -450,11 +522,38 @@ impl Default for SlotDimensions {
     }
 }
 
-/// Per-slot mouth weights from audio amplitude analysis.
-/// Updated by SetMouthWeight commands from the livekit_agent audio pipeline.
-/// When present, animate_speaking() uses this instead of sine oscillation.
+/// An active speech clip playing on Bevy's timeline.
+/// All animation attributes (mouth, head nod, future gestures) sample from this.
+struct ActiveClip {
+    mouth_weights: Vec<f32>,
+    interval_ms: u32,
+    duration_ms: u64,
+    /// Bevy elapsed_secs when playback started.
+    start_time: f32,
+}
+
+/// All active speech animations, keyed by slot.
+/// Single source of truth for speech-related animation — replaces the old fragmented
+/// MouthWeights + Speaking component approach.
+///
+/// Design: like a game engine's animation state machine.
+/// - PlaySpeech inserts a clip (starts mouth + head nod + auto-stop timer)
+/// - StopSpeech removes it (immediate interrupt)
+/// - animate_speaking reads from here — one resource, one timeline per slot
 #[derive(Resource, Default)]
-struct MouthWeights {
+struct ActiveSpeechClips {
+    clips: HashMap<u8, ActiveClip>,
+    /// Atomic stats — accumulated in the render loop, flushed periodically.
+    /// Never log from the hot path; read+reset from a low-frequency system.
+    clips_started: u32,
+    clips_auto_stopped: u32,
+    clips_interrupted: u32,
+}
+
+/// Legacy per-slot mouth weights (for SetMouthWeight individual command).
+/// Kept for backward compatibility but PlaySpeech is the preferred path.
+#[derive(Resource, Default)]
+struct LegacyMouthWeights {
     weights: HashMap<u8, f32>,
 }
 
@@ -488,7 +587,8 @@ fn run_bevy_app(
         .insert_resource(BlinkState::default())
         .insert_resource(BoneRegistry::default())
         .insert_resource(IdleGestureState::default())
-        .insert_resource(MouthWeights::default())
+        .insert_resource(ActiveSpeechClips::default())
+        .insert_resource(LegacyMouthWeights::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
@@ -869,12 +969,14 @@ fn ensure_continuous_readback(
 /// Process commands from the main application.
 fn process_commands(
     command_channel: Res<CommandChannel>,
+    time: Res<Time>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut registry: ResMut<SlotRegistry>,
     mut cameras: Query<&mut Camera>,
     mut pending: ResMut<PendingLoads>,
-    mut mouth_weights: ResMut<MouthWeights>,
+    mut speech_clips: ResMut<ActiveSpeechClips>,
+    mut legacy_mouth: ResMut<LegacyMouthWeights>,
     mut health: ResMut<SlotHealthStatus>,
     mut images: ResMut<Assets<Image>>,
     mut slot_dims: ResMut<SlotDimensions>,
@@ -999,7 +1101,51 @@ fn process_commands(
                 }
             }
             AvatarCommand::SetMouthWeight { slot, weight } => {
-                mouth_weights.weights.insert(slot, weight);
+                legacy_mouth.weights.insert(slot, weight);
+            }
+            AvatarCommand::SetMouthWeightSequence { slot, weights, interval_ms } => {
+                // Legacy path — use PlaySpeech instead for synchronized animation.
+                let duration_ms = weights.len() as u64 * interval_ms as u64;
+                speech_clips.clips.insert(slot, ActiveClip {
+                    mouth_weights: weights,
+                    interval_ms,
+                    duration_ms,
+                    start_time: time.elapsed_secs(),
+                });
+                // Also set Speaking component for head nod
+                if let Some(state) = registry.slots.get(&slot) {
+                    if let Some(scene_entity) = state.scene_entity {
+                        commands.entity(scene_entity).insert(Speaking);
+                    }
+                }
+                speech_clips.clips_started += 1;
+            }
+            AvatarCommand::PlaySpeech { slot, clip } => {
+                // Unified path — one command starts everything.
+                // Insert clip (mouth weights + auto-stop timer)
+                speech_clips.clips.insert(slot, ActiveClip {
+                    mouth_weights: clip.mouth_weights,
+                    interval_ms: clip.interval_ms,
+                    duration_ms: clip.duration_ms,
+                    start_time: time.elapsed_secs(),
+                });
+                // Set Speaking component for head nod
+                if let Some(state) = registry.slots.get(&slot) {
+                    if let Some(scene_entity) = state.scene_entity {
+                        commands.entity(scene_entity).insert(Speaking);
+                    }
+                }
+                speech_clips.clips_started += 1;
+            }
+            AvatarCommand::StopSpeech { slot } => {
+                if speech_clips.clips.remove(&slot).is_some() {
+                    speech_clips.clips_interrupted += 1;
+                }
+                if let Some(state) = registry.slots.get(&slot) {
+                    if let Some(scene_entity) = state.scene_entity {
+                        commands.entity(scene_entity).remove::<Speaking>();
+                    }
+                }
             }
             AvatarCommand::Resize { slot, width, height } => {
                 if let Some(state) = registry.slots.get_mut(&slot) {
@@ -1272,65 +1418,121 @@ fn discover_morph_targets(
     }
 }
 
-/// Animate mouth morph targets + subtle head nod when a slot is speaking.
-/// Uses audio-amplitude MouthWeights when available for responsive lip sync,
-/// falling back to sine oscillation when no amplitude data is present.
+/// Animate mouth morph targets + subtle head nod during speech.
+///
+/// Reads from ActiveSpeechClips (unified timeline per slot) for synchronized
+/// mouth + head animation. Auto-stops when clip duration expires — no external
+/// tokio::spawn needed.
+///
+/// Like a game engine animation system: one clip drives all speech-related
+/// attributes from a single timeline. Clips can be interrupted by new speech
+/// or StopSpeech commands.
 fn animate_speaking(
     time: Res<Time>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
     morph_targets: Res<SlotMorphTargets>,
     bone_registry: Res<BoneRegistry>,
-    mouth_weights: Res<MouthWeights>,
+    mut speech_clips: ResMut<ActiveSpeechClips>,
+    legacy_mouth: Res<LegacyMouthWeights>,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,
+    mut commands: Commands,
+    registry: Res<SlotRegistry>,
 ) {
-    // Collect which slots are currently speaking
     let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+    let now = time.elapsed_secs();
+
+    // Auto-stop expired clips and remove Speaking component.
+    // This replaces the tokio::spawn approach — Bevy manages its own lifecycle.
+    let mut expired: Vec<u8> = Vec::new();
+    for (&slot, clip) in &speech_clips.clips {
+        let elapsed_ms = ((now - clip.start_time) * 1000.0) as u64;
+        if elapsed_ms > clip.duration_ms + 200 { // 200ms grace for audio pipeline latency
+            expired.push(slot);
+        }
+    }
+    for slot in &expired {
+        speech_clips.clips.remove(slot);
+        speech_clips.clips_auto_stopped += 1;
+        if let Some(state) = registry.slots.get(slot) {
+            if let Some(scene_entity) = state.scene_entity {
+                commands.entity(scene_entity).remove::<Speaking>();
+            }
+        }
+    }
+
+    // Periodic stats flush — accumulate in memory, log every ~10s (300 frames at 30fps).
+    // Never log from the hot path per frame.
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
+        let frame = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if frame % 300 == 0 {
+            let started = speech_clips.clips_started;
+            let stopped = speech_clips.clips_auto_stopped;
+            let interrupted = speech_clips.clips_interrupted;
+            if started > 0 || stopped > 0 || interrupted > 0 {
+                clog_info!("🎨 Speech stats: {} started, {} auto-stopped, {} interrupted, {} active",
+                    started, stopped, interrupted, speech_clips.clips.len());
+                speech_clips.clips_started = 0;
+                speech_clips.clips_auto_stopped = 0;
+                speech_clips.clips_interrupted = 0;
+            }
+        }
+    }
 
     for (slot, layout) in &morph_targets.layouts {
+        let has_clip = speech_clips.clips.contains_key(slot);
         let is_speaking = speaking_slots.contains(slot);
 
         if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
             let w = weights.weights_mut();
-            if is_speaking {
-                // Prefer amplitude-based weight from audio pipeline when available
-                let mouth_weight = if let Some(&amplitude) = mouth_weights.weights.get(slot) {
-                    // Amplitude already normalized to 0.0-1.0 by the sender.
-                    // Full range for clearly visible mouth movement.
-                    amplitude.clamp(0.0, 1.0)
+
+            // Mouth weight from clip (priority) or legacy path or sine fallback.
+            let mouth_weight = if let Some(clip) = speech_clips.clips.get(slot) {
+                let elapsed = now - clip.start_time;
+                let t = elapsed * 1000.0 / clip.interval_ms as f32;
+                let idx = t as usize;
+                if idx >= clip.mouth_weights.len() {
+                    0.0
+                } else if idx + 1 < clip.mouth_weights.len() {
+                    // Lerp between consecutive weights for smooth continuous movement
+                    let frac = t - idx as f32;
+                    let a = clip.mouth_weights[idx];
+                    let b = clip.mouth_weights[idx + 1];
+                    (a + (b - a) * frac).clamp(0.0, 1.0)
                 } else {
-                    // Fallback: sine oscillation (no amplitude data)
-                    let t = time.elapsed_secs();
-                    ((t * 3.0 * std::f32::consts::TAU).sin() * 0.4 + 0.5).clamp(0.1, 0.9)
-                };
-                if let Some(idx) = layout.mouth_open_index {
-                    if idx < w.len() {
-                        w[idx] = mouth_weight;
-                    }
+                    clip.mouth_weights[idx].clamp(0.0, 1.0)
                 }
+            } else if let Some(&amplitude) = legacy_mouth.weights.get(slot) {
+                amplitude.clamp(0.0, 1.0)
+            } else if is_speaking {
+                // Sine fallback (Speaking set but no clip data — should be brief)
+                let t = now;
+                ((t * 3.0 * std::f32::consts::TAU).sin() * 0.4 + 0.5).clamp(0.1, 0.9)
             } else {
-                // Not speaking — close mouth
-                if let Some(idx) = layout.mouth_open_index {
-                    if idx < w.len() {
-                        w[idx] = 0.0;
-                    }
+                0.0
+            };
+
+            if let Some(idx) = layout.mouth_open_index {
+                if idx < w.len() {
+                    w[idx] = mouth_weight;
                 }
             }
         }
 
-        // Subtle head nod during speech (±2 degrees pitch oscillation at ~1.5Hz).
-        // Composes delta onto rest rotation — never replaces the bone's bind pose.
+        // Head nod during speech — driven by clip or Speaking flag.
+        let should_nod = has_clip || is_speaking;
         if let Some(slot_bones) = bone_registry.slots.get(slot) {
             if let Some(ref head) = slot_bones.head {
                 if let Ok(mut transform) = transforms.get_mut(head.entity) {
-                    if is_speaking {
-                        let t = time.elapsed_secs() + *slot as f32 * 1.3;
-                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035; // ~2 degrees
-                        let tilt = (t * 0.9).sin() * 0.02; // slight lateral tilt
+                    if should_nod {
+                        let t = now + *slot as f32 * 1.3;
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035;
+                        let tilt = (t * 0.9).sin() * 0.02;
                         let delta = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
                         transform.rotation = head.rest_rotation * delta;
                     } else {
-                        // Return to rest rotation (smoothly)
                         transform.rotation = transform.rotation.slerp(head.rest_rotation, 0.3);
                     }
                 }
@@ -1338,6 +1540,7 @@ fn animate_speaking(
         }
     }
 }
+
 
 /// Animate random eye blinks across all active avatar slots.
 fn animate_blinking(
@@ -1367,7 +1570,7 @@ fn animate_blinking(
 
         // Check if it's time to start a new blink
         if state.blink_frames_remaining == 0 && elapsed >= state.next_blink_time {
-            state.blink_frames_remaining = 2; // 2 frames at 5fps ≈ 400ms blink
+            state.blink_frames_remaining = 6; // 6 frames at 30fps = 200ms blink (guarantees ≥3 captured at 15fps readback)
             // Next blink in 2-6 seconds (pseudo-random using elapsed time)
             let pseudo_rand = ((elapsed * 1000.0 + *slot as f32 * 137.0) % 4000.0) / 1000.0;
             state.next_blink_time = elapsed + 2.0 + pseudo_rand;
@@ -1485,33 +1688,38 @@ fn animate_idle_gestures(
 }
 
 /// Subtle breathing animation — gentle spine/chest oscillation + weight shift.
+/// Uses cached spine bone from BoneRegistry (no per-frame tree traversal).
+/// Composes delta rotation onto the bone's rest rotation (preserves bind pose).
 fn animate_breathing(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
-    children_query: Query<&Children>,
-    names: Query<&Name>,
+    bone_registry: Res<BoneRegistry>,
     mut transforms: Query<&mut Transform>,
 ) {
     for (slot, state) in &registry.slots {
         if !state.active {
             continue;
         }
-        let scene_entity = match state.scene_entity {
-            Some(e) => e,
+
+        // Use cached spine bone from BoneRegistry (eliminates 420 tree traversals/sec)
+        let spine = match bone_registry.slots.get(slot).and_then(|b| b.spine.as_ref()) {
+            Some(s) => s,
             None => continue,
         };
 
-        // Find spine bone and apply subtle vertical oscillation + lateral weight shift
-        if let Some(spine_entity) = find_bone_by_name(scene_entity, &children_query, &names, &["J_Bip_C_Spine", "mixamorig:Spine", "Spine"]) {
-            if let Ok(mut transform) = transforms.get_mut(spine_entity) {
-                let t = time.elapsed_secs() + *slot as f32 * 1.1; // Phase offset
-                let breath = (t * 0.8 * std::f32::consts::TAU).sin() * 0.003;
-                // Breathing: Y scale variation (chest expanding)
-                transform.scale.y = 1.0 + breath;
-                // Weight shift: very slow lateral sway (barely perceptible)
-                let sway = (t * 0.12).sin() * 0.01;
-                transform.rotation = Quat::from_rotation_z(sway);
-            }
+        if let Ok(mut transform) = transforms.get_mut(spine.entity) {
+            let t = time.elapsed_secs() + *slot as f32 * 1.1; // Phase offset per slot
+
+            // Breathing: Y scale variation (chest expanding/contracting)
+            // Increased from ±0.003 to ±0.005 for visibility at 15fps readback
+            let breath = (t * 0.8 * std::f32::consts::TAU).sin() * 0.005;
+            transform.scale.y = 1.0 + breath;
+
+            // Weight shift: slow lateral sway — compose delta onto rest rotation
+            // (was: overwriting rotation entirely, breaking bind pose)
+            let sway = (t * 0.12).sin() * 0.012;
+            let delta = Quat::from_rotation_z(sway);
+            transform.rotation = spine.rest_rotation * delta;
         }
     }
 }
@@ -1578,6 +1786,12 @@ fn fix_tpose_arms(
     // Collect bone adjustments needed (entity, rotation)
     let mut adjustments = Vec::new();
     collect_arm_adjustments(entity, children, names, &mut adjustments);
+
+    if adjustments.is_empty() {
+        clog_warn!("🎨 T-pose fix: no arm bones found — model may use unknown naming convention");
+    } else {
+        clog_info!("🎨 T-pose fix: {} arm bone adjustments applied", adjustments.len());
+    }
 
     for (bone_entity, rotation) in adjustments {
         if let Ok(mut transform) = transforms.get_mut(bone_entity) {
@@ -1847,6 +2061,7 @@ fn discover_upper_body_bones(
 ) {
     let head_names = ["J_Bip_C_Head", "mixamorig:Head", "Head"];
     let neck_names = ["J_Bip_C_Neck", "mixamorig:Neck", "Neck"];
+    let spine_names = ["J_Bip_C_Spine", "mixamorig:Spine", "Spine"];
     let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder"];
     let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder"];
 
@@ -1872,16 +2087,21 @@ fn discover_upper_body_bones(
 
     let head = discover(&head_names, "Head");
     let neck = discover(&neck_names, "Neck");
+    let spine = discover(&spine_names, "Spine");
     let left_shoulder = discover(&left_shoulder_names, "L.Shoulder");
     let right_shoulder = discover(&right_shoulder_names, "R.Shoulder");
 
-    let found_count = [&head, &neck, &left_shoulder, &right_shoulder].iter()
+    let found_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
         .filter(|b| b.is_some()).count();
-    bevy_debug(&format!("Bone discovery slot {}: {}/4 bones found", slot, found_count));
+    clog_info!("🎨 Bone discovery slot {}: {}/5 bones found (head={} neck={} spine={} lsh={} rsh={})",
+        slot, found_count,
+        head.is_some(), neck.is_some(), spine.is_some(),
+        left_shoulder.is_some(), right_shoulder.is_some());
 
     bone_registry.slots.insert(slot, SlotBones {
         head,
         neck,
+        spine,
         left_shoulder,
         right_shoulder,
     });

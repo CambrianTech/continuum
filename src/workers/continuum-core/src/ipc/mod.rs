@@ -236,12 +236,12 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
 
     let reader = BufReader::new(stream.try_clone()?);
 
-    // Response channel — rayon tasks send completed results, writer thread serializes to socket.
+    // Response channel — tokio tasks send completed results, writer thread serializes to socket.
     // Unbounded: request rate is limited by socket read speed, not processing speed.
     let (tx, rx) = std::sync::mpsc::channel::<(Option<u64>, HandleResult)>();
 
     // Writer thread — owns the write half of the socket, serializes response frames.
-    // Multiple rayon tasks complete concurrently; this thread ensures atomic frame writes.
+    // Multiple tokio tasks complete concurrently; this thread ensures atomic frame writes.
     let mut writer_stream = stream.try_clone()?;
     let writer_handle = std::thread::spawn(move || {
         for (request_id, result) in rx {
@@ -262,7 +262,7 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         }
     });
 
-    // Reader loop — parse requests and dispatch to rayon for concurrent processing.
+    // Reader loop — parse requests and dispatch to tokio for concurrent processing.
     // No longer blocks waiting for handle_request() to complete before reading next request.
     for line in reader.lines() {
         let line = line?;
@@ -282,14 +282,30 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
         let command = json_value.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-        // Dispatch to rayon thread pool — each request runs concurrently.
-        // handle_request(&self) is safe for concurrent calls (DashMap per-key locking).
+        // Dispatch to tokio directly — NO RAYON THREAD BLOCKED.
+        //
+        // Previous: rayon::spawn → route_command_sync (blocks rayon thread for up to 60s)
+        // Now: tokio::spawn → route_command (async, zero thread blocking)
+        //
+        // rayon::spawn was the root cause of system-wide starvation:
+        // - Every IPC request occupied a rayon thread for its entire duration (up to 60s)
+        // - With 14 agents sending concurrent ai/generate + data/count + voice/speak-in-call,
+        //   all rayon threads were blocked waiting, and new commands couldn't start
+        // - This caused voice/speak-in-call timeouts → intermittent mouth animation
+        // - Also caused ai/generate and data/count timeouts → general system degradation
+        //
+        // tokio handles thousands of concurrent tasks without blocking any OS threads.
         let state = state.clone();
         let tx = tx.clone();
-        rayon::spawn(move || {
-            // Route through modular runtime (all commands handled by ServiceModules)
+        let rt_handle = state.rt_handle.clone();
+        rt_handle.spawn(async move {
             let handle_result = if let Some(ref cmd) = command {
-                match state.runtime.route_command_sync(cmd, json_value.clone(), &state.rt_handle) {
+                // No timeout here — the CLI enforces per-command timeouts (10s-300s by category).
+                // Adding a blanket timeout here killed long-running commands like voice/speak-in-call
+                // (TTS + real-time audio streaming = 20-60s+) and ai/generate.
+                let result = state.runtime.route_command(cmd, json_value.clone()).await;
+
+                match result {
                     Some(Ok(CommandResult::Json(value))) => HandleResult::Json(Response::success(value)),
                     Some(Ok(CommandResult::Binary { metadata, data })) => HandleResult::Binary {
                         json_header: Response::success(metadata),

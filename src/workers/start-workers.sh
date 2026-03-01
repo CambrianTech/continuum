@@ -95,8 +95,16 @@ else
 fi
 
 # Setup directories
-mkdir -p .continuum/jtag/logs/system
+mkdir -p .continuum/jtag/logs/system/modules
+mkdir -p .continuum/jtag/logs/system/daemons
 mkdir -p .continuum/sockets
+
+# Truncate all worker logs on restart (prevents multi-hundred-MB bloat)
+# Each session starts clean — old logs are not useful across restarts
+for logfile in .continuum/jtag/logs/system/*.log .continuum/jtag/logs/system/modules/*.log .continuum/jtag/logs/system/daemons/*.log; do
+  [ -f "$logfile" ] && : > "$logfile"
+done
+echo -e "${GREEN}✅ Logs truncated${NC}"
 
 # Kill existing workers and clean sockets (same as stop-workers.sh)
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"

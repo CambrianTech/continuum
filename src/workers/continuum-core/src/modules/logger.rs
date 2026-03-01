@@ -276,6 +276,9 @@ fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
     }
 }
 
+/// Max log file size before rotation (10 MB). Prevents unbounded growth during long sessions.
+const MAX_LOG_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 fn ensure_file_handle(
     category: &str,
     log_file_path: &PathBuf,
@@ -284,15 +287,22 @@ fn ensure_file_handle(
 ) -> std::io::Result<()> {
     let mut cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
 
-    // Check if cached file was deleted
+    // Check if cached file was deleted or exceeded size limit
     if let Some(existing) = cache.get(category) {
-        let file_deleted = {
+        let needs_reopen = {
             let file = existing.lock().unwrap_or_else(|e| e.into_inner());
-            file.metadata().is_err()
+            match file.metadata() {
+                Err(_) => true, // File deleted
+                Ok(meta) => meta.len() > MAX_LOG_FILE_SIZE, // File too large
+            }
         };
-        if file_deleted {
+        if needs_reopen {
             cache.remove(category);
             headers_written.lock().unwrap_or_else(|e| e.into_inner()).remove(category);
+            // Truncate the oversized file
+            if log_file_path.exists() {
+                let _ = fs::write(log_file_path, b"");
+            }
         }
     }
 

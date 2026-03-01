@@ -92,7 +92,6 @@ impl VoiceOrchestrator {
         }
 
         // Broadcast to text-based AI participants only
-        clog_info!("Broadcasting to {} text-based AIs (audio-native excluded)", ai_participants.len());
 
         ai_participants.iter().map(|p| p.user_id).collect()
     }

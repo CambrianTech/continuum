@@ -231,9 +231,9 @@ impl VoiceActivityDetection for SileroVAD {
             .commit_from_file(model_path)
             .map_err(|e| VADError::ModelNotLoaded(e.to_string()))?;
 
-        SILERO_SESSION
-            .set(Arc::new(Mutex::new(session)))
-            .map_err(|_| VADError::ModelNotLoaded("Failed to set global session".into()))?;
+        // OnceLock::set fails if another thread already set it — that's fine,
+        // it means the model is already loaded. Not an error.
+        let _ = SILERO_SESSION.set(Arc::new(Mutex::new(session)));
 
         clog_info!("Silero VAD model loaded successfully");
         Ok(())
