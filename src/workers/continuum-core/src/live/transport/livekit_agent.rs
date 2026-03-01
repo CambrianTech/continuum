@@ -35,6 +35,31 @@ use std::sync::Arc;
 use crate::{clog_info, clog_warn, clog_error};
 
 // =============================================================================
+// Video publishing constants
+// =============================================================================
+
+/// Max WebRTC video bitrate per avatar track.
+/// 1.5 Mbps is adequate for HD (1280×720) avatar content at 30fps —
+/// mostly static background with moving mouth/head.
+const AVATAR_VIDEO_BITRATE: u64 = 1_500_000;
+
+/// Max WebRTC video framerate advertised to the encoder.
+/// Matches the Bevy render tick rate (bevy_renderer::AVATAR_FPS).
+const AVATAR_VIDEO_MAX_FPS: f64 = 30.0;
+
+/// Lip sync RMS window duration in milliseconds.
+/// 66ms = ~15Hz update rate, matching effective readback cadence
+/// (30fps Bevy tick / 2 = 15fps one-shot readback).
+/// Shorter windows pick up individual wave cycles (too noisy for phoneme-level sync).
+const LIP_SYNC_WINDOW_MS: u32 = 66;
+
+/// Safety-net timeout for the frame-driven video loop.
+/// NOT the frame cadence — frame arrival (via Notify) is the real clock.
+/// This just ensures resolution checks and shutdown detection happen
+/// even if frames stop arriving.
+const VIDEO_LOOP_TIMEOUT_MS: u64 = 100;
+
+// =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
 // Serialized as JSON in the LiveKit JWT token's metadata field.
 // Browser reads via participant.metadata (livekit-client JS SDK).
@@ -453,8 +478,8 @@ impl LiveKitAgent {
                         // explicit bitrate to prevent WebRTC adaptive compression blur.
                         simulcast: false,
                         video_encoding: Some(VideoEncoding {
-                            max_bitrate: 800_000, // 800 kbps — VGA@15fps avatar with lip sync
-                            max_framerate: 15.0,
+                            max_bitrate: AVATAR_VIDEO_BITRATE,
+                            max_framerate: AVATAR_VIDEO_MAX_FPS,
                         }),
                         ..Default::default()
                     },
@@ -666,8 +691,10 @@ async fn publish_data_channel_transcription(
         .await
         .map_err(|e| format!("Failed to publish transcription data: {}", e))?;
 
+    let text_preview: String = text.chars().take(40).collect();
+    let speaker_preview: String = speaker_id.chars().take(8).collect();
     clog_info!("📝 Published data channel transcription: \"{}\" (speaker={})",
-        &text[..40.min(text.len())], &speaker_id[..8.min(speaker_id.len())]);
+        text_preview, speaker_preview);
     Ok(())
 }
 
@@ -704,8 +731,18 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
 
     // Second pass: normalize to 0.0-1.0 using the max RMS as reference
     if max_rms > 0.0 {
-        for rms in raw_rms {
+        for rms in &raw_rms {
             weights.push((rms / max_rms) as f32);
+        }
+    }
+
+    // Third pass: exponential moving average for smooth transitions.
+    // Without smoothing, mouth jumps between RMS values every 66ms.
+    // Alpha=0.4 balances responsiveness with smooth cadence.
+    if weights.len() > 1 {
+        let alpha: f32 = 0.4;
+        for i in 1..weights.len() {
+            weights[i] = alpha * weights[i] + (1.0 - alpha) * weights[i - 1];
         }
     }
 
@@ -789,6 +826,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         };
 
         let frame_rx = allocation.frame_rx;
+        let frame_notify = allocation.frame_notify;
         let slot = allocation.slot;
         // RAII: SlotGuard held alive until this async block exits.
         // On drop: unloads model, unregisters identity, returns slot to pool.
@@ -815,8 +853,8 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                             source: TrackSource::Camera,
                             simulcast: false,
                             video_encoding: Some(VideoEncoding {
-                                max_bitrate: 1_500_000,
-                                max_framerate: 15.0,
+                                max_bitrate: AVATAR_VIDEO_BITRATE,
+                                max_framerate: AVATAR_VIDEO_MAX_FPS,
                             }),
                             ..Default::default()
                         },
@@ -841,29 +879,46 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         // Watch channel for adaptive resolution — check for tier changes each iteration.
         let mut resolution_rx = agent.resolution_rx.clone();
 
-        let frame_interval = std::time::Duration::from_nanos((1_000_000_000.0 / 15.0) as u64);
+        // Frame-driven loop: the readback observer fires frame_notify when a frame
+        // is ready. We wake immediately on signal — frame arrival is the clock,
+        // not sleep-polling. Timeout is a safety net for resolution checks
+        // and shutdown detection (not the frame cadence).
+        let loop_started = std::time::Instant::now();
+        let mut frames_published: u64 = 0;
+        let mut first_frame_logged = false;
         loop {
+            tokio::select! {
+                _ = frame_notify.notified() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_millis(VIDEO_LOOP_TIMEOUT_MS)) => {}
+            }
+
             // Check for resolution changes from the hysteresis logic.
-            // has_changed() is non-blocking and only returns true when the value differs
-            // from the last time we marked it as seen.
             if resolution_rx.has_changed().unwrap_or(false) {
                 let (new_w, new_h) = *resolution_rx.borrow_and_update();
                 publisher.resize(new_w, new_h);
             }
 
             // try_publish is non-blocking (try_recv + ~1ms I420 conversion).
-            // Short enough for a tokio worker — no need for spawn_blocking.
             match publisher.try_publish(&video_source) {
-                Ok(true) => {} // Frame published
-                Ok(false) => {} // No frame ready
+                Ok(true) => {
+                    frames_published += 1;
+                    // One-time confirmation that notify-driven publish is working
+                    if !first_frame_logged {
+                        let latency_ms = loop_started.elapsed().as_millis();
+                        clog_info!("📹 First frame published for '{}' ({}ms after loop start)",
+                            agent.identity, latency_ms);
+                        first_frame_logged = true;
+                    }
+                }
+                Ok(false) => {} // Spurious wake or stale notify — harmless
                 Err(_) => {
-                    // Channel closed — Bevy readback channel disconnected
-                    clog_info!("📹 Video publisher channel closed for '{}'", agent.identity);
+                    let elapsed = loop_started.elapsed().as_secs_f64();
+                    let fps = if elapsed > 0.0 { frames_published as f64 / elapsed } else { 0.0 };
+                    clog_info!("📹 Video loop ended for '{}' ({} frames, {:.1} fps avg, {:.0}s)",
+                        agent.identity, frames_published, fps, elapsed);
                     break;
                 }
             }
-
-            tokio::time::sleep(frame_interval).await;
         }
         // _slot_guard drops here → slot released back to pool
     });
@@ -898,10 +953,11 @@ async fn process_audio_stream_with_vad(
 
     clog_info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
 
-    // Frame accumulation: LiveKit sends 10ms (160 samples) frames,
-    // but earshot WebRTC VAD requires >=240 samples per call.
-    // Accumulate to 480 samples (30ms) before feeding to VAD.
-    const VAD_FRAME_SIZE: usize = 480;
+    // Frame accumulation: LiveKit sends 10ms (160 samples) frames.
+    // Silero VAD requires exactly 512 samples (32ms) at 16kHz — its LSTM was
+    // trained on this chunk size. Feeding 480 samples produces near-zero scores.
+    // WebRTC VAD (earshot) handles 512 via chunk-and-vote on 240-sample pieces.
+    const VAD_FRAME_SIZE: usize = crate::audio_constants::AUDIO_FRAME_SIZE; // 512
     let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
 
     while let Some(frame) = audio_stream.next().await {
@@ -1099,13 +1155,6 @@ async fn listen_and_transcribe(
 
             match vad.process_frame(&vad_frame) {
                 Ok(Some(sentence_samples)) => {
-                    let sample_count = sentence_samples.len();
-                    let duration_s = sample_count as f64 / AUDIO_SAMPLE_RATE as f64;
-                    clog_info!(
-                        "🎤 STT: Sentence from '{}' ({} samples, {:.1}s)",
-                        speaker_name, sample_count, duration_s
-                    );
-
                     // Acquire semaphore (non-blocking — drop if at capacity)
                     let permit = match semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
@@ -1133,11 +1182,10 @@ async fn listen_and_transcribe(
                                     return;
                                 }
 
-                                let display_len = 60.min(text.len());
+                                let text_preview: String = text.chars().take(60).collect();
+                                let ellipsis = if text.chars().count() > 60 { "..." } else { "" };
                                 clog_info!("📝 STT: {} said: \"{}{}\"",
-                                    sname,
-                                    &text[..display_len],
-                                    if text.len() > 60 { "..." } else { "" },
+                                    sname, text_preview, ellipsis,
                                 );
 
                                 // Store in transcription buffer (for test polling via voice/poll-transcriptions)
@@ -1400,54 +1448,36 @@ impl LiveKitAgentManager {
             agent.set_voice(v);
         }
 
-        // Signal avatar to start speaking animation (mouth movement, head nod)
+        // Calculate per-chunk RMS amplitude for mouth weight animation.
+        // 66ms windows = ~15Hz update rate, matching effective readback cadence.
+        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, LIP_SYNC_WINDOW_MS);
+
+        // Send unified speech animation clip BEFORE audio starts playing.
+        // ONE command bundles: Speaking flag + mouth weights + auto-stop duration.
+        // Bevy plays the clip on its own timeline and auto-stops when done —
+        // no tokio::spawn needed for speaking-off (eliminates starvation risk).
         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-            bevy_system.set_speaking_by_identity(user_id, true);
+            use crate::live::video::bevy_renderer::SpeechAnimationClip;
+            if !bevy_system.play_speech_by_identity(user_id, SpeechAnimationClip {
+                mouth_weights,
+                interval_ms: LIP_SYNC_WINDOW_MS,
+                duration_ms,
+            }) {
+                clog_warn!("🤖 play_speech failed for '{}' — identity not registered",
+                    &user_id[..8.min(user_id.len())]);
+            }
         }
 
-        // Calculate per-chunk RMS amplitude for mouth weight animation.
-        // 66ms windows (~15fps) for smooth lip sync matching the render framerate.
-        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, 66);
-
-        // Publish subtitle FIRST — native transcription linked to the audio track SID.
-        // This ensures the browser receives the subtitle at the same time as audio starts,
-        // rather than after all audio frames are queued (which caused audio-ahead-of-subtitles).
+        // Publish subtitle BEFORE audio — browser receives text at the same time as
+        // (or slightly before) the first audio frames arrive via WebRTC.
         if let Err(e) = agent.publish_transcription(text, user_id, true).await {
             clog_warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
         }
 
-        // THEN feed audio frames to LiveKit
+        // Feed audio frames to LiveKit. Speech clip is already queued in Bevy,
+        // so mouth + head nod play in sync as audio starts.
+        // Bevy auto-stops the clip when duration_ms expires — no tokio::spawn needed.
         agent.speak(synthesis.samples).await?;
-
-        // Schedule amplitude-based mouth weights timed to audio playback.
-        // Each weight corresponds to a 66ms window (~15fps) of the audio.
-        let uid_for_mouth = user_id.to_string();
-        if !mouth_weights.is_empty() {
-            tokio::spawn(async move {
-                for weight in mouth_weights {
-                    if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                        bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, weight);
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(66)).await;
-                }
-                // Reset mouth weight to 0 after audio finishes
-                if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                    bevy_system.set_mouth_weight_by_identity(&uid_for_mouth, 0.0);
-                }
-            });
-        }
-
-        // Schedule speaking-off after audio duration elapses.
-        // speak() feeds frames synchronously, so audio is queued by now.
-        // Add a small buffer (200ms) for LiveKit's audio pipeline latency.
-        let uid = user_id.to_string();
-        let stop_delay = std::time::Duration::from_millis(duration_ms + 200);
-        tokio::spawn(async move {
-            tokio::time::sleep(stop_delay).await;
-            if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                bevy_system.set_speaking_by_identity(&uid, false);
-            }
-        });
 
         Ok((num_samples, duration_ms, sample_rate))
     }

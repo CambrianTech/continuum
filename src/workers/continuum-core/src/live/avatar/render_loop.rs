@@ -101,6 +101,9 @@ impl Drop for SlotGuard {
 pub struct BevySlotAllocation {
     /// Bevy's FrameChannels receiver — video loop reads frames directly from GPU readback.
     pub frame_rx: crossbeam_channel::Receiver<RgbaFrame>,
+    /// Frame-ready notifier — fires when the readback observer writes a frame.
+    /// Video loops await this instead of sleep-polling. Frame arrival is the clock.
+    pub frame_notify: std::sync::Arc<tokio::sync::Notify>,
     /// The allocated slot number (for speaking control, logging, etc.).
     pub slot: u8,
     /// RAII guard — hold alive for the duration of the video loop. Dropping releases the slot.
@@ -140,12 +143,15 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
         let identity_map = bevy_system.identity_to_slot_map();
         if let Some(&existing_slot) = identity_map.get(&identity) {
             if let Some(frame_rx) = bevy_system.frame_receiver(existing_slot) {
+                let frame_notify = bevy_system.frame_notifier(existing_slot)
+                    .ok_or_else(|| format!("frame_notifier failed for slot {}", existing_slot))?;
                 clog_info!(
                     "🎨 allocate_bevy_slot: reusing slot {} for '{}' (identity dedup)",
                     existing_slot, &identity[..8.min(identity.len())]
                 );
                 return Ok(BevySlotAllocation {
                     frame_rx: frame_rx.clone(),
+                    frame_notify,
                     slot: existing_slot,
                     // No-op guard for reused slots — original owner manages lifecycle
                     guard: SlotGuard { slot: existing_slot, identity: identity.clone(), released: true },
@@ -179,6 +185,10 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
         release_slot(slot);
         format!("frame_receiver failed for slot {}", slot)
     })?;
+    let frame_notify = bevy_system.frame_notifier(slot).ok_or_else(|| {
+        release_slot(slot);
+        format!("frame_notifier failed for slot {}", slot)
+    })?;
 
     clog_info!(
         "🎨 allocate_bevy_slot: slot {} for '{}' (model: {})",
@@ -187,6 +197,7 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
 
     Ok(BevySlotAllocation {
         frame_rx: frame_rx.clone(),
+        frame_notify,
         slot,
         guard: SlotGuard::new(slot, identity),
     })

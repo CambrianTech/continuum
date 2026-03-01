@@ -102,7 +102,7 @@ impl SentenceBuffer {
             silence_frames: 0,
             speech_frames: 0,
             config,
-            frame_size: 480, // 30ms @ 16kHz (earshot requires multiples of 240)
+            frame_size: crate::audio_constants::AUDIO_FRAME_SIZE, // 512 (32ms @ 16kHz) — matches Silero's trained chunk size
         }
     }
 
@@ -241,10 +241,12 @@ impl ProductionVAD {
                 // Possible speech - confirm with Silero (54ms)
                 let accurate_result = self.silero.detect(audio)?;
                 let confirmed = accurate_result.confidence > self.config.silero_threshold;
-                // Debug: log Silero decisions
-                clog_debug!("VAD frame #{}: WebRTC=SPEECH, Silero={:.3} (threshold={:.1}), confirmed={}, max_amp={}",
-                    self.frame_count, accurate_result.confidence, self.config.silero_threshold,
-                    confirmed, max_amp);
+                // Periodic Silero decision log (every 100th speech frame, not every frame)
+                if self.frame_count % 100 == 0 {
+                    clog_debug!("VAD frame #{}: WebRTC=SPEECH, Silero={:.3} (threshold={:.1}), confirmed={}, max_amp={}",
+                        self.frame_count, accurate_result.confidence, self.config.silero_threshold,
+                        confirmed, max_amp);
+                }
                 confirmed
             }
         } else {

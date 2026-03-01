@@ -279,5 +279,58 @@ export function printBackendConfig(): void {
   console.log('================================\n');
 }
 
+// ─── Per-Persona Collection Guard ──────────────────────────────────────────────
+//
+// These collections ONLY exist in per-persona databases (longterm.db).
+// They NEVER exist in the main/shared database.
+// Querying them with handle='default' is ALWAYS a bug — it means a caller
+// forgot to pass the persona's dbHandle, and the query would hit the main DB
+// where the table doesn't exist, causing timeouts that cascade into full IPC death.
+//
+const PER_PERSONA_COLLECTIONS = new Set<string>([
+  COLLECTIONS.MEMORIES,
+  COLLECTIONS.PERSONA_RAG_CONTEXTS,
+  COLLECTIONS.TIMELINE_EVENTS,
+  COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
+  COLLECTIONS.COGNITION_PLAN_RECORDS,
+  COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
+  COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
+  COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
+  COLLECTIONS.COGNITION_PLAN_REPLANS,
+  COLLECTIONS.TOOL_EXECUTION_LOGS,
+  COLLECTIONS.ADAPTER_DECISION_LOGS,
+  COLLECTIONS.ADAPTER_REASONING_LOGS,
+  COLLECTIONS.RESPONSE_GENERATION_LOGS,
+]);
+
+/**
+ * Check if a collection is per-persona only (never in main DB)
+ */
+export function isPerPersonaCollection(collection: string): boolean {
+  return PER_PERSONA_COLLECTIONS.has(collection);
+}
+
+/**
+ * Resolve dbHandle for a data command, FAILING for per-persona collections
+ * that don't provide a handle. Replaces the dangerous `params.dbHandle ?? 'default'`
+ * pattern that silently routes per-persona data to the main database.
+ */
+export function resolveDbHandle(collection: string, dbHandle?: string): string {
+  // If an explicit per-persona handle is provided, use it
+  if (dbHandle && dbHandle !== 'default') return dbHandle;
+
+  // Per-persona collections MUST have a real (non-default) handle.
+  // 'default' routes to the main shared DB where these tables don't exist.
+  if (PER_PERSONA_COLLECTIONS.has(collection)) {
+    throw new Error(
+      `Collection '${collection}' is per-persona only and requires a dbHandle. ` +
+      `Querying per-persona data on the main database is a bug. ` +
+      `Pass the persona's dbHandle from Hippocampus or data/open.`
+    );
+  }
+
+  return dbHandle || 'default';
+}
+
 // Re-export for convenience
 export { COLLECTIONS, type CollectionName };

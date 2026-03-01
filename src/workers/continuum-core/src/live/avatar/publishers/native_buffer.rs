@@ -98,6 +98,8 @@ pub struct NativeBufferPublisher {
     height: u32,
     /// Frame counter for periodic logging.
     frame_count: u64,
+    /// Epoch for FPS calculation.
+    started_at: std::time::Instant,
     /// Count of CVPixelBuffer allocation failures (should stay at 0).
     alloc_failures: u64,
 }
@@ -156,7 +158,7 @@ impl NativeBufferPublisher {
 
         unsafe { CVPixelBufferRelease(test_pb); }
 
-        Ok(Self { frame_rx, width, height, frame_count: 0, alloc_failures: 0 })
+        Ok(Self { frame_rx, width, height, frame_count: 0, started_at: std::time::Instant::now(), alloc_failures: 0 })
     }
 }
 
@@ -282,11 +284,13 @@ impl FramePublisher for NativeBufferPublisher {
 
         self.frame_count += 1;
 
-        // Periodic health log: every 450 frames (~30s at 15fps)
+        // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
         if self.frame_count == 1 || self.frame_count % 450 == 0 {
+            let elapsed = self.started_at.elapsed().as_secs_f64();
+            let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
             clog_info!(
-                "📹 NativeBufferPublisher NV12: {} frames published (alloc_failures={})",
-                self.frame_count, self.alloc_failures
+                "📹 NativeBufferPublisher NV12: {} frames published ({:.1} fps avg, alloc_failures={})",
+                self.frame_count, fps, self.alloc_failures
             );
         }
 

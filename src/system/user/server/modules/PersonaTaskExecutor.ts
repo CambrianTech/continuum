@@ -257,8 +257,12 @@ export class PersonaTaskExecutor {
       };
 
       // 5. Store to persona's longterm.db (not shared database)
+      const memoryDbHandle = CognitionLogger.getDbHandle(this.personaId);
+      if (!memoryDbHandle) {
+        this.log(`⏳ ${this.displayName}: Skipping memory store — longterm.db not ready yet`);
+        continue;
+      }
       try {
-        const memoryDbHandle = CognitionLogger.getDbHandle(this.personaId);
         await Commands.execute('data/create', {
           dbHandle: memoryDbHandle,
           collection: COLLECTIONS.MEMORIES,

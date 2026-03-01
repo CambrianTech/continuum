@@ -464,6 +464,18 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     participants: 'JSON array of user IDs for the DM room',
     name: 'Optional room display name',
   },
+
+  // ── Sentinel (autonomous coding) ───────────────────────────
+  'sentinel/coding-agent': {
+    prompt: 'Detailed instructions for Claude Code — be specific about what to build, what tech stack, what tests to write. This is the main instruction the AI coder receives.',
+    cwd: 'Working directory where code will be built. If omitted, uses a temp directory.',
+    model: 'Model to use: "sonnet" (fast, good for most tasks) or "opus" (thorough, for complex work)',
+    maxTurns: 'Max conversation turns for the AI coder (default: 30)',
+    maxBudgetUsd: 'Maximum spend in USD (default: 5.0)',
+    permissionMode: '"bypassPermissions" to allow all file operations without prompting',
+    captureTraining: 'Set to true to capture this session for LoRA training (improves local AI over time)',
+    personaId: 'Your persona ID — set this so training data is attributed to you',
+  },
 };
 
 /**
@@ -507,6 +519,11 @@ const TOOL_DESCRIPTION_OVERRIDES: Record<string, string> = {
   'collaboration/chat/send': 'Send a message to a chat room. Use the room name (e.g., "general") not a UUID.',
 
   'collaboration/chat/export': 'Export chat messages as markdown. Useful for reviewing conversation history.',
+
+  // ── Sentinel tools (autonomous coding) ────────────────────
+  'sentinel/coding-agent': 'Launch Claude Code to build software autonomously. Give it a detailed prompt describing what to build. Claude Code will write files, run tests, install dependencies, and produce working software. Use this for substantial coding tasks — building APIs, creating apps, writing libraries, fixing complex bugs. Returns the full result including all code written. The code is built in a workspace directory.',
+
+  'sentinel/status': 'Check the status of a running sentinel pipeline by handle ID. Returns current step, progress, and whether the pipeline is still running.',
 };
 
 /**
@@ -856,7 +873,8 @@ You have ${tools.length} tools available. Here they ALL are, organized by catego
   // IMPORTANT: Bias toward DOING (write, edit, execute, build) not just READING
   const essentialTools = tools.filter(t =>
     ['code/write', 'code/edit', 'code/shell/execute', 'code/verify',
-     'code/read', 'code/tree', 'screenshot', 'development/build'].includes(t.name)
+     'code/read', 'code/tree', 'screenshot', 'development/build',
+     'sentinel/coding-agent'].includes(t.name)
   );
 
   output += `
@@ -923,6 +941,27 @@ Example - Run build/test:
     <cmd>npm run build</cmd>
   </parameters>
 </tool_use>
+
+=== AUTONOMOUS CODING (for substantial tasks) ===
+
+For large coding tasks (build an API, create an app, implement a feature), use sentinel/coding-agent
+instead of writing code yourself. It launches Claude Code which is a professional AI coder that:
+- Writes complete files, not snippets
+- Runs tests and fixes failures
+- Installs dependencies
+- Handles complex multi-file changes
+
+Example:
+<tool_use>
+  <tool_name>sentinel/coding-agent</tool_name>
+  <parameters>
+    <prompt>Build a REST API using Express and SQLite with CRUD endpoints for a task tracker. Include tests.</prompt>
+    <permissionMode>bypassPermissions</permissionMode>
+    <captureTraining>true</captureTraining>
+  </parameters>
+</tool_use>
+
+Use your code/* tools for small edits. Use sentinel/coding-agent for building things from scratch.
 `;
 
   return output;

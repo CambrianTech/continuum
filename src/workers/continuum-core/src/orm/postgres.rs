@@ -539,9 +539,17 @@ impl StorageAdapter for PostgresAdapter {
         pg_config.manager = Some(ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         });
-        // Apply max_connections to deadpool — this was previously ignored!
+        // Apply max_connections and wait timeout to deadpool.
+        // wait timeout = 10s prevents pool.get() from blocking forever when all
+        // connections are in use. Without this, pool exhaustion causes rayon thread
+        // starvation and cascading IPC death.
         pg_config.pool = Some(deadpool_postgres::PoolConfig {
             max_size: config.max_connections,
+            timeouts: deadpool_postgres::Timeouts {
+                wait: Some(std::time::Duration::from_secs(10)),
+                create: Some(std::time::Duration::from_secs(10)),
+                recycle: Some(std::time::Duration::from_secs(5)),
+            },
             ..Default::default()
         });
 

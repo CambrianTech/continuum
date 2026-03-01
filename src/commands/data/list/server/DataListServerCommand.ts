@@ -14,6 +14,7 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';  // Only for getDescriptionFieldForCollection
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
+import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
 
 // Rust-style config defaults for generic data access
 const DEFAULT_CONFIG = {
@@ -82,7 +83,8 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       };
 
       // Pass handle directly to ORM — ORM resolves handle → path internally
-      const handle = params.dbHandle ?? 'default';
+      // resolveDbHandle REJECTS per-persona collections without a handle (no silent fallback)
+      const handle = resolveDbHandle(collection, params.dbHandle);
       if (!params.skipCount) {
         countResult = await ORM.count(countQuery, handle);
       }

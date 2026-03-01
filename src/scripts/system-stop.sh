@@ -19,10 +19,10 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^jt
   tmux kill-session -t "$session" 2>/dev/null || true
 done
 
-# 2. Kill LiveKit server
+# 2. Kill LiveKit server (SIGKILL — holds UDP ports that linger on SIGTERM)
 if pgrep -f "livekit-server" > /dev/null 2>&1; then
   echo -e "   Stopping LiveKit server..."
-  pkill -f "livekit-server" 2>/dev/null || true
+  pkill -9 -f "livekit-server" 2>/dev/null || true
 fi
 
 # 3. Kill Rust workers (from workers-config.json)

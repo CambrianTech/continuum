@@ -245,7 +245,8 @@ impl ParticipantStream {
                 }
                 self.ai_ring_available += samples_to_write;
 
-                if samples_to_write > 0 {
+                // Log AI buffer writes only for large pushes (TTS dumps), not per-frame ticks
+                if samples_to_write >= 1600 {
                     clog_debug!(
                         "🤖 AI {} buffered {} samples (total: {} = {:.1}s)",
                         self.display_name,

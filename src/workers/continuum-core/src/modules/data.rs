@@ -163,7 +163,10 @@ impl DataModule {
         // Scale pool size based on database role:
         // Main DB: full pool (high concurrency from all users/daemons)
         // Per-persona DBs: small pool (occasional queries from one persona)
-        let is_main_db = db_path.contains("database/main.db") || db_path.contains("database\\main.db");
+        let is_main_db = db_path.contains("database/main.db")
+            || db_path.contains("database\\main.db")
+            || db_path.starts_with("postgres://")
+            || db_path.starts_with("postgresql://");
         let max_connections = if is_main_db { 20 } else { 4 };
 
         let config = AdapterConfig {

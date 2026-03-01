@@ -55,7 +55,7 @@ export const createBaseDataParams = (
   userId: SYSTEM_SCOPES.SYSTEM,
   ...data,
   backend: data.backend ?? 'server',
-  dbHandle: data.dbHandle ?? 'default'
+  dbHandle: data.dbHandle
 });
 
 /**

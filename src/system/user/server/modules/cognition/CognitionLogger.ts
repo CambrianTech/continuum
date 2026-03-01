@@ -84,6 +84,20 @@ export class CognitionLogger {
   }
 
   /**
+   * Require the dbHandle for a persona — returns handle or null.
+   * Used by all logging methods to guard against writing per-persona data
+   * before Hippocampus has opened longterm.db. Cognition logs are observability,
+   * not critical — silently skipping pre-init is correct.
+   */
+  private static requireHandle(personaId: UUID): string | null {
+    const handle = this.dbHandles.get(personaId);
+    if (!handle) {
+      return null;  // Caller skips the write — no error, no fallback
+    }
+    return handle;
+  }
+
+  /**
    * Log a cognition state snapshot
    * Called periodically or on significant state changes
    */
@@ -151,8 +165,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
         data: entityData,
         backend: 'server',
@@ -247,8 +263,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         data: entityData,
         backend: 'server',
@@ -275,7 +293,8 @@ export class CognitionLogger {
     // Fire-and-forget: run the async chain but don't block caller
     (async () => {
       try {
-        const dbHandle = this.dbHandles.get(personaId);
+        const dbHandle = this.requireHandle(personaId);
+        if (!dbHandle) return;  // Pre-init: skip silently
 
         // Find the plan record in database
         const planRecords = await DataList.execute({
@@ -349,7 +368,8 @@ export class CognitionLogger {
     // Fire-and-forget: run the async chain but don't block caller
     (async () => {
       try {
-        const dbHandle = this.dbHandles.get(personaId);
+        const dbHandle = this.requireHandle(personaId);
+        if (!dbHandle) return;  // Pre-init: skip silently
 
         // Find the plan record in database
         const planRecords = await DataList.execute({
@@ -471,8 +491,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entityData,
         backend: 'server',
@@ -538,8 +560,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entityData,
         backend: 'server',
@@ -624,8 +648,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entityData,
         backend: 'server',
@@ -684,8 +710,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
         data: entityData,
         backend: 'server',
@@ -738,8 +766,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
         data: entityData,
         backend: 'server',
@@ -796,8 +826,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
         data: entityData,
         backend: 'server',
@@ -852,8 +884,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
         data: entityData,
         backend: 'server',
@@ -916,8 +950,10 @@ export class CognitionLogger {
       };
 
       // Fire-and-forget: cognition logs are observability, not user-facing
+      const dbHandle = this.requireHandle(personaId);
+      if (!dbHandle) return;  // Pre-init: skip silently
       DataCreate.execute({
-        dbHandle: this.dbHandles.get(personaId),
+        dbHandle,
         collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
         data: entityData,
         backend: 'server',

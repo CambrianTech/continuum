@@ -357,7 +357,6 @@ fn register_bridge(slot: u8, pair: Arc<IoSurfacePair>) {
     let mut guard = bridges().write().unwrap();
     if let Some(entry) = guard.get_mut(slot as usize) {
         *entry = Some(pair);
-        clog_info!("📹 GPU bridge registered for slot {}", slot);
     }
 }
 
@@ -404,6 +403,8 @@ pub struct GpuBridgePublisher {
     last_published: u64,
     /// Total frames published (for periodic logging).
     frame_count: u64,
+    /// Epoch for FPS calculation.
+    started_at: std::time::Instant,
     /// Channel receiver — NOT used for frames. Only for liveness detection
     /// (Disconnected = Bevy renderer died, all Senders dropped).
     liveness_rx: Receiver<RgbaFrame>,
@@ -440,6 +441,7 @@ impl GpuBridgePublisher {
             pair,
             last_published: 0,
             frame_count: 0,
+            started_at: std::time::Instant::now(),
             liveness_rx,
             slot,
             width,
@@ -475,7 +477,6 @@ impl FramePublisher for GpuBridgePublisher {
                 self.width = width;
                 self.height = height;
                 self.last_published = 0; // Reset counter for new pair
-                clog_info!("📹 GpuBridgePublisher: resize complete (slot {})", self.slot);
             }
             Err(e) => {
                 clog_warn!("📹 GpuBridgePublisher: resize failed: {} — keeping {}×{}",
@@ -539,11 +540,13 @@ impl FramePublisher for GpuBridgePublisher {
 
         self.frame_count += 1;
 
-        // Periodic health log: every 450 frames (~30s at 15fps)
+        // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
         if self.frame_count == 1 || self.frame_count % 450 == 0 {
+            let elapsed = self.started_at.elapsed().as_secs_f64();
+            let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
             clog_info!(
-                "📹 GpuBridgePublisher: {} frames published (slot={}, {}×{})",
-                self.frame_count, self.slot, self.width, self.height
+                "📹 GpuBridgePublisher: {} frames published (slot={}, {}×{}, {:.1} fps avg)",
+                self.frame_count, self.slot, self.width, self.height, fps
             );
         }
 

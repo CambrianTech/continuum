@@ -13,6 +13,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataUpdateCommand } from '../shared/DataUpdateCommand';
 import type { CollectionName } from '../../../../shared/generated-collection-constants';
+import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
 
 export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
 
@@ -29,7 +30,7 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
       params.id,
       params.data as Partial<BaseEntity>,
       params.incrementVersion ?? true,
-      params.dbHandle ?? 'default',
+      resolveDbHandle(collection, params.dbHandle),
       params.suppressEvents ?? false
     );
 

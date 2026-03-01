@@ -304,7 +304,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       const searchOptions: VectorSearchOptions = {
         collection: 'memories',
-        dbHandle: this._memoryDbHandle || undefined,  // Use per-persona database
+        dbHandle: this._memoryDbHandle,  // Per-persona database (required — no fallback to main DB)
         queryText,
         k: params.limit || 10,
         similarityThreshold: params.semanticThreshold || 0.6,
