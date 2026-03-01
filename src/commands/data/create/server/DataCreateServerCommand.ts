@@ -13,6 +13,7 @@ import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { CollectionName } from '../../../../shared/generated-collection-constants';
+import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
 
 export class DataCreateServerCommand extends DataCreateCommand {
 
@@ -32,7 +33,7 @@ export class DataCreateServerCommand extends DataCreateCommand {
       collection as CollectionName,
       params.data as BaseEntity,
       params.suppressEvents ?? false,
-      params.dbHandle ?? 'default'
+      resolveDbHandle(collection, params.dbHandle)
     );
 
     return createDataCreateResultFromParams(params, {

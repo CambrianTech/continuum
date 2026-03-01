@@ -196,12 +196,18 @@ impl Runtime {
             let _ = tx.send(result);
         });
 
-        // Wait for result from the tokio task - NO TIMEOUT.
-        // Voice/TTS commands can run indefinitely for streaming audio.
-        // If the task panics, recv() returns Err(RecvError).
-        let result = match rx.recv() {
+        // 60s timeout — generous enough for legitimate long operations (vector backfill,
+        // large queries), strict enough to prevent rayon thread starvation.
+        // Voice/TTS streaming uses a different code path (binary frames, dedicated connections).
+        // The ORMRustClient timeout is 30s, so the client always times out first with a clean
+        // error. This 60s is a safety net to free the rayon thread.
+        let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
             Ok(result) => result,
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                error!("Command timed out after 60s (rayon safety net): {command}");
+                Err(format!("Command timed out after 60s: {command}"))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 error!("Command handler task panicked or was cancelled: {command}");
                 Err(format!("Command handler failed: {command}"))
             }

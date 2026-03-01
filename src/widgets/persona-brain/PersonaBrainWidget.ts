@@ -392,25 +392,15 @@ export class PersonaBrainWidget extends ReactiveWidget {
     if (!this.persona) return;
 
     try {
-      // Fetch all stats in parallel for better performance
-      const [aiStatusResult, memoryCountResult, toolLogsResult] = await Promise.all([
+      // Fetch AI status — memory and tool log counts are per-persona DB data
+      // and CANNOT be queried from the browser (no per-persona dbHandle available).
+      // These stats come from the persona's server-side state instead.
+      const [aiStatusResult] = await Promise.all([
         // 1. Get AI status (model, provider, health)
         AIStatus.execute({} as any) as Promise<any>,
-        // 2. Get memory count
-        DataList.execute({
-          collection: 'memories',
-          filter: { personaId: this.persona.id },
-          limit: 1,  // We just need the count
-          dbHandle: 'default'
-        }),
-        // 3. Get tool execution count
-        DataList.execute({
-          collection: 'tool_execution_logs',
-          filter: { personaId: this.persona.id },
-          limit: 1,
-          dbHandle: 'default'
-        })
       ]);
+      const memoryCountResult: any = null;
+      const toolLogsResult: any = null;
 
       // Parse AI status
       let aiStatus: any = null;

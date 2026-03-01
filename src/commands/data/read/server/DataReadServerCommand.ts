@@ -13,6 +13,7 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';
 import { isValidCollection, type CollectionName, COLLECTIONS } from '../../../../shared/generated-collection-constants';
+import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
 
 export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
@@ -50,7 +51,7 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
     try {
       // Use DataDaemon for consistent storage access
-      const entity = await ORM.read<BaseEntity>(validCollection, params.id, params.dbHandle ?? 'default');
+      const entity = await ORM.read<BaseEntity>(validCollection, params.id, resolveDbHandle(params.collection, params.dbHandle));
 
       if (entity) {
 

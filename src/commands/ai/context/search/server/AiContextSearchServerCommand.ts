@@ -17,6 +17,9 @@ import { Commands } from '@system/core/shared/Commands';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '@commands/data/vector-search/shared/VectorSearchCommandTypes';
 
 import { VectorSearch } from '../../../../data/vector-search/shared/VectorSearchCommandTypes';
+import { isPerPersonaCollection } from '@daemons/data-daemon/shared/ORMConfig';
+import { CognitionLogger } from '@system/user/server/modules/cognition/CognitionLogger';
+
 // Default collections that typically have semantic content
 const DEFAULT_COLLECTIONS: CollectionName[] = [
   'chat_messages',
@@ -121,6 +124,20 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
         filter.createdAt = { $gte: options.since };
       }
 
+      // Resolve dbHandle: per-persona collections need the persona's longterm.db handle
+      let dbHandle: string | undefined;
+      if (isPerPersonaCollection(collection)) {
+        if (!options.personaId) {
+          console.debug(`CONTEXT-SEARCH: Skipping per-persona collection '${collection}' — no personaId`);
+          return [];
+        }
+        dbHandle = CognitionLogger.getDbHandle(options.personaId);
+        if (!dbHandle) {
+          console.debug(`CONTEXT-SEARCH: Skipping '${collection}' — persona ${options.personaId} DB not ready`);
+          return [];
+        }
+      }
+
       // Use data/vector-search command (delegates to Rust embedding worker)
       const result = await VectorSearch.execute({
         collection,
@@ -128,7 +145,8 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
         k: options.limit,
         similarityThreshold: options.minSimilarity,
         filter,
-        hybridMode: options.mode
+        hybridMode: options.mode,
+        ...(dbHandle ? { dbHandle } : {})
       });
 
       if (!result.success || !result.results) {

@@ -13,6 +13,7 @@ import { createVectorSearchResultFromParams } from '../shared/VectorSearchComman
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
+import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
 
 const DEFAULT_CONFIG = {
   vectorSearch: {
@@ -62,7 +63,7 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
       // ORM.vectorSearch resolves dbHandle to dbPath internally
       const searchResult = await ORM.vectorSearch<RecordData>({
         collection: params.collection,
-        dbHandle: params.dbHandle ?? 'default',
+        dbHandle: resolveDbHandle(params.collection, params.dbHandle),
         queryText: params.queryText,
         queryVector: params.queryVector,
         k,
