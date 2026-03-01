@@ -12,8 +12,8 @@
 //!           ├── ...
 //!           └── Avatar slot 13: Camera → RenderTarget → Readback → channel
 //!
-//! Performance: 14 avatars × 1280×720 @ 30fps = ~1.5 GB/s GPU readback.
-//! On Apple Silicon (shared memory), this is essentially a memcpy.
+//! Performance: 14 avatars × 1280×720 @ ~15fps effective readback.
+//! On Apple Silicon (shared memory + GPU bridge), readback is zero-copy IOSurface.
 
 use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
@@ -40,8 +40,8 @@ fn bevy_debug(_msg: &str) {
 
 /// Maximum number of concurrent avatar render slots.
 /// 16 supports up to 16 AI personas with 3D avatars simultaneously.
-/// At 15fps × 1280×720 × 4 bytes = ~52.7 MB/s readback per slot.
-/// On Apple Silicon shared memory this is essentially a memcpy.
+/// At 30fps Bevy / ~15fps effective readback × 1280×720 × 4 bytes = ~55 MB/s per slot.
+/// On Apple Silicon shared memory this is essentially a memcpy (GPU bridge zero-copy).
 /// Bevy supports 32 render layers; we use layers 1-16, leaving headroom.
 pub const MAX_AVATAR_SLOTS: u8 = 16;
 
@@ -54,10 +54,10 @@ pub const AVATAR_WIDTH: u32 = 1280;
 pub const AVATAR_HEIGHT: u32 = 720;
 
 /// Target framerate for avatar rendering.
-/// 15fps — adequate for lip sync and head animation while reducing GPU load ~40%.
-/// 16 slots × VGA × 15fps ≈ 29 MB/s readback (vs 47 MB/s at 24fps).
-/// Prevents sustained-load CPU/GPU saturation with 15+ concurrent avatars.
-const AVATAR_FPS: f64 = 15.0;
+/// 30fps Bevy tick → ~15fps effective readback (Readback is one-shot, re-inserted
+/// next frame). 15fps readback aligns with 66ms lip sync RMS windows, giving
+/// smooth mouth animation. ResolutionTier Large/HD/FullHD all specify 30fps.
+const AVATAR_FPS: f64 = 30.0;
 
 // ============================================================================
 // Public API — BevyAvatarSystem singleton
@@ -114,6 +114,10 @@ pub struct BevyAvatarSystem {
     command_tx: Sender<AvatarCommand>,
     /// Frame receivers, one per slot. Each LiveKit agent gets one.
     frame_receivers: Vec<Receiver<RgbaFrame>>,
+    /// Frame-ready notifiers, one per slot. Fired by the readback observer
+    /// when a frame is written (channel or GPU bridge). Video loops await
+    /// these instead of sleep-polling — frame arrival IS the clock.
+    frame_notifiers: Vec<std::sync::Arc<tokio::sync::Notify>>,
     /// Set to true once the Bevy app completes startup (setup_render_slots runs).
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Maps persona identity (user_id) → Bevy render slot index.
@@ -128,19 +132,25 @@ impl BevyAvatarSystem {
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let ready_clone = ready.clone();
 
-        // Create frame channels for each slot
+        // Create frame channels and notifiers for each slot
         let mut frame_senders = Vec::with_capacity(MAX_AVATAR_SLOTS as usize);
         let mut frame_receivers = Vec::with_capacity(MAX_AVATAR_SLOTS as usize);
+        let mut frame_notifiers = Vec::with_capacity(MAX_AVATAR_SLOTS as usize);
         for _ in 0..MAX_AVATAR_SLOTS {
-            let (tx, rx) = crossbeam_channel::bounded(2); // small buffer, drop stale frames
+            let (tx, rx) = crossbeam_channel::bounded(4); // absorbs timing jitter without frame drops
             frame_senders.push(tx);
             frame_receivers.push(rx);
+            frame_notifiers.push(std::sync::Arc::new(tokio::sync::Notify::new()));
         }
+
+        // Clone notifiers for Bevy thread — it fires these on readback completion
+        let notifiers_for_bevy: Vec<std::sync::Arc<tokio::sync::Notify>> =
+            frame_notifiers.iter().map(|n| n.clone()).collect();
 
         std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
-                run_bevy_app(command_rx, frame_senders, ready_clone);
+                run_bevy_app(command_rx, frame_senders, notifiers_for_bevy, ready_clone);
             })
             .expect("Failed to spawn Bevy avatar renderer thread");
 
@@ -163,6 +173,7 @@ impl BevyAvatarSystem {
         Self {
             command_tx,
             frame_receivers,
+            frame_notifiers,
             ready,
             identity_to_slot: std::sync::Mutex::new(HashMap::new()),
         }
@@ -177,6 +188,13 @@ impl BevyAvatarSystem {
     /// Returns None if slot is out of range.
     pub fn frame_receiver(&self, slot: u8) -> Option<&Receiver<RgbaFrame>> {
         self.frame_receivers.get(slot as usize)
+    }
+
+    /// Get the frame-ready notifier for a specific avatar slot.
+    /// Video loops await this instead of sleep-polling — wakes immediately
+    /// when the readback observer writes a frame.
+    pub fn frame_notifier(&self, slot: u8) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        self.frame_notifiers.get(slot as usize).cloned()
     }
 
     /// Load a VRM/glTF model into a render slot.
@@ -276,6 +294,12 @@ struct CommandChannel(Receiver<AvatarCommand>);
 /// Channels for sending rendered frames back to LiveKit video loops.
 #[derive(Resource)]
 struct FrameChannels(Vec<Sender<RgbaFrame>>);
+
+/// Per-slot frame-ready notifiers. Fired by the readback observer after writing
+/// a frame (channel or GPU bridge path). Video loops await these — frame arrival
+/// is the clock, not sleep-polling.
+#[derive(Resource)]
+struct FrameNotifiers(Vec<std::sync::Arc<tokio::sync::Notify>>);
 
 /// Shared ready flag — set after Bevy Startup systems complete.
 #[derive(Resource)]
@@ -438,6 +462,7 @@ struct MouthWeights {
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
     frame_senders: Vec<Sender<RgbaFrame>>,
+    frame_notifiers: Vec<std::sync::Arc<tokio::sync::Notify>>,
     ready_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     // Bevy's FileAssetReader resolves asset paths relative to the BINARY location
@@ -453,6 +478,7 @@ fn run_bevy_app(
     App::new()
         .insert_resource(CommandChannel(command_rx))
         .insert_resource(FrameChannels(frame_senders))
+        .insert_resource(FrameNotifiers(frame_notifiers))
         .insert_resource(ReadyFlag(ready_flag))
         .insert_resource(SlotRegistry {
             slots: HashMap::new(),
@@ -510,7 +536,7 @@ fn run_bevy_app(
 /// CRITICAL: Bevy's `Readback` component is one-shot — it fires `ReadbackComplete`
 /// once and is consumed. For continuous video frames, we must re-insert the
 /// `Readback` component after each completion. This gives us readback every
-/// other frame (~7.5fps at 15fps Bevy) due to Commands' deferred execution.
+/// other frame (~15fps at 30fps Bevy) due to Commands' deferred execution.
 fn spawn_readback_entity(
     commands: &mut Commands,
     rt_handle: Handle<Image>,
@@ -525,6 +551,7 @@ fn spawn_readback_entity(
         .observe(
             move |event: On<ReadbackComplete>,
                   channels: Res<FrameChannels>,
+                  notifiers: Res<FrameNotifiers>,
                   health: Res<SlotHealthStatus>,
                   slot_dims: Res<SlotDimensions>| {
                 let pixel_bytes: &[u8] = &event.data;
@@ -580,17 +607,39 @@ fn spawn_readback_entity(
                 #[cfg(target_os = "macos")]
                 {
                     if crate::live::avatar::publishers::gpu_bridge::try_write_bridge(slot_id, pixel_bytes) {
+                        // Signal video loop — frame arrival is the clock
+                        if let Some(notify) = notifiers.0.get(slot_id as usize) {
+                            notify.notify_one();
+                        }
                         return; // Frame written to IOSurface, skip channel
                     }
                 }
 
                 // Channel path (non-macOS, or no GPU bridge registered for this slot)
                 if let Some(tx) = channels.0.get(slot_id as usize) {
-                    let _ = tx.try_send(RgbaFrame {
+                    match tx.try_send(RgbaFrame {
                         width: slot_w,
                         height: slot_h,
                         data: pixel_bytes.to_vec(),
-                    });
+                    }) {
+                        Ok(()) => {
+                            // Signal video loop — frame arrival is the clock
+                            if let Some(notify) = notifiers.0.get(slot_id as usize) {
+                                notify.notify_one();
+                            }
+                        }
+                        Err(crossbeam_channel::TrySendError::Full(_)) => {
+                            static DROP_COUNTS: [std::sync::atomic::AtomicU32; 16] = {
+                                const INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                                [INIT; 16]
+                            };
+                            let count = DROP_COUNTS[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if count % 150 == 0 {
+                                clog_warn!("🎨 Slot {}: {} frames dropped (channel full)", slot_id, count + 1);
+                            }
+                        }
+                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+                    }
                 }
                 // NOTE: Readback re-insertion is handled by ensure_continuous_readback system,
                 // NOT here. Observer Commands race with Bevy's internal Readback removal.
@@ -1876,6 +1925,6 @@ mod tests {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
         assert_eq!(AVATAR_WIDTH, 1280);
         assert_eq!(AVATAR_HEIGHT, 720);
-        assert!(AVATAR_FPS >= 1.0 && AVATAR_FPS <= 30.0, "FPS should be reasonable (1-30)");
+        assert!(AVATAR_FPS >= 20.0 && AVATAR_FPS <= 60.0, "FPS must be 20-60 — below 20 looks bad, above 60 wastes GPU");
     }
 }

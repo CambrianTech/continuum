@@ -34,23 +34,29 @@ preflight_check_xcode
 #   - Build, start everything fresh, open new browser
 
 HOT_RESTART=false
-if ./jtag ping --timeout=3000 >/dev/null 2>&1; then
-  HOT_RESTART=true
-  echo -e "${GREEN}Phase 1: System already running — hot restart (browser preserved)${NC}"
-  # Kill ONLY the orchestrator process — leave browser, sockets, ports alone.
-  # The browser tab keeps its WebSocket open to the old server until it dies,
-  # then reconnects when the new server starts on the same port.
-  for pattern in "launch-active-example" "minimal-server" "launch-and-capture"; do
-    while IFS= read -r pid; do
-      if [ -n "$pid" ] && [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
-        echo -e "  Killing orchestrator ($pattern PID $pid)"
-        kill "$pid" 2>/dev/null || true
-      fi
-    done < <(pgrep -f "$pattern" 2>/dev/null || true)
-  done
-  # Brief pause for orchestrator to die — NOT the full nuclear 2s sleep
-  sleep 1
-else
+if [ -f .continuum/jtag/logs/system/npm-start.pid ]; then
+  OLD_PID=$(cat .continuum/jtag/logs/system/npm-start.pid)
+  if kill -0 "$OLD_PID" 2>/dev/null; then
+    HOT_RESTART=true
+    echo -e "${GREEN}Phase 1: System running (PID $OLD_PID) — hot restart (browser preserved)${NC}"
+    # Kill the known orchestrator PID — leave browser, sockets, ports alone.
+    # The browser tab keeps its WebSocket open to the old server until it dies,
+    # then reconnects when the new server starts on the same port.
+    kill "$OLD_PID" 2>/dev/null || true
+    # Also kill any other orchestrator patterns (safety — catches orphaned processes)
+    for pattern in "launch-active-example" "minimal-server" "launch-and-capture"; do
+      while IFS= read -r pid; do
+        if [ -n "$pid" ] && [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
+          kill "$pid" 2>/dev/null || true
+        fi
+      done < <(pgrep -f "$pattern" 2>/dev/null || true)
+    done
+    # Brief pause for orchestrator to die — NOT the full nuclear 2s sleep
+    sleep 1
+  fi
+fi
+
+if [ "$HOT_RESTART" = false ]; then
   echo -e "${YELLOW}Phase 1: No system running — cold start${NC}"
   bash scripts/system-stop.sh
 fi

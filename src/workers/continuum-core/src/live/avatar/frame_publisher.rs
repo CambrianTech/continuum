@@ -65,17 +65,18 @@ impl std::fmt::Display for PublishError {
 ///
 /// Works on all platforms. Each frame allocates a new I420Buffer because
 /// LiveKit's VideoFrame takes ownership (C++ UniquePtr, not reusable).
-/// At 15fps per agent this is ~460KB × 15 = ~6.9MB/s per agent.
+/// At ~15fps effective readback per agent this is ~460KB × 15 = ~6.9MB/s per agent.
 pub struct CpuI420Publisher {
     frame_rx: Receiver<RgbaFrame>,
     width: u32,
     height: u32,
     frame_count: u64,
+    started_at: std::time::Instant,
 }
 
 impl CpuI420Publisher {
     pub fn new(frame_rx: Receiver<RgbaFrame>, width: u32, height: u32) -> Self {
-        Self { frame_rx, width, height, frame_count: 0 }
+        Self { frame_rx, width, height, frame_count: 0, started_at: std::time::Instant::now() }
     }
 }
 
@@ -98,11 +99,13 @@ impl FramePublisher for CpuI420Publisher {
                 source.capture_frame(&video_frame);
 
                 self.frame_count += 1;
-                // Periodic health log: every 450 frames (~30s at 15fps)
+                // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
                 if self.frame_count == 1 || self.frame_count % 450 == 0 {
+                    let elapsed = self.started_at.elapsed().as_secs_f64();
+                    let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
                     crate::clog_info!(
-                        "📹 CpuI420Publisher: {} frames published ({}×{})",
-                        self.frame_count, w, h
+                        "📹 CpuI420Publisher: {} frames published ({}×{}, {:.1} fps avg)",
+                        self.frame_count, w, h, fps
                     );
                 }
 
