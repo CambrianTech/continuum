@@ -96,8 +96,7 @@ export class LiveWidget extends ReactiveWidget {
   private _captionsRef = createRef<LiveCaptions>();
   private _controlsRef = createRef<LiveControls>();
 
-  // Speaking state timeouts per user
-  private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
+  // Speaking state is driven by LiveKit ActiveSpeakersChanged (no timers needed)
 
   // Saved state for visibility changes
   private _visibilitySavedMic: boolean | null = null;
@@ -402,6 +401,29 @@ export class LiveWidget extends ReactiveWidget {
             newSet.delete(participantId);
             this.activeVideoUsers = newSet;
           },
+          onActiveSpeakersChanged: (speakerIds: string[]) => {
+            // Ground truth speaking detection — based on ACTUAL audio levels
+            // at the browser, not timers. LiveKit detects audio energy from
+            // both human mics and AI TTS streams with built-in hysteresis.
+            const speakerSet = new Set(speakerIds);
+            this.participants = this.participants.map(p => ({
+              ...p,
+              isSpeaking: speakerSet.has(p.userId)
+            }));
+
+            // Auto-spotlight the active speaker (prefer non-self)
+            if (!this._spotlightPinned) {
+              const aiSpeaker = speakerIds.find(id => id !== this.currentUser?.id);
+              if (aiSpeaker) {
+                this.spotlightUserId = aiSpeaker as UUID;
+              } else if (speakerIds.length === 0) {
+                // No one speaking — return to grid
+                this.spotlightUserId = null;
+              }
+            }
+
+            this.requestUpdate();
+          },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) return;
             if (!this.captionsEnabled) return;
@@ -409,11 +431,9 @@ export class LiveWidget extends ReactiveWidget {
             const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
               || transcription.displayName;
 
-            // Show caption immediately
+            // Show caption immediately (speaking state handled by ActiveSpeakersChanged)
             const captions = this._captionsRef.value ?? null;
             captions?.setCaption(resolvedName, transcription.text);
-
-            this.setSpeaking(transcription.userId as UUID, true);
 
             try {
               await CollaborationLiveTranscription.execute({
@@ -513,15 +533,14 @@ export class LiveWidget extends ReactiveWidget {
     // participants (the grid would fluctuate: 16→12→4→8).
     // LiveKit SDK is the ground truth for who is actually connected.
 
-    this.unsubscribers.push(
-      Events.subscribe(`live:speaking:${this.sessionId}`, (data: any) => {
-        this.participants = this.participants.map(p => ({
-          ...p,
-          isSpeaking: data.speakingUserIds?.includes(p.userId) || false
-        }));
-      })
-    );
+    // NOTE: Speaking state was previously tracked via `live:speaking` server events
+    // and timer-based `voice:ai:speech` events. Both are now replaced by LiveKit's
+    // ActiveSpeakersChanged which tracks ACTUAL audio levels at the browser.
+    // See onActiveSpeakersChanged callback in AudioStreamClient setup above.
 
+    // AI speech events — used ONLY for captions (text content + duration).
+    // Speaking state (green highlight) is now driven by LiveKit ActiveSpeakersChanged
+    // which tracks actual audio levels, not timers.
     this.unsubscribers.push(
       Events.subscribe('voice:ai:speech', (data: {
         sessionId: string;
@@ -531,21 +550,16 @@ export class LiveWidget extends ReactiveWidget {
         audioDurationMs?: number;
         timestamp: number;
       }) => {
-        if (data.sessionId === this.sessionId) {
-          const durationMs = data.audioDurationMs || 5000;
-          console.log(`LiveWidget: AI speech duration update: ${data.speakerName} (${durationMs}ms)`);
+        if (data.sessionId !== this.sessionId) return;
+        if (!this.captionsEnabled) return;
 
-          this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
-
-          if (!this.captionsEnabled) return;
-
-          const captions = this._captionsRef.value ?? null;
-          if (captions) {
-            if (captions.hasCaption(data.speakerName)) {
-              captions.extendCaption(data.speakerName, durationMs + 500);
-            } else {
-              captions.setCaption(data.speakerName, data.text, durationMs + 500);
-            }
+        const durationMs = data.audioDurationMs || 5000;
+        const captions = this._captionsRef.value ?? null;
+        if (captions) {
+          if (captions.hasCaption(data.speakerName)) {
+            captions.extendCaption(data.speakerName, durationMs + 500);
+          } else {
+            captions.setCaption(data.speakerName, data.text, durationMs + 500);
           }
         }
       })
@@ -653,80 +667,11 @@ export class LiveWidget extends ReactiveWidget {
   // Speaking State
   // ========================================
 
-  private setSpeaking(userId: UUID, isSpeaking: boolean): void {
-    const existingTimeout = this.speakingTimeouts.get(userId);
-    if (existingTimeout) {
-      clearTimeout(existingTimeout);
-      this.speakingTimeouts.delete(userId);
-    }
-
-    this.participants = this.participants.map(p => ({
-      ...p,
-      isSpeaking: p.userId === userId ? isSpeaking : p.isSpeaking
-    }));
-
-    // Auto-spotlight: when someone starts speaking, spotlight them.
-    // When they stop, return to grid. Manual pin overrides auto-spotlight.
-    if (!this._spotlightPinned) {
-      if (isSpeaking && userId !== this.currentUser?.id) {
-        this.spotlightUserId = userId;
-      } else if (!isSpeaking && this.spotlightUserId === userId) {
-        // Only return to grid if no one else is speaking
-        const anyoneSpeaking = this.participants.some(p =>
-          p.userId !== userId && p.isSpeaking
-        );
-        if (!anyoneSpeaking) {
-          this.spotlightUserId = null;
-        }
-      }
-    }
-
-    if (isSpeaking) {
-      const timeout = setTimeout(() => {
-        this.setSpeaking(userId, false);
-      }, 2000);
-      this.speakingTimeouts.set(userId, timeout);
-    }
-  }
-
-  private setSpeakingWithDuration(userId: UUID, durationMs: number): void {
-    const existingTimeout = this.speakingTimeouts.get(userId);
-    if (existingTimeout) {
-      clearTimeout(existingTimeout);
-      this.speakingTimeouts.delete(userId);
-    }
-
-    this.participants = this.participants.map(p => ({
-      ...p,
-      isSpeaking: p.userId === userId ? true : p.isSpeaking
-    }));
-
-    // Auto-spotlight while speaking (unless user manually pinned someone)
-    if (!this._spotlightPinned && userId !== this.currentUser?.id) {
-      this.spotlightUserId = userId;
-    }
-
-    this.requestUpdate();
-
-    const timeout = setTimeout(() => {
-      this.participants = this.participants.map(p => ({
-        ...p,
-        isSpeaking: p.userId === userId ? false : p.isSpeaking
-      }));
-      this.speakingTimeouts.delete(userId);
-
-      // Return to grid when done speaking (if not pinned and no one else is speaking)
-      if (!this._spotlightPinned && this.spotlightUserId === userId) {
-        const anyoneSpeaking = this.participants.some(p => p.isSpeaking);
-        if (!anyoneSpeaking) {
-          this.spotlightUserId = null;
-        }
-      }
-
-      this.requestUpdate();
-    }, durationMs + 500);
-    this.speakingTimeouts.set(userId, timeout);
-  }
+  // setSpeaking / setSpeakingWithDuration REMOVED — speaking state is now driven
+  // by LiveKit's ActiveSpeakersChanged (actual audio levels at the browser).
+  // Timer-based speaking was fundamentally broken: green highlight had no
+  // correlation with actual audio due to WebRTC encoding/network latency.
+  // Auto-spotlight is also handled in the ActiveSpeakersChanged callback.
 
   /**
    * Get the video element for a participant (if any).
@@ -823,9 +768,6 @@ export class LiveWidget extends ReactiveWidget {
     }
 
     this._stateLoaded = false;
-
-    this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
-    this.speakingTimeouts.clear();
 
     this._remoteVideoElements.clear();
     this.activeVideoUsers = new Set();
