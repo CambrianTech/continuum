@@ -454,9 +454,9 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("linear-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-a".into()], timeout_secs: Some(10), working_dir: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-b".into()], timeout_secs: Some(10), working_dir: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-c".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-c".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
@@ -484,9 +484,9 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("fail-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["ok".into()], timeout_secs: Some(10), working_dir: None },
-                PipelineStep::Shell { cmd: "/bin/sh".into(), args: vec!["-c".into(), "exit 42".into()], timeout_secs: Some(10), working_dir: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["never-reached".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["ok".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell { cmd: "/bin/sh".into(), args: vec!["-c".into(), "exit 42".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["never-reached".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
@@ -514,17 +514,17 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("cond-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["start".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["start".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                 PipelineStep::Condition {
                     condition: "{{input.should_build}}".to_string(),
                     then_steps: vec![
-                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["building".into()], timeout_secs: Some(10), working_dir: None },
+                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["building".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                     ],
                     else_steps: vec![
-                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["skipping".into()], timeout_secs: Some(10), working_dir: None },
+                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["skipping".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                     ],
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["done".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["done".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
@@ -558,6 +558,7 @@ mod tests {
                             args: vec!["iteration-{{input.iteration}}".into()],
                             timeout_secs: Some(10),
                             working_dir: None,
+                            allow_failure: None,
                         },
                     ],
                     while_condition: None,
@@ -585,15 +586,15 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("parallel-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["before-fork".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["before-fork".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                 PipelineStep::Parallel {
                     branches: vec![
-                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-a".into()], timeout_secs: Some(10), working_dir: None }],
-                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-b".into()], timeout_secs: Some(10), working_dir: None }],
+                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
+                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
                     ],
                     fail_fast: false,
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["after-join".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["after-join".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
@@ -626,6 +627,7 @@ mod tests {
                                 args: vec!["0.1".into()],
                                 timeout_secs: Some(5),
                                 working_dir: None,
+                                allow_failure: None,
                             },
                             PipelineStep::Emit {
                                 event: "test:signal".to_string(),
@@ -663,20 +665,20 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("parent".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-start".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-start".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                 PipelineStep::Sentinel {
                     pipeline: Box::new(Pipeline {
                         name: Some("child".to_string()),
                         steps: vec![
-                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-a".into()], timeout_secs: Some(10), working_dir: None },
-                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-b".into()], timeout_secs: Some(10), working_dir: None },
+                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                         ],
                         working_dir: None,
                         timeout_secs: None,
                         inputs: HashMap::new(),
                     }),
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-end".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-end".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
@@ -700,13 +702,14 @@ mod tests {
             name: Some("forward-test".to_string()),
             steps: vec![
                 // Step 0: produce output
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["hello-from-step-0".into()], timeout_secs: Some(10), working_dir: None },
+                PipelineStep::Shell { cmd: "echo".into(), args: vec!["hello-from-step-0".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
                 // Step 1: reference step 0's output via interpolation
                 PipelineStep::Shell {
                     cmd: "echo".into(),
                     args: vec!["got: {{steps.0.data.stdout}}".into()],
                     timeout_secs: Some(10),
                     working_dir: None,
+                    allow_failure: None,
                 },
             ],
             working_dir: Some("/tmp".to_string()),
@@ -753,7 +756,7 @@ mod tests {
 
         let pipeline = Pipeline {
             name: Some("no-reg".to_string()),
-            steps: vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["test".into()], timeout_secs: Some(10), working_dir: None }],
+            steps: vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["test".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),

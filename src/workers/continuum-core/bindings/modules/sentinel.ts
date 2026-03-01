@@ -115,7 +115,7 @@ export interface SentinelLogsTailResult {
  * Pipeline step types for multi-step execution
  */
 export type PipelineStep =
-	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string }
+	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string; allowFailure?: boolean }
 	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number }
 	| { type: 'command'; command: string; params?: Record<string, unknown> }
 	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
@@ -123,7 +123,8 @@ export type PipelineStep =
 	| { type: 'emit'; event: string; payload?: Record<string, unknown> }
 	| { type: 'watch'; event: string; timeoutSecs?: number }
 	| { type: 'parallel'; branches: PipelineStep[][]; failFast?: boolean }
-	| { type: 'sentinel'; pipeline: Pipeline };
+	| { type: 'sentinel'; pipeline: Pipeline }
+	| { type: 'codingagent'; prompt: string; provider?: string; workingDir?: string; systemPrompt?: string; model?: string; allowedTools?: string[]; maxTurns?: number; maxBudgetUsd?: number; permissionMode?: string; resumeSessionId?: string; captureTraining?: boolean; personaId?: string };
 
 /**
  * Pipeline definition

@@ -9,6 +9,7 @@ pub mod parallel;
 pub mod emit;
 pub mod watch;
 pub mod sentinel;
+pub mod coding_agent;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -25,8 +26,8 @@ pub fn execute_step<'a>(
 ) -> BoxFuture<'a, Result<StepResult, String>> {
     async move {
         match step {
-            PipelineStep::Shell { cmd, args, timeout_secs, working_dir } => {
-                shell::execute(cmd, args, timeout_secs.unwrap_or(300), working_dir.as_ref(), index, ctx, pipeline_ctx).await
+            PipelineStep::Shell { cmd, args, timeout_secs, working_dir, allow_failure } => {
+                shell::execute(cmd, args, timeout_secs.unwrap_or(300), working_dir.as_ref(), allow_failure.unwrap_or(false), index, ctx, pipeline_ctx).await
             }
             PipelineStep::Llm { prompt, model, provider, max_tokens, temperature, system_prompt, tools, agent_mode, max_iterations } => {
                 llm::execute(llm::LlmStepParams {
@@ -67,6 +68,27 @@ pub fn execute_step<'a>(
             }
             PipelineStep::Sentinel { pipeline } => {
                 sentinel::execute(pipeline, index, ctx, pipeline_ctx).await
+            }
+            PipelineStep::CodingAgent {
+                prompt, provider, working_dir, system_prompt, model,
+                allowed_tools, max_turns, max_budget_usd, permission_mode,
+                resume_session_id, capture_training, persona_id,
+            } => {
+                coding_agent::execute(
+                    prompt,
+                    provider.as_deref(),
+                    working_dir.as_deref(),
+                    system_prompt.as_deref(),
+                    model.as_deref(),
+                    allowed_tools.as_ref(),
+                    *max_turns,
+                    *max_budget_usd,
+                    permission_mode.as_deref(),
+                    resume_session_id.as_deref(),
+                    *capture_training,
+                    persona_id.as_deref(),
+                    index, ctx, pipeline_ctx,
+                ).await
             }
         }
     }.boxed()

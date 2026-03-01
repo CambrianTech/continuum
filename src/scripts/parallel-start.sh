@@ -10,18 +10,18 @@
 
 set -e
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+source "$SCRIPT_DIR/shared/preflight.sh"
 
 cd "$PROJECT_DIR"
 
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
+
+# Pre-flight: catch Xcode issues NOW, not buried in build output 30 lines deep
+preflight_check_xcode
 
 # Phase 1: Detect existing system state
 # If the system is already running, we do a HOT RESTART:
@@ -77,12 +77,19 @@ TS_PID=$!
   # Suppress ts-rs serde parse warnings (harmless, just noisy)
   cd workers
   echo -e "  [Rust] Building workers (cargo incremental)..."
-  cargo build --release --quiet 2>&1 | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
-  RESULT=${PIPESTATUS[0]}
+  BUILD_OUTPUT=$(cargo build --release --quiet 2>&1)
+  RESULT=$?
+  # Filter ts-rs noise and display
+  echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
   if [ $RESULT -eq 0 ]; then
     echo -e "  [Rust] ${GREEN}✅ Build complete${NC}"
   else
-    echo -e "  [Rust] ${RED}❌ Build failed${NC}"
+    # Detect specific failures with actionable messages
+    if preflight_check_cargo_xcode "$BUILD_OUTPUT"; then
+      : # Xcode issue detected — message already printed
+    else
+      echo -e "  [Rust] ${RED}❌ Build failed${NC}"
+    fi
     exit $RESULT
   fi
 
@@ -139,6 +146,56 @@ fi
 BUILD_TIME=$(date +%s)
 BUILD_ELAPSED=$((BUILD_TIME - START_TIME))
 echo -e "${GREEN}✅ All builds complete (${BUILD_ELAPSED}s)${NC}"
+
+# Phase 2.5: Database health check — ensure Postgres `continuum` database exists
+# After OOM crashes or system failures, Postgres can lose the database entirely.
+# Detect and auto-recover rather than failing cryptically during data daemon init.
+echo -e "\n${YELLOW}Phase 2.5: Database health check${NC}"
+
+# Find psql binary (Homebrew PostgreSQL 17, then PATH)
+PSQL=""
+for candidate in /opt/homebrew/opt/postgresql@17/bin/psql /usr/local/opt/postgresql@17/bin/psql; do
+  if [ -x "$candidate" ]; then
+    PSQL="$candidate"
+    break
+  fi
+done
+if [ -z "$PSQL" ]; then
+  PSQL=$(command -v psql 2>/dev/null || true)
+fi
+
+if [ -n "$PSQL" ]; then
+  CREATEDB="$(dirname "$PSQL")/createdb"
+
+  # Check if Postgres is accepting connections (start it if not)
+  if ! "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+    echo -e "  ${YELLOW}⚠️ Postgres not responding — attempting to start...${NC}"
+    # Try Homebrew service start (macOS)
+    if command -v brew >/dev/null 2>&1; then
+      brew services start postgresql@17 2>/dev/null || true
+      sleep 2
+    fi
+  fi
+  if "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+    # Check if continuum database exists
+    if "$PSQL" -h localhost -p 5432 -U joel -lqt 2>/dev/null | grep -qw continuum; then
+      echo -e "  ${GREEN}✅ Database 'continuum' exists${NC}"
+    else
+      echo -e "  ${YELLOW}⚠️ Database 'continuum' missing — creating...${NC}"
+      if "$CREATEDB" -h localhost -p 5432 -U joel continuum 2>&1; then
+        echo -e "  ${GREEN}✅ Database 'continuum' created${NC}"
+        # Flag that we need to seed after system is healthy
+        NEEDS_SEED=true
+      else
+        echo -e "  ${RED}❌ Failed to create database 'continuum' — data daemon may fail${NC}"
+      fi
+    fi
+  else
+    echo -e "  ${YELLOW}⚠️ Postgres not responding on localhost:5432 — skipping DB check${NC}"
+  fi
+else
+  echo -e "  ${YELLOW}⚠️ psql not found — skipping DB check${NC}"
+fi
 
 # Phase 3: Start workers (skip build — already done above)
 echo -e "\n${YELLOW}Phase 3: Start workers${NC}"
@@ -205,6 +262,22 @@ if [ "$HEALTHY" = false ]; then
     echo -e "${RED}❌ System did not become healthy within ${MAX_WAIT}s${NC}"
     echo -e "${RED}   Check log: .continuum/jtag/logs/system/orchestrator.log${NC}"
     exit 1
+  fi
+fi
+
+# Phase 5.5: Auto-seed if database was just created or data is missing
+# Check if essential data exists (rooms). If not, seed the database.
+if [ "${NEEDS_SEED:-false}" = true ]; then
+  echo -e "\n${YELLOW}Phase 5.5: Seeding freshly created database...${NC}"
+  npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
+  echo -e "  ${GREEN}✅ Database seeded${NC}"
+else
+  # Even if DB existed, verify it has data (rooms table might be empty after corruption)
+  ROOM_CHECK=$(./jtag data/list --collection=rooms --limit=1 2>/dev/null || echo '{"items":[]}')
+  if echo "$ROOM_CHECK" | grep -q '"items":\[\]' 2>/dev/null || echo "$ROOM_CHECK" | grep -q '"items": \[\]' 2>/dev/null; then
+    echo -e "\n${YELLOW}Phase 5.5: No rooms found — seeding database...${NC}"
+    npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
+    echo -e "  ${GREEN}✅ Database seeded${NC}"
   fi
 fi
 

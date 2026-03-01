@@ -3,12 +3,8 @@
 # Run this on new machines to set up the Rust infrastructure
 set -e
 
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/shared/preflight.sh"
 
 echo -e "${BLUE}🦀 Rust Setup for JTAG Workers${NC}"
 echo -e "================================="
@@ -39,47 +35,34 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # ============================================================================
-# Step 2: Check/Install jq (required for worker scripts)
+# Step 2: Check build tools (Xcode on macOS, gcc/make on Linux)
 # ============================================================================
 
-echo -e "${YELLOW}2. Checking jq installation...${NC}"
+echo -e "${YELLOW}2. Checking build tools...${NC}"
+preflight_check_build_tools
+echo -e "   ${GREEN}✅ Build tools OK${NC}"
 
-if command -v jq &> /dev/null; then
+# ============================================================================
+# Step 3: Check/Install jq (required for worker scripts)
+# ============================================================================
+
+echo -e "${YELLOW}3. Checking jq installation...${NC}"
+
+if command -v jq &>/dev/null; then
   echo -e "   ${GREEN}✅ jq installed${NC}"
 else
   echo -e "   ${YELLOW}⚠️  jq not found. Installing...${NC}"
-
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    if command -v brew &> /dev/null; then
-      brew install jq
-    else
-      echo -e "   ${RED}❌ Homebrew not found. Install jq manually: brew install jq${NC}"
-      exit 1
-    fi
-  elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Linux
-    if command -v apt-get &> /dev/null; then
-      sudo apt-get update && sudo apt-get install -y jq
-    elif command -v yum &> /dev/null; then
-      sudo yum install -y jq
-    else
-      echo -e "   ${RED}❌ Package manager not found. Install jq manually.${NC}"
-      exit 1
-    fi
-  fi
-
+  preflight_pkg_install jq
   echo -e "   ${GREEN}✅ jq installed${NC}"
 fi
 
 # ============================================================================
-# Step 3: Build all Rust workers
+# Step 4: Build all Rust workers
 # ============================================================================
 
-echo -e "${YELLOW}3. Building Rust workers...${NC}"
+echo -e "${YELLOW}4. Building Rust workers...${NC}"
 
-# Get script directory and navigate to jtag root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Navigate to jtag root (SCRIPT_DIR set at top via preflight source)
 JTAG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$JTAG_ROOT"
 
@@ -119,10 +102,10 @@ jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r wo
 done
 
 # ============================================================================
-# Step 4: Verify builds
+# Step 5: Verify builds
 # ============================================================================
 
-echo -e "${YELLOW}4. Verifying builds...${NC}"
+echo -e "${YELLOW}5. Verifying builds...${NC}"
 
 ALL_GOOD=true
 jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r worker; do

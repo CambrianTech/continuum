@@ -1,0 +1,26 @@
+{
+  "name": "@jtag-commands/genome/training-export",
+  "version": "1.0.0",
+  "description": "Export accumulated training data from PersonaUser buffer to JSONL file for genome/train",
+  "main": "server/GenomeTrainingExportServerCommand.ts",
+  "types": "shared/GenomeTrainingExportTypes.ts",
+  "scripts": {
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/training-export"
+  ],
+  "license": "MIT"
+}

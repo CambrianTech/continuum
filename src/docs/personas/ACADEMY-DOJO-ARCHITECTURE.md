@@ -230,7 +230,7 @@ Across 8 deployment cycles with the Academy running:
 - **12** synthetic datasets generated (JSONL)
 - **9** genome layers trained (LoRA via PEFT)
 - **7** examinations created and graded
-- **6 of 9** sentinel step types demonstrated: LLM, Command, Emit, Watch, Loop, Condition
+- **6 of 10** sentinel step types demonstrated: LLM, Command, Emit, Watch, Loop, Condition (remaining: Shell, Parallel, Sentinel, CodingAgent)
 
 ## Key Reuse
 

@@ -1,6 +1,8 @@
 # Sentinel Logging & Observability Plan
 
-> **Note**: This document focuses on sentinel-specific logging. For the unified observability architecture covering system logs, cognition logs, and controls, see [OBSERVABILITY-ARCHITECTURE.md](OBSERVABILITY-ARCHITECTURE.md).
+> **Partial Implementation Note**: The Rust pipeline engine now has per-sentinel log directories, real-time log streaming via MessageBus, and `sentinel/logs/*` commands (list, read, tail) — implemented in `executor.rs` and `logs.rs`. The TypeScript-centric components described below (BuildSentinel, SentinelWorkspace, SentinelExecutionLog) are from the pre-Rust architecture. Phases 1-3 (log directory, streaming, CLI commands) are largely complete in Rust. Phases 4-5 (chat integration, verbosity controls) remain relevant as future work.
+
+> **See also**: [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md) for the canonical system documentation.
 
 ## Vision
 
@@ -15,22 +17,24 @@ Sentinels are autonomous agents that do real work (compile, test, deploy, fix). 
 
 ---
 
-## Current State Analysis
+## Current State (Rust Implementation)
 
-### What Exists
+### What Exists Now
 
-| Component | Status | Gap |
-|-----------|--------|-----|
-| `SentinelExecutionLog` | Streaming events via `sentinel:{handle}:{type}` | Evidence output truncated to ~200 chars |
-| `SentinelWorkspace` | Creates `.sentinel-workspaces/{handle}` dirs | No logging infrastructure in workspace |
-| `BuildSentinel` | Captures stdout/stderr | Only stores `error.stdout + error.stderr` truncated |
-| `Logger` | Per-component routing, Rust backend | No per-sentinel logging support |
-| `LogLevelRegistry` | Runtime level control | No sentinel-aware controls |
-| `logs/*` commands | list, read, search, config, stats | System logs only, not sentinel logs |
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Per-sentinel log directory | ✅ Implemented | `executor.rs` creates `{logs_base}/{handle}/steps.jsonl` |
+| `sentinel/logs/list` | ✅ Implemented | Rust command in `logs.rs` |
+| `sentinel/logs/read` | ✅ Implemented | Rust command with offset/limit support |
+| `sentinel/logs/tail` | ✅ Implemented | Rust command for last N lines |
+| Real-time streaming | ✅ Implemented | `sentinel:{handle}:progress` events via MessageBus |
+| SentinelEventBridge | ✅ Implemented | TypeScript polls Rust handles, emits TS Events |
+| Chat integration | ❌ Not started | Phase 4 below |
+| Verbosity controls | ❌ Not started | Phase 5 below |
 
-### The Core Problem
+### Legacy Analysis (Pre-Rust Architecture)
 
-Sentinels run compilations that produce **massive output** (thousands of lines). Currently:
+The following analysis applies to the original TypeScript sentinel implementation. Some of these components still exist but are being superseded by the Rust pipeline engine:
 
 ```typescript
 // BuildSentinel.ts:201-213

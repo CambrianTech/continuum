@@ -1,5 +1,7 @@
 # Sentinel Workers: Focused Agentic Loops
 
+> **SUPERSEDED**: This is an early conceptual document. The sentinel system has been fully implemented as a Rust pipeline engine with 10 step types and 103 tests. See **[src/docs/SENTINEL-ARCHITECTURE.md](src/docs/SENTINEL-ARCHITECTURE.md)** for the canonical architecture documentation, and **[src/docs/personas/ACADEMY-DOJO-ARCHITECTURE.md](src/docs/personas/ACADEMY-DOJO-ARCHITECTURE.md)** for the dual-sentinel teacher/student system.
+
 ## Vision
 
 Sentinels are **focused agents** that sit between dumb scripts and full citizen AIs. They have enough intelligence to interpret results, adjust approach, and know when to escalate - but they're laser-focused on a single goal.

@@ -1,0 +1,27 @@
+{
+  "name": "@jtag-commands/genome/demo-run",
+  "version": "1.0.0",
+  "description": "Run a sentinel demo pipeline — Claude Code builds real software, interactions are captured for LoRA training",
+  "main": "server/GenomeDemoRunServerCommand.ts",
+  "types": "shared/GenomeDemoRunTypes.ts",
+  "scripts": {
+    "test": "echo 'Integration test: ./jtag genome/demo-run --project=task-tracker --personaId=<uuid>'",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/demo-run"
+  ],
+  "license": "MIT"
+}
