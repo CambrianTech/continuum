@@ -417,8 +417,8 @@ export class PersonaGenome {
     this.activeAdapters.delete(victimName);
     this.memoryUsedMB -= freedMB;
 
-    // NOTE: GPU memory is managed by the Rust gpu_allocator module
-    // PersonaGenome just tracks logical state here
+    // NOTE: GPU memory is managed by Rust GpuMemoryManager (gpu/memory_manager.rs)
+    // with per-subsystem budgets and RAII guards. PersonaGenome tracks logical state.
 
     this.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }

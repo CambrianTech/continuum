@@ -131,7 +131,7 @@ impl CandleAdapter {
         loaded.weights = Some(weights);
         adapters.insert(adapter_id.to_string(), loaded);
 
-        // Track GPU allocation for adapter
+        // Track GPU allocation for adapter — refuse at critical pressure
         if let Some(mgr) = &self.gpu_manager {
             let adapter_bytes = estimate_adapter_vram(path);
             if adapter_bytes > 0 {
@@ -140,10 +140,10 @@ impl CandleAdapter {
                         self.adapter_guards.write().insert(adapter_id.to_string(), guard);
                     }
                     Err(e) => {
-                        runtime::logger("candle").warn(&format!(
-                            "GPU allocation for adapter {} failed ({}), proceeding anyway",
-                            adapter_id, e
+                        runtime::logger("candle").error(&format!(
+                            "GPU CRITICAL: Cannot load adapter {} — {}", adapter_id, e
                         ));
+                        return Err(format!("GPU memory critical — cannot load adapter: {e}"));
                     }
                 }
             }
@@ -291,7 +291,7 @@ impl CandleAdapter {
             return Err("Current backend does not support LoRA".to_string());
         }
 
-        backend.rebuild_with_lora(&genome_adapters)
+        backend.rebuild_with_lora(&genome_adapters, self.gpu_manager.as_ref())
     }
 
     /// Reload base model without LoRA.
@@ -426,7 +426,8 @@ impl AIProviderAdapter for CandleAdapter {
                         match mgr.allocate(GpuSubsystem::Inference, vram_bytes) {
                             Ok(guard) => { new_model_guard = Some(guard); }
                             Err(e) => {
-                                log.warn(&format!("GPU allocation for model failed ({}), proceeding", e));
+                                log.error(&format!("GPU CRITICAL: Cannot load model — {}", e));
+                                return Err(format!("GPU memory critical — cannot load model: {e}"));
                             }
                         }
                     }

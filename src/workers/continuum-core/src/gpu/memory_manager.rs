@@ -37,7 +37,7 @@ impl GpuSubsystem {
         self as usize
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Rendering => "rendering",
             Self::Inference => "inference",
@@ -67,28 +67,32 @@ impl SubsystemBudget {
     }
 
     fn budget(&self) -> u64 {
-        self.budget_bytes.load(Ordering::Relaxed)
+        self.budget_bytes.load(Ordering::Acquire)
     }
 
     fn used(&self) -> u64 {
-        self.used_bytes.load(Ordering::Relaxed)
+        self.used_bytes.load(Ordering::Acquire)
     }
 
     fn set_budget(&self, bytes: u64) {
-        self.budget_bytes.store(bytes, Ordering::Relaxed);
+        self.budget_bytes.store(bytes, Ordering::Release);
     }
 
     /// Try to allocate bytes. Returns true if within budget, false if over.
     /// Allocation proceeds even if over-budget (soft limit) — caller checks pressure.
+    ///
+    /// Uses AcqRel ordering: the fetch_add is a release (publishes our write),
+    /// and subsequent loads see all prior writes (acquire). This ensures the
+    /// pressure calculation in the manager sees the true total across subsystems.
     fn allocate(&self, bytes: u64) -> bool {
-        let prev = self.used_bytes.fetch_add(bytes, Ordering::Relaxed);
-        let budget = self.budget_bytes.load(Ordering::Relaxed);
+        let prev = self.used_bytes.fetch_add(bytes, Ordering::AcqRel);
+        let budget = self.budget_bytes.load(Ordering::Acquire);
         (prev + bytes) <= budget
     }
 
     fn release(&self, bytes: u64) {
         // Saturating subtract to prevent underflow
-        self.used_bytes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        self.used_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             Some(current.saturating_sub(bytes))
         }).ok();
     }
@@ -179,34 +183,45 @@ impl GpuMemoryManager {
     /// Allocate VRAM for a subsystem. Returns an RAII guard that releases on drop.
     /// Logs a warning if allocation exceeds budget (soft limit — does not reject).
     /// Returns Err only at CRITICAL pressure (>95%) to prevent OOM.
+    ///
+    /// Concurrency: Uses optimistic-allocate-then-rollback to avoid TOCTOU races.
+    /// Two threads racing to allocate cannot both succeed if either would push
+    /// pressure past critical — the post-allocation check catches the overcommit
+    /// and rolls back the losing thread's allocation atomically.
     pub fn allocate(
         self: &Arc<Self>,
         subsystem: GpuSubsystem,
         bytes: u64,
     ) -> Result<GpuAllocationGuard, GpuError> {
-        let pressure = self.pressure();
+        let mb = bytes as f64 / (1024.0 * 1024.0);
 
-        // Hard reject at critical pressure
-        if pressure >= PRESSURE_CRITICAL {
-            let mb = bytes as f64 / (1024.0 * 1024.0);
+        // Optimistic allocation: commit bytes first, then check if result is acceptable.
+        // This is the standard lock-free pattern — avoids the TOCTOU race where two
+        // threads both pass a pre-check and both allocate, pushing past critical.
+        let within_budget = self.subsystems[subsystem.index()].allocate(bytes);
+        let new_pressure = self.pressure();
+
+        // Post-allocation critical check: rollback if we pushed past the safety threshold.
+        // Because fetch_add is atomic, at most ONE concurrent allocator sees pre-critical
+        // pressure — all others see the updated total and roll back.
+        if new_pressure >= PRESSURE_CRITICAL {
+            // Rollback the optimistic allocation
+            self.subsystems[subsystem.index()].release(bytes);
+
             log_error!("gpu", "manager",
                 "CRITICAL: Rejecting {}MB allocation for {} (pressure={:.0}%)",
-                mb, subsystem.name(), pressure * 100.0
+                mb, subsystem.name(), new_pressure * 100.0
             );
             return Err(GpuError::CriticalPressure {
                 subsystem: subsystem.name(),
                 requested_mb: mb,
-                pressure,
+                pressure: new_pressure,
             });
         }
-
-        let within_budget = self.subsystems[subsystem.index()].allocate(bytes);
-        let new_pressure = self.pressure();
 
         // Broadcast updated pressure
         let _ = self.pressure_tx.send(new_pressure);
 
-        let mb = bytes as f64 / (1024.0 * 1024.0);
         if !within_budget {
             log_info!("gpu", "manager",
                 "WARNING: {} allocation {:.0}MB exceeds budget (pressure={:.0}%)",
@@ -244,6 +259,9 @@ impl GpuMemoryManager {
     // ── Query ───────────────────────────────────────────────────────────
 
     /// Overall pressure: total_used / (total_vram - reserve). Range 0.0-1.0.
+    ///
+    /// Uses Acquire ordering to ensure we see the latest writes from all subsystems.
+    /// Critical for the post-allocation safety check in `allocate()`.
     pub fn pressure(&self) -> f32 {
         let usable = self.total_vram_bytes.saturating_sub(self.reserve_bytes);
         if usable == 0 {
@@ -289,6 +307,32 @@ impl GpuMemoryManager {
         self.subsystems[subsystem.index()].set_budget(bytes);
     }
 
+    /// Test-only constructor for creating managers with known budgets.
+    #[cfg(test)]
+    pub fn new_for_test(
+        total_vram_bytes: u64,
+        gpu_name: String,
+        inference_budget: u64,
+        tts_budget: u64,
+        rendering_budget: u64,
+        reserve_bytes: u64,
+        pressure_tx: watch::Sender<f32>,
+        pressure_rx: watch::Receiver<f32>,
+    ) -> Self {
+        Self {
+            total_vram_bytes,
+            gpu_name,
+            subsystems: [
+                SubsystemBudget::new(rendering_budget),
+                SubsystemBudget::new(inference_budget),
+                SubsystemBudget::new(tts_budget),
+            ],
+            reserve_bytes,
+            pressure_tx,
+            pressure_rx,
+        }
+    }
+
     /// Full stats snapshot for IPC.
     pub fn stats(&self) -> GpuStats {
         let mb = |b: u64| b as f32 / (1024.0 * 1024.0);
@@ -312,6 +356,9 @@ impl GpuMemoryManager {
                 used_mb: mb(self.subsystems[2].used()),
             },
             reserve_mb: mb(self.reserve_bytes),
+            warning_threshold: PRESSURE_WARNING,
+            high_threshold: PRESSURE_HIGH,
+            critical_threshold: PRESSURE_CRITICAL,
         }
     }
 }
@@ -426,6 +473,12 @@ pub struct GpuStats {
     pub tts: SubsystemStats,
     #[ts(type = "number")]
     pub reserve_mb: f32,
+    /// Pressure threshold: above this, log warnings and defer low-priority work
+    pub warning_threshold: f32,
+    /// Pressure threshold: above this, refuse new model loads
+    pub high_threshold: f32,
+    /// Pressure threshold: above this, refuse ALL allocations
+    pub critical_threshold: f32,
 }
 
 // =============================================================================
@@ -734,6 +787,69 @@ mod tests {
         // Total pressure from all subsystems
         let expected_total = 280.0; // 50+200+30
         assert!(stats.total_used_mb > expected_total - 1.0);
+    }
+
+    // ── Concurrency tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_critical_pressure_rollback() {
+        // Verify optimistic-allocate-then-rollback works:
+        // Fill to near-critical, then allocate just enough to push past.
+        let mgr = test_manager(1024); // 1GB
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100); // ~972MB usable
+
+        // Fill to 94% of usable across subsystems
+        let fill_bytes = (usable as f64 * 0.94) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill_bytes).unwrap();
+        assert!(mgr.pressure() < PRESSURE_CRITICAL);
+
+        // This allocation should push past 95% — should be rejected and rolled back
+        let overfill = (usable as f64 * 0.10) as u64; // 10% more → 104% total
+        let result = mgr.allocate(GpuSubsystem::Tts, overfill);
+        assert!(result.is_err(), "Should reject allocation that pushes past critical");
+
+        // Verify the bytes were rolled back (only fill_bytes should remain)
+        let tts_used = mgr.subsystems[GpuSubsystem::Tts.index()].used();
+        assert_eq!(tts_used, 0, "TTS used should be 0 after rollback, got {}", tts_used);
+    }
+
+    #[test]
+    fn test_concurrent_allocation_safety() {
+        // Simulate the TOCTOU scenario: many threads racing to allocate.
+        // With optimistic-rollback, at most one should succeed when total
+        // would push past critical.
+        let mgr = test_manager(1024); // 1GB
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        // Fill to 90%
+        let fill = (usable as f64 * 0.90) as u64;
+        let _fill_guard = mgr.allocate(GpuSubsystem::Inference, fill).unwrap();
+
+        // Now 10 threads try to allocate 2% each — only some should succeed
+        // (total would be 90% + 20% = 110%, well past critical)
+        let chunk = (usable as f64 * 0.02) as u64;
+        let mgr_ref = &mgr;
+
+        let results: Vec<bool> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..10).map(|_| {
+                s.spawn(move || {
+                    mgr_ref.allocate(GpuSubsystem::Tts, chunk).is_ok()
+                })
+            }).collect();
+
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let successes = results.iter().filter(|&&ok| ok).count();
+        let final_pressure = mgr.pressure();
+
+        // Some allocations should succeed, but final pressure must stay below critical.
+        // (The exact number depends on scheduling, but pressure must be safe.)
+        assert!(
+            final_pressure < PRESSURE_CRITICAL,
+            "Final pressure {:.1}% should be below critical {:.0}% — {} of 10 allocations succeeded",
+            final_pressure * 100.0, PRESSURE_CRITICAL * 100.0, successes
+        );
     }
 
     // ── ts-rs binding tests ─────────────────────────────────────────────

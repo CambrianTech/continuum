@@ -33,6 +33,8 @@ use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::tracker::GpuModelTracker;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 use crate::{clog_info, clog_warn};
@@ -73,6 +75,10 @@ const VOICES: &[(&str, &str, &str)] = &[
 
 // ─── Global Model (Mutex because ModelWeights::forward needs &mut self) ──────
 static ORPHEUS_MODEL: OnceCell<Arc<Mutex<OrpheusModel>>> = OnceCell::new();
+
+/// GPU allocation tracking — Orpheus has TWO models on GPU
+static ORPHEUS_LLM_GPU: GpuModelTracker = GpuModelTracker::new("Orpheus LLM");
+static ORPHEUS_SNAC_GPU: GpuModelTracker = GpuModelTracker::new("Orpheus SNAC");
 
 /// Loaded Orpheus model pipeline
 struct OrpheusModel {
@@ -558,6 +564,9 @@ impl TextToSpeech for OrpheusTts {
         })?;
         clog_info!("Orpheus: Llama model loaded on {:?}", device);
 
+        // Track GPU allocation for LLM weights (non-critical: proceed on failure)
+        let _ = ORPHEUS_LLM_GPU.track_file(GpuSubsystem::Tts, &gguf_path, super::gpu_manager());
+
         // Load SNAC decoder
         let snac_path = model_dir.join("snac_decoder.onnx");
         let snac_decoder = Self::build_snac_session(&snac_path)?;
@@ -566,6 +575,9 @@ impl TextToSpeech for OrpheusTts {
             snac_decoder.inputs().len(),
             snac_decoder.outputs().len()
         );
+
+        // Track GPU allocation for SNAC decoder (non-critical)
+        let _ = ORPHEUS_SNAC_GPU.track_file(GpuSubsystem::Tts, &snac_path, super::gpu_manager());
 
         let model = OrpheusModel {
             llm,

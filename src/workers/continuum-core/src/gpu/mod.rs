@@ -9,7 +9,9 @@
 //! per-subsystem budgets, and provides an RAII allocation guard pattern.
 
 pub mod memory_manager;
+pub mod tracker;
 
 pub use memory_manager::{
     GpuMemoryManager, GpuSubsystem, GpuAllocationGuard, GpuStats, SubsystemStats,
 };
+pub use tracker::GpuModelTracker;

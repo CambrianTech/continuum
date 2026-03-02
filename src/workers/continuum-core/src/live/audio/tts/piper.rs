@@ -15,9 +15,14 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::{clog_info, clog_warn};
+use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::tracker::GpuModelTracker;
 
 /// Global Piper session
 static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
+
+/// GPU allocation tracking for Piper ONNX model
+static PIPER_GPU: GpuModelTracker = GpuModelTracker::new("Piper");
 
 /// Piper model wrapper
 struct PiperModel {
@@ -193,6 +198,9 @@ impl TextToSpeech for PiperTTS {
             sample_rate: 22050,
             phonemizer,
         };
+
+        // Track GPU/memory allocation for ONNX model (non-critical: proceed on failure)
+        let _ = PIPER_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager());
 
         let _ = PIPER_SESSION
             .set(Arc::new(Mutex::new(model)));

@@ -4,4 +4,16 @@ import type { SubsystemStats } from "./SubsystemStats";
 /**
  * Full GPU stats snapshot — returned by `gpu/stats` IPC command.
  */
-export type GpuStats = { gpu_name: string, total_vram_mb: number, total_used_mb: number, pressure: number, rendering: SubsystemStats, inference: SubsystemStats, tts: SubsystemStats, reserve_mb: number, };
+export type GpuStats = { gpu_name: string, total_vram_mb: number, total_used_mb: number, pressure: number, rendering: SubsystemStats, inference: SubsystemStats, tts: SubsystemStats, reserve_mb: number, 
+/**
+ * Pressure threshold: above this, log warnings and defer low-priority work
+ */
+warning_threshold: number, 
+/**
+ * Pressure threshold: above this, refuse new model loads
+ */
+high_threshold: number, 
+/**
+ * Pressure threshold: above this, refuse ALL allocations
+ */
+critical_threshold: number, };

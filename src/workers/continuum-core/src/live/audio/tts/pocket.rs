@@ -26,6 +26,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::clog_info;
+use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::tracker::GpuModelTracker;
 
 /// Preset voices shipped with Pocket-TTS (Les Misérables characters)
 const PRESET_VOICES: &[(&str, &str, &str)] = &[
@@ -44,6 +46,9 @@ const DEFAULT_VARIANT: &str = "b6369a24";
 
 /// Global model (Mutex because TTSModel::generate needs &self but voice cache needs &mut)
 static POCKET_MODEL: OnceCell<Arc<Mutex<PocketState>>> = OnceCell::new();
+
+/// GPU allocation tracking for Pocket-TTS model (~400MB CPU/GPU)
+static POCKET_GPU: GpuModelTracker = GpuModelTracker::new("Pocket-TTS");
 
 /// Loaded model + cached voice states
 struct PocketState {
@@ -339,6 +344,13 @@ impl TextToSpeech for PocketTTS {
             voice_cache: HashMap::new(),
             native_sample_rate,
         };
+
+        // Track GPU/memory allocation (~400MB model, non-critical: proceed on failure)
+        let _ = POCKET_GPU.track_bytes(
+            GpuSubsystem::Tts,
+            400 * 1024 * 1024, // ~400MB model from HuggingFace (no local path to measure)
+            super::gpu_manager(),
+        );
 
         let _ = POCKET_MODEL
             .set(Arc::new(Mutex::new(pocket_state)));

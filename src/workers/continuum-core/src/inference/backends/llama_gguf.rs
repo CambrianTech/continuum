@@ -16,7 +16,9 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use tokenizers::Tokenizer;
 
-use super::{GenomeAdapter, ModelBackend, ModelFormat};
+use std::sync::Arc;
+
+use super::{GenomeAdapter, GpuMemoryManager, GpuSubsystem, ModelBackend, ModelFormat};
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
@@ -222,9 +224,22 @@ impl ModelBackend for LlamaGgufBackend {
     /// Layers WITHOUT adapters stay quantized — only touched layers pay the
     /// memory cost of dequantization. A typical 7-projection LoRA on 3B model
     /// with 28 layers = 196 merged layers out of ~230 total weight tensors.
-    fn rebuild_with_lora(&mut self, adapters: &[GenomeAdapter]) -> Result<(), String> {
+    fn rebuild_with_lora(
+        &mut self,
+        adapters: &[GenomeAdapter],
+        gpu_manager: Option<&Arc<GpuMemoryManager>>,
+    ) -> Result<(), String> {
         let log = runtime::logger("candle");
         let start = std::time::Instant::now();
+
+        // Transient spike guard: dequantizing Q4→FP32 expands touched layers ~7x.
+        // Estimate: num_lora_layers × average_layer_bytes × 7
+        let total_lora_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
+        let spike_bytes = (total_lora_layers as u64) * 4 * 1024 * 1024; // ~4MB avg layer × count
+        let _spike_guard = gpu_manager.and_then(|mgr| {
+            mgr.allocate(GpuSubsystem::Inference, spike_bytes).ok()
+        });
+        // _spike_guard drops at method end, releasing the transient allocation
 
         // Flatten all adapter weights into a single map: layer_name → (lora_a, lora_b, effective_scale)
         let mut all_lora: std::collections::HashMap<String, (candle_core::Tensor, candle_core::Tensor, f64)> =

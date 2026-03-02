@@ -25,10 +25,30 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
 use crate::utils::params::Params;
 
 /// Global model cache - models loaded on demand
 static MODEL_CACHE: OnceCell<Arc<Mutex<HashMap<String, TextEmbedding>>>> = OnceCell::new();
+
+/// GPU allocation guards for loaded embedding models (dynamic: one guard per model)
+static EMBEDDING_GPU_GUARDS: OnceCell<Mutex<HashMap<String, GpuAllocationGuard>>> = OnceCell::new();
+
+fn get_gpu_guards() -> &'static Mutex<HashMap<String, GpuAllocationGuard>> {
+    EMBEDDING_GPU_GUARDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// GPU memory manager — set during IPC startup
+static EMBEDDING_GPU_MANAGER: std::sync::OnceLock<Arc<GpuMemoryManager>> = std::sync::OnceLock::new();
+
+/// Set the GPU memory manager (called from ipc/mod.rs during startup)
+pub fn set_gpu_manager(mgr: Arc<GpuMemoryManager>) {
+    let _ = EMBEDDING_GPU_MANAGER.set(mgr);
+}
+
+fn gpu_manager() -> Option<&'static Arc<GpuMemoryManager>> {
+    EMBEDDING_GPU_MANAGER.get()
+}
 
 fn get_model_cache() -> &'static Arc<Mutex<HashMap<String, TextEmbedding>>> {
     MODEL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -127,6 +147,21 @@ fn get_cache_dir() -> PathBuf {
     }
 }
 
+/// Estimate VRAM/memory bytes for a loaded embedding model.
+/// Based on known model sizes from fastembed/sentence-transformers catalog.
+fn estimate_embedding_model_bytes(model_name: &str) -> u64 {
+    match model_name.to_lowercase().as_str() {
+        "allminilml6v2" | "all-minilm-l6-v2" | "default" => 90 * 1024 * 1024,   // ~90MB
+        "allminilml6v2q" | "all-minilm-l6-v2-q" => 25 * 1024 * 1024,            // ~25MB quantized
+        "bgesmallenv15" | "bge-small-en-v1.5" => 130 * 1024 * 1024,             // ~130MB
+        "bgebaseenv15" | "bge-base-en-v1.5" => 440 * 1024 * 1024,              // ~440MB
+        "bgelargeenv15" | "bge-large-en-v1.5" => 1300 * 1024 * 1024,            // ~1.3GB
+        "nomicembedtextv1" | "nomic-embed-text-v1" => 550 * 1024 * 1024,        // ~550MB
+        "nomicembedtextv15" | "nomic-embed-text-v1.5" => 550 * 1024 * 1024,     // ~550MB
+        _ => 100 * 1024 * 1024, // Conservative default for unknown models
+    }
+}
+
 /// Map string model name to fastembed EmbeddingModel enum
 fn parse_model_name(name: &str) -> Result<EmbeddingModel, String> {
     match name.to_lowercase().as_str() {
@@ -181,6 +216,27 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
 
     let elapsed = start.elapsed();
     info!("Model loaded in {:.2}s: {}", elapsed.as_secs_f64(), model_name);
+
+    // Track GPU allocation for embedding model
+    if let Some(mgr) = gpu_manager() {
+        let model_bytes = estimate_embedding_model_bytes(model_name);
+        if model_bytes > 0 {
+            match mgr.allocate(GpuSubsystem::Inference, model_bytes) {
+                Ok(guard) => {
+                    info!(
+                        "Embedding GPU: {} allocation {:.0}MB",
+                        model_name, model_bytes as f64 / (1024.0 * 1024.0)
+                    );
+                    if let Ok(mut guards) = get_gpu_guards().lock() {
+                        guards.insert(model_name.to_string(), guard);
+                    }
+                }
+                Err(e) => {
+                    warn!("Embedding GPU: allocation for {} failed ({}), proceeding", model_name, e);
+                }
+            }
+        }
+    }
 
     // Re-acquire lock and insert (double-check to avoid overwriting concurrent load)
     let mut models = get_model_cache().lock().map_err(|e| format!("Lock error: {e}"))?;

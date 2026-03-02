@@ -15,6 +15,7 @@
 import type { PersonaTrainingManager } from '../../user/server/modules/PersonaTrainingManager';
 import type { TrainingDataAccumulator } from '../../user/server/modules/TrainingDataAccumulator';
 import { GenomeRegistry } from './GenomeRegistry';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 /**
  * Registered persona for learning scheduling
@@ -239,6 +240,24 @@ export class LearningScheduler {
     }
 
     this.log(`🎓 LearningScheduler: Triggering training for ${persona.displayName} (${persona.personaId.slice(0, 8)})`);
+
+    // GPU pressure gate: training is the LOWEST priority workload.
+    // Defer at WARNING (60%) so user-facing inference and TTS always win.
+    try {
+      const rustClient = RustCoreIPCClient.getInstance();
+      const pressure = await rustClient.gpuPressure();
+      if (pressure > 0.6) {
+        this.log(`⏸️  GPU pressure ${(pressure * 100).toFixed(0)}% — deferring training for ${persona.displayName}`);
+        this._isTraining = false;
+        this._trainingPersonaId = null;
+        return false;
+      }
+    } catch {
+      this.log(`⏸️  GPU stats unavailable — deferring training for ${persona.displayName} (safe default)`);
+      this._isTraining = false;
+      this._trainingPersonaId = null;
+      return false;
+    }
 
     try {
       await persona.trainingManager.checkTrainingReadiness();

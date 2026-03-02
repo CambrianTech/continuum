@@ -8,7 +8,12 @@
  * Output: shared/generated/ (code/, persona/, rag/, ipc/, data/, etc.)
  *
  * Run manually: npx tsx generator/generate-rust-bindings.ts
- * Runs automatically as part of prebuild (after worker:build compiles Rust).
+ * Runs automatically as part of prebuild via smart-build.ts.
+ *
+ * IMPORTANT: This runs `cargo test --release` which shares the target directory with
+ * `cargo build --release`. parallel-start.sh ensures cargo build finishes BEFORE
+ * this script runs (via prebuild), so the compilation cache is warm and binding
+ * generation takes ~4s instead of a full rebuild (~2.5 min).
  */
 
 import { spawnSync } from 'child_process';
