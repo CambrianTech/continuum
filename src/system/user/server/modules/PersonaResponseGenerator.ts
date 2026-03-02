@@ -597,7 +597,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         return { success: false, error: 'Context budget exceeded — prompt too large for model', storedToolResultIds: [] };
       }
 
-      const effectiveModel = await this.getEffectiveModel();
+      const currentDomain = this.genome?.getCurrentAdapter()?.getDomain();
+      const effectiveModel = await this.getEffectiveModel(currentDomain);
       const request: TextGenerationRequest = {
         messages,
         model: effectiveModel,  // Use trained model if available, otherwise base model
@@ -1249,6 +1250,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             domain = classification.domain;
             // Record activity for gap detection
             this.rustCognitionBridge.recordActivity(domain, true).catch(() => {});
+            // Score interaction quality for training data selection
+            qualityRating = (await this.rustCognitionBridge.scoreInteraction(inputText, outputText)).score;
           } catch {
             domain = this.inferTrainingDomain(originalMessage);
           }

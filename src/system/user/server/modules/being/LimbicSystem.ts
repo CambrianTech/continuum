@@ -170,11 +170,29 @@ export class LimbicSystem {
       trainingLogger  // Pass training logger
     );
 
-    // Wire post-training activation: when training completes, reload genome from DB
-    // This closes the loop: train → persist GenomeLayerEntity → reload → activate → inference uses new weights
+    // Wire post-training activation: when training completes, re-discover adapters from filesystem
+    // This closes the loop: train → write adapter to disk → discover → register + activate → inference uses new weights
     this.trainingManager.onTrainingComplete = async (layerId: string, domain: string) => {
-      this.logger.info(`Post-training activation: reloading genome for new ${domain} adapter (layerId=${layerId})`);
-      await this.loadGenomeFromDatabase();
+      this.logger.info(`Post-training: re-discovering adapters for ${domain} (layerId=${layerId})`);
+      const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel);
+      let newCount = 0;
+      for (const [adapterDomain, adapter] of discovered) {
+        if (!this.memory.genome.hasAdapter(adapter.manifest.name)) {
+          this.memory.genome.registerAdapter({
+            name: adapter.manifest.name,
+            domain: adapter.manifest.traitType,
+            path: adapter.dirPath,
+            sizeMB: adapter.manifest.sizeMB,
+            priority: 0.7,
+          });
+          await this.memory.genome.activateSkill(adapter.manifest.name);
+          this.logger.info(`Hot-loaded adapter: ${adapter.manifest.name} (${adapterDomain})`);
+          newCount++;
+        }
+      }
+      if (newCount > 0) {
+        this.logger.info(`Hot-loaded ${newCount} new adapter(s) from training`);
+      }
     };
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
