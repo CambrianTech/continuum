@@ -1,0 +1,67 @@
+{
+  "name": "gpu/stats",
+  "description": "Query GPU memory manager stats including VRAM detection, per-subsystem budgets (inference, TTS, rendering), usage tracking, and memory pressure. Returns real hardware data from Metal (macOS) or CUDA APIs.",
+  "params": [
+    {
+      "name": "subsystem",
+      "type": "string",
+      "optional": true,
+      "description": "Filter to specific subsystem: 'inference', 'tts', or 'rendering'. Omit for full stats."
+    }
+  ],
+  "results": [
+    {
+      "name": "gpuName",
+      "type": "string",
+      "description": "GPU hardware name (e.g., 'Apple M3 Max', 'NVIDIA RTX 5090')"
+    },
+    {
+      "name": "totalVramMb",
+      "type": "number",
+      "description": "Total detected VRAM in MB"
+    },
+    {
+      "name": "totalUsedMb",
+      "type": "number",
+      "description": "Total VRAM used across all subsystems in MB"
+    },
+    {
+      "name": "pressure",
+      "type": "number",
+      "description": "Memory pressure 0.0-1.0 (0=idle, 0.6=warning, 0.8=high, 0.95=critical)"
+    },
+    {
+      "name": "reserveMb",
+      "type": "number",
+      "description": "Reserved headroom in MB (5% of total, prevents OOM)"
+    },
+    {
+      "name": "rendering",
+      "type": "SubsystemInfo",
+      "description": "Rendering subsystem budget and usage"
+    },
+    {
+      "name": "inference",
+      "type": "SubsystemInfo",
+      "description": "Inference subsystem budget and usage (models, LoRA adapters)"
+    },
+    {
+      "name": "tts",
+      "type": "SubsystemInfo",
+      "description": "TTS subsystem budget and usage"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Get full GPU stats",
+      "command": "./jtag gpu/stats",
+      "expectedResult": "{ gpuName: 'Apple M3 Max', totalVramMb: 36864, pressure: 0.12, inference: { budgetMb: 25804, usedMb: 3200 }, ... }"
+    },
+    {
+      "description": "Get inference subsystem only",
+      "command": "./jtag gpu/stats --subsystem=inference",
+      "expectedResult": "{ gpuName: 'Apple M3 Max', totalVramMb: 36864, pressure: 0.12, inference: { budgetMb: 25804, usedMb: 3200 } }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

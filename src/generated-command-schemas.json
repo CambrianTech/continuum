@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-02T03:59:14.396Z",
+  "generated": "2026-03-02T06:28:50.303Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3572,6 +3572,17 @@
           "type": "boolean",
           "required": false,
           "description": "list parameter"
+        }
+      }
+    },
+    {
+      "name": "gpu/stats",
+      "description": "Query GPU memory manager stats including VRAM detection, per-subsystem budgets (inference, TTS, rendering), usage tracking, and memory pressure. Returns real hardware data from Metal (macOS) or CUDA APIs.",
+      "params": {
+        "subsystem": {
+          "type": "string",
+          "required": false,
+          "description": "subsystem parameter"
         }
       }
     },

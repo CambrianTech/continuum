@@ -172,6 +172,7 @@ export const COMMANDS = {
   GENOME_TRAIN: 'genome/train',
   GENOME_TRAINING_EXPORT: 'genome/training-export',
   GENOME_TRAINING_PIPELINE: 'genome/training-pipeline',
+  GPU_STATS: 'gpu/stats',
   HELP: 'help',
   INFERENCE_GENERATE: 'inference/generate',
   INTERFACE_BROWSER_CAPABILITIES: 'interface/browser/capabilities',
