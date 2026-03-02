@@ -28,12 +28,28 @@ pub use silence::SilenceTTS;
 pub(crate) use phonemizer::Phonemizer;
 
 use crate::{clog_info, clog_warn};
+use crate::gpu::memory_manager::GpuMemoryManager;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
+
+/// GPU memory manager for TTS subsystem allocation tracking.
+/// Set once during server startup, used by adapters during model loading.
+static TTS_GPU_MANAGER: OnceLock<Arc<GpuMemoryManager>> = OnceLock::new();
+
+/// Set the GPU memory manager for TTS model allocation tracking.
+/// Call before TTS initialization to enable VRAM tracking.
+pub fn set_gpu_manager(mgr: Arc<GpuMemoryManager>) {
+    let _ = TTS_GPU_MANAGER.set(mgr);
+}
+
+/// Get the GPU memory manager (if set).
+pub(crate) fn gpu_manager() -> Option<&'static Arc<GpuMemoryManager>> {
+    TTS_GPU_MANAGER.get()
+}
 
 /// Deterministic hash for voice resolution.
 /// Maps any string (UUID, uniqueId, name) to a stable usize.

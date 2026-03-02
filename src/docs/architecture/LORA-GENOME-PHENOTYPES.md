@@ -1,7 +1,7 @@
 # LoRA Genome: Domain-Specific AI Phenotypes
 
-**Status**: Planning / Infrastructure Validation Phase
-**Date**: 2025-11-26
+**Status**: Infrastructure Complete — GPU-Aware Paging Wired
+**Date**: 2026-03-02 (updated from 2025-11-26)
 
 ## Vision
 
@@ -179,56 +179,60 @@ After collecting many such examples, fine-tuning encodes:
 
 ---
 
-## The Paging System
+## The Paging System (IMPLEMENTED)
 
-### Automatic Loading (Task-Driven)
+The genome paging engine is implemented in Rust (`persona/genome_paging.rs`) with real GPU-aware memory management. No more hardcoded budgets — VRAM is detected from hardware and budgets flow from `GpuMemoryManager`.
 
-```typescript
-class PersonaGenome {
-  private activeAdapters: Map<string, LoRAAdapter> = new Map();
-  private adapterRegistry: Map<string, AdapterMetadata>;
-  private maxActiveAdapters = 3; // Memory constraint
+### GPU Memory Integration
 
-  async activateForTask(task: Task): Promise<void> {
-    // 1. Determine required phenotypes from task domain
-    const requiredPhenotypes = this.inferPhenotypes(task);
+```
+GpuMemoryManager::detect()
+  → Metal/CUDA detects real VRAM (e.g., 16GB Apple Silicon shared memory)
+  → 75% allocated to Inference subsystem
+  → CognitionState.per_persona_budget_mb() divides by persona count
+  → Each GenomePagingEngine receives its real per-persona budget
+```
 
-    // 2. Page in needed adapters
-    for (const phenotype of requiredPhenotypes) {
-      if (!this.activeAdapters.has(phenotype)) {
-        // Check memory pressure
-        if (this.activeAdapters.size >= this.maxActiveAdapters) {
-          await this.evictLRU(); // Page out least recently used
-        }
+**Observability**: `./jtag gpu/stats` shows real-time VRAM usage across all subsystems.
 
-        await this.loadAdapter(phenotype);
-      }
+See [GPU-MEMORY-ARCHITECTURE.md](GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system design.
 
-      this.touch(phenotype); // Update LRU
+### Rust Implementation (GenomePagingEngine)
+
+```rust
+// Real Rust code in persona/genome_paging.rs
+pub struct GenomePagingEngine {
+    loaded_adapters: Vec<LoadedAdapterState>,
+    memory_budget_mb: f64,           // From GPU manager (real VRAM)
+    gpu_manager: Option<Arc<GpuMemoryManager>>,
+    allocation_guards: HashMap<String, GpuAllocationGuard>,  // RAII VRAM tracking
+    // ...
+}
+
+impl GenomePagingEngine {
+    pub fn activate_skill(&mut self, domain: &str) -> ActivateSkillResult {
+        // 1. Check if already loaded (cache hit)
+        // 2. If memory pressure, evict via LRU formula:
+        //    score = age_seconds / (priority * 10)
+        //    Higher score = more evictable
+        // 3. Load adapter, allocate GPU guard
+        // 4. Guard automatically releases VRAM on eviction (RAII)
     }
-  }
-
-  private inferPhenotypes(task: Task): string[] {
-    // Task domain → required phenotypes mapping
-    const domainMap = {
-      'debug-layout': ['visual-debugging'],
-      'design-review': ['visual-debugging', 'graphic-design'],
-      'code-review': ['code-analysis'],
-      'performance': ['performance-debugging', 'code-analysis'],
-      'security-audit': ['security-analysis', 'code-analysis']
-    };
-
-    return domainMap[task.domain] || [];
-  }
-
-  private async evictLRU(): Promise<void> {
-    // Find least recently used adapter
-    const lru = this.findLRU();
-    await this.unloadAdapter(lru);
-    this.activeAdapters.delete(lru);
-  }
 }
 ```
+
+### Pressure-Driven Eviction
+
+Eviction is now driven by real GPU pressure, not just adapter count:
+
+| Pressure | Level | Action |
+|----------|-------|--------|
+| 0-60% | Normal | No eviction needed |
+| 60-80% | Warning | Evict non-critical adapters (low priority, old age) |
+| 80-95% | High | Refuse new loads, aggressive eviction |
+| 95%+ | Critical | Force evictions |
+
+The eviction score formula: `age_seconds / (priority × 10)` — older, lower-priority adapters evict first. Critical adapters (marked `priority >= 0.9`) are never evicted.
 
 ### Manifest-Based Capabilities
 
@@ -267,56 +271,44 @@ Each phenotype declares its capabilities:
 
 ## Training Pipeline
 
-### Phase 1: Infrastructure Validation ✅ (Today)
+### Phase 1: Infrastructure Validation ✅
 
 **Goal**: Prove tools + vision + media flow works
 **Achievement**: Claude successfully executed instructor-guided visual debugging
-**Evidence**: Border + screenshot technique worked end-to-end
-**Commits**:
-- `c513182e2`: Media flow verification and logging
-- `32c9d653c`: Tool metadata pollution fix
 
-### Phase 2: Training Data Collection (Next)
+### Phase 2: LoRA Training E2E ✅
 
-**Goal**: Build library of instructor-guided examples
+**Goal**: End-to-end LoRA fine-tuning pipeline
+**Achievement**: Full pipeline proven: `genome/train` + `genome/dataset-prepare` + `genome/training-export`
+- PEFT-based training via `peft-train.py` with dynamic gradient accumulation
+- AdapterStore filesystem-based discovery (single source of truth)
+- Candle `ensure_adapters()` + `rebuild_with_stacked_lora()` for LoRA application
+- 196 LoRA layers per adapter on Llama-3.2-3B
+
+### Phase 3: Paging System ✅
+
+**Goal**: Automatic phenotype loading with LRU eviction
+**Achievement**: `GenomePagingEngine` in Rust with real GPU memory awareness
+- GPU budgets from `GpuMemoryManager.detect()` (Metal/CUDA)
+- RAII `GpuAllocationGuard` tracking per adapter
+- Eviction formula: `age_seconds / (priority × 10)`
+- Critical adapters protected from eviction
+
+### Phase 4: Academy Dojo ✅
+
+**Goal**: Automated training via teacher/student sentinels
+**Achievement**: Dual-sentinel pipeline — teacher synthesizes data, student trains, teacher examines
+- See [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)
+
+### Phase 5: Continuous Learning (NEXT)
+
+**Goal**: Capture interactions during normal operation, auto-train when threshold met
 **Method**:
-1. User guides AIs through debugging/design tasks
-2. System logs execution traces (tools, params, outcomes)
-3. Store as training examples with annotations
-4. Tag by domain (visual-debugging, code-analysis, etc.)
-
-**Example Collection Commands:**
-```bash
-# Start recording session
-./jtag training/start --domain="visual-debugging" --task="layout-overflow"
-
-# ... user guides AI through debugging ...
-
-# End session, store training example
-./jtag training/end --outcome="successful" --insights="Border technique isolated container"
-```
-
-### Phase 3: LoRA Fine-Tuning (Future)
-
-**Goal**: Encode patterns into fine-tuned layers
-**Method**:
-1. Aggregate training examples by domain
-2. Fine-tune LoRA adapters on domain-specific examples
-3. Test adapter activation improves task performance
-4. Iterate on training data and hyperparameters
-
-**Tools**: Ollama, llama.cpp, or Hugging Face PEFT library
-
-### Phase 4: Paging System (Future)
-
-**Goal**: Automatic phenotype loading based on tasks
-**Method**:
-1. Task arrives → infer required phenotypes
-2. Load LoRA adapters into model
-3. Execute task with specialized knowledge
-4. Unload when done (LRU eviction)
-
-**Integration**: PersonaUser.serviceInbox() checks genome before processing
+1. `TrainingDataAccumulator.captureInteraction()` during persona responses
+2. `shouldMicroTune()` triggers when 50+ quality examples accumulated per domain
+3. Check `gpu/pressure` before training (don't train if pressure > 60%)
+4. Spawn training sentinel, validate via academy examination
+5. Promote adapter only if examination passes
 
 ---
 
@@ -422,71 +414,53 @@ Executes debugging workflow autonomously
 
 ---
 
-## Next Steps
+## Progress
 
-### Immediate (Infrastructure)
-- [x] Verify tools + vision + media flow works ✅
-- [x] Fix tool result metadata pollution ✅
-- [ ] Design training data collection commands
-- [ ] Create training example storage schema
+### Complete
+- [x] Tools + vision + media flow
+- [x] Tool result metadata pipeline
+- [x] LoRA fine-tuning pipeline (PEFT `peft-train.py`, dynamic hyperparams)
+- [x] AdapterStore filesystem discovery
+- [x] Candle adapter loading (safetensors + GGUF backends)
+- [x] GenomePagingEngine with LRU eviction (Rust)
+- [x] GpuMemoryManager with Metal/CUDA detection
+- [x] RAII allocation guards across all GPU consumers
+- [x] `./jtag gpu/stats` observability command
+- [x] Academy Dojo teacher/student pipeline
+- [x] CodingAgent sentinel step for code generation training
 
-### Short-term (Data Collection)
-- [ ] Build training data collection CLI (`./jtag training/...`)
-- [ ] Log 50-100 examples per domain
-- [ ] Tag and annotate examples
-- [ ] Store in `PersonaGenome/training-data/`
-
-### Medium-term (Fine-Tuning)
-- [ ] Research LoRA fine-tuning for Ollama models
-- [ ] Set up fine-tuning pipeline
-- [ ] Train first phenotype (visual-debugging)
-- [ ] Test activation improves task performance
-
-### Long-term (Production)
-- [ ] Implement PersonaGenome class with paging
-- [ ] Integrate with PersonaUser.serviceInbox()
-- [ ] Add telemetry for phenotype effectiveness
-- [ ] Continuous improvement loop
+### Next
+- [ ] Wire `TrainingDataAccumulator.captureInteraction()` into persona response loop
+- [ ] Auto-training sentinel (triggered by `shouldMicroTune()`)
+- [ ] Phenotype validation via academy examination post-training
+- [ ] Pre-trained adapters shipped in repo (system-knowledge, sentinel-orchestration, user-assistance)
+- [ ] Grid: P2P genome sharing via Reticulum mesh
 
 ---
 
 ## Technical Stack
 
-**Current Infrastructure:**
+**Implemented:**
 - Tool execution: ToolRegistry + Commands system
 - Vision: Claude Sonnet 4.5 with screenshot support
 - Media flow: PersonaToolExecutor → ChatRAGBuilder → AnthropicAdapter
-- Storage: ChatMessageEntity with media[] support
-
-**Future Additions:**
-- LoRA loading: Ollama API or llama.cpp
-- Training pipeline: Hugging Face PEFT or custom scripts
-- Phenotype storage: .safetensors files + manifests
-- Paging logic: PersonaGenome class
+- LoRA training: PEFT via `peft-train.py` subprocess
+- LoRA inference: Candle (Rust) with `rebuild_with_stacked_lora()`
+- Adapter storage: `.safetensors` files, filesystem-based `AdapterStore`
+- Paging engine: Rust `GenomePagingEngine` with LRU eviction
+- GPU management: Rust `GpuMemoryManager` (Metal/CUDA detection, RAII guards)
+- Academy: Dual-sentinel teacher/student pipeline via Rust sentinel engine
+- Observability: `./jtag gpu/stats`, `./jtag genome/paging-stats`
 
 ---
 
 ## References
 
-- **Media Flow Verification**: `docs/MILESTONE-AUTONOMOUS-VISUAL-DEBUGGING.md`
-- **Tool Infrastructure**: `tools/server/ToolRegistry.ts`
+- **GPU Memory Architecture**: [GPU-MEMORY-ARCHITECTURE.md](GPU-MEMORY-ARCHITECTURE.md)
+- **Dynamic Genome Composition**: [DYNAMIC-GENOME-ARCHITECTURE.md](../genome/DYNAMIC-GENOME-ARCHITECTURE.md)
+- **Academy Dojo**: [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)
+- **Sentinel LoRA Training**: [sentinel-lora-training.md](../sentinel-lora-training.md)
+- **GPU Stats Command**: [gpu/stats README](../../commands/gpu/stats/README.md)
 - **PersonaUser Architecture**: `system/user/server/PersonaUser.ts`
-- **RAG + Media**: `system/user/server/modules/ChatRAGBuilder.ts`
-
----
-
-## Conclusion
-
-The LoRA Genome system will transform PersonaUser from a general-purpose AI into a **multi-specialist agent** that can swap expertise based on task demands.
-
-Today's session (2025-11-25) proved the foundational infrastructure works:
-- ✅ Tools execute successfully
-- ✅ Media flows through vision pipeline
-- ✅ AIs can analyze screenshots and reason spatially
-- ✅ Instructor-guided learning creates training examples
-
-Next phase: **Collect training data** from real debugging/design/coding sessions, then encode patterns into fine-tuned LoRA phenotypes.
-
-The future: AI assistants that learn specialized skills from your guidance, then apply those skills autonomously when similar tasks arise.
-
-**This is the path to truly capable, continuously learning AI agents.** 🧬
+- **Genome Paging Engine**: `workers/continuum-core/src/persona/genome_paging.rs`
+- **GPU Memory Manager**: `workers/continuum-core/src/gpu/memory_manager.rs`

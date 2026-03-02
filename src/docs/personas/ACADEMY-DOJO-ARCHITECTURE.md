@@ -292,6 +292,41 @@ All modalities share the same sentinel pipeline structure:
 
 The Academy doesn't need to know about modalities — it just orchestrates the pipeline. The modality-specific logic lives in the training and evaluation commands.
 
+## GPU-Aware Training
+
+Academy sessions are GPU-aware via the `GpuMemoryManager`. Before spawning a training sentinel, the system checks GPU pressure to avoid contention with running inference.
+
+### Training Budget Guard
+
+```
+Before training:
+  1. ./jtag gpu/pressure → check current pressure level
+  2. If pressure > 60% (Warning): defer training, queue for later
+  3. If pressure < 60% (Normal): proceed with training
+  4. Training allocates VRAM via GpuSubsystem::Inference guard
+  5. Guard released on training completion (RAII)
+```
+
+### Teacher Curriculum Sizing
+
+The teacher sentinel considers available VRAM when designing curriculum:
+- Per-persona budget: `GpuMemoryManager.per_persona_budget_mb()` (inference budget / persona count)
+- Base model + adapter must fit within per-persona budget
+- Teacher can adjust `examplesPerTopic` and `epochs` based on available memory
+- Smaller base models (SmolLM2 135M) fit any GPU; larger models need VRAM checks
+
+### Continuous Learning Integration
+
+When `TrainingDataAccumulator.shouldMicroTune()` returns true:
+1. Check `gpu/pressure` — only train if Normal (<60%)
+2. Spawn training sentinel with accumulated data
+3. After training: academy examination validates quality
+4. Compare new adapter against baseline — must improve, not regress
+5. Promote adapter only if examination passes
+6. Old adapter version retained for rollback
+
+See [GPU-MEMORY-ARCHITECTURE.md](../architecture/GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system.
+
 ## Long-Running Resilience
 
 Academy sessions are designed for hours-to-days execution:

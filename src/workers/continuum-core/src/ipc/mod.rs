@@ -597,6 +597,10 @@ pub fn start_server(
     // Phase 0: GPU Memory Manager (detect VRAM, create budgets)
     let gpu_manager = Arc::new(GpuMemoryManager::detect());
 
+    // Provide GPU manager to TTS and renderer subsystems for VRAM tracking
+    crate::live::audio::tts::set_gpu_manager(gpu_manager.clone());
+    crate::live::video::bevy_renderer::set_gpu_manager(gpu_manager.clone());
+
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
@@ -682,7 +686,7 @@ pub fn start_server(
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
     // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
-    runtime.register(Arc::new(AIProviderModule::new()));
+    runtime.register(Arc::new(AIProviderModule::with_gpu_manager(gpu_manager.clone())));
 
     // SentinelModule: Concurrent, fault-tolerant build/task execution
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list

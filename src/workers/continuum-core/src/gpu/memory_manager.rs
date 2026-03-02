@@ -329,6 +329,16 @@ pub struct GpuAllocationGuard {
     released: bool,
 }
 
+impl std::fmt::Debug for GpuAllocationGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuAllocationGuard")
+            .field("subsystem", &self.subsystem)
+            .field("bytes", &self.bytes)
+            .field("released", &self.released)
+            .finish()
+    }
+}
+
 impl GpuAllocationGuard {
     /// Manually release before drop (e.g., when ownership transfer is needed).
     pub fn release(mut self) {

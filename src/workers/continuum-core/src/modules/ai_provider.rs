@@ -45,13 +45,25 @@ static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 pub struct AIProviderModule {
     registry: Arc<RwLock<AdapterRegistry>>,
     log: OnceCell<Arc<ModuleLogger>>,
+    /// GPU memory manager — passed to CandleAdapter for VRAM allocation tracking.
+    gpu_manager: Option<Arc<crate::gpu::memory_manager::GpuMemoryManager>>,
 }
 
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
-            registry: GLOBAL_REGISTRY.clone(),  // Use global singleton
+            registry: GLOBAL_REGISTRY.clone(),
             log: OnceCell::new(),
+            gpu_manager: None,
+        }
+    }
+
+    /// Create with GPU memory manager for VRAM-aware local inference.
+    pub fn with_gpu_manager(gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>) -> Self {
+        Self {
+            registry: GLOBAL_REGISTRY.clone(),
+            log: OnceCell::new(),
+            gpu_manager: Some(gpu_manager),
         }
     }
 
@@ -132,7 +144,11 @@ impl AIProviderModule {
             // Priority 8: Local inference is fallback when cloud fails or for LoRA
             // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
             let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 8 };
-            registry.register(Box::new(CandleAdapter::new()), priority);
+            let mut candle = CandleAdapter::new();
+            if let Some(mgr) = &self.gpu_manager {
+                candle.set_gpu_manager(mgr.clone());
+            }
+            registry.register(Box::new(candle), priority);
         }
 
         // Initialize all registered adapters

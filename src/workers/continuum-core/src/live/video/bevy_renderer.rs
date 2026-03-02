@@ -27,9 +27,10 @@ use bevy::mesh::morph::MorphWeights;
 use bevy::scene::SceneInstanceReady;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use crate::{clog_info, clog_warn};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
 
 use crate::live::avatar::RgbaFrame;
 
@@ -62,6 +63,20 @@ const AVATAR_FPS: f64 = 30.0;
 // ============================================================================
 // Public API — BevyAvatarSystem singleton
 // ============================================================================
+
+/// GPU memory manager for render VRAM tracking.
+/// Set once from ipc/mod.rs during server startup, before any avatars load.
+static RENDERER_GPU_MANAGER: OnceLock<Arc<GpuMemoryManager>> = OnceLock::new();
+
+/// Provide the GPU memory manager to the renderer subsystem.
+pub fn set_gpu_manager(mgr: Arc<GpuMemoryManager>) {
+    let _ = RENDERER_GPU_MANAGER.set(mgr);
+}
+
+/// Access the GPU memory manager (if set).
+fn gpu_manager() -> Option<&'static Arc<GpuMemoryManager>> {
+    RENDERER_GPU_MANAGER.get()
+}
 
 /// Global singleton for the Bevy avatar rendering system.
 static BEVY_SYSTEM: OnceLock<BevyAvatarSystem> = OnceLock::new();
@@ -827,6 +842,20 @@ struct HdRenderTargetPool {
     assigned: HashMap<u8, Handle<Image>>,
 }
 
+/// GPU allocation guards for renderer VRAM tracking.
+/// One aggregate guard for all pre-allocated render targets (low-res + HD pool),
+/// plus per-slot guards for loaded VRM/glTF model VRAM.
+#[derive(Resource, Default)]
+struct GpuGuards {
+    /// Guard for all pre-allocated render targets (16 low-res + HD pool).
+    /// Allocated once at startup, never released until shutdown.
+    /// RAII: held alive so its Drop releases VRAM — not read directly.
+    _render_targets: Option<GpuAllocationGuard>,
+    /// Per-slot guards for loaded VRM model VRAM estimates.
+    /// Removed on `AvatarCommand::Unload` (drop releases VRAM).
+    model_guards: HashMap<u8, GpuAllocationGuard>,
+}
+
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
     frame_senders: Vec<Sender<RgbaFrame>>,
@@ -863,6 +892,7 @@ fn run_bevy_app(
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
         .insert_resource(RenderSchedule::default())
+        .insert_resource(GpuGuards::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -1180,6 +1210,26 @@ fn setup_render_slots(
         assigned: HashMap::new(),
     });
 
+    // Track total render target VRAM allocation:
+    // 16 low-res targets (640×360×4) + 3 HD targets (1280×720×4)
+    let lowres_bytes = MAX_AVATAR_SLOTS as u64 * AVATAR_WIDTH as u64 * AVATAR_HEIGHT as u64 * 4;
+    let hd_bytes = MAX_HD_SLOTS as u64 * HD_WIDTH as u64 * HD_HEIGHT as u64 * 4;
+    let total_rt_bytes = lowres_bytes + hd_bytes;
+    if let Some(mgr) = gpu_manager() {
+        match mgr.allocate(GpuSubsystem::Rendering, total_rt_bytes) {
+            Ok(guard) => {
+                commands.insert_resource(GpuGuards {
+                    _render_targets: Some(guard),
+                    model_guards: HashMap::new(),
+                });
+                clog_info!("🎨 GPU: allocated {:.1}MB for render targets", total_rt_bytes as f64 / 1_048_576.0);
+            }
+            Err(e) => {
+                clog_warn!("🎨 GPU: render target allocation failed ({}), proceeding untracked", e);
+            }
+        }
+    }
+
     clog_info!(
         "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps ({} HD targets pooled at {}×{})",
         MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS,
@@ -1367,6 +1417,7 @@ fn process_commands(
     mut health: ResMut<SlotHealthStatus>,
     mut slot_dims: ResMut<SlotDimensions>,
     mut hd_pool: ResMut<HdRenderTargetPool>,
+    mut gpu_guards: ResMut<GpuGuards>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -1387,6 +1438,8 @@ fn process_commands(
                     if let Some(old_entity) = state.scene_entity.take() {
                         commands.entity(old_entity).despawn();
                     }
+                    // Release previous model's GPU guard (if reloading)
+                    gpu_guards.model_guards.remove(&slot);
 
                     state.gltf_handle = None;
                     state.model_path = Some(model_path.clone());
@@ -1439,6 +1492,7 @@ fn process_commands(
                             mut cmds: Commands,
                             mut bone_registry: ResMut<BoneRegistry>,
                             mut slot_registry: ResMut<SlotRegistry>,
+                            mut gpu_guards: ResMut<GpuGuards>,
                         | {
                             let root = event.entity;
                             let child_count = count_descendants(root, &children_query);
@@ -1452,6 +1506,25 @@ fn process_commands(
                             // with the clear color. No more green-flash from uninitialized textures.
                             if let Some(state) = slot_registry.slots.get_mut(&slot_for_observer) {
                                 state.model_loaded = true;
+                            }
+
+                            // Track VRM model VRAM via GPU memory manager.
+                            // Estimate from file size — glTF/VRM meshes + textures decompress
+                            // to roughly file-size VRAM.
+                            let model_bytes = std::fs::metadata(&model_path_for_observer)
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            if model_bytes > 0 {
+                                if let Some(mgr) = gpu_manager() {
+                                    match mgr.allocate(GpuSubsystem::Rendering, model_bytes) {
+                                        Ok(guard) => {
+                                            gpu_guards.model_guards.insert(slot_for_observer, guard);
+                                        }
+                                        Err(e) => {
+                                            clog_warn!("🎨 GPU: model allocation for slot {} failed ({})", slot_for_observer, e);
+                                        }
+                                    }
+                                }
                             }
 
                             clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated, readback enabled", slot_for_observer, root, child_count);
@@ -1494,6 +1567,8 @@ fn process_commands(
                         state._render_target = state.default_render_target.clone();
                         slot_dims.dims.insert(slot, (AVATAR_WIDTH, AVATAR_HEIGHT));
                     }
+                    // Release GPU allocation guard for this model (drop releases VRAM)
+                    gpu_guards.model_guards.remove(&slot);
                     // Clean up animation state for this slot
                     emotion_state.slots.remove(&slot);
                     active_gestures.slots.remove(&slot);

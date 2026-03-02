@@ -112,6 +112,13 @@ pub trait ModelBackend: Send + Sync {
     /// Decode token IDs back to text.
     fn decode(&self, tokens: &[u32]) -> Result<String, String>;
 
+    // ── Memory ──
+
+    /// Estimated VRAM consumed by this model's weights (bytes).
+    /// Used by GpuMemoryManager to track real allocations.
+    /// Default: 0 (unknown). Backends should override with file-size-based estimate.
+    fn estimated_vram_bytes(&self) -> u64 { 0 }
+
     // ── Optional: LoRA Support ──
 
     /// Whether this backend supports LoRA adapter merging.
