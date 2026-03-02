@@ -27,6 +27,7 @@
 //!
 //! Uses `Params` helper for typed parameter extraction.
 
+use crate::gpu::GpuMemoryManager;
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognition, InboxMessage, SenderType, Modality};
 use crate::persona::{SleepMode, RecentResponse};
@@ -61,6 +62,8 @@ pub struct CognitionState {
     pub rag_engine: Arc<RagEngine>,
     /// Shared loop detector (not per-persona).
     pub loop_detector: LoopDetector,
+    /// GPU memory manager — real VRAM budgets for genome paging.
+    pub gpu_manager: Option<Arc<GpuMemoryManager>>,
 }
 
 impl CognitionState {
@@ -69,6 +72,23 @@ impl CognitionState {
             personas: Arc::new(DashMap::new()),
             rag_engine,
             loop_detector: LoopDetector::new(),
+            gpu_manager: None,
+        }
+    }
+
+    pub fn with_gpu_manager(mut self, manager: Arc<GpuMemoryManager>) -> Self {
+        self.gpu_manager = Some(manager);
+        self
+    }
+
+    /// Per-persona inference budget from GPU manager, or 200MB fallback.
+    pub fn per_persona_budget_mb(&self) -> f32 {
+        match &self.gpu_manager {
+            Some(mgr) => {
+                let persona_count = self.personas.len();
+                mgr.per_persona_inference_budget_mb(persona_count)
+            }
+            None => 200.0,
         }
     }
 }
@@ -85,15 +105,20 @@ impl CognitionModule {
 
 /// Helper: get or create persona, returning mutable ref via DashMap entry API.
 /// Used by commands that need to lazily create persona state.
+/// Uses GPU manager's per-persona budget when available, 200MB otherwise.
 macro_rules! get_or_create_persona {
     ($self:expr, $persona_uuid:expr) => {
         $self.state.personas
             .entry($persona_uuid)
-            .or_insert_with(|| PersonaCognition::new(
-                $persona_uuid,
-                String::new(),
-                $self.state.rag_engine.clone(),
-            ))
+            .or_insert_with(|| {
+                let budget = $self.state.per_persona_budget_mb();
+                PersonaCognition::with_budget(
+                    $persona_uuid,
+                    String::new(),
+                    $self.state.rag_engine.clone(),
+                    budget,
+                )
+            })
     };
 }
 
@@ -538,7 +563,10 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_genome_activate_skill");
                 let persona_uuid = p.uuid("persona_id")?;
                 let skill_name = p.str("skill_name")?.to_string();
-                let memory_budget_mb = p.f32_or("memory_budget_mb", 200.0);
+                let gpu_budget = self.state.per_persona_budget_mb();
+                // 0 or missing = use GPU-detected budget
+                let ts_budget = p.f32_or("memory_budget_mb", 0.0);
+                let memory_budget_mb = if ts_budget > 0.0 { ts_budget } else { gpu_budget };
 
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -563,7 +591,10 @@ impl ServiceModule for CognitionModule {
             "cognition/genome-sync" => {
                 let _timer = TimingGuard::new("module", "cognition_genome_sync");
                 let persona_uuid = p.uuid("persona_id")?;
-                let memory_budget_mb = p.f32_or("memory_budget_mb", 200.0);
+                let gpu_budget = self.state.per_persona_budget_mb();
+                // 0 or missing = use GPU-detected budget
+                let ts_budget = p.f32_or("memory_budget_mb", 0.0);
+                let memory_budget_mb = if ts_budget > 0.0 { ts_budget } else { gpu_budget };
                 let adapters_json = params.get("adapters")
                     .and_then(|v| v.as_array())
                     .ok_or("Missing adapters array")?;
@@ -730,6 +761,34 @@ impl ServiceModule for CognitionModule {
 
                 Ok(CommandResult::Json(serde_json::to_value(&report)
                     .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            // =================================================================
+            // GPU Budget Query (for TypeScript genome initialization)
+            // =================================================================
+
+            "cognition/gpu-budget" => {
+                let per_persona = self.state.per_persona_budget_mb();
+                let gpu_info = self.state.gpu_manager.as_ref().map(|mgr| {
+                    let stats = mgr.stats();
+                    serde_json::json!({
+                        "gpu_name": stats.gpu_name,
+                        "total_vram_mb": stats.total_vram_mb,
+                        "inference_budget_mb": stats.inference.budget_mb,
+                        "persona_count": self.state.personas.len(),
+                        "per_persona_budget_mb": per_persona,
+                        "pressure": stats.pressure,
+                    })
+                }).unwrap_or_else(|| serde_json::json!({
+                    "gpu_name": "unknown",
+                    "total_vram_mb": 0,
+                    "inference_budget_mb": 0,
+                    "persona_count": self.state.personas.len(),
+                    "per_persona_budget_mb": per_persona,
+                    "pressure": 0.0,
+                }));
+
+                Ok(CommandResult::Json(gpu_info))
             }
 
             // =================================================================

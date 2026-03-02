@@ -356,7 +356,9 @@ export class PersonaGenome {
     const adapterSize = adapter.getSize();
 
     // Evict if we're over our soft budget hint
-    while (this.memoryUsedMB + adapterSize > this.config.memoryBudgetMB) {
+    // 0 = "use Rust GPU-detected budget" — skip local eviction (Rust handles it)
+    const budget = this.config.memoryBudgetMB;
+    while (budget > 0 && this.memoryUsedMB + adapterSize > budget) {
       await this.evictLRU();
     }
 
@@ -459,8 +461,10 @@ export class PersonaGenome {
 
   /**
    * Get memory pressure (0.0-1.0)
+   * Returns 0 when budget is 0 (GPU-managed mode — Rust handles pressure)
    */
   getMemoryPressure(): number {
+    if (this.config.memoryBudgetMB <= 0) return 0;
     return this.memoryUsedMB / this.config.memoryBudgetMB;
   }
 

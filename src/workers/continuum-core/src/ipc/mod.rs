@@ -13,6 +13,8 @@ use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::code::{FileEngine, ShellSession};
 use crate::runtime::{Runtime, CommandResult};
+use crate::gpu::GpuMemoryManager;
+use crate::modules::gpu::GpuModule;
 use crate::modules::health::HealthModule;
 use crate::modules::cognition::{CognitionModule, CognitionState};
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -131,6 +133,8 @@ struct ServerState {
     shell_sessions: Arc<DashMap<String, ShellSession>>,
     /// Modular runtime — ServiceModule-based command routing.
     runtime: Arc<Runtime>,
+    /// GPU memory manager — unified VRAM coordination.
+    gpu_manager: Arc<GpuMemoryManager>,
 }
 
 impl ServerState {
@@ -145,6 +149,7 @@ impl ServerState {
         audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
         file_engines: Arc<DashMap<String, FileEngine>>,
         shell_sessions: Arc<DashMap<String, ShellSession>>,
+        gpu_manager: Arc<GpuMemoryManager>,
     ) -> Self {
         Self {
             voice_service,
@@ -156,6 +161,7 @@ impl ServerState {
             file_engines,
             shell_sessions,
             runtime,
+            gpu_manager,
         }
     }
 }
@@ -588,12 +594,21 @@ pub fn start_server(
     log_info!("ipc", "server", "Initializing modular runtime...");
     let runtime = Arc::new(Runtime::new());
 
+    // Phase 0: GPU Memory Manager (detect VRAM, create budgets)
+    let gpu_manager = Arc::new(GpuMemoryManager::detect());
+
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
+    // Phase 1: GpuModule (GPU stats + pressure IPC)
+    runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
+
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
-    let cognition_state = Arc::new(CognitionState::new(rag_engine.clone()));
+    let cognition_state = Arc::new(
+        CognitionState::new(rag_engine.clone())
+            .with_gpu_manager(gpu_manager.clone())
+    );
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
 
@@ -721,6 +736,7 @@ pub fn start_server(
         audio_pool,
         file_engines,
         shell_sessions,
+        gpu_manager,
     ));
 
     log_info!("ipc", "server", "IPC server ready");
