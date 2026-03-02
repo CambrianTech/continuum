@@ -11,9 +11,9 @@ import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
-// SubsystemInfo from IPC mixin (canonical type for GPU subsystem budget/usage)
-import type { SubsystemInfo } from '../../../../workers/continuum-core/bindings/modules/gpu';
-export type { SubsystemInfo };
+// SubsystemInfo and AllocationsByPriorityInfo from IPC mixin (canonical types)
+import type { SubsystemInfo, AllocationsByPriorityInfo } from '../../../../workers/continuum-core/bindings/modules/gpu';
+export type { SubsystemInfo, AllocationsByPriorityInfo };
 
 /**
  * Gpu Stats Command Parameters
@@ -60,6 +60,12 @@ export interface GpuStatsResult extends CommandResult {
   inference: SubsystemInfo;
   // TTS subsystem budget and usage
   tts: SubsystemInfo;
+  // Pressure thresholds
+  warningThreshold: number;
+  highThreshold: number;
+  criticalThreshold: number;
+  // Live allocation counts per priority level (Realtime/Interactive/Background/Batch)
+  allocationsByPriority: AllocationsByPriorityInfo;
   error?: JTAGError;
 }
 
@@ -81,6 +87,10 @@ export const createGpuStatsResult = (
     rendering: SubsystemInfo;
     inference: SubsystemInfo;
     tts: SubsystemInfo;
+    warningThreshold: number;
+    highThreshold: number;
+    criticalThreshold: number;
+    allocationsByPriority: AllocationsByPriorityInfo;
     error?: JTAGError;
   }
 ): GpuStatsResult => createPayload(context, sessionId, {

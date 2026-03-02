@@ -6,7 +6,7 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
-import type { GpuStats as RustGpuStats, SubsystemStats as RustSubsystemStats } from '../../../../shared/generated/gpu';
+import type { GpuStats as RustGpuStats, SubsystemStats as RustSubsystemStats, AllocationsByPriority as RustAllocationsByPriority } from '../../../../shared/generated/gpu';
 
 // ============================================================================
 // Types (camelCase for TypeScript consumers)
@@ -15,6 +15,13 @@ import type { GpuStats as RustGpuStats, SubsystemStats as RustSubsystemStats } f
 export interface SubsystemInfo {
 	budgetMb: number;
 	usedMb: number;
+}
+
+export interface AllocationsByPriorityInfo {
+	realtime: number;
+	interactive: number;
+	background: number;
+	batch: number;
 }
 
 export interface GpuStatsResponse {
@@ -26,6 +33,10 @@ export interface GpuStatsResponse {
 	rendering: SubsystemInfo;
 	inference: SubsystemInfo;
 	tts: SubsystemInfo;
+	warningThreshold: number;
+	highThreshold: number;
+	criticalThreshold: number;
+	allocationsByPriority: AllocationsByPriorityInfo;
 }
 
 // ============================================================================
@@ -52,6 +63,7 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 
 			// Rust returns snake_case; convert to camelCase
 			const r = response.result as RustGpuStats;
+			const abp = r.allocations_by_priority;
 			return {
 				gpuName: r.gpu_name,
 				totalVramMb: Number(r.total_vram_mb),
@@ -61,6 +73,15 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 				rendering: mapSubsystem(r.rendering),
 				inference: mapSubsystem(r.inference),
 				tts: mapSubsystem(r.tts),
+				warningThreshold: Number(r.warning_threshold),
+				highThreshold: Number(r.high_threshold),
+				criticalThreshold: Number(r.critical_threshold),
+				allocationsByPriority: {
+					realtime: Number(abp.realtime),
+					interactive: Number(abp.interactive),
+					background: Number(abp.background),
+					batch: Number(abp.batch),
+				},
 			};
 		}
 

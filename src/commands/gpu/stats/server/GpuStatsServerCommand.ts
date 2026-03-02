@@ -36,6 +36,10 @@ export class GpuStatsServerCommand extends CommandBase<GpuStatsParams, GpuStatsR
         rendering: stats.rendering,
         inference: stats.inference,
         tts: stats.tts,
+        warningThreshold: stats.warningThreshold,
+        highThreshold: stats.highThreshold,
+        criticalThreshold: stats.criticalThreshold,
+        allocationsByPriority: stats.allocationsByPriority,
       });
     } finally {
       this.rustClient.disconnect();
