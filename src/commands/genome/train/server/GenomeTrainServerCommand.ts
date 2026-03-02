@@ -97,6 +97,26 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
     this.log.info(`Loaded ${dataset.examples.length} examples`);
 
+    // 4. Check GPU pressure — refuse training if system is under memory pressure.
+    // On Apple Silicon, VRAM IS system RAM. Training a 3B model with optimizer states
+    // can consume 4-8GB. If inference/TTS/rendering are already using memory, training
+    // will OOM-kill the process.
+    try {
+      const rustClient = RustCoreIPCClient.getInstance();
+      const pressure = await rustClient.gpuPressure();
+      this.log.info(`GPU pressure: ${(pressure * 100).toFixed(1)}%`);
+      if (pressure > 0.6) {
+        return createGenomeTrainResultFromParams(params, {
+          success: false,
+          error: `GPU pressure too high (${(pressure * 100).toFixed(0)}%). Training deferred — would risk OOM. Free memory by unloading models or wait for inference to finish.`,
+          adapterPath: '',
+          metrics: { finalLoss: 0, trainingTime: 0, examplesProcessed: 0, epochs: 0 },
+        });
+      }
+    } catch (e) {
+      this.log.warn(`GPU pressure check failed (${e}), proceeding with training`);
+    }
+
     // ── ASYNC MODE: fire-and-forget, return handle immediately ──────────────
     if (asyncMode) {
       return this._executeAsync(params, adapter, dataset, personaId, personaName, traitType, baseModel);

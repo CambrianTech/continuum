@@ -109,7 +109,8 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
                 base_model,
                 quantization_config=bnb_config,
                 device_map="auto",
-                trust_remote_code=True
+                trust_remote_code=True,
+                low_cpu_mem_usage=True,
             )
             model = prepare_model_for_kbit_training(model)
             use_qlora = True
@@ -124,8 +125,16 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
             base_model,
             torch_dtype=dtype,
             device_map={"": device} if device != "cuda" else "auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
         )
+
+    # Enable gradient checkpointing — trades compute for memory.
+    # Without this, activation tensors for all layers are held in RAM during backprop.
+    # For a 3B model this can be 4-8GB of activations alone.
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+        print(f"✅ Gradient checkpointing enabled (saves ~50% activation memory)")
 
     print(f"✅ Model loaded successfully")
     return model, tokenizer
@@ -234,6 +243,17 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         )
         return text
 
+    # Mixed precision: bf16 on CUDA (halves activation memory), disabled on MPS/CPU.
+    # MPS doesn't support fp16/bf16 training. CPU has no benefit.
+    use_bf16 = (device == "cuda" and torch.cuda.is_bf16_supported())
+    use_fp16 = (device == "cuda" and not use_bf16)
+    if use_bf16:
+        print(f"   Mixed precision: bf16 (halves activation memory)")
+    elif use_fp16:
+        print(f"   Mixed precision: fp16")
+    else:
+        print(f"   Mixed precision: disabled ({device})")
+
     # Training arguments
     output_dir = config['outputDir']
     training_args = TrainingArguments(
@@ -243,8 +263,9 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         warmup_steps=warmup,
         num_train_epochs=num_epochs,
         learning_rate=learning_rate,
-        fp16=False,  # MPS doesn't support fp16
-        bf16=False,
+        fp16=use_fp16,
+        bf16=use_bf16,
+        gradient_checkpointing=True,
         logging_steps=1,
         optim="adamw_torch",
         weight_decay=0.01,
@@ -332,4 +353,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except torch.cuda.OutOfMemoryError:
+        print("\n❌ CUDA OUT OF MEMORY")
+        print("   Try: smaller batch size, lower rank, or enable quantization")
+        torch.cuda.empty_cache()
+        sys.exit(137)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() or "mps" in str(e).lower():
+            print(f"\n❌ OUT OF MEMORY: {e}")
+            print("   Try: smaller batch size, lower rank, or smaller model")
+            sys.exit(137)
+        raise
