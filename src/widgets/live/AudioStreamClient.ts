@@ -65,6 +65,8 @@ interface AudioStreamClientOptions {
   onVideoTrackRemoved?: (participantId: string) => void;
   /** Callback when an avatar state update arrives (via data channel) */
   onAvatarUpdate?: (update: AvatarUpdateEvent) => void;
+  /** Callback when active speakers change (based on real audio levels from LiveKit) */
+  onActiveSpeakersChanged?: (speakerIds: string[]) => void;
 }
 
 export class AudioStreamClient {
@@ -482,6 +484,16 @@ export class AudioStreamClient {
           language: segment.language || 'en',
         });
       }
+    });
+
+    // Active speaker detection — fires when participants start/stop speaking
+    // based on ACTUAL AUDIO LEVELS received at the browser. This is the ground
+    // truth for "who is speaking right now" — accounts for WebRTC latency,
+    // encoding delay, and network jitter. LiveKit applies built-in smoothing
+    // (onset/offset hysteresis) to avoid flicker.
+    this.room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
+      const speakerIds = speakers.map(s => s.identity);
+      this.options.onActiveSpeakersChanged?.(speakerIds);
     });
 
     // Data messages (human STT transcriptions, avatar state updates, etc.)

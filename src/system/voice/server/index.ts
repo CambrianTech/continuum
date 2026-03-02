@@ -53,7 +53,8 @@ function ensureTSVoiceOrchestrator(): void {
  * Get VoiceOrchestrator instance (Rust or TypeScript)
  *
  * When USE_RUST_VOICE=true: Rust handles utterance routing (fast IPC),
- * but TS VoiceOrchestrator is always alive for persona:response:generated handling.
+ * but TS VoiceOrchestrator is always alive for persona:response:generated handling
+ * AND session context tracking (recentUtterances for RAG + live/export).
  */
 export function getVoiceOrchestrator() {
 	if (USE_RUST_VOICE) {
@@ -62,4 +63,14 @@ export function getVoiceOrchestrator() {
 	} else {
 		return VoiceOrchestrator.instance;
 	}
+}
+
+/**
+ * Get the TypeScript VoiceOrchestrator directly.
+ * Used for session context that must live in TS (utterance history, RAG, export).
+ * In Rust voice mode, the Rust bridge handles routing but TS tracks context.
+ */
+export function getTSVoiceOrchestrator(): VoiceOrchestrator {
+	ensureTSVoiceOrchestrator();
+	return VoiceOrchestrator.instance;
 }

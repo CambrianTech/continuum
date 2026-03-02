@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-01T05:48:40.817Z",
+  "generated": "2026-03-02T03:59:14.396Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5859,6 +5859,37 @@
       }
     },
     {
+      "name": "collaboration/live/send",
+      "description": "Live Send Command Send a text message into the active live voice session. Auto-discovers the active session — no session ID needed. Usage: ./jtag collaboration/live/send --message=\"Hello everyone!\" ./jtag collaboration/live/send --message=\"How are you?\" --speakerName=\"Joel\"",
+      "params": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "description": "message parameter"
+        },
+        "speakerName": {
+          "type": "string",
+          "required": false,
+          "description": "speakerName parameter"
+        },
+        "speakerId": {
+          "type": "string",
+          "required": false,
+          "description": "speakerId parameter"
+        },
+        "callSessionId": {
+          "type": "string",
+          "required": false,
+          "description": "callSessionId parameter"
+        },
+        "confidence": {
+          "type": "number",
+          "required": false,
+          "description": "confidence parameter"
+        }
+      }
+    },
+    {
       "name": "collaboration/live/leave",
       "description": "Leave a live audio/video call. Removes user from participants. Call ends when last person leaves.",
       "params": {}
@@ -5871,6 +5902,32 @@
           "type": "string",
           "required": true,
           "description": "entityId parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/export",
+      "description": "Live Export Command Export recent utterances from the active live voice session. Mirrors collaboration/chat/export but for voice sessions. Usage: ./jtag collaboration/live/export ./jtag collaboration/live/export --limit=20 ./jtag collaboration/live/export --output=\"/tmp/call-transcript.md\"",
+      "params": {
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "callSessionId": {
+          "type": "string",
+          "required": false,
+          "description": "callSessionId parameter"
+        },
+        "includeEmotions": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeEmotions parameter"
         }
       }
     },

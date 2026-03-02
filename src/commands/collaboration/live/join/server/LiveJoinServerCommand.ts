@@ -18,7 +18,7 @@ import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { getVoiceOrchestrator } from '@system/voice/server';
+import { getVoiceOrchestrator, getTSVoiceOrchestrator } from '@system/voice/server';
 import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } from '@shared/AudioConstants';
 import { getSecret } from '@system/secrets/SecretManager';
 
@@ -66,6 +66,13 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     // 3. Find or create active call for this room (with retry logic for race conditions)
     const { call, existed } = await this.findOrCreateCall(room, params);
 
+    // 3b. Sync late joiners — add room members who came online after the call was created.
+    // Persona initialization is batched (6 at a time), so some personas come online
+    // after the call exists. Every join sweeps them in. No hard limits.
+    if (existed) {
+      await this.syncLateJoiners(call, room, params);
+    }
+
     // 4. Add current user as participant (if not already in the call)
     const myParticipant = call.addParticipant(
       user.id,
@@ -85,6 +92,11 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     // 7. Register with VoiceOrchestrator — spawns STT listener in LiveKit room
     const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
     await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
+
+    // Also register with TS VoiceOrchestrator for session context tracking.
+    // In Rust voice mode, the Rust bridge handles routing but TS tracks utterance
+    // history for RAG context (VoiceConversationSource) and live/export.
+    await getTSVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
 
     // 8. Generate LiveKit access token for WebRTC connection
     const livekitToken = await this.generateLiveKitToken(
@@ -357,6 +369,41 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     });
 
     return await token.toJwt();
+  }
+
+  /**
+   * Sync late joiners — when joining an existing call, add room members who are
+   * now online but weren't in the call yet.
+   *
+   * Persona initialization is batched, so personas come online over time.
+   * This catches up any that arrived after the call was created.
+   * No hard limits — all online members join.
+   */
+  private async syncLateJoiners(call: CallEntity, room: RoomEntity, params: LiveJoinParams): Promise<void> {
+    if (!room.members || room.members.length === 0) return;
+
+    const memberIds = room.members.map(m => m.userId);
+    const membersInfo = await this.lookupUsers(memberIds, params);
+
+    let addedCount = 0;
+    for (const memberUser of membersInfo) {
+      const isHuman = memberUser.type === 'human';
+      const isOnline = memberUser.status === 'online';
+      const alreadyInCall = call.getActiveParticipants().some(p => p.userId === memberUser.id);
+
+      if (!alreadyInCall && (isHuman || isOnline)) {
+        call.addParticipant(
+          memberUser.id as UUID,
+          memberUser.displayName || memberUser.uniqueId,
+          memberUser.avatar
+        );
+        addedCount++;
+      }
+    }
+
+    if (addedCount > 0) {
+      console.log(`🎙️ LiveJoin: Synced ${addedCount} late joiner(s) to existing call ${call.id.slice(0, 8)}`);
+    }
   }
 
   /**

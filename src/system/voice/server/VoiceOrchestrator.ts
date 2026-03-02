@@ -375,8 +375,8 @@ export class VoiceOrchestrator {
       }
     });
 
-    // Listen for AI speech events (no gating, event subscription kept for future use)
-    Events.subscribe('voice:ai:speech', (_event: {
+    // Listen for AI speech events — record in session context for RAG and export
+    Events.subscribe('voice:ai:speech', (event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
@@ -385,7 +385,30 @@ export class VoiceOrchestrator {
       failed?: boolean;
       timestamp: number;
     }) => {
-      // Event consumed — no action needed (turn-taking is not gated)
+      if (event.failed) return;
+
+      const context = this.sessionContexts.get(event.sessionId as UUID);
+      if (context) {
+        // Determine speaker type from participants
+        const participants = this.sessionParticipants.get(event.sessionId as UUID);
+        const participant = participants?.find(p => p.userId === event.speakerId);
+        const speakerType = participant?.type ?? 'persona';
+
+        const utteranceEvent: UtteranceEvent = {
+          sessionId: event.sessionId as UUID,
+          speakerId: event.speakerId as UUID,
+          speakerName: event.speakerName,
+          speakerType,
+          transcript: event.text,
+          confidence: 1.0,
+          timestamp: event.timestamp,
+        };
+        context.recentUtterances.push(utteranceEvent);
+        if (context.recentUtterances.length > 20) {
+          context.recentUtterances.shift();
+        }
+        context.turnCount++;
+      }
     });
   }
 
@@ -421,6 +444,22 @@ export class VoiceOrchestrator {
     // Return most recent utterances up to limit
     const utterances = context.recentUtterances.slice(-limit);
     return utterances;
+  }
+
+  /**
+   * Get the active session ID (first/only active session).
+   * Returns null if no live session is active.
+   */
+  get activeSessionId(): UUID | null {
+    const keys = [...this.sessionContexts.keys()];
+    return keys.length > 0 ? keys[0] : null;
+  }
+
+  /**
+   * Get participants for a session
+   */
+  getParticipants(sessionId: string): VoiceParticipant[] {
+    return this.sessionParticipants.get(sessionId as UUID) ?? [];
   }
 }
 

@@ -90,7 +90,7 @@ export class AIAudioBridge {
       // ONE Rust IPC call: synthesize + publish via LiveKit agent.
       // LiveKitAgentManager.speak_in_call() creates agent on-demand if needed.
       // Kokoro: local ONNX, 54 voices, fast reliable — until Orpheus (3B, LoRA-trainable) is installed.
-      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro');
+      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro', displayName);
 
       const audioDurationMs = result.durationMs;
       await this.emitSpeechEvent(callId, userId, displayName, text, audioDurationMs, false);

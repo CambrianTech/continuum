@@ -46,12 +46,12 @@ fn bevy_debug(_msg: &str) {
 pub const MAX_AVATAR_SLOTS: u8 = 16;
 
 /// Default render resolution per avatar.
-/// 1280×720 (HD) — sharp quality for spotlight/expanded tiles. The GPU bridge
-/// makes this nearly free (pre-allocated IOSurface, zero-copy). Adaptive
-/// resolution (ResolutionTier) drives per-slot sizes at runtime: smaller tiles
-/// get downgraded via the hysteresis protocol, larger tiles can go up to FullHD.
-pub const AVATAR_WIDTH: u32 = 1280;
-pub const AVATAR_HEIGHT: u32 = 720;
+/// 640×360 for grid tiles — matches typical display size (small thumbnails).
+/// The adaptive resize system scales spotlight/active speaker to HD (1280×720)
+/// via the ResolutionTier data channel from the browser. Starting low keeps GPU
+/// load manageable with 14+ simultaneous avatars on a single GPU.
+pub const AVATAR_WIDTH: u32 = 640;
+pub const AVATAR_HEIGHT: u32 = 360;
 
 /// Target framerate for avatar rendering.
 /// 30fps Bevy tick → ~15fps effective readback (Readback is one-shot, re-inserted
@@ -97,6 +97,40 @@ pub struct SpeechAnimationClip {
     pub duration_ms: u64,
 }
 
+/// Emotional expression state for avatar facial animation.
+/// Maps to VRM expression blend shape presets. Neutral = no expression active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Emotion {
+    #[default]
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Surprised,
+    Relaxed,
+}
+
+/// Body gesture for avatar upper-body animation.
+/// Driven by speech content analysis — gestures fire alongside emotions
+/// since they animate different body parts (arms vs face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Gesture {
+    #[default]
+    None,
+    /// Friendly wave — right arm up, forearm oscillates
+    Wave,
+    /// Thinking pose — right hand near chin, head tilts
+    Think,
+    /// Emphatic head nod — stronger than speech nod
+    Nod,
+    /// Shoulders up, arms slightly out — uncertainty
+    Shrug,
+    /// Right arm extended forward — directing attention
+    Point,
+    /// Both arms slightly out, palms up — explaining
+    OpenHands,
+}
+
 /// Commands sent to the Bevy renderer thread.
 #[derive(Debug)]
 pub enum AvatarCommand {
@@ -128,6 +162,12 @@ pub enum AvatarCommand {
     },
     /// Stop a speech animation immediately (e.g. interrupted by new speech).
     StopSpeech { slot: u8 },
+    /// Set emotional expression on an avatar. Weight controls intensity (0.0-1.0).
+    /// Transition smooths over transition_ms. Auto-decays to neutral after ~5s.
+    SetEmotion { slot: u8, emotion: Emotion, weight: f32, transition_ms: u32 },
+    /// Trigger a body gesture. Duration controls how long the gesture plays.
+    /// Gesture animation uses arm bones — can overlap with speech (head nod + arm gesture).
+    SetGesture { slot: u8, gesture: Gesture, duration_ms: u32 },
     /// Resize a slot's render target to new dimensions.
     /// Recreates the render target image, camera target, and readback entity.
     Resize { slot: u8, width: u32, height: u32 },
@@ -342,6 +382,48 @@ impl BevyAvatarSystem {
         let _ = self.command_tx.send(AvatarCommand::Resize { slot, width, height });
     }
 
+    /// Set emotional expression by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_emotion_by_identity(
+        &self,
+        identity: &str,
+        emotion: Emotion,
+        weight: f32,
+        transition_ms: u32,
+    ) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetEmotion {
+                slot,
+                emotion,
+                weight,
+                transition_ms,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Trigger a body gesture by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_gesture_by_identity(
+        &self,
+        identity: &str,
+        gesture: Gesture,
+        duration_ms: u32,
+    ) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetGesture {
+                slot,
+                gesture,
+                duration_ms,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     /// Resize by persona identity (user_id).
     /// Returns false if identity has no registered slot.
     pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
@@ -386,8 +468,16 @@ struct SlotState {
     camera_entity: Entity,
     _readback_entity: Entity,
     scene_entity: Option<Entity>,
+    /// Currently active render target (either default low-res or borrowed HD from pool).
     _render_target: Handle<Image>,
+    /// The slot's own low-res render target (640×360). Always retained for fallback
+    /// when an HD target is returned to the pool.
+    default_render_target: Handle<Image>,
     active: bool,
+    /// True once SceneInstanceReady fires — model meshes are spawned and the camera
+    /// has rendered at least one valid frame. Readback only starts after this flag is set,
+    /// preventing the bright-green uninitialized-texture flash on slot activation.
+    model_loaded: bool,
     /// Handle to the loaded Gltf asset — used for morph target name discovery.
     gltf_handle: Option<Handle<bevy::gltf::Gltf>>,
     /// Path to the model file — used for VRM extension parsing.
@@ -455,6 +545,17 @@ struct MorphTargetLayout {
     blink_left_index: Option<usize>,
     /// Index of right eye blink
     blink_right_index: Option<usize>,
+    // VRM expression presets — emotional blend shapes
+    happy_index: Option<usize>,
+    sad_index: Option<usize>,
+    angry_index: Option<usize>,
+    surprised_index: Option<usize>,
+    relaxed_index: Option<usize>,
+    // Eye gaze blend shapes (VRM lookAt presets)
+    look_up: Option<usize>,
+    look_down: Option<usize>,
+    look_left: Option<usize>,
+    look_right: Option<usize>,
 }
 
 /// Per-slot blink animation state.
@@ -482,6 +583,23 @@ struct SlotBones {
     spine: Option<BoneInfo>,
     left_shoulder: Option<BoneInfo>,
     right_shoulder: Option<BoneInfo>,
+    // Arm bones for gesture animation
+    left_upper_arm: Option<BoneInfo>,
+    right_upper_arm: Option<BoneInfo>,
+    left_lower_arm: Option<BoneInfo>,
+    right_lower_arm: Option<BoneInfo>,
+    // Eye bones for bone-based gaze (VRM lookAtTypeName: "Bone")
+    left_eye: Option<BoneInfo>,
+    right_eye: Option<BoneInfo>,
+    // Hand bones — discovered now for animation systems to reference.
+    // Currently used only for bone discovery logging; hand/finger animation is next.
+    #[allow(dead_code)]
+    left_hand: Option<BoneInfo>,
+    #[allow(dead_code)]
+    right_hand: Option<BoneInfo>,
+    /// VRM lookAt configuration — eye rotation ranges for bone-based gaze.
+    /// Parsed from extensions.VRM.firstPerson.lookAtHorizontalInner/Outer/VerticalUp/Down.
+    look_at_config: Option<VrmLookAtConfig>,
 }
 
 struct BoneInfo {
@@ -490,6 +608,34 @@ struct BoneInfo {
     rest_translation: Vec3,
     /// Actual local-space rest rotation (from skeleton bind pose)
     rest_rotation: Quat,
+}
+
+/// VRM lookAt configuration for bone-based eye gaze.
+/// Parsed from VRM extensions — defines how far eye bones can rotate in each direction.
+/// Output values are the actual eye bone rotation in degrees for the corresponding
+/// input range (typically full ±90° input → 8-12° actual eye rotation).
+#[derive(Debug, Clone, Copy)]
+struct VrmLookAtConfig {
+    /// Max eye bone Y-rotation (radians) for looking left/right (inward)
+    horizontal_inner_deg: f32,
+    /// Max eye bone Y-rotation (radians) for looking left/right (outward)
+    horizontal_outer_deg: f32,
+    /// Max eye bone X-rotation (radians) for looking up
+    vertical_up_deg: f32,
+    /// Max eye bone X-rotation (radians) for looking down
+    vertical_down_deg: f32,
+}
+
+impl Default for VrmLookAtConfig {
+    fn default() -> Self {
+        // Sensible defaults for typical VRM models (8° horizontal, 10° vertical)
+        Self {
+            horizontal_inner_deg: 8.0,
+            horizontal_outer_deg: 8.0,
+            vertical_up_deg: 10.0,
+            vertical_down_deg: 10.0,
+        }
+    }
 }
 
 /// Per-slot idle gesture animation state.
@@ -502,6 +648,10 @@ struct IdleGestureState {
 struct SlotGestureState {
     /// Unique phase offset derived from slot index
     phase: f32,
+    /// Current head Y-rotation toward speaker (smoothly interpolated)
+    head_turn_current: f32,
+    /// Target head Y-rotation toward speaker
+    head_turn_target: f32,
 }
 
 /// Per-slot render target dimensions. Updated when a slot is resized.
@@ -557,6 +707,125 @@ struct LegacyMouthWeights {
     weights: HashMap<u8, f32>,
 }
 
+/// Per-slot emotional expression state with smooth transitions and auto-decay.
+#[derive(Resource, Default)]
+struct EmotionState {
+    slots: HashMap<u8, SlotEmotionState>,
+}
+
+struct SlotEmotionState {
+    current: Emotion,
+    current_weight: f32,
+    target: Emotion,
+    target_weight: f32,
+    /// Weight change per second (derived from transition_ms)
+    transition_rate: f32,
+    /// Seconds remaining until fade to neutral (~5s auto-decay)
+    decay_timer: f32,
+}
+
+impl Default for SlotEmotionState {
+    fn default() -> Self {
+        Self {
+            current: Emotion::Neutral,
+            current_weight: 0.0,
+            target: Emotion::Neutral,
+            target_weight: 0.0,
+            transition_rate: 3.0, // default: 333ms transition
+            decay_timer: 0.0,
+        }
+    }
+}
+
+/// Auto-decay duration — emotion fades to neutral after this many seconds without refresh.
+const EMOTION_DECAY_SECS: f32 = 5.0;
+/// During active speech, expression weight is attenuated to this fraction
+/// to avoid fighting mouth animation (mouth shapes + full expression looks wrong).
+const SPEECH_ATTENUATION: f32 = 0.3;
+
+/// Per-slot body gesture state with attack/sustain/release phases.
+#[derive(Resource, Default)]
+struct ActiveGestures {
+    slots: HashMap<u8, SlotGestureAnimState>,
+}
+
+/// Phase of a gesture animation's lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GesturePhase {
+    /// Easing in from rest to gesture pose
+    Attack,
+    /// Holding gesture pose with micro-oscillation
+    Sustain,
+    /// Easing out from gesture pose back to rest
+    Release,
+}
+
+struct SlotGestureAnimState {
+    gesture: Gesture,
+    phase: GesturePhase,
+    /// Total duration of the gesture in seconds
+    duration_secs: f32,
+    /// Elapsed time since gesture started
+    elapsed: f32,
+    /// Current blend weight (0.0=rest, 1.0=full gesture)
+    weight: f32,
+}
+
+/// Duration of attack/release phases for gesture easing (seconds).
+const GESTURE_EASE_SECS: f32 = 0.3;
+
+/// Render cadence — staggered camera activation for GPU load distribution.
+///
+/// Game engine LOD principle: not every object renders every frame.
+/// - Speaking slots: camera active every frame (30fps → 15fps effective readback)
+/// - Idle slots: camera active every Nth frame, staggered by slot index
+///
+/// This distributes GPU render passes across frames. With 14 idle slots and
+/// cadence=3, each frame only renders ~5 idle + speaking slots (~6-7 total),
+/// cutting GPU work in half while maintaining visible animation quality.
+///
+/// Animation systems (blinking, breathing, gestures) still run every frame,
+/// updating bone transforms and morph weights. The camera just captures the
+/// accumulated state less frequently for idle slots.
+#[derive(Resource)]
+struct RenderSchedule {
+    frame_count: u32,
+    /// How many frames between renders for idle slots. Lower = smoother but more GPU work.
+    /// 3 = 10fps idle rendering at 30fps Bevy tick. Enough for blinking/breathing.
+    idle_cadence: u32,
+}
+
+impl Default for RenderSchedule {
+    fn default() -> Self {
+        Self {
+            frame_count: 0,
+            // 1 = all slots render every frame (animation smooth for blinking/breathing).
+            // The 640→360 default resolution already provides 4x GPU reduction.
+            // Increase to 2-3 if GPU is still saturated on lower-end hardware.
+            idle_cadence: 1,
+        }
+    }
+}
+
+/// HD render target resolution (for spotlight / active speaker).
+const HD_WIDTH: u32 = 1280;
+const HD_HEIGHT: u32 = 720;
+/// Maximum number of simultaneous HD render targets. Like Nintendo cartridge RAM —
+/// pre-allocate a fixed budget, swap pointers, never allocate at runtime.
+const MAX_HD_SLOTS: usize = 3;
+
+/// Pre-allocated pool of HD render targets. Only MAX_HD_SLOTS exist at any time.
+/// When a slot needs HD (spotlight/active speaker), it borrows from the pool.
+/// When demoted, it returns the target and falls back to its default low-res target.
+/// No runtime texture allocation — just pointer swaps.
+#[derive(Resource)]
+struct HdRenderTargetPool {
+    /// Available HD targets not currently assigned to any slot.
+    available: Vec<Handle<Image>>,
+    /// Which slot is borrowing which HD target. When the slot is done, the
+    /// target goes back to `available`.
+    assigned: HashMap<u8, Handle<Image>>,
+}
 
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
@@ -589,8 +858,11 @@ fn run_bevy_app(
         .insert_resource(IdleGestureState::default())
         .insert_resource(ActiveSpeechClips::default())
         .insert_resource(LegacyMouthWeights::default())
+        .insert_resource(EmotionState::default())
+        .insert_resource(ActiveGestures::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
+        .insert_resource(RenderSchedule::default())
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -619,14 +891,18 @@ fn run_bevy_app(
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(Update, (
             process_commands,
+            manage_render_cadence,
             ensure_continuous_readback,
             monitor_load_states,
             discover_morph_targets,
             animate_idle,
             animate_speaking,
+            animate_expression,
             animate_blinking,
             animate_breathing,
             animate_idle_gestures,
+            animate_eye_gaze,
+            animate_body_gestures,
         ))
         .run();
 }
@@ -637,17 +913,39 @@ fn run_bevy_app(
 /// once and is consumed. For continuous video frames, we must re-insert the
 /// `Readback` component after each completion. This gives us readback every
 /// other frame (~15fps at 30fps Bevy) due to Commands' deferred execution.
+///
+/// If `start_active` is true, the `Readback` component is inserted immediately
+/// (for resize/reload scenarios where the slot is already active).
+/// If false, only the marker + observer are spawned — `ensure_continuous_readback`
+/// inserts `Readback` once the slot becomes active. This prevents wasted GPU
+/// readback on inactive slots at boot.
 fn spawn_readback_entity(
     commands: &mut Commands,
     rt_handle: Handle<Image>,
     slot_id: u8,
 ) -> Entity {
-    commands
-        .spawn((
+    spawn_readback_entity_opt(commands, rt_handle, slot_id, true)
+}
+
+fn spawn_readback_entity_opt(
+    commands: &mut Commands,
+    rt_handle: Handle<Image>,
+    slot_id: u8,
+    start_active: bool,
+) -> Entity {
+    let mut entity_cmds = if start_active {
+        commands.spawn((
             Readback::texture(rt_handle),
             AvatarSlotId(slot_id),
             ReadbackMarker,
         ))
+    } else {
+        commands.spawn((
+            AvatarSlotId(slot_id),
+            ReadbackMarker,
+        ))
+    };
+    entity_cmds
         .observe(
             move |event: On<ReadbackComplete>,
                   channels: Res<FrameChannels>,
@@ -829,11 +1127,14 @@ fn setup_render_slots(
         // No per-slot directional light — shared light above handles all layers.
         // This avoids Bevy's 10 directional light limit.
 
-        // GPU readback — fires ReadbackComplete observer every rendered frame.
-        // ReadbackComplete derefs to Vec<u8> containing raw pixel data in the
-        // render target's texture format (Rgba8UnormSrgb → RGBA bytes).
+        // GPU readback entity — spawned WITHOUT Readback component initially.
+        // Inactive slots (no model loaded) should not trigger GPU readback.
+        // ensure_continuous_readback inserts Readback when the slot becomes active.
+        // The ReadbackComplete observer IS attached now (for when readback fires later).
         let slot_id = slot;
-        let readback_entity = spawn_readback_entity(&mut commands, rt_handle.clone(), slot_id);
+        let readback_entity = spawn_readback_entity_opt(
+            &mut commands, rt_handle.clone(), slot_id, false,
+        );
 
         registry.slots.insert(
             slot,
@@ -841,17 +1142,48 @@ fn setup_render_slots(
                 camera_entity,
                 _readback_entity: readback_entity,
                 scene_entity: None,
-                _render_target: rt_handle,
+                _render_target: rt_handle.clone(),
+                default_render_target: rt_handle,
                 active: false,
+                model_loaded: false,
                 gltf_handle: None,
                 model_path: None,
             },
         );
     }
 
+    // Pre-allocate HD render target pool — Nintendo-style fixed memory budget.
+    // Only MAX_HD_SLOTS HD textures exist. Spotlight borrows one; rest stay at low-res.
+    let mut hd_targets = Vec::with_capacity(MAX_HD_SLOTS);
+    for _ in 0..MAX_HD_SLOTS {
+        let hd_size = Extent3d {
+            width: HD_WIDTH,
+            height: HD_HEIGHT,
+            depth_or_array_layers: 1,
+        };
+        let mut hd_image = Image::new_fill(
+            hd_size,
+            TextureDimension::D2,
+            &[26, 26, 46, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        hd_image.texture_descriptor.usage =
+            TextureUsages::RENDER_ATTACHMENT
+            | TextureUsages::COPY_SRC
+            | TextureUsages::COPY_DST
+            | TextureUsages::TEXTURE_BINDING;
+        hd_targets.push(images.add(hd_image));
+    }
+    commands.insert_resource(HdRenderTargetPool {
+        available: hd_targets,
+        assigned: HashMap::new(),
+    });
+
     clog_info!(
-        "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps",
-        MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS
+        "🎨 Bevy renderer ready: {} slots × {}×{} @{}fps ({} HD targets pooled at {}×{})",
+        MAX_AVATAR_SLOTS, AVATAR_WIDTH, AVATAR_HEIGHT, AVATAR_FPS,
+        MAX_HD_SLOTS, HD_WIDTH, HD_HEIGHT
     );
 }
 
@@ -944,6 +1276,43 @@ fn signal_ready(flag: Res<ReadyFlag>) {
     bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
 }
 
+/// Staggered render cadence — controls which cameras render each frame.
+///
+/// Game engine LOD: active speakers render every frame (smooth lip sync),
+/// idle slots render every Nth frame (staggered by slot index for even distribution).
+/// Animation systems still run every frame for all slots (bone/morph updates are cheap).
+/// Only the GPU render pass (rasterization) is staggered.
+///
+/// With 14 slots and cadence=3: ~5 idle + speaking = 6-7 render passes per frame
+/// (vs 14 previously). Combined with lower default resolution (640×360), total
+/// GPU work drops ~5-8x.
+fn manage_render_cadence(
+    mut schedule: ResMut<RenderSchedule>,
+    registry: Res<SlotRegistry>,
+    speech_clips: Res<ActiveSpeechClips>,
+    mut cameras: Query<&mut Camera>,
+) {
+    schedule.frame_count = schedule.frame_count.wrapping_add(1);
+    let frame = schedule.frame_count;
+    let cadence = schedule.idle_cadence;
+
+    for (slot, state) in &registry.slots {
+        if !state.active || !state.model_loaded {
+            continue;
+        }
+
+        let is_speaking = speech_clips.clips.contains_key(slot);
+
+        // Speaking slots always render. Idle slots render every Nth frame,
+        // staggered by slot index so render load distributes evenly.
+        let should_render = is_speaking || (frame % cadence == (*slot as u32 % cadence));
+
+        if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
+            camera.is_active = should_render;
+        }
+    }
+}
+
 /// Re-insert `Readback` on entities that lost it after `ReadbackComplete`.
 ///
 /// Bevy's `Readback` is one-shot: the render pipeline removes the component after
@@ -951,14 +1320,30 @@ fn signal_ready(flag: Res<ReadyFlag>) {
 /// `Readback` component on readback entities that no longer have it, enabling
 /// continuous frame delivery at ~half the Bevy loop rate (every other frame).
 ///
+/// Only readbacks slots whose camera is active this frame (per render cadence).
 /// Uses `ReadbackMarker` to distinguish readback entities from cameras/scenes.
 fn ensure_continuous_readback(
     query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
     registry: Res<SlotRegistry>,
+    cameras: Query<&Camera>,
     mut commands: Commands,
 ) {
     for (entity, slot_id) in &query {
         if let Some(state) = registry.slots.get(&slot_id.0) {
+            // Skip slots that aren't ready for readback:
+            // - !active: no Load command received yet
+            // - !model_loaded: SceneInstanceReady hasn't fired yet
+            // - camera not active this frame (render cadence says skip)
+            if !state.active || !state.model_loaded {
+                continue;
+            }
+            // Only readback if the camera rendered this frame (per render cadence).
+            // Reading back a stale render target wastes GPU bandwidth for no new data.
+            if let Ok(camera) = cameras.get(state.camera_entity) {
+                if !camera.is_active {
+                    continue;
+                }
+            }
             commands.entity(entity).insert(
                 Readback::texture(state._render_target.clone())
             );
@@ -977,9 +1362,11 @@ fn process_commands(
     mut pending: ResMut<PendingLoads>,
     mut speech_clips: ResMut<ActiveSpeechClips>,
     mut legacy_mouth: ResMut<LegacyMouthWeights>,
+    mut emotion_state: ResMut<EmotionState>,
+    mut active_gestures: ResMut<ActiveGestures>,
     mut health: ResMut<SlotHealthStatus>,
-    mut images: ResMut<Assets<Image>>,
     mut slot_dims: ResMut<SlotDimensions>,
+    mut hd_pool: ResMut<HdRenderTargetPool>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -1042,6 +1429,7 @@ fn process_commands(
                     // Propagate RenderLayers to all descendants (Bevy doesn't inherit them).
                     let layer_for_observer = layer;
                     let slot_for_observer = slot;
+                    let model_path_for_observer = load_path.clone();
                     commands.entity(scene_entity).observe(
                         move |
                             event: On<SceneInstanceReady>,
@@ -1050,14 +1438,23 @@ fn process_commands(
                             mut transforms: Query<&mut Transform>,
                             mut cmds: Commands,
                             mut bone_registry: ResMut<BoneRegistry>,
+                            mut slot_registry: ResMut<SlotRegistry>,
                         | {
                             let root = event.entity;
                             let child_count = count_descendants(root, &children_query);
                             propagate_render_layers(root, &layer_for_observer, &children_query, &mut cmds);
                             dump_bone_names(root, &children_query, &names);
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
-                            discover_upper_body_bones(root, slot_for_observer, &children_query, &names, &transforms, &mut bone_registry);
-                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated", slot_for_observer, root, child_count);
+                            discover_upper_body_bones(root, slot_for_observer, &model_path_for_observer, &children_query, &names, &transforms, &mut bone_registry);
+
+                            // Mark model as loaded — readback can now begin for this slot.
+                            // Scene meshes are spawned, camera has rendered at least one frame
+                            // with the clear color. No more green-flash from uninitialized textures.
+                            if let Some(state) = slot_registry.slots.get_mut(&slot_for_observer) {
+                                state.model_loaded = true;
+                            }
+
+                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated, readback enabled", slot_for_observer, root, child_count);
                         }
                     );
 
@@ -1081,11 +1478,25 @@ fn process_commands(
                         commands.entity(entity).despawn();
                     }
                     state.active = false;
+                    state.model_loaded = false;
                     state.gltf_handle = None;
                     state.model_path = None;
                     if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
                         camera.is_active = false;
                     }
+                    // Return HD target to pool if this slot had one
+                    if let Some(hd_target) = hd_pool.assigned.remove(&slot) {
+                        hd_pool.available.push(hd_target);
+                        // Restore camera to default low-res target
+                        commands.entity(state.camera_entity).insert(
+                            RenderTarget::Image(state.default_render_target.clone().into()),
+                        );
+                        state._render_target = state.default_render_target.clone();
+                        slot_dims.dims.insert(slot, (AVATAR_WIDTH, AVATAR_HEIGHT));
+                    }
+                    // Clean up animation state for this slot
+                    emotion_state.slots.remove(&slot);
+                    active_gestures.slots.remove(&slot);
                     clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
@@ -1147,29 +1558,65 @@ fn process_commands(
                     }
                 }
             }
+            AvatarCommand::SetEmotion { slot, emotion, weight, transition_ms } => {
+                let rate = if transition_ms > 0 {
+                    1.0 / (transition_ms as f32 / 1000.0)
+                } else {
+                    100.0 // instant
+                };
+                let state = emotion_state.slots.entry(slot).or_insert_with(SlotEmotionState::default);
+                state.target = emotion;
+                state.target_weight = weight.clamp(0.0, 1.0);
+                state.transition_rate = rate;
+                state.decay_timer = EMOTION_DECAY_SECS;
+            }
+            AvatarCommand::SetGesture { slot, gesture, duration_ms } => {
+                if gesture == Gesture::None {
+                    active_gestures.slots.remove(&slot);
+                } else {
+                    active_gestures.slots.insert(slot, SlotGestureAnimState {
+                        gesture,
+                        phase: GesturePhase::Attack,
+                        duration_secs: duration_ms as f32 / 1000.0,
+                        elapsed: 0.0,
+                        weight: 0.0,
+                    });
+                }
+            }
             AvatarCommand::Resize { slot, width, height } => {
                 if let Some(state) = registry.slots.get_mut(&slot) {
-                    // Create new render target at requested dimensions
-                    let size = Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    };
-                    let mut rt_image = Image::new_fill(
-                        size,
-                        TextureDimension::D2,
-                        &[26, 26, 46, 255],
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-                    rt_image.texture_descriptor.usage =
-                        TextureUsages::RENDER_ATTACHMENT
-                        | TextureUsages::COPY_SRC
-                        | TextureUsages::COPY_DST
-                        | TextureUsages::TEXTURE_BINDING;
-                    let new_rt_handle = images.add(rt_image);
+                    let is_hd_request = width >= HD_WIDTH && height >= HD_HEIGHT;
+                    let currently_hd = hd_pool.assigned.contains_key(&slot);
 
-                    // Update camera render target
+                    let new_rt_handle = if is_hd_request && !currently_hd {
+                        // Promote to HD — borrow from pool
+                        if let Some(hd_target) = hd_pool.available.pop() {
+                            hd_pool.assigned.insert(slot, hd_target.clone());
+                            clog_info!("🎨 Slot {}: promoted to HD ({}×{}, {} HD targets remaining)",
+                                slot, HD_WIDTH, HD_HEIGHT, hd_pool.available.len());
+                            hd_target
+                        } else {
+                            clog_warn!("🎨 Slot {}: HD pool exhausted ({} already assigned), staying at current res",
+                                slot, hd_pool.assigned.len());
+                            continue;
+                        }
+                    } else if !is_hd_request && currently_hd {
+                        // Demote from HD — return target to pool, use default
+                        if let Some(hd_target) = hd_pool.assigned.remove(&slot) {
+                            hd_pool.available.push(hd_target);
+                            clog_info!("🎨 Slot {}: demoted to low-res ({}×{}, {} HD targets available)",
+                                slot, AVATAR_WIDTH, AVATAR_HEIGHT, hd_pool.available.len());
+                        }
+                        state.default_render_target.clone()
+                    } else if is_hd_request && currently_hd {
+                        // Already HD — no change needed
+                        continue;
+                    } else {
+                        // Low-res to low-res — use default target (no allocation)
+                        state.default_render_target.clone()
+                    };
+
+                    // Swap camera to the new render target
                     commands.entity(state.camera_entity).insert(
                         RenderTarget::Image(new_rt_handle.clone().into()),
                     );
@@ -1187,9 +1634,14 @@ fn process_commands(
                     state._render_target = new_rt_handle;
 
                     // Update per-slot dimensions
-                    slot_dims.dims.insert(slot, (width, height));
+                    let (effective_w, effective_h) = if is_hd_request {
+                        (HD_WIDTH, HD_HEIGHT)
+                    } else {
+                        (AVATAR_WIDTH, AVATAR_HEIGHT)
+                    };
+                    slot_dims.dims.insert(slot, (effective_w, effective_h));
 
-                    clog_info!("🎨 Slot {}: resized to {}×{}", slot, width, height);
+                    clog_info!("🎨 Slot {}: resized to {}×{}", slot, effective_w, effective_h);
                 }
             }
             AvatarCommand::Shutdown => {
@@ -1324,6 +1776,15 @@ fn discover_morph_targets(
         let mut blink_index = None;
         let mut blink_left_index = None;
         let mut blink_right_index = None;
+        let mut happy_index = None;
+        let mut sad_index = None;
+        let mut angry_index = None;
+        let mut surprised_index = None;
+        let mut relaxed_index = None;
+        let mut look_up = None;
+        let mut look_down = None;
+        let mut look_left = None;
+        let mut look_right = None;
 
         if !mesh_names.is_empty() {
             // Standard glTF + VRoid naming conventions — match by name.
@@ -1362,6 +1823,71 @@ fn discover_morph_targets(
                 ) {
                     blink_right_index = Some(i);
                 }
+                // VRM expression presets — emotional blend shapes
+                // VRoid: Fcl_EYE_Joy, Fcl_MTH_Angry, Fcl_ALL_Fun, etc.
+                // Standard glTF / VRM: happy, joy, sad, sorrow, angry, surprised, fun, relaxed
+                if happy_index.is_none() && (
+                    lower == "happy" || lower == "joy" ||
+                    lower.ends_with("_joy") || lower.ends_with("_happy") ||
+                    lower == "fcl_all_joy" || lower == "fcl_eye_joy"
+                ) {
+                    happy_index = Some(i);
+                }
+                if sad_index.is_none() && (
+                    lower == "sad" || lower == "sorrow" ||
+                    lower.ends_with("_sad") || lower.ends_with("_sorrow") ||
+                    lower == "fcl_all_sorrow" || lower == "fcl_eye_sorrow"
+                ) {
+                    sad_index = Some(i);
+                }
+                if angry_index.is_none() && (
+                    lower == "angry" ||
+                    lower.ends_with("_angry") ||
+                    lower == "fcl_all_angry" || lower == "fcl_mth_angry"
+                ) {
+                    angry_index = Some(i);
+                }
+                if surprised_index.is_none() && (
+                    lower == "surprised" || lower == "fun" ||
+                    lower.ends_with("_surprised") || lower.ends_with("_fun") ||
+                    lower == "fcl_all_fun" || lower == "fcl_brw_surprised"
+                ) {
+                    surprised_index = Some(i);
+                }
+                if relaxed_index.is_none() && (
+                    lower == "relaxed" ||
+                    lower.ends_with("_relaxed") ||
+                    lower == "fcl_all_relaxed"
+                ) {
+                    relaxed_index = Some(i);
+                }
+                // Eye gaze blend shapes (VRM lookAt presets)
+                // VRM 1.0: "lookUp", "lookDown", "lookLeft", "lookRight"
+                // VRoid: "Fcl_EYE_LookUp", "Fcl_EYE_LookDown", etc.
+                if look_up.is_none() && (
+                    lower == "lookup" || lower == "look_up" ||
+                    lower.ends_with("lookup") || lower == "fcl_eye_lookup"
+                ) {
+                    look_up = Some(i);
+                }
+                if look_down.is_none() && (
+                    lower == "lookdown" || lower == "look_down" ||
+                    lower.ends_with("lookdown") || lower == "fcl_eye_lookdown"
+                ) {
+                    look_down = Some(i);
+                }
+                if look_left.is_none() && (
+                    lower == "lookleft" || lower == "look_left" ||
+                    lower.ends_with("lookleft") || lower == "fcl_eye_lookleft"
+                ) {
+                    look_left = Some(i);
+                }
+                if look_right.is_none() && (
+                    lower == "lookright" || lower == "look_right" ||
+                    lower.ends_with("lookright") || lower == "fcl_eye_lookright"
+                ) {
+                    look_right = Some(i);
+                }
             }
         } else if let Some(model_path) = &state.model_path {
             // VRM path — parse blend shape groups from the VRM extension in the .glb file
@@ -1394,6 +1920,55 @@ fn discover_morph_targets(
                             blink_right_index = Some(bind.index);
                         }
                     }
+                    // VRM expression presets — emotional blend shapes
+                    // VRM 0.x presets: "joy"/"happy", "sorrow"/"sad", "angry", "fun"/"surprised", "relaxed"
+                    // VRM 1.0 presets: "happy", "sad", "angry", "surprised", "relaxed"
+                    if happy_index.is_none() && (preset == "joy" || preset == "happy") {
+                        if let Some(bind) = shape.binds.first() {
+                            happy_index = Some(bind.index);
+                        }
+                    }
+                    if sad_index.is_none() && (preset == "sorrow" || preset == "sad") {
+                        if let Some(bind) = shape.binds.first() {
+                            sad_index = Some(bind.index);
+                        }
+                    }
+                    if angry_index.is_none() && preset == "angry" {
+                        if let Some(bind) = shape.binds.first() {
+                            angry_index = Some(bind.index);
+                        }
+                    }
+                    if surprised_index.is_none() && (preset == "fun" || preset == "surprised") {
+                        if let Some(bind) = shape.binds.first() {
+                            surprised_index = Some(bind.index);
+                        }
+                    }
+                    if relaxed_index.is_none() && preset == "relaxed" {
+                        if let Some(bind) = shape.binds.first() {
+                            relaxed_index = Some(bind.index);
+                        }
+                    }
+                    // Eye gaze VRM presets
+                    if look_up.is_none() && (preset == "lookup" || preset == "lookUp") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_up = Some(bind.index);
+                        }
+                    }
+                    if look_down.is_none() && (preset == "lookdown" || preset == "lookDown") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_down = Some(bind.index);
+                        }
+                    }
+                    if look_left.is_none() && (preset == "lookleft" || preset == "lookLeft") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_left = Some(bind.index);
+                        }
+                    }
+                    if look_right.is_none() && (preset == "lookright" || preset == "lookRight") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_right = Some(bind.index);
+                        }
+                    }
                 }
                 clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
             }
@@ -1403,9 +1978,14 @@ fn discover_morph_targets(
             .map(|(_, w)| w.weights().len())
             .unwrap_or(0);
 
+        let emotion_count = [happy_index, sad_index, angry_index, surprised_index, relaxed_index]
+            .iter().filter(|i| i.is_some()).count();
+        let gaze_count = [look_up, look_down, look_left, look_right]
+            .iter().filter(|i| i.is_some()).count();
         clog_info!(
-            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}",
+            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5, gaze={}/4",
             slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
+            emotion_count, gaze_count,
         );
 
         morph_targets.layouts.insert(*slot, MorphTargetLayout {
@@ -1414,6 +1994,15 @@ fn discover_morph_targets(
             blink_index,
             blink_left_index,
             blink_right_index,
+            happy_index,
+            sad_index,
+            angry_index,
+            surprised_index,
+            relaxed_index,
+            look_up,
+            look_down,
+            look_left,
+            look_right,
         });
     }
 }
@@ -1542,6 +2131,90 @@ fn animate_speaking(
 }
 
 
+/// Animate emotional expressions via discovered VRM blend shapes.
+///
+/// Smoothly transitions between emotions with lerp. Auto-decays to neutral
+/// after EMOTION_DECAY_SECS without refresh. During active speech, expression
+/// weight is attenuated to SPEECH_ATTENUATION to avoid fighting mouth animation.
+fn animate_expression(
+    time: Res<Time>,
+    morph_targets: Res<SlotMorphTargets>,
+    mut emotion_state: ResMut<EmotionState>,
+    speech_clips: Res<ActiveSpeechClips>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut morph_weights: Query<&mut MorphWeights>,
+) {
+    let dt = time.delta_secs();
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+
+    for (slot, layout) in &morph_targets.layouts {
+        let state = match emotion_state.slots.get_mut(slot) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Auto-decay: count down timer, then fade to neutral
+        if state.decay_timer > 0.0 {
+            state.decay_timer -= dt;
+            if state.decay_timer <= 0.0 {
+                state.target = Emotion::Neutral;
+                state.target_weight = 0.0;
+                state.transition_rate = 1.0; // gentle 1s fade-out
+            }
+        }
+
+        // Cross-fade: if switching to a different emotion, fade old out first
+        if state.target != state.current && state.current_weight > 0.01 {
+            // Fade current emotion out
+            state.current_weight = (state.current_weight - state.transition_rate * dt).max(0.0);
+            if state.current_weight <= 0.01 {
+                state.current_weight = 0.0;
+                state.current = state.target;
+            }
+        } else {
+            // Same emotion (or old is faded) — lerp toward target
+            state.current = state.target;
+            if state.current_weight < state.target_weight {
+                state.current_weight = (state.current_weight + state.transition_rate * dt)
+                    .min(state.target_weight);
+            } else if state.current_weight > state.target_weight {
+                state.current_weight = (state.current_weight - state.transition_rate * dt)
+                    .max(state.target_weight);
+            }
+        }
+
+        // Speech attenuation: reduce expression during active speech
+        let is_speaking = speaking_slots.contains(slot) || speech_clips.clips.contains_key(slot);
+        let effective_weight = if is_speaking {
+            state.current_weight * SPEECH_ATTENUATION
+        } else {
+            state.current_weight
+        };
+
+        if state.current == Emotion::Neutral || effective_weight < 0.001 {
+            continue;
+        }
+
+        // Apply the blend shape weight for the current emotion
+        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+            let w = weights.weights_mut();
+            let idx = match state.current {
+                Emotion::Happy => layout.happy_index,
+                Emotion::Sad => layout.sad_index,
+                Emotion::Angry => layout.angry_index,
+                Emotion::Surprised => layout.surprised_index,
+                Emotion::Relaxed => layout.relaxed_index,
+                Emotion::Neutral => None,
+            };
+            if let Some(i) = idx {
+                if i < w.len() {
+                    w[i] = effective_weight;
+                }
+            }
+        }
+    }
+}
+
 /// Animate random eye blinks across all active avatar slots.
 fn animate_blinking(
     time: Res<Time>,
@@ -1621,9 +2294,11 @@ fn animate_idle_gestures(
     registry: Res<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    active_gestures: Res<ActiveGestures>,
     mut gesture_state: ResMut<IdleGestureState>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let dt = time.delta_secs();
     let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
 
     for (slot, state) in &registry.slots {
@@ -1631,8 +2306,12 @@ fn animate_idle_gestures(
             continue;
         }
 
-        // Skip gestures while speaking — head nod takes priority
-        if speaking_slots.contains(slot) {
+        let is_speaking = speaking_slots.contains(slot);
+
+        // Skip idle gestures while a body gesture is active (arm gesture takes priority).
+        // But DON'T skip for speaking — we still want head turn toward speaker for non-speakers,
+        // and forward-facing presenter pose for speakers.
+        if active_gestures.slots.contains_key(slot) {
             continue;
         }
 
@@ -1644,15 +2323,48 @@ fn animate_idle_gestures(
         // Initialize gesture state with unique phase offset per slot
         let gesture = gesture_state.slots.entry(*slot).or_insert_with(|| {
             SlotGestureState {
-                phase: *slot as f32 * 2.37, // Golden ratio-ish offset for visual variety
+                phase: *slot as f32 * 2.37,
+                head_turn_current: 0.0,
+                head_turn_target: 0.0,
             }
         });
 
         let t = time.elapsed_secs() + gesture.phase;
 
-        // 1. Neck micro-tilt — layered frequencies for organic motion.
+        // Compute head turn target toward active speaker.
+        // Non-speaking: turn head toward whoever is speaking.
+        // Speaking: face forward (slight drift, "presenter" pose).
+        if is_speaking {
+            gesture.head_turn_target = 0.0; // Face camera
+        } else if !speaking_slots.is_empty() {
+            // Average direction toward all active speakers
+            let turn_bias: f32 = speaking_slots.iter()
+                .map(|&s| {
+                    let diff = s as f32 - *slot as f32;
+                    diff.signum() * 0.15 // ~8.5° per speaker direction
+                })
+                .sum::<f32>()
+                .clamp(-0.25, 0.25); // Max ~14° turn
+            gesture.head_turn_target = turn_bias;
+        } else {
+            gesture.head_turn_target = 0.0; // No speaker, face forward
+        }
+
+        // Smooth interpolation: exponential decay for natural head movement.
+        // current = lerp(current, target, 1 - e^(-dt * speed))
+        // speed=3.0 → 95% there in ~1 second
+        let lerp_factor = 1.0 - (-dt * 3.0_f32).exp();
+        gesture.head_turn_current += (gesture.head_turn_target - gesture.head_turn_current) * lerp_factor;
+
+        // Skip idle oscillation while speaking (head nod in animate_speaking takes priority)
+        if is_speaking {
+            continue;
+        }
+
+        // 1. Neck micro-tilt + speaker-directed head turn.
         //    COMPOSES delta rotation onto the bone's rest rotation (not replacing it!)
         //    Combines 3 sine waves at incommensurate frequencies (non-repeating pattern)
+        //    plus the smooth head turn toward active speaker.
         if let Some(ref neck) = slot_bones.neck {
             if let Ok(mut transform) = transforms.get_mut(neck.entity) {
                 let tilt_x = (t * 0.15).sin() * 0.03           // Very slow nod
@@ -1660,7 +2372,9 @@ fn animate_idle_gestures(
                     + (t * 0.37).sin() * 0.01;                  // Subtle high-freq detail
                 let tilt_z = (t * 0.12).cos() * 0.025           // Slow lateral head tilt
                     + (t * 0.31).sin() * 0.015;                 // Detail frequency
-                let turn_y = (t * 0.08).sin() * 0.02;           // Very slow head turn
+                // Head turn: idle drift + speaker-directed turn
+                let idle_turn = (t * 0.08).sin() * 0.02;
+                let turn_y = idle_turn + gesture.head_turn_current;
 
                 let delta = Quat::from_euler(EulerRot::XYZ, tilt_x, turn_y, tilt_z);
                 transform.rotation = neck.rest_rotation * delta;
@@ -1721,6 +2435,352 @@ fn animate_breathing(
             let delta = Quat::from_rotation_z(sway);
             transform.rotation = spine.rest_rotation * delta;
         }
+    }
+}
+
+/// Animate eye gaze via look blend shapes. Creates a "living eyes" effect with:
+/// 1. Idle drift: slow random movement using layered oscillators
+/// 2. Look toward speaker: when another slot is speaking, eyes drift that direction
+/// 3. Look at camera when speaking: engaging the viewer during own speech
+///
+/// Uses lookUp/lookDown/lookLeft/lookRight blend shapes discovered from VRM presets.
+fn animate_eye_gaze(
+    time: Res<Time>,
+    registry: Res<SlotRegistry>,
+    morph_targets: Res<SlotMorphTargets>,
+    bone_registry: Res<BoneRegistry>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut morph_weights: Query<&mut MorphWeights>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+    let t = time.elapsed_secs();
+
+    // Iterate over all active slots (not just those with morph targets)
+    for (slot, state) in &registry.slots {
+        if !state.active { continue; }
+
+        let is_speaking = speaking_slots.contains(slot);
+        let phase = *slot as f32 * 2.73; // Unique offset per slot
+
+        // Compute gaze target (x = left/right, y = up/down), range -1..1
+        let (gaze_x, gaze_y) = if is_speaking {
+            // Look at camera when speaking (small drift for naturalness)
+            let drift_x = (t * 0.3 + phase).sin() * 0.05;
+            let drift_y = (t * 0.25 + phase).cos() * 0.03;
+            (drift_x, drift_y)
+        } else {
+            // Find which direction a speaker is (relative to this slot's position)
+            let speaker_bias: f32 = speaking_slots.iter()
+                .map(|&s| {
+                    let diff = s as f32 - *slot as f32;
+                    diff.signum() * 0.15 // Subtle bias toward speaker direction
+                })
+                .sum::<f32>()
+                .clamp(-0.3, 0.3);
+
+            // Idle gaze drift — layered oscillators for organic movement
+            let drift_x = (t * 0.13 + phase).sin() * 0.12
+                + (t * 0.07 + phase * 0.7).cos() * 0.08
+                + speaker_bias;
+            let drift_y = (t * 0.11 + phase).cos() * 0.08
+                + (t * 0.19 + phase * 1.3).sin() * 0.05;
+            (drift_x.clamp(-0.4, 0.4), drift_y.clamp(-0.3, 0.3))
+        };
+
+        // Path 1: Bone-based eye gaze (VRM lookAtTypeName: "Bone")
+        // Eye bones rotate directly — this is what most VRM models actually use.
+        let mut used_bone_gaze = false;
+        if let Some(slot_bones) = bone_registry.slots.get(slot) {
+            if slot_bones.left_eye.is_some() && slot_bones.right_eye.is_some() {
+                let config = slot_bones.look_at_config.unwrap_or_default();
+
+                // Map gaze_x/gaze_y (-1..1) to eye bone rotation.
+                // Use average of inner/outer for horizontal (both eyes look the same direction).
+                let h_deg = (config.horizontal_inner_deg + config.horizontal_outer_deg) * 0.5;
+                let v_up_deg = config.vertical_up_deg;
+                let v_down_deg = config.vertical_down_deg;
+
+                // Horizontal: Y-rotation (positive = look right in VRM's -Z forward convention)
+                let yaw_rad = gaze_x * h_deg.to_radians();
+                // Vertical: X-rotation (negative = look up, positive = look down)
+                let pitch_rad = if gaze_y >= 0.0 {
+                    -gaze_y * v_up_deg.to_radians()  // Looking up
+                } else {
+                    -gaze_y * v_down_deg.to_radians() // Looking down (gaze_y is negative)
+                };
+
+                let gaze_delta = Quat::from_euler(EulerRot::XYZ, pitch_rad, yaw_rad, 0.0);
+
+                // Apply to both eyes (conjugate gaze — both look at same point)
+                if let Some(ref left_eye) = slot_bones.left_eye {
+                    if let Ok(mut transform) = transforms.get_mut(left_eye.entity) {
+                        transform.rotation = left_eye.rest_rotation * gaze_delta;
+                    }
+                }
+                if let Some(ref right_eye) = slot_bones.right_eye {
+                    if let Ok(mut transform) = transforms.get_mut(right_eye.entity) {
+                        transform.rotation = right_eye.rest_rotation * gaze_delta;
+                    }
+                }
+                used_bone_gaze = true;
+            }
+        }
+
+        // Path 2: Blend shape gaze (fallback for models without eye bones)
+        if !used_bone_gaze {
+            if let Some(layout) = morph_targets.layouts.get(slot) {
+                let has_gaze = layout.look_up.is_some() || layout.look_down.is_some()
+                    || layout.look_left.is_some() || layout.look_right.is_some();
+                if !has_gaze { continue; }
+
+                if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+                    let w = weights.weights_mut();
+
+                    // Horizontal: negative = look left, positive = look right
+                    if gaze_x < 0.0 {
+                        if let Some(idx) = layout.look_left {
+                            if idx < w.len() { w[idx] = (-gaze_x).min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_right {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    } else {
+                        if let Some(idx) = layout.look_right {
+                            if idx < w.len() { w[idx] = gaze_x.min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_left {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    }
+
+                    // Vertical: negative = look down, positive = look up
+                    if gaze_y < 0.0 {
+                        if let Some(idx) = layout.look_down {
+                            if idx < w.len() { w[idx] = (-gaze_y).min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_up {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    } else {
+                        if let Some(idx) = layout.look_up {
+                            if idx < w.len() { w[idx] = gaze_y.min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_down {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Smoothstep easing function (cubic Hermite interpolation). Maps 0→0, 1→1
+/// with zero derivative at both endpoints — natural acceleration/deceleration.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Body gesture animation system — drives arm/shoulder bones through gesture poses.
+///
+/// Each gesture has three phases: Attack (ease in), Sustain (hold with micro-oscillation),
+/// Release (ease out). Arm rotations compose onto rest_rotation from BoneInfo —
+/// never replaces the bind pose. Idle gestures automatically resume when gesture ends.
+///
+/// Gesture and speech are complementary: speech drives head nod + mouth, gestures drive arms.
+/// Both can be active simultaneously without conflict.
+fn animate_body_gestures(
+    time: Res<Time>,
+    bone_registry: Res<BoneRegistry>,
+    mut active_gestures: ResMut<ActiveGestures>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let dt = time.delta_secs();
+    let now = time.elapsed_secs();
+
+    // Collect slots to remove after iteration (gesture completed)
+    let mut finished: Vec<u8> = Vec::new();
+
+    for (slot, anim) in active_gestures.slots.iter_mut() {
+        anim.elapsed += dt;
+
+        // Phase transitions
+        let attack_end = GESTURE_EASE_SECS;
+        let sustain_end = anim.duration_secs - GESTURE_EASE_SECS;
+        let total_end = anim.duration_secs;
+
+        if anim.elapsed >= total_end {
+            finished.push(*slot);
+            continue;
+        }
+
+        // Compute blend weight based on phase
+        anim.weight = if anim.elapsed < attack_end {
+            // Attack: ease in
+            anim.phase = GesturePhase::Attack;
+            smoothstep(anim.elapsed / GESTURE_EASE_SECS)
+        } else if anim.elapsed < sustain_end {
+            // Sustain: full weight with subtle oscillation
+            anim.phase = GesturePhase::Sustain;
+            1.0
+        } else {
+            // Release: ease out
+            anim.phase = GesturePhase::Release;
+            let release_progress = (anim.elapsed - sustain_end) / GESTURE_EASE_SECS;
+            1.0 - smoothstep(release_progress)
+        };
+
+        let slot_bones = match bone_registry.slots.get(slot) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let w = anim.weight;
+        let t = now + *slot as f32 * 1.7; // Phase offset per slot for micro-oscillation
+
+        match anim.gesture {
+            Gesture::Wave => {
+                // Right upper arm up ~90°, right forearm oscillates ±20° at 2Hz
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        // Rotate up (negative Z = up for right arm, already T-pose fixed)
+                        let up_angle = -1.2 * w; // ~69° up from resting
+                        let delta = Quat::from_rotation_z(up_angle);
+                        transform.rotation = rua.rest_rotation * delta;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        // Oscillating wave motion on forearm
+                        let wave = if anim.phase == GesturePhase::Sustain {
+                            (t * 2.0 * std::f32::consts::TAU).sin() * 0.35
+                        } else {
+                            0.0
+                        };
+                        let bend = (-0.5 + wave) * w; // Bent + wave
+                        let delta = Quat::from_rotation_z(bend);
+                        transform.rotation = rla.rest_rotation * delta;
+                    }
+                }
+            }
+            Gesture::Think => {
+                // Right arm forward and bent — hand near chin
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let forward = Quat::from_rotation_x(-0.8 * w); // Forward ~45°
+                        let inward = Quat::from_rotation_z(-0.3 * w);  // Slightly inward
+                        let delta = forward * inward;
+                        transform.rotation = rua.rest_rotation * delta;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        let bend = Quat::from_rotation_z(2.0 * w); // Tight bend ~115°
+                        transform.rotation = rla.rest_rotation * bend;
+                    }
+                }
+                // Slight head tilt for "thinking" look
+                if let Some(ref head) = slot_bones.head {
+                    if let Ok(mut transform) = transforms.get_mut(head.entity) {
+                        let tilt = Quat::from_euler(EulerRot::XYZ, 0.05 * w, 0.0, 0.08 * w);
+                        transform.rotation = head.rest_rotation * tilt;
+                    }
+                }
+            }
+            Gesture::Nod => {
+                // Emphatic head nod — stronger than speech nod
+                if let Some(ref head) = slot_bones.head {
+                    if let Ok(mut transform) = transforms.get_mut(head.entity) {
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.12 * w;
+                        let delta = Quat::from_rotation_x(nod);
+                        transform.rotation = head.rest_rotation * delta;
+                    }
+                }
+            }
+            Gesture::Shrug => {
+                // Both shoulders up, both arms slightly out
+                if let Some(ref ls) = slot_bones.left_shoulder {
+                    if let Ok(mut transform) = transforms.get_mut(ls.entity) {
+                        transform.translation.y = ls.rest_translation.y + 0.01 * w;
+                    }
+                }
+                if let Some(ref rs) = slot_bones.right_shoulder {
+                    if let Ok(mut transform) = transforms.get_mut(rs.entity) {
+                        transform.translation.y = rs.rest_translation.y + 0.01 * w;
+                    }
+                }
+                // Arms slightly out
+                if let Some(ref lua) = slot_bones.left_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(lua.entity) {
+                        let out = Quat::from_rotation_z(-0.35 * w); // Left arm out
+                        transform.rotation = lua.rest_rotation * out;
+                    }
+                }
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let out = Quat::from_rotation_z(0.35 * w); // Right arm out
+                        transform.rotation = rua.rest_rotation * out;
+                    }
+                }
+            }
+            Gesture::Point => {
+                // Right arm extended forward
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let forward = Quat::from_rotation_x(-1.05 * w); // Forward ~60°
+                        transform.rotation = rua.rest_rotation * forward;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        // Straighten forearm (undo the resting bend)
+                        let straighten = Quat::from_rotation_z(0.26 * w); // Cancel ~15° resting bend
+                        transform.rotation = rla.rest_rotation * straighten;
+                    }
+                }
+            }
+            Gesture::OpenHands => {
+                // Both arms slightly out and forward, forearms open
+                if let Some(ref lua) = slot_bones.left_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(lua.entity) {
+                        let out = Quat::from_rotation_z(-0.4 * w);
+                        let forward = Quat::from_rotation_x(-0.3 * w);
+                        transform.rotation = lua.rest_rotation * forward * out;
+                    }
+                }
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let out = Quat::from_rotation_z(0.4 * w);
+                        let forward = Quat::from_rotation_x(-0.3 * w);
+                        transform.rotation = rua.rest_rotation * forward * out;
+                    }
+                }
+                // Slight oscillation during sustain
+                if anim.phase == GesturePhase::Sustain {
+                    if let Some(ref lla) = slot_bones.left_lower_arm {
+                        if let Ok(mut transform) = transforms.get_mut(lla.entity) {
+                            let osc = (t * 0.5).sin() * 0.05 * w;
+                            let delta = Quat::from_rotation_x(osc);
+                            transform.rotation = lla.rest_rotation * delta;
+                        }
+                    }
+                    if let Some(ref rla) = slot_bones.right_lower_arm {
+                        if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                            let osc = (t * 0.5 + 0.5).sin() * 0.05 * w;
+                            let delta = Quat::from_rotation_x(osc);
+                            transform.rotation = rla.rest_rotation * delta;
+                        }
+                    }
+                }
+            }
+            Gesture::None => {}
+        }
+    }
+
+    for slot in finished {
+        active_gestures.slots.remove(&slot);
     }
 }
 
@@ -1809,27 +2869,66 @@ fn collect_arm_adjustments(
 ) {
     if let Ok(name) = names.get(entity) {
         let name_str = name.as_str();
-        let _name_lower = name_str.to_lowercase();
+        let name_lower = name_str.to_lowercase();
 
         // Detect upper arm bones and rotate downward (~65 degrees).
         // VRoid: "J_Bip_L_UpperArm", "J_Sec_L_UpperArm"
         // Mixamo: "mixamorig:LeftArm", "vis_char_056:mixamorig:LeftArm"
+        // 100Avatars/Generic: "LeftUpperArm", "Left_UpperArm", "leftupperarm"
+        // Blender Rigify: "upper_arm.L", "upper_arm.R" (dot-suffix laterality)
+        // Webaverse/quappa: "Upperarm_L", "Upperarm_R" (underscore-suffix laterality)
+        // Hand-rigged: "Left arm", "Right arm" (space-separated, exact match)
+        // Humanoid: any name ending in "upperarm" or "upper_arm" with left/L hint
         let is_left_upper = name_str.contains("J_Bip_L_UpperArm")
             || name_str.contains("J_Sec_L_UpperArm")
-            || (name_str.contains("mixamorig:LeftArm") && !name_str.contains("ForeArm"));
+            || (name_str.contains("mixamorig:LeftArm") && !name_str.contains("ForeArm"))
+            || name_str == "LeftUpperArm"
+            || name_str == "Left_UpperArm"
+            || name_str == "Left arm"
+            || name_str == "Upperarm_L"
+            || name_str == "upper_arm.L"
+            || (name_lower.ends_with("upperarm") && (name_lower.contains("left") || name_lower.contains("_l_")))
+            || (name_lower.ends_with("upper_arm") && (name_lower.contains("left") || name_lower.contains("_l_")));
         let is_right_upper = name_str.contains("J_Bip_R_UpperArm")
             || name_str.contains("J_Sec_R_UpperArm")
-            || (name_str.contains("mixamorig:RightArm") && !name_str.contains("ForeArm"));
+            || (name_str.contains("mixamorig:RightArm") && !name_str.contains("ForeArm"))
+            || name_str == "RightUpperArm"
+            || name_str == "Right_UpperArm"
+            || name_str == "Right arm"
+            || name_str == "Upperarm_R"
+            || name_str == "upper_arm.R"
+            || (name_lower.ends_with("upperarm") && (name_lower.contains("right") || name_lower.contains("_r_")))
+            || (name_lower.ends_with("upper_arm") && (name_lower.contains("right") || name_lower.contains("_r_")));
 
         // Detect lower arm / forearm bones — slight bend for natural look.
         // VRoid: "J_Bip_L_LowerArm"
         // Mixamo: "mixamorig:LeftForeArm"
+        // 100Avatars/Generic: "LeftLowerArm", "Left_LowerArm", "leftlowerarm"
+        // Blender Rigify: "lower_arm.L", "lower_arm.R"
+        // Webaverse/quappa: "Lowerarm_L", "Lowerarm_R"
+        // Hand-rigged: "Left elbow", "Right elbow" (elbow = forearm bone in simple rigs)
         let is_left_lower = name_str.contains("J_Bip_L_LowerArm")
             || name_str.contains("J_Sec_L_LowerArm")
-            || name_str.contains("mixamorig:LeftForeArm");
+            || name_str.contains("mixamorig:LeftForeArm")
+            || name_str == "LeftLowerArm"
+            || name_str == "Left_LowerArm"
+            || name_str == "LeftForeArm"
+            || name_str == "Left elbow"
+            || name_str == "Lowerarm_L"
+            || name_str == "lower_arm.L"
+            || (name_lower.ends_with("lowerarm") && (name_lower.contains("left") || name_lower.contains("_l_")))
+            || (name_lower.ends_with("forearm") && (name_lower.contains("left") || name_lower.contains("_l_")));
         let is_right_lower = name_str.contains("J_Bip_R_LowerArm")
             || name_str.contains("J_Sec_R_LowerArm")
-            || name_str.contains("mixamorig:RightForeArm");
+            || name_str.contains("mixamorig:RightForeArm")
+            || name_str == "RightLowerArm"
+            || name_str == "Right_LowerArm"
+            || name_str == "RightForeArm"
+            || name_str == "Right elbow"
+            || name_str == "Lowerarm_R"
+            || name_str == "lower_arm.R"
+            || (name_lower.ends_with("lowerarm") && (name_lower.contains("right") || name_lower.contains("_r_")))
+            || (name_lower.ends_with("forearm") && (name_lower.contains("right") || name_lower.contains("_r_")));
 
         if is_left_upper {
             // Rotate left upper arm down ~65 degrees (positive Z in VRM local space)
@@ -2021,6 +3120,149 @@ fn parse_vrmc_expressions(root: &serde_json::Value, glb_path: &str) -> Option<Ve
     Some(shapes)
 }
 
+/// Parse VRM humanoid bone mapping from the .glb JSON extensions.
+/// Returns a map of VRM bone name (e.g. "leftEye") → glTF node name.
+/// Works with both VRM 0.x (extensions.VRM.humanoid.humanBones) and
+/// VRM 1.0 (extensions.VRMC_vrm.humanoid.humanBones).
+fn parse_vrm_humanoid_bones(glb_path: &str) -> HashMap<String, String> {
+    let root = match read_glb_json(glb_path) {
+        Some(r) => r,
+        None => return HashMap::new(),
+    };
+
+    // Get the nodes array for resolving node index → node name
+    let nodes = root.get("nodes").and_then(|v| v.as_array());
+
+    let resolve_node_name = |node_index: u64| -> Option<String> {
+        nodes.and_then(|n| n.get(node_index as usize))
+            .and_then(|node| node.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+
+    let mut bone_map = HashMap::new();
+
+    // Try VRM 0.x: extensions.VRM.humanoid.humanBones (array of {bone, node, ...})
+    if let Some(human_bones) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRM"))
+        .and_then(|v| v.get("humanoid"))
+        .and_then(|h| h.get("humanBones"))
+        .and_then(|b| b.as_array())
+    {
+        for bone_entry in human_bones {
+            let bone_name = bone_entry.get("bone").and_then(|v| v.as_str());
+            let node_idx = bone_entry.get("node").and_then(|v| v.as_u64());
+            if let (Some(name), Some(idx)) = (bone_name, node_idx) {
+                if let Some(node_name) = resolve_node_name(idx) {
+                    bone_map.insert(name.to_string(), node_name);
+                }
+            }
+        }
+        if !bone_map.is_empty() {
+            bevy_debug(&format!("VRM 0.x humanoid bones from '{}': {} bones", glb_path, bone_map.len()));
+            return bone_map;
+        }
+    }
+
+    // Try VRM 1.0: extensions.VRMC_vrm.humanoid.humanBones (object of {boneName: {node: idx}})
+    if let Some(human_bones) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRMC_vrm"))
+        .and_then(|v| v.get("humanoid"))
+        .and_then(|h| h.get("humanBones"))
+        .and_then(|b| b.as_object())
+    {
+        for (bone_name, bone_data) in human_bones {
+            let node_idx = bone_data.get("node").and_then(|v| v.as_u64());
+            if let Some(idx) = node_idx {
+                if let Some(node_name) = resolve_node_name(idx) {
+                    bone_map.insert(bone_name.clone(), node_name);
+                }
+            }
+        }
+        if !bone_map.is_empty() {
+            bevy_debug(&format!("VRM 1.0 humanoid bones from '{}': {} bones", glb_path, bone_map.len()));
+        }
+    }
+
+    bone_map
+}
+
+/// Parse VRM lookAt configuration from the .glb JSON extensions.
+/// Returns the eye rotation ranges used for bone-based gaze.
+fn parse_vrm_look_at_config(glb_path: &str) -> Option<VrmLookAtConfig> {
+    let root = read_glb_json(glb_path)?;
+
+    // VRM 0.x: extensions.VRM.firstPerson.lookAtTypeName + lookAtHorizontalInner/Outer/VerticalUp/Down
+    if let Some(first_person) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRM"))
+        .and_then(|v| v.get("firstPerson"))
+    {
+        let look_at_type = first_person.get("lookAtTypeName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Only parse bone config if lookAtTypeName is "Bone" (not "BlendShape")
+        if look_at_type != "Bone" {
+            bevy_debug(&format!("VRM lookAt type '{}' — not bone-based", look_at_type));
+            return None;
+        }
+
+        let get_output = |key: &str| -> f32 {
+            first_person.get(key)
+                .and_then(|v| v.get("yRange"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(8.0) as f32
+        };
+
+        let config = VrmLookAtConfig {
+            horizontal_inner_deg: get_output("lookAtHorizontalInner"),
+            horizontal_outer_deg: get_output("lookAtHorizontalOuter"),
+            vertical_up_deg: get_output("lookAtVerticalUp"),
+            vertical_down_deg: get_output("lookAtVerticalDown"),
+        };
+        bevy_debug(&format!("VRM lookAt config: inner={:.1}° outer={:.1}° up={:.1}° down={:.1}°",
+            config.horizontal_inner_deg, config.horizontal_outer_deg,
+            config.vertical_up_deg, config.vertical_down_deg));
+        return Some(config);
+    }
+
+    // VRM 1.0: extensions.VRMC_vrm.lookAt.type + rangeMapHorizontalInner/Outer/VerticalUp/Down
+    if let Some(look_at) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRMC_vrm"))
+        .and_then(|v| v.get("lookAt"))
+    {
+        let look_at_type = look_at.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if look_at_type != "bone" {
+            bevy_debug(&format!("VRMC lookAt type '{}' — not bone-based", look_at_type));
+            return None;
+        }
+
+        let get_output = |key: &str| -> f32 {
+            look_at.get(key)
+                .and_then(|v| v.get("outputScale"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(8.0) as f32
+        };
+
+        let config = VrmLookAtConfig {
+            horizontal_inner_deg: get_output("rangeMapHorizontalInner"),
+            horizontal_outer_deg: get_output("rangeMapHorizontalOuter"),
+            vertical_up_deg: get_output("rangeMapVerticalUp"),
+            vertical_down_deg: get_output("rangeMapVerticalDown"),
+        };
+        return Some(config);
+    }
+
+    None
+}
+
 /// Find the first entity with MorphWeights in a scene hierarchy.
 fn find_morph_entity(
     root: Entity,
@@ -2054,6 +3296,7 @@ fn find_morph_entity(
 fn discover_upper_body_bones(
     root: Entity,
     slot: u8,
+    model_path: &str,
     children: &Query<&Children>,
     names: &Query<&Name>,
     transforms: &Query<&mut Transform>,
@@ -2062,8 +3305,16 @@ fn discover_upper_body_bones(
     let head_names = ["J_Bip_C_Head", "mixamorig:Head", "Head"];
     let neck_names = ["J_Bip_C_Neck", "mixamorig:Neck", "Neck"];
     let spine_names = ["J_Bip_C_Spine", "mixamorig:Spine", "Spine"];
-    let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder"];
-    let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder"];
+    let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder", "Left shoulder", "Shoulder_L", "Shoulder.L"];
+    let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder", "Right shoulder", "Shoulder_R", "Shoulder.R"];
+    // Arm bone naming conventions across model sources:
+    // VRoid (J_Bip_*), Mixamo (mixamorig:*), Generic (LeftUpperArm),
+    // Blender Rigify (upper_arm.L), Webaverse/quappa (Upperarm_L), Hand-rigged (Left arm)
+    // Note: mixamorig patterns use contains() so prefixed names like "vis_char_056:mixamorig:LeftArm" match.
+    let left_upper_arm_names = ["J_Bip_L_UpperArm", "mixamorig:LeftArm", "LeftUpperArm", "Left_UpperArm", "Left arm", "Upperarm_L", "upper_arm.L"];
+    let right_upper_arm_names = ["J_Bip_R_UpperArm", "mixamorig:RightArm", "RightUpperArm", "Right_UpperArm", "Right arm", "Upperarm_R", "upper_arm.R"];
+    let left_lower_arm_names = ["J_Bip_L_LowerArm", "mixamorig:LeftForeArm", "LeftLowerArm", "Left_LowerArm", "LeftForeArm", "Left elbow", "Lowerarm_L", "lower_arm.L"];
+    let right_lower_arm_names = ["J_Bip_R_LowerArm", "mixamorig:RightForeArm", "RightLowerArm", "Right_LowerArm", "RightForeArm", "Right elbow", "Lowerarm_R", "lower_arm.R"];
 
     // Helper: find bone and capture its actual local-space rest transform.
     // This is critical — bone transforms are LOCAL (relative to parent bone),
@@ -2090,13 +3341,70 @@ fn discover_upper_body_bones(
     let spine = discover(&spine_names, "Spine");
     let left_shoulder = discover(&left_shoulder_names, "L.Shoulder");
     let right_shoulder = discover(&right_shoulder_names, "R.Shoulder");
+    let left_upper_arm = discover(&left_upper_arm_names, "L.UpperArm");
+    let right_upper_arm = discover(&right_upper_arm_names, "R.UpperArm");
+    let left_lower_arm = discover(&left_lower_arm_names, "L.LowerArm");
+    let right_lower_arm = discover(&right_lower_arm_names, "R.LowerArm");
 
-    let found_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
+    // Discover eye and hand bones.
+    // First try name-based discovery (works for all model types).
+    let left_eye_names = ["J_Adj_L_FaceEye", "mixamorig:LeftEye", "LeftEye", "Eye_L", "eye.L"];
+    let right_eye_names = ["J_Adj_R_FaceEye", "mixamorig:RightEye", "RightEye", "Eye_R", "eye.R"];
+    let left_hand_names = ["J_Bip_L_Hand", "mixamorig:LeftHand", "LeftHand", "Hand_L", "hand.L"];
+    let right_hand_names = ["J_Bip_R_Hand", "mixamorig:RightHand", "RightHand", "Hand_R", "hand.R"];
+
+    let mut left_eye = discover(&left_eye_names, "L.Eye");
+    let mut right_eye = discover(&right_eye_names, "R.Eye");
+    let mut left_hand = discover(&left_hand_names, "L.Hand");
+    let mut right_hand = discover(&right_hand_names, "R.Hand");
+
+    // Parse VRM humanoid bone mapping for any bones that name-based discovery missed.
+    // The VRM extension has an authoritative mapping: VRM bone name → glTF node index → node name.
+    let vrm_bones = parse_vrm_humanoid_bones(model_path);
+    if !vrm_bones.is_empty() {
+        // Helper: discover a bone from VRM mapping by looking up its node name
+        let vrm_discover = |vrm_name: &str, label: &str| -> Option<BoneInfo> {
+            vrm_bones.get(vrm_name).and_then(|node_name| {
+                find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(|entity| {
+                    if let Ok(t) = transforms.get(entity) {
+                        bevy_debug(&format!("{} bone slot {} (VRM '{}'→'{}'): entity {:?}",
+                            label, slot, vrm_name, node_name, entity));
+                        Some(BoneInfo {
+                            entity,
+                            rest_translation: t.translation,
+                            rest_rotation: t.rotation,
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+        };
+
+        // Fill in missing bones from VRM mapping
+        if left_eye.is_none() { left_eye = vrm_discover("leftEye", "L.Eye"); }
+        if right_eye.is_none() { right_eye = vrm_discover("rightEye", "R.Eye"); }
+        if left_hand.is_none() { left_hand = vrm_discover("leftHand", "L.Hand"); }
+        if right_hand.is_none() { right_hand = vrm_discover("rightHand", "R.Hand"); }
+    }
+
+    // Parse VRM lookAt config for bone-based eye gaze rotation ranges
+    let look_at_config = parse_vrm_look_at_config(model_path);
+
+    let upper_body_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
         .filter(|b| b.is_some()).count();
-    clog_info!("🎨 Bone discovery slot {}: {}/5 bones found (head={} neck={} spine={} lsh={} rsh={})",
-        slot, found_count,
+    let arm_count = [&left_upper_arm, &right_upper_arm, &left_lower_arm, &right_lower_arm].iter()
+        .filter(|b| b.is_some()).count();
+    let eye_count = [&left_eye, &right_eye].iter().filter(|b| b.is_some()).count();
+    let hand_count = [&left_hand, &right_hand].iter().filter(|b| b.is_some()).count();
+    clog_info!("🎨 Bone discovery slot {}: {}/5 upper body (head={} neck={} spine={} lsh={} rsh={}), {}/4 arms (lua={} rua={} lla={} rla={}), eyes={}/2, hands={}/2, lookAt={}",
+        slot, upper_body_count,
         head.is_some(), neck.is_some(), spine.is_some(),
-        left_shoulder.is_some(), right_shoulder.is_some());
+        left_shoulder.is_some(), right_shoulder.is_some(),
+        arm_count,
+        left_upper_arm.is_some(), right_upper_arm.is_some(),
+        left_lower_arm.is_some(), right_lower_arm.is_some(),
+        eye_count, hand_count, look_at_config.is_some());
 
     bone_registry.slots.insert(slot, SlotBones {
         head,
@@ -2104,6 +3412,15 @@ fn discover_upper_body_bones(
         spine,
         left_shoulder,
         right_shoulder,
+        left_upper_arm,
+        right_upper_arm,
+        left_lower_arm,
+        right_lower_arm,
+        left_eye,
+        right_eye,
+        left_hand,
+        right_hand,
+        look_at_config,
     });
 }
 
@@ -2143,8 +3460,9 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
-        assert_eq!(AVATAR_WIDTH, 1280);
-        assert_eq!(AVATAR_HEIGHT, 720);
+        // Default: 640×360 for non-spotlight tiles. HD pool provides 1280×720 for spotlight.
+        assert_eq!(AVATAR_WIDTH, 640);
+        assert_eq!(AVATAR_HEIGHT, 360);
         assert!(AVATAR_FPS >= 20.0 && AVATAR_FPS <= 60.0, "FPS must be 20-60 — below 20 looks bad, above 60 wastes GPU");
     }
 }

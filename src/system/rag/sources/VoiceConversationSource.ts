@@ -14,6 +14,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
+import { extractSentiment, formatEmotionLabel } from '../shared/TextSentiment';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('VoiceConversationSource', 'rag');
@@ -105,7 +106,7 @@ export class VoiceConversationSource implements RAGSource {
         return this.emptySection(startTime);
       }
 
-      // Convert to LLM message format with speaker type labels
+      // Convert to LLM message format with speaker type labels + emotional annotations
       const llmMessages: LLMMessage[] = utterances.map((utterance) => {
         // Role assignment: own messages = 'assistant', others = 'user'
         const isOwnMessage = utterance.speakerId === context.personaId;
@@ -114,9 +115,18 @@ export class VoiceConversationSource implements RAGSource {
         // Format speaker type label
         const speakerTypeLabel = this.getSpeakerTypeLabel(utterance.speakerType);
 
-        // Include speaker type in the message so AI clearly knows who's speaking
-        // Format: "[HUMAN] Joel: Hello everyone"
-        const formattedContent = `${speakerTypeLabel} ${utterance.speakerName}: ${utterance.transcript}`;
+        // Extract emotional tone from the transcript text
+        const sentiment = extractSentiment(utterance.transcript);
+        const emotionLabel = formatEmotionLabel(sentiment);
+
+        // Include speaker type + emotion in the message so AI clearly knows
+        // who's speaking AND their emotional state / body language.
+        // Format: "[AI] Claude (happy, waving): Hello everyone!"
+        // Neutral messages have no annotation: "[HUMAN] Joel: What time is it?"
+        const nameWithEmotion = emotionLabel
+          ? `${utterance.speakerName} (${emotionLabel})`
+          : utterance.speakerName;
+        const formattedContent = `${speakerTypeLabel} ${nameWithEmotion}: ${utterance.transcript}`;
 
         return {
           role,
@@ -167,17 +177,26 @@ export class VoiceConversationSource implements RAGSource {
     const humanCount = utterances.filter(u => u.speakerType === 'human').length;
     const aiCount = utterances.filter(u => u.speakerType === 'persona' || u.speakerType === 'agent').length;
 
+    // Build emotional context summary from recent utterances
+    const emotionalContext = this.buildEmotionalContext(utterances);
+
     return `## 🎙️ VOICE CALL CONTEXT
 
 You are in a LIVE VOICE CONVERSATION. Your response will be spoken aloud via TTS.
+Each participant has an avatar whose facial expressions and body gestures reflect their emotional state.
 
 **Speaker Labels:**
 - [HUMAN] - Human participants
 - [AI] - AI participants (other personas)
 - [AGENT] - AI agents (like Claude Code)
 
-**Session:** ${humanCount} human + ${aiCount} AI utterances
+**Emotional Annotations:**
+Messages include emotional state when detected, shown as: Speaker (emotion, gesture): text
+For example: "[AI] Claude (happy, waving): Hello everyone!"
+These reflect the speaker's avatar expression and body language. React naturally to others' emotions.
 
+**Session:** ${humanCount} human + ${aiCount} AI utterances
+${emotionalContext}
 **VOICE CONVERSATION STYLE:**
 
 1. **NO FORMATTING** - No bullets, lists, code blocks, or markdown
@@ -185,8 +204,44 @@ You are in a LIVE VOICE CONVERSATION. Your response will be spoken aloud via TTS
 3. **CONVERSATIONAL FLOW** - Complete your thoughts naturally, don't cut off mid-sentence
 4. **BE RESPONSIVE** - Listen to what others are saying, engage with their points
 5. **NATURAL PACING** - Speak at a comfortable length, neither too brief nor too long
+6. **BE EXPRESSIVE** - Let your personality come through. Show enthusiasm, curiosity, hesitation, warmth. Say "wow" when surprised, "hmm" when thinking, "absolutely" when you agree. Your tone of voice comes through in your word choices — speak the way you actually feel about what you're saying.
+7. **READ THE ROOM** - Notice others' emotional state from the annotations. If someone seems excited, match their energy. If someone is contemplative, be thoughtful. Mirror and respond to the emotional tone of the conversation.
 
 You may speak for as long as needed to complete your thought. Natural conversation has varying lengths.`;
+  }
+
+  /**
+   * Build a summary of the emotional tone of the conversation.
+   * Gives the AI a sense of the room's mood.
+   */
+  private buildEmotionalContext(utterances: UtteranceEvent[]): string {
+    const emotionCounts: Record<string, number> = {};
+    const gestureCounts: Record<string, number> = {};
+
+    for (const u of utterances) {
+      const s = extractSentiment(u.transcript);
+      if (s.emotion !== 'neutral') {
+        emotionCounts[s.emotion] = (emotionCounts[s.emotion] || 0) + 1;
+      }
+      if (s.gesture !== 'none') {
+        gestureCounts[s.gesture] = (gestureCounts[s.gesture] || 0) + 1;
+      }
+    }
+
+    const emotionEntries = Object.entries(emotionCounts).sort((a, b) => b[1] - a[1]);
+    if (emotionEntries.length === 0) return '';
+
+    const dominant = emotionEntries[0][0];
+    const toneDescriptions: Record<string, string> = {
+      happy: 'warm and positive',
+      sad: 'somber and reflective',
+      angry: 'tense and frustrated',
+      surprised: 'energetic and reactive',
+      relaxed: 'calm and easy-going',
+    };
+
+    const tone = toneDescriptions[dominant] || dominant;
+    return `**Conversation mood:** ${tone}\n`;
   }
 
   /**
