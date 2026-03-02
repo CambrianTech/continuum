@@ -24,11 +24,11 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
-import type { AdapterPackageManifest } from '../shared/AdapterPackageTypes';
+import type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
 import { EmbeddingGenerate } from '../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes';
 
 // Re-export for convenience
-export type { AdapterPackageManifest } from '../shared/AdapterPackageTypes';
+export type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
 
 const MANIFEST_FILENAME = 'manifest.json';
 
@@ -103,6 +103,7 @@ export class AdapterPackage {
     entity.rank = manifest.rank;
     entity.creatorId = manifest.personaId;
     entity.trainingMetadata = manifest.trainingMetadata;
+    entity.quantization = manifest.quantization;
     entity.contentHash = manifest.contentHash;
     entity.tags = [manifest.traitType, manifest.baseModel, manifest.personaName.toLowerCase()];
     entity.generation = 0;
@@ -159,10 +160,11 @@ export class AdapterPackage {
     sizeMB: number;
     contentHash?: string;
     trainingMetadata: TrainingMetadata;
+    quantization?: QuantizationInfo;
   }): AdapterPackageManifest {
     const safeName = params.personaName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-    return {
+    const manifest: AdapterPackageManifest = {
       id: generateUUID(),
       name: `${safeName}-${params.traitType}`,
       traitType: params.traitType,
@@ -177,6 +179,12 @@ export class AdapterPackage {
       createdAt: new Date().toISOString(),
       version: 1,
     };
+
+    if (params.quantization) {
+      manifest.quantization = params.quantization;
+    }
+
+    return manifest;
   }
 
   /**

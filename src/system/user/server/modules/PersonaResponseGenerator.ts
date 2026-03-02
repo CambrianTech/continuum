@@ -57,6 +57,7 @@ import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
+import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 // SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -1267,6 +1268,19 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           output: outputText,
           qualityRating,
         }).catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
+      }
+
+      // 🧬 FITNESS TRACKING: Record inference result for genome natural selection
+      if (this.genome) {
+        const activeAdapter = this.genome.getCurrentAdapter();
+        const layerId = activeAdapter?.getLayerId();
+        if (layerId) {
+          const inferenceLatency = Date.now() - generateStartTime;
+          FitnessTracker.instance.recordInference(layerId, {
+            success: true,
+            latency: inferenceLatency,
+          });
+        }
       }
 
       // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message

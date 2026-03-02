@@ -78,9 +78,21 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
     QLoRA strategy: quantize the base model to 4-bit NF4 so you can train the
     LARGEST model that fits on hardware. LoRA weights stay full precision.
     A 3B model in 4-bit fits in ~2GB VRAM, 8B in ~5GB.
+
+    Returns (model, tokenizer, quantization_info) where quantization_info
+    records what actually happened (may differ from requested if fallback occurred).
     """
     print(f"\n🤖 Loading base model: {base_model}")
     print(f"   Quantization: {'QLoRA ' + str(quantize_bits) + '-bit' if quantize else 'disabled'}")
+
+    # Track what quantization actually happened
+    quantization_info = {
+        "enabled": False,
+        "bits": quantize_bits,
+        "type": "nf4" if quantize_bits == 4 else "int8",
+        "doubleQuant": quantize_bits == 4,
+        "computeDtype": "bfloat16" if device == "cuda" else "float16",
+    }
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
@@ -89,15 +101,17 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # QLoRA: Try 4-bit quantization on any device that supports BitsAndBytes
+    # QLoRA: Try requested quantization, then 8-bit fallback, then full precision
     use_qlora = False
+    actual_bits = quantize_bits
     if quantize:
         try:
             if quantize_bits == 4:
+                compute_dtype = torch.bfloat16 if device == "cuda" else torch.float16
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16 if device == "cuda" else torch.float16,
+                    bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_use_double_quant=True,
                 )
             else:
@@ -114,9 +128,27 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
             )
             model = prepare_model_for_kbit_training(model)
             use_qlora = True
+            actual_bits = quantize_bits
             print(f"✅ QLoRA {quantize_bits}-bit quantization active")
         except Exception as e:
-            print(f"⚠️  QLoRA failed ({e}), falling back to full precision")
+            print(f"⚠️  QLoRA {quantize_bits}-bit failed ({e})")
+            # Fallback: try 8-bit if we were trying 4-bit
+            if quantize_bits == 4:
+                try:
+                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                    model = AutoModelForCausalLM.from_pretrained(
+                        base_model,
+                        quantization_config=bnb_config,
+                        device_map="auto",
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True,
+                    )
+                    model = prepare_model_for_kbit_training(model)
+                    use_qlora = True
+                    actual_bits = 8
+                    print(f"✅ QLoRA 8-bit fallback active")
+                except Exception as e2:
+                    print(f"⚠️  QLoRA 8-bit also failed ({e2}), falling back to full precision")
 
     if not use_qlora:
         # Fallback: full precision (float16 on GPU, float32 on CPU)
@@ -129,6 +161,12 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
             low_cpu_mem_usage=True,
         )
 
+    # Record actual quantization state
+    quantization_info["enabled"] = use_qlora
+    quantization_info["bits"] = actual_bits
+    quantization_info["type"] = "nf4" if actual_bits == 4 else "int8"
+    quantization_info["doubleQuant"] = actual_bits == 4 and use_qlora
+
     # Enable gradient checkpointing — trades compute for memory.
     # Without this, activation tensors for all layers are held in RAM during backprop.
     # For a 3B model this can be 4-8GB of activations alone.
@@ -137,7 +175,7 @@ def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True
         print(f"✅ Gradient checkpointing enabled (saves ~50% activation memory)")
 
     print(f"✅ Model loaded successfully")
-    return model, tokenizer
+    return model, tokenizer, quantization_info
 
 
 def configure_lora(model, rank: int, alpha: int):
@@ -328,7 +366,7 @@ def main():
     device = detect_device()
 
     # Step 3: Load base model and tokenizer (QLoRA quantization enabled by default)
-    model, tokenizer = load_model_and_tokenizer(
+    model, tokenizer, quantization_info = load_model_and_tokenizer(
         config['baseModel'], device,
         quantize=config.get('quantize', True),
         quantize_bits=config.get('quantizeBits', 4)
@@ -346,9 +384,16 @@ def main():
     # Step 7: Save adapter weights
     save_adapter(model, tokenizer, args.output)
 
+    # Step 8: Write quantization metadata alongside adapter
+    quant_info_path = os.path.join(args.output, "quantization_info.json")
+    with open(quant_info_path, 'w') as f:
+        json.dump(quantization_info, f, indent=2)
+    print(f"📊 Quantization info written to: {quant_info_path}")
+
     print("\n" + "=" * 60)
     print("✅ LoRA Training: SUCCESS")
     print(f"   Adapter saved to: {args.output}")
+    print(f"   QLoRA: {'enabled (' + str(quantization_info['bits']) + '-bit ' + quantization_info['type'] + ')' if quantization_info['enabled'] else 'disabled (full precision)'}")
     print(f"   Ready for inference with Transformers or Ollama")
 
 

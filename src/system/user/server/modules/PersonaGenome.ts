@@ -234,6 +234,7 @@ export class PersonaGenome {
     sizeMB: number;
     priority?: number;
     trainedModelName?: string;
+    layerId?: UUID;
   }): void {
     const adapter = new LoRAAdapter({
       id: generateUUID() as UUID,
@@ -243,6 +244,7 @@ export class PersonaGenome {
       sizeMB: config.sizeMB,
       priority: config.priority,
       trainedModelName: config.trainedModelName,
+      layerId: config.layerId,
       aiProvider: this.aiProvider ?? undefined, // Pass provider for real loading
       logger: this.log
     });

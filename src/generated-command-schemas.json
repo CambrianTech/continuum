@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-02T15:42:15.557Z",
+  "generated": "2026-03-02T18:20:02.946Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4169,6 +4169,42 @@
           "type": "number",
           "required": false,
           "description": "maxMessages parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/convert",
+      "description": "Convert LoRA adapters between formats. Supports: merge LoRA into full-precision model, merge + quantize to GGUF, quantize base model to GGUF, and validate converted models. Uses convert-adapter.py via Rust sentinel for process isolation.",
+      "params": {
+        "operation": {
+          "type": "string",
+          "required": true,
+          "description": "operation parameter"
+        },
+        "adapterPath": {
+          "type": "string",
+          "required": false,
+          "description": "adapterPath parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "bits": {
+          "type": "number",
+          "required": false,
+          "description": "bits parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "validate": {
+          "type": "boolean",
+          "required": false,
+          "description": "validate parameter"
         }
       }
     },

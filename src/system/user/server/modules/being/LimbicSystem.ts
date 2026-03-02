@@ -293,13 +293,14 @@ export class LimbicSystem {
           continue;
         }
 
-        // Register adapter in PersonaGenome
+        // Register adapter in PersonaGenome (layerId enables fitness tracking back to entity)
         this.memory.genome.registerAdapter({
           name: layer.name,
           domain: layer.traitType || layerRef.traitType,
           path: layer.modelPath,
           sizeMB: layer.sizeMB || 10,
           priority: layerRef.weight,
+          layerId: layer.id,
         });
 
         // Activate the adapter immediately so it's available for inference
@@ -315,6 +316,41 @@ export class LimbicSystem {
     }
 
     this.logger.info(`Loaded and activated ${loadedCount}/${genome.layers.length} genome layers from database`);
+  }
+
+  /**
+   * Adopt an existing adapter from another persona (cross-persona sharing).
+   *
+   * Instead of training from scratch, reuse a GenomeLayerEntity that was already
+   * trained by someone else and discovered via GenomeRegistry.findByCapability().
+   *
+   * Validates path existence and model compatibility before registering.
+   * Returns true if adoption succeeded.
+   */
+  async adoptAdapter(layer: GenomeLayerEntity): Promise<boolean> {
+    if (!AdapterStore.isValidAdapterPath(layer.modelPath)) {
+      this.logger.warn(`Cannot adopt ${layer.name} — adapter path missing: ${layer.modelPath}`);
+      return false;
+    }
+
+    const adapterInfo = AdapterStore.discoverAll().find(a => a.dirPath === layer.modelPath);
+    if (adapterInfo && !AdapterStore.isCompatibleWithModel(adapterInfo, this.inferenceModel)) {
+      this.logger.warn(`Cannot adopt ${layer.name} — incompatible with ${this.inferenceModel}`);
+      return false;
+    }
+
+    this.memory.genome.registerAdapter({
+      name: layer.name,
+      domain: layer.traitType,
+      path: layer.modelPath,
+      sizeMB: layer.sizeMB || 10,
+      priority: 0.7,
+      layerId: layer.id,
+    });
+
+    await this.memory.genome.activateSkill(layer.name);
+    this.logger.info(`Adopted adapter: ${layer.name} (${layer.traitType}) from ${layer.creatorId?.slice(0, 8) ?? 'unknown'}`);
+    return true;
   }
 
   /**

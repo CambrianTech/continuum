@@ -156,6 +156,7 @@ export const COMMANDS = {
   GENOME_ACADEMY_SESSION: 'genome/academy-session',
   GENOME_BATCH_MICRO_TUNE: 'genome/batch-micro-tune',
   GENOME_COMPOSE: 'genome/compose',
+  GENOME_CONVERT: 'genome/convert',
   GENOME_DATASET_PREPARE: 'genome/dataset-prepare',
   GENOME_DATASET_SYNTHESIZE: 'genome/dataset-synthesize',
   GENOME_DEMO_RUN: 'genome/demo-run',

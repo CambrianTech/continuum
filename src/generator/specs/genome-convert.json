@@ -1,0 +1,88 @@
+{
+  "name": "genome/convert",
+  "description": "Convert LoRA adapters between formats. Supports: merge LoRA into full-precision model, merge + quantize to GGUF, quantize base model to GGUF, and validate converted models. Uses convert-adapter.py via Rust sentinel for process isolation.",
+  "params": [
+    {
+      "name": "operation",
+      "type": "string",
+      "description": "Conversion operation: 'merge-full' (LoRA → merged FP16), 'merge-and-quantize' (LoRA → merged GGUF), 'quantize-base' (HF → GGUF), 'validate' (sanity check)"
+    },
+    {
+      "name": "adapterPath",
+      "type": "string",
+      "optional": true,
+      "description": "Path to LoRA adapter directory (required for merge-full and merge-and-quantize)"
+    },
+    {
+      "name": "baseModel",
+      "type": "string",
+      "optional": true,
+      "description": "Base model name or HuggingFace ID (required for merge and quantize operations)"
+    },
+    {
+      "name": "bits",
+      "type": "number",
+      "optional": true,
+      "description": "Quantization bits: 4 or 8 (default: 4, only for quantize operations)"
+    },
+    {
+      "name": "outputPath",
+      "type": "string",
+      "optional": true,
+      "description": "Output directory. Default: sibling directory with format suffix"
+    },
+    {
+      "name": "validate",
+      "type": "boolean",
+      "optional": true,
+      "description": "Run validation inference after conversion (default: true)"
+    }
+  ],
+  "results": [
+    {
+      "name": "outputPath",
+      "type": "string",
+      "description": "Path to converted model/adapter"
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "description": "Output format: 'safetensors-fp16', 'gguf-q4_0', 'gguf-q8_0'"
+    },
+    {
+      "name": "sizeMB",
+      "type": "number",
+      "description": "Output size in megabytes"
+    },
+    {
+      "name": "durationSeconds",
+      "type": "number",
+      "description": "Conversion duration in seconds"
+    },
+    {
+      "name": "compressionRatio",
+      "type": "number",
+      "optional": true,
+      "description": "Original size / converted size (for quantize operations)"
+    },
+    {
+      "name": "validation",
+      "type": "object",
+      "optional": true,
+      "description": "Validation result if --validate was run"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Merge LoRA into full-precision model",
+      "command": "./jtag genome/convert --operation=merge-full --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct",
+      "expectedResult": "{ outputPath: '.continuum/genome/converted/...', format: 'safetensors-fp16', sizeMB: 6144 }"
+    },
+    {
+      "description": "Merge LoRA and quantize to 4-bit GGUF",
+      "command": "./jtag genome/convert --operation=merge-and-quantize --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct --bits=4",
+      "expectedResult": "{ outputPath: '.continuum/genome/converted/...', format: 'gguf-q4_0', sizeMB: 1800, compressionRatio: 3.4 }"
+    }
+  ],
+  "accessLevel": "admin"
+}

@@ -16,7 +16,7 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use tokenizers::Tokenizer;
 
-use super::{ModelBackend, ModelFormat};
+use super::{GenomeAdapter, ModelBackend, ModelFormat};
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
@@ -204,5 +204,65 @@ impl ModelBackend for LlamaGgufBackend {
         self.tokenizer
             .decode(tokens, true)
             .map_err(|e| format!("Decode failed: {e}"))
+    }
+
+    // ── LoRA Support (Mixed-Precision Merge) ──
+
+    fn supports_lora(&self) -> bool {
+        true
+    }
+
+    /// Apply LoRA adapters to the quantized model via mixed-precision merge.
+    ///
+    /// For each layer with a LoRA adapter:
+    ///   1. Dequantize the GGUF weight to FP32
+    ///   2. Apply LoRA: W' = W + scale * (B @ A)
+    ///   3. Store as non-quantized QMatMul::Tensor
+    ///
+    /// Layers WITHOUT adapters stay quantized — only touched layers pay the
+    /// memory cost of dequantization. A typical 7-projection LoRA on 3B model
+    /// with 28 layers = 196 merged layers out of ~230 total weight tensors.
+    fn rebuild_with_lora(&mut self, adapters: &[GenomeAdapter]) -> Result<(), String> {
+        let log = runtime::logger("candle");
+        let start = std::time::Instant::now();
+
+        // Flatten all adapter weights into a single map: layer_name → (lora_a, lora_b, effective_scale)
+        let mut all_lora: std::collections::HashMap<String, (candle_core::Tensor, candle_core::Tensor, f64)> =
+            std::collections::HashMap::new();
+
+        for adapter in adapters {
+            log.info(&format!(
+                "  Applying GGUF LoRA adapter '{}' (scale={}, {} layers)",
+                adapter.adapter_id, adapter.scale, adapter.weights.len()
+            ));
+            for (lora_name, lora_weights) in &adapter.weights {
+                let effective_scale = lora_weights.scale * adapter.scale;
+                // Use raw LoRA name (not mapped to safetensors model name)
+                // because parse_lora_layer_name handles PEFT naming directly
+                all_lora.insert(
+                    lora_name.clone(),
+                    (lora_weights.lora_a.clone(), lora_weights.lora_b.clone(), effective_scale),
+                );
+            }
+        }
+
+        // Apply to quantized model weights
+        let (merged, failed) = self.model.apply_lora_adapters(&all_lora)
+            .map_err(|e| format!("GGUF LoRA merge failed: {e}"))?;
+
+        self.clear_cache()?;
+
+        let duration = start.elapsed();
+        log.info(&format!(
+            "GGUF LoRA applied: {merged} layers merged, {failed} failed, {:.2}s",
+            duration.as_secs_f32()
+        ));
+
+        Ok(())
+    }
+
+    /// Reload base model from disk (strips LoRA merges).
+    fn reload_base(&mut self) -> Result<(), String> {
+        self.reload_weights()
     }
 }

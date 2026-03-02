@@ -21,6 +21,7 @@ import {
   TEXT_LENGTH
 } from '../../data/decorators/FieldDecorators';
 import { BaseEntity } from '../../data/entities/BaseEntity';
+import type { QuantizationInfo } from '../shared/AdapterPackageTypes';
 
 /**
  * Trait type - free-entry string for evolutionary flexibility
@@ -119,6 +120,10 @@ export class GenomeLayerEntity extends BaseEntity {
 
   @JsonField()
   trainingMetadata?: TrainingMetadata;
+
+  // Quantization — was the base model quantized during training?
+  @JsonField()
+  quantization?: QuantizationInfo;
 
   // Fitness & Performance
   @JsonField()
