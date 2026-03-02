@@ -243,12 +243,14 @@ impl LiveKitAgent {
             persona_name, call_id
         );
 
-        // Create audio source for TTS output (16kHz mono, 1s buffer)
+        // Create audio source for TTS output (16kHz mono, 30s buffer).
+        // Must be large enough for the longest TTS response — a 1s queue
+        // overflows on anything longer than ~1 second, dropping audio mid-sentence.
         let audio_source = NativeAudioSource::new(
             AudioSourceOptions::default(),
             AUDIO_SAMPLE_RATE,
             1, // mono
-            1000, // 1 second queue
+            30_000, // 30 second queue — handles long AI responses
         );
 
         // Publish TTS audio track immediately — capture SID for transcription sync
@@ -1476,6 +1478,13 @@ impl LiveKitAgentManager {
         // Extract sentiment from text for emotional expression BEFORE sending to Bevy.
         // Sub-microsecond: emoji/keyword pattern matching, no ML model.
         let sentiment = crate::live::session::sentiment::extract_sentiment(text);
+        if sentiment.emotion != crate::live::video::bevy_renderer::Emotion::Neutral
+            || sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None
+        {
+            let text_preview: String = text.chars().take(40).collect();
+            clog_info!("🎭 Sentiment: {:?} ({:.1}) + {:?} — \"{}...\"",
+                sentiment.emotion, sentiment.intensity, sentiment.gesture, text_preview);
+        }
 
         // Send unified speech animation clip BEFORE audio starts playing.
         // ONE command bundles: Speaking flag + mouth weights + auto-stop duration.
@@ -1492,6 +1501,16 @@ impl LiveKitAgentManager {
                     sentiment.emotion,
                     sentiment.intensity,
                     300, // 300ms smooth transition
+                );
+            }
+
+            // Trigger body gesture alongside emotion — arms and face animate
+            // different body parts so they can overlap without conflict.
+            if sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None {
+                bevy_system.set_gesture_by_identity(
+                    user_id,
+                    sentiment.gesture,
+                    2000, // 2s default gesture duration
                 );
             }
 

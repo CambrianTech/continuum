@@ -18,7 +18,7 @@ import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { getVoiceOrchestrator } from '@system/voice/server';
+import { getVoiceOrchestrator, getTSVoiceOrchestrator } from '@system/voice/server';
 import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } from '@shared/AudioConstants';
 import { getSecret } from '@system/secrets/SecretManager';
 
@@ -92,6 +92,11 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     // 7. Register with VoiceOrchestrator — spawns STT listener in LiveKit room
     const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
     await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
+
+    // Also register with TS VoiceOrchestrator for session context tracking.
+    // In Rust voice mode, the Rust bridge handles routing but TS tracks utterance
+    // history for RAG context (VoiceConversationSource) and live/export.
+    await getTSVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
 
     // 8. Generate LiveKit access token for WebRTC connection
     const livekitToken = await this.generateLiveKitToken(

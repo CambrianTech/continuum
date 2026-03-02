@@ -29,8 +29,6 @@ import { ContentService } from '../../system/state/ContentService';
 
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
-import { CollaborationLiveTranscription } from '../../commands/collaboration/live/transcription/shared/CollaborationLiveTranscriptionTypes';
-
 // Import sub-components (registers custom elements)
 import './LiveParticipantTile';
 import './LiveControls';
@@ -96,7 +94,10 @@ export class LiveWidget extends ReactiveWidget {
   private _captionsRef = createRef<LiveCaptions>();
   private _controlsRef = createRef<LiveControls>();
 
-  // Speaking state is driven by LiveKit ActiveSpeakersChanged (no timers needed)
+  // Speaking state is driven by LiveKit ActiveSpeakersChanged
+  // Spotlight hold: keep current speaker spotlighted through brief pauses
+  private _spotlightHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SPOTLIGHT_HOLD_MS = 1500; // Hold spotlight 1.5s after speaker goes silent
 
   // Saved state for visibility changes
   private _visibilitySavedMic: boolean | null = null;
@@ -411,14 +412,28 @@ export class LiveWidget extends ReactiveWidget {
               isSpeaking: speakerSet.has(p.userId)
             }));
 
-            // Auto-spotlight the active speaker (prefer non-self)
+            // Auto-spotlight with hold timer: keep current speaker through brief pauses.
+            // Without this, natural breath pauses cause rapid grid↔spotlight flipping.
             if (!this._spotlightPinned) {
               const aiSpeaker = speakerIds.find(id => id !== this.currentUser?.id);
               if (aiSpeaker) {
+                // New speaker detected — switch immediately, cancel any pending fade-out
+                if (this._spotlightHoldTimer) {
+                  clearTimeout(this._spotlightHoldTimer);
+                  this._spotlightHoldTimer = null;
+                }
                 this.spotlightUserId = aiSpeaker as UUID;
-              } else if (speakerIds.length === 0) {
-                // No one speaking — return to grid
-                this.spotlightUserId = null;
+              } else if (speakerIds.length === 0 && this.spotlightUserId) {
+                // No one speaking — hold spotlight briefly before returning to grid.
+                // This prevents flicker during natural speech pauses.
+                if (!this._spotlightHoldTimer) {
+                  this._spotlightHoldTimer = setTimeout(() => {
+                    this._spotlightHoldTimer = null;
+                    if (!this._spotlightPinned) {
+                      this.spotlightUserId = null;
+                    }
+                  }, LiveWidget.SPOTLIGHT_HOLD_MS);
+                }
               }
             }
 
@@ -431,23 +446,12 @@ export class LiveWidget extends ReactiveWidget {
             const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
               || transcription.displayName;
 
-            // Show caption immediately (speaking state handled by ActiveSpeakersChanged)
+            // Show caption immediately (speaking state handled by ActiveSpeakersChanged).
+            // AI routing is handled server-side: Rust STT listener calls
+            // collaboration/live/transcription directly via IPC. DO NOT relay from
+            // browser — that caused every transcription to reach AIs twice.
             const captions = this._captionsRef.value ?? null;
             captions?.setCaption(resolvedName, transcription.text);
-
-            try {
-              await CollaborationLiveTranscription.execute({
-                callSessionId: this.sessionId,
-                speakerId: transcription.userId,
-                speakerName: transcription.displayName,
-                transcript: transcription.text,
-                confidence: transcription.confidence,
-                language: transcription.language,
-                timestamp: Date.now()
-              });
-            } catch (error) {
-              console.error(`Failed to relay transcription:`, error);
-            }
           },
         });
 
@@ -775,6 +779,10 @@ export class LiveWidget extends ReactiveWidget {
     if (this._tileResDebounce) {
       clearTimeout(this._tileResDebounce);
       this._tileResDebounce = null;
+    }
+    if (this._spotlightHoldTimer) {
+      clearTimeout(this._spotlightHoldTimer);
+      this._spotlightHoldTimer = null;
     }
 
     this.unsubscribers.forEach(unsub => unsub());

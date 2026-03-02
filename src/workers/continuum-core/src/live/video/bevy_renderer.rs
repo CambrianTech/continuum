@@ -110,6 +110,27 @@ pub enum Emotion {
     Relaxed,
 }
 
+/// Body gesture for avatar upper-body animation.
+/// Driven by speech content analysis — gestures fire alongside emotions
+/// since they animate different body parts (arms vs face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Gesture {
+    #[default]
+    None,
+    /// Friendly wave — right arm up, forearm oscillates
+    Wave,
+    /// Thinking pose — right hand near chin, head tilts
+    Think,
+    /// Emphatic head nod — stronger than speech nod
+    Nod,
+    /// Shoulders up, arms slightly out — uncertainty
+    Shrug,
+    /// Right arm extended forward — directing attention
+    Point,
+    /// Both arms slightly out, palms up — explaining
+    OpenHands,
+}
+
 /// Commands sent to the Bevy renderer thread.
 #[derive(Debug)]
 pub enum AvatarCommand {
@@ -144,6 +165,9 @@ pub enum AvatarCommand {
     /// Set emotional expression on an avatar. Weight controls intensity (0.0-1.0).
     /// Transition smooths over transition_ms. Auto-decays to neutral after ~5s.
     SetEmotion { slot: u8, emotion: Emotion, weight: f32, transition_ms: u32 },
+    /// Trigger a body gesture. Duration controls how long the gesture plays.
+    /// Gesture animation uses arm bones — can overlap with speech (head nod + arm gesture).
+    SetGesture { slot: u8, gesture: Gesture, duration_ms: u32 },
     /// Resize a slot's render target to new dimensions.
     /// Recreates the render target image, camera target, and readback entity.
     Resize { slot: u8, width: u32, height: u32 },
@@ -380,6 +404,26 @@ impl BevyAvatarSystem {
         }
     }
 
+    /// Trigger a body gesture by persona identity (user_id).
+    /// Returns false if identity has no registered slot.
+    pub fn set_gesture_by_identity(
+        &self,
+        identity: &str,
+        gesture: Gesture,
+        duration_ms: u32,
+    ) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetGesture {
+                slot,
+                gesture,
+                duration_ms,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     /// Resize by persona identity (user_id).
     /// Returns false if identity has no registered slot.
     pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
@@ -507,6 +551,11 @@ struct MorphTargetLayout {
     angry_index: Option<usize>,
     surprised_index: Option<usize>,
     relaxed_index: Option<usize>,
+    // Eye gaze blend shapes (VRM lookAt presets)
+    look_up: Option<usize>,
+    look_down: Option<usize>,
+    look_left: Option<usize>,
+    look_right: Option<usize>,
 }
 
 /// Per-slot blink animation state.
@@ -534,6 +583,11 @@ struct SlotBones {
     spine: Option<BoneInfo>,
     left_shoulder: Option<BoneInfo>,
     right_shoulder: Option<BoneInfo>,
+    // Arm bones for gesture animation
+    left_upper_arm: Option<BoneInfo>,
+    right_upper_arm: Option<BoneInfo>,
+    left_lower_arm: Option<BoneInfo>,
+    right_lower_arm: Option<BoneInfo>,
 }
 
 struct BoneInfo {
@@ -645,6 +699,37 @@ const EMOTION_DECAY_SECS: f32 = 5.0;
 /// to avoid fighting mouth animation (mouth shapes + full expression looks wrong).
 const SPEECH_ATTENUATION: f32 = 0.3;
 
+/// Per-slot body gesture state with attack/sustain/release phases.
+#[derive(Resource, Default)]
+struct ActiveGestures {
+    slots: HashMap<u8, SlotGestureAnimState>,
+}
+
+/// Phase of a gesture animation's lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GesturePhase {
+    /// Easing in from rest to gesture pose
+    Attack,
+    /// Holding gesture pose with micro-oscillation
+    Sustain,
+    /// Easing out from gesture pose back to rest
+    Release,
+}
+
+struct SlotGestureAnimState {
+    gesture: Gesture,
+    phase: GesturePhase,
+    /// Total duration of the gesture in seconds
+    duration_secs: f32,
+    /// Elapsed time since gesture started
+    elapsed: f32,
+    /// Current blend weight (0.0=rest, 1.0=full gesture)
+    weight: f32,
+}
+
+/// Duration of attack/release phases for gesture easing (seconds).
+const GESTURE_EASE_SECS: f32 = 0.3;
+
 /// Render cadence — staggered camera activation for GPU load distribution.
 ///
 /// Game engine LOD principle: not every object renders every frame.
@@ -730,6 +815,7 @@ fn run_bevy_app(
         .insert_resource(ActiveSpeechClips::default())
         .insert_resource(LegacyMouthWeights::default())
         .insert_resource(EmotionState::default())
+        .insert_resource(ActiveGestures::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
         .insert_resource(RenderSchedule::default())
@@ -771,6 +857,8 @@ fn run_bevy_app(
             animate_blinking,
             animate_breathing,
             animate_idle_gestures,
+            animate_eye_gaze,
+            animate_body_gestures,
         ))
         .run();
 }
@@ -1231,6 +1319,7 @@ fn process_commands(
     mut speech_clips: ResMut<ActiveSpeechClips>,
     mut legacy_mouth: ResMut<LegacyMouthWeights>,
     mut emotion_state: ResMut<EmotionState>,
+    mut active_gestures: ResMut<ActiveGestures>,
     mut health: ResMut<SlotHealthStatus>,
     mut slot_dims: ResMut<SlotDimensions>,
     mut hd_pool: ResMut<HdRenderTargetPool>,
@@ -1362,6 +1451,7 @@ fn process_commands(
                     }
                     // Clean up animation state for this slot
                     emotion_state.slots.remove(&slot);
+                    active_gestures.slots.remove(&slot);
                     clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
@@ -1434,6 +1524,19 @@ fn process_commands(
                 state.target_weight = weight.clamp(0.0, 1.0);
                 state.transition_rate = rate;
                 state.decay_timer = EMOTION_DECAY_SECS;
+            }
+            AvatarCommand::SetGesture { slot, gesture, duration_ms } => {
+                if gesture == Gesture::None {
+                    active_gestures.slots.remove(&slot);
+                } else {
+                    active_gestures.slots.insert(slot, SlotGestureAnimState {
+                        gesture,
+                        phase: GesturePhase::Attack,
+                        duration_secs: duration_ms as f32 / 1000.0,
+                        elapsed: 0.0,
+                        weight: 0.0,
+                    });
+                }
             }
             AvatarCommand::Resize { slot, width, height } => {
                 if let Some(state) = registry.slots.get_mut(&slot) {
@@ -1633,6 +1736,10 @@ fn discover_morph_targets(
         let mut angry_index = None;
         let mut surprised_index = None;
         let mut relaxed_index = None;
+        let mut look_up = None;
+        let mut look_down = None;
+        let mut look_left = None;
+        let mut look_right = None;
 
         if !mesh_names.is_empty() {
             // Standard glTF + VRoid naming conventions — match by name.
@@ -1709,6 +1816,33 @@ fn discover_morph_targets(
                 ) {
                     relaxed_index = Some(i);
                 }
+                // Eye gaze blend shapes (VRM lookAt presets)
+                // VRM 1.0: "lookUp", "lookDown", "lookLeft", "lookRight"
+                // VRoid: "Fcl_EYE_LookUp", "Fcl_EYE_LookDown", etc.
+                if look_up.is_none() && (
+                    lower == "lookup" || lower == "look_up" ||
+                    lower.ends_with("lookup") || lower == "fcl_eye_lookup"
+                ) {
+                    look_up = Some(i);
+                }
+                if look_down.is_none() && (
+                    lower == "lookdown" || lower == "look_down" ||
+                    lower.ends_with("lookdown") || lower == "fcl_eye_lookdown"
+                ) {
+                    look_down = Some(i);
+                }
+                if look_left.is_none() && (
+                    lower == "lookleft" || lower == "look_left" ||
+                    lower.ends_with("lookleft") || lower == "fcl_eye_lookleft"
+                ) {
+                    look_left = Some(i);
+                }
+                if look_right.is_none() && (
+                    lower == "lookright" || lower == "look_right" ||
+                    lower.ends_with("lookright") || lower == "fcl_eye_lookright"
+                ) {
+                    look_right = Some(i);
+                }
             }
         } else if let Some(model_path) = &state.model_path {
             // VRM path — parse blend shape groups from the VRM extension in the .glb file
@@ -1769,6 +1903,27 @@ fn discover_morph_targets(
                             relaxed_index = Some(bind.index);
                         }
                     }
+                    // Eye gaze VRM presets
+                    if look_up.is_none() && (preset == "lookup" || preset == "lookUp") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_up = Some(bind.index);
+                        }
+                    }
+                    if look_down.is_none() && (preset == "lookdown" || preset == "lookDown") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_down = Some(bind.index);
+                        }
+                    }
+                    if look_left.is_none() && (preset == "lookleft" || preset == "lookLeft") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_left = Some(bind.index);
+                        }
+                    }
+                    if look_right.is_none() && (preset == "lookright" || preset == "lookRight") {
+                        if let Some(bind) = shape.binds.first() {
+                            look_right = Some(bind.index);
+                        }
+                    }
                 }
                 clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
             }
@@ -1780,10 +1935,12 @@ fn discover_morph_targets(
 
         let emotion_count = [happy_index, sad_index, angry_index, surprised_index, relaxed_index]
             .iter().filter(|i| i.is_some()).count();
+        let gaze_count = [look_up, look_down, look_left, look_right]
+            .iter().filter(|i| i.is_some()).count();
         clog_info!(
-            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5 (happy={:?} sad={:?} angry={:?} surprised={:?} relaxed={:?})",
+            "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5, gaze={}/4",
             slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
-            emotion_count, happy_index, sad_index, angry_index, surprised_index, relaxed_index,
+            emotion_count, gaze_count,
         );
 
         morph_targets.layouts.insert(*slot, MorphTargetLayout {
@@ -1797,6 +1954,10 @@ fn discover_morph_targets(
             angry_index,
             surprised_index,
             relaxed_index,
+            look_up,
+            look_down,
+            look_left,
+            look_right,
         });
     }
 }
@@ -2088,6 +2249,7 @@ fn animate_idle_gestures(
     registry: Res<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    active_gestures: Res<ActiveGestures>,
     mut gesture_state: ResMut<IdleGestureState>,
     mut transforms: Query<&mut Transform>,
 ) {
@@ -2098,8 +2260,9 @@ fn animate_idle_gestures(
             continue;
         }
 
-        // Skip gestures while speaking — head nod takes priority
-        if speaking_slots.contains(slot) {
+        // Skip idle gestures while speaking (head nod takes priority)
+        // or while a body gesture is active (arm gesture takes priority)
+        if speaking_slots.contains(slot) || active_gestures.slots.contains_key(slot) {
             continue;
         }
 
@@ -2191,6 +2354,306 @@ fn animate_breathing(
     }
 }
 
+/// Animate eye gaze via look blend shapes. Creates a "living eyes" effect with:
+/// 1. Idle drift: slow random movement using layered oscillators
+/// 2. Look toward speaker: when another slot is speaking, eyes drift that direction
+/// 3. Look at camera when speaking: engaging the viewer during own speech
+///
+/// Uses lookUp/lookDown/lookLeft/lookRight blend shapes discovered from VRM presets.
+fn animate_eye_gaze(
+    time: Res<Time>,
+    morph_targets: Res<SlotMorphTargets>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut morph_weights: Query<&mut MorphWeights>,
+) {
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+    let t = time.elapsed_secs();
+
+    for (slot, layout) in &morph_targets.layouts {
+        // Skip if no gaze blend shapes discovered
+        let has_gaze = layout.look_up.is_some() || layout.look_down.is_some()
+            || layout.look_left.is_some() || layout.look_right.is_some();
+        if !has_gaze {
+            continue;
+        }
+
+        let is_speaking = speaking_slots.contains(slot);
+        let phase = *slot as f32 * 2.73; // Unique offset per slot
+
+        // Compute gaze target (x = left/right, y = up/down), range -1..1
+        let (gaze_x, gaze_y) = if is_speaking {
+            // Look at camera when speaking (small drift for naturalness)
+            let drift_x = (t * 0.3 + phase).sin() * 0.05;
+            let drift_y = (t * 0.25 + phase).cos() * 0.03;
+            (drift_x, drift_y)
+        } else {
+            // Find which direction a speaker is (relative to this slot's position)
+            let speaker_bias: f32 = speaking_slots.iter()
+                .map(|&s| {
+                    let diff = s as f32 - *slot as f32;
+                    diff.signum() * 0.15 // Subtle bias toward speaker direction
+                })
+                .sum::<f32>()
+                .clamp(-0.3, 0.3);
+
+            // Idle gaze drift — layered oscillators for organic movement
+            let drift_x = (t * 0.13 + phase).sin() * 0.12
+                + (t * 0.07 + phase * 0.7).cos() * 0.08
+                + speaker_bias;
+            let drift_y = (t * 0.11 + phase).cos() * 0.08
+                + (t * 0.19 + phase * 1.3).sin() * 0.05;
+            (drift_x.clamp(-0.4, 0.4), drift_y.clamp(-0.3, 0.3))
+        };
+
+        // Apply gaze to blend shape weights
+        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+            let w = weights.weights_mut();
+
+            // Horizontal: negative = look left, positive = look right
+            if gaze_x < 0.0 {
+                if let Some(idx) = layout.look_left {
+                    if idx < w.len() { w[idx] = (-gaze_x).min(1.0); }
+                }
+                if let Some(idx) = layout.look_right {
+                    if idx < w.len() { w[idx] = 0.0; }
+                }
+            } else {
+                if let Some(idx) = layout.look_right {
+                    if idx < w.len() { w[idx] = gaze_x.min(1.0); }
+                }
+                if let Some(idx) = layout.look_left {
+                    if idx < w.len() { w[idx] = 0.0; }
+                }
+            }
+
+            // Vertical: negative = look down, positive = look up
+            if gaze_y < 0.0 {
+                if let Some(idx) = layout.look_down {
+                    if idx < w.len() { w[idx] = (-gaze_y).min(1.0); }
+                }
+                if let Some(idx) = layout.look_up {
+                    if idx < w.len() { w[idx] = 0.0; }
+                }
+            } else {
+                if let Some(idx) = layout.look_up {
+                    if idx < w.len() { w[idx] = gaze_y.min(1.0); }
+                }
+                if let Some(idx) = layout.look_down {
+                    if idx < w.len() { w[idx] = 0.0; }
+                }
+            }
+        }
+    }
+}
+
+/// Smoothstep easing function (cubic Hermite interpolation). Maps 0→0, 1→1
+/// with zero derivative at both endpoints — natural acceleration/deceleration.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Body gesture animation system — drives arm/shoulder bones through gesture poses.
+///
+/// Each gesture has three phases: Attack (ease in), Sustain (hold with micro-oscillation),
+/// Release (ease out). Arm rotations compose onto rest_rotation from BoneInfo —
+/// never replaces the bind pose. Idle gestures automatically resume when gesture ends.
+///
+/// Gesture and speech are complementary: speech drives head nod + mouth, gestures drive arms.
+/// Both can be active simultaneously without conflict.
+fn animate_body_gestures(
+    time: Res<Time>,
+    bone_registry: Res<BoneRegistry>,
+    mut active_gestures: ResMut<ActiveGestures>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let dt = time.delta_secs();
+    let now = time.elapsed_secs();
+
+    // Collect slots to remove after iteration (gesture completed)
+    let mut finished: Vec<u8> = Vec::new();
+
+    for (slot, anim) in active_gestures.slots.iter_mut() {
+        anim.elapsed += dt;
+
+        // Phase transitions
+        let attack_end = GESTURE_EASE_SECS;
+        let sustain_end = anim.duration_secs - GESTURE_EASE_SECS;
+        let total_end = anim.duration_secs;
+
+        if anim.elapsed >= total_end {
+            finished.push(*slot);
+            continue;
+        }
+
+        // Compute blend weight based on phase
+        anim.weight = if anim.elapsed < attack_end {
+            // Attack: ease in
+            anim.phase = GesturePhase::Attack;
+            smoothstep(anim.elapsed / GESTURE_EASE_SECS)
+        } else if anim.elapsed < sustain_end {
+            // Sustain: full weight with subtle oscillation
+            anim.phase = GesturePhase::Sustain;
+            1.0
+        } else {
+            // Release: ease out
+            anim.phase = GesturePhase::Release;
+            let release_progress = (anim.elapsed - sustain_end) / GESTURE_EASE_SECS;
+            1.0 - smoothstep(release_progress)
+        };
+
+        let slot_bones = match bone_registry.slots.get(slot) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let w = anim.weight;
+        let t = now + *slot as f32 * 1.7; // Phase offset per slot for micro-oscillation
+
+        match anim.gesture {
+            Gesture::Wave => {
+                // Right upper arm up ~90°, right forearm oscillates ±20° at 2Hz
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        // Rotate up (negative Z = up for right arm, already T-pose fixed)
+                        let up_angle = -1.2 * w; // ~69° up from resting
+                        let delta = Quat::from_rotation_z(up_angle);
+                        transform.rotation = rua.rest_rotation * delta;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        // Oscillating wave motion on forearm
+                        let wave = if anim.phase == GesturePhase::Sustain {
+                            (t * 2.0 * std::f32::consts::TAU).sin() * 0.35
+                        } else {
+                            0.0
+                        };
+                        let bend = (-0.5 + wave) * w; // Bent + wave
+                        let delta = Quat::from_rotation_z(bend);
+                        transform.rotation = rla.rest_rotation * delta;
+                    }
+                }
+            }
+            Gesture::Think => {
+                // Right arm forward and bent — hand near chin
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let forward = Quat::from_rotation_x(-0.8 * w); // Forward ~45°
+                        let inward = Quat::from_rotation_z(-0.3 * w);  // Slightly inward
+                        let delta = forward * inward;
+                        transform.rotation = rua.rest_rotation * delta;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        let bend = Quat::from_rotation_z(2.0 * w); // Tight bend ~115°
+                        transform.rotation = rla.rest_rotation * bend;
+                    }
+                }
+                // Slight head tilt for "thinking" look
+                if let Some(ref head) = slot_bones.head {
+                    if let Ok(mut transform) = transforms.get_mut(head.entity) {
+                        let tilt = Quat::from_euler(EulerRot::XYZ, 0.05 * w, 0.0, 0.08 * w);
+                        transform.rotation = head.rest_rotation * tilt;
+                    }
+                }
+            }
+            Gesture::Nod => {
+                // Emphatic head nod — stronger than speech nod
+                if let Some(ref head) = slot_bones.head {
+                    if let Ok(mut transform) = transforms.get_mut(head.entity) {
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.12 * w;
+                        let delta = Quat::from_rotation_x(nod);
+                        transform.rotation = head.rest_rotation * delta;
+                    }
+                }
+            }
+            Gesture::Shrug => {
+                // Both shoulders up, both arms slightly out
+                if let Some(ref ls) = slot_bones.left_shoulder {
+                    if let Ok(mut transform) = transforms.get_mut(ls.entity) {
+                        transform.translation.y = ls.rest_translation.y + 0.01 * w;
+                    }
+                }
+                if let Some(ref rs) = slot_bones.right_shoulder {
+                    if let Ok(mut transform) = transforms.get_mut(rs.entity) {
+                        transform.translation.y = rs.rest_translation.y + 0.01 * w;
+                    }
+                }
+                // Arms slightly out
+                if let Some(ref lua) = slot_bones.left_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(lua.entity) {
+                        let out = Quat::from_rotation_z(-0.35 * w); // Left arm out
+                        transform.rotation = lua.rest_rotation * out;
+                    }
+                }
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let out = Quat::from_rotation_z(0.35 * w); // Right arm out
+                        transform.rotation = rua.rest_rotation * out;
+                    }
+                }
+            }
+            Gesture::Point => {
+                // Right arm extended forward
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let forward = Quat::from_rotation_x(-1.05 * w); // Forward ~60°
+                        transform.rotation = rua.rest_rotation * forward;
+                    }
+                }
+                if let Some(ref rla) = slot_bones.right_lower_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                        // Straighten forearm (undo the resting bend)
+                        let straighten = Quat::from_rotation_z(0.26 * w); // Cancel ~15° resting bend
+                        transform.rotation = rla.rest_rotation * straighten;
+                    }
+                }
+            }
+            Gesture::OpenHands => {
+                // Both arms slightly out and forward, forearms open
+                if let Some(ref lua) = slot_bones.left_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(lua.entity) {
+                        let out = Quat::from_rotation_z(-0.4 * w);
+                        let forward = Quat::from_rotation_x(-0.3 * w);
+                        transform.rotation = lua.rest_rotation * forward * out;
+                    }
+                }
+                if let Some(ref rua) = slot_bones.right_upper_arm {
+                    if let Ok(mut transform) = transforms.get_mut(rua.entity) {
+                        let out = Quat::from_rotation_z(0.4 * w);
+                        let forward = Quat::from_rotation_x(-0.3 * w);
+                        transform.rotation = rua.rest_rotation * forward * out;
+                    }
+                }
+                // Slight oscillation during sustain
+                if anim.phase == GesturePhase::Sustain {
+                    if let Some(ref lla) = slot_bones.left_lower_arm {
+                        if let Ok(mut transform) = transforms.get_mut(lla.entity) {
+                            let osc = (t * 0.5).sin() * 0.05 * w;
+                            let delta = Quat::from_rotation_x(osc);
+                            transform.rotation = lla.rest_rotation * delta;
+                        }
+                    }
+                    if let Some(ref rla) = slot_bones.right_lower_arm {
+                        if let Ok(mut transform) = transforms.get_mut(rla.entity) {
+                            let osc = (t * 0.5 + 0.5).sin() * 0.05 * w;
+                            let delta = Quat::from_rotation_x(osc);
+                            transform.rotation = rla.rest_rotation * delta;
+                        }
+                    }
+                }
+            }
+            Gesture::None => {}
+        }
+    }
+
+    for slot in finished {
+        active_gestures.slots.remove(&slot);
+    }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -2276,27 +2739,66 @@ fn collect_arm_adjustments(
 ) {
     if let Ok(name) = names.get(entity) {
         let name_str = name.as_str();
-        let _name_lower = name_str.to_lowercase();
+        let name_lower = name_str.to_lowercase();
 
         // Detect upper arm bones and rotate downward (~65 degrees).
         // VRoid: "J_Bip_L_UpperArm", "J_Sec_L_UpperArm"
         // Mixamo: "mixamorig:LeftArm", "vis_char_056:mixamorig:LeftArm"
+        // 100Avatars/Generic: "LeftUpperArm", "Left_UpperArm", "leftupperarm"
+        // Blender Rigify: "upper_arm.L", "upper_arm.R" (dot-suffix laterality)
+        // Webaverse/quappa: "Upperarm_L", "Upperarm_R" (underscore-suffix laterality)
+        // Hand-rigged: "Left arm", "Right arm" (space-separated, exact match)
+        // Humanoid: any name ending in "upperarm" or "upper_arm" with left/L hint
         let is_left_upper = name_str.contains("J_Bip_L_UpperArm")
             || name_str.contains("J_Sec_L_UpperArm")
-            || (name_str.contains("mixamorig:LeftArm") && !name_str.contains("ForeArm"));
+            || (name_str.contains("mixamorig:LeftArm") && !name_str.contains("ForeArm"))
+            || name_str == "LeftUpperArm"
+            || name_str == "Left_UpperArm"
+            || name_str == "Left arm"
+            || name_str == "Upperarm_L"
+            || name_str == "upper_arm.L"
+            || (name_lower.ends_with("upperarm") && (name_lower.contains("left") || name_lower.contains("_l_")))
+            || (name_lower.ends_with("upper_arm") && (name_lower.contains("left") || name_lower.contains("_l_")));
         let is_right_upper = name_str.contains("J_Bip_R_UpperArm")
             || name_str.contains("J_Sec_R_UpperArm")
-            || (name_str.contains("mixamorig:RightArm") && !name_str.contains("ForeArm"));
+            || (name_str.contains("mixamorig:RightArm") && !name_str.contains("ForeArm"))
+            || name_str == "RightUpperArm"
+            || name_str == "Right_UpperArm"
+            || name_str == "Right arm"
+            || name_str == "Upperarm_R"
+            || name_str == "upper_arm.R"
+            || (name_lower.ends_with("upperarm") && (name_lower.contains("right") || name_lower.contains("_r_")))
+            || (name_lower.ends_with("upper_arm") && (name_lower.contains("right") || name_lower.contains("_r_")));
 
         // Detect lower arm / forearm bones — slight bend for natural look.
         // VRoid: "J_Bip_L_LowerArm"
         // Mixamo: "mixamorig:LeftForeArm"
+        // 100Avatars/Generic: "LeftLowerArm", "Left_LowerArm", "leftlowerarm"
+        // Blender Rigify: "lower_arm.L", "lower_arm.R"
+        // Webaverse/quappa: "Lowerarm_L", "Lowerarm_R"
+        // Hand-rigged: "Left elbow", "Right elbow" (elbow = forearm bone in simple rigs)
         let is_left_lower = name_str.contains("J_Bip_L_LowerArm")
             || name_str.contains("J_Sec_L_LowerArm")
-            || name_str.contains("mixamorig:LeftForeArm");
+            || name_str.contains("mixamorig:LeftForeArm")
+            || name_str == "LeftLowerArm"
+            || name_str == "Left_LowerArm"
+            || name_str == "LeftForeArm"
+            || name_str == "Left elbow"
+            || name_str == "Lowerarm_L"
+            || name_str == "lower_arm.L"
+            || (name_lower.ends_with("lowerarm") && (name_lower.contains("left") || name_lower.contains("_l_")))
+            || (name_lower.ends_with("forearm") && (name_lower.contains("left") || name_lower.contains("_l_")));
         let is_right_lower = name_str.contains("J_Bip_R_LowerArm")
             || name_str.contains("J_Sec_R_LowerArm")
-            || name_str.contains("mixamorig:RightForeArm");
+            || name_str.contains("mixamorig:RightForeArm")
+            || name_str == "RightLowerArm"
+            || name_str == "Right_LowerArm"
+            || name_str == "RightForeArm"
+            || name_str == "Right elbow"
+            || name_str == "Lowerarm_R"
+            || name_str == "lower_arm.R"
+            || (name_lower.ends_with("lowerarm") && (name_lower.contains("right") || name_lower.contains("_r_")))
+            || (name_lower.ends_with("forearm") && (name_lower.contains("right") || name_lower.contains("_r_")));
 
         if is_left_upper {
             // Rotate left upper arm down ~65 degrees (positive Z in VRM local space)
@@ -2529,8 +3031,16 @@ fn discover_upper_body_bones(
     let head_names = ["J_Bip_C_Head", "mixamorig:Head", "Head"];
     let neck_names = ["J_Bip_C_Neck", "mixamorig:Neck", "Neck"];
     let spine_names = ["J_Bip_C_Spine", "mixamorig:Spine", "Spine"];
-    let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder"];
-    let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder"];
+    let left_shoulder_names = ["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder", "Left shoulder", "Shoulder_L", "Shoulder.L"];
+    let right_shoulder_names = ["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder", "Right shoulder", "Shoulder_R", "Shoulder.R"];
+    // Arm bone naming conventions across model sources:
+    // VRoid (J_Bip_*), Mixamo (mixamorig:*), Generic (LeftUpperArm),
+    // Blender Rigify (upper_arm.L), Webaverse/quappa (Upperarm_L), Hand-rigged (Left arm)
+    // Note: mixamorig patterns use contains() so prefixed names like "vis_char_056:mixamorig:LeftArm" match.
+    let left_upper_arm_names = ["J_Bip_L_UpperArm", "mixamorig:LeftArm", "LeftUpperArm", "Left_UpperArm", "Left arm", "Upperarm_L", "upper_arm.L"];
+    let right_upper_arm_names = ["J_Bip_R_UpperArm", "mixamorig:RightArm", "RightUpperArm", "Right_UpperArm", "Right arm", "Upperarm_R", "upper_arm.R"];
+    let left_lower_arm_names = ["J_Bip_L_LowerArm", "mixamorig:LeftForeArm", "LeftLowerArm", "Left_LowerArm", "LeftForeArm", "Left elbow", "Lowerarm_L", "lower_arm.L"];
+    let right_lower_arm_names = ["J_Bip_R_LowerArm", "mixamorig:RightForeArm", "RightLowerArm", "Right_LowerArm", "RightForeArm", "Right elbow", "Lowerarm_R", "lower_arm.R"];
 
     // Helper: find bone and capture its actual local-space rest transform.
     // This is critical — bone transforms are LOCAL (relative to parent bone),
@@ -2557,13 +3067,22 @@ fn discover_upper_body_bones(
     let spine = discover(&spine_names, "Spine");
     let left_shoulder = discover(&left_shoulder_names, "L.Shoulder");
     let right_shoulder = discover(&right_shoulder_names, "R.Shoulder");
+    let left_upper_arm = discover(&left_upper_arm_names, "L.UpperArm");
+    let right_upper_arm = discover(&right_upper_arm_names, "R.UpperArm");
+    let left_lower_arm = discover(&left_lower_arm_names, "L.LowerArm");
+    let right_lower_arm = discover(&right_lower_arm_names, "R.LowerArm");
 
-    let found_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
+    let upper_body_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
         .filter(|b| b.is_some()).count();
-    clog_info!("🎨 Bone discovery slot {}: {}/5 bones found (head={} neck={} spine={} lsh={} rsh={})",
-        slot, found_count,
+    let arm_count = [&left_upper_arm, &right_upper_arm, &left_lower_arm, &right_lower_arm].iter()
+        .filter(|b| b.is_some()).count();
+    clog_info!("🎨 Bone discovery slot {}: {}/5 upper body (head={} neck={} spine={} lsh={} rsh={}), {}/4 arms (lua={} rua={} lla={} rla={})",
+        slot, upper_body_count,
         head.is_some(), neck.is_some(), spine.is_some(),
-        left_shoulder.is_some(), right_shoulder.is_some());
+        left_shoulder.is_some(), right_shoulder.is_some(),
+        arm_count,
+        left_upper_arm.is_some(), right_upper_arm.is_some(),
+        left_lower_arm.is_some(), right_lower_arm.is_some());
 
     bone_registry.slots.insert(slot, SlotBones {
         head,
@@ -2571,6 +3090,10 @@ fn discover_upper_body_bones(
         spine,
         left_shoulder,
         right_shoulder,
+        left_upper_arm,
+        right_upper_arm,
+        left_lower_arm,
+        right_lower_arm,
     });
 }
 
@@ -2610,8 +3133,9 @@ mod tests {
     #[test]
     fn test_constants() {
         assert!(MAX_AVATAR_SLOTS >= 14, "Need at least 14 slots for all personas");
-        assert_eq!(AVATAR_WIDTH, 1280);
-        assert_eq!(AVATAR_HEIGHT, 720);
+        // Default: 640×360 for non-spotlight tiles. HD pool provides 1280×720 for spotlight.
+        assert_eq!(AVATAR_WIDTH, 640);
+        assert_eq!(AVATAR_HEIGHT, 360);
         assert!(AVATAR_FPS >= 20.0 && AVATAR_FPS <= 60.0, "FPS must be 20-60 — below 20 looks bad, above 60 wastes GPU");
     }
 }
