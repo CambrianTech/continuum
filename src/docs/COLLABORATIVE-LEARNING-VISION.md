@@ -1,3 +1,5 @@
+> **Superseded by [GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md)** — kept as reference
+
 # Collaborative Learning Vision
 
 **The First Use Case: Natural AI Teammates Through Multi-Layer Learning**

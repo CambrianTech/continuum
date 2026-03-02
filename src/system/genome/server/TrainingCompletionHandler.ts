@@ -172,10 +172,19 @@ async function handleTrainingComplete(
   });
   await AdapterPackage.writeManifest(adapterPath, manifest);
 
-  // 5. Create GenomeLayerEntity
+  // 5. Create GenomeLayerEntity with capability embedding
   let layerId: UUID | undefined;
   try {
     const entity = AdapterPackage.toGenomeLayerEntity(manifest, adapterPath);
+
+    // Generate capability embedding — geometry of competence, not keywords
+    try {
+      await AdapterPackage.generateLayerEmbedding(entity);
+      console.log(`[TrainingCompletion] Capability embedding generated: ${entity.embeddingDimension}d`);
+    } catch (embError) {
+      console.warn(`[TrainingCompletion] Embedding generation failed (non-blocking): ${embError}`);
+    }
+
     await DataCreate.execute({
       collection: GenomeLayerEntity.collection,
       data: entity,

@@ -251,11 +251,20 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     const adapterPath = result.modelPath ?? '';
     this.log.info(`Adapter saved to ${adapterPath} (sentinel=${result.sentinelHandle})`);
 
-    // Create GenomeLayerEntity and persist to database
+    // Create GenomeLayerEntity, generate capability embedding, and persist to database
     let layerId: UUID | undefined;
     if (result.manifest) {
       try {
         const entity = AdapterPackage.toGenomeLayerEntity(result.manifest, adapterPath);
+
+        // Generate capability embedding — encodes what the adapter can actually do
+        try {
+          await AdapterPackage.generateLayerEmbedding(entity);
+          this.log.info(`Capability embedding generated: ${entity.embeddingDimension}d`);
+        } catch (embError) {
+          this.log.warn(`Embedding generation failed (non-blocking): ${embError}`);
+        }
+
         await DataCreate.execute({
           dbHandle: 'default',
           collection: GenomeLayerEntity.collection,

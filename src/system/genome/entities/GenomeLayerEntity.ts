@@ -102,9 +102,13 @@ export class GenomeLayerEntity extends BaseEntity {
   @NumberField()
   rank: number;  // LoRA rank (8, 16, 32, etc.)
 
-  // Searchability - 768-dim embedding for cosine similarity
+  // Searchability - capability embedding for cosine similarity
+  // Dimension is configurable (384, 768, etc.) — determined by embedding model at generation time
   @JsonField()
   embedding: number[];
+
+  @NumberField()
+  embeddingDimension: number;  // Actual dimension of embedding vector (0 = not yet embedded)
 
   @JsonField()
   tags: string[];  // Searchable keywords
@@ -150,7 +154,8 @@ export class GenomeLayerEntity extends BaseEntity {
     this.modelPath = '';
     this.sizeMB = 0;
     this.rank = 16;  // Default LoRA rank
-    this.embedding = Array(768).fill(0);  // 768-dim zero vector
+    this.embedding = [];  // Empty until populated by embedding model
+    this.embeddingDimension = 0;  // 0 = not yet embedded
     this.tags = [];
     this.fitness = {
       accuracy: 0,
@@ -191,8 +196,12 @@ export class GenomeLayerEntity extends BaseEntity {
       return { success: false, error: 'Layer rank must be between 1 and 128' };
     }
 
-    if (!Array.isArray(this.embedding) || this.embedding.length !== 768) {
-      return { success: false, error: 'Layer embedding must be 768-dimensional array' };
+    if (!Array.isArray(this.embedding)) {
+      return { success: false, error: 'Layer embedding must be an array' };
+    }
+    // If embedding is populated, dimension must match
+    if (this.embedding.length > 0 && this.embedding.length !== this.embeddingDimension) {
+      return { success: false, error: `Layer embedding length (${this.embedding.length}) does not match embeddingDimension (${this.embeddingDimension})` };
     }
 
     // TraitType is free-entry (any string) - just validate it exists

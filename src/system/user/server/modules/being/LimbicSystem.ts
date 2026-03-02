@@ -17,8 +17,7 @@ import { PersonaGenomeManager } from '../PersonaGenomeManager';
 import { TrainingDataAccumulator } from '../TrainingDataAccumulator';
 import { PersonaTrainingManager } from '../PersonaTrainingManager';
 import { Hippocampus } from '../cognitive/memory/Hippocampus';
-import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
-import type { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
+import { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
 import { SubsystemLogger } from './logging/SubsystemLogger';
 import type { UserEntity } from '../../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../data/entities/UserEntity';
@@ -26,9 +25,11 @@ import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
 import type { DbHandle } from '../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -192,6 +193,9 @@ export class LimbicSystem {
       }
       if (newCount > 0) {
         this.logger.info(`Hot-loaded ${newCount} new adapter(s) from training`);
+
+        // Recalculate composite embedding for this persona's genome
+        await this.recalculateCompositeEmbedding();
       }
     };
 
@@ -350,6 +354,43 @@ export class LimbicSystem {
     // Training accumulator is just data structure - no shutdown needed
     this.logger.info('Limbic system shutdown complete');
     this.logger.close();
+  }
+
+  /**
+   * Recalculate composite embedding for this persona's genome.
+   * Loads all genome layer entities, averages their embeddings,
+   * and persists the result to the GenomeEntity.
+   */
+  private async recalculateCompositeEmbedding(): Promise<void> {
+    try {
+      const genome = await this.genomeManager.getGenome();
+      if (!genome || genome.layers.length === 0) return;
+
+      // Load all layer embeddings
+      const layerIds = genome.getEnabledLayers().map(l => l.layerId);
+      const layerResult = await DataList.execute<GenomeLayerEntity>({
+        collection: GenomeLayerEntity.collection,
+        filter: { id: { $in: layerIds } },
+        dbHandle: 'default',
+        limit: layerIds.length,
+      });
+
+      if (!layerResult.success) return;
+
+      const embeddings = layerResult.items
+        .map(layer => layer.embedding)
+        .filter(e => e && e.length > 0);
+
+      if (embeddings.length === 0) return;
+
+      const { embedding, dimension } = GenomeEntity.calculateCompositeEmbedding(embeddings);
+      genome.compositeEmbedding = embedding;
+      genome.embeddingDimension = dimension;
+
+      this.logger.info(`Composite embedding recalculated: ${dimension}d from ${embeddings.length} layers`);
+    } catch (error) {
+      this.logger.warn(`Composite embedding recalculation failed (non-critical): ${error}`);
+    }
   }
 
   /**

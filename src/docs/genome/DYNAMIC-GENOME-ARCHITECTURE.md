@@ -1,3 +1,5 @@
+> **Superseded by [../GENOME-ARCHITECTURE.md](../GENOME-ARCHITECTURE.md)** — kept as reference
+
 # PersonaUser Dynamic Genome Architecture
 
 ## Executive Summary

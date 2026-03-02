@@ -1,3 +1,5 @@
+> **Superseded by [GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md)** — kept as reference
+
 # Composable Expertise: LoRA Layer Stacking
 
 **The Docker Model for AI Intelligence**
