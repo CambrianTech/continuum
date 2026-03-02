@@ -465,6 +465,8 @@ impl TextToSpeech for KokoroTTS {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+        KOKORO_GPU.touch();
+
         let session = KOKORO_SESSION
             .get()
             .ok_or_else(|| TTSError::ModelNotLoaded("Kokoro not initialized".into()))?

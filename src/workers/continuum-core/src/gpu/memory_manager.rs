@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use ts_rs::TS;
 
 use crate::{log_info, log_error};
+use super::eviction_registry::EvictionRegistry;
 
 // =============================================================================
 // SUBSYSTEM ENUM
@@ -186,6 +187,8 @@ pub struct GpuMemoryManager {
     pressure_rx: watch::Receiver<f32>,
     /// Live allocation count per priority level [Realtime, Interactive, Background, Batch].
     allocation_counts: [AtomicU32; PRIORITY_LEVELS],
+    /// Registry of GPU consumers for eviction visibility.
+    pub eviction_registry: EvictionRegistry,
 }
 
 impl std::fmt::Debug for GpuMemoryManager {
@@ -242,6 +245,7 @@ impl GpuMemoryManager {
                 AtomicU32::new(0), AtomicU32::new(0),
                 AtomicU32::new(0), AtomicU32::new(0),
             ],
+            eviction_registry: EvictionRegistry::new(),
         }
     }
 
@@ -415,6 +419,7 @@ impl GpuMemoryManager {
                 AtomicU32::new(0), AtomicU32::new(0),
                 AtomicU32::new(0), AtomicU32::new(0),
             ],
+            eviction_registry: EvictionRegistry::new(),
         }
     }
 
@@ -775,6 +780,7 @@ mod tests {
                 AtomicU32::new(0), AtomicU32::new(0),
                 AtomicU32::new(0), AtomicU32::new(0),
             ],
+            eviction_registry: EvictionRegistry::new(),
         })
     }
 

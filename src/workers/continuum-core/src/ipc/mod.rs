@@ -31,6 +31,8 @@ use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::tool_parsing::ToolParsingModule;
+use crate::modules::system_resources::SystemResourceModule;
+use crate::system_resources::SystemResourceMonitor;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -607,6 +609,10 @@ pub fn start_server(
 
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
+
+    // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
+    let system_monitor = Arc::new(SystemResourceMonitor::new());
+    runtime.register(Arc::new(SystemResourceModule::new(system_monitor)));
 
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());

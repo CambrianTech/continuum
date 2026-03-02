@@ -26,6 +26,7 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::gpu::make_entry;
 use crate::utils::params::Params;
 
 /// Global model cache - models loaded on demand
@@ -227,6 +228,12 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
                         "Embedding GPU: {} allocation {:.0}MB",
                         model_name, model_bytes as f64 / (1024.0 * 1024.0)
                     );
+                    mgr.eviction_registry.register(make_entry(
+                        &format!("embed:{}", model_name),
+                        &format!("Embedding {}", model_name),
+                        GpuPriority::Interactive,
+                        model_bytes,
+                    ));
                     if let Ok(mut guards) = get_gpu_guards().lock() {
                         guards.insert(model_name.to_string(), guard);
                     }

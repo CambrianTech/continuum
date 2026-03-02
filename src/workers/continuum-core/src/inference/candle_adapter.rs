@@ -19,6 +19,7 @@ use crate::ai::{
     UsageMetrics,
 };
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::gpu::make_entry;
 use crate::runtime;
 
 use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
@@ -138,6 +139,12 @@ impl CandleAdapter {
                 match mgr.allocate(GpuSubsystem::Inference, adapter_bytes, GpuPriority::Interactive) {
                     Ok(guard) => {
                         self.adapter_guards.write().insert(adapter_id.to_string(), guard);
+                        mgr.eviction_registry.register(make_entry(
+                            &format!("candle:adapter:{}", adapter_id),
+                            &format!("LoRA {}", adapter_id),
+                            GpuPriority::Interactive,
+                            adapter_bytes,
+                        ));
                     }
                     Err(e) => {
                         runtime::logger("candle").error(&format!(
@@ -205,6 +212,10 @@ impl CandleAdapter {
         adapters.remove(adapter_id);
         // Release GPU allocation guard (drops on remove)
         self.adapter_guards.write().remove(adapter_id);
+        // Unregister from eviction registry
+        if let Some(mgr) = &self.gpu_manager {
+            mgr.eviction_registry.unregister(&format!("candle:adapter:{}", adapter_id));
+        }
         runtime::logger("candle").info(&format!("Unloaded LoRA adapter: {}", adapter_id));
         Ok(())
     }
@@ -424,7 +435,15 @@ impl AIProviderAdapter for CandleAdapter {
                 if let Some(mgr) = &gpu_mgr {
                     if vram_bytes > 0 {
                         match mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Interactive) {
-                            Ok(guard) => { new_model_guard = Some(guard); }
+                            Ok(guard) => {
+                                mgr.eviction_registry.register(make_entry(
+                                    &format!("candle:model:{}", model.model_id()),
+                                    &format!("{} ({})", model.model_id(), model.architecture()),
+                                    GpuPriority::Interactive,
+                                    vram_bytes,
+                                ));
+                                new_model_guard = Some(guard);
+                            }
                             Err(e) => {
                                 log.error(&format!("GPU CRITICAL: Cannot load model — {}", e));
                                 return Err(format!("GPU memory critical — cannot load model: {e}"));
@@ -448,6 +467,14 @@ impl AIProviderAdapter for CandleAdapter {
         // Store model guard if this was a first load
         if let Some(guard) = new_model_guard {
             *self.model_guard.write() = Some(guard);
+        }
+
+        // Touch eviction registry entries (model + active adapters) on use
+        if let Some(mgr) = &self.gpu_manager {
+            mgr.eviction_registry.touch(&format!("candle:model:{}", default_model));
+            for adapter_id in &applied_adapters {
+                mgr.eviction_registry.touch(&format!("candle:adapter:{}", adapter_id));
+            }
         }
 
         let duration = start.elapsed();

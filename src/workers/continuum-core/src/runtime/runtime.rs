@@ -34,6 +34,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "embedding",  // Phase 4c: fastembed vector generation
     "runtime",    // RuntimeModule: metrics and control
     "mcp",        // MCP server: dynamic tool discovery
+    "system",     // System resources: CPU, memory, process monitoring
 ];
 
 pub struct Runtime {

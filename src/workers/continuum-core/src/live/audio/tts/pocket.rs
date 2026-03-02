@@ -365,6 +365,8 @@ impl TextToSpeech for PocketTTS {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+        POCKET_GPU.touch();
+
         let model_arc = POCKET_MODEL
             .get()
             .ok_or_else(|| {

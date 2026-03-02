@@ -8,9 +8,13 @@
 //! GpuMemoryManager detects real VRAM at startup (Metal/CUDA), enforces
 //! per-subsystem budgets, and provides an RAII allocation guard pattern.
 
+pub mod eviction_registry;
 pub mod memory_manager;
 pub mod tracker;
 
+pub use eviction_registry::{
+    EvictionRegistry, EvictableEntry, EvictionRegistrySnapshot, make_entry,
+};
 pub use memory_manager::{
     GpuMemoryManager, GpuSubsystem, GpuAllocationGuard, GpuStats, SubsystemStats,
     GpuPriority, GpuError, AllocationsByPriority,

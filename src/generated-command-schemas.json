@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-02T18:20:02.946Z",
+  "generated": "2026-03-02T23:30:44.945Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -696,6 +696,22 @@
           "type": "string",
           "required": false,
           "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "system/resources",
+      "description": "Query system resource usage: CPU load, memory pressure, swap, and optionally top processes by CPU and memory. Uses sysinfo for cross-platform monitoring (macOS/Linux/Windows). On Apple Silicon, memory pressure directly impacts GPU headroom since VRAM is unified.",
+      "params": {
+        "includeProcesses": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeProcesses parameter"
+        },
+        "topN": {
+          "type": "number",
+          "required": false,
+          "description": "topN parameter"
         }
       }
     },

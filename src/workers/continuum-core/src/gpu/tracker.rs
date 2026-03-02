@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::log_info;
 
+use super::eviction_registry::make_entry;
 use super::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 
 /// Reusable GPU allocation tracker for model loading.
@@ -48,6 +49,8 @@ use super::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, G
 pub struct GpuModelTracker {
     label: &'static str,
     guard: Mutex<Option<GpuAllocationGuard>>,
+    /// Manager ref + registry ID for unregister on release.
+    registry_state: Mutex<Option<(Arc<GpuMemoryManager>, String)>>,
 }
 
 // Safety: GpuAllocationGuard contains Arc<GpuMemoryManager> (Send+Sync)
@@ -63,6 +66,7 @@ impl GpuModelTracker {
         Self {
             label,
             guard: Mutex::new(None),
+            registry_state: Mutex::new(None),
         }
     }
 
@@ -111,10 +115,24 @@ impl GpuModelTracker {
                     "{}: GPU {} [{}] allocation {:.0}MB",
                     self.label, subsystem.name(), priority.name(), mb
                 );
+
+                // Register in eviction registry for visibility
+                let registry_id = format!("{}:{}", subsystem.name(), self.label.to_lowercase());
+                mgr.eviction_registry.register(make_entry(
+                    &registry_id,
+                    self.label,
+                    priority,
+                    bytes,
+                ));
+
+                // Store guard and registry state for cleanup on release
                 let mut slot = self.guard.lock()
                     .map_err(|e| format!("{}: lock poisoned: {e}", self.label))?;
                 // If replacing an existing guard, the old one drops here (releases old allocation)
                 *slot = Some(guard);
+                if let Ok(mut rs) = self.registry_state.lock() {
+                    *rs = Some((Arc::clone(mgr), registry_id));
+                }
                 Ok(())
             }
             Err(e) => {
@@ -136,6 +154,22 @@ impl GpuModelTracker {
                 );
                 // guard.release() called by Drop
                 drop(guard);
+            }
+        }
+        // Unregister from eviction registry
+        if let Ok(mut rs) = self.registry_state.lock() {
+            if let Some((mgr, id)) = rs.take() {
+                mgr.eviction_registry.unregister(&id);
+            }
+        }
+    }
+
+    /// Touch the eviction registry entry (update last_used timestamp).
+    /// Call this on every inference/TTS use to keep the entry fresh.
+    pub fn touch(&self) {
+        if let Ok(rs) = self.registry_state.lock() {
+            if let Some((mgr, id)) = rs.as_ref() {
+                mgr.eviction_registry.touch(id);
             }
         }
     }
@@ -259,5 +293,47 @@ mod tests {
         // Replace with larger allocation — old guard drops, releases old memory
         tracker.track_bytes(GpuSubsystem::Tts, 80 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
         assert_eq!(tracker.tracked_bytes(), 80 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_tracker_registers_in_eviction_registry() {
+        let tracker = GpuModelTracker::new("RegistryTest");
+        let mgr = test_manager();
+
+        // Before tracking: registry empty
+        assert_eq!(mgr.eviction_registry.len(), 0);
+
+        // Track → registered
+        tracker.track_bytes(GpuSubsystem::Tts, 100 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        assert_eq!(mgr.eviction_registry.len(), 1);
+
+        let snap = mgr.eviction_registry.snapshot();
+        assert_eq!(snap.entries[0].id, "tts:registrytest");
+        assert_eq!(snap.entries[0].label, "RegistryTest");
+        assert_eq!(snap.entries[0].bytes, 100 * 1024 * 1024);
+
+        // Release → unregistered
+        tracker.release();
+        assert_eq!(mgr.eviction_registry.len(), 0);
+    }
+
+    #[test]
+    fn test_tracker_touch_updates_registry() {
+        let tracker = GpuModelTracker::new("TouchTest");
+        let mgr = test_manager();
+
+        tracker.track_bytes(GpuSubsystem::Inference, 50 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+
+        let snap_before = mgr.eviction_registry.snapshot();
+        let ts_before = snap_before.entries[0].last_used_ms;
+
+        // Small delay to ensure timestamp changes
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        tracker.touch();
+
+        let snap_after = mgr.eviction_registry.snapshot();
+        let ts_after = snap_after.entries[0].last_used_ms;
+        assert!(ts_after >= ts_before, "touch() should update last_used_ms");
     }
 }

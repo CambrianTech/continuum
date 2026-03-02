@@ -596,6 +596,9 @@ impl TextToSpeech for OrpheusTts {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+        ORPHEUS_LLM_GPU.touch();
+        ORPHEUS_SNAC_GPU.touch();
+
         let model_arc = ORPHEUS_MODEL
             .get()
             .ok_or_else(|| {

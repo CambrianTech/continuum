@@ -67,6 +67,7 @@ export * from './rag';
 export * from './runtime';
 export * from './search';
 export * from './sentinel';
+export * from './system';
 export * from './voice';
 export type { AvatarState } from './AvatarState';
 export type { CallMessage } from './CallMessage';

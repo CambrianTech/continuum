@@ -31,6 +31,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use crate::{clog_info, clog_warn};
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::gpu::make_entry;
 
 use crate::live::avatar::RgbaFrame;
 
@@ -1218,6 +1219,12 @@ fn setup_render_slots(
     if let Some(mgr) = gpu_manager() {
         match mgr.allocate(GpuSubsystem::Rendering, total_rt_bytes, GpuPriority::Realtime) {
             Ok(guard) => {
+                mgr.eviction_registry.register(make_entry(
+                    "render:targets",
+                    "Render Targets (pre-allocated)",
+                    GpuPriority::Realtime,
+                    total_rt_bytes,
+                ));
                 commands.insert_resource(GpuGuards {
                     _render_targets: Some(guard),
                     model_guards: HashMap::new(),
@@ -1518,6 +1525,12 @@ fn process_commands(
                                 if let Some(mgr) = gpu_manager() {
                                     match mgr.allocate(GpuSubsystem::Rendering, model_bytes, GpuPriority::Interactive) {
                                         Ok(guard) => {
+                                            mgr.eviction_registry.register(make_entry(
+                                                &format!("render:model:slot{}", slot_for_observer),
+                                                &format!("Avatar Model (slot {})", slot_for_observer),
+                                                GpuPriority::Interactive,
+                                                model_bytes,
+                                            ));
                                             gpu_guards.model_guards.insert(slot_for_observer, guard);
                                         }
                                         Err(e) => {

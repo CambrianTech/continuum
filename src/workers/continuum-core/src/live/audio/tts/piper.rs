@@ -211,6 +211,8 @@ impl TextToSpeech for PiperTTS {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+        PIPER_GPU.touch();
+
         let session = PIPER_SESSION
             .get()
             .ok_or_else(|| TTSError::ModelNotLoaded("Piper not initialized".into()))?
