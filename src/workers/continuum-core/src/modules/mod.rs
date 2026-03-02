@@ -8,6 +8,7 @@
 //! Phase 3: voice, code, memory, models (remaining core domains)
 //! Phase 4: data, embedding, inference, search, training, logger (absorb external workers)
 
+pub mod gpu;
 pub mod health;
 pub mod cognition;
 pub mod channel;

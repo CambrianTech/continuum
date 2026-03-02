@@ -37,6 +37,16 @@ impl PersonaCognition {
         persona_name: String,
         rag_engine: Arc<RagEngine>,
     ) -> Self {
+        Self::with_budget(persona_id, persona_name, rag_engine, 200.0)
+    }
+
+    /// Create with a specific genome memory budget (from GPU manager).
+    pub fn with_budget(
+        persona_id: Uuid,
+        persona_name: String,
+        rag_engine: Arc<RagEngine>,
+        genome_budget_mb: f32,
+    ) -> Self {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             engine: PersonaCognitionEngine::new(
@@ -49,7 +59,7 @@ impl PersonaCognition {
             rate_limiter: RateLimiterState::default(),
             sleep_state: SleepState::default(),
             adapter_registry: AdapterRegistry::default(),
-            genome_engine: GenomePagingEngine::new(200.0),
+            genome_engine: GenomePagingEngine::new(genome_budget_mb),
             domain_classifier: DomainClassifier::new(),
         }
     }

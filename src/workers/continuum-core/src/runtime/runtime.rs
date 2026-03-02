@@ -19,6 +19,7 @@ use tracing::{info, warn, error};
 /// Adding a module here ensures it cannot be forgotten during registration.
 /// The server will fail to start if any expected module is missing.
 pub const EXPECTED_MODULES: &[&str] = &[
+    "gpu",        // Phase 0: GPU memory management
     "health",     // Phase 1: stateless health checks
     "cognition",  // Phase 2: persona cognition engines
     "channel",    // Phase 2: persona channel registries

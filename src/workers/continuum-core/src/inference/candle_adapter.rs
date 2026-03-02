@@ -18,6 +18,7 @@ use crate::ai::{
     ModelCapability, ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
 };
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
 use crate::runtime;
 
 use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
@@ -47,6 +48,12 @@ pub struct CandleAdapter {
     active_adapters: RwLock<Vec<String>>,
     /// Use quantized model
     use_quantized: bool,
+    /// GPU memory manager for VRAM allocation tracking
+    gpu_manager: Option<Arc<GpuMemoryManager>>,
+    /// RAII guard for base model VRAM allocation
+    model_guard: RwLock<Option<GpuAllocationGuard>>,
+    /// RAII guards for per-adapter VRAM allocations
+    adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>,
 }
 
 impl CandleAdapter {
@@ -66,7 +73,15 @@ impl CandleAdapter {
             loaded_adapters: RwLock::new(HashMap::new()),
             active_adapters: RwLock::new(Vec::new()),
             use_quantized: false,
+            gpu_manager: None,
+            model_guard: RwLock::new(None),
+            adapter_guards: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Set GPU memory manager for VRAM allocation tracking.
+    pub fn set_gpu_manager(&mut self, mgr: Arc<GpuMemoryManager>) {
+        self.gpu_manager = Some(mgr);
     }
 
     pub fn with_model(model_id: &str) -> Self {
@@ -115,6 +130,24 @@ impl CandleAdapter {
         let mut loaded = LoadedAdapter::new(adapter_id.to_string(), path.to_string(), scale);
         loaded.weights = Some(weights);
         adapters.insert(adapter_id.to_string(), loaded);
+
+        // Track GPU allocation for adapter
+        if let Some(mgr) = &self.gpu_manager {
+            let adapter_bytes = estimate_adapter_vram(path);
+            if adapter_bytes > 0 {
+                match mgr.allocate(GpuSubsystem::Inference, adapter_bytes) {
+                    Ok(guard) => {
+                        self.adapter_guards.write().insert(adapter_id.to_string(), guard);
+                    }
+                    Err(e) => {
+                        runtime::logger("candle").warn(&format!(
+                            "GPU allocation for adapter {} failed ({}), proceeding anyway",
+                            adapter_id, e
+                        ));
+                    }
+                }
+            }
+        }
 
         runtime::logger("candle").info(&format!("Loaded LoRA adapter: {} from {}", adapter_id, path));
         Ok(())
@@ -170,6 +203,8 @@ impl CandleAdapter {
         self.remove_lora(adapter_id).await?;
         let mut adapters = self.loaded_adapters.write();
         adapters.remove(adapter_id);
+        // Release GPU allocation guard (drops on remove)
+        self.adapter_guards.write().remove(adapter_id);
         runtime::logger("candle").info(&format!("Unloaded LoRA adapter: {}", adapter_id));
         Ok(())
     }
@@ -321,6 +356,9 @@ impl AIProviderAdapter for CandleAdapter {
         runtime::logger("candle").info("Shutting down Candle adapter");
         let mut backend = self.backend.write();
         *backend = None;
+        // Release all GPU allocation guards
+        *self.model_guard.write() = None;
+        self.adapter_guards.write().clear();
         Ok(())
     }
 
@@ -355,12 +393,14 @@ impl AIProviderAdapter for CandleAdapter {
         let default_model = self.config.default_model.clone();
         let use_quantized = self.use_quantized;
         let model_id = self.config.default_model.clone();
+        let gpu_mgr = self.gpu_manager.clone();
 
         // Run inference on blocking thread pool (lazy model loading on first call)
         let result = tokio::task::spawn_blocking(move || {
             let log = runtime::logger("candle");
 
             let mut backend_guard = backend_arc.write();
+            let mut new_model_guard: Option<GpuAllocationGuard> = None;
 
             // Lazy load: if model not loaded yet, load it now
             if backend_guard.is_none() {
@@ -372,20 +412,42 @@ impl AIProviderAdapter for CandleAdapter {
                     load_model_by_id(&model_id)
                         .map_err(|e| format!("Failed to load model: {e}"))?
                 };
+
+                // Track GPU allocation for model weights
+                let vram_bytes = model.estimated_vram_bytes();
                 log.info(&format!(
-                    "Model loaded: arch={}, format={:?}, context_length={}, model_id={}",
-                    model.architecture(), model.format(), model.context_length(), model.model_id()
+                    "Model loaded: arch={}, format={:?}, context_length={}, model_id={}, vram={:.0}MB",
+                    model.architecture(), model.format(), model.context_length(), model.model_id(),
+                    vram_bytes as f64 / (1024.0 * 1024.0)
                 ));
+
+                if let Some(mgr) = &gpu_mgr {
+                    if vram_bytes > 0 {
+                        match mgr.allocate(GpuSubsystem::Inference, vram_bytes) {
+                            Ok(guard) => { new_model_guard = Some(guard); }
+                            Err(e) => {
+                                log.warn(&format!("GPU allocation for model failed ({}), proceeding", e));
+                            }
+                        }
+                    }
+                }
+
                 *backend_guard = Some(BackendWrapper(model));
             }
 
             let wrapper = backend_guard.as_mut().expect("just loaded");
-            backends::generate(&mut *wrapper.0, &prompt, max_tokens, temperature)
+            let gen_result = backends::generate(&mut *wrapper.0, &prompt, max_tokens, temperature);
+            gen_result.map(|r| (r, new_model_guard))
         })
         .await
         .map_err(|e| format!("Inference task panicked: {e}"))?;
 
-        let (output_text, completion_tokens) = result?;
+        let ((output_text, completion_tokens), new_model_guard) = result?;
+
+        // Store model guard if this was a first load
+        if let Some(guard) = new_model_guard {
+            *self.model_guard.write() = Some(guard);
+        }
 
         let duration = start.elapsed();
         let input_tokens = (prompt_len / 4) as u32;
@@ -473,6 +535,20 @@ impl AIProviderAdapter for CandleAdapter {
             "stablelm", "yi", "deepseek-coder", "unsloth/",
         ]
     }
+}
+
+/// Estimate VRAM usage for a LoRA adapter from its file path.
+/// Path may be a directory (containing adapter_model.safetensors) or a direct file.
+fn estimate_adapter_vram(path: &str) -> u64 {
+    let p = std::path::Path::new(path);
+    let file_path = if p.is_dir() {
+        p.join("adapter_model.safetensors")
+    } else {
+        p.to_path_buf()
+    };
+    std::fs::metadata(&file_path)
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 /// Build a prompt string from chat messages using Llama 3 chat template.

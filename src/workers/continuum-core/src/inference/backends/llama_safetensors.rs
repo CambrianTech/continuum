@@ -188,6 +188,14 @@ impl ModelBackend for LlamaSafetensorsBackend {
             .map_err(|e| format!("Decode failed: {e}"))
     }
 
+    fn estimated_vram_bytes(&self) -> u64 {
+        self.weight_paths
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum()
+    }
+
     // ── LoRA Support ──
 
     fn supports_lora(&self) -> bool {

@@ -20,6 +20,7 @@ export type { ListTablesResult } from './data-daemon';
 export type { OrderBy } from './data-daemon';
 export type { VectorSearchHit } from './data-daemon';
 export type { VectorSearchResult } from './data-daemon';
+export * from './gpu';
 export * from './ipc';
 export * from './logger';
 // orm: explicit exports (has duplicate types)

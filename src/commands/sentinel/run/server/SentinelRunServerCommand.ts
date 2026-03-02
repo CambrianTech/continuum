@@ -40,11 +40,16 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
     const asyncMode = (params as SentinelRunParams).async !== false; // Default: async (fire-and-forget)
 
     // Build pipeline for Rust
+    // Timeout precedence: params.timeout > definition.timeoutSecs > definition.timeout_secs
+    const timeoutSecs = (params as SentinelRunParams).timeout
+      || definition.timeoutSecs
+      || definition.timeout_secs;
+
     const pipeline: Pipeline = {
       name: definition.name || 'unnamed',
       steps: definition.steps,
       workingDir,
-      timeoutSecs: definition.timeoutSecs || definition.timeout_secs,
+      timeoutSecs,
       inputs: definition.inputs || {},
     };
 
@@ -55,7 +60,7 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
       args: [] as string[],
       workingDir,
       env: { PIPELINE_JSON: JSON.stringify(pipeline) },
-      timeout: pipeline.timeoutSecs,
+      timeout: timeoutSecs,
     };
 
     try {

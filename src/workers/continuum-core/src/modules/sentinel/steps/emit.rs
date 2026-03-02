@@ -71,6 +71,7 @@ mod tests {
             handle_id: "test-emit",
             registry,
             bus: Some(bus),
+            steps_log_path: None,
         }
     }
 
@@ -138,6 +139,7 @@ mod tests {
             handle_id: "test-emit",
             registry: &registry,
             bus: None,
+            steps_log_path: None,
         };
         let mut ctx = test_ctx();
 

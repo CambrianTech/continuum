@@ -20,9 +20,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use crate::{clog_info, clog_warn};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuSubsystem};
 
 /// Global Kokoro session + tokenizer
 static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
+
+/// GPU allocation guard for the loaded Kokoro ONNX model.
+/// Held for the lifetime of the model (until process shutdown).
+static KOKORO_GPU_GUARD: OnceLock<GpuAllocationGuard> = OnceLock::new();
+use std::sync::OnceLock;
 
 /// Kokoro model wrapper
 struct KokoroModel {
@@ -447,6 +453,27 @@ impl TextToSpeech for KokoroTTS {
             voice_cache: HashMap::new(),
             sample_rate: 24000,
         };
+
+        // Track GPU allocation for TTS model
+        let model_bytes = std::fs::metadata(&model_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if let Some(mgr) = super::gpu_manager() {
+            if model_bytes > 0 {
+                match mgr.allocate(GpuSubsystem::Tts, model_bytes) {
+                    Ok(guard) => {
+                        let _ = KOKORO_GPU_GUARD.set(guard);
+                        clog_info!(
+                            "Kokoro: GPU TTS allocation {:.0}MB",
+                            model_bytes as f64 / (1024.0 * 1024.0)
+                        );
+                    }
+                    Err(e) => {
+                        clog_warn!("Kokoro: GPU allocation failed ({}), proceeding", e);
+                    }
+                }
+            }
+        }
 
         // OnceLock::set returns Err if already set by another thread — that's fine,
         // it means a concurrent request already initialized the model.

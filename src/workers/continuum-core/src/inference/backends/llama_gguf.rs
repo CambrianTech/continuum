@@ -131,6 +131,12 @@ impl ModelBackend for LlamaGgufBackend {
         &self.device
     }
 
+    fn estimated_vram_bytes(&self) -> u64 {
+        std::fs::metadata(&self.model_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
     fn forward(&mut self, input: &Tensor, index_pos: usize) -> Result<Tensor, candle_core::Error> {
         self.model.forward(input, index_pos)
     }

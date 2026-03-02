@@ -24,6 +24,7 @@ export type { EmbeddingResult, SimilarityResult, TopKResult, TopKResponse, Clust
 export type { SearchExecuteResult, SearchVectorResult } from './modules/search';
 export type { ChannelEnqueueResult, ChannelDequeueResult, ChannelServiceCycleResult, ChannelServiceCycleFullResult } from './modules/channel';
 export type { ModuleInfo, ModuleMetrics, SlowCommand } from './modules/runtime';
+export type { GpuStatsResponse, SubsystemInfo } from './modules/gpu';
 export type {
 	SentinelHandle,
 	SentinelRunParams,
@@ -49,6 +50,7 @@ import { ModelsMixin } from './modules/models';
 import { AIMixin } from './modules/ai';
 import { EmbeddingMixin } from './modules/embedding';
 import { RuntimeMixin } from './modules/runtime';
+import { GpuMixin } from './modules/gpu';
 import { SentinelMixin } from './modules/sentinel';
 import { ToolParsingMixin } from './modules/tool_parsing';
 
@@ -105,17 +107,19 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  */
 const ComposedClient = ToolParsingMixin(
 	SentinelMixin(
-		RuntimeMixin(
-			EmbeddingMixin(
-				AIMixin(
-					ModelsMixin(
-						RagMixin(
-							SearchMixin(
-								CodeMixin(
-									MemoryMixin(
-										ChannelMixin(
-											CognitionMixin(
-												VoiceMixin(RustCoreIPCClientBase)
+		GpuMixin(
+			RuntimeMixin(
+				EmbeddingMixin(
+					AIMixin(
+						ModelsMixin(
+							RagMixin(
+								SearchMixin(
+									CodeMixin(
+										MemoryMixin(
+											ChannelMixin(
+												CognitionMixin(
+													VoiceMixin(RustCoreIPCClientBase)
+												)
 											)
 										)
 									)

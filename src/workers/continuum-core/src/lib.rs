@@ -27,6 +27,7 @@ pub mod runtime;
 pub mod modules;
 pub mod orm;
 pub mod secrets;
+pub mod gpu;
 pub mod inference;
 pub mod tool_parsing;
 

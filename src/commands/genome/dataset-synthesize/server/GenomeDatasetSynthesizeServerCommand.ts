@@ -57,24 +57,56 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       temperature: 0.8,
     };
 
-    const generateResult = await Commands.execute<AIGenerateParams, AIGenerateResult>(
-      'ai/generate',
-      generateParams,
-    );
+    // Retry with exponential backoff for transient API errors (DeepSeek "error decoding response body", etc.)
+    const MAX_RETRIES = 3;
+    const RETRY_BASE_MS = 2000;
+    let generateResult: AIGenerateResult | undefined;
+    let lastError: string | undefined;
 
-    if (!generateResult.success || !generateResult.text) {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const result = await Commands.execute<AIGenerateParams, AIGenerateResult>(
+        'ai/generate',
+        generateParams,
+      );
+
+      if (result.success && result.text) {
+        generateResult = result;
+        break;
+      }
+
+      lastError = result.error ?? 'LLM generation failed — no text returned';
+
+      if (attempt < MAX_RETRIES && this._isTransientError(lastError)) {
+        const delayMs = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+        console.warn(`⚠️ DATASET SYNTHESIZE: transient error on attempt ${attempt}/${MAX_RETRIES}, retrying in ${delayMs}ms: ${lastError}`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      // Non-transient error or exhausted retries
       return createGenomeDatasetSynthesizeResultFromParams(params, {
         success: false,
-        error: generateResult.error ?? 'LLM generation failed — no text returned',
+        error: lastError,
         datasetPath: '',
         exampleCount: 0,
         topic,
-        generatedBy: generateResult.model ?? 'unknown',
+        generatedBy: result.model ?? 'unknown',
+      });
+    }
+
+    if (!generateResult) {
+      return createGenomeDatasetSynthesizeResultFromParams(params, {
+        success: false,
+        error: lastError ?? 'LLM generation failed after retries',
+        datasetPath: '',
+        exampleCount: 0,
+        topic,
+        generatedBy: 'unknown',
       });
     }
 
     // Parse the LLM response into JSONL training examples
-    const jsonlLines = this._parseToJSONL(generateResult.text, personaName);
+    const jsonlLines = this._parseToJSONL(generateResult.text!, personaName);
 
     if (jsonlLines.length === 0) {
       return createGenomeDatasetSynthesizeResultFromParams(params, {
@@ -170,6 +202,22 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
     lines.push('', 'Output as a JSON array of objects with "messages" arrays.');
 
     return lines.join('\n');
+  }
+
+  /**
+   * Detect transient API errors that are worth retrying.
+   */
+  private _isTransientError(error: string): boolean {
+    const lower = error.toLowerCase();
+    return lower.includes('error decoding response body')
+      || lower.includes('connection reset')
+      || lower.includes('timeout')
+      || lower.includes('502 bad gateway')
+      || lower.includes('503 service')
+      || lower.includes('429 too many')
+      || lower.includes('rate limit')
+      || lower.includes('econnreset')
+      || lower.includes('socket hang up');
   }
 
   /**

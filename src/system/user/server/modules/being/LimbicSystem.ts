@@ -120,13 +120,16 @@ export class LimbicSystem {
       this.logger.info(`Skipped ${incompatible} incompatible adapters (trained on different base model)`);
     }
 
+    // memoryBudgetMB: 0 means "let Rust decide from real GPU detection".
+    // Rust GpuMemoryManager detects actual VRAM and divides inference budget by persona count.
+    // If Rust has no GPU manager, it falls back to 200MB internally.
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
       () => personaUser.personalDbHandle,
       {
         baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
-        memoryBudgetMB: 200,
+        memoryBudgetMB: 0,
         adaptersPath: AdapterStore.storeRoot,
         initialAdapters,
       },

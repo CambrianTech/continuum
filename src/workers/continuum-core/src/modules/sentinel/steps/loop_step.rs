@@ -8,6 +8,7 @@
 
 use serde_json::json;
 use std::time::Instant;
+use tokio::io::AsyncWriteExt;
 
 use crate::modules::sentinel::interpolation;
 use crate::modules::sentinel::types::{
@@ -111,6 +112,20 @@ pub async fn execute(
                     }),
                 });
             }
+            // Flush sub-step result to steps.jsonl for real-time observability.
+            // Without this, loop sub-steps are invisible until the entire loop completes.
+            if let Some(log_path) = pipeline_ctx.steps_log_path {
+                if let Ok(json_line) = serde_json::to_string(&sub_result) {
+                    if let Ok(mut file) = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_path)
+                        .await
+                    {
+                        let _ = file.write_all(format!("{json_line}\n").as_bytes()).await;
+                    }
+                }
+            }
             ctx.step_results.push(sub_result);
         }
 
@@ -184,6 +199,7 @@ mod tests {
             handle_id: "test-loop",
             registry,
             bus: Some(bus),
+            steps_log_path: None,
         }
     }
 

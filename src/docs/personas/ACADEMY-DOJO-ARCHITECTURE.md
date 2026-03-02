@@ -220,17 +220,19 @@ Understanding where step results store their data is critical:
 - **Token budget**: `examplesPerTopic` default reduced from 20 → 10, and `maxTokens` increased to 8192. With 20 examples, the LLM consistently exhausted 4096 tokens and produced truncated JSON.
 - **Session-scoped adapter names**: Adapter registration must include `sessionId` fragment to prevent collisions across academy sessions. Pattern: `${personaName}-${sessionId.slice(0,8)}-topic-${iteration}`.
 - **Student exam model**: The student's exam LLM step must NOT use `baseModel` (e.g., smollm2:135m), which is a local Candle model unavailable on cloud providers. Use system default; future: route to Candle local inference to prove training worked.
-- **Transient API errors**: DeepSeek API returns sporadic "error decoding response body" after long sessions. Production needs retry logic with exponential backoff per step.
+- **Transient API errors**: DeepSeek API returns sporadic "error decoding response body" after long sessions. **SOLVED**: Both Rust LLM steps and TypeScript `genome/dataset-synthesize` now retry up to 3 times with exponential backoff (2s, 4s, 8s). See `llm.rs` and `GenomeDatasetSynthesizeServerCommand.ts`.
+- **Markdown-wrapped LLM output**: Grading LLMs sometimes wrap JSON responses in ` ```json ... ``` ` fences, causing `traverse_json_path()` to fail. **SOLVED**: `strip_markdown_fences()` in `interpolation.rs` unwraps fenced content before JSON parsing.
 
 ### Metrics from Test Runs
 
-Across 8 deployment cycles with the Academy running:
-- **11** academy sessions created
-- **9** curricula designed (LLM)
-- **12** synthetic datasets generated (JSONL)
-- **9** genome layers trained (LoRA via PEFT)
-- **7** examinations created and graded
+Across 12+ deployment cycles with the Academy running:
+- **14+** academy sessions created
+- **12+** curricula designed (LLM)
+- **16+** synthetic datasets generated (JSONL)
+- **12+** genome layers trained (LoRA via PEFT)
+- **10+** examinations created and graded
 - **6 of 10** sentinel step types demonstrated: LLM, Command, Emit, Watch, Loop, Condition (remaining: Shell, Parallel, Sentinel, CodingAgent)
+- **Proven multi-topic sessions**: 2/3 topics passed in a single session (score 100/100 each), 24-31s training per topic
 
 ## Key Reuse
 
@@ -292,6 +294,41 @@ All modalities share the same sentinel pipeline structure:
 
 The Academy doesn't need to know about modalities — it just orchestrates the pipeline. The modality-specific logic lives in the training and evaluation commands.
 
+## GPU-Aware Training
+
+Academy sessions are GPU-aware via the `GpuMemoryManager`. Before spawning a training sentinel, the system checks GPU pressure to avoid contention with running inference.
+
+### Training Budget Guard
+
+```
+Before training:
+  1. ./jtag gpu/pressure → check current pressure level
+  2. If pressure > 60% (Warning): defer training, queue for later
+  3. If pressure < 60% (Normal): proceed with training
+  4. Training allocates VRAM via GpuSubsystem::Inference guard
+  5. Guard released on training completion (RAII)
+```
+
+### Teacher Curriculum Sizing
+
+The teacher sentinel considers available VRAM when designing curriculum:
+- Per-persona budget: `GpuMemoryManager.per_persona_budget_mb()` (inference budget / persona count)
+- Base model + adapter must fit within per-persona budget
+- Teacher can adjust `examplesPerTopic` and `epochs` based on available memory
+- Smaller base models (SmolLM2 135M) fit any GPU; larger models need VRAM checks
+
+### Continuous Learning Integration
+
+When `TrainingDataAccumulator.shouldMicroTune()` returns true:
+1. Check `gpu/pressure` — only train if Normal (<60%)
+2. Spawn training sentinel with accumulated data
+3. After training: academy examination validates quality
+4. Compare new adapter against baseline — must improve, not regress
+5. Promote adapter only if examination passes
+6. Old adapter version retained for rollback
+
+See [GPU-MEMORY-ARCHITECTURE.md](../architecture/GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system.
+
 ## Long-Running Resilience
 
 Academy sessions are designed for hours-to-days execution:
@@ -303,14 +340,19 @@ Academy sessions are designed for hours-to-days execution:
 
 ### Observability
 - Every step result logged to `steps.jsonl` — full execution trace
+- **Real-time sub-step logging**: Loop and parallel sub-steps flush to `steps.jsonl` immediately as they complete (not just when the parent step returns). Enables live monitoring via `tail -f`.
 - Events emitted per loop iteration — widgets and persona inbox stay informed
+- Log path: `.continuum/jtag/logs/system/sentinels/<handle>/steps.jsonl`
 - Future: inference demo after each training round (prove learning to user/persona)
 - Future: loss curves, exam scores, inference examples streamed as real-time events
 - Future: criteria/thresholds replace hard-coded config (adaptive difficulty)
 
 ### Retry & Recovery
-- Watch steps have configurable `timeoutSecs` (300-600s currently)
-- Future: per-step retry with exponential backoff for transient API errors
+- Watch steps have configurable `timeoutSecs` (default 300s)
+- **Pipeline timeout**: Academy sessions use 1800s (30 minutes) — each topic takes 3-7 minutes, comfortably covers 6 topics
+- **Per-step LLM retry**: Rust LLM steps retry up to 3 times with exponential backoff (2s/4s/8s) for transient API errors (connection reset, 502, rate limit, etc.)
+- **Dataset synthesis retry**: TypeScript `genome/dataset-synthesize` retries with same backoff strategy
+- **Markdown fence resilience**: `traverse_json_path()` strips ` ```json ... ``` ` fences before JSON parsing — prevents false condition evaluation on LLM-graded output
 - Future: session resume via `sentinel/resume --handle=<handle>`
 - Future: dead-letter queue for failed steps (inspect and retry)
 

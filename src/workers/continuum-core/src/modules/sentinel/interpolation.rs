@@ -188,6 +188,26 @@ fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
         .unwrap_or_default()
 }
 
+/// Strip markdown code fences from LLM output.
+///
+/// LLMs frequently wrap JSON output in ` ```json ... ``` ` fences.
+/// This strips those fences so the inner content can be JSON-parsed.
+fn strip_markdown_fences(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.starts_with("```") {
+        if let Some(first_newline) = trimmed.find('\n') {
+            let inner = &trimmed[first_newline + 1..];
+            if let Some(closing) = inner.rfind("```") {
+                let content = inner[..closing].trim();
+                if !content.is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Traverse a JSON value using dot-separated path parts.
 ///
 /// Supports:
@@ -196,6 +216,8 @@ fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
 /// - JSON string auto-parsing: if a value is a string containing JSON,
 ///   it's automatically parsed for deeper traversal (enables accessing
 ///   structured LLM output like `steps.0.output.topics.0.name`)
+/// - Markdown fence stripping: LLM output wrapped in ` ```json ... ``` `
+///   is unwrapped before JSON parsing
 fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
     let mut current = root.clone();
 
@@ -204,6 +226,10 @@ fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
         if let Value::String(ref s) = current {
             if let Ok(parsed) = serde_json::from_str::<Value>(s) {
                 current = parsed;
+            } else if let Some(stripped) = strip_markdown_fences(s) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&stripped) {
+                    current = parsed;
+                }
             }
         }
 
@@ -753,5 +779,89 @@ mod tests {
         assert_eq!(interpolate("{{steps.0.data.text.name}}", &ctx), "Alice");
         assert_eq!(interpolate("{{steps.0.data.text.scores.0}}", &ctx), "95");
         assert_eq!(interpolate("{{steps.0.data.text.scores.2}}", &ctx), "92");
+    }
+
+    // ── Markdown fence stripping ──
+
+    #[test]
+    fn test_strip_markdown_fences_json() {
+        let fenced = "```json\n{\"score\": 100, \"passed\": true}\n```";
+        let result = strip_markdown_fences(fenced);
+        assert_eq!(result, Some("{\"score\": 100, \"passed\": true}".to_string()));
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_no_lang() {
+        let fenced = "```\n{\"key\": \"value\"}\n```";
+        let result = strip_markdown_fences(fenced);
+        assert_eq!(result, Some("{\"key\": \"value\"}".to_string()));
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_not_fenced() {
+        let plain = "{\"key\": \"value\"}";
+        let result = strip_markdown_fences(plain);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_whitespace() {
+        let fenced = "  ```json\n  {\"a\": 1}  \n  ```  ";
+        let result = strip_markdown_fences(fenced);
+        assert_eq!(result, Some("{\"a\": 1}".to_string()));
+    }
+
+    #[test]
+    fn test_traverse_json_path_with_markdown_fenced_output() {
+        // Simulates LLM grading output wrapped in markdown fences
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 5000,
+                    output: Some("```json\n{\"overallScore\": 100, \"passed\": true, \"feedback\": \"Excellent\"}\n```".to_string()),
+                    error: None,
+                    exit_code: None,
+                    data: json!({}),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // These would previously fail (return "") because JSON parse failed on fenced content
+        assert_eq!(interpolate("{{steps.0.output.passed}}", &ctx), "true");
+        assert_eq!(interpolate("{{steps.0.output.overallScore}}", &ctx), "100");
+        assert_eq!(interpolate("{{steps.0.output.feedback}}", &ctx), "Excellent");
+    }
+
+    #[test]
+    fn test_traverse_json_path_with_markdown_fenced_data() {
+        // Markdown fences in data fields (e.g., LLM text stored in data.text)
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: None,
+                    error: None,
+                    exit_code: None,
+                    data: json!({
+                        "text": "```json\n{\"items\": [\"alpha\", \"beta\"]}\n```"
+                    }),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        assert_eq!(interpolate("{{steps.0.data.text.items.0}}", &ctx), "alpha");
+        assert_eq!(interpolate("{{steps.0.data.text.items.1}}", &ctx), "beta");
     }
 }

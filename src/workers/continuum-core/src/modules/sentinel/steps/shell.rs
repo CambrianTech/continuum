@@ -108,6 +108,7 @@ mod tests {
             handle_id: "test-001",
             registry,
             bus: Some(bus),
+            steps_log_path: None,
         }
     }
 

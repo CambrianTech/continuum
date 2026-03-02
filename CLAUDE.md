@@ -1003,6 +1003,63 @@ commands/example/
 
 **Never import server/browser code IN shared files!**
 
+### Rust-Backed Commands (IPC Mixin Pattern)
+
+When a command is backed by Rust (via continuum-core IPC), it requires **THREE layers**:
+
+```
+1. CommandSpec JSON   →  generator/specs/gpu-stats.json
+2. CommandGenerator   →  npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
+3. IPC Mixin          →  workers/continuum-core/bindings/modules/gpu.ts
+```
+
+**Step-by-step workflow:**
+
+```bash
+# 1. Create the Rust module (ServiceModule trait) with IPC commands
+#    e.g., modules/gpu.rs handles "gpu/stats", "gpu/pressure"
+
+# 2. Create a CommandSpec JSON
+cat > generator/specs/gpu-stats.json << 'EOF'
+{
+  "name": "gpu/stats",
+  "description": "Query GPU memory stats",
+  "params": [...],
+  "results": [...],
+  "examples": [...],
+  "accessLevel": "ai-safe"
+}
+EOF
+
+# 3. Run the generator (creates shared/Types, server/Command, browser/Command, README, tests)
+npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
+
+# 4. Create IPC mixin (snake_case Rust → camelCase TypeScript)
+#    workers/continuum-core/bindings/modules/gpu.ts
+#    Pattern: export function GpuMixin<T>(Base: T) { return class extends Base { ... } }
+
+# 5. Add mixin to RustCoreIPC.ts composition chain
+#    import { GpuMixin } from './modules/gpu';
+#    const ComposedClient = ... GpuMixin(RuntimeMixin( ... )) ...
+
+# 6. Implement server command to use mixin
+#    const stats = await this.rustClient.gpuStats();
+
+# 7. Build and verify
+npm run build:ts && npm start
+./jtag gpu/stats
+```
+
+**The three-layer architecture:**
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| Rust IPC | `modules/gpu.rs` | ServiceModule, handles `gpu/stats` |
+| TS Mixin | `bindings/modules/gpu.ts` | snake_case→camelCase, typed wrapper |
+| TS Command | `commands/gpu/stats/` | Generated scaffold, uses mixin |
+
+**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `./jtag` and the command system. The generator creates discoverability (README, help text, CLI params).
+
 ---
 
 ## 📸 WIDGET DOM PATH

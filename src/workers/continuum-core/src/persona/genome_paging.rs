@@ -8,8 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use ts_rs::TS;
+
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
 
 // =============================================================================
 // TYPES (ts-rs generated)
@@ -137,6 +140,10 @@ pub struct GenomePagingEngine {
     available: HashMap<String, GenomeAdapterInfo>,
     /// Domain activity tracking for gap detection
     domain_activity: HashMap<String, DomainActivityInternal>,
+    /// GPU memory manager for real VRAM allocation tracking
+    gpu_manager: Option<Arc<GpuMemoryManager>>,
+    /// RAII guards for VRAM allocations (adapter_name → guard)
+    allocation_guards: HashMap<String, GpuAllocationGuard>,
 }
 
 /// Internal activity tracking (not exported — CoverageReport is the public API).
@@ -156,7 +163,14 @@ impl GenomePagingEngine {
             active: HashMap::new(),
             available: HashMap::new(),
             domain_activity: HashMap::new(),
+            gpu_manager: None,
+            allocation_guards: HashMap::new(),
         }
+    }
+
+    /// Set GPU memory manager for real VRAM allocation tracking.
+    pub fn set_gpu_manager(&mut self, mgr: Arc<GpuMemoryManager>) {
+        self.gpu_manager = Some(mgr);
     }
 
     /// Sync full adapter state from TypeScript.
@@ -164,11 +178,19 @@ impl GenomePagingEngine {
     pub fn sync_state(&mut self, adapters: Vec<GenomeAdapterInfo>) {
         self.active.clear();
         self.available.clear();
+        self.allocation_guards.clear(); // Release all VRAM guards on resync
         self.memory_used_mb = 0.0;
 
         for adapter in adapters {
             if adapter.is_loaded {
                 self.memory_used_mb += adapter.size_mb;
+                // Re-allocate GPU guard for already-loaded adapters
+                if let Some(mgr) = &self.gpu_manager {
+                    let bytes = (adapter.size_mb * 1024.0 * 1024.0) as u64;
+                    if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes) {
+                        self.allocation_guards.insert(adapter.name.clone(), guard);
+                    }
+                }
                 self.active.insert(adapter.name.clone(), adapter);
             } else {
                 self.available.insert(adapter.name.clone(), adapter);
@@ -222,6 +244,8 @@ impl GenomePagingEngine {
                 Some(victim_name) => {
                     if let Some(victim) = self.active.remove(&victim_name) {
                         self.memory_used_mb -= victim.size_mb;
+                        // Release GPU allocation guard (drops, releasing VRAM)
+                        self.allocation_guards.remove(&victim_name);
                         // Move to available
                         let mut unloaded = victim;
                         unloaded.is_loaded = false;
@@ -238,6 +262,15 @@ impl GenomePagingEngine {
         loaded.is_loaded = true;
         loaded.last_used_ms = now_ms;
         self.memory_used_mb += loaded.size_mb;
+
+        // Allocate GPU guard for newly loaded adapter
+        if let Some(mgr) = &self.gpu_manager {
+            let bytes = (loaded.size_mb * 1024.0 * 1024.0) as u64;
+            if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes) {
+                self.allocation_guards.insert(loaded.name.clone(), guard);
+            }
+        }
+
         self.active.insert(loaded.name.clone(), loaded);
 
         ActivateSkillResult {

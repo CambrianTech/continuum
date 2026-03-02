@@ -106,6 +106,10 @@ bevy = { version = "0.18", default-features = false, features = [
 
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 
+# GPU detection — Metal API for VRAM detection on macOS
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.31"
+
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
