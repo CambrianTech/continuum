@@ -114,6 +114,7 @@ mod tests {
             handle_id: "test-sentinel",
             registry,
             bus: Some(bus),
+            steps_log_path: None,
         }
     }
 

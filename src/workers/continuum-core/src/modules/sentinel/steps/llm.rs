@@ -4,7 +4,7 @@
 //! agentMode=true: routes to TypeScript ai/agent via CommandExecutor (Unix socket IPC)
 //!   for full agentic loop with tool calling, 243+ discoverable tools
 
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::runtime::CommandResult;
@@ -40,7 +40,25 @@ pub async fn execute(
     }
 }
 
+/// Maximum retry attempts for transient LLM API errors
+const LLM_MAX_RETRIES: u32 = 3;
+/// Base delay between retries (doubles each attempt)
+const LLM_RETRY_BASE_MS: u64 = 2000;
+
+/// Check if an error message indicates a transient API failure worth retrying
+fn is_transient_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("error decoding response body")
+        || lower.contains("connection reset")
+        || lower.contains("timeout")
+        || lower.contains("502 bad gateway")
+        || lower.contains("503 service")
+        || lower.contains("429 too many")
+        || lower.contains("rate limit")
+}
+
 /// agentMode=false: Fast in-process Rust call to ai/generate via ModuleRegistry
+/// Includes retry with exponential backoff for transient API errors.
 async fn execute_generate_mode(
     params: LlmStepParams<'_>,
     index: usize,
@@ -80,32 +98,71 @@ async fn execute_generate_mode(
     let (module, cmd) = pipeline_ctx.registry.route_command("ai/generate")
         .ok_or_else(|| format!("[{}] ai module not found in registry", pipeline_ctx.handle_id))?;
 
-    let result = module.handle_command(&cmd, ai_params).await
-        .map_err(|e| format!("[{}] LLM step error: {}", pipeline_ctx.handle_id, e))?;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    match result {
-        CommandResult::Json(json) => {
-            let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let text = json.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-            Ok(StepResult {
-                step_index: index,
-                step_type: "llm".to_string(),
-                success,
-                duration_ms,
-                output: text,
-                error,
-                exit_code: None,
-                data: json,
-            })
+    // Retry loop for transient API errors
+    let mut last_error = String::new();
+    for attempt in 0..=LLM_MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = LLM_RETRY_BASE_MS * (1 << (attempt - 1)); // 2s, 4s, 8s
+            log.warn(&format!("[{}] LLM retry {}/{} after {}ms (error: {})",
+                pipeline_ctx.handle_id, attempt, LLM_MAX_RETRIES, delay_ms, last_error));
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
-        CommandResult::Binary { .. } => {
-            Err(format!("[{}] Unexpected binary response from ai/generate", pipeline_ctx.handle_id))
+
+        let result = module.handle_command(&cmd, ai_params.clone()).await;
+
+        match result {
+            Ok(CommandResult::Json(json)) => {
+                let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                let text = json.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let duration_ms = start.elapsed().as_millis() as u64;
+
+                // If the API returned an error that looks transient, retry
+                if !success {
+                    if let Some(ref err_msg) = error {
+                        if is_transient_error(err_msg) && attempt < LLM_MAX_RETRIES {
+                            last_error = err_msg.clone();
+                            continue;
+                        }
+                    }
+                }
+
+                return Ok(StepResult {
+                    step_index: index,
+                    step_type: "llm".to_string(),
+                    success,
+                    duration_ms,
+                    output: text,
+                    error,
+                    exit_code: None,
+                    data: json,
+                });
+            }
+            Ok(CommandResult::Binary { .. }) => {
+                return Err(format!("[{}] Unexpected binary response from ai/generate", pipeline_ctx.handle_id));
+            }
+            Err(e) => {
+                if is_transient_error(&e) && attempt < LLM_MAX_RETRIES {
+                    last_error = e;
+                    continue;
+                }
+                return Err(format!("[{}] LLM step error: {}", pipeline_ctx.handle_id, e));
+            }
         }
     }
+
+    // All retries exhausted
+    let duration_ms = start.elapsed().as_millis() as u64;
+    Ok(StepResult {
+        step_index: index,
+        step_type: "llm".to_string(),
+        success: false,
+        duration_ms,
+        output: None,
+        error: Some(format!("LLM failed after {} retries: {}", LLM_MAX_RETRIES, last_error)),
+        exit_code: None,
+        data: Value::Null,
+    })
 }
 
 /// agentMode=true: Route to TypeScript ai/agent via CommandExecutor (Unix socket IPC)

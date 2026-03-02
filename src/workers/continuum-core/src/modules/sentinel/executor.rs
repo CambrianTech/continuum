@@ -73,6 +73,7 @@ pub async fn execute_pipeline(
             handle_id: &handle_id,
             registry: &registry,
             bus: bus.as_ref(),
+            steps_log_path: Some(&steps_log_path),
         };
 
         match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {
@@ -85,7 +86,10 @@ pub async fn execute_pipeline(
                     failed = true;
                     error_msg = result.error.clone();
                 }
-                // Write step result to steps.jsonl
+
+                // Write the top-level step result to steps.jsonl.
+                // Sub-step results (from loops, conditions, parallel branches) are
+                // flushed in real-time by those step executors directly via steps_log_path.
                 if let Ok(json_line) = serde_json::to_string(&result) {
                     if let Ok(mut file) = tokio::fs::OpenOptions::new()
                         .create(true)
@@ -105,6 +109,7 @@ pub async fn execute_pipeline(
                 log.error(&format!("[{handle_id}] Step {i} error: {e}"));
                 failed = true;
                 error_msg = Some(e.clone());
+
                 let error_result = StepResult {
                     step_index: i,
                     step_type: step_type.to_string(),
@@ -371,6 +376,7 @@ pub async fn execute_pipeline_direct(
             handle_id,
             registry: &registry,
             bus,
+            steps_log_path: None,
         };
 
         match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {

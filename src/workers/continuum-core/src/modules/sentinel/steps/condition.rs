@@ -82,6 +82,7 @@ mod tests {
             handle_id: "test-cond",
             registry,
             bus: Some(bus),
+            steps_log_path: None,
         }
     }
 

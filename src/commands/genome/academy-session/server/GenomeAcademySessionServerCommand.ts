@@ -141,6 +141,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // 3. Submit teacher sentinel
     // PipelineStep[] (Rust bindings) → SentinelStep[] (TS definitions) — structurally compatible wire types
     const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
+    // Academy sessions run multiple topics (curriculum → synthesize → train → exam per topic).
+    // Each topic takes 3-7 minutes, so 30 minutes covers sessions up to ~6 topics comfortably.
+    const pipelineTimeout = 1800;
     const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-' } as const;
     const modePrefix = modePrefixMap[mode];
     const modeLabel = mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';
@@ -160,6 +163,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       },
       parentPersonaId: personaId,
       sentinelName: teacherName,
+      timeout: pipelineTimeout,
     });
 
     const teacherHandle = teacherResult.handle ?? '';
@@ -181,6 +185,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       },
       parentPersonaId: personaId,
       sentinelName: studentName,
+      timeout: pipelineTimeout,
     });
 
     const studentHandle = studentResult.handle ?? '';

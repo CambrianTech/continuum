@@ -318,6 +318,9 @@ pub struct PipelineContext<'a> {
     pub handle_id: &'a str,
     pub registry: &'a std::sync::Arc<crate::runtime::ModuleRegistry>,
     pub bus: Option<&'a std::sync::Arc<crate::runtime::message_bus::MessageBus>>,
+    /// Path to steps.jsonl for real-time sub-step logging.
+    /// When set, loop/condition/parallel steps flush results as they complete.
+    pub steps_log_path: Option<&'a std::path::Path>,
 }
 
 /// Internal state for a running sentinel
