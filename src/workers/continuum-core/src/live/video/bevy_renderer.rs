@@ -588,6 +588,18 @@ struct SlotBones {
     right_upper_arm: Option<BoneInfo>,
     left_lower_arm: Option<BoneInfo>,
     right_lower_arm: Option<BoneInfo>,
+    // Eye bones for bone-based gaze (VRM lookAtTypeName: "Bone")
+    left_eye: Option<BoneInfo>,
+    right_eye: Option<BoneInfo>,
+    // Hand bones — discovered now for animation systems to reference.
+    // Currently used only for bone discovery logging; hand/finger animation is next.
+    #[allow(dead_code)]
+    left_hand: Option<BoneInfo>,
+    #[allow(dead_code)]
+    right_hand: Option<BoneInfo>,
+    /// VRM lookAt configuration — eye rotation ranges for bone-based gaze.
+    /// Parsed from extensions.VRM.firstPerson.lookAtHorizontalInner/Outer/VerticalUp/Down.
+    look_at_config: Option<VrmLookAtConfig>,
 }
 
 struct BoneInfo {
@@ -596,6 +608,34 @@ struct BoneInfo {
     rest_translation: Vec3,
     /// Actual local-space rest rotation (from skeleton bind pose)
     rest_rotation: Quat,
+}
+
+/// VRM lookAt configuration for bone-based eye gaze.
+/// Parsed from VRM extensions — defines how far eye bones can rotate in each direction.
+/// Output values are the actual eye bone rotation in degrees for the corresponding
+/// input range (typically full ±90° input → 8-12° actual eye rotation).
+#[derive(Debug, Clone, Copy)]
+struct VrmLookAtConfig {
+    /// Max eye bone Y-rotation (radians) for looking left/right (inward)
+    horizontal_inner_deg: f32,
+    /// Max eye bone Y-rotation (radians) for looking left/right (outward)
+    horizontal_outer_deg: f32,
+    /// Max eye bone X-rotation (radians) for looking up
+    vertical_up_deg: f32,
+    /// Max eye bone X-rotation (radians) for looking down
+    vertical_down_deg: f32,
+}
+
+impl Default for VrmLookAtConfig {
+    fn default() -> Self {
+        // Sensible defaults for typical VRM models (8° horizontal, 10° vertical)
+        Self {
+            horizontal_inner_deg: 8.0,
+            horizontal_outer_deg: 8.0,
+            vertical_up_deg: 10.0,
+            vertical_down_deg: 10.0,
+        }
+    }
 }
 
 /// Per-slot idle gesture animation state.
@@ -608,6 +648,10 @@ struct IdleGestureState {
 struct SlotGestureState {
     /// Unique phase offset derived from slot index
     phase: f32,
+    /// Current head Y-rotation toward speaker (smoothly interpolated)
+    head_turn_current: f32,
+    /// Target head Y-rotation toward speaker
+    head_turn_target: f32,
 }
 
 /// Per-slot render target dimensions. Updated when a slot is resized.
@@ -1385,6 +1429,7 @@ fn process_commands(
                     // Propagate RenderLayers to all descendants (Bevy doesn't inherit them).
                     let layer_for_observer = layer;
                     let slot_for_observer = slot;
+                    let model_path_for_observer = load_path.clone();
                     commands.entity(scene_entity).observe(
                         move |
                             event: On<SceneInstanceReady>,
@@ -1400,7 +1445,7 @@ fn process_commands(
                             propagate_render_layers(root, &layer_for_observer, &children_query, &mut cmds);
                             dump_bone_names(root, &children_query, &names);
                             fix_tpose_arms(root, &children_query, &names, &mut transforms);
-                            discover_upper_body_bones(root, slot_for_observer, &children_query, &names, &transforms, &mut bone_registry);
+                            discover_upper_body_bones(root, slot_for_observer, &model_path_for_observer, &children_query, &names, &transforms, &mut bone_registry);
 
                             // Mark model as loaded — readback can now begin for this slot.
                             // Scene meshes are spawned, camera has rendered at least one frame
@@ -2253,6 +2298,7 @@ fn animate_idle_gestures(
     mut gesture_state: ResMut<IdleGestureState>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let dt = time.delta_secs();
     let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
 
     for (slot, state) in &registry.slots {
@@ -2260,9 +2306,12 @@ fn animate_idle_gestures(
             continue;
         }
 
-        // Skip idle gestures while speaking (head nod takes priority)
-        // or while a body gesture is active (arm gesture takes priority)
-        if speaking_slots.contains(slot) || active_gestures.slots.contains_key(slot) {
+        let is_speaking = speaking_slots.contains(slot);
+
+        // Skip idle gestures while a body gesture is active (arm gesture takes priority).
+        // But DON'T skip for speaking — we still want head turn toward speaker for non-speakers,
+        // and forward-facing presenter pose for speakers.
+        if active_gestures.slots.contains_key(slot) {
             continue;
         }
 
@@ -2274,15 +2323,48 @@ fn animate_idle_gestures(
         // Initialize gesture state with unique phase offset per slot
         let gesture = gesture_state.slots.entry(*slot).or_insert_with(|| {
             SlotGestureState {
-                phase: *slot as f32 * 2.37, // Golden ratio-ish offset for visual variety
+                phase: *slot as f32 * 2.37,
+                head_turn_current: 0.0,
+                head_turn_target: 0.0,
             }
         });
 
         let t = time.elapsed_secs() + gesture.phase;
 
-        // 1. Neck micro-tilt — layered frequencies for organic motion.
+        // Compute head turn target toward active speaker.
+        // Non-speaking: turn head toward whoever is speaking.
+        // Speaking: face forward (slight drift, "presenter" pose).
+        if is_speaking {
+            gesture.head_turn_target = 0.0; // Face camera
+        } else if !speaking_slots.is_empty() {
+            // Average direction toward all active speakers
+            let turn_bias: f32 = speaking_slots.iter()
+                .map(|&s| {
+                    let diff = s as f32 - *slot as f32;
+                    diff.signum() * 0.15 // ~8.5° per speaker direction
+                })
+                .sum::<f32>()
+                .clamp(-0.25, 0.25); // Max ~14° turn
+            gesture.head_turn_target = turn_bias;
+        } else {
+            gesture.head_turn_target = 0.0; // No speaker, face forward
+        }
+
+        // Smooth interpolation: exponential decay for natural head movement.
+        // current = lerp(current, target, 1 - e^(-dt * speed))
+        // speed=3.0 → 95% there in ~1 second
+        let lerp_factor = 1.0 - (-dt * 3.0_f32).exp();
+        gesture.head_turn_current += (gesture.head_turn_target - gesture.head_turn_current) * lerp_factor;
+
+        // Skip idle oscillation while speaking (head nod in animate_speaking takes priority)
+        if is_speaking {
+            continue;
+        }
+
+        // 1. Neck micro-tilt + speaker-directed head turn.
         //    COMPOSES delta rotation onto the bone's rest rotation (not replacing it!)
         //    Combines 3 sine waves at incommensurate frequencies (non-repeating pattern)
+        //    plus the smooth head turn toward active speaker.
         if let Some(ref neck) = slot_bones.neck {
             if let Ok(mut transform) = transforms.get_mut(neck.entity) {
                 let tilt_x = (t * 0.15).sin() * 0.03           // Very slow nod
@@ -2290,7 +2372,9 @@ fn animate_idle_gestures(
                     + (t * 0.37).sin() * 0.01;                  // Subtle high-freq detail
                 let tilt_z = (t * 0.12).cos() * 0.025           // Slow lateral head tilt
                     + (t * 0.31).sin() * 0.015;                 // Detail frequency
-                let turn_y = (t * 0.08).sin() * 0.02;           // Very slow head turn
+                // Head turn: idle drift + speaker-directed turn
+                let idle_turn = (t * 0.08).sin() * 0.02;
+                let turn_y = idle_turn + gesture.head_turn_current;
 
                 let delta = Quat::from_euler(EulerRot::XYZ, tilt_x, turn_y, tilt_z);
                 transform.rotation = neck.rest_rotation * delta;
@@ -2362,20 +2446,19 @@ fn animate_breathing(
 /// Uses lookUp/lookDown/lookLeft/lookRight blend shapes discovered from VRM presets.
 fn animate_eye_gaze(
     time: Res<Time>,
+    registry: Res<SlotRegistry>,
     morph_targets: Res<SlotMorphTargets>,
+    bone_registry: Res<BoneRegistry>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
     mut morph_weights: Query<&mut MorphWeights>,
+    mut transforms: Query<&mut Transform>,
 ) {
     let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
     let t = time.elapsed_secs();
 
-    for (slot, layout) in &morph_targets.layouts {
-        // Skip if no gaze blend shapes discovered
-        let has_gaze = layout.look_up.is_some() || layout.look_down.is_some()
-            || layout.look_left.is_some() || layout.look_right.is_some();
-        if !has_gaze {
-            continue;
-        }
+    // Iterate over all active slots (not just those with morph targets)
+    for (slot, state) in &registry.slots {
+        if !state.active { continue; }
 
         let is_speaking = speaking_slots.contains(slot);
         let phase = *slot as f32 * 2.73; // Unique offset per slot
@@ -2405,41 +2488,88 @@ fn animate_eye_gaze(
             (drift_x.clamp(-0.4, 0.4), drift_y.clamp(-0.3, 0.3))
         };
 
-        // Apply gaze to blend shape weights
-        if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
-            let w = weights.weights_mut();
+        // Path 1: Bone-based eye gaze (VRM lookAtTypeName: "Bone")
+        // Eye bones rotate directly — this is what most VRM models actually use.
+        let mut used_bone_gaze = false;
+        if let Some(slot_bones) = bone_registry.slots.get(slot) {
+            if slot_bones.left_eye.is_some() && slot_bones.right_eye.is_some() {
+                let config = slot_bones.look_at_config.unwrap_or_default();
 
-            // Horizontal: negative = look left, positive = look right
-            if gaze_x < 0.0 {
-                if let Some(idx) = layout.look_left {
-                    if idx < w.len() { w[idx] = (-gaze_x).min(1.0); }
+                // Map gaze_x/gaze_y (-1..1) to eye bone rotation.
+                // Use average of inner/outer for horizontal (both eyes look the same direction).
+                let h_deg = (config.horizontal_inner_deg + config.horizontal_outer_deg) * 0.5;
+                let v_up_deg = config.vertical_up_deg;
+                let v_down_deg = config.vertical_down_deg;
+
+                // Horizontal: Y-rotation (positive = look right in VRM's -Z forward convention)
+                let yaw_rad = gaze_x * h_deg.to_radians();
+                // Vertical: X-rotation (negative = look up, positive = look down)
+                let pitch_rad = if gaze_y >= 0.0 {
+                    -gaze_y * v_up_deg.to_radians()  // Looking up
+                } else {
+                    -gaze_y * v_down_deg.to_radians() // Looking down (gaze_y is negative)
+                };
+
+                let gaze_delta = Quat::from_euler(EulerRot::XYZ, pitch_rad, yaw_rad, 0.0);
+
+                // Apply to both eyes (conjugate gaze — both look at same point)
+                if let Some(ref left_eye) = slot_bones.left_eye {
+                    if let Ok(mut transform) = transforms.get_mut(left_eye.entity) {
+                        transform.rotation = left_eye.rest_rotation * gaze_delta;
+                    }
                 }
-                if let Some(idx) = layout.look_right {
-                    if idx < w.len() { w[idx] = 0.0; }
+                if let Some(ref right_eye) = slot_bones.right_eye {
+                    if let Ok(mut transform) = transforms.get_mut(right_eye.entity) {
+                        transform.rotation = right_eye.rest_rotation * gaze_delta;
+                    }
                 }
-            } else {
-                if let Some(idx) = layout.look_right {
-                    if idx < w.len() { w[idx] = gaze_x.min(1.0); }
-                }
-                if let Some(idx) = layout.look_left {
-                    if idx < w.len() { w[idx] = 0.0; }
-                }
+                used_bone_gaze = true;
             }
+        }
 
-            // Vertical: negative = look down, positive = look up
-            if gaze_y < 0.0 {
-                if let Some(idx) = layout.look_down {
-                    if idx < w.len() { w[idx] = (-gaze_y).min(1.0); }
-                }
-                if let Some(idx) = layout.look_up {
-                    if idx < w.len() { w[idx] = 0.0; }
-                }
-            } else {
-                if let Some(idx) = layout.look_up {
-                    if idx < w.len() { w[idx] = gaze_y.min(1.0); }
-                }
-                if let Some(idx) = layout.look_down {
-                    if idx < w.len() { w[idx] = 0.0; }
+        // Path 2: Blend shape gaze (fallback for models without eye bones)
+        if !used_bone_gaze {
+            if let Some(layout) = morph_targets.layouts.get(slot) {
+                let has_gaze = layout.look_up.is_some() || layout.look_down.is_some()
+                    || layout.look_left.is_some() || layout.look_right.is_some();
+                if !has_gaze { continue; }
+
+                if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
+                    let w = weights.weights_mut();
+
+                    // Horizontal: negative = look left, positive = look right
+                    if gaze_x < 0.0 {
+                        if let Some(idx) = layout.look_left {
+                            if idx < w.len() { w[idx] = (-gaze_x).min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_right {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    } else {
+                        if let Some(idx) = layout.look_right {
+                            if idx < w.len() { w[idx] = gaze_x.min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_left {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    }
+
+                    // Vertical: negative = look down, positive = look up
+                    if gaze_y < 0.0 {
+                        if let Some(idx) = layout.look_down {
+                            if idx < w.len() { w[idx] = (-gaze_y).min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_up {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    } else {
+                        if let Some(idx) = layout.look_up {
+                            if idx < w.len() { w[idx] = gaze_y.min(1.0); }
+                        }
+                        if let Some(idx) = layout.look_down {
+                            if idx < w.len() { w[idx] = 0.0; }
+                        }
+                    }
                 }
             }
         }
@@ -2990,6 +3120,149 @@ fn parse_vrmc_expressions(root: &serde_json::Value, glb_path: &str) -> Option<Ve
     Some(shapes)
 }
 
+/// Parse VRM humanoid bone mapping from the .glb JSON extensions.
+/// Returns a map of VRM bone name (e.g. "leftEye") → glTF node name.
+/// Works with both VRM 0.x (extensions.VRM.humanoid.humanBones) and
+/// VRM 1.0 (extensions.VRMC_vrm.humanoid.humanBones).
+fn parse_vrm_humanoid_bones(glb_path: &str) -> HashMap<String, String> {
+    let root = match read_glb_json(glb_path) {
+        Some(r) => r,
+        None => return HashMap::new(),
+    };
+
+    // Get the nodes array for resolving node index → node name
+    let nodes = root.get("nodes").and_then(|v| v.as_array());
+
+    let resolve_node_name = |node_index: u64| -> Option<String> {
+        nodes.and_then(|n| n.get(node_index as usize))
+            .and_then(|node| node.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+
+    let mut bone_map = HashMap::new();
+
+    // Try VRM 0.x: extensions.VRM.humanoid.humanBones (array of {bone, node, ...})
+    if let Some(human_bones) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRM"))
+        .and_then(|v| v.get("humanoid"))
+        .and_then(|h| h.get("humanBones"))
+        .and_then(|b| b.as_array())
+    {
+        for bone_entry in human_bones {
+            let bone_name = bone_entry.get("bone").and_then(|v| v.as_str());
+            let node_idx = bone_entry.get("node").and_then(|v| v.as_u64());
+            if let (Some(name), Some(idx)) = (bone_name, node_idx) {
+                if let Some(node_name) = resolve_node_name(idx) {
+                    bone_map.insert(name.to_string(), node_name);
+                }
+            }
+        }
+        if !bone_map.is_empty() {
+            bevy_debug(&format!("VRM 0.x humanoid bones from '{}': {} bones", glb_path, bone_map.len()));
+            return bone_map;
+        }
+    }
+
+    // Try VRM 1.0: extensions.VRMC_vrm.humanoid.humanBones (object of {boneName: {node: idx}})
+    if let Some(human_bones) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRMC_vrm"))
+        .and_then(|v| v.get("humanoid"))
+        .and_then(|h| h.get("humanBones"))
+        .and_then(|b| b.as_object())
+    {
+        for (bone_name, bone_data) in human_bones {
+            let node_idx = bone_data.get("node").and_then(|v| v.as_u64());
+            if let Some(idx) = node_idx {
+                if let Some(node_name) = resolve_node_name(idx) {
+                    bone_map.insert(bone_name.clone(), node_name);
+                }
+            }
+        }
+        if !bone_map.is_empty() {
+            bevy_debug(&format!("VRM 1.0 humanoid bones from '{}': {} bones", glb_path, bone_map.len()));
+        }
+    }
+
+    bone_map
+}
+
+/// Parse VRM lookAt configuration from the .glb JSON extensions.
+/// Returns the eye rotation ranges used for bone-based gaze.
+fn parse_vrm_look_at_config(glb_path: &str) -> Option<VrmLookAtConfig> {
+    let root = read_glb_json(glb_path)?;
+
+    // VRM 0.x: extensions.VRM.firstPerson.lookAtTypeName + lookAtHorizontalInner/Outer/VerticalUp/Down
+    if let Some(first_person) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRM"))
+        .and_then(|v| v.get("firstPerson"))
+    {
+        let look_at_type = first_person.get("lookAtTypeName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Only parse bone config if lookAtTypeName is "Bone" (not "BlendShape")
+        if look_at_type != "Bone" {
+            bevy_debug(&format!("VRM lookAt type '{}' — not bone-based", look_at_type));
+            return None;
+        }
+
+        let get_output = |key: &str| -> f32 {
+            first_person.get(key)
+                .and_then(|v| v.get("yRange"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(8.0) as f32
+        };
+
+        let config = VrmLookAtConfig {
+            horizontal_inner_deg: get_output("lookAtHorizontalInner"),
+            horizontal_outer_deg: get_output("lookAtHorizontalOuter"),
+            vertical_up_deg: get_output("lookAtVerticalUp"),
+            vertical_down_deg: get_output("lookAtVerticalDown"),
+        };
+        bevy_debug(&format!("VRM lookAt config: inner={:.1}° outer={:.1}° up={:.1}° down={:.1}°",
+            config.horizontal_inner_deg, config.horizontal_outer_deg,
+            config.vertical_up_deg, config.vertical_down_deg));
+        return Some(config);
+    }
+
+    // VRM 1.0: extensions.VRMC_vrm.lookAt.type + rangeMapHorizontalInner/Outer/VerticalUp/Down
+    if let Some(look_at) = root
+        .get("extensions")
+        .and_then(|e| e.get("VRMC_vrm"))
+        .and_then(|v| v.get("lookAt"))
+    {
+        let look_at_type = look_at.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if look_at_type != "bone" {
+            bevy_debug(&format!("VRMC lookAt type '{}' — not bone-based", look_at_type));
+            return None;
+        }
+
+        let get_output = |key: &str| -> f32 {
+            look_at.get(key)
+                .and_then(|v| v.get("outputScale"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(8.0) as f32
+        };
+
+        let config = VrmLookAtConfig {
+            horizontal_inner_deg: get_output("rangeMapHorizontalInner"),
+            horizontal_outer_deg: get_output("rangeMapHorizontalOuter"),
+            vertical_up_deg: get_output("rangeMapVerticalUp"),
+            vertical_down_deg: get_output("rangeMapVerticalDown"),
+        };
+        return Some(config);
+    }
+
+    None
+}
+
 /// Find the first entity with MorphWeights in a scene hierarchy.
 fn find_morph_entity(
     root: Entity,
@@ -3023,6 +3296,7 @@ fn find_morph_entity(
 fn discover_upper_body_bones(
     root: Entity,
     slot: u8,
+    model_path: &str,
     children: &Query<&Children>,
     names: &Query<&Name>,
     transforms: &Query<&mut Transform>,
@@ -3072,17 +3346,65 @@ fn discover_upper_body_bones(
     let left_lower_arm = discover(&left_lower_arm_names, "L.LowerArm");
     let right_lower_arm = discover(&right_lower_arm_names, "R.LowerArm");
 
+    // Discover eye and hand bones.
+    // First try name-based discovery (works for all model types).
+    let left_eye_names = ["J_Adj_L_FaceEye", "mixamorig:LeftEye", "LeftEye", "Eye_L", "eye.L"];
+    let right_eye_names = ["J_Adj_R_FaceEye", "mixamorig:RightEye", "RightEye", "Eye_R", "eye.R"];
+    let left_hand_names = ["J_Bip_L_Hand", "mixamorig:LeftHand", "LeftHand", "Hand_L", "hand.L"];
+    let right_hand_names = ["J_Bip_R_Hand", "mixamorig:RightHand", "RightHand", "Hand_R", "hand.R"];
+
+    let mut left_eye = discover(&left_eye_names, "L.Eye");
+    let mut right_eye = discover(&right_eye_names, "R.Eye");
+    let mut left_hand = discover(&left_hand_names, "L.Hand");
+    let mut right_hand = discover(&right_hand_names, "R.Hand");
+
+    // Parse VRM humanoid bone mapping for any bones that name-based discovery missed.
+    // The VRM extension has an authoritative mapping: VRM bone name → glTF node index → node name.
+    let vrm_bones = parse_vrm_humanoid_bones(model_path);
+    if !vrm_bones.is_empty() {
+        // Helper: discover a bone from VRM mapping by looking up its node name
+        let vrm_discover = |vrm_name: &str, label: &str| -> Option<BoneInfo> {
+            vrm_bones.get(vrm_name).and_then(|node_name| {
+                find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(|entity| {
+                    if let Ok(t) = transforms.get(entity) {
+                        bevy_debug(&format!("{} bone slot {} (VRM '{}'→'{}'): entity {:?}",
+                            label, slot, vrm_name, node_name, entity));
+                        Some(BoneInfo {
+                            entity,
+                            rest_translation: t.translation,
+                            rest_rotation: t.rotation,
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+        };
+
+        // Fill in missing bones from VRM mapping
+        if left_eye.is_none() { left_eye = vrm_discover("leftEye", "L.Eye"); }
+        if right_eye.is_none() { right_eye = vrm_discover("rightEye", "R.Eye"); }
+        if left_hand.is_none() { left_hand = vrm_discover("leftHand", "L.Hand"); }
+        if right_hand.is_none() { right_hand = vrm_discover("rightHand", "R.Hand"); }
+    }
+
+    // Parse VRM lookAt config for bone-based eye gaze rotation ranges
+    let look_at_config = parse_vrm_look_at_config(model_path);
+
     let upper_body_count = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter()
         .filter(|b| b.is_some()).count();
     let arm_count = [&left_upper_arm, &right_upper_arm, &left_lower_arm, &right_lower_arm].iter()
         .filter(|b| b.is_some()).count();
-    clog_info!("🎨 Bone discovery slot {}: {}/5 upper body (head={} neck={} spine={} lsh={} rsh={}), {}/4 arms (lua={} rua={} lla={} rla={})",
+    let eye_count = [&left_eye, &right_eye].iter().filter(|b| b.is_some()).count();
+    let hand_count = [&left_hand, &right_hand].iter().filter(|b| b.is_some()).count();
+    clog_info!("🎨 Bone discovery slot {}: {}/5 upper body (head={} neck={} spine={} lsh={} rsh={}), {}/4 arms (lua={} rua={} lla={} rla={}), eyes={}/2, hands={}/2, lookAt={}",
         slot, upper_body_count,
         head.is_some(), neck.is_some(), spine.is_some(),
         left_shoulder.is_some(), right_shoulder.is_some(),
         arm_count,
         left_upper_arm.is_some(), right_upper_arm.is_some(),
-        left_lower_arm.is_some(), right_lower_arm.is_some());
+        left_lower_arm.is_some(), right_lower_arm.is_some(),
+        eye_count, hand_count, look_at_config.is_some());
 
     bone_registry.slots.insert(slot, SlotBones {
         head,
@@ -3094,6 +3416,11 @@ fn discover_upper_body_bones(
         right_upper_arm,
         left_lower_arm,
         right_lower_arm,
+        left_eye,
+        right_eye,
+        left_hand,
+        right_hand,
+        look_at_config,
     });
 }
 

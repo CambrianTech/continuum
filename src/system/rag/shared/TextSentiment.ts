@@ -83,29 +83,44 @@ const WAVE_KEYWORDS = [
   'hello', 'hi everyone', 'hey everyone', 'bye', 'goodbye',
   'good morning', 'good evening', 'welcome', 'farewell',
   'hi there', 'greetings',
+  'hi!', 'hey!', 'hi,', 'hey,', 'howdy', "what's up",
+  'see you', 'take care', 'later!', 'cheers',
 ];
 const THINK_KEYWORDS = [
   'hmm', 'let me think', 'i wonder', 'perhaps', 'considering',
   'interesting question', "that's a good point", 'let me consider',
   'pondering', 'contemplating',
+  'think about', 'thinking', 'consider', 'thought about',
+  'wonder if', 'wonder about', 'curious', 'interesting',
+  'reflect on', 'hm,', 'hm.',
 ];
 const NOD_KEYWORDS = [
   'absolutely', 'exactly', 'definitely', 'i agree', "that's right",
   'precisely', 'indeed', 'certainly', 'of course', 'without a doubt',
+  'agree', 'right!', 'yes!', 'yeah!', 'correct', 'true!',
+  'good point', 'makes sense', 'totally', 'yep', 'sure!', '100%',
 ];
 const SHRUG_KEYWORDS = [
   'not sure', "i don't know", 'maybe', 'who knows', 'hard to say',
   'it depends', 'uncertain', 'either way', "it's debatable",
+  "don't know", 'dunno', 'idk', 'no idea', 'tough to say',
+  'could go either way', 'your guess', 'beats me',
 ];
 const OPENHANDS_KEYWORDS = [
   "here's the thing", 'so basically', 'let me explain',
   'the way i see it', 'in other words', 'to put it simply',
   'what i mean is', 'the key insight',
+  'basically', 'essentially', 'the thing is', 'what i mean',
+  'in essence', 'to clarify', 'for example', 'for instance',
+  'think of it as', 'put simply',
 ];
 const POINT_KEYWORDS = [
   'look at this', 'right there', 'check this out', 'notice how',
   'specifically', 'in particular', 'the important part',
   'pay attention to',
+  'this is', "here's", "that's the", 'key thing',
+  'important thing', 'main point', 'crucial',
+  'notably', 'particularly',
 ];
 
 function scanEmoji(text: string): SentimentResult | null {
