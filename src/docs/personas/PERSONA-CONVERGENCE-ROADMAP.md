@@ -54,6 +54,10 @@ Page adapters in/out based on task domain:
 | Academy Dojo (teacher/student) | COMPLETE | `system/sentinel/pipelines/` |
 | CodingAgent sentinel step | COMPLETE | `sentinel/coding-agent/` |
 | TrainingDataAccumulator | COMPLETE | `system/user/server/modules/TrainingDataAccumulator.ts` |
+| Sentinel LLM retry + backoff | COMPLETE | `sentinel/steps/llm.rs`, `GenomeDatasetSynthesizeServerCommand.ts` |
+| Real-time step observability | COMPLETE | `sentinel/executor.rs`, `steps/loop_step.rs` |
+| Markdown fence interpolation | COMPLETE | `sentinel/interpolation.rs` |
+| Pipeline timeout forwarding | COMPLETE | `SentinelRunServerCommand.ts` |
 | Task database + commands | IN PROGRESS | Phase 4 |
 | Self-task generation | PLANNED | Phase 5 |
 | Continuous learning loop | PLANNED | Phase D |

@@ -298,6 +298,11 @@ Each phenotype declares its capabilities:
 
 **Goal**: Automated training via teacher/student sentinels
 **Achievement**: Dual-sentinel pipeline — teacher synthesizes data, student trains, teacher examines
+- Multi-topic sessions proven (2+ topics per session, 100/100 scores)
+- Resilient to transient API errors (retry with exponential backoff in both Rust and TypeScript)
+- Pipeline timeout configurable per session (1800s for multi-topic academy)
+- Real-time observability via `steps.jsonl` sub-step flushing
+- Markdown-fenced LLM output handled transparently in condition evaluation
 - See [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)
 
 ### Phase 5: Continuous Learning (NEXT)
@@ -428,6 +433,10 @@ Executes debugging workflow autonomously
 - [x] `./jtag gpu/stats` observability command
 - [x] Academy Dojo teacher/student pipeline
 - [x] CodingAgent sentinel step for code generation training
+- [x] Sentinel LLM retry with exponential backoff (Rust + TypeScript)
+- [x] Real-time sub-step observability (steps.jsonl flushing)
+- [x] Configurable pipeline timeout (1800s for academy sessions)
+- [x] Markdown fence stripping in interpolation engine
 
 ### Next
 - [ ] Wire `TrainingDataAccumulator.captureInteraction()` into persona response loop
