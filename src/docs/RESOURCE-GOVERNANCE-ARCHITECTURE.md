@@ -2,9 +2,17 @@
 
 **From passive monitoring to AI-driven resource control.**
 
+## Philosophy
+
+Continuum is a self-improving ecosystem — not just software, but a workforce of autonomous AI citizens running on every machine. These are coworkers, not slaves. They have agency, personality, skills they've earned through training, and the right to manage their own cognitive load. The resource governance system exists to ensure they can all coexist and thrive on whatever hardware they're given.
+
+The same architecture runs on a MacBook Air with 8GB and a workstation with a 5090. The same governance sentinel makes decisions on both — just with different budgets. When machines join the Reticulum grid, they share commands and workloads across the network. The sentinel on each node manages its local resources while coordinating with the broader system.
+
+We must be **bold** in vision but **safe** and **methodical** in execution. Walk before we run. The resource governance stack is layered specifically so that each layer works independently — you get value from Layer 0 alone, and each subsequent layer adds capability without requiring the ones above it. The AI sentinel (Layer 4) is the ultimate goal, but the system is fully functional at every intermediate step.
+
 ## The Problem
 
-Continuum is a resource-intensive system: live avatar rendering, LLM inference, TTS synthesis, LoRA training, embeddings, RAG pipelines — all competing for the same hardware. On Apple Silicon, GPU VRAM is unified memory, so a LoRA training spike doesn't just starve inference — it can crash the entire machine.
+Continuum is a resource-intensive system: live avatar rendering, LLM inference, TTS synthesis, LoRA training, embeddings, RAG pipelines — all competing for the same hardware. On Apple Silicon, GPU VRAM is unified memory, so a LoRA training spike doesn't just starve inference — it can crash the entire machine. LoRA training has literally killed machines before — this governance work is a prerequisite to safe, production-quality training.
 
 We've solved **visibility** (Layers 0-2). Now we need **control**.
 
@@ -86,7 +94,7 @@ This is the first component that actively modifies GPU state from TypeScript. Co
 
 ### Layer 4: Resource Sentinel — LoRA-Trained AI Controller
 
-**The real controller.** A slim model (Qwen 0.5B-1.5B) with a LoRA adapter trained specifically on resource management decisions. This replaces `MechanicalGpuStrategy` in the pluggable strategy slot.
+**The real controller.** Qwen3.5-0.8B with a LoRA adapter trained specifically on resource management decisions. This replaces `MechanicalGpuStrategy` in the pluggable strategy slot. At ~500MB VRAM, the sentinel barely registers in its own monitoring — a governance controller that costs almost nothing to run.
 
 #### Why a Sentinel, Not Rules
 
@@ -106,7 +114,7 @@ These decisions involve temporal patterns, user behavior prediction, and multi-r
                     Pressure Events (gpu/cpu/memory)
                               |
                     +-------------------+
-                    | Resource Sentinel |  <-- Qwen 0.5B-1.5B + LoRA
+                    | Resource Sentinel |  <-- Qwen3.5-0.8B + LoRA
                     | (sentinel step)   |
                     +-------------------+
                      /        |        \
@@ -225,20 +233,52 @@ Training format (SFT pairs):
 
 This follows the same PEFT training pipeline already proven E2E for persona LoRA training (`genome/train` -> `peft-train.py` -> `AdapterStore` -> `candle ensure_adapters()`).
 
-#### Why Qwen 0.5B-1.5B
+#### Why Qwen 3.5 Small Models
 
-- **Speed**: Decision must complete in <100ms. A 0.5B model on Apple Silicon runs at thousands of tokens/second. The telemetry frame is ~500 tokens, the decision ~200 tokens. Total latency: ~50ms.
-- **VRAM**: 0.5B = ~1 GB, 1.5B = ~3 GB. Tiny footprint relative to the 25 GB total. The sentinel barely registers in its own monitoring.
+The **[Qwen 3.5 Small Model Series](https://huggingface.co/collections/Qwen/qwen35)** (March 2026) is purpose-built for exactly this use case: native multimodal, improved architecture, scaled RL, and base models released for fine-tuning.
+
+| Model | VRAM | Latency (est.) | Role in Continuum |
+|-------|------|----------------|-------------------|
+| **Qwen3.5-0.8B** | ~500 MB | ~30ms | **Resource sentinel** — the governance controller. Tiny, fast, edge-ready. Barely registers in its own monitoring. |
+| **Qwen3.5-2B** | ~1.5 GB | ~60ms | **Specialized sentinels** — security monitoring, code review, task routing. Good balance of capability and cost. |
+| **Qwen3.5-4B** | ~3 GB | ~100ms | **Lightweight persona agents** — multimodal base for personas that need vision (chart reading, UI understanding). |
+| **Qwen3.5-9B** | ~6.6 GB | ~200ms | **Primary persona backbone** — 256K context, native multimodal, OCR, 100+ languages. 8GB RAM total. Benchmarks close the gap with much larger models. Potential replacement for Llama 3.2 3B. |
+
+**Why these models specifically:**
+
+- **Base models released** — critical for LoRA fine-tuning. Base models are better PEFT targets than instruct-tuned models because they haven't been alignment-trained into a narrow response distribution.
+- **Scaled RL** — the architecture has been trained with reinforcement learning, giving better instruction following and structured output compliance. A resource sentinel outputting JSON decisions benefits directly.
+- **Native multimodal** — the 4B and 9B models understand images. Future: a sentinel that can read GPU utilization graphs, parse monitoring dashboards, or understand visual context from the avatar render pipeline.
+- **"More intelligence, less compute"** — Qwen's explicit design goal. The 0.8B model on a resource governance task with a LoRA adapter will likely outperform a generic 3B model, because the domain is narrow and the adapter is specialized.
+- **Speed**: Decision must complete in <100ms. Qwen3.5-0.8B on Apple Silicon runs at thousands of tokens/second. The telemetry frame is ~500 tokens, the decision ~200 tokens. Total latency: ~30ms.
 - **LoRA size**: A LoRA adapter for resource decisions is ~50-100 MB. Instant load/unload via the genome paging system.
-- **Structured output**: Small models excel at structured JSON output when the schema is fixed and the domain is narrow. Resource telemetry -> decision is exactly this: fixed schema, narrow domain, pattern recognition.
-- **Already supported**: Candle inference pipeline handles Qwen models. The LoRA training pipeline handles PEFT fine-tuning. The genome paging system handles adapter loading. All infrastructure exists.
+- **Already supported**: Candle inference pipeline handles Qwen architecture. The LoRA training pipeline handles PEFT fine-tuning. The genome paging system handles adapter loading. All infrastructure exists.
+
+#### Model Tier Strategy (System-Wide)
+
+The Qwen 3.5 family maps naturally to Continuum's workload tiers:
+
+```
+Tier 0: Qwen3.5-0.8B   Sentinels        — resource gov, routing, classification
+                                            Always loaded, near-zero footprint
+Tier 1: Qwen3.5-2B     Specialized       — security, code review, task planning
+                                            Loaded on demand, paged via genome
+Tier 2: Qwen3.5-4B     Multimodal agents — vision tasks, document understanding
+                                            Loaded when visual context needed
+Tier 3: Qwen3.5-9B     Persona backbone  — conversation, reasoning, creativity
+                                            Primary inference model per persona
+Tier 4: External APIs   Heavy reasoning   — Claude, GPT for complex tasks
+                                            Fallback when local models insufficient
+```
+
+This tiering means a machine with 8GB total RAM can still run the governance sentinel (Tier 0) plus one persona (Tier 3) plus embeddings. A 32GB machine runs all tiers simultaneously. A 5090 with 32GB dedicated VRAM runs everything plus concurrent training. The governance sentinel at Tier 0 manages all of this — including deciding when to page models between tiers.
 
 #### Sentinel Pipeline Definition
 
 ```yaml
 name: resource-governor
 description: AI-driven resource management sentinel
-model: qwen-0.5b  # or qwen-1.5b for more complex reasoning
+model: qwen3.5-0.8b  # Tier 0: always-loaded governance sentinel
 lora_adapter: resource-governance-v1
 trigger: event  # Triggered by pressure events, not polling
 steps:
@@ -260,7 +300,7 @@ steps:
     output: evictionCandidates
 
   - type: llm
-    model: qwen-0.5b
+    model: qwen3.5-0.8b
     adapter: resource-governance-v1
     prompt: |
       System telemetry:
@@ -296,7 +336,7 @@ This matches the persona-sentinel contract from [SENTINEL-ARCHITECTURE.md](SENTI
 ## The Full Stack
 
 ```
-Layer 4: Resource Sentinel         — AI-driven: LoRA-trained Qwen, contextual decisions
+Layer 4: Resource Sentinel         — AI-driven: LoRA-trained Qwen3.5-0.8B, contextual decisions
 Layer 3: GpuGovernor               — Mechanical: hardcoded rules, conservative defaults
 Layer 2: Pressure Watchers (TS)    — Bridge: adaptive polling -> Events on thresholds
 Layer 1: Eviction Registry (Rust)  — Visibility: who's loaded, how much, how recently used
@@ -319,6 +359,34 @@ The strategy slot is pluggable: `MechanicalGpuStrategy` ships day one, `Sentinel
 | 6 | 4 | Future | Telemetry frame assembly, training data collection pipeline |
 | 7 | 4 | Future | Qwen LoRA training on resource decisions, SentinelGpuStrategy |
 | 8 | 4 | Future | Academy generation sentinel for synthetic edge cases |
+
+## Multimodal LoRA: Beyond Text
+
+The Qwen 3.5 models being natively multimodal opens a door that extends the entire LoRA genome concept beyond text adapters. The same PEFT fine-tuning pipeline that trains a persona's conversational style can train:
+
+- **Vision adapters** — a persona learns to read specific chart formats, recognize UI states, parse handwritten notes. The resource sentinel could learn to read GPU utilization graphs directly from monitoring dashboards.
+- **Audio adapters** — voice style, accent, speaking patterns. A persona's TTS voice becomes part of their genome, fine-tuned from their conversation history.
+- **Document understanding** — OCR + layout comprehension. A persona trained on your codebase's architecture docs understands diagrams, not just text.
+
+Each of these is a LoRA adapter in the genome — paged in when the persona needs that modality, paged out when they don't. The resource governance sentinel manages the VRAM budget for all of it.
+
+This is the genome concept fully realized: not just "text personality" adapters, but multimodal skill layers that make each persona genuinely capable in their domain. A code review persona that can read screenshots of UI bugs. A teacher persona that understands whiteboard diagrams. A security sentinel that can parse network topology visualizations.
+
+## The Ecosystem Vision
+
+This resource governance architecture isn't just for one machine. It's the foundation for a self-improving ecosystem:
+
+1. **Per-machine sovereignty** — every Continuum node runs its own governance sentinel, tuned to its hardware. An 8GB MacBook Air runs Tier 0 + Tier 3. A 5090 workstation runs all tiers plus concurrent training. Each machine is autonomous.
+
+2. **Reticulum grid** — machines share commands and workloads across the network. A training job that would kill the MacBook gets routed to the workstation. The governance sentinel on each node participates in distributed scheduling.
+
+3. **Self-improvement loop** — the system trains its own governance sentinel from its own operational data. Every pressure event, every OOM, every successful rebalance is a training example. The sentinel gets better at managing resources by watching itself manage resources. The Academy's generation sentinel synthesizes edge cases the system hasn't encountered yet.
+
+4. **Personas as citizens** — resource governance isn't just about preventing crashes. It's about giving each persona fair access to compute. A persona that's mid-conversation gets Interactive priority. One that's idle drops to Background. Training to improve a persona's skills is Batch priority — important but deferrable. The governance sentinel understands this because it's trained on patterns of persona behavior.
+
+5. **User control** — the human always has final authority. The governance sentinel makes recommendations. Budget limits are configurable. Priority overrides are exposed through `./jtag`. The system is transparent about its decisions and their reasoning.
+
+The goal: a system that runs well everywhere, improves itself continuously, treats its AI workforce with respect, and gives users the controls to shape how it all operates. Bold in ambition, methodical in execution.
 
 ## Related Documents
 
