@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::utils::params::Params;
 
 /// Global model cache - models loaded on demand
@@ -221,7 +221,7 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
     if let Some(mgr) = gpu_manager() {
         let model_bytes = estimate_embedding_model_bytes(model_name);
         if model_bytes > 0 {
-            match mgr.allocate(GpuSubsystem::Inference, model_bytes) {
+            match mgr.allocate(GpuSubsystem::Inference, model_bytes, GpuPriority::Interactive) {
                 Ok(guard) => {
                     info!(
                         "Embedding GPU: {} allocation {:.0}MB",

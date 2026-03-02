@@ -16,7 +16,7 @@ use tokenizers::Tokenizer;
 
 use std::sync::Arc;
 
-use super::{GenomeAdapter, GpuMemoryManager, GpuSubsystem, ModelBackend, ModelFormat};
+use super::{GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat};
 use crate::inference::model::rebuild_with_stacked_lora;
 use crate::runtime;
 
@@ -213,7 +213,7 @@ impl ModelBackend for LlamaSafetensorsBackend {
         // Allocate for the doubled memory, release after swap.
         let vram_bytes = self.estimated_vram_bytes();
         let _spike_guard = gpu_manager.and_then(|mgr| {
-            mgr.allocate(GpuSubsystem::Inference, vram_bytes).ok()
+            mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Background).ok()
         });
 
         let new_model = rebuild_with_stacked_lora(

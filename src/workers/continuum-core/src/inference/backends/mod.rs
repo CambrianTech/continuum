@@ -27,7 +27,7 @@ use candle_transformers::generation::LogitsProcessor;
 use rand::Rng;
 use tokenizers::Tokenizer;
 
-use crate::gpu::memory_manager::{GpuMemoryManager, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::inference::lora::LoRAWeights;
 use crate::runtime;
 

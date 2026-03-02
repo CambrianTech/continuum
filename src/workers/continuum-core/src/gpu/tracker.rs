@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::log_info;
 
-use super::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
+use super::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 
 /// Reusable GPU allocation tracker for model loading.
 ///
@@ -73,26 +73,28 @@ impl GpuModelTracker {
     /// - No manager available (graceful degradation)
     /// - File size is 0 or unreadable
     ///
-    /// Returns Err only on critical GPU pressure (>95%).
+    /// Returns Err when pressure exceeds this priority's gate threshold.
     pub fn track_file(
         &self,
         subsystem: GpuSubsystem,
         path: &Path,
         manager: Option<&Arc<GpuMemoryManager>>,
+        priority: GpuPriority,
     ) -> Result<(), String> {
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        self.track_bytes(subsystem, bytes, manager)
+        self.track_bytes(subsystem, bytes, manager, priority)
     }
 
     /// Track GPU allocation with explicit byte count.
     ///
     /// Returns Ok(()) if allocation succeeded or manager unavailable.
-    /// Returns Err only on critical GPU pressure (>95%).
+    /// Returns Err when pressure exceeds this priority's gate threshold.
     pub fn track_bytes(
         &self,
         subsystem: GpuSubsystem,
         bytes: u64,
         manager: Option<&Arc<GpuMemoryManager>>,
+        priority: GpuPriority,
     ) -> Result<(), String> {
         if bytes == 0 {
             return Ok(());
@@ -101,13 +103,13 @@ impl GpuModelTracker {
             return Ok(());
         };
 
-        match mgr.allocate(subsystem, bytes) {
+        match mgr.allocate(subsystem, bytes, priority) {
             Ok(guard) => {
                 let mb = bytes as f64 / (1024.0 * 1024.0);
                 log_info!(
                     "gpu", self.label,
-                    "{}: GPU {} allocation {:.0}MB",
-                    self.label, subsystem.name(), mb
+                    "{}: GPU {} [{}] allocation {:.0}MB",
+                    self.label, subsystem.name(), priority.name(), mb
                 );
                 let mut slot = self.guard.lock()
                     .map_err(|e| format!("{}: lock poisoned: {e}", self.label))?;
@@ -208,6 +210,7 @@ mod tests {
             GpuSubsystem::Tts,
             100 * 1024 * 1024, // 100MB
             Some(&mgr),
+            GpuPriority::Interactive,
         );
         assert!(result.is_ok());
         assert!(tracker.is_tracked());
@@ -217,7 +220,7 @@ mod tests {
     #[test]
     fn test_track_bytes_no_manager() {
         let tracker = GpuModelTracker::new("NoMgr");
-        let result = tracker.track_bytes(GpuSubsystem::Tts, 100_000_000, None);
+        let result = tracker.track_bytes(GpuSubsystem::Tts, 100_000_000, None, GpuPriority::Interactive);
         assert!(result.is_ok());
         assert!(!tracker.is_tracked()); // No guard stored
     }
@@ -226,7 +229,7 @@ mod tests {
     fn test_track_zero_bytes_noop() {
         let tracker = GpuModelTracker::new("ZeroBytes");
         let mgr = test_manager();
-        let result = tracker.track_bytes(GpuSubsystem::Tts, 0, Some(&mgr));
+        let result = tracker.track_bytes(GpuSubsystem::Tts, 0, Some(&mgr), GpuPriority::Interactive);
         assert!(result.is_ok());
         assert!(!tracker.is_tracked());
     }
@@ -236,7 +239,7 @@ mod tests {
         let tracker = GpuModelTracker::new("ReleaseTest");
         let mgr = test_manager();
 
-        tracker.track_bytes(GpuSubsystem::Inference, 200 * 1024 * 1024, Some(&mgr)).unwrap();
+        tracker.track_bytes(GpuSubsystem::Inference, 200 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
         assert!(tracker.is_tracked());
 
         tracker.release();
@@ -250,11 +253,11 @@ mod tests {
         let mgr = test_manager();
 
         // First allocation
-        tracker.track_bytes(GpuSubsystem::Tts, 50 * 1024 * 1024, Some(&mgr)).unwrap();
+        tracker.track_bytes(GpuSubsystem::Tts, 50 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
         assert_eq!(tracker.tracked_bytes(), 50 * 1024 * 1024);
 
         // Replace with larger allocation — old guard drops, releases old memory
-        tracker.track_bytes(GpuSubsystem::Tts, 80 * 1024 * 1024, Some(&mgr)).unwrap();
+        tracker.track_bytes(GpuSubsystem::Tts, 80 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
         assert_eq!(tracker.tracked_bytes(), 80 * 1024 * 1024);
     }
 }

@@ -18,7 +18,7 @@ use crate::ai::{
     ModelCapability, ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
 };
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
 
 use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
@@ -135,7 +135,7 @@ impl CandleAdapter {
         if let Some(mgr) = &self.gpu_manager {
             let adapter_bytes = estimate_adapter_vram(path);
             if adapter_bytes > 0 {
-                match mgr.allocate(GpuSubsystem::Inference, adapter_bytes) {
+                match mgr.allocate(GpuSubsystem::Inference, adapter_bytes, GpuPriority::Interactive) {
                     Ok(guard) => {
                         self.adapter_guards.write().insert(adapter_id.to_string(), guard);
                     }
@@ -423,7 +423,7 @@ impl AIProviderAdapter for CandleAdapter {
 
                 if let Some(mgr) = &gpu_mgr {
                     if vram_bytes > 0 {
-                        match mgr.allocate(GpuSubsystem::Inference, vram_bytes) {
+                        match mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Interactive) {
                             Ok(guard) => { new_model_guard = Some(guard); }
                             Err(e) => {
                                 log.error(&format!("GPU CRITICAL: Cannot load model — {}", e));

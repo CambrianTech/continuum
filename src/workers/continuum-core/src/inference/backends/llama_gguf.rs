@@ -18,7 +18,7 @@ use tokenizers::Tokenizer;
 
 use std::sync::Arc;
 
-use super::{GenomeAdapter, GpuMemoryManager, GpuSubsystem, ModelBackend, ModelFormat};
+use super::{GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat};
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
@@ -237,7 +237,7 @@ impl ModelBackend for LlamaGgufBackend {
         let total_lora_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
         let spike_bytes = (total_lora_layers as u64) * 4 * 1024 * 1024; // ~4MB avg layer × count
         let _spike_guard = gpu_manager.and_then(|mgr| {
-            mgr.allocate(GpuSubsystem::Inference, spike_bytes).ok()
+            mgr.allocate(GpuSubsystem::Inference, spike_bytes, GpuPriority::Background).ok()
         });
         // _spike_guard drops at method end, releasing the transient allocation
 

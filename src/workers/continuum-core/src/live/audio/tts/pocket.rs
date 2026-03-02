@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::clog_info;
-use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 
 /// Preset voices shipped with Pocket-TTS (Les Misérables characters)
@@ -350,6 +350,7 @@ impl TextToSpeech for PocketTTS {
             GpuSubsystem::Tts,
             400 * 1024 * 1024, // ~400MB model from HuggingFace (no local path to measure)
             super::gpu_manager(),
+            GpuPriority::Interactive,
         );
 
         let _ = POCKET_MODEL

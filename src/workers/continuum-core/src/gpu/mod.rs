@@ -13,5 +13,7 @@ pub mod tracker;
 
 pub use memory_manager::{
     GpuMemoryManager, GpuSubsystem, GpuAllocationGuard, GpuStats, SubsystemStats,
+    GpuPriority, GpuError, AllocationsByPriority,
+    PRESSURE_WARNING, PRESSURE_HIGH, PRESSURE_CRITICAL,
 };
 pub use tracker::GpuModelTracker;

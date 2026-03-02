@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use crate::{clog_info, clog_warn};
-use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 
 /// Global Kokoro session + tokenizer
@@ -454,7 +454,7 @@ impl TextToSpeech for KokoroTTS {
         };
 
         // Track GPU allocation for TTS model (non-critical: proceed on failure)
-        let _ = KOKORO_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager());
+        let _ = KOKORO_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager(), GpuPriority::Interactive);
 
         // OnceLock::set returns Err if already set by another thread — that's fine,
         // it means a concurrent request already initialized the model.

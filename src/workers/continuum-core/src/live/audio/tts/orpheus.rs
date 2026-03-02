@@ -33,7 +33,7 @@ use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use crate::gpu::memory_manager::GpuSubsystem;
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
@@ -565,7 +565,7 @@ impl TextToSpeech for OrpheusTts {
         clog_info!("Orpheus: Llama model loaded on {:?}", device);
 
         // Track GPU allocation for LLM weights (non-critical: proceed on failure)
-        let _ = ORPHEUS_LLM_GPU.track_file(GpuSubsystem::Tts, &gguf_path, super::gpu_manager());
+        let _ = ORPHEUS_LLM_GPU.track_file(GpuSubsystem::Tts, &gguf_path, super::gpu_manager(), GpuPriority::Interactive);
 
         // Load SNAC decoder
         let snac_path = model_dir.join("snac_decoder.onnx");
@@ -577,7 +577,7 @@ impl TextToSpeech for OrpheusTts {
         );
 
         // Track GPU allocation for SNAC decoder (non-critical)
-        let _ = ORPHEUS_SNAC_GPU.track_file(GpuSubsystem::Tts, &snac_path, super::gpu_manager());
+        let _ = ORPHEUS_SNAC_GPU.track_file(GpuSubsystem::Tts, &snac_path, super::gpu_manager(), GpuPriority::Interactive);
 
         let model = OrpheusModel {
             llm,
