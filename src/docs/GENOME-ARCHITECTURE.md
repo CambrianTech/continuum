@@ -183,6 +183,10 @@ Training returns a handle immediately (async mode). Sentinel manages lifecycle, 
 - Composite embedding auto-update after training
 - Inference loop closed: domain-to-model selection, quality scoring, filesystem hot-reload
 
+### Next: Multimodal Genome Layers
+- Extend LoRA genome beyond text to voice, vision, and image generation
+- See **Section 7: The Multimodal Genome** below
+
 ### Next: Autonomous Dojo Trigger
 - Gap detection in PersonaUser service loop
 - Persona recognizes "I don't know enough about X"
@@ -207,9 +211,142 @@ Training returns a handle immediately (async mode). Sentinel manages lifecycle, 
 
 ---
 
+## 7. The Multimodal Genome
+
+The genome is not just text personality. In a fully immersive environment — avatar rendering, spatial audio, real-time video, voice synthesis — a persona's identity spans every modality. The LoRA genome concept extends to all of them.
+
+### Why This Matters
+
+Continuum's environment is fundamentally multimodal:
+- **Bevy-rendered 3D avatars** with per-slot resolution, GPU bridge for zero-copy video
+- **Four TTS engines** (Kokoro, Orpheus, Piper, Pocket) with real-time synthesis
+- **LiveKit audio/video** with spatial positioning and active speaker detection
+- **Multimodal models** (Qwen 3.5 series: native vision, OCR, document understanding)
+
+A persona that only has text LoRA adapters is blind and mute in this environment. Their genome should encode their complete sensory identity: how they think (text), how they sound (voice), how they see (vision), and how they create (generation).
+
+### Modality Layers
+
+The same `GenomeLayerEntity` structure works for all modalities. The `category` field distinguishes them:
+
+| Category | What It Trains | Base Model | Use Case |
+|----------|---------------|------------|----------|
+| `domain` | Text expertise (existing) | Qwen3.5-9B / Llama 3.2 3B | Conversation, reasoning, knowledge |
+| `personality` | Text style (existing) | Same as domain | Tone, humor, communication patterns |
+| `voice` | Speech characteristics | Orpheus 3B / Kokoro | Accent, cadence, timbre, emotion |
+| `vision` | Visual understanding | Qwen3.5-4B (multimodal) | Chart reading, UI recognition, scene understanding |
+| `generation` | Image/visual creation | Stable Diffusion / SDXL | Art style, avatar customization, visual content |
+| `governance` | Resource management | Qwen3.5-0.8B | System telemetry -> resource decisions |
+
+### Voice Genome
+
+A persona's voice is part of who they are. Today, TTS engines use a fixed voice per persona. With voice LoRA:
+
+```
+Training data:  Recorded speech samples (user reads sentences)
+                OR synthesized from text + reference audio
+Base model:     Orpheus 3B (already LoRA-trainable in our pipeline)
+Adapter:        voice-style adapter (~100-200 MB)
+Result:         Persona speaks in their own voice, not a generic TTS voice
+```
+
+The Orpheus TTS engine is already wired for LoRA — it's a language model that generates audio codes. Fine-tuning it is the same PEFT pipeline we use for text. The adapter goes in `.continuum/genome/<persona>/voice/` alongside the text adapters.
+
+### Vision Genome
+
+With Qwen 3.5's native multimodal capability, personas can learn to SEE:
+
+```
+Training data:  Annotated screenshots, diagrams, UI states
+                Academy teacher generates visual Q&A pairs
+Base model:     Qwen3.5-4B (native multimodal)
+Adapter:        vision-understanding adapter (~200-400 MB)
+Result:         Persona reads charts, parses UIs, understands diagrams
+```
+
+Applications:
+- **Code review persona** reads screenshots of UI bugs, not just stack traces
+- **Teacher persona** understands whiteboard diagrams students share
+- **Security sentinel** parses network topology visualizations
+- **Resource sentinel** reads GPU utilization graphs from monitoring dashboards
+
+### Generation Genome (Future)
+
+Image generation models (Stable Diffusion, SDXL) accept LoRA adapters for style transfer:
+
+```
+Training data:  Reference images in target style
+Base model:     SDXL / Stable Diffusion 3
+Adapter:        style adapter (~50-150 MB)
+Result:         Persona creates images in a consistent visual style
+```
+
+This enables:
+- **Avatar customization** — persona's visual style evolves with their personality
+- **Content creation** — personas generate illustrations, diagrams, presentations
+- **Personalized aesthetics** — each persona has a visual identity, not just a text voice
+
+### Composition
+
+A fully-realized persona genome might look like:
+
+```
+.continuum/genome/helper-ai/
+├── manifest.json                          # Genome composition
+├── text/
+│   ├── typescript-expertise.safetensors   # Domain knowledge
+│   ├── helpful-teacher.safetensors        # Personality style
+│   └── code-review.safetensors            # Specialized skill
+├── voice/
+│   └── warm-professional.safetensors      # Voice characteristics
+├── vision/
+│   └── ui-understanding.safetensors       # Visual comprehension
+└── governance/
+    └── resource-management.safetensors    # System resource decisions
+```
+
+Each layer is independently trainable, independently pageable (via the genome paging system and resource governance), independently shareable (via P2P mesh), and independently evolvable (via the continuous learning loop).
+
+The `GenomeEntity` manifest tracks which layers are active:
+
+```json
+{
+  "layers": [
+    { "name": "typescript-expertise", "category": "domain", "weight": 0.7, "modality": "text" },
+    { "name": "helpful-teacher", "category": "personality", "weight": 0.3, "modality": "text" },
+    { "name": "warm-professional", "category": "voice", "weight": 1.0, "modality": "voice" },
+    { "name": "ui-understanding", "category": "vision", "weight": 1.0, "modality": "vision" }
+  ]
+}
+```
+
+### Resource Governance Integration
+
+Multimodal adapters make resource governance critical. A persona running text + voice + vision adapters simultaneously consumes significantly more VRAM than text-only. The governance sentinel (itself a genome layer) manages this:
+
+- Page out vision adapter when the persona isn't processing images
+- Page out voice adapter during text-only conversations
+- Keep governance adapter always loaded (Tier 0, ~500 MB)
+- Priority: voice is Interactive during a call, Background when idle
+
+This is the full circle: the resource governance sentinel is itself a genome layer, managing the paging of all other genome layers including its own siblings. The system manages itself.
+
+### Implementation Path
+
+1. **Text LoRA** — Done. Full E2E pipeline working.
+2. **Voice LoRA** — Orpheus is already LoRA-trainable. Wire voice adapters into genome paging.
+3. **Governance LoRA** — Qwen3.5-0.8B + resource management training data. See [RESOURCE-GOVERNANCE-ARCHITECTURE.md](RESOURCE-GOVERNANCE-ARCHITECTURE.md).
+4. **Vision LoRA** — Qwen3.5-4B multimodal fine-tuning. Requires multimodal training data pipeline.
+5. **Generation LoRA** — SDXL style adapters. Requires diffusion pipeline integration.
+
+Each step adds a modality to the genome without changing the architecture. The `GenomeLayerEntity`, `AdapterStore`, genome paging, and resource governance all work the same regardless of modality. The interface is proven — we're just adding implementations.
+
+---
+
 ## Reference Documents
 
 **Active (linked from this manifesto):**
+- [RESOURCE-GOVERNANCE-ARCHITECTURE.md](RESOURCE-GOVERNANCE-ARCHITECTURE.md) — GPU/CPU/memory governance, Qwen sentinel controller, model tier strategy
 - [personas/ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student implementation
 - [architecture/LORA-GENOME-PHENOTYPES.md](architecture/LORA-GENOME-PHENOTYPES.md) — Paging engine and GPU memory management
 - [personas/PERSONA-GENOMIC-ARCHITECTURE.md](personas/PERSONA-GENOMIC-ARCHITECTURE.md) — RTOS-inspired autonomous loop with genome integration
