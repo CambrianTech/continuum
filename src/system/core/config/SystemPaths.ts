@@ -1,23 +1,24 @@
 /**
  * SystemPaths - SINGLE SOURCE OF TRUTH for all filesystem paths
  *
- * Registry Pattern: Same tree structure off EITHER base location
- * - $HOME/.continuum/jtag (global shared resources)
- * - $REPO/.continuum/jtag (project-specific resources)
+ * Two-root architecture:
+ * - PERSISTENT ($HOME/.continuum): genome, personas, databases, blobs, models, datasets
+ * - RUNTIME ($REPO/.continuum): logs, sessions, sockets, registry, temp, shared, reports, media
  *
- * Like Claude Code's # memoization: asks which location when saving.
- * This makes personas/genomes act like a "container registry" - can exist in either location.
+ * 25+ consumers import SystemPaths — the composite singleton routes each section
+ * to the correct root transparently. Zero consumer code changes needed.
  *
  * Example:
  * ```typescript
- * import { SystemPaths, createPathsForBase } from '@system/core/config/SystemPaths';
+ * import { SystemPaths } from '@system/core/config/SystemPaths';
  *
- * // Use default repo-local paths
- * const logPath = SystemPaths.logs.personas('helper-ai');
+ * // Persistent → $HOME/.continuum
+ * const adapterDir = SystemPaths.genome.adapters;
+ * const personaDb = SystemPaths.personas.longterm('helper-abc123');
  *
- * // Or create global paths (e.g., for shared personas)
- * const globalPaths = createPathsForBase(path.join(os.homedir(), '.continuum', 'jtag'));
- * const globalPersonaLog = globalPaths.logs.personas('helper-ai');
+ * // Runtime → $REPO/.continuum
+ * const logPath = SystemPaths.logs.system;
+ * const socketPath = SystemPaths.sockets.core;
  * ```
  */
 
@@ -25,11 +26,12 @@ import * as path from 'path';
 import * as os from 'os';
 
 /**
- * Path tree structure - SAME regardless of base location
- * This is the SINGLE SOURCE OF TRUTH for the directory structure
+ * Path tree structure - SAME regardless of base location.
+ * This is the SINGLE SOURCE OF TRUTH for the directory structure.
+ * Every directory that exists on disk gets declared here.
  */
 export interface ContinuumPaths {
-  /** Root .continuum/jtag directory */
+  /** Root .continuum directory */
   root: string;
 
   /** Database storage paths */
@@ -80,9 +82,11 @@ export interface ContinuumPaths {
     training: string;
     /** .genome.tgz distribution archives for adapter trading */
     packages: string;
+    /** Micromamba Python environment for PEFT training */
+    python: string;
   };
 
-  /** Persona storage (can be in $HOME or $REPO) */
+  /** Persona storage (identity, memories, databases) */
   personas: {
     root: string;
     /** Get persona directory (by uniqueId: {name}-{shortId}) - the persona's $HOME */
@@ -124,98 +128,132 @@ export interface ContinuumPaths {
     /** Get agent state database */
     state: (uniqueId: string) => string;
   };
+
+  /** Content-addressable blob storage */
+  blobs: {
+    root: string;
+  };
+
+  /** Shared data (room exports, collaborative files) */
+  shared: {
+    root: string;
+    rooms: (roomId: string) => string;
+  };
+
+  /** Generated reports */
+  reports: {
+    root: string;
+  };
+
+  /** Downloaded/cached ML models */
+  models: {
+    root: string;
+  };
+
+  /** Unix domain sockets for IPC */
+  sockets: {
+    root: string;
+    core: string;
+    archive: string;
+    inference: string;
+  };
+
+  /** Training datasets */
+  datasets: {
+    root: string;
+    parsed: string;
+    prepared: string;
+  };
+
+  /** Media processing workspace */
+  media: {
+    root: string;
+    temp: string;
+  };
 }
 
 /**
- * Create path tree for ANY base location
- * This factory ensures SAME structure regardless of $HOME vs $REPO
+ * Create path tree for ANY base location.
+ * This factory ensures SAME structure regardless of $HOME vs $REPO.
  */
 export function createPathsForBase(baseRoot: string): ContinuumPaths {
   return {
     root: baseRoot,
 
     database: {
-      root: path.join(baseRoot, 'jtag', 'database'),
-      main: path.join(baseRoot, 'jtag', 'database', 'main.db'),
-      backup: path.join(baseRoot, 'jtag', 'database', 'backups')
+      root: path.join(baseRoot, 'data'),
+      main: path.join(baseRoot, 'data', 'database.sqlite'),
+      backup: path.join(baseRoot, 'data', 'backups'),
     },
 
     logs: {
       root: path.join(baseRoot, 'jtag', 'logs'),
 
       personas: (uniqueId: string): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
         return path.join(baseRoot, 'personas', uniqueId, 'logs');
       },
 
       subsystem: (uniqueId: string, subsystem: 'mind' | 'body' | 'soul' | 'cns'): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
         return path.join(baseRoot, 'personas', uniqueId, 'logs', `${subsystem}.log`);
       },
 
-      // System logs - all under logs/system/ with subdirectories
       system: path.join(baseRoot, 'jtag', 'logs', 'system'),
       sql: path.join(baseRoot, 'jtag', 'logs', 'system', 'data', 'sql.log'),
-      errors: path.join(baseRoot, 'jtag', 'logs', 'system', 'core', 'errors.log')
+      errors: path.join(baseRoot, 'jtag', 'logs', 'system', 'core', 'errors.log'),
     },
 
     sessions: {
       root: path.join(baseRoot, 'jtag', 'sessions'),
       user: path.join(baseRoot, 'jtag', 'sessions', 'user'),
-      validation: path.join(baseRoot, 'jtag', 'sessions', 'validation')
+      validation: path.join(baseRoot, 'jtag', 'sessions', 'validation'),
     },
 
     registry: {
       root: path.join(baseRoot, 'jtag', 'registry'),
       processes: path.join(baseRoot, 'jtag', 'registry', 'process-registry.json'),
-      ports: path.join(baseRoot, 'jtag', 'registry', 'dynamic-ports.json')
+      ports: path.join(baseRoot, 'jtag', 'registry', 'dynamic-ports.json'),
     },
 
     temp: {
       root: path.join(baseRoot, 'jtag', 'temp'),
       screenshots: path.join(baseRoot, 'jtag', 'temp', 'screenshots'),
-      artifacts: path.join(baseRoot, 'jtag', 'temp', 'artifacts')
+      artifacts: path.join(baseRoot, 'jtag', 'temp', 'artifacts'),
     },
 
     genome: {
       root: path.join(baseRoot, 'genome'),
       adapters: path.join(baseRoot, 'genome', 'adapters'),
       training: path.join(baseRoot, 'genome', 'training-data'),
-      packages: path.join(baseRoot, 'genome', 'packages')
+      packages: path.join(baseRoot, 'genome', 'packages'),
+      python: path.join(baseRoot, 'genome', 'python'),
     },
 
     personas: {
       root: path.join(baseRoot, 'personas'),
 
       dir: (uniqueId: string): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
         return path.join(baseRoot, 'personas', uniqueId);
       },
 
       data: (uniqueId: string): string => {
-        // All databases live in data/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'data');
       },
 
       logs: (uniqueId: string): string => {
-        // All log files live in logs/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'logs');
       },
 
       state: (uniqueId: string): string => {
-        // State database in data/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'data', 'state.db');
       },
 
       memory: (uniqueId: string): string => {
-        // Memory database in data/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'data', 'memory.db');
       },
 
       longterm: (uniqueId: string): string => {
-        // Hippocampus long-term memory in data/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'data', 'longterm.db');
-      }
+      },
     },
 
     users: {
@@ -235,7 +273,7 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
       state: (uniqueId: string): string => {
         return path.join(baseRoot, 'users', uniqueId, 'data', 'state.db');
-      }
+      },
     },
 
     agents: {
@@ -255,8 +293,84 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
       state: (uniqueId: string): string => {
         return path.join(baseRoot, 'agents', uniqueId, 'data', 'state.db');
-      }
-    }
+      },
+    },
+
+    blobs: {
+      root: path.join(baseRoot, 'blobs'),
+    },
+
+    shared: {
+      root: path.join(baseRoot, 'shared'),
+      rooms: (roomId: string): string => {
+        return path.join(baseRoot, 'shared', 'rooms', roomId);
+      },
+    },
+
+    reports: {
+      root: path.join(baseRoot, 'reports'),
+    },
+
+    models: {
+      root: path.join(baseRoot, 'models'),
+    },
+
+    sockets: {
+      root: path.join(baseRoot, 'sockets'),
+      core: path.join(baseRoot, 'sockets', 'core.sock'),
+      archive: path.join(baseRoot, 'sockets', 'archive.sock'),
+      inference: path.join(baseRoot, 'sockets', 'inference.sock'),
+    },
+
+    datasets: {
+      root: path.join(baseRoot, 'datasets'),
+      parsed: path.join(baseRoot, 'datasets', 'parsed'),
+      prepared: path.join(baseRoot, 'datasets', 'prepared'),
+    },
+
+    media: {
+      root: path.join(baseRoot, 'media'),
+      temp: path.join(baseRoot, 'media', 'temp'),
+    },
+  };
+}
+
+/**
+ * Create a composite path tree that routes persistent data to one root
+ * and runtime data to another.
+ *
+ * Persistent ($HOME): database, genome, personas, users, agents, blobs, models, datasets
+ * Runtime ($REPO): logs, sessions, registry, temp, sockets, shared, reports, media
+ */
+export function createCompositeSystemPaths(
+  persistentRoot: string,
+  runtimeRoot: string,
+): ContinuumPaths {
+  const home = createPathsForBase(persistentRoot);
+  const repo = createPathsForBase(runtimeRoot);
+
+  return {
+    root: runtimeRoot,
+
+    // PERSISTENT → $HOME
+    database: home.database,
+    genome: home.genome,
+    personas: home.personas,
+    users: home.users,
+    agents: home.agents,
+    blobs: home.blobs,
+    models: home.models,
+    datasets: home.datasets,
+
+    // RUNTIME → $REPO
+    logs: repo.logs,
+    sessions: repo.sessions,
+    registry: repo.registry,
+    temp: repo.temp,
+    sockets: repo.sockets,
+    shared: repo.shared,
+    reports: repo.reports,
+    media: repo.media,
   };
 }
 
@@ -267,9 +381,10 @@ const REPO_ROOT = path.join(process.cwd(), '.continuum');
 const HOME_ROOT = path.join(os.homedir(), '.continuum');
 
 /**
- * Default paths (repo-local) - use for project-specific resources
+ * Default paths — composite: persistent data in $HOME, runtime data in $REPO.
+ * 25+ consumers import this. The composite routing is transparent.
  */
-export const SystemPaths: ContinuumPaths = createPathsForBase(REPO_ROOT);
+export const SystemPaths: ContinuumPaths = createCompositeSystemPaths(HOME_ROOT, REPO_ROOT);
 
 /**
  * Global paths ($HOME) - use for shared/user-global resources
@@ -277,3 +392,8 @@ export const SystemPaths: ContinuumPaths = createPathsForBase(REPO_ROOT);
  */
 export const GlobalPaths: ContinuumPaths = createPathsForBase(HOME_ROOT);
 
+/**
+ * Project paths ($REPO) - explicit repo-local tree
+ * Use when you specifically need a repo-relative path regardless of composite routing.
+ */
+export const ProjectPaths: ContinuumPaths = createPathsForBase(REPO_ROOT);

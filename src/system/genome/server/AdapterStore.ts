@@ -74,21 +74,20 @@ export class AdapterStore {
   }
 
   /**
-   * Discover all adapters in the store
+   * Discover all adapters in the store.
+   * Also scans legacy $REPO location as a migration bridge.
    */
   static discoverAll(): DiscoveredAdapter[] {
-    const storeDir = AdapterStore.storeRoot;
-    if (!fs.existsSync(storeDir)) return [];
+    const adapters = AdapterStore._scanRoot(AdapterStore.storeRoot);
 
-    const entries = fs.readdirSync(storeDir, { withFileTypes: true });
-    const adapters: DiscoveredAdapter[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const dirPath = path.join(storeDir, entry.name);
-      const adapter = AdapterStore._readAdapter(dirPath);
-      if (adapter) adapters.push(adapter);
+    // MIGRATION: also scan legacy $REPO/.continuum/genome/adapters
+    const legacyRoot = path.join(process.cwd(), '.continuum', 'genome', 'adapters');
+    if (legacyRoot !== AdapterStore.storeRoot && fs.existsSync(legacyRoot)) {
+      const legacy = AdapterStore._scanRoot(legacyRoot);
+      const seen = new Set(adapters.map(a => a.manifest.id));
+      for (const a of legacy) {
+        if (!seen.has(a.manifest.id)) adapters.push(a);
+      }
     }
 
     return adapters;
@@ -236,6 +235,25 @@ export class AdapterStore {
     }
 
     return false;
+  }
+
+  /**
+   * Scan a single root directory for adapter subdirectories
+   */
+  private static _scanRoot(rootDir: string): DiscoveredAdapter[] {
+    if (!fs.existsSync(rootDir)) return [];
+
+    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    const adapters: DiscoveredAdapter[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dirPath = path.join(rootDir, entry.name);
+      const adapter = AdapterStore._readAdapter(dirPath);
+      if (adapter) adapters.push(adapter);
+    }
+
+    return adapters;
   }
 
   /**

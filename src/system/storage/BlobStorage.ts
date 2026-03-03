@@ -29,6 +29,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
+import { SystemPaths } from '../core/config/SystemPaths';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -74,7 +75,7 @@ export interface BlobStorageConfig {
 }
 
 const DEFAULT_CONFIG: BlobStorageConfig = {
-  basePath: '.continuum/blobs',
+  basePath: SystemPaths.blobs.root,
   minBlobSize: 4096,  // 4KB - smaller stays inline
   compress: true,
 };

@@ -10,10 +10,11 @@
  */
 
 /**
- * File System Paths - Browser-safe constants only
+ * File System Paths - Browser-relative paths ONLY
  *
  * ⚠️ DO NOT add database paths or other server-only paths here!
  * ⚠️ This file is bundled into browser code
+ * ⚠️ Server code MUST use SystemPaths.* (from system/core/config/SystemPaths)
  * ⚠️ Use DatabaseConfig.ts for server-only database paths
  */
 export const PATHS = {
@@ -24,12 +25,6 @@ export const PATHS = {
   DATASETS: '.continuum/datasets',
   DATASETS_PARSED: '.continuum/datasets/parsed',
   DATASETS_PREPARED: '.continuum/datasets/prepared',
-
-  /** Logs */
-  LOGS: '.continuum/logs',
-
-  /** Screenshots */
-  SCREENSHOTS: '.continuum/screenshots',
 
   /** Media processing output */
   MEDIA_OUTPUT: '.continuum/media',
