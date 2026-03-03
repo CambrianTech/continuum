@@ -35,10 +35,10 @@ export class SemanticMemorySource implements RAGSource {
   readonly defaultBudgetPercent = 12;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
-  // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.
+  // Negative cache: when Rust returns "No memory corpus", skip IPC for 10s.
   // Without this, each failing persona makes a 1-3s IPC call every RAG build.
   private static _corpusUnavailable: Map<string, number> = new Map();
-  private static readonly NEGATIVE_CACHE_TTL_MS = 60_000;
+  private static readonly NEGATIVE_CACHE_TTL_MS = 10_000;
 
   isApplicable(context: RAGSourceContext): boolean {
     // Skip if we recently learned this persona's corpus is unavailable
@@ -195,7 +195,7 @@ export class SemanticMemorySource implements RAGSource {
       // Negative-cache "No memory corpus" errors — skip IPC for 60s
       if (error.message?.includes('No memory corpus')) {
         SemanticMemorySource._corpusUnavailable.set(context.personaId, Date.now());
-        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 60s`);
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 10s`);
       } else {
         log.error(`Failed to load memories: ${error.message}`);
       }

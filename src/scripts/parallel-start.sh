@@ -64,64 +64,74 @@ fi
 # Version bump (once, before builds — not inside prebuild where it triggers cascading rebuilds)
 npm version patch --no-git-tag-version --silent 2>/dev/null || true
 
-# Phase 2: Parallel builds — TypeScript and Rust are independent
-echo -e "\n${YELLOW}Phase 2: Parallel build (TypeScript + Rust + voice models)${NC}"
+# Phase 2: Build pipeline — Rust first (exclusive cargo access), then TS + VRM in parallel
+#
+# Why not fully parallel? cargo test (ts-rs binding gen) and cargo build --release
+# both target the same target/release directory. Running them concurrently causes
+# cache invalidation → full recompilation → 300s timeout. Sequential Rust build
+# followed by parallel TS+VRM is actually FASTER than the broken parallel approach.
+echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 
-# Run TypeScript build in background
+# Voice models download in parallel with cargo build (no cargo contention)
+(
+  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /'
+) &
+MODELS_PID=$!
+
+# Rust: cargo build (exclusive access to target directory)
+# Suppress ts-rs serde parse warnings (harmless, just noisy)
+cd workers
+echo -e "  [Rust] Building workers (cargo incremental)..."
+BUILD_OUTPUT=$(cargo build --release --quiet 2>&1) && RESULT=0 || RESULT=$?
+# Filter ts-rs noise and display
+echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
+if [ $RESULT -eq 0 ]; then
+  echo -e "  [Rust] ${GREEN}✅ Build complete${NC}"
+else
+  # Detect specific failures with actionable messages
+  if preflight_check_cargo_xcode "$BUILD_OUTPUT"; then
+    : # Xcode issue detected — message already printed
+  else
+    echo -e "  [Rust] ${RED}❌ Build failed${NC}"
+  fi
+  exit $RESULT
+fi
+cd ..
+
+# Wait for voice models before VRM conversion
+wait $MODELS_PID || true
+
+RUST_TIME=$(date +%s)
+RUST_ELAPSED=$((RUST_TIME - START_TIME))
+echo -e "${GREEN}✅ Rust build complete (${RUST_ELAPSED}s)${NC}"
+
+# Phase 2b: TS build + VRM conversion in parallel
+# Now cargo is idle — binding generation (cargo test --release) hits warm cache (~4s)
+echo -e "\n${YELLOW}Phase 2b: TypeScript build + VRM conversion${NC}"
+
+# TS build: prebuild (includes binding gen on warm cache) + compile + bundle
 (
   npx tsx scripts/smart-build.ts 2>&1 | sed 's/^/  [TS] /'
   exit ${PIPESTATUS[0]}
 ) &
 TS_PID=$!
 
-# Run Rust build + voice model check in background (both are Rust/binary work)
+# VRM conversion (uses binary from cargo build, no cargo contention)
 (
-  # Voice models: fast check, downloads only if missing
-  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /'
-
-  # Rust: cargo handles incremental builds — only recompiles what changed
-  # Suppress ts-rs serde parse warnings (harmless, just noisy)
-  cd workers
-  echo -e "  [Rust] Building workers (cargo incremental)..."
-  BUILD_OUTPUT=$(cargo build --release --quiet 2>&1)
-  RESULT=$?
-  # Filter ts-rs noise and display
-  echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
-  if [ $RESULT -eq 0 ]; then
-    echo -e "  [Rust] ${GREEN}✅ Build complete${NC}"
-  else
-    # Detect specific failures with actionable messages
-    if preflight_check_cargo_xcode "$BUILD_OUTPUT"; then
-      : # Xcode issue detected — message already printed
-    else
-      echo -e "  [Rust] ${RED}❌ Build failed${NC}"
-    fi
-    exit $RESULT
-  fi
-
-  # Post-build: Normalize VRM models for Bevy compatibility
-  # The converter handles two fixes (both idempotent):
-  #   1. KHR_texture_basisu → move texture sources to standard field
-  #   2. VRM 1.0 orientation → rotate skeleton root 180° Y to face -Z
-  CONVERTER="target/release/vrm-convert-textures"
+  CONVERTER="workers/target/release/vrm-convert-textures"
   if [ -x "$CONVERTER" ]; then
-    cd ..  # Back to src/
     CONVERTED=0
     for vrm in models/avatars/*.vrm; do
       [ -f "$vrm" ] || continue
-      # Quick check: does this VRM need conversion?
-      # Run converter on VRM 1.0 files (VRMC_vrm) or files with KHR_texture_basisu.
-      # The converter itself is idempotent — it detects when no work is needed.
       NEEDS_WORK=false
       if grep -q 'KHR_texture_basisu' "$vrm" 2>/dev/null; then
         NEEDS_WORK=true
       elif grep -q 'VRMC_vrm' "$vrm" 2>/dev/null; then
-        # VRM 1.0 — might need orientation fix. Converter checks internally.
         NEEDS_WORK=true
       fi
       if [ "$NEEDS_WORK" = true ]; then
         echo -e "  [VRM] Normalizing: $(basename $vrm)"
-        workers/$CONVERTER "$vrm" 2>&1 | sed 's/^/  [VRM]   /'
+        $CONVERTER "$vrm" 2>&1 | sed 's/^/  [VRM]   /'
         CONVERTED=$((CONVERTED + 1))
       fi
     done
@@ -130,22 +140,17 @@ TS_PID=$!
     fi
   fi
 ) &
-RUST_PID=$!
+VRM_PID=$!
 
-# Wait for both builds
+# Wait for TS + VRM
 TS_OK=true
-RUST_OK=true
+VRM_OK=true
 
 wait $TS_PID || TS_OK=false
-wait $RUST_PID || RUST_OK=false
+wait $VRM_PID || VRM_OK=true  # VRM failure is non-fatal
 
 if [ "$TS_OK" = false ]; then
   echo -e "${RED}❌ TypeScript build failed${NC}"
-  exit 1
-fi
-
-if [ "$RUST_OK" = false ]; then
-  echo -e "${RED}❌ Rust build failed${NC}"
   exit 1
 fi
 

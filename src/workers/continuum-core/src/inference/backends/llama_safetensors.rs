@@ -14,7 +14,9 @@ use candle_transformers::models::llama::{
 };
 use tokenizers::Tokenizer;
 
-use super::{GenomeAdapter, ModelBackend, ModelFormat};
+use std::sync::Arc;
+
+use super::{GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat};
 use crate::inference::model::rebuild_with_stacked_lora;
 use crate::runtime;
 
@@ -202,7 +204,18 @@ impl ModelBackend for LlamaSafetensorsBackend {
         true
     }
 
-    fn rebuild_with_lora(&mut self, adapters: &[GenomeAdapter]) -> Result<(), String> {
+    fn rebuild_with_lora(
+        &mut self,
+        adapters: &[GenomeAdapter],
+        gpu_manager: Option<&Arc<GpuMemoryManager>>,
+    ) -> Result<(), String> {
+        // Transient spike: old model + new model coexist during rebuild.
+        // Allocate for the doubled memory, release after swap.
+        let vram_bytes = self.estimated_vram_bytes();
+        let _spike_guard = gpu_manager.and_then(|mgr| {
+            mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Background).ok()
+        });
+
         let new_model = rebuild_with_stacked_lora(
             &self.weight_paths,
             &self.device,
@@ -213,6 +226,7 @@ impl ModelBackend for LlamaSafetensorsBackend {
         .map_err(|e| format!("LoRA rebuild failed: {e}"))?;
 
         self.model = new_model;
+        // Old model dropped here. _spike_guard drops at method end, releasing transient.
         self.clear_cache()?;
 
         runtime::logger("candle").info(&format!(

@@ -30,7 +30,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use crate::{clog_info, clog_warn};
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::gpu::make_entry;
 
 use crate::live::avatar::RgbaFrame;
 
@@ -1216,8 +1217,14 @@ fn setup_render_slots(
     let hd_bytes = MAX_HD_SLOTS as u64 * HD_WIDTH as u64 * HD_HEIGHT as u64 * 4;
     let total_rt_bytes = lowres_bytes + hd_bytes;
     if let Some(mgr) = gpu_manager() {
-        match mgr.allocate(GpuSubsystem::Rendering, total_rt_bytes) {
+        match mgr.allocate(GpuSubsystem::Rendering, total_rt_bytes, GpuPriority::Realtime) {
             Ok(guard) => {
+                mgr.eviction_registry.register(make_entry(
+                    "render:targets",
+                    "Render Targets (pre-allocated)",
+                    GpuPriority::Realtime,
+                    total_rt_bytes,
+                ));
                 commands.insert_resource(GpuGuards {
                     _render_targets: Some(guard),
                     model_guards: HashMap::new(),
@@ -1516,8 +1523,14 @@ fn process_commands(
                                 .unwrap_or(0);
                             if model_bytes > 0 {
                                 if let Some(mgr) = gpu_manager() {
-                                    match mgr.allocate(GpuSubsystem::Rendering, model_bytes) {
+                                    match mgr.allocate(GpuSubsystem::Rendering, model_bytes, GpuPriority::Interactive) {
                                         Ok(guard) => {
+                                            mgr.eviction_registry.register(make_entry(
+                                                &format!("render:model:slot{}", slot_for_observer),
+                                                &format!("Avatar Model (slot {})", slot_for_observer),
+                                                GpuPriority::Interactive,
+                                                model_bytes,
+                                            ));
                                             gpu_guards.model_guards.insert(slot_for_observer, guard);
                                         }
                                         Err(e) => {

@@ -234,6 +234,7 @@ export class PersonaGenome {
     sizeMB: number;
     priority?: number;
     trainedModelName?: string;
+    layerId?: UUID;
   }): void {
     const adapter = new LoRAAdapter({
       id: generateUUID() as UUID,
@@ -243,6 +244,7 @@ export class PersonaGenome {
       sizeMB: config.sizeMB,
       priority: config.priority,
       trainedModelName: config.trainedModelName,
+      layerId: config.layerId,
       aiProvider: this.aiProvider ?? undefined, // Pass provider for real loading
       logger: this.log
     });
@@ -415,8 +417,8 @@ export class PersonaGenome {
     this.activeAdapters.delete(victimName);
     this.memoryUsedMB -= freedMB;
 
-    // NOTE: GPU memory is managed by the Rust gpu_allocator module
-    // PersonaGenome just tracks logical state here
+    // NOTE: GPU memory is managed by Rust GpuMemoryManager (gpu/memory_manager.rs)
+    // with per-subsystem budgets and RAII guards. PersonaGenome tracks logical state.
 
     this.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }

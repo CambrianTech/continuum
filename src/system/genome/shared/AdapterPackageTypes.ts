@@ -9,6 +9,27 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
 
 /**
+ * Quantization metadata — tracks whether QLoRA was used during training.
+ *
+ * Key insight: QLoRA quantizes the BASE MODEL during training, but the
+ * LoRA adapter weights are always full precision (FP16/BF16 safetensors).
+ * The same adapter works on both quantized and non-quantized inference paths.
+ * This metadata tells us HOW the adapter was trained, not what format it is.
+ */
+export interface QuantizationInfo {
+  /** Was the base model quantized during training? */
+  enabled: boolean;
+  /** Quantization precision (4-bit or 8-bit) */
+  bits: 4 | 8;
+  /** Quantization algorithm used */
+  type: 'nf4' | 'int4' | 'int8' | 'fp8';
+  /** BitsAndBytes double quantization (reduces memory further) */
+  doubleQuant: boolean;
+  /** Compute dtype used during training */
+  computeDtype: 'bfloat16' | 'float16';
+}
+
+/**
  * Adapter package manifest — mirrors GenomeLayerEntity fields.
  * Written as manifest.json inside every adapter directory.
  */
@@ -39,4 +60,6 @@ export interface AdapterPackageManifest {
   createdAt: string;
   /** Manifest format version */
   version: number;
+  /** QLoRA quantization metadata — tracks base model quantization during training */
+  quantization?: QuantizationInfo;
 }

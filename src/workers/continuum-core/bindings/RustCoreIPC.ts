@@ -53,6 +53,7 @@ import { RuntimeMixin } from './modules/runtime';
 import { GpuMixin } from './modules/gpu';
 import { SentinelMixin } from './modules/sentinel';
 import { ToolParsingMixin } from './modules/tool_parsing';
+import { SystemResourceMixin } from './modules/system_resources';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -107,18 +108,20 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  */
 const ComposedClient = ToolParsingMixin(
 	SentinelMixin(
-		GpuMixin(
-			RuntimeMixin(
-				EmbeddingMixin(
-					AIMixin(
-						ModelsMixin(
-							RagMixin(
-								SearchMixin(
-									CodeMixin(
-										MemoryMixin(
-											ChannelMixin(
-												CognitionMixin(
-													VoiceMixin(RustCoreIPCClientBase)
+		SystemResourceMixin(
+			GpuMixin(
+				RuntimeMixin(
+					EmbeddingMixin(
+						AIMixin(
+							ModelsMixin(
+								RagMixin(
+									SearchMixin(
+										CodeMixin(
+											MemoryMixin(
+												ChannelMixin(
+													CognitionMixin(
+														VoiceMixin(RustCoreIPCClientBase)
+													)
 												)
 											)
 										)

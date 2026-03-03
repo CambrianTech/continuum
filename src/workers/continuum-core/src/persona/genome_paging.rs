@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use ts_rs::TS;
 
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::gpu::make_entry;
 
 // =============================================================================
 // TYPES (ts-rs generated)
@@ -187,7 +188,13 @@ impl GenomePagingEngine {
                 // Re-allocate GPU guard for already-loaded adapters
                 if let Some(mgr) = &self.gpu_manager {
                     let bytes = (adapter.size_mb * 1024.0 * 1024.0) as u64;
-                    if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes) {
+                    if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive) {
+                        mgr.eviction_registry.register(make_entry(
+                            &format!("genome:adapter:{}", adapter.name),
+                            &format!("Genome {}", adapter.name),
+                            GpuPriority::Interactive,
+                            bytes,
+                        ));
                         self.allocation_guards.insert(adapter.name.clone(), guard);
                     }
                 }
@@ -246,6 +253,10 @@ impl GenomePagingEngine {
                         self.memory_used_mb -= victim.size_mb;
                         // Release GPU allocation guard (drops, releasing VRAM)
                         self.allocation_guards.remove(&victim_name);
+                        // Unregister from eviction registry
+                        if let Some(mgr) = &self.gpu_manager {
+                            mgr.eviction_registry.unregister(&format!("genome:adapter:{}", victim_name));
+                        }
                         // Move to available
                         let mut unloaded = victim;
                         unloaded.is_loaded = false;
@@ -266,7 +277,13 @@ impl GenomePagingEngine {
         // Allocate GPU guard for newly loaded adapter
         if let Some(mgr) = &self.gpu_manager {
             let bytes = (loaded.size_mb * 1024.0 * 1024.0) as u64;
-            if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes) {
+            if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive) {
+                mgr.eviction_registry.register(make_entry(
+                    &format!("genome:adapter:{}", loaded.name),
+                    &format!("Genome {}", loaded.name),
+                    GpuPriority::Interactive,
+                    bytes,
+                ));
                 self.allocation_guards.insert(loaded.name.clone(), guard);
             }
         }

@@ -16,6 +16,8 @@ import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { generateUUID } from '../../types/CrossPlatformUUID';
 import { CommandRouterServer } from '@shared/ipc/archive-worker/CommandRouterServer';
 import { startVoiceServer, getVoiceWebSocketServer } from '../../../voice/server';
+import { GpuPressureWatcher } from '../../../gpu/server/GpuPressureWatcher';
+import { ResourcePressureWatcher } from '../../../resources/server/ResourcePressureWatcher';
 
 export class JTAGSystemServer extends JTAGSystem {
   private commandRouter: CommandRouterServer | null = null;
@@ -195,6 +197,12 @@ export class JTAGSystemServer extends JTAGSystem {
     } catch (error) {
       console.warn(`⚠️  JTAG System: Command Router failed to start (Rust workers will not work):`, error);
     }
+
+    // 7.1. Start GPU Pressure Watcher (adaptive polling → Events on threshold crossings)
+    GpuPressureWatcher.instance.start();
+
+    // 7.2. Start Resource Pressure Watcher (CPU + memory → Events on threshold crossings)
+    ResourcePressureWatcher.instance.start();
 
     // 7.5. Start Voice WebSocket Server
     try {

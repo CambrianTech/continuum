@@ -13,6 +13,7 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import {
   TextField,
+  NumberField,
   JsonField,
   ForeignKeyField,
   TEXT_LENGTH
@@ -81,6 +82,9 @@ export class GenomeEntity extends BaseEntity {
   @JsonField()
   compositeEmbedding: number[];
 
+  @NumberField()
+  embeddingDimension: number;  // Dimension of composite embedding (0 = not yet computed)
+
   // Metadata & Provenance
   @JsonField()
   metadata: GenomeMetadata;
@@ -104,7 +108,8 @@ export class GenomeEntity extends BaseEntity {
     this.personaId = '' as UUID;
     this.baseModel = '';
     this.layers = [];
-    this.compositeEmbedding = Array(768).fill(0);
+    this.compositeEmbedding = [];  // Empty until computed from layer embeddings
+    this.embeddingDimension = 0;  // 0 = not yet computed
     this.metadata = {
       generation: 0,
       createdVia: 'manual',
@@ -163,8 +168,12 @@ export class GenomeEntity extends BaseEntity {
       }
     }
 
-    if (!Array.isArray(this.compositeEmbedding) || this.compositeEmbedding.length !== 768) {
-      return { success: false, error: 'Genome compositeEmbedding must be 768-dimensional array' };
+    if (!Array.isArray(this.compositeEmbedding)) {
+      return { success: false, error: 'Genome compositeEmbedding must be an array' };
+    }
+    // If composite embedding is populated, dimension must match
+    if (this.compositeEmbedding.length > 0 && this.compositeEmbedding.length !== this.embeddingDimension) {
+      return { success: false, error: `Genome compositeEmbedding length (${this.compositeEmbedding.length}) does not match embeddingDimension (${this.embeddingDimension})` };
     }
 
     return { success: true };
@@ -233,28 +242,34 @@ export class GenomeEntity extends BaseEntity {
   }
 
   /**
-   * Calculate composite embedding from layer embeddings
-   * (Requires loading actual GenomeLayerEntity instances)
+   * Calculate composite embedding from layer embeddings.
+   * Returns { embedding, dimension } — dimension determined by the first non-empty vector.
+   * Filters out empty embeddings (layers not yet embedded).
    */
-  static calculateCompositeEmbedding(layerEmbeddings: number[][]): number[] {
-    if (layerEmbeddings.length === 0) {
-      return Array(768).fill(0);
+  static calculateCompositeEmbedding(layerEmbeddings: number[][]): { embedding: number[]; dimension: number } {
+    // Filter out empty/zero embeddings
+    const populated = layerEmbeddings.filter(e => e.length > 0);
+    if (populated.length === 0) {
+      return { embedding: [], dimension: 0 };
     }
 
-    const composite = Array(768).fill(0);
+    const dimension = populated[0].length;
+    const composite = Array(dimension).fill(0);
 
-    // Average all layer embeddings
-    for (const embedding of layerEmbeddings) {
-      for (let i = 0; i < 768; i++) {
+    for (const embedding of populated) {
+      // Skip embeddings of mismatched dimension (different model)
+      if (embedding.length !== dimension) continue;
+      for (let i = 0; i < dimension; i++) {
         composite[i] += embedding[i];
       }
     }
 
-    for (let i = 0; i < 768; i++) {
-      composite[i] /= layerEmbeddings.length;
+    const count = populated.filter(e => e.length === dimension).length;
+    for (let i = 0; i < dimension; i++) {
+      composite[i] /= count;
     }
 
-    return composite;
+    return { embedding: composite, dimension };
   }
 
   /**

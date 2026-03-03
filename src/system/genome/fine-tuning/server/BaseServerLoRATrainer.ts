@@ -15,7 +15,7 @@ import type {
   LoRATrainingRequest,
   TrainingDataset
 } from '../shared/FineTuningTypes';
-import { AdapterPackage, type AdapterPackageManifest } from '../../server/AdapterPackage';
+import { AdapterPackage, type AdapterPackageManifest, type QuantizationInfo } from '../../server/AdapterPackage';
 import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as path from 'path';
@@ -240,6 +240,9 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     // Copy all adapter files from output directory (handles both files and subdirectories)
     await this.copyDirRecursive(outputDir, adapterPath);
 
+    // Read quantization info written by peft-train.py
+    const quantization = await this.readQuantizationInfo(adapterPath);
+
     // Calculate real size and content hash
     const sizeMB = await AdapterPackage.calculateSizeMB(adapterPath);
     const contentHash = await AdapterPackage.calculateContentHash(adapterPath);
@@ -255,12 +258,35 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       sizeMB,
       contentHash,
       trainingMetadata,
+      quantization,
     });
 
     await AdapterPackage.writeManifest(adapterPath, manifest);
 
-    this.log('info', `Adapter saved: ${adapterPath} (${sizeMB}MB, hash=${contentHash.slice(0, 12)})`);
+    this.log('info', `Adapter saved: ${adapterPath} (${sizeMB}MB, hash=${contentHash.slice(0, 12)}, QLoRA=${quantization?.enabled ?? false})`);
     return { adapterPath, manifest };
+  }
+
+  /**
+   * Read quantization_info.json written by peft-train.py alongside the adapter.
+   * Returns undefined if the file doesn't exist (pre-QLoRA adapters).
+   */
+  private async readQuantizationInfo(adapterPath: string): Promise<QuantizationInfo | undefined> {
+    const infoPath = path.join(adapterPath, 'quantization_info.json');
+    try {
+      const content = await fs.promises.readFile(infoPath, 'utf-8');
+      const raw = JSON.parse(content);
+      return {
+        enabled: raw.enabled ?? false,
+        bits: raw.bits ?? 4,
+        type: raw.type ?? 'nf4',
+        doubleQuant: raw.doubleQuant ?? false,
+        computeDtype: raw.computeDtype ?? 'float16',
+      };
+    } catch {
+      // No quantization info file — pre-QLoRA adapter or non-PEFT training
+      return undefined;
+    }
   }
 
   /**

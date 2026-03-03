@@ -18,6 +18,7 @@ pub mod llama_safetensors;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use candle_core::{Device, Tensor};
@@ -26,6 +27,7 @@ use candle_transformers::generation::LogitsProcessor;
 use rand::Rng;
 use tokenizers::Tokenizer;
 
+use crate::gpu::memory_manager::{GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::inference::lora::LoRAWeights;
 use crate::runtime;
 
@@ -125,7 +127,13 @@ pub trait ModelBackend: Send + Sync {
     fn supports_lora(&self) -> bool { false }
 
     /// Rebuild model with stacked LoRA adapters merged into weights.
-    fn rebuild_with_lora(&mut self, _adapters: &[GenomeAdapter]) -> Result<(), String> {
+    /// `gpu_manager` enables transient spike tracking during the rebuild
+    /// (memory temporarily doubles while old and new weights coexist).
+    fn rebuild_with_lora(
+        &mut self,
+        _adapters: &[GenomeAdapter],
+        _gpu_manager: Option<&Arc<GpuMemoryManager>>,
+    ) -> Result<(), String> {
         Err("LoRA not supported by this backend".to_string())
     }
 

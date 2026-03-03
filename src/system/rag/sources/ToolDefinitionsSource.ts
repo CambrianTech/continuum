@@ -121,12 +121,18 @@ export class ToolDefinitionsSource implements RAGSource {
     const finalSpecs = convertToNativeToolSpecs(prioritizedTools);
     const finalTokens = this.estimateNativeToolTokens(finalSpecs);
 
-    log.debug(`Native tools: ${finalSpecs.length} specs (~${finalTokens} tokens) for persona ${context.personaId.slice(0, 8)}`);
+    // Native providers still need behavioral instruction IN the system prompt.
+    // JSON tool specs alone don't tell the model to prefer action over prose.
+    const nativeBehavioralNudge = `When asked to do something, USE your tools to do it. Do not describe what you would do — act. Prefer tool use over prose.`;
+    const nudgeTokens = this.estimateTokens(nativeBehavioralNudge);
+
+    log.debug(`Native tools: ${finalSpecs.length} specs (~${finalTokens + nudgeTokens} tokens) for persona ${context.personaId.slice(0, 8)}`);
 
     return {
       sourceName: this.name,
-      tokenCount: finalTokens,
+      tokenCount: finalTokens + nudgeTokens,
       loadTimeMs: performance.now() - startTime,
+      systemPromptSection: nativeBehavioralNudge,
       metadata: {
         nativeToolSpecs: finalSpecs,
         toolChoice: 'auto',
@@ -165,7 +171,11 @@ export class ToolDefinitionsSource implements RAGSource {
     const adapter = getPrimaryAdapter();
     const formattedTools = adapter.formatToolsForPrompt(prioritized);
 
-    const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools:\n\n${formattedTools}\n================================`;
+    const behavioralNudge = `When asked to do something, USE TOOLS to do it. Do not describe — act.
+When asked about code: USE code/read, code/write, code/edit.
+When assigned a task: USE sentinel/coding-agent for complex work.`;
+
+    const toolsSection = `\n\n=== AVAILABLE TOOLS ===\n${behavioralNudge}\n\nYou have access to the following tools:\n\n${formattedTools}\n================================`;
 
     let finalSection = toolsSection;
     let tokenCount = this.estimateTokens(toolsSection);

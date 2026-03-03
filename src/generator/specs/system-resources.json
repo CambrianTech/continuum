@@ -1,0 +1,59 @@
+{
+  "name": "system/resources",
+  "description": "Query system resource usage: CPU load, memory pressure, swap, and optionally top processes by CPU and memory. Uses sysinfo for cross-platform monitoring (macOS/Linux/Windows). On Apple Silicon, memory pressure directly impacts GPU headroom since VRAM is unified.",
+  "params": [
+    {
+      "name": "includeProcesses",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include top processes by CPU and memory usage. More expensive — iterates all OS processes."
+    },
+    {
+      "name": "topN",
+      "type": "number",
+      "optional": true,
+      "description": "Number of top processes to return (default: 10). Only used when includeProcesses=true."
+    }
+  ],
+  "results": [
+    {
+      "name": "cpu",
+      "type": "CpuStatsInfo",
+      "description": "CPU stats: brand, core counts, global usage (0.0-1.0), per-core usage"
+    },
+    {
+      "name": "memory",
+      "type": "MemoryStatsInfo",
+      "description": "Memory stats: total, used, available bytes, pressure (0.0-1.0), swap"
+    },
+    {
+      "name": "processes",
+      "type": "ProcessStatsInfo",
+      "optional": true,
+      "description": "Top processes by CPU and memory (only when includeProcesses=true)"
+    },
+    {
+      "name": "timestampMs",
+      "type": "number",
+      "description": "Snapshot timestamp in milliseconds since epoch"
+    },
+    {
+      "name": "uptimeSeconds",
+      "type": "number",
+      "description": "System uptime in seconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Get CPU and memory overview",
+      "command": "./jtag system/resources",
+      "expectedResult": "{ cpu: { brand: 'Apple M1 Pro', globalUsage: 0.65, physicalCores: 10 }, memory: { pressure: 0.82, totalBytes: 34359738368 }, ... }"
+    },
+    {
+      "description": "Get full report with top 10 processes",
+      "command": "./jtag system/resources --includeProcesses=true --topN=10",
+      "expectedResult": "{ cpu: {...}, memory: {...}, processes: { topByCpu: [...], topByMemory: [...] } }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -17,6 +17,7 @@
 import { Events } from '../../core/shared/Events';
 import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import { AdapterPackage } from './AdapterPackage';
+import type { QuantizationInfo } from '../shared/AdapterPackageTypes';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';
 import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
@@ -154,6 +155,9 @@ async function handleTrainingComplete(
   // Copy from temp output directory
   await copyDirRecursive(outputDir, adapterPath);
 
+  // Read quantization info written by peft-train.py
+  const quantization = await readQuantizationInfo(adapterPath);
+
   // Calculate size and hash
   const sizeMB = await AdapterPackage.calculateSizeMB(adapterPath);
   const contentHash = await AdapterPackage.calculateContentHash(adapterPath);
@@ -169,13 +173,23 @@ async function handleTrainingComplete(
     sizeMB,
     contentHash,
     trainingMetadata,
+    quantization,
   });
   await AdapterPackage.writeManifest(adapterPath, manifest);
 
-  // 5. Create GenomeLayerEntity
+  // 5. Create GenomeLayerEntity with capability embedding
   let layerId: UUID | undefined;
   try {
     const entity = AdapterPackage.toGenomeLayerEntity(manifest, adapterPath);
+
+    // Generate capability embedding — geometry of competence, not keywords
+    try {
+      await AdapterPackage.generateLayerEmbedding(entity);
+      console.log(`[TrainingCompletion] Capability embedding generated: ${entity.embeddingDimension}d`);
+    } catch (embError) {
+      console.warn(`[TrainingCompletion] Embedding generation failed (non-blocking): ${embError}`);
+    }
+
     await DataCreate.execute({
       collection: GenomeLayerEntity.collection,
       data: entity,
@@ -211,6 +225,27 @@ async function handleTrainingComplete(
     await fs.promises.rm(outputDir, { recursive: true, force: true });
   } catch {
     // Non-critical
+  }
+}
+
+/**
+ * Read quantization_info.json written by peft-train.py alongside the adapter.
+ * Returns undefined if the file doesn't exist (pre-QLoRA adapters).
+ */
+async function readQuantizationInfo(adapterPath: string): Promise<QuantizationInfo | undefined> {
+  const infoPath = path.join(adapterPath, 'quantization_info.json');
+  try {
+    const content = await fs.promises.readFile(infoPath, 'utf-8');
+    const raw = JSON.parse(content);
+    return {
+      enabled: raw.enabled ?? false,
+      bits: raw.bits ?? 4,
+      type: raw.type ?? 'nf4',
+      doubleQuant: raw.doubleQuant ?? false,
+      computeDtype: raw.computeDtype ?? 'float16',
+    };
+  } catch {
+    return undefined;
   }
 }
 

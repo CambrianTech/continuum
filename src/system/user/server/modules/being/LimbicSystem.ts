@@ -17,8 +17,7 @@ import { PersonaGenomeManager } from '../PersonaGenomeManager';
 import { TrainingDataAccumulator } from '../TrainingDataAccumulator';
 import { PersonaTrainingManager } from '../PersonaTrainingManager';
 import { Hippocampus } from '../cognitive/memory/Hippocampus';
-import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
-import type { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
+import { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
 import { SubsystemLogger } from './logging/SubsystemLogger';
 import type { UserEntity } from '../../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../data/entities/UserEntity';
@@ -26,9 +25,11 @@ import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
 import type { DbHandle } from '../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -170,11 +171,32 @@ export class LimbicSystem {
       trainingLogger  // Pass training logger
     );
 
-    // Wire post-training activation: when training completes, reload genome from DB
-    // This closes the loop: train → persist GenomeLayerEntity → reload → activate → inference uses new weights
+    // Wire post-training activation: when training completes, re-discover adapters from filesystem
+    // This closes the loop: train → write adapter to disk → discover → register + activate → inference uses new weights
     this.trainingManager.onTrainingComplete = async (layerId: string, domain: string) => {
-      this.logger.info(`Post-training activation: reloading genome for new ${domain} adapter (layerId=${layerId})`);
-      await this.loadGenomeFromDatabase();
+      this.logger.info(`Post-training: re-discovering adapters for ${domain} (layerId=${layerId})`);
+      const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel);
+      let newCount = 0;
+      for (const [adapterDomain, adapter] of discovered) {
+        if (!this.memory.genome.hasAdapter(adapter.manifest.name)) {
+          this.memory.genome.registerAdapter({
+            name: adapter.manifest.name,
+            domain: adapter.manifest.traitType,
+            path: adapter.dirPath,
+            sizeMB: adapter.manifest.sizeMB,
+            priority: 0.7,
+          });
+          await this.memory.genome.activateSkill(adapter.manifest.name);
+          this.logger.info(`Hot-loaded adapter: ${adapter.manifest.name} (${adapterDomain})`);
+          newCount++;
+        }
+      }
+      if (newCount > 0) {
+        this.logger.info(`Hot-loaded ${newCount} new adapter(s) from training`);
+
+        // Recalculate composite embedding for this persona's genome
+        await this.recalculateCompositeEmbedding();
+      }
     };
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
@@ -271,13 +293,14 @@ export class LimbicSystem {
           continue;
         }
 
-        // Register adapter in PersonaGenome
+        // Register adapter in PersonaGenome (layerId enables fitness tracking back to entity)
         this.memory.genome.registerAdapter({
           name: layer.name,
           domain: layer.traitType || layerRef.traitType,
           path: layer.modelPath,
           sizeMB: layer.sizeMB || 10,
           priority: layerRef.weight,
+          layerId: layer.id,
         });
 
         // Activate the adapter immediately so it's available for inference
@@ -293,6 +316,41 @@ export class LimbicSystem {
     }
 
     this.logger.info(`Loaded and activated ${loadedCount}/${genome.layers.length} genome layers from database`);
+  }
+
+  /**
+   * Adopt an existing adapter from another persona (cross-persona sharing).
+   *
+   * Instead of training from scratch, reuse a GenomeLayerEntity that was already
+   * trained by someone else and discovered via GenomeRegistry.findByCapability().
+   *
+   * Validates path existence and model compatibility before registering.
+   * Returns true if adoption succeeded.
+   */
+  async adoptAdapter(layer: GenomeLayerEntity): Promise<boolean> {
+    if (!AdapterStore.isValidAdapterPath(layer.modelPath)) {
+      this.logger.warn(`Cannot adopt ${layer.name} — adapter path missing: ${layer.modelPath}`);
+      return false;
+    }
+
+    const adapterInfo = AdapterStore.discoverAll().find(a => a.dirPath === layer.modelPath);
+    if (adapterInfo && !AdapterStore.isCompatibleWithModel(adapterInfo, this.inferenceModel)) {
+      this.logger.warn(`Cannot adopt ${layer.name} — incompatible with ${this.inferenceModel}`);
+      return false;
+    }
+
+    this.memory.genome.registerAdapter({
+      name: layer.name,
+      domain: layer.traitType,
+      path: layer.modelPath,
+      sizeMB: layer.sizeMB || 10,
+      priority: 0.7,
+      layerId: layer.id,
+    });
+
+    await this.memory.genome.activateSkill(layer.name);
+    this.logger.info(`Adopted adapter: ${layer.name} (${layer.traitType}) from ${layer.creatorId?.slice(0, 8) ?? 'unknown'}`);
+    return true;
   }
 
   /**
@@ -332,6 +390,43 @@ export class LimbicSystem {
     // Training accumulator is just data structure - no shutdown needed
     this.logger.info('Limbic system shutdown complete');
     this.logger.close();
+  }
+
+  /**
+   * Recalculate composite embedding for this persona's genome.
+   * Loads all genome layer entities, averages their embeddings,
+   * and persists the result to the GenomeEntity.
+   */
+  private async recalculateCompositeEmbedding(): Promise<void> {
+    try {
+      const genome = await this.genomeManager.getGenome();
+      if (!genome || genome.layers.length === 0) return;
+
+      // Load all layer embeddings
+      const layerIds = genome.getEnabledLayers().map(l => l.layerId);
+      const layerResult = await DataList.execute<GenomeLayerEntity>({
+        collection: GenomeLayerEntity.collection,
+        filter: { id: { $in: layerIds } },
+        dbHandle: 'default',
+        limit: layerIds.length,
+      });
+
+      if (!layerResult.success) return;
+
+      const embeddings = layerResult.items
+        .map(layer => layer.embedding)
+        .filter(e => e && e.length > 0);
+
+      if (embeddings.length === 0) return;
+
+      const { embedding, dimension } = GenomeEntity.calculateCompositeEmbedding(embeddings);
+      genome.compositeEmbedding = embedding;
+      genome.embeddingDimension = dimension;
+
+      this.logger.info(`Composite embedding recalculated: ${dimension}d from ${embeddings.length} layers`);
+    } catch (error) {
+      this.logger.warn(`Composite embedding recalculation failed (non-critical): ${error}`);
+    }
   }
 
   /**

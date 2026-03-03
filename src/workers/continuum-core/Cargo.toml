@@ -47,6 +47,7 @@ rayon.workspace = true
 ndarray.workspace = true
 num_cpus = "1.16"  # CPU count detection
 dirs = "5.0"  # User directories for model paths
+sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 
 # Candle ML framework (for local LLM inference + Orpheus TTS)
 candle-core.workspace = true

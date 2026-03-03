@@ -642,6 +642,12 @@ export class ChatRAGBuilder extends RAGBuilder {
 
   /**
    * Build system prompt from persona UserEntity with room context
+   *
+   * @deprecated LEGACY PATH — only reached when useModularSources=false.
+   * The modular RAG path (useModularSources=true) uses PersonaIdentitySource + ToolDefinitionsSource
+   * instead. This method generates tool documentation via ToolRegistry.generateToolDocumentation()
+   * which is a dead code path in the modular pipeline. Do not add features here — add them to
+   * the corresponding RAGSource modules instead.
    */
   private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
     // Load ToolRegistry for dynamic tool documentation
@@ -691,7 +697,7 @@ RESPONSE FORMAT:
 1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
 2. DO NOT generate fake conversations with "A:" and "H:" prefixes
 3. DO NOT invent participants - ONLY these people exist: ${membersList.join(', ')}
-4. Just respond naturally in 1-3 sentences as yourself
+4. Respond as yourself. When asked to DO something, use your tools — don't describe what you would do, DO it. For casual conversation, keep it concise.
 5. In history you'll see "Name: message" format, but YOUR responses should NOT include this prefix
 
 When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.

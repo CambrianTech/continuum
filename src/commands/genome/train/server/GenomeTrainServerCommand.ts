@@ -20,6 +20,7 @@ import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { GpuPressureWatcher } from '@system/gpu/server/GpuPressureWatcher';
 import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
 import { registerSentinelHandle } from '@system/sentinel/SentinelEscalationService';
 import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
@@ -101,20 +102,16 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     // On Apple Silicon, VRAM IS system RAM. Training a 3B model with optimizer states
     // can consume 4-8GB. If inference/TTS/rendering are already using memory, training
     // will OOM-kill the process.
-    try {
-      const rustClient = RustCoreIPCClient.getInstance();
-      const pressure = await rustClient.gpuPressure();
-      this.log.info(`GPU pressure: ${(pressure * 100).toFixed(1)}%`);
-      if (pressure > 0.6) {
-        return createGenomeTrainResultFromParams(params, {
-          success: false,
-          error: `GPU pressure too high (${(pressure * 100).toFixed(0)}%). Training deferred — would risk OOM. Free memory by unloading models or wait for inference to finish.`,
-          adapterPath: '',
-          metrics: { finalLoss: 0, trainingTime: 0, examplesProcessed: 0, epochs: 0 },
-        });
-      }
-    } catch (e) {
-      this.log.warn(`GPU pressure check failed (${e}), proceeding with training`);
+    // Uses GpuPressureWatcher's cached value — no blocking IPC call.
+    const watcher = GpuPressureWatcher.instance;
+    this.log.info(`GPU pressure: ${(watcher.pressure * 100).toFixed(1)}% (${watcher.currentLevel})`);
+    if (watcher.currentLevel !== 'normal') {
+      return createGenomeTrainResultFromParams(params, {
+        success: false,
+        error: `GPU pressure ${watcher.currentLevel} (${(watcher.pressure * 100).toFixed(0)}%). Training deferred — would risk OOM. Free memory by unloading models or wait for inference to finish.`,
+        adapterPath: '',
+        metrics: { finalLoss: 0, trainingTime: 0, examplesProcessed: 0, epochs: 0 },
+      });
     }
 
     // ── ASYNC MODE: fire-and-forget, return handle immediately ──────────────
@@ -251,11 +248,20 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     const adapterPath = result.modelPath ?? '';
     this.log.info(`Adapter saved to ${adapterPath} (sentinel=${result.sentinelHandle})`);
 
-    // Create GenomeLayerEntity and persist to database
+    // Create GenomeLayerEntity, generate capability embedding, and persist to database
     let layerId: UUID | undefined;
     if (result.manifest) {
       try {
         const entity = AdapterPackage.toGenomeLayerEntity(result.manifest, adapterPath);
+
+        // Generate capability embedding — encodes what the adapter can actually do
+        try {
+          await AdapterPackage.generateLayerEmbedding(entity);
+          this.log.info(`Capability embedding generated: ${entity.embeddingDimension}d`);
+        } catch (embError) {
+          this.log.warn(`Embedding generation failed (non-blocking): ${embError}`);
+        }
+
         await DataCreate.execute({
           dbHandle: 'default',
           collection: GenomeLayerEntity.collection,

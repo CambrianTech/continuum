@@ -20,15 +20,14 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use crate::{clog_info, clog_warn};
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuSubsystem};
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
+use crate::gpu::tracker::GpuModelTracker;
 
 /// Global Kokoro session + tokenizer
 static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
 
-/// GPU allocation guard for the loaded Kokoro ONNX model.
-/// Held for the lifetime of the model (until process shutdown).
-static KOKORO_GPU_GUARD: OnceLock<GpuAllocationGuard> = OnceLock::new();
-use std::sync::OnceLock;
+/// GPU allocation tracking for the loaded Kokoro ONNX model.
+static KOKORO_GPU: GpuModelTracker = GpuModelTracker::new("Kokoro");
 
 /// Kokoro model wrapper
 struct KokoroModel {
@@ -454,26 +453,8 @@ impl TextToSpeech for KokoroTTS {
             sample_rate: 24000,
         };
 
-        // Track GPU allocation for TTS model
-        let model_bytes = std::fs::metadata(&model_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if let Some(mgr) = super::gpu_manager() {
-            if model_bytes > 0 {
-                match mgr.allocate(GpuSubsystem::Tts, model_bytes) {
-                    Ok(guard) => {
-                        let _ = KOKORO_GPU_GUARD.set(guard);
-                        clog_info!(
-                            "Kokoro: GPU TTS allocation {:.0}MB",
-                            model_bytes as f64 / (1024.0 * 1024.0)
-                        );
-                    }
-                    Err(e) => {
-                        clog_warn!("Kokoro: GPU allocation failed ({}), proceeding", e);
-                    }
-                }
-            }
-        }
+        // Track GPU allocation for TTS model (non-critical: proceed on failure)
+        let _ = KOKORO_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager(), GpuPriority::Interactive);
 
         // OnceLock::set returns Err if already set by another thread — that's fine,
         // it means a concurrent request already initialized the model.
@@ -484,6 +465,8 @@ impl TextToSpeech for KokoroTTS {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
+        KOKORO_GPU.touch();
+
         let session = KOKORO_SESSION
             .get()
             .ok_or_else(|| TTSError::ModelNotLoaded("Kokoro not initialized".into()))?

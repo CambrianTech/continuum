@@ -3,6 +3,8 @@
 //! Commands:
 //! - `gpu/stats`: Full GPU stats snapshot (total VRAM, per-subsystem budgets/usage, pressure)
 //! - `gpu/pressure`: Quick pressure query (0.0-1.0)
+//! - `gpu/eviction-registry`: Full eviction registry snapshot (all tracked consumers)
+//! - `gpu/eviction-candidates`: Sorted eviction candidates (highest score first)
 //!
 //! Follows the HealthModule pattern: stateless handler wrapping shared state.
 
@@ -61,6 +63,20 @@ impl ServiceModule for GpuModule {
                 })))
             }
 
+            "gpu/eviction-registry" => {
+                let snapshot = self.manager.eviction_registry.snapshot();
+                let json = serde_json::to_value(snapshot)
+                    .map_err(|e| format!("Failed to serialize eviction registry: {e}"))?;
+                Ok(CommandResult::Json(json))
+            }
+
+            "gpu/eviction-candidates" => {
+                let candidates = self.manager.eviction_registry.candidates();
+                let json = serde_json::to_value(candidates)
+                    .map_err(|e| format!("Failed to serialize eviction candidates: {e}"))?;
+                Ok(CommandResult::Json(json))
+            }
+
             _ => Err(format!("Unknown GPU command: {command}")),
         }
     }
@@ -100,6 +116,67 @@ mod tests {
         if let Ok(CommandResult::Json(json)) = result {
             let pressure = json["pressure"].as_f64().unwrap();
             assert!(pressure >= 0.0 && pressure <= 1.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eviction_registry_empty() {
+        let module = test_gpu_module();
+        let result = module.handle_command("gpu/eviction-registry", Value::Null).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            assert_eq!(json["entries"].as_array().unwrap().len(), 0);
+            assert_eq!(json["total_tracked_bytes"].as_u64().unwrap(), 0);
+            assert_eq!(json["evictable_count"].as_u64().unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eviction_registry_with_entries() {
+        let module = test_gpu_module();
+        use crate::gpu::{make_entry, GpuPriority};
+
+        module.manager.eviction_registry.register(
+            make_entry("candle:llama", "Llama 3.2", GpuPriority::Interactive, 3_000_000_000)
+        );
+
+        let result = module.handle_command("gpu/eviction-registry", Value::Null).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            assert_eq!(json["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(json["total_tracked_bytes"].as_u64().unwrap(), 3_000_000_000);
+            assert_eq!(json["evictable_count"].as_u64().unwrap(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eviction_candidates_empty() {
+        let module = test_gpu_module();
+        let result = module.handle_command("gpu/eviction-candidates", Value::Null).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            assert!(json.as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_eviction_candidates_excludes_realtime() {
+        let module = test_gpu_module();
+        use crate::gpu::{make_entry, GpuPriority};
+
+        module.manager.eviction_registry.register(
+            make_entry("render:targets", "Render Targets", GpuPriority::Realtime, 100_000_000)
+        );
+        module.manager.eviction_registry.register(
+            make_entry("candle:llama", "Llama 3.2", GpuPriority::Interactive, 3_000_000_000)
+        );
+
+        let result = module.handle_command("gpu/eviction-candidates", Value::Null).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            let candidates = json.as_array().unwrap();
+            assert_eq!(candidates.len(), 1, "Realtime should be excluded from candidates");
+            assert_eq!(candidates[0]["id"].as_str().unwrap(), "candle:llama");
         }
     }
 

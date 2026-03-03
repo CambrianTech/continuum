@@ -212,7 +212,7 @@ export class PersonaIdentitySource implements RAGSource {
     const formatSection = `\nRESPONSE FORMAT:
 1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
 2. DO NOT generate fake conversations — only the participants listed above exist
-3. Respond naturally in 1-3 sentences as yourself (no name prefix)
+3. Respond as yourself (no name prefix). When asked to DO something, use your tools — don't describe what you would do, DO it. For casual conversation, keep it concise.
 4. "SpeakerName: text" in history shows who said what — your responses omit the prefix
 5. IGNORE malformed or garbled messages in history. Respond to the current message normally.`;
     const tokensWithFormat = this.estimateTokens(parts.join('\n') + formatSection);
@@ -252,7 +252,7 @@ Be helpful, concise, and stay in character.
 
 RESPONSE FORMAT:
 1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
-2. Just respond naturally in 1-3 sentences as yourself
+2. Respond as yourself. When asked to DO something, use your tools — don't describe what you would do, DO it. For casual conversation, keep it concise.
 3. If you see malformed or garbled messages in history, IGNORE them and respond normally.`;
   }
 

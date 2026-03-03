@@ -13,12 +13,13 @@
 //!   95%+    Critical — refuse all allocations, force evictions
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use ts_rs::TS;
 
 use crate::{log_info, log_error};
+use super::eviction_registry::EvictionRegistry;
 
 // =============================================================================
 // SUBSYSTEM ENUM
@@ -37,11 +38,69 @@ impl GpuSubsystem {
         self as usize
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Rendering => "rendering",
             Self::Inference => "inference",
             Self::Tts => "tts",
+        }
+    }
+}
+
+// =============================================================================
+// GPU PRIORITY (RTOS-style interrupt levels)
+// =============================================================================
+
+/// Priority levels for GPU allocations — RTOS-style scheduling.
+///
+/// Higher priority = higher pressure gate = harder to reject.
+/// Realtime (render loop, audio) only stops at OOM.
+/// Batch (training) yields the bus when anyone else needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/gpu/GpuPriority.ts")]
+pub enum GpuPriority {
+    /// Render loop, audio pipeline — only OOM stops it
+    Realtime = 0,
+    /// User-facing inference, TTS, embeddings
+    Interactive = 1,
+    /// LoRA rebuild spikes, adapter pre-load
+    Background = 2,
+    /// Training, conversion — lowest priority, yields first
+    Batch = 3,
+}
+
+impl GpuPriority {
+    /// Pressure threshold at which this priority level gets rejected.
+    /// Lower priority = lower gate = rejected sooner.
+    pub fn pressure_gate(self) -> f32 {
+        match self {
+            Self::Realtime    => PRESSURE_CRITICAL,  // 0.95 — only OOM
+            Self::Interactive => PRESSURE_HIGH,       // 0.80
+            Self::Background  => PRESSURE_WARNING,    // 0.60
+            Self::Batch       => 0.50,                // yields at 50%
+        }
+    }
+
+    /// Weight for eviction scoring — lower priority evicts first.
+    pub fn eviction_weight(self) -> f32 {
+        match self {
+            Self::Realtime    => f32::INFINITY, // never evictable
+            Self::Interactive => 0.7,
+            Self::Background  => 0.4,
+            Self::Batch       => 0.2,
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Realtime    => "realtime",
+            Self::Interactive => "interactive",
+            Self::Background  => "background",
+            Self::Batch       => "batch",
         }
     }
 }
@@ -67,28 +126,32 @@ impl SubsystemBudget {
     }
 
     fn budget(&self) -> u64 {
-        self.budget_bytes.load(Ordering::Relaxed)
+        self.budget_bytes.load(Ordering::Acquire)
     }
 
     fn used(&self) -> u64 {
-        self.used_bytes.load(Ordering::Relaxed)
+        self.used_bytes.load(Ordering::Acquire)
     }
 
     fn set_budget(&self, bytes: u64) {
-        self.budget_bytes.store(bytes, Ordering::Relaxed);
+        self.budget_bytes.store(bytes, Ordering::Release);
     }
 
     /// Try to allocate bytes. Returns true if within budget, false if over.
     /// Allocation proceeds even if over-budget (soft limit) — caller checks pressure.
+    ///
+    /// Uses AcqRel ordering: the fetch_add is a release (publishes our write),
+    /// and subsequent loads see all prior writes (acquire). This ensures the
+    /// pressure calculation in the manager sees the true total across subsystems.
     fn allocate(&self, bytes: u64) -> bool {
-        let prev = self.used_bytes.fetch_add(bytes, Ordering::Relaxed);
-        let budget = self.budget_bytes.load(Ordering::Relaxed);
+        let prev = self.used_bytes.fetch_add(bytes, Ordering::AcqRel);
+        let budget = self.budget_bytes.load(Ordering::Acquire);
         (prev + bytes) <= budget
     }
 
     fn release(&self, bytes: u64) {
         // Saturating subtract to prevent underflow
-        self.used_bytes.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        self.used_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             Some(current.saturating_sub(bytes))
         }).ok();
     }
@@ -112,6 +175,9 @@ pub const PRESSURE_WARNING: f32 = 0.60;
 pub const PRESSURE_HIGH: f32 = 0.80;
 pub const PRESSURE_CRITICAL: f32 = 0.95;
 
+/// Number of priority levels (Realtime, Interactive, Background, Batch).
+const PRIORITY_LEVELS: usize = 4;
+
 pub struct GpuMemoryManager {
     total_vram_bytes: u64,
     gpu_name: String,
@@ -119,6 +185,10 @@ pub struct GpuMemoryManager {
     reserve_bytes: u64,
     pressure_tx: watch::Sender<f32>,
     pressure_rx: watch::Receiver<f32>,
+    /// Live allocation count per priority level [Realtime, Interactive, Background, Batch].
+    allocation_counts: [AtomicU32; PRIORITY_LEVELS],
+    /// Registry of GPU consumers for eviction visibility.
+    pub eviction_registry: EvictionRegistry,
 }
 
 impl std::fmt::Debug for GpuMemoryManager {
@@ -171,51 +241,80 @@ impl GpuMemoryManager {
             reserve_bytes,
             pressure_tx,
             pressure_rx,
+            allocation_counts: [
+                AtomicU32::new(0), AtomicU32::new(0),
+                AtomicU32::new(0), AtomicU32::new(0),
+            ],
+            eviction_registry: EvictionRegistry::new(),
         }
     }
 
     // ── Allocation ──────────────────────────────────────────────────────
 
-    /// Allocate VRAM for a subsystem. Returns an RAII guard that releases on drop.
-    /// Logs a warning if allocation exceeds budget (soft limit — does not reject).
-    /// Returns Err only at CRITICAL pressure (>95%) to prevent OOM.
+    /// Allocate VRAM for a subsystem at the given priority level.
+    ///
+    /// Priority gating (RTOS-style):
+    /// - Realtime: only rejected at CRITICAL (95%) — render loop, audio
+    /// - Interactive: rejected at HIGH (80%) — user-facing inference, TTS
+    /// - Background: rejected at WARNING (60%) — LoRA rebuild spikes
+    /// - Batch: rejected at 50% — training, yields the bus first
+    ///
+    /// Concurrency: Uses optimistic-allocate-then-rollback to avoid TOCTOU races.
+    /// Two threads racing to allocate cannot both succeed if either would push
+    /// pressure past their gate — the post-allocation check catches the overcommit
+    /// and rolls back the losing thread's allocation atomically.
     pub fn allocate(
         self: &Arc<Self>,
         subsystem: GpuSubsystem,
         bytes: u64,
+        priority: GpuPriority,
     ) -> Result<GpuAllocationGuard, GpuError> {
-        let pressure = self.pressure();
+        let mb = bytes as f64 / (1024.0 * 1024.0);
+        let gate = priority.pressure_gate();
 
-        // Hard reject at critical pressure
-        if pressure >= PRESSURE_CRITICAL {
-            let mb = bytes as f64 / (1024.0 * 1024.0);
+        // Optimistic allocation: commit bytes first, then check if result is acceptable.
+        // This is the standard lock-free pattern — avoids the TOCTOU race where two
+        // threads both pass a pre-check and both allocate, pushing past their gate.
+        let within_budget = self.subsystems[subsystem.index()].allocate(bytes);
+        let new_pressure = self.pressure();
+
+        // Post-allocation priority gate: rollback if we pushed past this priority's threshold.
+        // Because fetch_add is atomic, at most ONE concurrent allocator sees pre-gate
+        // pressure — all others see the updated total and roll back.
+        if new_pressure >= gate {
+            // Rollback the optimistic allocation
+            self.subsystems[subsystem.index()].release(bytes);
+
             log_error!("gpu", "manager",
-                "CRITICAL: Rejecting {}MB allocation for {} (pressure={:.0}%)",
-                mb, subsystem.name(), pressure * 100.0
+                "PRESSURE GATE: Rejecting {:.0}MB {} allocation for {} \
+                 (pressure={:.0}% >= {:.0}% gate)",
+                mb, priority.name(), subsystem.name(),
+                new_pressure * 100.0, gate * 100.0
             );
-            return Err(GpuError::CriticalPressure {
+            return Err(GpuError::PressureGate {
                 subsystem: subsystem.name(),
+                priority,
                 requested_mb: mb,
-                pressure,
+                pressure: new_pressure,
+                gate,
             });
         }
 
-        let within_budget = self.subsystems[subsystem.index()].allocate(bytes);
-        let new_pressure = self.pressure();
+        // Allocation accepted — increment priority counter
+        self.allocation_counts[priority.index()].fetch_add(1, Ordering::Relaxed);
 
         // Broadcast updated pressure
         let _ = self.pressure_tx.send(new_pressure);
 
-        let mb = bytes as f64 / (1024.0 * 1024.0);
         if !within_budget {
             log_info!("gpu", "manager",
-                "WARNING: {} allocation {:.0}MB exceeds budget (pressure={:.0}%)",
-                subsystem.name(), mb, new_pressure * 100.0
+                "WARNING: {} {} allocation {:.0}MB exceeds budget (pressure={:.0}%)",
+                priority.name(), subsystem.name(), mb, new_pressure * 100.0
             );
         } else {
             log_info!("gpu", "manager",
-                "GPU: Allocated {:.0}MB for {} (pressure={:.0}%)",
-                mb, subsystem.name(), new_pressure * 100.0
+                "GPU: Allocated {:.0}MB for {} [{}] (pressure={:.0}%)",
+                mb, subsystem.name(), priority.name(), new_pressure * 100.0
             );
         }
 
@@ -223,6 +322,7 @@ impl GpuMemoryManager {
             manager: Arc::clone(self),
             subsystem,
             bytes,
+            priority,
             released: false,
         })
     }
@@ -244,6 +344,9 @@ impl GpuMemoryManager {
     // ── Query ───────────────────────────────────────────────────────────
 
     /// Overall pressure: total_used / (total_vram - reserve). Range 0.0-1.0.
+    ///
+    /// Uses Acquire ordering to ensure we see the latest writes from all subsystems.
+    /// Critical for the post-allocation safety check in `allocate()`.
     pub fn pressure(&self) -> f32 {
         let usable = self.total_vram_bytes.saturating_sub(self.reserve_bytes);
         if usable == 0 {
@@ -289,6 +392,37 @@ impl GpuMemoryManager {
         self.subsystems[subsystem.index()].set_budget(bytes);
     }
 
+    /// Test-only constructor for creating managers with known budgets.
+    #[cfg(test)]
+    pub fn new_for_test(
+        total_vram_bytes: u64,
+        gpu_name: String,
+        inference_budget: u64,
+        tts_budget: u64,
+        rendering_budget: u64,
+        reserve_bytes: u64,
+        pressure_tx: watch::Sender<f32>,
+        pressure_rx: watch::Receiver<f32>,
+    ) -> Self {
+        Self {
+            total_vram_bytes,
+            gpu_name,
+            subsystems: [
+                SubsystemBudget::new(rendering_budget),
+                SubsystemBudget::new(inference_budget),
+                SubsystemBudget::new(tts_budget),
+            ],
+            reserve_bytes,
+            pressure_tx,
+            pressure_rx,
+            allocation_counts: [
+                AtomicU32::new(0), AtomicU32::new(0),
+                AtomicU32::new(0), AtomicU32::new(0),
+            ],
+            eviction_registry: EvictionRegistry::new(),
+        }
+    }
+
     /// Full stats snapshot for IPC.
     pub fn stats(&self) -> GpuStats {
         let mb = |b: u64| b as f32 / (1024.0 * 1024.0);
@@ -312,7 +446,25 @@ impl GpuMemoryManager {
                 used_mb: mb(self.subsystems[2].used()),
             },
             reserve_mb: mb(self.reserve_bytes),
+            warning_threshold: PRESSURE_WARNING,
+            high_threshold: PRESSURE_HIGH,
+            critical_threshold: PRESSURE_CRITICAL,
+            allocations_by_priority: AllocationsByPriority {
+                realtime: self.allocation_counts[GpuPriority::Realtime.index()]
+                    .load(Ordering::Relaxed),
+                interactive: self.allocation_counts[GpuPriority::Interactive.index()]
+                    .load(Ordering::Relaxed),
+                background: self.allocation_counts[GpuPriority::Background.index()]
+                    .load(Ordering::Relaxed),
+                batch: self.allocation_counts[GpuPriority::Batch.index()]
+                    .load(Ordering::Relaxed),
+            },
         }
+    }
+
+    /// Live allocation count for a specific priority level.
+    pub fn allocation_count(&self, priority: GpuPriority) -> u32 {
+        self.allocation_counts[priority.index()].load(Ordering::Relaxed)
     }
 }
 
@@ -322,10 +474,12 @@ impl GpuMemoryManager {
 
 /// RAII guard that releases GPU memory on drop.
 /// Like SlotGuard in bevy_renderer.rs — deterministic cleanup.
+/// Tracks both subsystem and priority for the allocation counter bookkeeping.
 pub struct GpuAllocationGuard {
     manager: Arc<GpuMemoryManager>,
     subsystem: GpuSubsystem,
     bytes: u64,
+    priority: GpuPriority,
     released: bool,
 }
 
@@ -333,6 +487,7 @@ impl std::fmt::Debug for GpuAllocationGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GpuAllocationGuard")
             .field("subsystem", &self.subsystem)
+            .field("priority", &self.priority)
             .field("bytes", &self.bytes)
             .field("released", &self.released)
             .finish()
@@ -343,8 +498,7 @@ impl GpuAllocationGuard {
     /// Manually release before drop (e.g., when ownership transfer is needed).
     pub fn release(mut self) {
         if !self.released {
-            self.manager.release(self.subsystem, self.bytes);
-            self.released = true;
+            self.do_release();
         }
     }
 
@@ -357,13 +511,25 @@ impl GpuAllocationGuard {
     pub fn subsystem(&self) -> GpuSubsystem {
         self.subsystem
     }
+
+    /// Priority this allocation was made at.
+    pub fn priority(&self) -> GpuPriority {
+        self.priority
+    }
+
+    /// Internal release: decrement allocation counter + release bytes.
+    fn do_release(&mut self) {
+        self.manager.allocation_counts[self.priority.index()]
+            .fetch_sub(1, Ordering::Relaxed);
+        self.manager.release(self.subsystem, self.bytes);
+        self.released = true;
+    }
 }
 
 impl Drop for GpuAllocationGuard {
     fn drop(&mut self) {
         if !self.released {
-            self.manager.release(self.subsystem, self.bytes);
-            self.released = true;
+            self.do_release();
         }
     }
 }
@@ -374,21 +540,27 @@ impl Drop for GpuAllocationGuard {
 
 #[derive(Debug)]
 pub enum GpuError {
-    CriticalPressure {
+    /// Priority-gated rejection: pressure exceeds this priority's threshold.
+    /// Supersedes the old CriticalPressure — now every priority has its own gate.
+    PressureGate {
         subsystem: &'static str,
+        priority: GpuPriority,
         requested_mb: f64,
         pressure: f32,
+        gate: f32,
     },
 }
 
 impl std::fmt::Display for GpuError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CriticalPressure { subsystem, requested_mb, pressure } => {
+            Self::PressureGate { subsystem, priority, requested_mb, pressure, gate } => {
                 write!(
                     f,
-                    "GPU critical pressure ({:.0}%): cannot allocate {:.0}MB for {}",
-                    pressure * 100.0, requested_mb, subsystem
+                    "GPU pressure gate ({:.0}% >= {:.0}% {} threshold): \
+                     cannot allocate {:.0}MB for {}",
+                    pressure * 100.0, gate * 100.0, priority.name(),
+                    requested_mb, subsystem
                 )
             }
         }
@@ -411,6 +583,20 @@ pub struct SubsystemStats {
     pub used_mb: f32,
 }
 
+/// Live allocation counts per priority level.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/gpu/AllocationsByPriority.ts")]
+pub struct AllocationsByPriority {
+    #[ts(type = "number")]
+    pub realtime: u32,
+    #[ts(type = "number")]
+    pub interactive: u32,
+    #[ts(type = "number")]
+    pub background: u32,
+    #[ts(type = "number")]
+    pub batch: u32,
+}
+
 /// Full GPU stats snapshot — returned by `gpu/stats` IPC command.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/gpu/GpuStats.ts")]
@@ -426,6 +612,14 @@ pub struct GpuStats {
     pub tts: SubsystemStats,
     #[ts(type = "number")]
     pub reserve_mb: f32,
+    /// Pressure threshold: above this, log warnings and defer low-priority work
+    pub warning_threshold: f32,
+    /// Pressure threshold: above this, refuse new model loads
+    pub high_threshold: f32,
+    /// Pressure threshold: above this, refuse ALL allocations
+    pub critical_threshold: f32,
+    /// Live allocation counts per priority level
+    pub allocations_by_priority: AllocationsByPriority,
 }
 
 // =============================================================================
@@ -582,6 +776,11 @@ mod tests {
             reserve_bytes,
             pressure_tx,
             pressure_rx,
+            allocation_counts: [
+                AtomicU32::new(0), AtomicU32::new(0),
+                AtomicU32::new(0), AtomicU32::new(0),
+            ],
+            eviction_registry: EvictionRegistry::new(),
         })
     }
 
@@ -603,9 +802,9 @@ mod tests {
         let mgr = test_manager(1024); // 1GB
         let inference_budget = mgr.inference_budget_bytes();
 
-        // Allocate half the inference budget
+        // Allocate half the inference budget at Interactive priority
         let half = inference_budget / 2;
-        let guard = mgr.allocate(GpuSubsystem::Inference, half).unwrap();
+        let guard = mgr.allocate(GpuSubsystem::Inference, half, GpuPriority::Interactive).unwrap();
         assert!(mgr.pressure() > 0.0);
 
         // Release
@@ -619,7 +818,7 @@ mod tests {
         let used_before = mgr.subsystems[GpuSubsystem::Inference.index()].used();
 
         {
-            let _guard = mgr.allocate(GpuSubsystem::Inference, 100 * 1024 * 1024).unwrap();
+            let _guard = mgr.allocate(GpuSubsystem::Inference, 100 * 1024 * 1024, GpuPriority::Interactive).unwrap();
             let used_during = mgr.subsystems[GpuSubsystem::Inference.index()].used();
             assert_eq!(used_during, used_before + 100 * 1024 * 1024);
         }
@@ -631,7 +830,7 @@ mod tests {
     #[test]
     fn test_manual_release() {
         let mgr = test_manager(1024);
-        let guard = mgr.allocate(GpuSubsystem::Tts, 50 * 1024 * 1024).unwrap();
+        let guard = mgr.allocate(GpuSubsystem::Tts, 50 * 1024 * 1024, GpuPriority::Interactive).unwrap();
         assert!(mgr.subsystems[GpuSubsystem::Tts.index()].used() > 0);
 
         guard.release();
@@ -678,7 +877,7 @@ mod tests {
     #[test]
     fn test_stats_snapshot() {
         let mgr = test_manager(1024);
-        let _guard = mgr.allocate(GpuSubsystem::Inference, 100 * 1024 * 1024).unwrap();
+        let _guard = mgr.allocate(GpuSubsystem::Inference, 100 * 1024 * 1024, GpuPriority::Interactive).unwrap();
 
         let stats = mgr.stats();
         assert_eq!(stats.gpu_name, "Test GPU");
@@ -696,7 +895,7 @@ mod tests {
         assert!(*rx.borrow() < 0.01);
 
         // Allocate should update pressure
-        let _guard = mgr.allocate(GpuSubsystem::Inference, 500 * 1024 * 1024).unwrap();
+        let _guard = mgr.allocate(GpuSubsystem::Inference, 500 * 1024 * 1024, GpuPriority::Realtime).unwrap();
         assert!(rx.has_changed().unwrap_or(false) || *rx.borrow() > 0.0);
     }
 
@@ -705,8 +904,8 @@ mod tests {
         let mgr = test_manager(1024);
         let budget = mgr.inference_budget_bytes();
 
-        // Allocate more than budget — should succeed (soft limit)
-        let guard = mgr.allocate(GpuSubsystem::Inference, budget + 100 * 1024 * 1024);
+        // Allocate more than budget — should succeed (soft limit) at Realtime priority
+        let guard = mgr.allocate(GpuSubsystem::Inference, budget + 100 * 1024 * 1024, GpuPriority::Realtime);
         assert!(guard.is_ok(), "Over-budget allocation should succeed (soft limit)");
     }
 
@@ -722,9 +921,9 @@ mod tests {
     fn test_multiple_subsystem_pressure() {
         let mgr = test_manager(1024);
 
-        let _g1 = mgr.allocate(GpuSubsystem::Rendering, 50 * 1024 * 1024).unwrap();
-        let _g2 = mgr.allocate(GpuSubsystem::Inference, 200 * 1024 * 1024).unwrap();
-        let _g3 = mgr.allocate(GpuSubsystem::Tts, 30 * 1024 * 1024).unwrap();
+        let _g1 = mgr.allocate(GpuSubsystem::Rendering, 50 * 1024 * 1024, GpuPriority::Realtime).unwrap();
+        let _g2 = mgr.allocate(GpuSubsystem::Inference, 200 * 1024 * 1024, GpuPriority::Interactive).unwrap();
+        let _g3 = mgr.allocate(GpuSubsystem::Tts, 30 * 1024 * 1024, GpuPriority::Interactive).unwrap();
 
         let stats = mgr.stats();
         assert!(stats.rendering.used_mb > 49.0);
@@ -734,6 +933,257 @@ mod tests {
         // Total pressure from all subsystems
         let expected_total = 280.0; // 50+200+30
         assert!(stats.total_used_mb > expected_total - 1.0);
+    }
+
+    // ── Priority gating tests ────────────────────────────────────────
+
+    #[test]
+    fn test_realtime_only_rejected_at_critical() {
+        // Realtime priority: gate = 0.95 (PRESSURE_CRITICAL)
+        // Fill to 90% — Realtime should still succeed
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        let fill = (usable as f64 * 0.90) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+        assert!(mgr.pressure() >= PRESSURE_HIGH);
+
+        // Realtime at 90% pressure — should succeed
+        let small = 1024 * 1024; // 1MB
+        let result = mgr.allocate(GpuSubsystem::Rendering, small, GpuPriority::Realtime);
+        assert!(result.is_ok(), "Realtime should succeed at 90% pressure");
+    }
+
+    #[test]
+    fn test_interactive_rejected_at_high() {
+        // Interactive priority: gate = 0.80 (PRESSURE_HIGH)
+        // Fill to 82% — Interactive should be rejected
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        let fill = (usable as f64 * 0.82) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+        assert!(mgr.pressure() >= PRESSURE_HIGH);
+
+        // Interactive at 82% — should be rejected (gate = 0.80)
+        let small = 1024 * 1024; // 1MB
+        let result = mgr.allocate(GpuSubsystem::Tts, small, GpuPriority::Interactive);
+        assert!(result.is_err(), "Interactive should be rejected at 82% pressure");
+    }
+
+    #[test]
+    fn test_background_rejected_at_warning() {
+        // Background priority: gate = 0.60 (PRESSURE_WARNING)
+        // Fill to 62% — Background should be rejected
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        let fill = (usable as f64 * 0.62) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+        assert!(mgr.pressure() >= PRESSURE_WARNING);
+
+        // Background at 62% — should be rejected (gate = 0.60)
+        let small = 1024 * 1024;
+        let result = mgr.allocate(GpuSubsystem::Inference, small, GpuPriority::Background);
+        assert!(result.is_err(), "Background should be rejected at 62% pressure");
+
+        // But Interactive should still succeed at 62% (gate = 0.80)
+        let result2 = mgr.allocate(GpuSubsystem::Inference, small, GpuPriority::Interactive);
+        assert!(result2.is_ok(), "Interactive should succeed at 62% pressure");
+    }
+
+    #[test]
+    fn test_batch_rejected_at_50_percent() {
+        // Batch priority: gate = 0.50
+        // Fill to 52% — Batch should be rejected
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        let fill = (usable as f64 * 0.52) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+
+        let small = 1024 * 1024;
+        let result = mgr.allocate(GpuSubsystem::Inference, small, GpuPriority::Batch);
+        assert!(result.is_err(), "Batch should be rejected at 52% pressure");
+
+        // Background should still succeed at 52% (gate = 0.60)
+        let result2 = mgr.allocate(GpuSubsystem::Inference, small, GpuPriority::Background);
+        assert!(result2.is_ok(), "Background should succeed at 52% pressure");
+    }
+
+    #[test]
+    fn test_pressure_gate_error_contains_priority_info() {
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        // Fill to 65%
+        let fill = (usable as f64 * 0.65) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+
+        // Background allocation should fail with PressureGate error
+        let result = mgr.allocate(GpuSubsystem::Tts, 1024 * 1024, GpuPriority::Background);
+        match result {
+            Err(GpuError::PressureGate { priority, gate, .. }) => {
+                assert_eq!(priority, GpuPriority::Background);
+                assert!((gate - PRESSURE_WARNING).abs() < 0.001);
+            }
+            _ => panic!("Expected PressureGate error"),
+        }
+    }
+
+    // ── Allocation counter tests ──────────────────────────────────────
+
+    #[test]
+    fn test_allocation_counters_increment_and_decrement() {
+        let mgr = test_manager(1024);
+
+        assert_eq!(mgr.allocation_count(GpuPriority::Interactive), 0);
+        assert_eq!(mgr.allocation_count(GpuPriority::Realtime), 0);
+
+        let g1 = mgr.allocate(GpuSubsystem::Inference, 10 * 1024 * 1024, GpuPriority::Interactive).unwrap();
+        assert_eq!(mgr.allocation_count(GpuPriority::Interactive), 1);
+
+        let g2 = mgr.allocate(GpuSubsystem::Tts, 5 * 1024 * 1024, GpuPriority::Interactive).unwrap();
+        assert_eq!(mgr.allocation_count(GpuPriority::Interactive), 2);
+
+        let _g3 = mgr.allocate(GpuSubsystem::Rendering, 5 * 1024 * 1024, GpuPriority::Realtime).unwrap();
+        assert_eq!(mgr.allocation_count(GpuPriority::Realtime), 1);
+
+        // Drop g1 — Interactive should decrement
+        drop(g1);
+        assert_eq!(mgr.allocation_count(GpuPriority::Interactive), 1);
+
+        // Manual release g2 — Interactive should decrement again
+        g2.release();
+        assert_eq!(mgr.allocation_count(GpuPriority::Interactive), 0);
+
+        // Realtime unchanged
+        assert_eq!(mgr.allocation_count(GpuPriority::Realtime), 1);
+    }
+
+    #[test]
+    fn test_stats_includes_allocation_counts() {
+        let mgr = test_manager(1024);
+
+        let _g1 = mgr.allocate(GpuSubsystem::Rendering, 5 * 1024 * 1024, GpuPriority::Realtime).unwrap();
+        let _g2 = mgr.allocate(GpuSubsystem::Inference, 10 * 1024 * 1024, GpuPriority::Interactive).unwrap();
+        let _g3 = mgr.allocate(GpuSubsystem::Inference, 5 * 1024 * 1024, GpuPriority::Background).unwrap();
+
+        let stats = mgr.stats();
+        assert_eq!(stats.allocations_by_priority.realtime, 1);
+        assert_eq!(stats.allocations_by_priority.interactive, 1);
+        assert_eq!(stats.allocations_by_priority.background, 1);
+        assert_eq!(stats.allocations_by_priority.batch, 0);
+    }
+
+    #[test]
+    fn test_rejected_allocation_does_not_increment_counter() {
+        let mgr = test_manager(1024);
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        // Fill to 65%
+        let fill = (usable as f64 * 0.65) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+
+        // Background allocation should fail — counter should NOT increment
+        assert_eq!(mgr.allocation_count(GpuPriority::Background), 0);
+        let _ = mgr.allocate(GpuSubsystem::Tts, 1024 * 1024, GpuPriority::Background);
+        assert_eq!(mgr.allocation_count(GpuPriority::Background), 0,
+            "Rejected allocation should not increment counter");
+    }
+
+    #[test]
+    fn test_guard_stores_priority() {
+        let mgr = test_manager(1024);
+        let guard = mgr.allocate(GpuSubsystem::Inference, 10 * 1024 * 1024, GpuPriority::Background).unwrap();
+        assert_eq!(guard.priority(), GpuPriority::Background);
+    }
+
+    // ── Concurrency tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_critical_pressure_rollback() {
+        // Verify optimistic-allocate-then-rollback works:
+        // Fill to near-critical, then allocate just enough to push past.
+        let mgr = test_manager(1024); // 1GB
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100); // ~972MB usable
+
+        // Fill to 94% of usable across subsystems (Realtime so it doesn't get gated)
+        let fill_bytes = (usable as f64 * 0.94) as u64;
+        let _fill = mgr.allocate(GpuSubsystem::Inference, fill_bytes, GpuPriority::Realtime).unwrap();
+        assert!(mgr.pressure() < PRESSURE_CRITICAL);
+
+        // This Realtime allocation should push past 95% — should be rejected and rolled back
+        let overfill = (usable as f64 * 0.10) as u64; // 10% more → 104% total
+        let result = mgr.allocate(GpuSubsystem::Tts, overfill, GpuPriority::Realtime);
+        assert!(result.is_err(), "Should reject allocation that pushes past critical");
+
+        // Verify the bytes were rolled back (only fill_bytes should remain)
+        let tts_used = mgr.subsystems[GpuSubsystem::Tts.index()].used();
+        assert_eq!(tts_used, 0, "TTS used should be 0 after rollback, got {}", tts_used);
+    }
+
+    #[test]
+    fn test_concurrent_allocation_safety() {
+        // Simulate the TOCTOU scenario: many threads racing to allocate.
+        // With optimistic-rollback, at most one should succeed when total
+        // would push past the gate.
+        let mgr = test_manager(1024); // 1GB
+        let usable = 1024_u64 * 1024 * 1024 - (1024_u64 * 1024 * 1024 * 5 / 100);
+
+        // Fill to 90% (with Realtime so it doesn't get gated early)
+        let fill = (usable as f64 * 0.90) as u64;
+        let _fill_guard = mgr.allocate(GpuSubsystem::Inference, fill, GpuPriority::Realtime).unwrap();
+
+        // Now 10 threads try Realtime allocation of 2% each — only some should succeed
+        // (total would be 90% + 20% = 110%, well past critical)
+        let chunk = (usable as f64 * 0.02) as u64;
+        let mgr_ref = &mgr;
+
+        let results: Vec<bool> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..10).map(|_| {
+                s.spawn(move || {
+                    mgr_ref.allocate(GpuSubsystem::Tts, chunk, GpuPriority::Realtime).is_ok()
+                })
+            }).collect();
+
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let successes = results.iter().filter(|&&ok| ok).count();
+        let final_pressure = mgr.pressure();
+
+        // Some allocations should succeed, but final pressure must stay below critical.
+        // (The exact number depends on scheduling, but pressure must be safe.)
+        assert!(
+            final_pressure < PRESSURE_CRITICAL,
+            "Final pressure {:.1}% should be below critical {:.0}% — {} of 10 allocations succeeded",
+            final_pressure * 100.0, PRESSURE_CRITICAL * 100.0, successes
+        );
+    }
+
+    // ── Priority ordering tests ──────────────────────────────────────
+
+    #[test]
+    fn test_priority_ordering() {
+        assert!(GpuPriority::Realtime < GpuPriority::Interactive);
+        assert!(GpuPriority::Interactive < GpuPriority::Background);
+        assert!(GpuPriority::Background < GpuPriority::Batch);
+    }
+
+    #[test]
+    fn test_pressure_gates_are_monotonically_decreasing() {
+        // Higher priority = higher gate = harder to reject
+        assert!(GpuPriority::Realtime.pressure_gate() > GpuPriority::Interactive.pressure_gate());
+        assert!(GpuPriority::Interactive.pressure_gate() > GpuPriority::Background.pressure_gate());
+        assert!(GpuPriority::Background.pressure_gate() > GpuPriority::Batch.pressure_gate());
+    }
+
+    #[test]
+    fn test_eviction_weights_match_priority() {
+        assert!(GpuPriority::Realtime.eviction_weight() > GpuPriority::Interactive.eviction_weight());
+        assert!(GpuPriority::Interactive.eviction_weight() > GpuPriority::Background.eviction_weight());
+        assert!(GpuPriority::Background.eviction_weight() > GpuPriority::Batch.eviction_weight());
     }
 
     // ── ts-rs binding tests ─────────────────────────────────────────────
@@ -748,5 +1198,17 @@ mod tests {
     fn export_bindings_subsystem_stats() {
         let cfg = ts_rs::Config::default();
         SubsystemStats::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_gpu_priority() {
+        let cfg = ts_rs::Config::default();
+        GpuPriority::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_allocations_by_priority() {
+        let cfg = ts_rs::Config::default();
+        AllocationsByPriority::export_all(&cfg).unwrap();
     }
 }

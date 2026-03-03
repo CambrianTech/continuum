@@ -205,6 +205,10 @@ export class PersonaUser extends AIUser {
   // Keyed by context (e.g., room uniqueId) so personas can have per-room workspaces
   private _workspaces: Map<string, Workspace> = new Map();
 
+  // Tracks whether the initial corpus load returned empty (startup race: longterm.db may not exist yet)
+  // If true, we retry after Hippocampus creates the schema in ensureDbReady()
+  private _corpusLoadedEmpty = false;
+
   /**
    * Get unified consciousness for cross-context awareness
    * Public for RAG sources and cognitive modules
@@ -725,10 +729,18 @@ export class PersonaUser extends AIUser {
         parallelTasks.push((async () => {
           try {
             const { memories, events } = await this.loadCorpusFromORM();
-            const corpusResult = await this._rustCognition!.memoryLoadCorpus(memories, events);
-            this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+            if (memories.length === 0 && events.length === 0) {
+              // First-ever startup: longterm.db schema may not exist yet (Hippocampus creates it later).
+              // Mark for retry after ensureDbReady().
+              this._corpusLoadedEmpty = true;
+              this.log.info(`${this.displayName}: Corpus empty on initial load (will retry after Hippocampus init)`);
+            } else {
+              const corpusResult = await this._rustCognition!.memoryLoadCorpus(memories, events);
+              this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+            }
           } catch (error) {
             this.log.error(`${this.displayName}: Corpus load failed:`, error);
+            this._corpusLoadedEmpty = true;
             // Non-fatal — recall will return empty results until corpus is loaded
           }
         })());
@@ -846,6 +858,20 @@ export class PersonaUser extends AIUser {
     // Hippocampus sets PersonaUser.personaDbHandle directly; PersonaMemory reads it
     // via live reference, CognitionLogger has it via registerDbHandle().
     await this.limbic!.ensureDbReady();
+
+    // Retry corpus load if initial attempt was empty (startup race: schema didn't exist yet)
+    if (this._rustCognition && this._corpusLoadedEmpty) {
+      try {
+        const { memories, events } = await this.loadCorpusFromORM();
+        if (memories.length > 0 || events.length > 0) {
+          const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
+          this.log.info(`${this.displayName}: Corpus reloaded post-Hippocampus — ${corpusResult.memory_count} memories, ${corpusResult.timeline_event_count} events`);
+          this._corpusLoadedEmpty = false;
+        }
+      } catch (error) {
+        this.log.warn(`${this.displayName}: Corpus reload post-Hippocampus failed:`, error);
+      }
+    }
 
     // GENOME INTEGRATION: Load adapters from database into PersonaGenome
     // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)

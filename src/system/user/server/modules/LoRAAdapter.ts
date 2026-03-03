@@ -48,6 +48,10 @@ export interface LoRAAdapterState {
   /** Trained model name for inference (e.g., HuggingFace adapter ID)
    * Set after training completes, used for model selection during inference */
   trainedModelName?: string;
+
+  /** Back-reference to GenomeLayerEntity.id for fitness tracking.
+   * Set when adapter is loaded from database; undefined for dynamically created adapters. */
+  layerId?: UUID;
 }
 
 /**
@@ -71,6 +75,7 @@ export class LoRAAdapter {
     sizeMB: number;
     priority?: number;
     trainedModelName?: string;
+    layerId?: UUID;
     aiProvider?: AIProviderAdapter;
     logger?: (message: string) => void;
   }) {
@@ -85,7 +90,8 @@ export class LoRAAdapter {
       sizeMB: config.sizeMB,
       trainingActive: false,
       priority: config.priority ?? 0.5,
-      trainedModelName: config.trainedModelName
+      trainedModelName: config.trainedModelName,
+      layerId: config.layerId,
     };
     this.aiProvider = config.aiProvider;
   }
@@ -152,6 +158,14 @@ export class LoRAAdapter {
    */
   getTrainedModelName(): string | undefined {
     return this.state.trainedModelName;
+  }
+
+  /**
+   * Get GenomeLayerEntity ID back-reference (for fitness tracking).
+   * Returns undefined for dynamically created adapters without a database entity.
+   */
+  getLayerId(): UUID | undefined {
+    return this.state.layerId;
   }
 
   /**

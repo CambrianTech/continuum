@@ -24,10 +24,11 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
-import type { AdapterPackageManifest } from '../shared/AdapterPackageTypes';
+import type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
+import { EmbeddingGenerate } from '../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes';
 
 // Re-export for convenience
-export type { AdapterPackageManifest } from '../shared/AdapterPackageTypes';
+export type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
 
 const MANIFEST_FILENAME = 'manifest.json';
 
@@ -102,6 +103,7 @@ export class AdapterPackage {
     entity.rank = manifest.rank;
     entity.creatorId = manifest.personaId;
     entity.trainingMetadata = manifest.trainingMetadata;
+    entity.quantization = manifest.quantization;
     entity.contentHash = manifest.contentHash;
     entity.tags = [manifest.traitType, manifest.baseModel, manifest.personaName.toLowerCase()];
     entity.generation = 0;
@@ -111,6 +113,38 @@ export class AdapterPackage {
     entity.updatedAt = createdAt;
 
     return entity;
+  }
+
+  /**
+   * Generate a capability embedding for a GenomeLayerEntity.
+   *
+   * The embedding encodes WHAT the adapter can do, not just its name/description.
+   * When exam questions are provided, they're included in the embedding text —
+   * meaning the vector represents actual tested competence. A biology adapter's
+   * embedding naturally overlaps biochem because the exam questions about cellular
+   * processes, molecular interactions, chemical pathways all embed in that neighborhood.
+   *
+   * Geometry of competence, not keywords.
+   */
+  static async generateLayerEmbedding(
+    entity: GenomeLayerEntity,
+    examQuestions?: string[]
+  ): Promise<void> {
+    const parts = [entity.name, entity.description, `domain: ${entity.traitType}`];
+    if (entity.tags.length > 0) {
+      parts.push(`tags: ${entity.tags.join(', ')}`);
+    }
+    if (examQuestions?.length) {
+      parts.push('proven competence:', ...examQuestions);
+    }
+
+    const text = parts.join('\n');
+    const result = await EmbeddingGenerate.execute({ input: text });
+
+    if (result.success && result.embeddings.length > 0) {
+      entity.embedding = result.embeddings[0];
+      entity.embeddingDimension = result.dimensions;
+    }
   }
 
   /**
@@ -126,10 +160,11 @@ export class AdapterPackage {
     sizeMB: number;
     contentHash?: string;
     trainingMetadata: TrainingMetadata;
+    quantization?: QuantizationInfo;
   }): AdapterPackageManifest {
     const safeName = params.personaName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-    return {
+    const manifest: AdapterPackageManifest = {
       id: generateUUID(),
       name: `${safeName}-${params.traitType}`,
       traitType: params.traitType,
@@ -144,6 +179,12 @@ export class AdapterPackage {
       createdAt: new Date().toISOString(),
       version: 1,
     };
+
+    if (params.quantization) {
+      manifest.quantization = params.quantization;
+    }
+
+    return manifest;
   }
 
   /**

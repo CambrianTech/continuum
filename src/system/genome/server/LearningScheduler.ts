@@ -14,6 +14,8 @@
 
 import type { PersonaTrainingManager } from '../../user/server/modules/PersonaTrainingManager';
 import type { TrainingDataAccumulator } from '../../user/server/modules/TrainingDataAccumulator';
+import { GenomeRegistry } from './GenomeRegistry';
+import { GpuPressureWatcher } from '../../gpu/server/GpuPressureWatcher';
 
 /**
  * Registered persona for learning scheduling
@@ -206,13 +208,49 @@ export class LearningScheduler {
 
   /**
    * Trigger training for a specific persona.
+   * Before training from scratch, checks GenomeRegistry for existing adapters
+   * that could be adopted instead (cross-persona sharing).
    * Sets the training lock and delegates to PersonaTrainingManager.
    */
   private async triggerTraining(persona: ScheduledPersona): Promise<boolean> {
     this._isTraining = true;
     this._trainingPersonaId = persona.personaId;
 
+    // Check if an existing adapter can be adopted instead of training from scratch
+    const readyDomains = persona.accumulator.getDomains()
+      .filter(d => persona.accumulator.shouldMicroTune(d));
+
+    if (readyDomains.length > 0) {
+      const primaryDomain = readyDomains[0];
+      try {
+        const existing = await GenomeRegistry.findByCapability(primaryDomain, {
+          minSimilarity: 0.7,
+          limit: 1,
+        });
+        if (existing.length > 0 && existing[0].layer.modelPath) {
+          this.log(`🔗 LearningScheduler: Found existing adapter "${existing[0].layer.name}" (similarity=${existing[0].similarity.toFixed(2)}) for ${persona.displayName} — skipping training, adoption available`);
+          // Don't train — the PersonaTaskExecutor's adoptAdapter flow handles the rest
+          this._isTraining = false;
+          this._trainingPersonaId = null;
+          return false;
+        }
+      } catch {
+        // Registry search failed (embeddings unavailable, etc.) — proceed with training
+      }
+    }
+
     this.log(`🎓 LearningScheduler: Triggering training for ${persona.displayName} (${persona.personaId.slice(0, 8)})`);
+
+    // GPU pressure gate: training is the LOWEST priority workload.
+    // Defer at WARNING (60%) so user-facing inference and TTS always win.
+    // Uses GpuPressureWatcher's cached value — no blocking IPC call.
+    const watcher = GpuPressureWatcher.instance;
+    if (watcher.currentLevel !== 'normal') {
+      this.log(`⏸️  GPU ${watcher.currentLevel} (${(watcher.pressure * 100).toFixed(0)}%) — deferring training for ${persona.displayName}`);
+      this._isTraining = false;
+      this._trainingPersonaId = null;
+      return false;
+    }
 
     try {
       await persona.trainingManager.checkTrainingReadiness();
