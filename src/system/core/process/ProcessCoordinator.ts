@@ -9,8 +9,9 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import type { ExampleName } from '../../shared/ExampleConfigTypes';
+import { SystemPaths } from '../config/SystemPaths';
 
 export interface ProcessState {
   readonly pid: number;
@@ -34,8 +35,8 @@ export type ProcessTransition =
 
 export class ProcessCoordinator {
   private static instance: ProcessCoordinator;
-  private readonly lockFile = '.continuum/jtag/system/startup.lock';
-  private readonly pidFile = '.continuum/jtag/system/server.pid';
+  private readonly lockFile = join(SystemPaths.root, 'jtag', 'system', 'startup.lock');
+  private readonly pidFile = join(SystemPaths.root, 'jtag', 'system', 'server.pid');
 
   private constructor() {}
 

@@ -17,6 +17,10 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 
 cd "$PROJECT_DIR"
 
+# Runtime root — all runtime data (logs, sockets, sessions) lives here.
+# Matches SystemPaths.root in TypeScript (composite factory routes runtime → $REPO).
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-.continuum}"
+
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
 
@@ -34,8 +38,8 @@ preflight_check_xcode
 #   - Build, start everything fresh, open new browser
 
 HOT_RESTART=false
-if [ -f .continuum/jtag/logs/system/npm-start.pid ]; then
-  OLD_PID=$(cat .continuum/jtag/logs/system/npm-start.pid)
+if [ -f $CONTINUUM_ROOT/jtag/logs/system/npm-start.pid ]; then
+  OLD_PID=$(cat $CONTINUUM_ROOT/jtag/logs/system/npm-start.pid)
   if kill -0 "$OLD_PID" 2>/dev/null; then
     HOT_RESTART=true
     echo -e "${GREEN}Phase 1: System running (PID $OLD_PID) — hot restart (browser preserved)${NC}"
@@ -216,16 +220,16 @@ bash workers/start-workers.sh --skip-build
 echo -e "\n${YELLOW}Phase 4: Launch system${NC}"
 
 # Ensure log directory exists
-mkdir -p .continuum/jtag/logs/system
+mkdir -p "$CONTINUUM_ROOT/jtag/logs/system"
 
 # Start the orchestrator as a daemon — it runs forever (WebSocket server is in-process).
 # Redirect output to log file. system-stop.sh finds it by pattern "launch-active-example".
 nohup npx tsx scripts/launch-active-example.ts \
-  >> .continuum/jtag/logs/system/orchestrator.log 2>&1 &
+  >> $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log 2>&1 &
 LAUNCH_PID=$!
 disown $LAUNCH_PID
-echo "$LAUNCH_PID" > .continuum/jtag/logs/system/npm-start.pid
-echo -e "  Orchestrator started (PID $LAUNCH_PID, log: .continuum/jtag/logs/system/orchestrator.log)"
+echo "$LAUNCH_PID" > $CONTINUUM_ROOT/jtag/logs/system/npm-start.pid
+echo -e "  Orchestrator started (PID $LAUNCH_PID, log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log)"
 
 # Phase 5: Wait for system health (poll ./jtag ping)
 # On HOT RESTART, the orchestrator's detectAndManageBrowser() will find the
@@ -244,7 +248,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
 
   # Check if daemon process is still alive
   if ! kill -0 $LAUNCH_PID 2>/dev/null; then
-    echo -e "${RED}❌ Orchestrator process died (check .continuum/jtag/logs/system/orchestrator.log)${NC}"
+    echo -e "${RED}❌ Orchestrator process died (check $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log)${NC}"
     exit 1
   fi
 
@@ -271,7 +275,7 @@ if [ "$HEALTHY" = false ]; then
     echo -e "\n${YELLOW}⚠️ Server is UP but no browser detected. Open manually or run: npm start${NC}"
   else
     echo -e "${RED}❌ System did not become healthy within ${MAX_WAIT}s${NC}"
-    echo -e "${RED}   Check log: .continuum/jtag/logs/system/orchestrator.log${NC}"
+    echo -e "${RED}   Check log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log${NC}"
     exit 1
   fi
 fi

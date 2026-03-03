@@ -17,6 +17,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { SystemPaths } from '../../../core/config/SystemPaths';
 
 export interface UserDirectoryPaths {
   root: string;              // .continuum/users/{userId}
@@ -32,9 +33,9 @@ export class UserDirectoryManager {
   private readonly baseDir: string;
 
   /**
-   * @param baseDir - Base directory for all users (default: .continuum/users)
+   * @param baseDir - Base directory for all users (default: SystemPaths.users.root)
    */
-  constructor(baseDir: string = '.continuum/users') {
+  constructor(baseDir: string = SystemPaths.users.root) {
     this.baseDir = baseDir;
   }
 
@@ -49,7 +50,7 @@ export class UserDirectoryManager {
     // Check if new path exists
     if (!fs.existsSync(root)) {
       // Fall back to legacy persona path if it exists (may be UUID-named from old code)
-      const legacyPath = path.join('.continuum/personas', userId);
+      const legacyPath = path.join(SystemPaths.personas.root, userId);
       if (fs.existsSync(legacyPath)) {
         root = legacyPath;
       }

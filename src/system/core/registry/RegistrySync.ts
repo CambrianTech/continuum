@@ -9,12 +9,13 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { SystemPaths } from '../config/SystemPaths';
 
 /**
  * Registry locations that need to be synchronized
  */
 const REGISTRY_LOCATIONS = [
-  '.continuum/jtag/registry/process-registry.json',  // Main JTAG directory
+  SystemPaths.registry.processes,  // Main JTAG directory
   'examples/test-bench/.continuum/jtag/registry/process-registry.json'  // Test-bench directory
 ];
 

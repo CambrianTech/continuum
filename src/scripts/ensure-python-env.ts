@@ -9,9 +9,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const GENOME_PYTHON_DIR = path.join(REPO_ROOT, '.continuum', 'genome', 'python');
+const GENOME_PYTHON_DIR = SystemPaths.genome.python;
 const MICROMAMBA_ROOT = path.join(GENOME_PYTHON_DIR, 'micromamba');
 const BOOTSTRAP_SCRIPT = path.join(GENOME_PYTHON_DIR, 'bootstrap.sh');
 const ENV_NAME = 'jtag-genome-training';

@@ -207,7 +207,8 @@ export class DatasetCreateServerCommand {
    * Load dataset configuration
    */
   private async loadConfig(): Promise<DatasetConfig> {
-    const configPath = path.join(os.homedir(), '.continuum', 'config', 'datasets.json');
+    const { GlobalPaths } = await import('../../../../../system/core/config/SystemPaths');
+    const configPath = path.join(GlobalPaths.root, 'config', 'datasets.json');
 
     try {
       const content = await fs.readFile(configPath, 'utf-8');

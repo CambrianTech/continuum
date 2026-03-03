@@ -15,6 +15,7 @@ import { ToolResult } from '@system/core/shared/ToolResult';
 import { v4 as uuid } from 'uuid';
 import * as path from 'path';
 import * as fs from 'fs';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   
@@ -98,7 +99,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
 
             // Clean up temp file
             try {
-              const sessionPath = path.resolve(process.cwd(), '.continuum/sessions/user/shared/shared');
+              const sessionPath = path.join(SystemPaths.sessions.user, 'shared', 'shared');
               fs.unlinkSync(path.join(sessionPath, tempSaveResult.filepath));
             } catch (_err) {
               console.warn(`⚠️  RESIZE: Could not delete temp file: ${_err}`);

@@ -100,25 +100,9 @@ export class ServerConfig {
   }
 
   /**
-   * Get logs directory path
+   * Runtime paths (logs, signals, sessions) removed — use SystemPaths directly.
+   * SystemPaths.logs.root, SystemPaths.sessions.root, etc.
    */
-  getLogsDir(): string {
-    return DATABASE_PATHS.LOGS_DIR;
-  }
-
-  /**
-   * Get signals directory path
-   */
-  getSignalsDir(): string {
-    return DATABASE_PATHS.SIGNALS_DIR;
-  }
-
-  /**
-   * Get sessions directory path
-   */
-  getSessionsDir(): string {
-    return DATABASE_PATHS.SESSIONS_DIR;
-  }
 
   // ===================================
   // Network Port Accessors

@@ -11,6 +11,7 @@ import type { AdapterSearchParams, AdapterSearchResult, AdapterSearchResultItem,
 import { createAdapterSearchResultFromParams } from '../shared/AdapterSearchTypes';
 import * as fs from 'fs';
 import * as path from 'path';
+import { GlobalPaths } from '../../../../system/core/config/SystemPaths';
 
 /**
  * HuggingFace API response types
@@ -43,10 +44,7 @@ export class AdapterSearchServerCommand extends CommandBase<AdapterSearchParams,
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('adapter/search', context, subpath, commander);
-    this.LOCAL_REGISTRY_PATH = path.join(
-      process.env.HOME || '',
-      '.continuum/adapters/installed'
-    );
+    this.LOCAL_REGISTRY_PATH = path.join(GlobalPaths.root, 'adapters', 'installed');
   }
 
   async execute(params: AdapterSearchParams): Promise<AdapterSearchResult> {

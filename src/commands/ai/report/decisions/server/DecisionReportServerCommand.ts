@@ -21,6 +21,7 @@ import type { DataListParams, DataListResult } from '../../../../data/list/share
 import type { FileSaveParams, FileSaveResult } from '../../../../file/save/shared/FileSaveTypes';
 import * as path from 'path';
 import * as fs from 'fs';
+import { SystemPaths } from '../../../../../system/core/config/SystemPaths';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { FileSave } from '../../../../file/save/shared/FileSaveTypes';
@@ -130,7 +131,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
       outputPath = path.resolve(params.output);
     } else {
       // Default: .continuum/reports/decisions-{timestamp}.md
-      const reportsDir = path.resolve('.continuum/reports');
+      const reportsDir = SystemPaths.reports.root;
 
       // Ensure reports directory exists
       if (!fs.existsSync(reportsDir)) {

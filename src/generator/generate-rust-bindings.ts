@@ -260,22 +260,83 @@ function generateMasterBarrel(): void {
   console.log(`  📦 index.ts (master barrel)`);
 }
 
+/**
+ * Check if Rust source files have changed since bindings were last generated.
+ * Compares newest .rs mtime in workers/ against newest generated .ts mtime in shared/generated/.
+ * Skips cargo test entirely when Rust hasn't changed — saves 12-300s per build.
+ */
+function bindingsUpToDate(): boolean {
+  // Find newest generated .ts file
+  let newestGenerated = 0;
+  try {
+    const subdirs = fs.readdirSync(GENERATED_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+    for (const dir of subdirs) {
+      const dirPath = path.join(GENERATED_DIR, dir.name);
+      const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.ts') && f !== 'index.ts');
+      for (const f of files) {
+        const mtime = fs.statSync(path.join(dirPath, f)).mtime.getTime();
+        if (mtime > newestGenerated) newestGenerated = mtime;
+      }
+    }
+  } catch {
+    return false; // No generated files — must regenerate
+  }
+
+  if (newestGenerated === 0) return false;
+
+  // Find newest .rs file in workers/
+  let newestRust = 0;
+  function scanDir(dir: string) {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory() && entry.name !== 'target' && entry.name !== '.git') {
+          scanDir(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.rs')) {
+          const mtime = fs.statSync(fullPath).mtime.getTime();
+          if (mtime > newestRust) newestRust = mtime;
+        }
+      }
+    } catch { /* skip inaccessible dirs */ }
+  }
+  scanDir(WORKERS_DIR);
+
+  // Also check Cargo.toml files (dependency changes can affect generated types)
+  try {
+    const cargoToml = fs.statSync(path.join(WORKERS_DIR, 'Cargo.toml')).mtime.getTime();
+    if (cargoToml > newestRust) newestRust = cargoToml;
+    const coreCargo = fs.statSync(path.join(WORKERS_DIR, 'continuum-core', 'Cargo.toml')).mtime.getTime();
+    if (coreCargo > newestRust) newestRust = coreCargo;
+  } catch { /* missing Cargo.toml is fine */ }
+
+  return newestRust <= newestGenerated;
+}
+
 async function main() {
   console.log('🔧 Generating Rust → TypeScript bindings via ts-rs...\n');
 
   // Ensure output directory exists
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
-  // Step 1: Run cargo test for each package to generate .ts files
-  let allSuccess = true;
-  for (const pkg of TS_RS_PACKAGES) {
-    const ok = generateBindings(pkg.package, pkg.description);
-    if (!ok) allSuccess = false;
-  }
+  // Skip cargo test if Rust source hasn't changed since last generation
+  const forceRegen = process.argv.includes('--force');
+  if (!forceRegen && bindingsUpToDate()) {
+    console.log('  ✅ Bindings up to date (no Rust changes since last generation)');
+    console.log('     Use --force to regenerate anyway\n');
+  } else {
+    // Step 1: Run cargo test for each package to generate .ts files
+    let allSuccess = true;
+    for (const pkg of TS_RS_PACKAGES) {
+      const ok = generateBindings(pkg.package, pkg.description);
+      if (!ok) allSuccess = false;
+    }
 
-  if (!allSuccess) {
-    console.error('\n❌ Some bindings failed to generate');
-    process.exit(1);
+    if (!allSuccess) {
+      console.error('\n❌ Some bindings failed to generate');
+      process.exit(1);
+    }
   }
 
   console.log('');

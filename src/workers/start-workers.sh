@@ -10,6 +10,10 @@ NC='\033[0m' # No Color
 
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
 
+# Runtime root — all runtime data (logs, sockets, sessions) lives here.
+# Matches SystemPaths.root in TypeScript (composite factory routes runtime → $REPO).
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-.continuum}"
+
 # Memory limit helper - converts "8G" to bytes for ulimit
 parse_memory_limit() {
   local limit="$1"
@@ -48,14 +52,14 @@ if ! command -v jq &> /dev/null; then
 fi
 
 # Setup runtime directories (BEFORE anything writes to them)
-mkdir -p .continuum/jtag/logs/system/modules
-mkdir -p .continuum/jtag/logs/system/daemons
-mkdir -p .continuum/sockets
+mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/modules"
+mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/daemons"
+mkdir -p "$CONTINUUM_ROOT/sockets"
 
 # Start LiveKit SFU server (WebRTC media transport)
 # Check brew first, then manual install location
 LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
-LIVEKIT_LOG=".continuum/jtag/logs/system/livekit-server.log"
+LIVEKIT_LOG="$CONTINUUM_ROOT/jtag/logs/system/livekit-server.log"
 if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   # Kill existing LiveKit server (SIGKILL for clean port release)
   pkill -9 -f "livekit-server" 2>/dev/null || true
@@ -101,7 +105,7 @@ fi
 
 # Truncate all worker logs on restart (prevents multi-hundred-MB bloat)
 # Each session starts clean — old logs are not useful across restarts
-for logfile in .continuum/jtag/logs/system/*.log .continuum/jtag/logs/system/modules/*.log .continuum/jtag/logs/system/daemons/*.log; do
+for logfile in "$CONTINUUM_ROOT"/jtag/logs/system/*.log "$CONTINUUM_ROOT"/jtag/logs/system/modules/*.log "$CONTINUUM_ROOT"/jtag/logs/system/daemons/*.log; do
   [ -f "$logfile" ] && : > "$logfile"
 done
 echo -e "${GREEN}✅ Logs truncated${NC}"
@@ -162,7 +166,7 @@ while read -r worker; do
     # TCP worker (e.g., gRPC server) - no socket argument
     # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     # Each TCP worker gets its own log file for better segregation
-    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
+    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -183,14 +187,14 @@ while read -r worker; do
     # Unix socket worker - each gets its own log file for better segregation
     # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     fi
 
     WORKER_PID=$!

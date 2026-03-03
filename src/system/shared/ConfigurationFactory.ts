@@ -149,6 +149,8 @@ export class ConfigurationFactory {
           max_connections: 100,
           enable_cors: false
         },
+        // Config metadata defaults — NOT used for filesystem access.
+        // Server code MUST use SystemPaths.logs.root, SystemPaths.sessions.root, etc.
         paths: {
           logs: `.continuum/jtag/logs`,
           screenshots: `.continuum/jtag/screenshots`,

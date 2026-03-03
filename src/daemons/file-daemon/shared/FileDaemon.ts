@@ -4,6 +4,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 
 export class FileDaemon {
   
@@ -24,7 +25,7 @@ export class FileDaemon {
     
     // Fall back to session-relative path if session ID provided
     if (sessionId) {
-      const sessionPath = path.resolve(`.continuum/jtag/sessions/user/${sessionId}`, filepath);
+      const sessionPath = path.resolve(path.join(SystemPaths.sessions.user, sessionId), filepath);
       return sessionPath;
     }
     

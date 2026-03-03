@@ -23,6 +23,7 @@ import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * Metadata stored when async training starts — needed to complete post-training work.
@@ -145,7 +146,7 @@ async function handleTrainingComplete(
   };
 
   // 4. Move adapter to genome storage
-  const adaptersDir = path.join('.continuum', 'genome', 'adapters');
+  const adaptersDir = SystemPaths.genome.adapters;
   await fs.promises.mkdir(adaptersDir, { recursive: true });
 
   const adapterName = `${personaName.replace(/\s+/g, '-')}-${traitType}-${Date.now()}`;

@@ -28,6 +28,7 @@ import {
 } from '../../../daemons/logger-daemon/shared/LoggerDaemonTypes';
 import { createIPCMessage } from '../process/IPCProtocol';
 import type { ManagedProcess } from '../process/ProcessManager';
+import { SystemPaths } from '../config/SystemPaths';
 
 /**
  * Log levels (matches Logger.ts enum)
@@ -424,7 +425,7 @@ class ComponentLoggerProxy {
    * (Returns category-based path for compatibility)
    */
   getLogFilePath(): string {
-    return `.continuum/jtag/logs/system/${this.category}.log`;
+    return `${SystemPaths.logs.system}/${this.category}.log`;
   }
 }
 

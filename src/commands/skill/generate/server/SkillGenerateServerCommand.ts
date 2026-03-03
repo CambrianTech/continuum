@@ -18,6 +18,7 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { CommandGenerator } from '@generator/CommandGenerator';
 import type { CommandSpec } from '@generator/CommandNaming';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { GlobalPaths } from '@system/core/config/SystemPaths';
 
 export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams, SkillGenerateResult> {
 
@@ -77,7 +78,7 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
     const outputDir = params.outputDir
       ?? (skill.scope === 'team'
         ? path.join(rootPath, 'commands', skill.spec.name)
-        : path.join(rootPath, '.continuum', 'skills', skill.createdById, skill.spec.name));
+        : path.join(GlobalPaths.root, 'skills', skill.createdById, skill.spec.name));
 
     // Run CommandGenerator
     const generator = new CommandGenerator(rootPath);

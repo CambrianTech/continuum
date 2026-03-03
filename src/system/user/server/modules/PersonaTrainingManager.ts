@@ -8,6 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../../core/config/SystemPaths';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { Events } from '../../../core/shared/Events';
 import { Commands } from '../../../core/shared/Commands';
@@ -286,7 +287,7 @@ export class PersonaTrainingManager {
    * Returns the file path for genome/train.
    */
   private async writeTrainingFile(traitType: TraitType, jsonlContent: string): Promise<string> {
-    const trainingDir = path.resolve('.continuum', 'training', 'auto', this.personaId);
+    const trainingDir = path.join(SystemPaths.genome.training, 'auto', this.personaId);
     await fs.promises.mkdir(trainingDir, { recursive: true });
 
     const timestamp = Date.now();

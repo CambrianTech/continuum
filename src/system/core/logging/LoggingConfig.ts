@@ -16,6 +16,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { GlobalPaths } from '../config/SystemPaths';
 
 /**
  * Per-persona logging configuration
@@ -103,18 +104,10 @@ export class LoggingConfig {
   private configPath: string;
   private lastModified: number = 0;
 
-  private constructor(baseDir: string) {
-    this.configPath = path.join(baseDir, '.continuum', 'logging.json');
+  private constructor() {
+    // Logging config is a user preference → persistent at $HOME/.continuum/logging.json
+    this.configPath = path.join(GlobalPaths.root, 'logging.json');
     this.config = this.load();
-  }
-
-  /**
-   * Initialize with base directory (call once at startup)
-   */
-  static initialize(baseDir: string): void {
-    if (!LoggingConfig.instance) {
-      LoggingConfig.instance = new LoggingConfig(baseDir);
-    }
   }
 
   /**
@@ -122,8 +115,7 @@ export class LoggingConfig {
    */
   static getInstance(): LoggingConfig {
     if (!LoggingConfig.instance) {
-      // Fallback: use process.cwd() if not initialized
-      LoggingConfig.instance = new LoggingConfig(process.cwd());
+      LoggingConfig.instance = new LoggingConfig();
     }
     return LoggingConfig.instance;
   }

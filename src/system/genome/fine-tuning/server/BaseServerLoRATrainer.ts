@@ -21,6 +21,7 @@ import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/R
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { SystemPaths } from '../../../core/config/SystemPaths';
 
 /**
  * Base class for server-side LoRA trainers
@@ -57,7 +58,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
    */
   protected getPythonWrapperPath(): string {
     const projectRoot = this.getProjectRoot();
-    return path.join(projectRoot, '.continuum', 'genome', 'python', 'train-wrapper.sh');
+    return path.join(SystemPaths.genome.python, 'train-wrapper.sh');
   }
 
   /**
@@ -171,7 +172,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     if (!this.isPythonEnvironmentBootstrapped()) {
       throw new Error(
         `Training environment not bootstrapped.\n` +
-        `Run: bash .continuum/genome/python/bootstrap.sh\n` +
+        `Run: bash ${SystemPaths.genome.python}/bootstrap.sh\n` +
         `This will install Python dependencies in an isolated environment.`
       );
     }
@@ -229,7 +230,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     trainingMetadata: TrainingMetadata,
   ): Promise<{ adapterPath: string; manifest: AdapterPackageManifest }> {
     // Create genome adapters directory
-    const adaptersDir = path.join('.continuum', 'genome', 'adapters');
+    const adaptersDir = SystemPaths.genome.adapters;
     await fs.promises.mkdir(adaptersDir, { recursive: true });
 
     // Create adapter subdirectory

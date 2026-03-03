@@ -150,9 +150,8 @@ export class WorkspaceStrategy {
 
     if (initializedWorkspaces.has(handle)) {
       // Already initialized — resolve path from convention (human-readable uniqueId)
-      const jtagRoot = process.cwd();
       const workspaceDir = path.join(
-        jtagRoot, '.continuum', 'sessions', 'user', 'shared', config.personaUniqueId, 'workspace',
+        SystemPaths.sessions.user, 'shared', config.personaUniqueId, 'workspace',
       );
       return { handle, workspaceDir, mode: 'worktree' };
     }

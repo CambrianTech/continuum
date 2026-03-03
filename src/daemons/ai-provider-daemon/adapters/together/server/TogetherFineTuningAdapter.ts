@@ -28,6 +28,7 @@ import { TogetherBaseConfig } from '../shared/TogetherBaseConfig';
 import { PATHS } from '../../../../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../../../../system/core/config/SystemPaths';
 
 // Declare globals (Node.js 18+ built-ins)
 declare const fetch: typeof globalThis.fetch;
@@ -495,7 +496,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     const adapterFilename = `${baseModelSafe}-${request.traitType}-${timestamp}.json`;
 
     // Use provided output path or default
-    const permanentDir = outputPath ?? path.join('.continuum', 'genome', 'adapters');
+    const permanentDir = outputPath ?? SystemPaths.genome.adapters;
 
     // Ensure permanent directory exists
     await fs.promises.mkdir(permanentDir, { recursive: true });

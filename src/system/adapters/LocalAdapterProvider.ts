@@ -18,6 +18,7 @@ import type { AdapterSearchResultItem, AdapterSource } from '../../commands/adap
 import { InferenceGrpcClient } from '../core/services/InferenceGrpcClient';
 import * as fs from 'fs';
 import * as path from 'path';
+import { GlobalPaths } from '../core/config/SystemPaths';
 
 /**
  * Local adapter provider - Candle inference
@@ -32,10 +33,7 @@ export class LocalAdapterProvider implements IAdapterProvider {
   private readonly client: InferenceGrpcClient;
 
   constructor() {
-    this.registryPath = path.join(
-      process.env.HOME || '',
-      '.continuum/adapters/installed'
-    );
+    this.registryPath = path.join(GlobalPaths.root, 'adapters', 'installed');
     this.client = new InferenceGrpcClient();
   }
 

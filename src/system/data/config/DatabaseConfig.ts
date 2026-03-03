@@ -43,17 +43,11 @@ export const DATABASE_PATHS = {
   /** Datasets directory path for training data */
   DATASETS_DIR: PATHS.DATASETS,
 
-  /** Infrastructure log files directory (SQL, tools, system) */
-  LOGS_DIR: '.continuum/jtag/logs',
-
-  /** Signal files directory (system ready indicators) */
-  SIGNALS_DIR: '.continuum/jtag/signals',
-
-  /** Sessions directory */
-  SESSIONS_DIR: '.continuum/jtag/sessions',
-
-  /** Legacy database path (for migration reference) */
-  LEGACY: '.continuum/database/continuum.db'
+  /**
+   * Runtime paths (logs, signals, sessions) are NOT defined here.
+   * Server code MUST use SystemPaths.logs.root, SystemPaths.sessions.root, etc.
+   * These paths route through the composite factory ($REPO for runtime, $HOME for persistent).
+   */
 } as const;
 
 /**

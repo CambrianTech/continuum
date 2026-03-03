@@ -8,6 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
@@ -120,7 +121,7 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
     }
 
     // Save to datasets directory
-    const datasetsDir = path.resolve('.continuum/genome/datasets');
+    const datasetsDir = SystemPaths.datasets.root;
     await fs.promises.mkdir(datasetsDir, { recursive: true });
 
     const safeTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
