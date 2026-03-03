@@ -18,6 +18,7 @@ import { CommandRouterServer } from '@shared/ipc/archive-worker/CommandRouterSer
 import { startVoiceServer, getVoiceWebSocketServer } from '../../../voice/server';
 import { GpuPressureWatcher } from '../../../gpu/server/GpuPressureWatcher';
 import { ResourcePressureWatcher } from '../../../resources/server/ResourcePressureWatcher';
+import { GpuGovernor } from '../../../gpu/server/GpuGovernor';
 
 export class JTAGSystemServer extends JTAGSystem {
   private commandRouter: CommandRouterServer | null = null;
@@ -203,6 +204,9 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 7.2. Start Resource Pressure Watcher (CPU + memory → Events on threshold crossings)
     ResourcePressureWatcher.instance.start();
+
+    // 7.3. Start GPU Governor (active budget rebalancing based on pressure events)
+    GpuGovernor.instance.start();
 
     // 7.5. Start Voice WebSocket Server
     try {

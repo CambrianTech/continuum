@@ -99,6 +99,9 @@ import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { LOCAL_MODELS } from '../../shared/Constants';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
+import { GapDetector } from './modules/GapDetector';
+import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
+import { getTrainingBuffer } from './modules/TrainingBuffer';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { TimingHarness } from '../../core/shared/TimingHarness';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
@@ -582,6 +585,14 @@ export class PersonaUser extends AIUser {
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
+
+    // Wire gap detection for autonomous self-learning
+    if (this._rustCognition) {
+      const trainingBuffer = getTrainingBuffer(this.id, this.displayName, cognitionLogger);
+      const gapDetector = new GapDetector(this.id, this._rustCognition, trainingBuffer, cognitionLogger);
+      const selfTaskGenerator = new SelfTaskGenerator(this.id, cognitionLogger);
+      this.autonomousLoop.setGapDetection(gapDetector, selfTaskGenerator);
+    }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 

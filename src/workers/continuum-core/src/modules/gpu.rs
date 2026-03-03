@@ -3,12 +3,13 @@
 //! Commands:
 //! - `gpu/stats`: Full GPU stats snapshot (total VRAM, per-subsystem budgets/usage, pressure)
 //! - `gpu/pressure`: Quick pressure query (0.0-1.0)
+//! - `gpu/set-budget`: Set subsystem budget (params: subsystem, budgetMb). Returns stats snapshot.
 //! - `gpu/eviction-registry`: Full eviction registry snapshot (all tracked consumers)
 //! - `gpu/eviction-candidates`: Sorted eviction candidates (highest score first)
 //!
 //! Follows the HealthModule pattern: stateless handler wrapping shared state.
 
-use crate::gpu::GpuMemoryManager;
+use crate::gpu::{GpuMemoryManager, GpuSubsystem};
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -46,7 +47,7 @@ impl ServiceModule for GpuModule {
     async fn handle_command(
         &self,
         command: &str,
-        _params: Value,
+        params: Value,
     ) -> Result<CommandResult, String> {
         match command {
             "gpu/stats" => {
@@ -61,6 +62,35 @@ impl ServiceModule for GpuModule {
                 Ok(CommandResult::Json(serde_json::json!({
                     "pressure": pressure,
                 })))
+            }
+
+            "gpu/set-budget" => {
+                let subsystem_name = params.get("subsystem")
+                    .and_then(|v| v.as_str())
+                    .ok_or("gpu/set-budget requires 'subsystem' string param")?;
+
+                let budget_mb = params.get("budgetMb")
+                    .and_then(|v| v.as_f64())
+                    .ok_or("gpu/set-budget requires 'budgetMb' number param")?;
+
+                if budget_mb <= 0.0 {
+                    return Err("budgetMb must be > 0".to_string());
+                }
+
+                let subsystem = GpuSubsystem::from_name(subsystem_name)
+                    .ok_or_else(|| format!(
+                        "Unknown subsystem '{}'. Valid: rendering, inference, tts",
+                        subsystem_name
+                    ))?;
+
+                let budget_bytes = (budget_mb * 1024.0 * 1024.0) as u64;
+                self.manager.set_budget(subsystem, budget_bytes);
+
+                // Return fresh stats snapshot so caller sees the result
+                let stats = self.manager.stats();
+                let json = serde_json::to_value(stats)
+                    .map_err(|e| format!("Failed to serialize GPU stats: {e}"))?;
+                Ok(CommandResult::Json(json))
             }
 
             "gpu/eviction-registry" => {
@@ -178,6 +208,52 @@ mod tests {
             assert_eq!(candidates.len(), 1, "Realtime should be excluded from candidates");
             assert_eq!(candidates[0]["id"].as_str().unwrap(), "candle:llama");
         }
+    }
+
+    #[tokio::test]
+    async fn test_set_budget() {
+        let module = test_gpu_module();
+        let params = serde_json::json!({
+            "subsystem": "inference",
+            "budgetMb": 2048.0
+        });
+        let result = module.handle_command("gpu/set-budget", params).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            // Returns full stats snapshot with updated budget
+            assert_eq!(json["inference"]["budget_mb"].as_f64().unwrap(), 2048.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_budget_invalid_subsystem() {
+        let module = test_gpu_module();
+        let params = serde_json::json!({
+            "subsystem": "nonexistent",
+            "budgetMb": 100.0
+        });
+        let result = module.handle_command("gpu/set-budget", params).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown subsystem"));
+    }
+
+    #[tokio::test]
+    async fn test_set_budget_invalid_amount() {
+        let module = test_gpu_module();
+        let params = serde_json::json!({
+            "subsystem": "tts",
+            "budgetMb": -50.0
+        });
+        let result = module.handle_command("gpu/set-budget", params).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be > 0"));
+    }
+
+    #[tokio::test]
+    async fn test_set_budget_missing_params() {
+        let module = test_gpu_module();
+        let result = module.handle_command("gpu/set-budget", Value::Null).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

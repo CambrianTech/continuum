@@ -47,6 +47,11 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
+# Setup runtime directories (BEFORE anything writes to them)
+mkdir -p .continuum/jtag/logs/system/modules
+mkdir -p .continuum/jtag/logs/system/daemons
+mkdir -p .continuum/sockets
+
 # Start LiveKit SFU server (WebRTC media transport)
 # Check brew first, then manual install location
 LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
@@ -93,11 +98,6 @@ else
   (cd "$SCRIPT_DIR" && cargo build --release --quiet)
   echo -e "${GREEN}✅ Rust build complete${NC}"
 fi
-
-# Setup directories
-mkdir -p .continuum/jtag/logs/system/modules
-mkdir -p .continuum/jtag/logs/system/daemons
-mkdir -p .continuum/sockets
 
 # Truncate all worker logs on restart (prevents multi-hundred-MB bloat)
 # Each session starts clean — old logs are not useful across restarts

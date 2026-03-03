@@ -172,9 +172,11 @@ export class TaskEntity extends BaseEntity {
     exerciseId?: UUID;
     skillName?: string;
 
-    // Self domain (fine-tuning)
+    // Self domain (fine-tuning & academy)
     loraLayer?: string;          // Which LoRA adapter to train
     trainingData?: unknown[];    // Training examples
+    domain?: string;             // Skill domain for academy enrollment
+    suggested_mode?: string;     // Academy mode (knowledge, coding, project)
   };
 
   constructor() {
