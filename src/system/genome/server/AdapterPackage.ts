@@ -6,6 +6,7 @@
  * - Calculating directory size and content hashes
  * - Converting manifests to GenomeLayerEntity instances
  * - Scanning adapter directories for existing packages
+ * - Distribution: pack/unpack/import .genome.tgz archives
  *
  * Each adapter directory follows a standard layout:
  *   .continuum/genome/adapters/{name}-{timestamp}/
@@ -14,21 +15,33 @@
  *   ├── adapter_config.json              ← LoRA config
  *   └── ...                              ← Other PEFT output files
  *
- * SERVER-ONLY: Uses Node.js fs, path, crypto APIs
+ * Distribution format (.genome.tgz):
+ *   Strips training artifacts (~400MB checkpoints, optimizer state),
+ *   includes only inference-essential files, verifies integrity on import.
+ *
+ * SERVER-ONLY: Uses Node.js fs, path, crypto, child_process APIs
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
-import type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
+import type { AdapterPackageManifest, QuantizationInfo, PackResult, ImportResult } from '../shared/AdapterPackageTypes';
+import { DISTRIBUTABLE_FILES } from '../shared/AdapterPackageTypes';
+import { SystemPaths } from '../../core/config/SystemPaths';
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 import { EmbeddingGenerate } from '../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes';
+import { AdapterStore } from './AdapterStore';
 
 // Re-export for convenience
-export type { AdapterPackageManifest, QuantizationInfo } from '../shared/AdapterPackageTypes';
+export type { AdapterPackageManifest, QuantizationInfo, PackResult, ImportResult } from '../shared/AdapterPackageTypes';
+
+const execFileAsync = promisify(execFile);
 
 const MANIFEST_FILENAME = 'manifest.json';
 
@@ -215,6 +228,158 @@ export class AdapterPackage {
     }
 
     return manifests;
+  }
+
+  // ==================== Distribution (pack / unpack / import) ====================
+
+  /**
+   * Pack an adapter directory into a .genome.tgz distribution archive.
+   *
+   * Only includes inference-essential files (DISTRIBUTABLE_FILES), stripping
+   * training artifacts like checkpoint dirs (~400MB), optimizer.pt (~389MB), etc.
+   * Result: ~200MB archive vs ~600MB source directory.
+   *
+   * Archive naming: {manifest.name}-{manifest.id.slice(0,8)}.genome.tgz
+   */
+  static async pack(adapterPath: string, outputDir?: string): Promise<PackResult> {
+    const manifest = await this.readManifest(adapterPath);
+
+    // Collect only distributable files that actually exist in this adapter
+    const filesToInclude: string[] = [];
+    for (const file of DISTRIBUTABLE_FILES) {
+      if (fs.existsSync(path.join(adapterPath, file))) {
+        filesToInclude.push(file);
+      }
+    }
+
+    if (filesToInclude.length === 0) {
+      throw new Error(`No distributable files found in ${adapterPath}`);
+    }
+
+    // Ensure manifest.json is always included (it's in DISTRIBUTABLE_FILES but be explicit)
+    if (!filesToInclude.includes('manifest.json')) {
+      throw new Error(`manifest.json missing from ${adapterPath}`);
+    }
+
+    // Ensure output directory exists
+    const targetDir = outputDir ?? SystemPaths.genome.packages;
+    await fs.promises.mkdir(targetDir, { recursive: true });
+
+    // Archive name: {name}-{shortId}.genome.tgz
+    const shortId = manifest.id.slice(0, 8);
+    const archiveName = `${manifest.name}-${shortId}.genome.tgz`;
+    const tgzPath = path.join(targetDir, archiveName);
+
+    // Create .tgz via system tar (available on macOS + Linux)
+    await execFileAsync('tar', ['czf', tgzPath, '-C', adapterPath, ...filesToInclude]);
+
+    // Calculate archive size
+    const archiveStats = await fs.promises.stat(tgzPath);
+    const packageSizeMB = Math.round((archiveStats.size / (1024 * 1024)) * 100) / 100;
+
+    return {
+      tgzPath,
+      manifest,
+      contentHash: manifest.contentHash ?? '',
+      packageSizeMB,
+      filesIncluded: filesToInclude,
+    };
+  }
+
+  /**
+   * Unpack a .genome.tgz archive and verify integrity.
+   *
+   * Extracts to a temp directory, verifies SHA-256 of adapter_model.safetensors
+   * against manifest.contentHash, then moves to final destination.
+   *
+   * @throws Error if content hash verification fails (archive is corrupt or tampered)
+   */
+  static async unpack(tgzPath: string, targetDir?: string): Promise<ImportResult> {
+    // Create temp extraction directory
+    const tempDir = path.join(SystemPaths.temp.root, `genome-unpack-${Date.now()}`);
+    await fs.promises.mkdir(tempDir, { recursive: true });
+
+    try {
+      // Extract archive
+      await execFileAsync('tar', ['xzf', tgzPath, '-C', tempDir]);
+
+      // Read manifest from extracted files
+      const manifest = await this.readManifest(tempDir);
+
+      // Verify integrity: SHA-256 of adapter_model.safetensors must match manifest.contentHash
+      let contentHashVerified = false;
+      const weightsPath = path.join(tempDir, 'adapter_model.safetensors');
+
+      if (manifest.contentHash && fs.existsSync(weightsPath)) {
+        const actualHash = await this.hashFile(weightsPath);
+        if (actualHash !== manifest.contentHash) {
+          // Clean up before throwing — don't leave corrupt files around
+          await fs.promises.rm(tempDir, { recursive: true, force: true });
+          throw new Error(
+            `Content hash mismatch: expected ${manifest.contentHash}, got ${actualHash}. ` +
+            `Archive may be corrupt or tampered.`
+          );
+        }
+        contentHashVerified = true;
+      }
+
+      // Move to final destination
+      const baseDir = targetDir ?? AdapterStore.storeRoot;
+      await fs.promises.mkdir(baseDir, { recursive: true });
+      const finalDir = path.join(baseDir, `${manifest.name}-${Date.now()}`);
+      await fs.promises.rename(tempDir, finalDir);
+
+      return {
+        adapterPath: finalDir,
+        manifest,
+        contentHashVerified,
+      };
+    } catch (error) {
+      // Clean up temp dir on any failure (might already be gone if hash check cleaned it)
+      if (fs.existsSync(tempDir)) {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Import a .genome.tgz archive: unpack, verify, register in database.
+   *
+   * Higher-level pipeline that combines unpack() with ORM registration.
+   * After import, AdapterStore.discoverAll() will find the adapter automatically.
+   *
+   * @param opts.inferenceModel - If provided, verifies model compatibility before registering
+   */
+  static async importAdapter(
+    tgzPath: string,
+    opts?: { inferenceModel?: string }
+  ): Promise<ImportResult> {
+    const result = await this.unpack(tgzPath);
+
+    // Optional model compatibility check
+    if (opts?.inferenceModel) {
+      const normalizedAdapter = AdapterStore.normalizeModelName(result.manifest.baseModel);
+      const normalizedTarget = AdapterStore.normalizeModelName(opts.inferenceModel);
+      if (normalizedAdapter !== normalizedTarget) {
+        // Clean up extracted files — incompatible adapter is useless
+        await fs.promises.rm(result.adapterPath, { recursive: true, force: true });
+        throw new Error(
+          `Model incompatible: adapter trained on ${result.manifest.baseModel} ` +
+          `(${normalizedAdapter}), target is ${opts.inferenceModel} (${normalizedTarget})`
+        );
+      }
+    }
+
+    // Create GenomeLayerEntity and persist to database
+    const entity = this.toGenomeLayerEntity(result.manifest, result.adapterPath);
+    await DataCreate.execute({
+      collection: GenomeLayerEntity.collection,
+      data: entity,
+      dbHandle: 'default',
+    });
+
+    return result;
   }
 
   // ==================== Private Helpers ====================

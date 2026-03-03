@@ -78,6 +78,8 @@ export interface ContinuumPaths {
     root: string;
     adapters: string;
     training: string;
+    /** .genome.tgz distribution archives for adapter trading */
+    packages: string;
   };
 
   /** Persona storage (can be in $HOME or $REPO) */
@@ -178,7 +180,8 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
     genome: {
       root: path.join(baseRoot, 'genome'),
       adapters: path.join(baseRoot, 'genome', 'adapters'),
-      training: path.join(baseRoot, 'genome', 'training-data')
+      training: path.join(baseRoot, 'genome', 'training-data'),
+      packages: path.join(baseRoot, 'genome', 'packages')
     },
 
     personas: {

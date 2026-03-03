@@ -9,6 +9,47 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
 
 /**
+ * Files included in a .genome.tgz distribution archive (inference-essential only).
+ *
+ * Excludes training artifacts: checkpoint dirs (~400MB), optimizer.pt (~389MB),
+ * scheduler.pt, training_args.bin, rng_state.pth, README.md, merges.txt, vocab.json.
+ * Result: ~200MB package vs ~600MB source directory.
+ */
+export const DISTRIBUTABLE_FILES = [
+  'manifest.json',
+  'adapter_model.safetensors',
+  'adapter_config.json',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'special_tokens_map.json',
+  'chat_template.jinja',
+] as const;
+
+/** Result of packing an adapter directory into a .genome.tgz archive */
+export interface PackResult {
+  /** Absolute path to the created .genome.tgz file */
+  tgzPath: string;
+  /** The adapter manifest included in the archive */
+  manifest: AdapterPackageManifest;
+  /** SHA-256 content hash from the manifest (for integrity verification on import) */
+  contentHash: string;
+  /** Archive size in megabytes */
+  packageSizeMB: number;
+  /** List of files included in the archive */
+  filesIncluded: string[];
+}
+
+/** Result of importing (unpacking + registering) a .genome.tgz archive */
+export interface ImportResult {
+  /** Absolute path to the extracted adapter directory */
+  adapterPath: string;
+  /** The adapter manifest from the archive */
+  manifest: AdapterPackageManifest;
+  /** Whether the SHA-256 hash was verified against manifest.contentHash */
+  contentHashVerified: boolean;
+}
+
+/**
  * Quantization metadata — tracks whether QLoRA was used during training.
  *
  * Key insight: QLoRA quantizes the BASE MODEL during training, but the
