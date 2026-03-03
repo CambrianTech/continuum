@@ -30,8 +30,8 @@
   "examples": [
     {
       "description": "Switch from SQLite to PostgreSQL",
-      "command": "./jtag migration/cutover --current=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://joel@localhost:5432/continuum\"",
-      "expectedResult": "{ cutover: true, previousConnection: \"/Users/joel/.continuum/data/database.sqlite\" }"
+      "command": "./jtag migration/cutover --current=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://user@localhost:5432/continuum\"",
+      "expectedResult": "{ cutover: true, previousConnection: \"$HOME/.continuum/data/database.sqlite\" }"
     }
   ],
   "accessLevel": "system",
