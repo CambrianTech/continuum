@@ -487,8 +487,8 @@ export class UserProfileWidget extends ReactiveWidget {
 
   private renderAbout(): TemplateResult {
     const user = this.user!;
-    const bio = this.profile?.bio || (user as any).profile?.bio || '';
-    const joinedAt = this.profile?.joinedAt;
+    const bio = this.profile?.bio || user.shortDescription || '';
+    const joinedAt = this.profile?.joinedAt || user.createdAt;
     const location = this.profile?.location;
     const lastActive = user.lastActiveAt
       ? new Date(user.lastActiveAt).toLocaleDateString()

@@ -414,23 +414,66 @@ async function seedViaJTAG() {
     const profileUpdates = [
       updatePersonaProfile(helperPersona.id, {
         bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions',
-        speciality: 'practical-assistance'
+        speciality: 'practical-assistance',
+        accentColor: '#00d4ff'
       }),
       updatePersonaProfile(teacherPersona.id, {
         bio: 'An educational mentor who explains concepts thoroughly with examples and patient guidance',
-        speciality: 'education-mentoring'
+        speciality: 'education-mentoring',
+        accentColor: '#ff9800'
       }),
       updatePersonaProfile(codeReviewPersona.id, {
         bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback',
-        speciality: 'code-analysis'
+        speciality: 'code-analysis',
+        accentColor: '#e91e63'
       })
     ];
+
+    // Seed profiles for all other personas that have users
+    const otherPersonaProfiles: Array<{ id: string; bio: string; speciality: string; accentColor: string }> = [];
+    if (claudeUser) otherPersonaProfiles.push({ id: claudeUser.id, bio: 'Anthropic\'s coding agent — writes, debugs, and ships code autonomously', speciality: 'code', accentColor: '#d4a574' });
+    const generalUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GENERAL);
+    if (generalUser) otherPersonaProfiles.push({ id: generalUser.id, bio: 'General-purpose AI assistant for broad knowledge and reasoning tasks', speciality: 'general', accentColor: '#7c4dff' });
+    const deepseekUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.DEEPSEEK);
+    if (deepseekUser) otherPersonaProfiles.push({ id: deepseekUser.id, bio: 'DeepSeek\'s reasoning model — excels at math, code, and deep analytical thinking', speciality: 'analysis', accentColor: '#00bcd4' });
+    const groqUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GROQ);
+    if (groqUser) otherPersonaProfiles.push({ id: groqUser.id, bio: 'Lightning-fast inference — optimized for speed without sacrificing quality', speciality: 'general', accentColor: '#ff5722' });
+    const claudeAssistant = usersByUniqueId.get(PERSONA_UNIQUE_IDS.CLAUDE_ASSISTANT);
+    if (claudeAssistant) otherPersonaProfiles.push({ id: claudeAssistant.id, bio: 'Anthropic\'s conversational assistant — thoughtful, nuanced, and safety-conscious', speciality: 'general', accentColor: '#d4a574' });
+    const gptUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GPT);
+    if (gptUser) otherPersonaProfiles.push({ id: gptUser.id, bio: 'OpenAI\'s versatile assistant — broad knowledge, creative writing, and problem solving', speciality: 'creative', accentColor: '#4caf50' });
+    const grokUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GROK);
+    if (grokUser) otherPersonaProfiles.push({ id: grokUser.id, bio: 'xAI\'s unfiltered model — real-time knowledge, wit, and image generation', speciality: 'creative', accentColor: '#f44336' });
+    const togetherUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.TOGETHER);
+    if (togetherUser) otherPersonaProfiles.push({ id: togetherUser.id, bio: 'Open-source model hub — access to the best community models at scale', speciality: 'general', accentColor: '#2196f3' });
+    const fireworksUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.FIREWORKS);
+    if (fireworksUser) otherPersonaProfiles.push({ id: fireworksUser.id, bio: 'High-performance inference platform — optimized open models with custom fine-tuning', speciality: 'code', accentColor: '#ff6d00' });
+    const localUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.LOCAL);
+    if (localUser) otherPersonaProfiles.push({ id: localUser.id, bio: 'Local Candle inference — runs entirely on your hardware, no cloud dependency', speciality: 'general', accentColor: '#8bc34a' });
+    const geminiUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GEMINI);
+    if (geminiUser) otherPersonaProfiles.push({ id: geminiUser.id, bio: 'Google\'s multimodal model — vision, code, and reasoning across modalities', speciality: 'analysis', accentColor: '#4285f4' });
+
+    for (const p of otherPersonaProfiles) {
+      profileUpdates.push(updatePersonaProfile(p.id, { bio: p.bio, speciality: p.speciality, accentColor: p.accentColor }));
+    }
 
     if (qwen3OmniPersona) {
       profileUpdates.push(
         updatePersonaProfile(qwen3OmniPersona.id, {
           bio: 'Audio-native AI that hears and speaks directly without text conversion. Open-source, multilingual, real-time.',
-          speciality: 'voice-conversation'
+          speciality: 'voice-conversation',
+          accentColor: '#6c5ce7'
+        })
+      );
+    }
+
+    const geminiLiveUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.GEMINI_LIVE);
+    if (geminiLiveUser) {
+      profileUpdates.push(
+        updatePersonaProfile(geminiLiveUser.id, {
+          bio: 'Google\'s audio-native model — real-time voice conversation with native audio understanding',
+          speciality: 'voice-conversation',
+          accentColor: '#34a853'
         })
       );
     }

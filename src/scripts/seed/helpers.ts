@@ -95,12 +95,13 @@ export async function createStateRecord(
 }
 
 /**
- * Update persona bio via shortDescription field
+ * Update persona bio via shortDescription field AND create UserProfileEntity
  */
 export async function updatePersonaProfile(
   userId: string,
-  profile: { bio: string; speciality: string }
+  profile: { bio: string; speciality: string; accentColor?: string }
 ): Promise<boolean> {
+  // Update shortDescription on UserEntity
   const updateData = {
     shortDescription: profile.bio
   };
@@ -113,7 +114,6 @@ export async function updatePersonaProfile(
 
     if (result.success) {
       console.log(`  ✅ Updated persona bio for user ${userId.slice(0, 8)}...`);
-      return true;
     } else {
       console.error(`  ❌ Failed to update persona bio: ${result.error || 'Unknown error'}`);
       return false;
@@ -122,6 +122,43 @@ export async function updatePersonaProfile(
     console.error(`  ❌ Failed to update persona bio: ${error.message}`);
     return false;
   }
+
+  // Create UserProfileEntity with visual identity
+  const profileData = {
+    userId,
+    bio: profile.bio,
+    speciality: profile.speciality,
+    joinedAt: new Date().toISOString(),
+    visualIdentity: {
+      avatar: '',
+      theme: 'dark',
+      accentColor: profile.accentColor || '#00d4ff'
+    },
+    preferences: {
+      language: 'en',
+      timezone: 'UTC',
+      notifications: { mentions: true, directMessages: true, roomUpdates: false },
+      privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false }
+    }
+  };
+  const profileArg = JSON.stringify(profileData).replace(/'/g, `'"'"'`);
+  const profileCmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=user_profiles --data='${profileArg}'`;
+
+  try {
+    const { stdout } = await execAsync(profileCmd);
+    if (stdout.includes('"success": true') || stdout.includes('"success":true')) {
+      console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+  } catch (error: any) {
+    if (error.stdout?.includes('"success": true') || error.stdout?.includes('"success":true')) {
+      console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+    console.error(`  ⚠️ Failed to create profile entity: ${error.message}`);
+  }
+
+  return true;
 }
 
 /**
