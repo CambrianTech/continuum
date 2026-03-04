@@ -1,8 +1,9 @@
-# Sentinel Logging & Observability Plan
+# Sentinel Logging & Observability
 
-> **Partial Implementation Note**: The Rust pipeline engine now has per-sentinel log directories, real-time log streaming via MessageBus, and `sentinel/logs/*` commands (list, read, tail) — implemented in `executor.rs` and `logs.rs`. The TypeScript-centric components described below (BuildSentinel, SentinelWorkspace, SentinelExecutionLog) are from the pre-Rust architecture. Phases 1-3 (log directory, streaming, CLI commands) are largely complete in Rust. Phases 4-5 (chat integration, verbosity controls) remain relevant as future work.
+> Per-sentinel log directories, real-time streaming, CLI commands. Phases 1-3 complete in Rust. Chat integration and verbosity controls planned.
 
-> **See also**: [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md) for the canonical system documentation.
+**Status:** Phases 1-3 implemented (Rust), Phases 4-5 planned
+**Parent:** [Sentinel README](README.md) · [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md)
 
 ## Vision
 

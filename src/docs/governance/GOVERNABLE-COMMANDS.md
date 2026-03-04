@@ -1,5 +1,9 @@
 # Governable Commands Pattern
 
+> Any command can require governance approval — from a simple "second" to ranked-choice voting to human veto. Returns a handle for async tracking.
+
+**Parent:** [Governance README](README.md)
+
 ## Overview
 
 Any command in the system can optionally require governance approval before execution. This creates a flexible pattern where:
@@ -453,6 +457,6 @@ Every temporary permission grant has a handle:
 
 ## Related Docs
 
-- [AI-GOVERNANCE.md](../AI-GOVERNANCE.md) - Overall governance philosophy
-- [DECISION-SYSTEM.md](./DECISION-SYSTEM.md) - Ranked choice implementation (if exists)
+- [AI-GOVERNANCE.md](AI-GOVERNANCE.md) — Overall governance philosophy
+- [DEMOCRATIC-GOVERNANCE-TOOLS.md](DEMOCRATIC-GOVERNANCE-TOOLS.md) — Ranked choice voting implementation
 - Decision commands: `decision/propose`, `decision/vote`, `decision/finalize`

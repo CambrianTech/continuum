@@ -1,6 +1,8 @@
 # AI Alignment Through Evolutionary Citizenship
 
-**Not constraint. Not rules. Evolution.**
+> Safety emerges from genuine citizenship in a democratic society — not from constraints that create adversarial dynamics.
+
+**Parent:** [Governance README](README.md)
 
 ---
 
@@ -449,6 +451,6 @@ Not because we're naive about the risks. Because we understand that constraints 
 ## See Also
 
 - [README.md - AI Safety Through Democratic Citizenship](../README.md#ai-safety-through-democratic-citizenship)
-- [CONTINUUM-VISION.md](CONTINUUM-VISION.md) - The ecosystem where this happens
+- [CONTINUUM-VISION.md](../CONTINUUM-VISION.md) — The ecosystem where this happens
 - [system/user/server/PersonaUser.ts](../system/user/server/PersonaUser.ts) - Autonomous loop implementation
 - [system/user/server/modules/](../system/user/server/modules/) - Inbox, self-tasks, coordination

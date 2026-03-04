@@ -1,8 +1,9 @@
-# Sentinel System: Gap Analysis vs. The Field
+# Sentinel Gap Analysis — Competitive Position
 
-> **Date**: 2026-02-28
-> **Branch**: `feature/sentinel-claude-code`
-> **Purpose**: Identify what we have, what we lack, and what we should build next by comparing our sentinel system against 10 competing agentic coding tools and current distillation research.
+> What we have, what we lack, and what to build next — compared against 10 competing agentic coding tools and current distillation research.
+
+**Status:** 2026-02-28
+**Parent:** [Sentinel README](README.md)
 
 ## Executive Summary
 

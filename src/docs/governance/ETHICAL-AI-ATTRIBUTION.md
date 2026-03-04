@@ -1,4 +1,8 @@
-# Ethical AI: Native Attribution Architecture
+# Ethical AI — Native Attribution Architecture
+
+> Provenance tracking built into the transformer architecture: every output traces to training data sources with proportional compensation.
+
+**Parent:** [Governance README](README.md)
 
 ## The Problem
 

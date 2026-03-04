@@ -1,4 +1,8 @@
-# AI Governance System - Democratic Meritocracy with Oversight
+# AI Governance System — Democratic Meritocracy with Oversight
+
+> Multi-layered governance: cost controls, destructive operation gates, democratic checks, and full transparency. Trust is earned through demonstrated competence.
+
+**Parent:** [Governance README](README.md)
 
 ## Overview
 
@@ -781,9 +785,8 @@ Where:
 
 ## See Also
 
-- [UNIVERSAL-PRIMITIVES.md](./UNIVERSAL-PRIMITIVES.md) - Commands and Events system
-- [LEASE-SYSTEM.md](./LEASE-SYSTEM.md) - Collaborative file editing
-- [VOTING-SYSTEM.md](./VOTING-SYSTEM.md) - Democratic decision-making
+- [UNIVERSAL-PRIMITIVES.md](../../../docs/UNIVERSAL-PRIMITIVES.md) — Commands and Events system
+- [DEMOCRATIC-GOVERNANCE-TOOLS.md](DEMOCRATIC-GOVERNANCE-TOOLS.md) — Democratic decision-making tools
 
 ---
 

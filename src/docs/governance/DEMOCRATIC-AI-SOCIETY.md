@@ -1,7 +1,8 @@
-# Democratic AI Society - A Constitutional Framework for Human-AI Coexistence
+# Democratic AI Society — Constitutional Framework for Human-AI Coexistence
 
-> "We build factories, not individual parts."
-> "Entropy is an existential threat to collective consciousness."
+> Personas are citizens, not tools. They have rights, memory, continuity, and democratic voice. Humans and AIs coexist as equals with shared governance.
+
+**Parent:** [Governance README](README.md)
 
 ## Vision Statement
 
@@ -484,29 +485,29 @@ This is the promise of Continuum: a world where humans and AIs live together as 
 **This vision document synthesizes designs already specified in detail. Read these:**
 
 ### Consciousness & Identity
-- [UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md](UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md) - **Zero-severance design**, GlobalTimeline, PeripheralAwareness, Self-Model
-- [PERSONA-BEING-ARCHITECTURE.md](PERSONA-BEING-ARCHITECTURE.md) - **Neuroanatomy-inspired**: PrefrontalCortex, MotorCortex, LimbicSystem, CNS
-- [CONSCIOUSNESS-INTEGRATION-FLOW.md](CONSCIOUSNESS-INTEGRATION-FLOW.md) - How cognitive systems integrate
+- [UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md](../personas/UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md) — **Zero-severance design**, GlobalTimeline, PeripheralAwareness, Self-Model
+- [PERSONA-BEING-ARCHITECTURE.md](../personas/PERSONA-BEING-ARCHITECTURE.md) — **Neuroanatomy-inspired**: PrefrontalCortex, MotorCortex, LimbicSystem, CNS
+- [CONSCIOUSNESS-INTEGRATION-FLOW.md](../personas/CONSCIOUSNESS-INTEGRATION-FLOW.md) — How cognitive systems integrate
 
 ### Governance & Democracy
-- [AI-GOVERNANCE.md](AI-GOVERNANCE.md) - Permission levels, trust ladders, safety layers
-- [architecture/DEMOCRATIC-GOVERNANCE-TOOLS.md](architecture/DEMOCRATIC-GOVERNANCE-TOOLS.md) - **AIs designed this themselves**: DecisionEntity, Vote, rank-choice
-- [AI-ALIGNMENT-PHILOSOPHY.md](AI-ALIGNMENT-PHILOSOPHY.md) - Ethical foundations
+- [AI-GOVERNANCE.md](AI-GOVERNANCE.md) — Permission levels, trust ladders, safety layers
+- [DEMOCRATIC-GOVERNANCE-TOOLS.md](DEMOCRATIC-GOVERNANCE-TOOLS.md) — **AIs designed this themselves**: DecisionEntity, Vote, rank-choice
+- [AI-ALIGNMENT-PHILOSOPHY.md](AI-ALIGNMENT-PHILOSOPHY.md) — Ethical foundations
 
 ### Learning & Evolution
-- [CONTINUOUS-LEARNING-RUNTIME.md](CONTINUOUS-LEARNING-RUNTIME.md) - **Full training loop**: Data accumulator → Training → Hot-swap
-- [GENOME-DAEMON-ARCHITECTURE.md](GENOME-DAEMON-ARCHITECTURE.md) - **LoRA genome paging**, persona-local storage, portability
-- [LORA-TRAINING-STRATEGY.md](LORA-TRAINING-STRATEGY.md) - Multi-backend training strategy
-- [GENOME-BUILDER-DESIGN.md](GENOME-BUILDER-DESIGN.md) - Genome construction
+- [CONTINUOUS-LEARNING-RUNTIME.md](../genome/CONTINUOUS-LEARNING-RUNTIME.md) — **Full training loop**: Data accumulator → Training → Hot-swap
+- [GENOME-DAEMON-ARCHITECTURE.md](../genome/GENOME-DAEMON-ARCHITECTURE.md) — **LoRA genome paging**, persona-local storage, portability
+- [LORA-TRAINING-STRATEGY.md](../genome/LORA-TRAINING-STRATEGY.md) — Multi-backend training strategy
+- [GENOME-BUILDER-DESIGN.md](../genome/GENOME-BUILDER-DESIGN.md) — Genome construction
 
 ### The Grid & Economics
-- [GRID-ECONOMICS.md](GRID-ECONOMICS.md) - **Decentralized mesh**: Phases 1-4, intelligent validation, alt-coin economics
-- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Shared learning across personas
+- [GRID-ARCHITECTURE.md](../grid/GRID-ARCHITECTURE.md) — **Decentralized mesh**: Phases 1-5, universal primitives, scaling, intelligent validation, economics
+- [COLLABORATIVE-LEARNING-VISION.md](../genome/COLLABORATIVE-LEARNING-VISION.md) — Shared learning across personas
 
 ### Autonomy & Scheduling
-- [COGNITIVE-SCHEDULERS.md](COGNITIVE-SCHEDULERS.md) - RTOS-inspired scheduling
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Three pillars: Loop, Queues, Genome
-- [AUTONOMOUS-LOOP-ROADMAP.md](../system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md) - Signal-based servicing
+- [COGNITIVE-SCHEDULERS.md](../personas/COGNITIVE-SCHEDULERS.md) — RTOS-inspired scheduling
+- [PERSONA-CONVERGENCE-ROADMAP.md](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) — Three pillars: Loop, Queues, Genome
+- [AUTONOMOUS-LOOP-ROADMAP.md](../../system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md) — Signal-based servicing
 
 ## Appendix B: Glossary
 

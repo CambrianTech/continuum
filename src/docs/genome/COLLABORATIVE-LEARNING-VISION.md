@@ -552,10 +552,10 @@ Events.subscribe('vscode:file-saved', async (data) => {
 
 ## Related Documentation
 
-- [SCOPE-BASED-RECIPES.md](recipes/SCOPE-BASED-RECIPES.md) - Scope-based collaboration architecture
-- [TRAINING-DATA-PIPELINE.md](architecture/TRAINING-DATA-PIPELINE.md) - Training pipeline implementation
-- [LORA-GENOME-PAGING.md](../system/user/server/modules/LORA-GENOME-PAGING.md) - Virtual memory for skills
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - How all pieces integrate
+- [SCOPE-BASED-RECIPES.md](../activities/recipes/SCOPE-BASED-RECIPES.md) — Scope-based collaboration architecture
+- [TRAINING-DATA-PIPELINE.md](TRAINING-DATA-PIPELINE.md) — Training pipeline implementation
+- [LORA-GENOME-PAGING.md](../../system/user/server/modules/LORA-GENOME-PAGING.md) — Virtual memory for skills
+- [PERSONA-CONVERGENCE-ROADMAP.md](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) — How all pieces integrate
 
 ---
 

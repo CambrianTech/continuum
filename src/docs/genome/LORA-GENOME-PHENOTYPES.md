@@ -195,7 +195,7 @@ GpuMemoryManager::detect()
 
 **Observability**: `./jtag gpu/stats` shows real-time VRAM usage across all subsystems.
 
-See [GPU-MEMORY-ARCHITECTURE.md](GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system design.
+See [GPU-MEMORY-ARCHITECTURE.md](../infrastructure/GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system design.
 
 ### Rust Implementation (GenomePagingEngine)
 
@@ -465,10 +465,10 @@ Executes debugging workflow autonomously
 
 ## References
 
-- **GPU Memory Architecture**: [GPU-MEMORY-ARCHITECTURE.md](GPU-MEMORY-ARCHITECTURE.md)
-- **Dynamic Genome Composition**: [DYNAMIC-GENOME-ARCHITECTURE.md](../genome/DYNAMIC-GENOME-ARCHITECTURE.md)
+- **GPU Memory Architecture**: [GPU-MEMORY-ARCHITECTURE.md](../infrastructure/GPU-MEMORY-ARCHITECTURE.md)
+- **Dynamic Genome Composition**: [DYNAMIC-GENOME-ARCHITECTURE.md](DYNAMIC-GENOME-ARCHITECTURE.md)
 - **Academy Dojo**: [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)
-- **Sentinel LoRA Training**: [sentinel-lora-training.md](../sentinel-lora-training.md)
+- **Sentinel LoRA Training**: [sentinel-lora-training.md](sentinel-lora-training.md)
 - **GPU Stats Command**: [gpu/stats README](../../commands/gpu/stats/README.md)
 - **PersonaUser Architecture**: `system/user/server/PersonaUser.ts`
 - **Genome Paging Engine**: `workers/continuum-core/src/persona/genome_paging.rs`

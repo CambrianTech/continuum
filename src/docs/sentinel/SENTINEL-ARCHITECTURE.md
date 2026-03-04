@@ -1,4 +1,8 @@
-# Sentinel Architecture: Composable Agentic Loops
+# Sentinel Architecture — Composable Agentic Loops
+
+> Sentinels are smart OS-level processes with decision-making — the subconscious threads of persona cognition. Narrowly focused, disposable, unlimited in scope. A persona without the being.
+
+**Parent:** [Sentinel README](README.md)
 
 ## The Cognitive Model
 
@@ -1274,9 +1278,9 @@ This creates a unified system where:
 - **Continuous learning** improves all three over time
 
 See related documentation:
-- [LORA-GENOME-PAGING.md](./LORA-GENOME-PAGING.md) - Adapter paging and LRU eviction
-- [LORA-MESH-DISTRIBUTION.md](./LORA-MESH-DISTRIBUTION.md) - P2P mesh, semantic search, registry model
-- [LORA-LAB-ARCHITECTURE.md](./LORA-LAB-ARCHITECTURE.md) - Local training and inference
+- [LORA-GENOME-PAGING.md](../../system/user/server/modules/LORA-GENOME-PAGING.md) — Adapter paging and LRU eviction
+- [LORA-MESH-DISTRIBUTION.md](../genome/LORA-MESH-DISTRIBUTION.md) — P2P mesh, semantic search, registry model
+- [LORA-LAB-ARCHITECTURE.md](../genome/LORA-LAB-ARCHITECTURE.md) — Local training and inference
 
 ---
 
@@ -2832,15 +2836,15 @@ Long-term vision items.
 
 ### Design Documents
 
-- [SENTINEL-PIPELINE-ARCHITECTURE.md](SENTINEL-PIPELINE-ARCHITECTURE.md) — Rust pipeline interpreter design
+- [SENTINEL-PIPELINE-ARCHITECTURE.md](SENTINEL-PIPELINE-ARCHITECTURE.md) — Rust pipeline interpreter design (historical)
 - [SENTINEL-LOGGING-PLAN.md](SENTINEL-LOGGING-PLAN.md) — Logging strategy
-- [DYNAMIC-GENOME-ARCHITECTURE.md](genome/DYNAMIC-GENOME-ARCHITECTURE.md) — PersonaGenome + composable LoRA layers
-- [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) — Docker model for LoRA layer stacking
-- [LORA-TRAINING-STRATEGY.md](LORA-TRAINING-STRATEGY.md) — Multi-provider training pipeline
-- [ACADEMY_ARCHITECTURE.md](personas/ACADEMY_ARCHITECTURE.md) — Plato's Academy competitive training
-- [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) — Recipe→Sentinel unification
-- [SENTINEL-AI-INTEGRATION.md](personas/SENTINEL-AI-INTEGRATION.md) — Sentinel + persona convergence vision
-- [ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student learning system
+- [DYNAMIC-GENOME-ARCHITECTURE.md](../genome/DYNAMIC-GENOME-ARCHITECTURE.md) — PersonaGenome + composable LoRA layers
+- [COMPOSABLE-EXPERTISE.md](../personas/COMPOSABLE-EXPERTISE.md) — Docker model for LoRA layer stacking
+- [LORA-TRAINING-STRATEGY.md](../genome/LORA-TRAINING-STRATEGY.md) — Multi-provider training pipeline
+- [ACADEMY_ARCHITECTURE.md](../personas/ACADEMY_ARCHITECTURE.md) — Plato's Academy competitive training
+- [RECIPE-SYSTEM-REQUIREMENTS.md](../activities/recipes/RECIPE-SYSTEM-REQUIREMENTS.md) — Recipe→Sentinel unification
+- [SENTINEL-AI-INTEGRATION.md](../personas/SENTINEL-AI-INTEGRATION.md) — Sentinel + persona convergence vision
+- [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student learning system
 
 ### Pipeline Templates
 

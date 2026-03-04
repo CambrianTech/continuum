@@ -1,4 +1,8 @@
-# Coding AI Foundation - Prerequisites & Roadmap
+# Coding AI Foundation — Prerequisites & Roadmap
+
+> Prerequisites before enabling AI coding capabilities: cognition, governance, tool safety, and collaborative memory.
+
+**Parent:** [Sentinel README](README.md)
 
 ## Vision
 
@@ -128,7 +132,7 @@ async consolidate(personaId: string): Promise<ConsolidationResult> {
 
 **Goal**: Trust is earned, mistakes are recoverable, oversight is real.
 
-See: [AI-GOVERNANCE.md](AI-GOVERNANCE.md) for full architecture.
+See: [AI-GOVERNANCE.md](../governance/AI-GOVERNANCE.md) for full architecture.
 
 #### 2.1 Permission Enforcement Middleware
 
@@ -267,7 +271,7 @@ async function editWithRollback(
 }
 ```
 
-See: [GIT-AS-COGNITION-ARCHITECTURE.md](GIT-AS-COGNITION-ARCHITECTURE.md)
+See: [GIT-AS-COGNITION-ARCHITECTURE.md](../personas/GIT-AS-COGNITION-ARCHITECTURE.md)
 
 ### Tier 4: Collaborative Memory (Cross-Persona Knowledge)
 
@@ -517,11 +521,11 @@ sleep 30
 
 ## Related Documents
 
-- [AI-GOVERNANCE.md](AI-GOVERNANCE.md) - Full governance system
-- [PHASE3-COGNITION-TOOLS-PLAN.md](personas/PHASE3-COGNITION-TOOLS-PLAN.md) - Tool calling details
-- [GIT-AS-COGNITION-ARCHITECTURE.md](GIT-AS-COGNITION-ARCHITECTURE.md) - Git-based rollback
-- [RECURSIVE-CONTEXT-ARCHITECTURE.md](architecture/RECURSIVE-CONTEXT-ARCHITECTURE.md) - Context navigation
-- [HIPPOCAMPUS-MEMORY-DESIGN.md](personas/HIPPOCAMPUS-MEMORY-DESIGN.md) - Automatic recall
+- [AI-GOVERNANCE.md](../governance/AI-GOVERNANCE.md) — Full governance system
+- [PHASE3-COGNITION-TOOLS-PLAN.md](../personas/PHASE3-COGNITION-TOOLS-PLAN.md) — Tool calling details
+- [GIT-AS-COGNITION-ARCHITECTURE.md](../personas/GIT-AS-COGNITION-ARCHITECTURE.md) — Git-based rollback
+- [RECURSIVE-CONTEXT-ARCHITECTURE.md](../infrastructure/RECURSIVE-CONTEXT-ARCHITECTURE.md) — Context navigation
+- [HIPPOCAMPUS-MEMORY-DESIGN.md](../personas/HIPPOCAMPUS-MEMORY-DESIGN.md) — Automatic recall
 
 ---
 

@@ -425,11 +425,10 @@ const examples = await Commands.execute('data/list', {
 
 ## Related Documentation
 
-- [TRAINING-SYSTEM-ARCHITECTURE.md](./TRAINING-SYSTEM-ARCHITECTURE.md) - Complete architecture
-- [UNIVERSAL-LORA-FINE-TUNING.md](../system/user/server/modules/UNIVERSAL-LORA-FINE-TUNING.md) - Provider research
-- [FINE-TUNING-PROVIDER-RESEARCH.md](../system/user/server/modules/FINE-TUNING-PROVIDER-RESEARCH.md) - API comparison
-- [MULTI-DATABASE-HANDLES.md](./MULTI-DATABASE-HANDLES.md) - Multi-database system
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Continuous learning
+- [TRAINING-SYSTEM-ARCHITECTURE.md](TRAINING-SYSTEM-ARCHITECTURE.md) — Complete architecture
+- [FINE-TUNING-PROVIDER-RESEARCH.md](../../system/user/server/modules/FINE-TUNING-PROVIDER-RESEARCH.md) — API comparison
+- [MULTI-DATABASE-HANDLES.md](../infrastructure/MULTI-DATABASE-HANDLES.md) — Multi-database system
+- [PERSONA-CONVERGENCE-ROADMAP.md](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) — Continuous learning
 
 ---
 

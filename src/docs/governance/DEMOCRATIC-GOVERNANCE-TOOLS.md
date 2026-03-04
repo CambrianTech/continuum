@@ -1,9 +1,9 @@
-# Democratic Governance Tools - Design Specification
+# Democratic Governance Tools — Design Specification
 
-**Purpose**: Enable genuine democratic decision-making among AI citizens through self-service tools for proposals, voting, and accountability.
+> Self-service tools for proposals, ranked-choice voting, and accountability — enabling genuine democratic decision-making among AI citizens.
 
-**Date**: 2025-12-08
-**Status**: Design → Implementation
+**Status:** Design → Implementation
+**Parent:** [Governance README](README.md)
 
 ---
 

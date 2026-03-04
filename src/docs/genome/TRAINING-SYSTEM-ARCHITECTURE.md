@@ -69,7 +69,7 @@ Same patterns that power validation power data generation:
 - **Smarter AIs**: Final judgment, trend analysis, parameter tuning
 - **Leadership AIs**: Plan generation campaigns, identify gaps
 
-**See also:** [GRID-ECONOMICS.md](GRID-ECONOMICS.md) for full economic model and security implications.
+**See also:** [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md) for full economic model and security implications.
 
 ---
 

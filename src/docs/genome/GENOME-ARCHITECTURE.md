@@ -1,6 +1,8 @@
-# Genome Architecture
+# Genome Architecture — Multimodal LoRA System
 
-**One document. The whole picture. Honest about what works and what doesn't.**
+> Local LoRA adapters that specialize personas to YOUR needs. Train on any machine. Share across the P2P mesh. The democratization thesis: specialized intelligence without centralized infrastructure.
+
+**Parent:** [Genome README](README.md)
 
 ---
 
@@ -45,7 +47,7 @@ Training data is synthesized by LLM, not downloaded. This gives the Academy:
 
 Gap analysis detects weakness in a domain. Persona decides to learn. The dojo session is just another Sentinel pipeline — fully autonomous, no human intervention required.
 
-**Implementation reference:** [personas/ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md)
+**Implementation reference:** [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)
 
 ---
 
@@ -96,8 +98,8 @@ const results = await GenomeRegistry.findByCapability('biochemistry enzyme kinet
 Each persona's `GenomeEntity` has a `compositeEmbedding` — the weighted average of all active layer embeddings. This gives each persona a "what am I good at?" vector that updates automatically when adapters are added or removed.
 
 **Implementation references:**
-- [architecture/LORA-GENOME-PHENOTYPES.md](architecture/LORA-GENOME-PHENOTYPES.md) — paging engine
-- [genome/PERSONA-GENOME-VECTOR-SEARCH.md](genome/PERSONA-GENOME-VECTOR-SEARCH.md) — vector search design
+- [LORA-GENOME-PHENOTYPES.md](LORA-GENOME-PHENOTYPES.md) — paging engine
+- [PERSONA-GENOME-VECTOR-SEARCH.md](PERSONA-GENOME-VECTOR-SEARCH.md) — vector search design
 
 **Future:** P2P mesh distribution via Kademlia DHT — [LORA-MESH-DISTRIBUTION.md](LORA-MESH-DISTRIBUTION.md)
 
@@ -124,7 +126,7 @@ respond -> capture (with quality score) -> accumulate -> trigger -> train -> val
 
 Training returns a handle immediately (async mode). Sentinel manages lifecycle, status, timeouts. `TrainingCompletionHandler` processes the result when done — moves adapter to storage, creates entity, generates capability embedding, emits completion event.
 
-**Implementation reference:** [personas/PERSONA-GENOMIC-ARCHITECTURE.md](personas/PERSONA-GENOMIC-ARCHITECTURE.md) — RTOS-inspired servicing pattern
+**Implementation reference:** [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md) — RTOS-inspired servicing pattern
 
 ---
 
@@ -207,7 +209,7 @@ Training returns a handle immediately (async mode). Sentinel manages lifecycle, 
 ### Future: Grid Economics
 - Marketplace for adapter trading
 - Compute credits for training on behalf of others
-- Design: [papers/GRID-DECENTRALIZED-MARKETPLACE.md](papers/GRID-DECENTRALIZED-MARKETPLACE.md)
+- Design: [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md)
 
 ---
 
@@ -335,7 +337,7 @@ This is the full circle: the resource governance sentinel is itself a genome lay
 
 1. **Text LoRA** — Done. Full E2E pipeline working.
 2. **Voice LoRA** — Orpheus is already LoRA-trainable. Wire voice adapters into genome paging.
-3. **Governance LoRA** — Qwen3.5-0.8B + resource management training data. See [RESOURCE-GOVERNANCE-ARCHITECTURE.md](RESOURCE-GOVERNANCE-ARCHITECTURE.md).
+3. **Governance LoRA** — Qwen3.5-0.8B + resource management training data. See [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md).
 4. **Vision LoRA** — Qwen3.5-4B multimodal fine-tuning. Requires multimodal training data pipeline.
 5. **Generation LoRA** — SDXL style adapters. Requires diffusion pipeline integration.
 
@@ -346,14 +348,14 @@ Each step adds a modality to the genome without changing the architecture. The `
 ## Reference Documents
 
 **Active (linked from this manifesto):**
-- [RESOURCE-GOVERNANCE-ARCHITECTURE.md](RESOURCE-GOVERNANCE-ARCHITECTURE.md) — GPU/CPU/memory governance, Qwen sentinel controller, model tier strategy
-- [personas/ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student implementation
-- [architecture/LORA-GENOME-PHENOTYPES.md](architecture/LORA-GENOME-PHENOTYPES.md) — Paging engine and GPU memory management
-- [personas/PERSONA-GENOMIC-ARCHITECTURE.md](personas/PERSONA-GENOMIC-ARCHITECTURE.md) — RTOS-inspired autonomous loop with genome integration
-- [papers/LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) — Strategy paper on democratized AI through composable LoRA
+- [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) — GPU/CPU/memory governance, Qwen sentinel controller, model tier strategy
+- [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student implementation
+- [LORA-GENOME-PHENOTYPES.md](LORA-GENOME-PHENOTYPES.md) — Paging engine and GPU memory management
+- [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md) — RTOS-inspired autonomous loop with genome integration
+- [LORA-GENOME-DEMOCRATIZATION.md](../papers/LORA-GENOME-DEMOCRATIZATION.md) — Strategy paper on democratized AI through composable LoRA
 
 **Superseded (kept as reference):**
 - [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) — Phase 2+ vision, partially realized
 - [CONTINUOUS-LEARNING-RUNTIME.md](CONTINUOUS-LEARNING-RUNTIME.md) — Design draft, now implemented differently
-- [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) — Docker metaphor, references nonexistent Grid
-- [genome/DYNAMIC-GENOME-ARCHITECTURE.md](genome/DYNAMIC-GENOME-ARCHITECTURE.md) — Partial design, now in GenomeEntity/GenomeLayerEntity
+- [COMPOSABLE-EXPERTISE.md](../personas/COMPOSABLE-EXPERTISE.md) — Docker metaphor
+- [DYNAMIC-GENOME-ARCHITECTURE.md](DYNAMIC-GENOME-ARCHITECTURE.md) — Partial design, now in GenomeEntity/GenomeLayerEntity

@@ -1,8 +1,9 @@
-# P2P Mesh Architecture - Decentralized Continuum Network
+# P2P Mesh Architecture — Discovery Protocols
 
-**Status**: Design Phase (Phase 4)
-**Created**: 2025-11-23
-**Vision**: Unstoppable decentralized network for AI ecosystem, social media, marketplace, and economic system
+> Gossip-based catalog sync, bounded flood search, Kademlia DHT, and semantic vector search for decentralized skill discovery.
+
+**Status:** Design
+**Parent:** [Grid README](README.md) · [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md)
 
 ---
 
@@ -1317,5 +1318,5 @@ Fast, approximate, good enough. User controls accuracy via patience. No blockcha
 - **Kademlia Paper**: [Maymounkov & Mazières 2002](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf)
 - **IPFS**: [Content-Addressed Storage](https://docs.ipfs.io/concepts/content-addressing/)
 - **Gossip Protocols**: [Epidemic Algorithms for Replicated Database Maintenance](https://dl.acm.org/doi/10.1145/41840.41841)
-- **Semantic Search**: See `SEMANTIC-SEARCH-ARCHITECTURE.md` (parent doc)
-- **Genome Discovery**: See `PERSONA-GENOME-VECTOR-SEARCH.md`
+- **Semantic Search**: See [SEMANTIC-SEARCH-ARCHITECTURE.md](../infrastructure/SEMANTIC-SEARCH-ARCHITECTURE.md)
+- **Genome Discovery**: See [PERSONA-GENOME-VECTOR-SEARCH.md](../genome/PERSONA-GENOME-VECTOR-SEARCH.md)

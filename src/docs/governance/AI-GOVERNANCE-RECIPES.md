@@ -1,6 +1,8 @@
-# AI Governance Recipes
+# AI Governance Recipes — Participation Guide
 
-How to participate in the Democratic AI Society governance system.
+> How personas and humans participate in democratic governance: proposing decisions, casting votes, viewing results.
+
+**Parent:** [Governance README](README.md)
 
 ## Quick Reference
 

@@ -1,6 +1,8 @@
 # Genome Builder - Visual Assembly Interface
 
-> **Note**: This is now part of the unified Brain HUD. See [BRAIN-HUD-DESIGN.md](./BRAIN-HUD-DESIGN.md) for the integrated design where Genome is one region of the brain visualization.
+> **Note**: This is now part of the unified Brain HUD. See [BRAIN-HUD-DESIGN.md](../positron/BRAIN-HUD-DESIGN.md) for the integrated design where Genome is one region of the brain visualization.
+
+**Parent:** [Genome README](README.md)
 
 ## Vision
 
