@@ -36,6 +36,7 @@ import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
 import { Dm } from '../../commands/collaboration/dm/shared/DmTypes';
+import { CollaborationLiveStart } from '../../commands/collaboration/live/start/shared/CollaborationLiveStartTypes';
 import { styles as PROFILE_STYLES } from './public/user-profile-widget.styles';
 
 export class UserProfileWidget extends ReactiveWidget {
@@ -214,12 +215,13 @@ export class UserProfileWidget extends ReactiveWidget {
       const response = await fetch(avatarUrl, { method: 'HEAD' });
       if (!response.ok) return;
 
-      // File exists — update profile entity so it persists
+      const updatedVi = {
+        ...(this.profile?.visualIdentity || {}),
+        avatarUrl
+      } as UserVisualIdentity;
+
+      // Persist to profile entity if it exists
       if (this.profile?.id) {
-        const updatedVi = {
-          ...(this.profile.visualIdentity || {}),
-          avatarUrl
-        };
         await DataUpdate.execute({
           collection: 'user_profiles',
           id: this.profile.id,
@@ -229,7 +231,12 @@ export class UserProfileWidget extends ReactiveWidget {
 
         this.profile = {
           ...this.profile,
-          visualIdentity: updatedVi as UserVisualIdentity
+          visualIdentity: updatedVi
+        } as UserProfileEntity;
+      } else {
+        // No profile entity — still set in-memory for rendering
+        this.profile = {
+          visualIdentity: updatedVi
         } as UserProfileEntity;
       }
     } catch {
@@ -403,6 +410,27 @@ export class UserProfileWidget extends ReactiveWidget {
     });
   }
 
+  private async startVideoCall(): Promise<void> {
+    if (!this.user) return;
+
+    try {
+      const result = await CollaborationLiveStart.execute({
+        participants: this.user.id,
+        withVideo: true
+      });
+
+      if (result.success && result.roomId) {
+        ContentService.open('live', result.roomId as string, {
+          title: `Call - ${this.user.displayName}`,
+          uniqueId: result.room?.uniqueId || `live-${this.user.uniqueId || this.user.id}`,
+          metadata: { room: result.room, session: result.session }
+        });
+      }
+    } catch (err) {
+      console.error('UserProfile: Failed to start video call:', err);
+    }
+  }
+
   // === Visual Identity Helpers ===
 
   private get visualIdentity(): UserVisualIdentity | undefined {
@@ -526,6 +554,18 @@ export class UserProfileWidget extends ReactiveWidget {
             ` : ''}
             <span class="badge badge-type ${user.type}">${user.type}</span>
           </div>
+          ${user.id !== this.currentUser?.id ? html`
+            <div class="hero-actions">
+              <button class="hero-btn hero-btn-message" @click=${() => this.openDm()}>
+                <span class="hero-btn-icon">💬</span>
+                Message
+              </button>
+              <button class="hero-btn hero-btn-call" @click=${() => this.startVideoCall()}>
+                <span class="hero-btn-icon">📹</span>
+                Video Call
+              </button>
+            </div>
+          ` : ''}
         </div>
       </div>
     `;

@@ -200,6 +200,58 @@
   flex-wrap: wrap;
 }
 
+// === HERO ACTION BUTTONS (Message + Call) ===
+
+.hero-actions {
+  display: flex;
+  gap: $spacing-sm;
+  margin-top: $spacing-sm;
+}
+
+.hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: $spacing-sm $spacing-lg;
+  border-radius: $border-radius-md;
+  font-size: $font-size-md;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all $transition-fast;
+
+  &:active {
+    transform: scale(0.97);
+  }
+}
+
+.hero-btn-message {
+  background: rgba(0, 212, 255, 0.15);
+  color: $color-primary;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.25);
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.15);
+  }
+}
+
+.hero-btn-call {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+
+  &:hover {
+    background: rgba(16, 185, 129, 0.25);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+  }
+}
+
+.hero-btn-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
 .badge {
   padding: 2px 8px;
   border-radius: 10px;
@@ -576,6 +628,10 @@
   }
 
   .hero-badges {
+    justify-content: center;
+  }
+
+  .hero-actions {
     justify-content: center;
   }
 
