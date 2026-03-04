@@ -1,0 +1,55 @@
+{
+  "name": "avatar/snapshot",
+  "description": "Capture a Bevy 3D avatar snapshot as PNG for profile pictures. Allocates a temporary render slot, loads the persona's VRM model, waits for a clean frame, encodes as PNG, and saves to ~/.continuum/avatars/. Cached on disk — subsequent calls return immediately unless force=true.",
+  "params": [
+    {
+      "name": "identity",
+      "type": "string",
+      "optional": false,
+      "description": "Persona identity string (e.g., 'helper', 'teacher'). Used to select avatar model and name the output file."
+    },
+    {
+      "name": "width",
+      "type": "number",
+      "optional": true,
+      "description": "Render width in pixels (default: 480)"
+    },
+    {
+      "name": "height",
+      "type": "number",
+      "optional": true,
+      "description": "Render height in pixels (default: 480)"
+    },
+    {
+      "name": "force",
+      "type": "boolean",
+      "optional": true,
+      "description": "Force re-capture even if cached snapshot exists (default: false)"
+    }
+  ],
+  "results": [
+    {
+      "name": "path",
+      "type": "string",
+      "description": "Relative URL path to the avatar PNG (e.g., '/avatars/helper.png')"
+    },
+    {
+      "name": "cached",
+      "type": "boolean",
+      "description": "Whether the result came from disk cache (true) or was freshly captured (false)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Capture avatar for helper persona",
+      "command": "./jtag avatar/snapshot --identity=helper",
+      "expectedResult": "{ path: '/avatars/helper.png', cached: false }"
+    },
+    {
+      "description": "Force re-capture at higher resolution",
+      "command": "./jtag avatar/snapshot --identity=helper --width=640 --height=640 --force=true",
+      "expectedResult": "{ path: '/avatars/helper.png', cached: false }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -2,8 +2,8 @@
   "uniqueId": "profile",
   "name": "User Profile",
   "displayName": "Profile",
-  "description": "View and manage user profile, settings, and status",
-  "version": 1,
+  "description": "View and manage user profile — social page with pathway cards",
+  "version": 2,
 
   "inputs": {
     "userId": {
@@ -16,7 +16,7 @@
     "main": ["user-profile-widget"],
     "right": {
       "widgets": ["chat-widget"],
-      "config": { "room": "help", "compact": true }
+      "config": { "compact": true }
     }
   },
 

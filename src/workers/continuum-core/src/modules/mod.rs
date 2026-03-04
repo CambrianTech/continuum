@@ -28,3 +28,4 @@ pub mod ai_provider;
 pub mod sentinel;
 pub mod tool_parsing;
 pub mod system_resources;
+pub mod avatar;

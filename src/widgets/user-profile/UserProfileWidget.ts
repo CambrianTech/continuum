@@ -36,6 +36,7 @@ import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
 import { Dm } from '../../commands/collaboration/dm/shared/DmTypes';
+import { AvatarSnapshot } from '../../commands/avatar/snapshot/shared/AvatarSnapshotTypes';
 import { styles as PROFILE_STYLES } from './public/user-profile-widget.styles';
 
 export class UserProfileWidget extends ReactiveWidget {
@@ -51,6 +52,7 @@ export class UserProfileWidget extends ReactiveWidget {
   @reactive() private dmRoomId: string | null = null;
   @reactive() private wallDocs: WallDocumentEntity[] = [];
   @reactive() private feedLoading = false;
+  private _snapshotRequested = false;
 
   constructor() {
     super({
@@ -108,6 +110,7 @@ export class UserProfileWidget extends ReactiveWidget {
     this.loading = true;
     this.error = null;
     this.adminExpanded = false;
+    this._snapshotRequested = false;
 
     // Instant hydration from metadata
     const preloaded = metadata?.entity as UserEntity;
@@ -188,6 +191,57 @@ export class UserProfileWidget extends ReactiveWidget {
     } catch (err) {
       // Profile is optional — don't set error
       this.verbose() && console.log('UserProfile: No profile entity found', err);
+    }
+
+    // After profile loads, request avatar snapshot for AI personas if no avatar yet
+    this.ensureAvatarSnapshot();
+  }
+
+  /**
+   * Request a Bevy 3D avatar snapshot for AI personas that don't have one yet.
+   * Updates the profile entity with the snapshot URL and re-renders.
+   */
+  private async ensureAvatarSnapshot(): Promise<void> {
+    if (this._snapshotRequested) return;
+    if (!this.user) return;
+
+    // Only AI personas get Bevy avatars
+    const isAI = this.user.type === 'persona' || this.user.type === 'agent';
+    if (!isAI) return;
+
+    // Already has an avatar URL
+    if (this.profile?.visualIdentity?.avatarUrl) return;
+
+    this._snapshotRequested = true;
+    const identity = this.user.uniqueId || this.user.id;
+
+    try {
+      const result = await AvatarSnapshot.execute({ identity });
+
+      if (result?.success && result.path) {
+        // Update profile entity with the new avatar URL
+        if (this.profile?.id) {
+          const updatedVi = {
+            ...(this.profile.visualIdentity || {}),
+            avatarUrl: result.path
+          };
+          await DataUpdate.execute({
+            collection: 'user_profiles',
+            id: this.profile.id,
+            data: { visualIdentity: updatedVi },
+            dbHandle: 'default'
+          });
+
+          // Update local state to trigger re-render
+          this.profile = {
+            ...this.profile,
+            visualIdentity: updatedVi as UserVisualIdentity
+          } as UserProfileEntity;
+        }
+      }
+    } catch (err) {
+      // Avatar snapshot is best-effort — gradient+initial remains
+      this.verbose() && console.log('UserProfile: Avatar snapshot not available:', err);
     }
   }
 

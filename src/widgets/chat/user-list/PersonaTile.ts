@@ -49,6 +49,7 @@ export class PersonaTile extends LitElement {
   @reactive() private _fitness: number = 0;
   @reactive() private _genomeLayers: GenomeLayerInfo[] = [];
 
+
   // Decay timers
   private _thinkingTimer: ReturnType<typeof setTimeout> | null = null;
   private _speakingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -240,16 +241,22 @@ export class PersonaTile extends LitElement {
 
   protected override render(): TemplateResult {
     const statusClass = this.status === 'online' ? 'online' : 'offline';
-    const avatar = this.userType === 'human' ? '👤' :
-                   this.userType === 'agent' ? '🤖' :
-                   this.userType === 'persona' ? '⭐' :
-                   this.userType === 'system' ? '⚙️' : '❓';
+    const emoji = this.userType === 'human' ? '👤' :
+                  this.userType === 'agent' ? '🤖' :
+                  this.userType === 'persona' ? '⭐' :
+                  this.userType === 'system' ? '⚙️' : '❓';
+
+    // AI personas: use avatar image as background if available, emoji fallback
+    const avatarUrl = this._isAI && this.uniqueId ? `/avatars/${this.uniqueId}.png` : '';
+    const avatarStyle = avatarUrl
+      ? `background-image: url('${avatarUrl}'); background-size: cover; background-position: center top;`
+      : '';
 
     return html`
       <div class="tile-content ${statusClass}" data-ai-status=${this._cognitivePhase ?? nothing}>
         ${this.lastActive ? html`<span class="tile-last-active">${this.lastActive}</span>` : nothing}
-        <span class="tile-avatar">
-          ${avatar}
+        <span class="tile-avatar" style=${avatarStyle || nothing}>
+          ${!avatarUrl ? emoji : nothing}
           <span class="status-indicator"></span>
           ${this._isAI ? html`
             <span class="response-mode-dot ${this.requiresMention ? 'mention-required' : 'free-chat'}"
