@@ -54,7 +54,10 @@ impl SentinelModule {
     pub fn new() -> Self {
         Self {
             sentinels: Arc::new(DashMap::new()),
-            logs_base_dir: RwLock::new(PathBuf::from(".continuum/jtag/logs/system/sentinels")),
+            logs_base_dir: RwLock::new({
+                let home = dirs::home_dir().expect("Failed to resolve home directory");
+                home.join(".continuum").join("jtag").join("logs").join("system").join("sentinels")
+            }),
             max_concurrent: 4,
             bus: RwLock::new(None),
             registry: RwLock::new(None),
@@ -366,9 +369,7 @@ impl ServiceModule for SentinelModule {
         *self.bus.write() = Some(Arc::clone(&ctx.bus));
         *self.registry.write() = Some(Arc::clone(&ctx.registry));
 
-        if let Ok(cwd) = std::env::current_dir() {
-            *self.logs_base_dir.write() = cwd.join(".continuum/jtag/logs/system/sentinels");
-        }
+        // logs_base_dir already set to $HOME/.continuum/... in new() — no cwd override needed
 
         Ok(())
     }

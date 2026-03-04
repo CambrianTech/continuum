@@ -132,7 +132,7 @@ export class LogFileRegistry {
    */
   private async discoverPersonaLogs(): Promise<LogMetadata[]> {
     const logs: LogMetadata[] = [];
-    const personasBaseDir = path.join(SystemPaths.root, 'personas');
+    const personasBaseDir = SystemPaths.personas.root;
 
     try {
       const personaDirs = await fs.readdir(personasBaseDir, { withFileTypes: true });
@@ -166,7 +166,7 @@ export class LogFileRegistry {
    */
   private async discoverSessionLogs(): Promise<LogMetadata[]> {
     const logs: LogMetadata[] = [];
-    const sessionsBaseDir = path.join(SystemPaths.root, 'sessions');
+    const sessionsBaseDir = SystemPaths.sessions.root;
 
     try {
       const sessionTypes = await fs.readdir(sessionsBaseDir, { withFileTypes: true });

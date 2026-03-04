@@ -6,6 +6,7 @@
 
 import { HealthCheckRunner, HealthSuite, SystemHealthChecks } from './HealthCheckFramework';
 import { HTTP_PORT, WS_PORT } from '../config';
+import { SystemPaths } from '../../system/core/config/SystemPaths';
 
 export function createJTAGHealthSuite(): HealthSuite {
   return {
@@ -16,7 +17,7 @@ export function createJTAGHealthSuite(): HealthSuite {
       SystemHealthChecks.portOpen(WS_PORT),  // WebSocket port (from config)
       SystemHealthChecks.portOpen(HTTP_PORT), // HTTP port (from config)
       SystemHealthChecks.processRunning('tmux'),
-      SystemHealthChecks.directoryExists('.continuum/jtag'),
+      SystemHealthChecks.directoryExists(SystemPaths.root),
       
       // Custom JTAG-specific checks
       {
@@ -27,9 +28,7 @@ export function createJTAGHealthSuite(): HealthSuite {
           
           // Check multiple possible session locations
           const possiblePaths = [
-            '.continuum/jtag/currentUser/',
-            'examples/widget-ui/.continuum/jtag/currentUser/',
-            'examples/test-bench/.continuum/jtag/currentUser/'
+            SystemPaths.sessions.root,
           ];
           
           let foundPath = '';

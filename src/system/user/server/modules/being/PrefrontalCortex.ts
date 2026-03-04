@@ -38,7 +38,7 @@ export class PrefrontalCortex {
     this.personaState = new PersonaStateManager(personaUser.displayName, {
       enableLogging: true,
       logger: this.logger  // Share mind logger
-    });
+    }, personaUser.id);
     // WorkingMemory logs to cognition.log (shared with decision-making)
     const cognitionLogger = (message: string) => {
       personaUser.logger.enqueueLog('cognition.log', message);

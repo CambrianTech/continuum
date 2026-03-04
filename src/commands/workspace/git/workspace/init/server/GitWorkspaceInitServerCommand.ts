@@ -16,6 +16,7 @@ import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { DataRecord } from '@daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import * as path from 'path';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 import * as fs from 'fs';
 import { promisify } from 'util';
 import { exec } from 'child_process';
@@ -58,9 +59,9 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
       const persona = userResult.data as UserEntity;
 
       // 3. Generate workspace path — use human-readable uniqueId for directory names
-      const workspacePath = path.resolve(
-        process.cwd(),
-        '.continuum/sessions/user/shared',
+      const workspacePath = path.join(
+        SystemPaths.sessions.user,
+        'shared',
         persona.uniqueId || personaId,
         'workspace'
       );

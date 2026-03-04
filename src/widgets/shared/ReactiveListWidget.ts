@@ -70,6 +70,12 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
   protected get containerClass(): string { return 'list-body'; }
   protected get pageSize(): number { return 100; }
 
+  /** Backend preference for data loading.
+   *  'auto' (default) = local-first with server fallback.
+   *  'stale-while-revalidate' = return cached instantly, refresh from server in background.
+   *  'server' = always fetch from server. */
+  protected get loadBackend(): 'auto' | 'server' | 'local' | 'stale-while-revalidate' { return 'auto'; }
+
   /** List title shown in header */
   protected get listTitle(): string { return 'Items'; }
 
@@ -140,7 +146,8 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
           filter: this.loadFilter,
           orderBy: this.orderBy,
           limit: limit ?? this.pageSize,
-          dbHandle: 'default'
+          dbHandle: 'default',
+          backend: this.loadBackend,
         }
       );
       if (!result?.success) {

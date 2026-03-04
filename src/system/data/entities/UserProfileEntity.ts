@@ -13,6 +13,9 @@ export type UserSpecialityType = 'general' | 'code' | 'planning' | 'analysis' | 
 
 export interface UserVisualIdentity {
   avatar: string;
+  avatarUrl?: string;       // URL to avatar image (Bevy snapshot, AI art)
+  coverUrl?: string;        // URL to cover banner image
+  coverGradient?: string;   // CSS gradient string for custom cover
   theme: 'light' | 'dark' | 'auto';
   accentColor: string;
   badge?: string; // For agents/personas: shows their speciality

@@ -32,6 +32,7 @@ use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::tool_parsing::ToolParsingModule;
 use crate::modules::system_resources::SystemResourceModule;
+use crate::modules::avatar::AvatarModule;
 use crate::system_resources::SystemResourceMonitor;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
@@ -706,6 +707,10 @@ pub fn start_server(
     // tool-parsing/decode-name, tool-parsing/encode-name
     // Replaces 784 lines of TypeScript ToolFormatAdapter hierarchy
     runtime.register(Arc::new(ToolParsingModule::new()));
+
+    // AvatarModule: Bevy 3D avatar snapshots for profile pictures
+    // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
+    runtime.register(Arc::new(AvatarModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

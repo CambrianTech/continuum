@@ -19,16 +19,37 @@ import { inboxMessageToProcessable, type InboxTask, type QueueItem } from './Que
 import { fromRustServiceItem } from './QueueItemTypes';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 import { LearningScheduler } from '../../../genome/server/LearningScheduler';
+import type { GapDetector } from './GapDetector';
+import type { SelfTaskGenerator } from './SelfTaskGenerator';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
+
+/** Gap assessment runs every N service cycles (~25-50s during active operation) */
+const GAP_ASSESSMENT_INTERVAL = 50;
 
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private log: (message: string) => void;
 
+  /** Cycle counter for gap assessment cadence */
+  private gapCycleCount = 0;
+
+  /** Optional gap detection + self-task generation */
+  private gapDetector: GapDetector | null = null;
+  private selfTaskGenerator: SelfTaskGenerator | null = null;
+
   constructor(private readonly personaUser: PersonaUser, logger: (message: string) => void) {
     this.log = logger;
+  }
+
+  /**
+   * Wire gap detector and self-task generator for autonomous learning.
+   * Called after PersonaUser initializes these components.
+   */
+  setGapDetection(gapDetector: GapDetector, selfTaskGenerator: SelfTaskGenerator): void {
+    this.gapDetector = gapDetector;
+    this.selfTaskGenerator = selfTaskGenerator;
   }
 
   /**
@@ -118,6 +139,15 @@ export class PersonaAutonomousLoop {
     LearningScheduler.sharedInstance().tick(this.personaUser.id).catch(err => {
       this.log(`⚠️ ${this.personaUser.displayName}: Learning scheduler tick failed: ${err}`);
     });
+
+    // Periodically assess gaps and generate self-learning tasks
+    this.gapCycleCount++;
+    if (this.gapDetector && this.selfTaskGenerator && this.gapCycleCount >= GAP_ASSESSMENT_INTERVAL) {
+      this.gapCycleCount = 0;
+      this.runGapAssessment().catch(err => {
+        this.log(`⚠️ ${this.personaUser.displayName}: Gap assessment failed: ${err}`);
+      });
+    }
   }
 
   /**
@@ -217,6 +247,17 @@ export class PersonaAutonomousLoop {
       // Room lookup failed — use truncated UUID
     }
     return roomId.slice(0, 8);
+  }
+
+  /**
+   * Run gap assessment and generate self-learning tasks.
+   * Fire-and-forget from the service loop — errors are logged, never thrown.
+   */
+  private async runGapAssessment(): Promise<void> {
+    const report = await this.gapDetector!.assess();
+    if (report.gaps.length > 0) {
+      await this.selfTaskGenerator!.generateFromGaps(report);
+    }
   }
 
   /**

@@ -14,6 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 
 export interface HardwareCapabilities {
   // Hardware detection
@@ -71,7 +72,7 @@ export class HardwareProfile {
   private profilePath: string;
 
   private constructor() {
-    this.profilePath = path.join(process.cwd(), '.continuum', 'hardware-profile.json');
+    this.profilePath = path.join(SystemPaths.root, 'hardware-profile.json');
   }
 
   static getInstance(): HardwareProfile {

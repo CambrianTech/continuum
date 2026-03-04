@@ -1,0 +1,376 @@
+/**
+ * PersonaTile — Styles for self-contained persona tile component.
+ *
+ * Layout mirrors the original UserListWidget tile exactly:
+ *   tile-content = old user-item internals
+ *   tile-avatar  = old user-avatar (with ring animation)
+ *   tile-info    = old user-info (name, meta, meters)
+ *   genome-panel = old genome-panel (label, bars, diamond) — always shown for AI
+ */
+
+@use "sass:map";
+@use '../../shared/styles/variables' as *;
+
+:host {
+  display: contents; // No wrapper box, tile-content fills parent
+}
+
+// === AI Status Ring Animation ===
+
+@keyframes comet-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+$ai-statuses: (
+  evaluating: (color: rgba(147, 51, 234, 0.8), speed: 3.5s),
+  responding: (color: rgba(59, 130, 246, 0.8), speed: 3.5s),
+  generating: (color: rgba(16, 185, 129, 0.8), speed: 3.5s),
+  checking: (color: rgba(245, 158, 11, 0.8), speed: 3.5s),
+  error: (color: rgba(239, 68, 68, 0.8), speed: 2.5s)
+);
+
+// Tile content wrapper — same layout as old .user-item internals
+.tile-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  width: 100%;
+}
+
+// Avatar — identical to old .user-avatar
+.tile-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+
+  // When avatar image is loaded via background-image, add subtle border
+  &[style*="background-image"] {
+    border: 2px solid rgba(0, 212, 255, 0.3);
+    box-shadow: 0 0 6px rgba(0, 212, 255, 0.15);
+  }
+
+  // Rotating arc indicator (ring)
+  &::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+    border: 3px solid transparent;
+    border-top-color: var(--comet-color, rgba(59, 130, 246, 0.9));
+    border-right-color: var(--comet-color, rgba(59, 130, 246, 0.6));
+    border-bottom-color: transparent;
+    border-left-color: transparent;
+    transition: opacity 0.3s ease;
+    z-index: 2;
+  }
+}
+
+
+
+// Ring animation per cognitive phase
+@each $status, $props in $ai-statuses {
+  .tile-content[data-ai-status="#{$status}"] .tile-avatar::before {
+    --comet-color: #{map.get($props, color)};
+    opacity: 1;
+    animation: comet-orbit #{map.get($props, speed)} linear infinite;
+  }
+}
+
+.tile-content[data-ai-status="passed"] .tile-avatar {
+  box-shadow: 0 0 8px rgba(156, 163, 175, 0.2);
+
+  &::before {
+    opacity: 0;
+  }
+}
+
+// Status indicator dot — identical to old
+.status-indicator {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--status-offline);
+  border: 2px solid var(--widget-surface-solid);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+.tile-content.online .status-indicator {
+  background: var(--status-online);
+}
+
+// Response mode dot — identical to old
+.response-mode-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--widget-surface-solid);
+  z-index: 3;
+
+  &.free-chat {
+    background: #10b981;
+  }
+
+  &.mention-required {
+    background: #f59e0b;
+  }
+}
+
+// Info column — identical to old .user-info
+.tile-info {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.tile-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tile-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--content-primary);
+  overflow: visible;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.tile-type-badge,
+.tile-model-badge {
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.7);
+  background: transparent;
+  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+  font-family: monospace;
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+}
+
+.tile-model-badge {
+  margin-left: auto;
+}
+
+.tile-model-info {
+  display: none;
+}
+
+.tile-speciality {
+  font-size: 12px;
+  color: var(--content-secondary);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+.tile-last-active {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 10px;
+  color: var(--content-secondary);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+// === METERS (replaces IQ bars — same visual area, real data) ===
+
+.meters {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.meter-label {
+  font-size: 7px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.6);
+  font-family: monospace;
+  letter-spacing: 0.5px;
+  width: 20px;
+  flex-shrink: 0;
+  text-shadow: 0 0 3px rgba(0, 255, 200, 0.2);
+}
+
+.meter-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(20, 30, 45, 0.6);
+  border: 1px solid rgba(60, 80, 100, 0.4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.5s ease, background 0.5s ease;
+  min-width: 0;
+  box-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+}
+
+// === GENOME PANEL — identical to old layout ===
+
+.genome-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: rgba(10, 25, 35, 0.9);
+  border: 1px solid rgba(0, 255, 200, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 8px rgba(0, 255, 200, 0.15);
+  flex-shrink: 0;
+  margin-left: 8px;
+  height: 32px;
+  align-self: flex-end;
+}
+
+.genome-label {
+  font-size: 7px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+  line-height: 1;
+}
+
+.genome-bars {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  align-items: flex-end;
+  height: 24px;
+  justify-content: center;
+}
+
+.genome-layer {
+  width: 4px;
+  min-height: 8px;
+  border-radius: 1px;
+  border: 1px solid rgba(0, 255, 200, 0.4);
+  transition: height 0.2s ease, background 0.2s ease;
+  flex-shrink: 0;
+
+  &.active {
+    height: 100%;
+    background: linear-gradient(180deg,
+      rgba(0, 255, 200, 0.9) 0%,
+      rgba(0, 220, 255, 0.8) 50%,
+      rgba(0, 180, 255, 0.7) 100%);
+    box-shadow: 0 0 6px rgba(0, 255, 200, 0.6);
+    border-color: rgba(0, 255, 255, 0.8);
+  }
+
+  &.inactive {
+    height: 35%;
+    background: rgba(60, 80, 100, 0.5);
+    border-color: rgba(80, 100, 120, 0.6);
+    box-shadow: none;
+  }
+}
+
+// Diamond grid — inside genome panel, identical to old
+@keyframes diamond-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(0, 255, 200, 0.5); }
+  50% { box-shadow: 0 0 10px rgba(0, 255, 200, 0.9); }
+}
+
+.genome-diamond {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  transform: rotate(45deg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.diamond-cell {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  background: rgba(60, 80, 100, 0.3);
+  border: 1px solid rgba(80, 100, 120, 0.4);
+  border-radius: 1px;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  box-sizing: border-box;
+
+  &.active {
+    background: linear-gradient(135deg,
+      rgba(0, 255, 200, 0.8) 0%,
+      rgba(0, 220, 255, 0.7) 100%);
+    border-color: rgba(0, 255, 255, 0.6);
+    animation: diamond-pulse 1.5s ease-in-out infinite;
+  }
+}
+
+// Hover effects — identical to old
+:host(:hover) {
+  .genome-panel {
+    border-color: rgba(0, 255, 200, 0.6);
+    box-shadow: 0 0 12px rgba(0, 255, 200, 0.25);
+  }
+
+  .genome-layer.active {
+    box-shadow: 0 0 8px rgba(0, 255, 200, 0.8);
+  }
+
+  .diamond-cell.active {
+    box-shadow: 0 0 6px rgba(0, 255, 200, 0.7);
+  }
+}

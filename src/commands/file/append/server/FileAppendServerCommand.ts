@@ -10,6 +10,7 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { PersistenceError } from '../../../../system/core/types/ErrorTypes';
 import  { type FileAppendParams, type FileAppendResult, createFileAppendResult } from '../shared/FileAppendTypes';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileAppendResult> {
   
@@ -28,7 +29,7 @@ export class FileAppendServerCommand extends CommandBase<FileAppendParams, FileA
     try {
       // TEMPORARY: Create session-based path manually
       const sessionId = appendParams.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+      const basePath = path.join(SystemPaths.sessions.user, sessionId);
       const fullPath = path.resolve(basePath, appendParams.filepath);
       let wasCreated = false;
       

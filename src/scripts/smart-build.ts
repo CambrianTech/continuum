@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 import { globSync } from 'glob';
 
 interface BuildCheck {
@@ -94,7 +95,7 @@ function checkGeneratedFiles(): BuildCheck {
       const configHash = crypto.createHash('md5').update(JSON.stringify(structureGen || {})).digest('hex');
       
       // Store and compare config hash to detect real changes
-      const hashFile = '.continuum/generator/structure-config.hash';
+      const hashFile = path.join(SystemPaths.root, 'generator', 'structure-config.hash');
       let lastConfigHash = '';
       try {
         lastConfigHash = fs.readFileSync(hashFile, 'utf8').trim();

@@ -8,8 +8,9 @@
 import { InferenceGrpcClient } from '../system/core/services/InferenceGrpcClient';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { resolve } from 'path';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
-const ADAPTERS_DIR = '/Users/joel/.continuum/adapters/installed';
+const ADAPTERS_DIR = resolve(SystemPaths.genome.adapters, 'installed');
 const TEST_PROMPT = 'Hello, how are you today?';
 
 interface AdapterManifest {

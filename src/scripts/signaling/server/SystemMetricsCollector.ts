@@ -10,6 +10,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { SystemReadySignal, SystemHealth, BuildStatus } from '../shared/SystemSignalingTypes';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 
 // Mutable version of SystemReadySignal for building metrics incrementally
 type MutableSystemReadySignal = {
@@ -17,7 +18,6 @@ type MutableSystemReadySignal = {
 };
 import { getSignalConfig } from '../shared/MilestoneConfiguration';
 import { JTAG_LOG_PATTERNS } from '../../../system/core/client/shared/JTAGClientConstants';
-import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
 
@@ -123,26 +123,11 @@ export class SystemMetricsCollector {
 
   private async checkWebSocketBootstrap(): Promise<boolean> {
     try {
-      // ROBUST FIX: Check where logs actually exist instead of relying on fragile path resolution
-      const baseDirs = [
-        process.cwd(), // Current working directory
-        path.join(process.cwd(), 'examples/widget-ui'), // Widget UI example
-        path.join(process.cwd(), 'examples/test-bench')  // Test bench example
+      // Check SystemPaths for browser log locations
+      const logPatterns: string[] = [
+        path.join(SystemPaths.sessions.user, 'logs', 'browser-console-log.log'),
+        path.join(SystemPaths.logs.system, 'browser-console-log.log'),
       ];
-      
-      const logPatterns: string[] = [];
-      
-      // Try all possible locations where .continuum directories might exist
-      for (const baseDir of baseDirs) {
-        const continuumPath = path.join(baseDir, '.continuum');
-        logPatterns.push(
-          // Try currentUser logs first (most reliable)
-          path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
-          // Try direct session access
-          `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
-          `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
-        );
-      }
       
       // Silently check log locations for bootstrap completion
       for (const logPattern of logPatterns) {
@@ -244,8 +229,7 @@ export class SystemMetricsCollector {
   private async checkSessionManagement(): Promise<boolean> {
     try {
       // CHECK: Has the browser established a session with the server?
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const sessionDirPath = path.join(continuumPath, 'jtag', 'sessions');
+      const sessionDirPath = SystemPaths.sessions.root;
       
       // Look for any active session directories (browser has connected)
       const { stdout } = await execAsync(`find "${sessionDirPath}" -type d -name "*-*-*-*-*" 2>/dev/null | head -1 || echo ""`);
@@ -379,7 +363,7 @@ export class SystemMetricsCollector {
   private async checkBuildStatus(): Promise<BuildStatus> {
     try {
       // Check if TypeScript build completed successfully
-      const startupLog = '.continuum/jtag/logs/system/npm-start.log';
+      const startupLog = path.join(SystemPaths.logs.system, 'npm-start.log');
       const { stdout } = await execAsync(`tail -150 ${startupLog} 2>/dev/null | grep -E "(build|tsc|Build|esbuild|npm run|Error|error|Could not resolve)" | tail -15 || echo ""`);
       
       // Only flag as build failure if we have RECENT/FINAL build failures
@@ -414,7 +398,7 @@ export class SystemMetricsCollector {
 
   private async captureStartupLogs(): Promise<string> {
     try {
-      const logFile = path.join('.continuum', 'jtag', 'system', 'logs', 'npm-start.log');
+      const logFile = path.join(SystemPaths.logs.system, 'npm-start.log');
       const { stdout } = await execAsync(`tail -50 ${logFile} 2>/dev/null | grep -v "^$" | tail -20 || echo "No startup logs found"`);
       return stdout || 'No startup logs found\n';
     } catch {
@@ -424,8 +408,7 @@ export class SystemMetricsCollector {
 
   private async captureNodeErrors(): Promise<string[]> {
     try {
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const errorLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'server-console-error.log');
+      const errorLog = path.join(SystemPaths.logs.system, 'server-console-error.log');
       const { stdout } = await execAsync(`tail -10 ${errorLog} 2>/dev/null | grep -E "(Error|error|Failed|failed)" | tail -3 || echo ""`);
       return stdout.trim() ? stdout.split('\n').filter(line => line.trim()) : [];
     } catch {
@@ -440,8 +423,7 @@ export class SystemMetricsCollector {
       // CRITICAL: Check server console errors for daemon creation failures
       if (!bootstrapComplete && commandCount === 0) {
         // Check server console error logs for daemon creation failures
-        const continuumPath = WorkingDirConfig.getContinuumPath();
-        const serverErrorLog = path.join(continuumPath, 'jtag', 'system', 'logs', 'server-console-error.log');
+        const serverErrorLog = path.join(SystemPaths.logs.system, 'server-console-error.log');
         const { stdout: daemonErrors } = await execAsync(`tail -20 ${serverErrorLog} 2>/dev/null | grep "Failed to create.*daemon\\|Unknown storage adapter type" | tail -3 || echo ""`);
         
         if (daemonErrors.trim()) {

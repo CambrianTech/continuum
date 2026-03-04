@@ -442,16 +442,16 @@ export class SessionDaemonServer extends SessionDaemon {
       }
 
       // Create appropriate User subclass based on type
+      // All types use SQLite for persistent state — matches the create() path
       let user: BaseUser;
       if (userEntity.type === 'persona') {
-        const personaDatabasePath = SystemPaths.personas.state(userEntity.uniqueId);
-        const storage = new SQLiteStateBackend(personaDatabasePath);
+        const storage = new SQLiteStateBackend(SystemPaths.personas.state(userEntity.uniqueId));
         user = new PersonaUser(userEntity, userState, storage);
       } else if (userEntity.type === 'agent') {
-        const storage = new MemoryStateBackend();
+        const storage = new SQLiteStateBackend(SystemPaths.agents.state(userEntity.uniqueId));
         user = new AgentUser(userEntity, userState, storage);
       } else {
-        const storage = new MemoryStateBackend();
+        const storage = new SQLiteStateBackend(SystemPaths.users.state(userEntity.uniqueId));
         user = new HumanUser(userEntity, userState, storage);
       }
 

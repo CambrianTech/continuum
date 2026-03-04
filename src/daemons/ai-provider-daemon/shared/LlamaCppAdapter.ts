@@ -44,13 +44,13 @@ function estimateTokenCount(text: string): number {
 import { getLlama, LlamaChatSession, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 
 /**
  * Resolve model name to GGUF file path from local model storage
  */
 function resolveLocalModelPath(modelName: string): string | null {
-  const modelsDir = path.join(os.homedir(), '.continuum', 'models');
+  const modelsDir = SystemPaths.models.root;
   const manifestPath = path.join(modelsDir, 'manifests', 'library', modelName.replace(':', '/'));
 
   if (!fs.existsSync(manifestPath)) {
@@ -259,7 +259,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
   }
 
   async getAvailableModels(): Promise<ModelInfo[]> {
-    const modelsDir = path.join(os.homedir(), '.continuum', 'models', 'manifests', 'library');
+    const modelsDir = path.join(SystemPaths.models.root, 'manifests', 'library');
 
     if (!fs.existsSync(modelsDir)) {
       return [];

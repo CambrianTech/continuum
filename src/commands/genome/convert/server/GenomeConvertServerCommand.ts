@@ -21,6 +21,7 @@ import { LOCAL_MODELS } from '@system/shared/Constants';
 import { AdapterStore } from '@system/genome/server/AdapterStore';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 const VALID_OPERATIONS = ['merge-full', 'merge-and-quantize', 'quantize-base', 'validate'] as const;
 type ConvertOperation = typeof VALID_OPERATIONS[number];
@@ -168,11 +169,11 @@ export class GenomeConvertServerCommand extends CommandBase<GenomeConvertParams,
   }
 
   private getPythonWrapperPath(): string {
-    return path.join(process.cwd(), '.continuum', 'genome', 'python', 'train-wrapper.sh');
+    return path.join(SystemPaths.genome.python, 'train-wrapper.sh');
   }
 
   private defaultOutputPath(operation: ConvertOperation, params: GenomeConvertParams): string {
-    const convertedDir = path.join('.continuum', 'genome', 'converted');
+    const convertedDir = path.join(SystemPaths.genome.root, 'converted');
     fs.mkdirSync(convertedDir, { recursive: true });
 
     const timestamp = Date.now();

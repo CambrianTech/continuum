@@ -18,6 +18,7 @@ import { ExecutionSandbox } from '@system/code/server/ExecutionSandbox';
 import type { SandboxResult } from '@system/code/server/ExecutionSandbox';
 import * as path from 'path';
 import * as fs from 'fs';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 /** TypeScript error regex: file(line,col): error TSxxxx: message */
 const TS_ERROR_REGEX = /^(.+?)\((\d+),(\d+)\):\s*error\s+(TS\d+):\s*(.+)$/gm;
@@ -92,8 +93,7 @@ export class CodeVerifyServerCommand extends CommandBase<CodeVerifyParams, CodeV
 
     // Fallback: scan persona directories for a workspace matching this handle/userId.
     // This is a last-resort heuristic — callers should pass cwd explicitly.
-    const jtagRoot = process.cwd();
-    const personasRoot = path.join(jtagRoot, '.continuum', 'personas');
+    const personasRoot = SystemPaths.personas.root;
 
     if (fs.existsSync(personasRoot)) {
       try {

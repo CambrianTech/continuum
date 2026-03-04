@@ -16,17 +16,6 @@ import { createBaseResponse, type BaseResponsePayload } from '../../../system/co
 // Storage location types that ArtifactsDaemon manages
 export type StorageType = 'database' | 'session' | 'system' | 'cache' | 'logs' | 'config' | 'persona';
 
-// Storage base paths
-export const STORAGE_PATHS = {
-  DATABASE: '.continuum/database',
-  SYSTEM: '.continuum/jtag/system',
-  CACHE: '.continuum/cache',
-  LOGS: '.continuum/logs',
-  CONFIG: (homeDir: string) => `${homeDir}/.continuum`,
-  SESSION: (sessionId: string) => `.continuum/jtag/sessions/user/${sessionId}`,
-  PERSONA: (personaUniqueId: string) => `${process.env.HOME}/.continuum/personas/${personaUniqueId}`
-} as const;
-
 // Artifacts operation types
 export interface ArtifactsPayload extends JTAGPayload {
   readonly operation: 'read' | 'write' | 'append' | 'mkdir' | 'list' | 'stat' | 'delete' | 'loadEnvironment';
@@ -169,53 +158,6 @@ export abstract class ArtifactsDaemon extends DaemonBase {
       this.log.error(`❌ ${this.toString()}: Operation failed:`, error.message);
       return createArtifactsErrorResponse(artifactsPayload.operation, error.message, artifactsPayload.context, artifactsPayload.sessionId || 'system');
     }
-  }
-
-  /**
-   * Validate and resolve path within .continuum structure based on storage type
-   */
-  protected validateAndResolvePath(
-    relativePath: string,
-    storageType: StorageType = 'system',
-    sessionId?: UUID,
-    personaId?: UUID
-  ): string {
-    // Remove leading slash if present
-    const cleanPath = relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
-
-    // Build full path based on storage type
-    let basePath: string;
-
-    switch (storageType) {
-      case 'database':
-        basePath = STORAGE_PATHS.DATABASE;
-        break;
-      case 'session':
-        if (!sessionId) throw new Error('Session storage requires sessionId');
-        basePath = STORAGE_PATHS.SESSION(sessionId);
-        break;
-      case 'system':
-        basePath = STORAGE_PATHS.SYSTEM;
-        break;
-      case 'cache':
-        basePath = STORAGE_PATHS.CACHE;
-        break;
-      case 'logs':
-        basePath = STORAGE_PATHS.LOGS;
-        break;
-      case 'config':
-        if (!process.env.HOME) throw new Error('HOME environment variable not set');
-        basePath = STORAGE_PATHS.CONFIG(process.env.HOME);
-        break;
-      case 'persona':
-        if (!personaId) throw new Error('Persona storage requires personaId');
-        basePath = STORAGE_PATHS.PERSONA(personaId);
-        break;
-      default:
-        throw new Error(`Unknown storage type: ${storageType}`);
-    }
-
-    return `${basePath}/${cleanPath}`;
   }
 
   // Abstract methods for environment-specific implementations

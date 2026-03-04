@@ -13,6 +13,7 @@ import * as crypto from 'crypto';
 import { globSync } from 'glob';
 // import { execSync } from 'child_process'; // Currently unused
 import { SystemReadySignaler } from '@scripts/signaling/server/SystemReadySignaler';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 import { diagnostics } from '@utils/DiagnosticsLogger';
 
 export interface VersionMismatchResult {
@@ -36,8 +37,8 @@ export interface BuildNeedAnalysis {
 }
 
 export class BuildVersionDetector {
-  private versionFile = '.continuum/jtag/system/version.json';
-  private sourceHashFile = '.continuum/jtag/system/source-hash.json';
+  private versionFile = path.join(SystemPaths.root, 'jtag', 'system', 'version.json');
+  private sourceHashFile = path.join(SystemPaths.root, 'jtag', 'system', 'source-hash.json');
 
   /**
    * Main entry point: Detect if running system matches current source code
@@ -244,14 +245,14 @@ export class BuildVersionDetector {
   private async getRunningSystemTime(): Promise<number> {
     try {
       // Check system startup from signal file
-      const signalFile = '.continuum/jtag/signals/system-ready.json';
+      const signalFile = path.join(SystemPaths.root, 'jtag', 'signals', 'system-ready.json');
       if (fs.existsSync(signalFile)) {
         const stats = fs.statSync(signalFile);
         return stats.mtime.getTime();
       }
       
       // Fallback: check log files
-      const logFile = '.continuum/jtag/logs/system/npm-start.log';
+      const logFile = path.join(SystemPaths.logs.system, 'npm-start.log');
       if (fs.existsSync(logFile)) {
         const stats = fs.statSync(logFile);
         return stats.mtime.getTime();

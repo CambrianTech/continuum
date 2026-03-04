@@ -3,7 +3,7 @@
  * ==========================================
  *
  * Responsible for loading LoRA adapter layers from the filesystem.
- * Layers are stored in: .continuum/genomes/layers/{layerId}/
+ * Layers are stored in: $HOME/.continuum/genome/layers/{layerId}/
  *
  * File structure per layer:
  * - adapter_config.json: LoRA configuration
@@ -17,6 +17,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { UUID } from '../../../system/core/types/JTAGTypes';
+import { SystemPaths } from '../../core/config/SystemPaths';
 import type {
   LoadedLayer,
   LoRAConfig,
@@ -36,7 +37,7 @@ export class LayerLoader {
 
   constructor(basePath?: string) {
     // Default to .continuum/genomes/layers/ in project root
-    this.basePath = basePath || path.join(process.cwd(), '.continuum', 'genomes', 'layers');
+    this.basePath = basePath || path.join(SystemPaths.genome.root, 'layers');
 
     this.stats = {
       layersLoaded: 0,

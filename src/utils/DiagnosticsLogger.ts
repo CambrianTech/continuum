@@ -9,6 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 export interface DiagnosticContext {
   operation: string;
@@ -45,7 +46,7 @@ export interface SystemSnapshot {
 }
 
 export class DiagnosticsLogger {
-  private logDir = '.continuum/jtag/diagnostics';
+  private logDir = path.join(SystemPaths.root, 'jtag', 'diagnostics');
   private contexts: Map<string, DiagnosticContext> = new Map();
 
   constructor() {
@@ -166,7 +167,7 @@ export class DiagnosticsLogger {
         cwd: process.cwd(),
         sourceFiles: this.countFiles('**/*.{ts,tsx}'),
         distFiles: this.countFiles('dist/**/*'),
-        tempFiles: this.countFiles('.continuum/**/*')
+        tempFiles: this.countFiles(path.join(SystemPaths.root, '**', '*'))
       },
       network: {
         activePorts: await this.getActivePorts(),
@@ -297,7 +298,7 @@ export class DiagnosticsLogger {
 
   private async getRecentErrors(): Promise<string[]> {
     const logPaths = [
-      '.continuum/jtag/logs/system/npm-start.log',
+      path.join(SystemPaths.logs.system, 'npm-start.log'),
       'examples/test-bench/.continuum/jtag/currentUser/logs/server.log'
     ];
     
@@ -319,7 +320,7 @@ export class DiagnosticsLogger {
 
   private async getSystemHealth(): Promise<string> {
     try {
-      const signalFile = '.continuum/jtag/signals/system-ready.json';
+      const signalFile = path.join(SystemPaths.root, 'jtag', 'signals', 'system-ready.json');
       if (fs.existsSync(signalFile)) {
         const signal = JSON.parse(fs.readFileSync(signalFile, 'utf8'));
         return signal.systemHealth || 'unknown';

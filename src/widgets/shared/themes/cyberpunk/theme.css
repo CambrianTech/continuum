@@ -9,6 +9,8 @@
   --content-secondary: #ff0088;
   --content-accent: #ff00aa;
   --content-warning: #ff3366;
+  --content-error: #ff0044;
+  --content-error-dim: rgba(255, 0, 68, 0.2);
   --content-success: #00ffaa;
   
   /* === COLORS - BACKGROUNDS === */

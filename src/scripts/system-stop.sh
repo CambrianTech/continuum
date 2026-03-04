@@ -10,6 +10,9 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$PROJECT_DIR/workers/workers-config.json"
 
+# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
+
 echo -e "${YELLOW}🛑 Stopping JTAG system...${NC}"
 
 # 1. Kill tmux session (if any)
@@ -66,18 +69,18 @@ for port in 9000 9001 7880; do
 done
 
 # 8. Clean up sockets
-if [ -d "$PROJECT_DIR/.continuum/sockets" ]; then
+if [ -d "$CONTINUUM_ROOT/sockets" ]; then
   echo -e "   Cleaning sockets..."
-  rm -f "$PROJECT_DIR/.continuum/sockets/"*.sock 2>/dev/null || true
+  rm -f "$CONTINUUM_ROOT/sockets/"*.sock 2>/dev/null || true
 fi
 
 # 9. Clear ready signal
-if [ -f "$PROJECT_DIR/.continuum/jtag/system-ready.signal" ]; then
-  rm -f "$PROJECT_DIR/.continuum/jtag/system-ready.signal"
+if [ -f "$CONTINUUM_ROOT/jtag/system-ready.signal" ]; then
+  rm -f "$CONTINUUM_ROOT/jtag/system-ready.signal"
 fi
 
 # 10. Remove PID files
-rm -f "$PROJECT_DIR/.continuum/jtag/logs/system/npm-start.pid" 2>/dev/null || true
-rm -f "$PROJECT_DIR/.continuum/jtag/system.lock" 2>/dev/null || true
+rm -f "$CONTINUUM_ROOT/jtag/logs/system/npm-start.pid" 2>/dev/null || true
+rm -f "$CONTINUUM_ROOT/jtag/system.lock" 2>/dev/null || true
 
 echo -e "${GREEN}✅ JTAG system stopped${NC}"

@@ -17,6 +17,7 @@ import { FILE_COMMANDS } from './commands/file/shared/FileCommandConstants';
 import { USER_COMMANDS } from './commands/shared/SystemCommandConstants';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from './system/core/config/SystemPaths';
 
 // Check for verbose flag EARLY to control module initialization logging
 if (process.argv.includes('--verbose')) {
@@ -40,14 +41,12 @@ const instanceConfig = loadInstanceConfigForContext();
  */
 function getPersistentSessionId(): string | undefined {
   try {
-    // Use the same path resolution as the instance config
-    const exampleDir = instanceConfig.paths.directory;
-    const sessionFile = path.join(exampleDir, '.continuum', 'jtag', 'cli-session-id.txt');
-    
+    const sessionFile = path.join(SystemPaths.sessions.root, 'cli-session-id.txt');
+
     // Check if we have a stored session ID
     if (fs.existsSync(sessionFile)) {
       const storedSessionId = fs.readFileSync(sessionFile, 'utf8').trim();
-      
+
       // Validate session ID format (must be valid UUID)
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!uuidRegex.test(storedSessionId)) {
@@ -55,9 +54,9 @@ function getPersistentSessionId(): string | undefined {
         fs.unlinkSync(sessionFile);
         return undefined;
       }
-      
+
       // Verify the session directory still exists (session is active)
-      const sessionDir = path.join(exampleDir, '.continuum', 'jtag', 'sessions', 'user', storedSessionId);
+      const sessionDir = path.join(SystemPaths.sessions.user, storedSessionId);
       if (fs.existsSync(sessionDir)) {
         return storedSessionId;
       } else {
@@ -65,7 +64,7 @@ function getPersistentSessionId(): string | undefined {
         fs.unlinkSync(sessionFile);
       }
     }
-    
+
     return undefined; // No valid existing session
   } catch (error) {
     // If anything fails, just let the system create a new session
@@ -78,9 +77,7 @@ function getPersistentSessionId(): string | undefined {
  */
 function storePersistentSessionId(sessionId: string): void {
   try {
-    // Use the same path resolution as the instance config
-    const exampleDir = instanceConfig.paths.directory;
-    const sessionFile = path.join(exampleDir, '.continuum', 'jtag', 'cli-session-id.txt');
+    const sessionFile = path.join(SystemPaths.sessions.root, 'cli-session-id.txt');
     console.log(`🗂️ Storing session file at: ${sessionFile}`);
     fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
     fs.writeFileSync(sessionFile, sessionId);

@@ -1,62 +1,85 @@
 /**
- * UserProfileWidget - Universal user profile view
+ * UserProfileWidget - Full Visual Social Profile
  *
- * Works for ALL user types: humans, personas, agents
- * Shows: name, type, status, last active, stats
- * Actions: Edit, Freeze/Unfreeze, Delete
- * For PersonaUsers: Links to cognitive views (brain, genome, memory)
+ * Facebook-level visual richness: full-bleed cover banner, gradient avatar
+ * with initial, bio, pathway cards, writings feed, admin tools.
  *
- * Structure:
- * - public/user-profile-widget.html - Template container
- * - public/user-profile-widget.scss - Styles (compiled to .css)
- * - UserProfileWidget.ts - Logic (this file)
+ * Layout:
+ * - Full-bleed cover banner (gradient or image)
+ * - Avatar overlapping cover bottom edge (gradient+initial or image)
+ * - About section (bio, joined, last active)
+ * - Pathway cards grid (brain, genome, DM, logs, memory, stats)
+ * - Writings feed (wall documents + social posts)
+ * - Admin section (freeze/delete, collapsed by default)
+ *
+ * Right panel: DM chat with the persona being viewed (resolved dynamically).
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
-import { Commands } from '../../system/core/shared/Commands';
+import {
+  ReactiveWidget,
+  html,
+  unsafeCSS,
+  reactive,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
-import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
-import type { UserEntity, UserStatus } from '../../system/data/entities/UserEntity';
-import type { DataReadParams, DataReadResult } from '../../commands/data/read/shared/DataReadTypes';
-import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
-import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/delete/shared/DataDeleteTypes';
-import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
-import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { ContentService } from '../../system/state/ContentService';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { getWidgetEntityId } from '../shared/WidgetConstants';
-
+import type { UserEntity, UserStatus } from '../../system/data/entities/UserEntity';
+import type { UserProfileEntity, UserVisualIdentity } from '../../system/data/entities/UserProfileEntity';
+import type { WallDocumentEntity } from '../../system/data/entities/WallDocumentEntity';
 import { DataRead } from '../../commands/data/read/shared/DataReadTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
-export class UserProfileWidget extends BaseWidget {
-  private user: UserEntity | null = null;
-  private loading = true;
-  private error: string | null = null;
+import { Dm } from '../../commands/collaboration/dm/shared/DmTypes';
+import { CollaborationLiveStart } from '../../commands/collaboration/live/start/shared/CollaborationLiveStartTypes';
+import { styles as PROFILE_STYLES } from './public/user-profile-widget.styles';
+
+export class UserProfileWidget extends ReactiveWidget {
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(PROFILE_STYLES)
+  ] as CSSResultGroup;
+
+  // === Reactive State ===
+  @reactive() private user: UserEntity | null = null;
+  @reactive() private profile: UserProfileEntity | null = null;
+  @reactive() private adminExpanded = false;
+  @reactive() private dmRoomId: string | null = null;
+  @reactive() private wallDocs: WallDocumentEntity[] = [];
+  @reactive() private feedLoading = false;
+
 
   constructor() {
     super({
       widgetName: 'UserProfileWidget',
-      template: 'user-profile-widget.html',
-      styles: 'user-profile-widget.css',
-      enableAI: false,
-      enableDatabase: true,
-      enableRouterEvents: false,
-      enableScreenshots: false
+      enableCommands: true,
+      enablePositron: true
     });
   }
 
-  /**
-   * Override path resolution - directory is 'user-profile' (kebab-case)
-   */
-  protected resolveResourcePath(filename: string): string {
-    return `widgets/user-profile/public/${filename}`;
-  }
+  // === Lifecycle ===
 
-  protected async onWidgetInitialize(): Promise<void> {
-    this.verbose() && console.log('UserProfile: Initializing...');
-    await this.loadUser();
+  protected override onFirstRender(): void {
+    this.registerWidgetState({
+      viewingUserId: null,
+      userType: null,
+      status: null
+    });
+
+    // Effect: resolve DM room when user changes (best-effort)
+    this.createEffect(
+      (w: UserProfileWidget) => w.user?.id,
+      (userId) => {
+        if (userId && this.user && this.user.type !== 'human') {
+          this.resolveDmRoom(this.user);
+        }
+      }
+    );
   }
 
   /**
@@ -64,54 +87,58 @@ export class UserProfileWidget extends BaseWidget {
    * Implements clear/populate/query pattern for instant hydration.
    */
   public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
-    this.verbose() && console.log(`UserProfile: onActivate called with entityId=${entityId}`);
+    this.verbose() && console.log(`UserProfile: onActivate entityId=${entityId}`);
 
-    // Store entityId as attribute for loadUser to find
     if (entityId) {
       this.setAttribute('entity-id', entityId);
     } else {
       this.removeAttribute('entity-id');
     }
 
-    // SAME ENTITY? Just refresh deltas
+    // Same entity? Just refresh
     if (this.user && (this.user.id === entityId || this.user.uniqueId === entityId)) {
-      this.verbose() && console.log('UserProfile: Same entity, refreshing deltas');
-      await this.loadUser(); // Query for updates
+      await this.loadUser();
       return;
     }
 
-    // DIFFERENT ENTITY - clear old state
+    // Different entity — clear old state
     this.user = null;
+    this.profile = null;
+    this.dmRoomId = null;
+    this.wallDocs = [];
+    this.feedLoading = false;
     this.loading = true;
     this.error = null;
+    this.adminExpanded = false;
 
-    // POPULATE with passed entity (instant hydration)
+    // Instant hydration from metadata
     const preloaded = metadata?.entity as UserEntity;
     if (preloaded) {
       this.user = preloaded;
       this.loading = false;
-      this.renderWidget(); // Render immediately with what we have
-      this.verbose() && console.log('UserProfile: Instant hydration from metadata');
-      return; // No need to query - we have the full entity
+      this.loadProfile(preloaded.id);
+      this.loadWritings(preloaded.id);
+      this.emitPositronContext();
+      return;
     }
 
-    // QUERY - only if no metadata (e.g., direct URL navigation)
+    // Full query
     await this.loadUser();
   }
 
+  // === Data Loading ===
+
   private async loadUser(): Promise<void> {
-    // Use helper function for consistent attribute handling
-    const entityId = getWidgetEntityId(this) || this.pageState?.entityId;
+    const entityId = getWidgetEntityId(this) || (this as any).pageState?.entityId;
 
     if (!entityId) {
       this.error = 'No user specified';
       this.loading = false;
-      this.renderWidget();
       return;
     }
 
     try {
-      // Try to find by uniqueId first, then by id
+      // Try by ID first
       const result = await DataRead.execute<UserEntity>({
         collection: 'users',
         id: entityId,
@@ -121,7 +148,7 @@ export class UserProfileWidget extends BaseWidget {
       if (result?.data) {
         this.user = result.data;
       } else {
-        // Try finding by uniqueId
+        // Try by uniqueId
         const listResult = await DataList.execute<UserEntity>({
           collection: 'users',
           filter: { uniqueId: entityId },
@@ -140,19 +167,146 @@ export class UserProfileWidget extends BaseWidget {
     }
 
     this.loading = false;
-    this.emitPositronContext();
-    this.renderWidget();
+
+    if (this.user) {
+      this.loadProfile(this.user.id);
+      this.loadWritings(this.user.id);
+      this.emitPositronContext();
+    }
+  }
+
+  private async loadProfile(userId: string): Promise<void> {
+    try {
+      const result = await DataList.execute<UserProfileEntity>({
+        collection: 'user_profiles',
+        filter: { userId },
+        limit: 1,
+        dbHandle: 'default'
+      });
+
+      if (result?.items?.[0]) {
+        this.profile = result.items[0] as UserProfileEntity;
+      }
+    } catch (err) {
+      // Profile is optional — don't set error
+      this.verbose() && console.log('UserProfile: No profile entity found', err);
+    }
+
+    // Passive avatar: if no avatarUrl set but a cached PNG exists on disk,
+    // use it directly without triggering Bevy snapshot generation.
+    this.resolvePassiveAvatar();
   }
 
   /**
-   * Emit Positron context for AI awareness
-   * NOTE: Removed PositronWidgetState.emit() - MainWidget handles context.
-   * KEPT: emitWidgetEvent for widget-to-widget communication (ChatWidget listens)
+   * Passively resolve avatar URL for AI personas.
+   * Checks if /avatars/{identity}.png exists via the HTTP server.
+   * Does NOT allocate Bevy slots — purely checks cached files.
    */
+  private async resolvePassiveAvatar(): Promise<void> {
+    if (!this.user) return;
+    const isAI = this.user.type === 'persona' || this.user.type === 'agent';
+    if (!isAI) return;
+    if (this.profile?.visualIdentity?.avatarUrl) return;
+
+    const identity = this.user.uniqueId || this.user.id;
+    const avatarUrl = `/avatars/${identity}.png`;
+
+    try {
+      const response = await fetch(avatarUrl, { method: 'HEAD' });
+      if (!response.ok) return;
+
+      const updatedVi = {
+        ...(this.profile?.visualIdentity || {}),
+        avatarUrl
+      } as UserVisualIdentity;
+
+      // Persist to profile entity if it exists
+      if (this.profile?.id) {
+        await DataUpdate.execute({
+          collection: 'user_profiles',
+          id: this.profile.id,
+          data: { visualIdentity: updatedVi },
+          dbHandle: 'default'
+        });
+
+        this.profile = {
+          ...this.profile,
+          visualIdentity: updatedVi
+        } as UserProfileEntity;
+      } else {
+        // No profile entity — still set in-memory for rendering
+        this.profile = {
+          visualIdentity: updatedVi
+        } as UserProfileEntity;
+      }
+    } catch {
+      // File doesn't exist — gradient+initial remains
+    }
+  }
+
+  /**
+   * Load wall documents authored by this user.
+   */
+  private async loadWritings(userId: string): Promise<void> {
+    this.feedLoading = true;
+
+    try {
+      const result = await DataList.execute<WallDocumentEntity>({
+        collection: 'wall_documents',
+        filter: { createdBy: userId },
+        orderBy: [{ field: 'lastModifiedAt', direction: 'desc' }],
+        limit: 10,
+        dbHandle: 'default'
+      });
+
+      if (result?.items) {
+        this.wallDocs = result.items as WallDocumentEntity[];
+      }
+    } catch (err) {
+      this.verbose() && console.log('UserProfile: Failed to load writings', err);
+    }
+
+    this.feedLoading = false;
+  }
+
+  /**
+   * Find or create a DM room with this user, then update the right panel
+   */
+  private async resolveDmRoom(user: UserEntity): Promise<void> {
+    if (user.type === 'human') return; // Don't auto-DM humans
+
+    try {
+      const result = await Dm.execute({ participants: user.id });
+
+      if (result?.success && result.roomId) {
+        this.dmRoomId = result.roomId as string;
+        this.requestUpdate();
+
+        // Override the right panel to show this DM room
+        Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+          widget: 'chat-widget',
+          room: result.uniqueId || result.roomId,
+          compact: true,
+          contentType: 'profile'
+        });
+      }
+    } catch {
+      // DM resolution is best-effort — card is always clickable as fallback
+    }
+  }
+
+  // === Positron Context ===
+
   private emitPositronContext(): void {
     if (!this.user) return;
 
-    // Emit widget event for reactive subscriptions (ChatWidget listens to this)
+    this.updateWidgetState({
+      viewingUserId: this.user.id,
+      userType: this.user.type,
+      status: this.user.status,
+      displayName: this.user.displayName
+    });
+
     PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
       userId: this.user.id,
       status: this.user.status,
@@ -160,6 +314,8 @@ export class UserProfileWidget extends BaseWidget {
       userType: this.user.type
     });
   }
+
+  // === Actions ===
 
   private async updateUserStatus(newStatus: UserStatus): Promise<void> {
     if (!this.user) return;
@@ -172,19 +328,10 @@ export class UserProfileWidget extends BaseWidget {
         dbHandle: 'default'
       });
 
-      this.user.status = newStatus;
-      this.renderWidget();
-
-      // Emit event so user list can refresh
+      // Mutate + trigger re-render
+      this.user = { ...this.user, status: newStatus } as UserEntity;
       Events.emit('data:users:updated', { id: this.user.id, status: newStatus });
-
-      // Emit widget event for reactive subscriptions
-      PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
-        userId: this.user.id,
-        status: newStatus,
-        displayName: this.user.displayName,
-        userType: this.user.type
-      });
+      this.emitPositronContext();
     } catch (err) {
       console.error('Failed to update user status:', err);
     }
@@ -193,13 +340,12 @@ export class UserProfileWidget extends BaseWidget {
   private async deleteUser(): Promise<void> {
     if (!this.user) return;
 
-    // Prevent deleting your own user
-    if (this.userState?.userId === this.user.id) {
-      alert('You cannot delete your own user account. Please use a different account to delete this user.');
+    if (this.currentUser?.id === this.user.id) {
+      alert('Cannot delete your own account.');
       return;
     }
 
-    if (!confirm(`Are you sure you want to permanently delete ${this.user.displayName}? This cannot be undone.`)) {
+    if (!confirm(`Permanently delete ${this.user.displayName}? This cannot be undone.`)) {
       return;
     }
 
@@ -210,198 +356,375 @@ export class UserProfileWidget extends BaseWidget {
         dbHandle: 'default'
       });
 
-      // Emit event so user list can refresh
       Events.emit('data:users:deleted', { id: this.user.id });
-
-      // OPTIMISTIC: Navigate back to chat instantly
-      if (this.userState?.userId) {
-        ContentService.setUserId(this.userState.userId as UUID);
-      }
-      ContentService.open('chat', 'general', {
-        title: 'General',
-        uniqueId: 'general'
-      });
+      ContentService.open('chat', 'general', { title: 'General', uniqueId: 'general' });
     } catch (err) {
       console.error('Failed to delete user:', err);
     }
   }
 
-  private openCognition(): void {
+  // === Navigation (Pathway Cards) ===
+
+  private openBrain(): void {
     if (!this.user) return;
-
-    // OPTIMISTIC: Use ContentService for instant tab creation
-    if (this.userState?.userId) {
-      ContentService.setUserId(this.userState.userId as UUID);
-    }
-
-    // IMPORTANT: entityId is always UUID for database lookups
-    // uniqueId is human-readable string for URLs
-    const entityId = this.user.id;  // Always UUID
-    const uniqueId = this.user.uniqueId || this.user.id;  // Human-readable, fallback to UUID
-    ContentService.open('persona', entityId, {
+    ContentService.open('persona', this.user.id, {
       title: `${this.user.displayName} - Brain`,
-      uniqueId,  // Human-readable uniqueId for URLs
-      metadata: { entity: this.user }  // Pass full entity for instant hydration
+      uniqueId: this.user.uniqueId || this.user.id,
+      metadata: { entity: this.user }
     });
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Inject loaded template and styles into shadow DOM
-    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
-      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
-      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
-    }
-
-    // Render dynamic content
-    this.renderContent();
-    this.setupEventListeners();
-  }
-
-  private renderContent(): void {
-    const container = this.shadowRoot?.querySelector('.profile-container');
-    if (!container) return;
-
-    if (this.loading) {
-      container.innerHTML = '<div class="loading">Loading user...</div>';
-      return;
-    }
-
-    if (this.error) {
-      container.innerHTML = `<div class="error">${this.error}</div>`;
-      return;
-    }
-
+  private async openDm(): Promise<void> {
     if (!this.user) return;
 
-    const avatar = this.user.type === 'human' ? '👤' :
-                  this.user.type === 'agent' ? '🤖' :
-                  this.user.type === 'persona' ? '⭐' : '⚙️';
+    // If we already have the DM room, open it directly
+    if (this.dmRoomId) {
+      ContentService.open('chat', this.dmRoomId, {
+        title: `DM - ${this.user.displayName}`,
+        uniqueId: `dm-${this.user.uniqueId || this.user.id}`
+      });
+      return;
+    }
 
-    const isFrozen = this.user.status === 'frozen';
+    // Otherwise create-or-find the DM room on-click
+    try {
+      const result = await Dm.execute({ participants: this.user.id });
+      if (result?.success && result.roomId) {
+        this.dmRoomId = result.roomId as string;
+        ContentService.open('chat', result.roomId as string, {
+          title: `DM - ${this.user.displayName}`,
+          uniqueId: result.uniqueId || `dm-${this.user.uniqueId || this.user.id}`
+        });
+      }
+    } catch (err) {
+      console.error('UserProfile: Failed to create DM room:', err);
+    }
+  }
+
+  private openLogs(): void {
+    if (!this.user) return;
+    const logPath = `personas/${this.user.uniqueId || this.user.id}/cognition`;
+    ContentService.open('diagnostics-log', logPath, {
+      title: `${this.user.displayName} - Logs`,
+      uniqueId: `logs-${this.user.uniqueId || this.user.id}`
+    });
+  }
+
+  private async startVideoCall(): Promise<void> {
+    if (!this.user) return;
+
+    try {
+      const result = await CollaborationLiveStart.execute({
+        participants: this.user.id,
+        withVideo: true
+      });
+
+      if (result.success && result.roomId) {
+        ContentService.open('live', result.roomId as string, {
+          title: `Call - ${this.user.displayName}`,
+          uniqueId: result.room?.uniqueId || `live-${this.user.uniqueId || this.user.id}`,
+          metadata: { room: result.room, session: result.session }
+        });
+      }
+    } catch (err) {
+      console.error('UserProfile: Failed to start video call:', err);
+    }
+  }
+
+  // === Visual Identity Helpers ===
+
+  private get visualIdentity(): UserVisualIdentity | undefined {
+    return this.profile?.visualIdentity;
+  }
+
+  private get accentColor(): string {
+    return this.visualIdentity?.accentColor || '#00d4ff';
+  }
+
+  /** Cover banner CSS: image URL or generated gradient from accent color */
+  private get coverStyle(): string {
+    const vi = this.visualIdentity;
+    if (vi?.coverUrl) {
+      return `background-image: url(${vi.coverUrl})`;
+    }
+    const gradient = vi?.coverGradient ||
+      `linear-gradient(135deg, #0a0f1a, ${this.accentColor}15 30%, #0d1b2a 60%, ${this.accentColor}10)`;
+    return `background: ${gradient}`;
+  }
+
+  /** Avatar gradient: radial gradient from accent color giving 3D sphere feel */
+  private get avatarGradient(): string {
+    const c = this.accentColor;
+    return `radial-gradient(circle at 30% 30%, ${c}40, ${c}15 70%, transparent)`;
+  }
+
+  /** First letter of display name for gradient avatar */
+  private get avatarInitial(): string {
+    return this.user?.displayName?.charAt(0)?.toUpperCase() || '?';
+  }
+
+  // === Size Formatting ===
+
+  private formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  private formatRelativeTime(date: Date | string): string {
+    const d = date instanceof Date ? date : new Date(date);
+    const now = Date.now();
+    const diff = now - d.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days < 30) return `${days}d ago`;
+    return d.toLocaleDateString();
+  }
+
+  // === Rendering ===
+
+  protected override renderContent(): TemplateResult {
+    if (!this.user) {
+      return html`<div class="loading">No user loaded</div>`;
+    }
+
     const isAI = this.user.type === 'persona' || this.user.type === 'agent';
 
-    const lastActive = this.user.lastActiveAt
-      ? new Date(this.user.lastActiveAt).toLocaleString()
-      : 'Never';
-
-    container.innerHTML = `
-      <div class="profile-header">
-        <div class="avatar ${isFrozen ? 'frozen' : ''}">${avatar}</div>
-        <div class="user-details">
-          <h1 class="user-name">${this.user.displayName}</h1>
-          <div class="user-meta">
-            <span class="badge type-${this.user.type}">${this.user.type}</span>
-            <span class="badge status-${this.user.status}">${this.user.status}</span>
-            ${this.user.shortDescription ? `<span class="description-text">${this.user.shortDescription}</span>` : ''}
-          </div>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-header">Information</div>
-        <div class="section-content">
-          <div class="info-grid">
-            <div class="info-item">
-              <span class="info-label">Unique ID</span>
-              <span class="info-value">${this.user.uniqueId}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Last Active</span>
-              <span class="info-value">${lastActive}</span>
-            </div>
-            ${isAI && this.user.modelConfig?.provider ? `
-            <div class="info-item">
-              <span class="info-label">Provider</span>
-              <span class="info-value">${this.user.modelConfig.provider}</span>
-            </div>
-            ` : ''}
-            ${isAI && this.user.modelConfig?.model ? `
-            <div class="info-item">
-              <span class="info-label">Model</span>
-              <span class="info-value">${this.user.modelConfig.model}</span>
-            </div>
-            ` : ''}
-          </div>
-        </div>
-      </div>
-
-      ${isAI ? `
-      <div class="section">
-        <div class="section-header">Cognitive Modules</div>
-        <div class="section-content">
-          <p class="cognitive-description">
-            Access this AI's cognitive systems and memory
-          </p>
-          <div class="cognitive-links">
-            <div class="cognitive-link" data-action="cognition">
-              <span class="icon">🧠</span>
-              <span class="label">Brain View</span>
-            </div>
-            <div class="cognitive-link" style="opacity: 0.5; cursor: not-allowed;">
-              <span class="icon">🧬</span>
-              <span class="label">Genome</span>
-            </div>
-            <div class="cognitive-link" style="opacity: 0.5; cursor: not-allowed;">
-              <span class="icon">💾</span>
-              <span class="label">Memory</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      ` : ''}
-
-      <div class="section">
-        <div class="section-header">Actions</div>
-        <div class="section-content">
-          <div class="actions">
-            ${isFrozen ? `
-              <button class="btn btn-primary" data-action="unfreeze">
-                <span>❄️</span> Unfreeze User
-              </button>
-            ` : `
-              <button class="btn btn-warning" data-action="freeze">
-                <span>🥶</span> Freeze User
-              </button>
-            `}
-            <button class="btn btn-danger" data-action="delete">
-              <span>🗑️</span> Delete Permanently
-            </button>
-          </div>
-          <p class="actions-note">
-            <strong>Freeze:</strong> Hides user from chats and lists. Can be undone.<br>
-            <strong>Delete:</strong> Permanently removes user. Cannot be undone.
-          </p>
+    return html`
+      <div class="profile-page" style="--profile-accent: ${this.accentColor}">
+        ${this.renderCover()}
+        ${this.renderHeroProfile()}
+        <div class="profile-content">
+          ${this.renderAbout()}
+          ${isAI ? this.renderPathways() : ''}
+          ${this.renderWritings()}
+          ${this.renderAdmin()}
         </div>
       </div>
     `;
   }
 
-  private setupEventListeners(): void {
-    this.shadowRoot?.querySelectorAll('[data-action]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const action = (e.currentTarget as HTMLElement).dataset.action;
-        switch (action) {
-          case 'freeze':
-            this.updateUserStatus('frozen');
-            break;
-          case 'unfreeze':
-            this.updateUserStatus('offline');
-            break;
-          case 'delete':
-            this.deleteUser();
-            break;
-          case 'cognition':
-            this.openCognition();
-            break;
-        }
-      });
-    });
+  private renderCover(): TemplateResult {
+    return html`
+      <div class="hero-cover" style="${this.coverStyle}"></div>
+    `;
   }
 
-  protected async onWidgetCleanup(): Promise<void> {
-    this.verbose() && console.log('UserProfile: Cleanup complete');
+  private renderHeroProfile(): TemplateResult {
+    const user = this.user!;
+    const isFrozen = user.status === 'frozen';
+    const isAI = user.type === 'persona' || user.type === 'agent';
+    const vi = this.visualIdentity;
+
+    return html`
+      <div class="hero-profile">
+        <div class="hero-avatar ${isFrozen ? 'frozen' : ''}">
+          ${vi?.avatarUrl
+            ? html`<img class="avatar-image" src="${vi.avatarUrl}" alt="${user.displayName}" />`
+            : html`
+              <div class="avatar-gradient" style="background: ${this.avatarGradient}"></div>
+              <span class="avatar-initial">${this.avatarInitial}</span>
+            `
+          }
+          <span class="status-dot ${user.status}"></span>
+        </div>
+        <div class="hero-info">
+          <h1 class="hero-name">${user.displayName}</h1>
+          <div class="hero-identity">
+            <span>@${user.uniqueId}</span>
+            <span class="separator">&middot;</span>
+            <span>${user.type}</span>
+            <span class="separator">&middot;</span>
+            <span>${user.status}</span>
+          </div>
+          ${user.shortDescription ? html`
+            <p class="hero-description">"${user.shortDescription}"</p>
+          ` : ''}
+          <div class="hero-badges">
+            ${isAI && user.modelConfig?.provider ? html`
+              <span class="badge badge-provider">${user.modelConfig.provider}/${user.modelConfig.model || '?'}</span>
+            ` : ''}
+            ${this.profile?.speciality ? html`
+              <span class="badge badge-speciality">${this.profile.speciality}</span>
+            ` : ''}
+            <span class="badge badge-type ${user.type}">${user.type}</span>
+          </div>
+          ${user.id !== this.currentUser?.id ? html`
+            <div class="hero-actions">
+              <button class="hero-btn hero-btn-message" @click=${() => this.openDm()}>
+                <span class="hero-btn-icon">💬</span>
+                Message
+              </button>
+              <button class="hero-btn hero-btn-call" @click=${() => this.startVideoCall()}>
+                <span class="hero-btn-icon">📹</span>
+                Video Call
+              </button>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderAbout(): TemplateResult {
+    const user = this.user!;
+    const bio = this.profile?.bio || user.shortDescription || '';
+    const joinedAt = this.profile?.joinedAt || user.createdAt;
+    const location = this.profile?.location;
+    const lastActive = user.lastActiveAt
+      ? new Date(user.lastActiveAt).toLocaleDateString()
+      : 'Never';
+
+    return html`
+      <div class="about">
+        <div class="section-header">About</div>
+        ${bio ? html`<p class="about-bio">${bio}</p>` : ''}
+        <div class="about-meta">
+          <div class="meta-item">
+            <span class="meta-label">Last Active</span>
+            <span class="meta-value">${lastActive}</span>
+          </div>
+          ${joinedAt ? html`
+            <div class="meta-item">
+              <span class="meta-label">Joined</span>
+              <span class="meta-value">${new Date(joinedAt).toLocaleDateString()}</span>
+            </div>
+          ` : ''}
+          ${location ? html`
+            <div class="meta-item">
+              <span class="meta-label">Location</span>
+              <span class="meta-value">${location}</span>
+            </div>
+          ` : ''}
+          ${user.modelConfig?.provider ? html`
+            <div class="meta-item">
+              <span class="meta-label">Provider</span>
+              <span class="meta-value">${user.modelConfig.provider}</span>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderPathways(): TemplateResult {
+    return html`
+      <div>
+        <div class="section-header">Pathways</div>
+        <div class="pathways">
+          <div class="pathway-card" @click=${() => this.openBrain()}>
+            <span class="pathway-icon">🧠</span>
+            <span class="pathway-title">Brain</span>
+            <span class="pathway-subtitle">Cognitive View</span>
+          </div>
+          <div class="pathway-card disabled">
+            <span class="pathway-icon">🧬</span>
+            <span class="pathway-title">Genome</span>
+            <span class="pathway-subtitle">Adapters & Layers</span>
+          </div>
+          <div class="pathway-card" @click=${() => this.openDm()}>
+            <span class="pathway-icon">💬</span>
+            <span class="pathway-title">DM</span>
+            <span class="pathway-subtitle">Message Directly</span>
+          </div>
+          <div class="pathway-card" @click=${() => this.openLogs()}>
+            <span class="pathway-icon">📋</span>
+            <span class="pathway-title">Logs</span>
+            <span class="pathway-subtitle">Cognition Logs</span>
+          </div>
+          <div class="pathway-card disabled">
+            <span class="pathway-icon">💾</span>
+            <span class="pathway-title">Memory</span>
+            <span class="pathway-subtitle">Long-term Store</span>
+          </div>
+          <div class="pathway-card disabled">
+            <span class="pathway-icon">📊</span>
+            <span class="pathway-title">Stats</span>
+            <span class="pathway-subtitle">Activity Metrics</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderWritings(): TemplateResult {
+    return html`
+      <div>
+        <div class="section-header">Writings</div>
+        <div class="writings">
+          ${this.feedLoading ? html`
+            <div class="writings-loading">Loading writings...</div>
+          ` : this.wallDocs.length === 0 ? html`
+            <div class="writings-empty">No published writings yet.</div>
+          ` : html`
+            ${this.wallDocs.map(doc => this.renderWallDocCard(doc))}
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderWallDocCard(doc: WallDocumentEntity): TemplateResult {
+    return html`
+      <div class="feed-card">
+        <div class="feed-card-header">
+          <span class="feed-card-icon">📝</span>
+          <span class="feed-card-type">Wall Document</span>
+        </div>
+        <div class="feed-card-title">${doc.name}</div>
+        <div class="feed-card-meta">
+          <span class="feed-card-stat">${doc.lineCount} lines</span>
+          <span class="feed-card-stat">${this.formatBytes(doc.byteCount)}</span>
+          <span class="feed-card-stat">${this.formatRelativeTime(doc.lastModifiedAt)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderAdmin(): TemplateResult {
+    const user = this.user!;
+    const isFrozen = user.status === 'frozen';
+
+    return html`
+      <div class="admin">
+        <button class="admin-toggle" @click=${() => { this.adminExpanded = !this.adminExpanded; }}>
+          <span>Administration</span>
+          <span class="chevron ${this.adminExpanded ? 'open' : ''}">▼</span>
+        </button>
+        ${this.adminExpanded ? html`
+          <div class="admin-content">
+            <div class="admin-actions">
+              ${isFrozen ? html`
+                <button class="btn btn-primary" @click=${() => this.updateUserStatus('offline')}>
+                  Unfreeze
+                </button>
+              ` : html`
+                <button class="btn btn-warning" @click=${() => this.updateUserStatus('frozen')}>
+                  Freeze
+                </button>
+              `}
+              <button class="btn btn-danger" @click=${() => this.deleteUser()}>
+                Delete
+              </button>
+            </div>
+            <p class="admin-note">
+              <strong>Freeze:</strong> Hides from chats and lists. Reversible.<br>
+              <strong>Delete:</strong> Permanent removal. Cannot be undone.
+            </p>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  protected override onDisconnect(): void {
+    this.verbose() && console.log('UserProfile: Cleanup');
   }
 }
 
-// Register the custom element
 // Registration handled by centralized BROWSER_WIDGETS registry

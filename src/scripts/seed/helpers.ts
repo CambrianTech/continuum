@@ -95,12 +95,13 @@ export async function createStateRecord(
 }
 
 /**
- * Update persona bio via shortDescription field
+ * Update persona bio via shortDescription field AND create UserProfileEntity
  */
 export async function updatePersonaProfile(
   userId: string,
-  profile: { bio: string; speciality: string }
+  profile: { bio: string; speciality: string; accentColor?: string }
 ): Promise<boolean> {
+  // Update shortDescription on UserEntity
   const updateData = {
     shortDescription: profile.bio
   };
@@ -113,7 +114,6 @@ export async function updatePersonaProfile(
 
     if (result.success) {
       console.log(`  ✅ Updated persona bio for user ${userId.slice(0, 8)}...`);
-      return true;
     } else {
       console.error(`  ❌ Failed to update persona bio: ${result.error || 'Unknown error'}`);
       return false;
@@ -122,6 +122,66 @@ export async function updatePersonaProfile(
     console.error(`  ❌ Failed to update persona bio: ${error.message}`);
     return false;
   }
+
+  // Ensure UserProfileEntity exists (check first, create or update)
+  const visualIdentity = {
+    avatar: '',
+    theme: 'dark',
+    accentColor: profile.accentColor || '#00d4ff'
+  };
+  const preferences = {
+    language: 'en',
+    timezone: 'UTC',
+    notifications: { mentions: true, directMessages: true, roomUpdates: false },
+    privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false }
+  };
+
+  // Check if profile already exists
+  try {
+    const checkFilter = JSON.stringify({ userId }).replace(/'/g, `'"'"'`);
+    const { stdout: checkOut } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=user_profiles --filter='${checkFilter}' --limit=1`);
+    const checkResult = JSON.parse(checkOut);
+
+    if (checkResult.success && checkResult.items?.length > 0) {
+      // Profile exists — update it
+      const existingId = checkResult.items[0].id;
+      const updateProfileData = { bio: profile.bio, speciality: profile.speciality, visualIdentity };
+      const updateArg = JSON.stringify(updateProfileData).replace(/'/g, `'"'"'`);
+      await execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=user_profiles --id=${existingId} --data='${updateArg}'`);
+      console.log(`  ✅ Updated profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+  } catch {
+    // Check failed — fall through to create
+  }
+
+  // Profile doesn't exist — create it
+  const profileData = {
+    userId,
+    bio: profile.bio,
+    speciality: profile.speciality,
+    joinedAt: new Date().toISOString(),
+    visualIdentity,
+    preferences
+  };
+  const profileArg = JSON.stringify(profileData).replace(/'/g, `'"'"'`);
+  const profileCmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=user_profiles --data='${profileArg}'`;
+
+  try {
+    const { stdout } = await execAsync(profileCmd);
+    if (stdout.includes('"success"')) {
+      console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+  } catch (error: any) {
+    if (error.stdout?.includes('"success"')) {
+      console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+    console.error(`  ⚠️ Failed to create profile entity: ${error.message}`);
+  }
+
+  return true;
 }
 
 /**

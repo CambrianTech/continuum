@@ -45,6 +45,16 @@ impl GpuSubsystem {
             Self::Tts => "tts",
         }
     }
+
+    /// Parse subsystem from string name (as sent by TypeScript IPC).
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "rendering" => Some(Self::Rendering),
+            "inference" => Some(Self::Inference),
+            "tts" => Some(Self::Tts),
+            _ => None,
+        }
+    }
 }
 
 // =============================================================================

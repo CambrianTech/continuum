@@ -27,6 +27,7 @@ import type {
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { SystemPaths } from '../../../../../system/core/config/SystemPaths';
 
 /**
  * Anthropic LoRA Adapter - Remote API training with Anthropic Claude
@@ -398,7 +399,7 @@ export class AnthropicLoRAAdapter extends BaseLoRATrainer {
     metrics: TrainingMetrics
   ): Promise<void> {
     const metadataPath = path.join(
-      '.continuum/genome/adapters',
+      SystemPaths.genome.adapters,
       `${request.baseModel}-${request.traitType}-${Date.now()}.json`
     );
 

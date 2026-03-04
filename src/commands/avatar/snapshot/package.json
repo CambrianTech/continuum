@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/avatar/snapshot",
+  "version": "1.0.0",
+  "description": "Capture a Bevy 3D avatar snapshot as PNG for profile pictures. Allocates a temporary render slot, loads the persona's VRM model, waits for a clean frame, encodes as PNG, and saves to ~/.continuum/avatars/. Cached on disk — subsequent calls return immediately unless force=true.",
+  "main": "server/AvatarSnapshotServerCommand.ts",
+  "types": "shared/AvatarSnapshotTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AvatarSnapshotIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "avatar/snapshot"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 
 const execAsync = promisify(exec);
 
@@ -37,9 +38,9 @@ export class GitCommitServerCommand extends CommandBase<GitCommitParams, GitComm
 
       // 2. Determine workspace path
       const userId = params.userId || 'unknown';
-      const workspacePath = params.workspacePath || path.resolve(
-        process.cwd(),
-        '.continuum/sessions/user/shared',
+      const workspacePath = params.workspacePath || path.join(
+        SystemPaths.sessions.user,
+        'shared',
         userId,
         'workspace'
       );

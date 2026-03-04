@@ -3,6 +3,8 @@
  * Tests the SQL expert LoRA adapter
  */
 import { InferenceGrpcClient } from '../system/core/services/InferenceGrpcClient';
+import { resolve } from 'path';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 async function main() {
   console.log('SQL Adapter Test\n');
@@ -25,7 +27,7 @@ async function main() {
 
     // Load SQL adapter
     console.log('3. Loading SQL adapter...');
-    const adapterPath = '/Users/joel/.continuum/adapters/installed/SujanKarki--Llama-3.2-3B-Instruct_text_to_sql_lora_newdataset/adapter_model.safetensors';
+    const adapterPath = resolve(SystemPaths.genome.adapters, 'installed', 'SujanKarki--Llama-3.2-3B-Instruct_text_to_sql_lora_newdataset', 'adapter_model.safetensors');
     await client.loadAdapter('sql-expert', adapterPath, { scale: 1.0, merge: true });
     console.log('   Adapter loaded\n');
 

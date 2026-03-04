@@ -64,8 +64,9 @@ function generateConfig() {
   const htmlFile = activeExample === 'widget-ui' ? 'index.html' : 'public/demo.html';
 
   // Socket configuration - single source of truth
-  // Use .continuum/sockets/ for proper isolation from system /tmp
-  const socketDir = '.continuum/sockets';
+  // Absolute path at $HOME/.continuum/sockets — works for git clone, npm install, or curl
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const socketDir = `${home}/.continuum/sockets`;
 
   // Generate TypeScript content
   const content = `/**

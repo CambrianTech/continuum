@@ -149,11 +149,13 @@ export class ConfigurationFactory {
           max_connections: 100,
           enable_cors: false
         },
+        // Config metadata — mirrors SystemPaths for diagnostics/display.
+        // Server code MUST use SystemPaths directly for filesystem access.
         paths: {
-          logs: `.continuum/jtag/logs`,
-          screenshots: `.continuum/jtag/screenshots`,
-          data_directory: `.continuum/jtag/data`,
-          pid_file: `.continuum/jtag/server.pid`
+          logs: '$HOME/.continuum/jtag/logs',
+          screenshots: '$HOME/.continuum/jtag/temp/screenshots',
+          data_directory: '$HOME/.continuum/data',
+          pid_file: '$HOME/.continuum/jtag/registry/server.pid'
         },
         security: {
           enable_authentication: false,

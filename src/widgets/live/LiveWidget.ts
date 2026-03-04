@@ -54,14 +54,20 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private isPreview: boolean = false;
   @reactive() private previewStream: MediaStream | null = null;
 
-  // Local user state
-  @reactive() private micEnabled: boolean = true;
-  @reactive() private speakerEnabled: boolean = true;
+  // User intent — persisted preferences, always shown in controls.
+  // These represent what the user WANTS, not what LiveKit currently has.
+  @reactive() private _micIntent: boolean = true;
+  @reactive() private _speakerIntent: boolean = true;
   @reactive() private speakerVolume: number = 1.0;
   @reactive() private cameraEnabled: boolean = false;
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
   @reactive() private captionsEnabled: boolean = true;
+
+  // Transient conditions — affect effective media state, NEVER persisted.
+  // Tab switches and visibility changes mute media without touching user intent.
+  @reactive() private _tabActive: boolean = true;
+  @reactive() private _widgetVisible: boolean = true;
 
   // Entity association
   @reactive() private entityId: string = '';
@@ -99,9 +105,19 @@ export class LiveWidget extends ReactiveWidget {
   private _spotlightHoldTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly SPOTLIGHT_HOLD_MS = 1500; // Hold spotlight 1.5s after speaker goes silent
 
-  // Saved state for visibility changes
-  private _visibilitySavedMic: boolean | null = null;
-  private _visibilitySavedSpeaker: boolean | null = null;
+  /** Effective mic state: user intent AND all transient conditions satisfied */
+  private get _effectiveMic(): boolean {
+    return this._micIntent && this._tabActive && this._widgetVisible;
+  }
+
+  /** Effective speaker state: user intent AND all transient conditions satisfied */
+  private get _effectiveSpeaker(): boolean {
+    return this._speakerIntent && this._tabActive && this._widgetVisible;
+  }
+
+  // Track last applied state to deduplicate LiveKit calls
+  private _lastAppliedMic: boolean | null = null;
+  private _lastAppliedSpeaker: boolean | null = null;
 
   // Keyboard listener for Escape key
   private _escapeHandler = (e: KeyboardEvent) => {
@@ -111,16 +127,18 @@ export class LiveWidget extends ReactiveWidget {
     }
   };
 
-  // Saved state for tab deactivation
-  private _deactivateSavedMic: boolean | null = null;
-  private _deactivateSavedSpeaker: boolean | null = null;
-
   // Tile resolution tracking — collected from tile-resized events, batched to data channel
   private _tileResolutions: Map<string, { width: number; height: number }> = new Map();
   private _tileResDebounce: ReturnType<typeof setTimeout> | null = null;
 
-  // Reentrancy guard
+  // Reentrancy guard for async mic state application
   private _applyingMicState = false;
+
+  // Reentrancy guard for handleJoin (async — prevents duplicate joins on rapid refresh)
+  private _joining = false;
+
+  // Page unload handler (must be stored for removeEventListener)
+  private _unloadHandler: (() => void) | null = null;
 
   // State loading tracking
   @reactive() private _stateLoaded: boolean = false;
@@ -140,55 +158,93 @@ export class LiveWidget extends ReactiveWidget {
 
     document.addEventListener('keydown', this._escapeHandler);
 
+    // Best-effort leave on page unload (refresh, close, navigate away).
+    // May not complete — server-side rejoin cleanup handles the rest.
+    this._unloadHandler = () => {
+      if (this.isJoined && this.sessionId) {
+        Commands.execute(COMMANDS.COLLABORATION_LIVE_LEAVE, {
+          sessionId: this.sessionId
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', this._unloadHandler);
+
     this.stateLoadedPromise = this.loadUserContext().then(() => {
       this.loadCallState();
       this._stateLoaded = true;
-      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, captions=${this.captionsEnabled})`);
+      console.log(`LiveWidget: State loaded (mic=${this._micIntent}, speaker=${this._speakerIntent}, captions=${this.captionsEnabled})`);
       this.requestUpdate();
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
       this._stateLoaded = true; // Unblock UI — use defaults
     });
 
+    // Visibility observer: just set the transient flag. The effective state
+    // computation handles muting — no save/restore dance needed.
     this.visibilityObserver = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        if (this.isJoined) {
-          if (!entry.isIntersecting && this._visibilitySavedMic === null) {
-            this._visibilitySavedMic = this.micEnabled;
-            this._visibilitySavedSpeaker = this.speakerEnabled;
-            this.micEnabled = false;
-            this.speakerEnabled = false;
-          } else if (entry.isIntersecting && this._visibilitySavedMic !== null) {
-            this.micEnabled = this._visibilitySavedMic;
-            this.speakerEnabled = this._visibilitySavedSpeaker ?? true;
-            this._visibilitySavedMic = null;
-            this._visibilitySavedSpeaker = null;
-          }
-        }
+        this._widgetVisible = entry.isIntersecting;
       }
     }, { threshold: 0.1 });
 
     this.visibilityObserver.observe(this);
   }
 
-  protected override updated(changedProperties: Map<string, unknown>): void {
-    super.updated(changedProperties);
+  protected override updated(_changedProperties: Map<string, unknown>): void {
+    super.updated(_changedProperties);
+    this._syncMediaState();
+  }
 
-    // Auto-sync mic state
-    if (changedProperties.has('micEnabled') && this.audioClient && !this._applyingMicState) {
-      this._applyingMicState = true;
-      this.applyMicState().finally(() => { this._applyingMicState = false; });
+  /**
+   * Sync effective media state to LiveKit. Safe to call frequently — deduplicates
+   * by comparing effective state against last-applied state.
+   *
+   * CRITICAL: Must check isConnected, not just audioClient existence.
+   * Between audioClient creation and room.connect() completion, applyMicState()
+   * early-returns without setting _lastAppliedMic, causing the .finally()
+   * re-check to recurse infinitely (microtask flood → browser hang).
+   */
+  private _syncMediaState(): void {
+    if (!this.audioClient?.isConnected) return;
+
+    // Speaker is synchronous — apply whenever effective state or volume changes
+    const effectiveSpeaker = this._effectiveSpeaker;
+    if (effectiveSpeaker !== this._lastAppliedSpeaker) {
+      this._lastAppliedSpeaker = effectiveSpeaker;
+      this.applySpeakerState();
     }
 
-    // Auto-sync speaker state
-    if ((changedProperties.has('speakerEnabled') || changedProperties.has('speakerVolume')) && this.audioClient) {
-      this.applySpeakerState();
+    // Mic is async — guard against concurrent LiveKit calls
+    const effectiveMic = this._effectiveMic;
+    if (effectiveMic !== this._lastAppliedMic && !this._applyingMicState) {
+      this._applyingMicState = true;
+      this.applyMicState().finally(() => {
+        this._applyingMicState = false;
+        // Re-check: effective state may have changed during async apply
+        if (this._effectiveMic !== this._lastAppliedMic) {
+          this._syncMediaState();
+        }
+      });
     }
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     document.removeEventListener('keydown', this._escapeHandler);
+    if (this._unloadHandler) {
+      window.removeEventListener('beforeunload', this._unloadHandler);
+      this._unloadHandler = null;
+    }
+
+    // Fire live/leave before cleanup — best-effort, fire-and-forget.
+    // Cleanup disconnects LiveKit immediately; this notifies the server
+    // to update CallEntity and unregister VoiceOrchestrator if needed.
+    if (this.isJoined && this.sessionId) {
+      Commands.execute(COMMANDS.COLLABORATION_LIVE_LEAVE, {
+        sessionId: this.sessionId
+      }).catch(() => {});
+    }
+
     this.cleanup();
   }
 
@@ -197,6 +253,8 @@ export class LiveWidget extends ReactiveWidget {
   // ========================================
 
   onActivate(entityId?: string, metadata?: unknown): void {
+    this._tabActive = true; // Effective state recomputes — mic/speaker restore automatically
+
     if (entityId) {
       const cleanEntityId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
       this.entityId = cleanEntityId;
@@ -211,24 +269,10 @@ export class LiveWidget extends ReactiveWidget {
         this.handleJoin();
       }
     }
-
-    if (this.isJoined && this._deactivateSavedMic !== null) {
-      this.micEnabled = this._deactivateSavedMic;
-      this.speakerEnabled = this._deactivateSavedSpeaker ?? true;
-      this._deactivateSavedMic = null;
-      this._deactivateSavedSpeaker = null;
-    }
   }
 
   onDeactivate(): void {
-    console.log('LiveWidget: onDeactivate', { isJoined: this.isJoined, micEnabled: this.micEnabled });
-    if (this.isJoined && this._deactivateSavedMic === null) {
-      this._deactivateSavedMic = this.micEnabled;
-      this._deactivateSavedSpeaker = this.speakerEnabled;
-      this.micEnabled = false;
-      this.speakerEnabled = false;
-      console.log('LiveWidget: Muting mic/speaker on deactivate');
-    }
+    this._tabActive = false; // Effective state recomputes — mic/speaker mute automatically
   }
 
   setEntityId(entityId: string): void {
@@ -242,8 +286,8 @@ export class LiveWidget extends ReactiveWidget {
   private loadCallState(): void {
     const callState = this.userState?.callState;
     if (callState) {
-      this.micEnabled = callState.micEnabled ?? true;
-      this.speakerEnabled = callState.speakerEnabled ?? true;
+      this._micIntent = callState.micEnabled ?? true;
+      this._speakerIntent = callState.speakerEnabled ?? true;
       this.speakerVolume = callState.speakerVolume ?? 1.0;
       this.cameraEnabled = callState.cameraEnabled ?? false;
       this.screenShareEnabled = callState.screenShareEnabled ?? false;
@@ -258,8 +302,8 @@ export class LiveWidget extends ReactiveWidget {
     }
 
     const newCallState = {
-      micEnabled: this.micEnabled,
-      speakerEnabled: this.speakerEnabled,
+      micEnabled: this._micIntent,
+      speakerEnabled: this._speakerIntent,
       speakerVolume: this.speakerVolume,
       cameraEnabled: this.cameraEnabled,
       screenShareEnabled: this.screenShareEnabled,
@@ -290,11 +334,22 @@ export class LiveWidget extends ReactiveWidget {
   // ========================================
 
   private async handleJoin(): Promise<void> {
+    if (this._joining || this.isJoined) return;
     if (!this.entityId) {
       console.error('LiveWidget: No entityId specified');
       return;
     }
+    this._joining = true;
 
+    try {
+      await this._executeJoin();
+    } finally {
+      this._joining = false;
+    }
+  }
+
+  /** Inner join logic — separated from guard for clarity */
+  private async _executeJoin(): Promise<void> {
     if (this.stateLoadedPromise) {
       await this.stateLoadedPromise;
     }
@@ -308,18 +363,26 @@ export class LiveWidget extends ReactiveWidget {
       return;
     }
 
-    if (this.micEnabled && !this.micPermissionGranted) {
+    if (this._micIntent && !this.micPermissionGranted) {
       try {
         this.previewStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         this.micPermissionGranted = true;
         console.log('LiveWidget: Mic permission granted');
       } catch (error) {
         console.warn('LiveWidget: Mic permission denied:', error);
-        this.micEnabled = false;
+        this._micIntent = false;
       }
     }
 
     this.isPreview = false;
+
+    // Release the permission-check stream BEFORE LiveKit captures its own.
+    // Two active getUserMedia streams on the same device can cause the second
+    // to be silenced on macOS (CoreAudio exclusive access).
+    if (this.previewStream) {
+      this.previewStream.getTracks().forEach(track => track.stop());
+      this.previewStream = null;
+    }
 
     try {
       const userId = this.currentUser?.id;
@@ -387,7 +450,11 @@ export class LiveWidget extends ReactiveWidget {
           onConnectionChange: (connected) => {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
             if (connected) {
-              this.audioClient?.setMuted(!this.micEnabled);
+              // Re-apply full mic+speaker state through canonical path (handles
+              // reconnections too). Don't call setMuted() directly — that bypasses
+              // startMicrophone/stopMicrophone and mic level monitoring setup.
+              this.applyMicState();
+              this.applySpeakerState();
             }
           },
           onVideoTrackAdded: (participantId: string, element: HTMLVideoElement) => {
@@ -487,7 +554,7 @@ export class LiveWidget extends ReactiveWidget {
 
           await this.applyMicState();
           this.applySpeakerState();
-          console.log(`LiveWidget: State applied from saved (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, volume=${this.speakerVolume})`);
+          console.log(`LiveWidget: State applied from saved (mic=${this._micIntent}, speaker=${this._speakerIntent}, volume=${this.speakerVolume})`);
         } catch (audioError) {
           console.warn('LiveWidget: Audio stream failed:', audioError);
         }
@@ -575,39 +642,39 @@ export class LiveWidget extends ReactiveWidget {
   // ========================================
 
   private async applyMicState(): Promise<void> {
-    if (!this.audioClient) return;
+    if (!this.audioClient?.isConnected) return;
 
-    console.log(`LiveWidget: applyMicState(micEnabled=${this.micEnabled})`);
+    const wantMic = this._effectiveMic;
+    this._lastAppliedMic = wantMic;
+    console.log(`LiveWidget: applyMicState(effective=${wantMic}, intent=${this._micIntent}, tab=${this._tabActive}, visible=${this._widgetVisible})`);
 
-    if (this.micEnabled) {
+    if (wantMic) {
       try {
         await this.audioClient.startMicrophone();
       } catch (error) {
         console.error('LiveWidget: Failed to start mic:', error);
-        this.micEnabled = false;
+        this._micIntent = false;
       }
     } else {
       this.audioClient.stopMicrophone();
     }
-    this.audioClient.setMuted(!this.micEnabled);
   }
 
   private async toggleMic(): Promise<void> {
-    this.micEnabled = !this.micEnabled;
-    await this.applyMicState();
+    this._micIntent = !this._micIntent;
+    // _syncMediaState via updated() applies the new effective state to LiveKit
     await this.saveCallState();
   }
 
   private applySpeakerState(): void {
     if (!this.audioClient) return;
-    this.audioClient.setSpeakerMuted(!this.speakerEnabled);
+    this.audioClient.setSpeakerMuted(!this._effectiveSpeaker);
     this.audioClient.setSpeakerVolume(this.speakerVolume);
   }
 
   private async toggleSpeaker(): Promise<void> {
-    this.speakerEnabled = !this.speakerEnabled;
-    this.requestUpdate();
-    this.applySpeakerState();
+    this._speakerIntent = !this._speakerIntent;
+    // _syncMediaState via updated() applies the new effective state
     await this.saveCallState();
   }
 
@@ -773,6 +840,11 @@ export class LiveWidget extends ReactiveWidget {
 
     this._stateLoaded = false;
 
+    // Reset applied-state tracking so next join gets a clean sync
+    this._lastAppliedMic = null;
+    this._lastAppliedSpeaker = null;
+    this._applyingMicState = false;
+
     this._remoteVideoElements.clear();
     this.activeVideoUsers = new Set();
     this._tileResolutions.clear();
@@ -886,8 +958,8 @@ export class LiveWidget extends ReactiveWidget {
           <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
         <live-controls ${ref(this._controlsRef)}
-          .micEnabled=${this.micEnabled}
-          .speakerEnabled=${this.speakerEnabled}
+          .micEnabled=${this._micIntent}
+          .speakerEnabled=${this._speakerIntent}
           .cameraEnabled=${this.cameraEnabled}
           .screenShareEnabled=${this.screenShareEnabled}
           .captionsEnabled=${this.captionsEnabled}
@@ -954,8 +1026,8 @@ export class LiveWidget extends ReactiveWidget {
         ` : ''}
 
         <live-controls ${ref(this._controlsRef)}
-          .micEnabled=${this.micEnabled}
-          .speakerEnabled=${this.speakerEnabled}
+          .micEnabled=${this._micIntent}
+          .speakerEnabled=${this._speakerIntent}
           .cameraEnabled=${this.cameraEnabled}
           .screenShareEnabled=${this.screenShareEnabled}
           .captionsEnabled=${this.captionsEnabled}

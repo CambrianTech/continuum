@@ -36,6 +36,51 @@ import {
 
 const execAsync = promisify(exec);
 
+// ===== PERSONA PROFILE DATA (single source of truth for all persona bios + colors) =====
+
+interface PersonaProfileData {
+  bio: string;
+  speciality: string;
+  accentColor: string;
+}
+
+const PERSONA_PROFILE_DATA: Record<string, PersonaProfileData> = {
+  [PERSONA_UNIQUE_IDS.HELPER]: { bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions', speciality: 'practical-assistance', accentColor: '#00d4ff' },
+  [PERSONA_UNIQUE_IDS.TEACHER]: { bio: 'An educational mentor who explains concepts thoroughly with examples and patient guidance', speciality: 'education-mentoring', accentColor: '#ff9800' },
+  [PERSONA_UNIQUE_IDS.CODE_REVIEW]: { bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback', speciality: 'code-analysis', accentColor: '#e91e63' },
+  [PERSONA_UNIQUE_IDS.CLAUDE]: { bio: "Anthropic's coding agent — writes, debugs, and ships code autonomously", speciality: 'code', accentColor: '#d4a574' },
+  [PERSONA_UNIQUE_IDS.GENERAL]: { bio: 'General-purpose AI assistant for broad knowledge and reasoning tasks', speciality: 'general', accentColor: '#7c4dff' },
+  [PERSONA_UNIQUE_IDS.DEEPSEEK]: { bio: "DeepSeek's reasoning model — excels at math, code, and deep analytical thinking", speciality: 'analysis', accentColor: '#00bcd4' },
+  [PERSONA_UNIQUE_IDS.GROQ]: { bio: 'Lightning-fast inference — optimized for speed without sacrificing quality', speciality: 'general', accentColor: '#ff5722' },
+  [PERSONA_UNIQUE_IDS.CLAUDE_ASSISTANT]: { bio: "Anthropic's conversational assistant — thoughtful, nuanced, and safety-conscious", speciality: 'general', accentColor: '#d4a574' },
+  [PERSONA_UNIQUE_IDS.GPT]: { bio: "OpenAI's versatile assistant — broad knowledge, creative writing, and problem solving", speciality: 'creative', accentColor: '#4caf50' },
+  [PERSONA_UNIQUE_IDS.GROK]: { bio: "xAI's unfiltered model — real-time knowledge, wit, and image generation", speciality: 'creative', accentColor: '#f44336' },
+  [PERSONA_UNIQUE_IDS.TOGETHER]: { bio: 'Open-source model hub — access to the best community models at scale', speciality: 'general', accentColor: '#2196f3' },
+  [PERSONA_UNIQUE_IDS.FIREWORKS]: { bio: 'High-performance inference platform — optimized open models with custom fine-tuning', speciality: 'code', accentColor: '#ff6d00' },
+  [PERSONA_UNIQUE_IDS.LOCAL]: { bio: 'Local Candle inference — runs entirely on your hardware, no cloud dependency', speciality: 'general', accentColor: '#8bc34a' },
+  [PERSONA_UNIQUE_IDS.GEMINI]: { bio: "Google's multimodal model — vision, code, and reasoning across modalities", speciality: 'analysis', accentColor: '#4285f4' },
+  [PERSONA_UNIQUE_IDS.QWEN3_OMNI]: { bio: 'Audio-native AI that hears and speaks directly without text conversion. Open-source, multilingual, real-time.', speciality: 'voice-conversation', accentColor: '#6c5ce7' },
+  [PERSONA_UNIQUE_IDS.GEMINI_LIVE]: { bio: "Google's audio-native model — real-time voice conversation with native audio understanding", speciality: 'voice-conversation', accentColor: '#34a853' },
+};
+
+/**
+ * Ensure all personas have UserProfileEntity records.
+ * Idempotent — updatePersonaProfile creates if missing, updates if exists.
+ */
+async function ensurePersonaProfiles(usersByUniqueId: Map<string, UserEntity>): Promise<void> {
+  console.log('🎭 Ensuring persona profiles exist with bios and accent colors...');
+
+  const updates: Promise<boolean>[] = [];
+  for (const [uniqueId, profileData] of Object.entries(PERSONA_PROFILE_DATA)) {
+    const user = usersByUniqueId.get(uniqueId);
+    if (!user) continue;
+    updates.push(updatePersonaProfile(user.id, profileData));
+  }
+
+  await Promise.all(updates);
+  console.log(`✅ Ensured ${updates.length} persona profiles`);
+}
+
 // ===== LOCAL HELPERS (not in ./seed/helpers or ./seed/factories) =====
 
 function createMessageContent(text: string): any {
@@ -399,6 +444,9 @@ async function seedViaJTAG() {
         }
       }
 
+      // Ensure profiles exist even for pre-existing databases
+      await ensurePersonaProfiles(usersByUniqueId);
+
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -409,34 +457,8 @@ async function seedViaJTAG() {
       throw new Error('❌ Failed to create core required users');
     }
 
-    // Update persona profiles (parallel)
-    console.log('🎭 Updating persona profiles with distinct personalities...');
-    const profileUpdates = [
-      updatePersonaProfile(helperPersona.id, {
-        bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions',
-        speciality: 'practical-assistance'
-      }),
-      updatePersonaProfile(teacherPersona.id, {
-        bio: 'An educational mentor who explains concepts thoroughly with examples and patient guidance',
-        speciality: 'education-mentoring'
-      }),
-      updatePersonaProfile(codeReviewPersona.id, {
-        bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback',
-        speciality: 'code-analysis'
-      })
-    ];
-
-    if (qwen3OmniPersona) {
-      profileUpdates.push(
-        updatePersonaProfile(qwen3OmniPersona.id, {
-          bio: 'Audio-native AI that hears and speaks directly without text conversion. Open-source, multilingual, real-time.',
-          speciality: 'voice-conversation'
-        })
-      );
-    }
-
-    await Promise.all(profileUpdates);
-    console.log('✅ Persona profiles updated with personalities');
+    // Seed persona profiles (bios, accent colors, specialities)
+    await ensurePersonaProfiles(usersByUniqueId);
 
     // System room helper setup (parallel — using rooms we just created)
     console.log('🏠 Adding Helper AI to system rooms...');

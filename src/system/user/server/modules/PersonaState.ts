@@ -11,6 +11,7 @@
  */
 
 import type { SubsystemLogger } from './being/logging/SubsystemLogger';
+import { Events } from '../../../core/shared/Events';
 
 /**
  * Persona internal state
@@ -50,10 +51,12 @@ export class PersonaStateManager {
   private readonly config: StateConfig;
   private state: PersonaState;
   private readonly personaName: string;
+  private readonly personaId?: string;
   private readonly logger?: SubsystemLogger;
 
-  constructor(personaName: string, config: Partial<StateConfig> = {}) {
+  constructor(personaName: string, config: Partial<StateConfig> = {}, personaId?: string) {
     this.personaName = personaName;
+    this.personaId = personaId;
     this.config = { ...DEFAULT_STATE_CONFIG, ...config };
     this.logger = config.logger;
 
@@ -94,6 +97,8 @@ export class PersonaStateManager {
     this.state.mood = this.calculateMood();
 
     this.log(`📊 Activity recorded: energy=${this.state.energy.toFixed(2)}, attention=${this.state.attention.toFixed(2)}, mood=${this.state.mood}`);
+
+    this.emitSnapshot();
   }
 
   /**
@@ -114,6 +119,8 @@ export class PersonaStateManager {
     this.state.mood = this.calculateMood();
 
     this.log(`💤 Rested: energy=${this.state.energy.toFixed(2)}, attention=${this.state.attention.toFixed(2)}, mood=${this.state.mood}`);
+
+    this.emitSnapshot();
   }
 
   /**
@@ -249,6 +256,23 @@ export class PersonaStateManager {
            `inbox=${this.state.inboxLoad}, ` +
            `responses=${this.state.responseCount}, ` +
            `budget=${this.state.computeBudget.toFixed(2)}`;
+  }
+
+  /**
+   * Emit state snapshot event for browser-side consumers (PersonaTile meters)
+   */
+  private emitSnapshot(): void {
+    if (!this.personaId) return;
+
+    Events.emit('persona:state:snapshot', {
+      personaId: this.personaId,
+      energy: this.state.energy,
+      attention: this.state.attention,
+      mood: this.state.mood,
+      inboxLoad: this.state.inboxLoad,
+      computeBudget: this.state.computeBudget,
+      timestamp: Date.now()
+    });
   }
 
   /**

@@ -7,10 +7,12 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { ArtifactsDaemon, type ArtifactsPayload, type ArtifactsResult } from '../shared/ArtifactsDaemon';
+import { ArtifactsDaemon, type ArtifactsPayload, type ArtifactsResult, type StorageType } from '../shared/ArtifactsDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { SystemPaths, GlobalPaths } from '../../../system/core/config/SystemPaths';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Server Artifacts Daemon - Real filesystem operations
@@ -24,6 +26,50 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
     // Logs go to .continuum/jtag/logs/system/daemons/{ClassName}.log
     const className = this.constructor.name;
     this.log = Logger.create(className, `daemons/${className}`);
+  }
+
+  /**
+   * Resolve path within .continuum structure based on storage type.
+   * Server-only — uses SystemPaths for correct $HOME/$REPO routing.
+   */
+  private validateAndResolvePath(
+    relativePath: string,
+    storageType: StorageType = 'system',
+    sessionId?: UUID | string,
+    personaId?: UUID | string,
+  ): string {
+    const cleanPath = relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
+
+    let basePath: string;
+    switch (storageType) {
+      case 'database':
+        basePath = SystemPaths.database.root;
+        break;
+      case 'session':
+        if (!sessionId) throw new Error('Session storage requires sessionId');
+        basePath = path.join(SystemPaths.sessions.user, sessionId);
+        break;
+      case 'system':
+        basePath = path.join(SystemPaths.root, 'jtag', 'system');
+        break;
+      case 'cache':
+        basePath = path.join(SystemPaths.root, 'cache');
+        break;
+      case 'logs':
+        basePath = SystemPaths.logs.root;
+        break;
+      case 'config':
+        basePath = GlobalPaths.root;
+        break;
+      case 'persona':
+        if (!personaId) throw new Error('Persona storage requires personaId');
+        basePath = SystemPaths.personas.dir(personaId as string);
+        break;
+      default:
+        throw new Error(`Unknown storage type: ${storageType}`);
+    }
+
+    return path.join(basePath, cleanPath);
   }
 
   /**

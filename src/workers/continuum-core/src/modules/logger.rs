@@ -235,25 +235,25 @@ type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 /// - `sentinels/{handle}/{stream}` → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
 /// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
 /// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
-fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
+fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &str) -> PathBuf {
     let parts: Vec<&str> = category.split('/').collect();
 
     match parts.as_slice() {
-        // personas/{uniqueId}/{subsystem} → .continuum/personas/{uniqueId}/logs/{subsystem}.log
+        // personas/{uniqueId}/{subsystem} → $HOME/.continuum/personas/{uniqueId}/logs/{subsystem}.log
         ["personas", unique_id, subsystem] => {
-            PathBuf::from(format!(".continuum/personas/{unique_id}/logs/{subsystem}.log"))
+            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/{subsystem}.log"))
         }
-        // personas/{uniqueId} → .continuum/personas/{uniqueId}/logs/general.log
+        // personas/{uniqueId} → $HOME/.continuum/personas/{uniqueId}/logs/general.log
         ["personas", unique_id] => {
-            PathBuf::from(format!(".continuum/personas/{unique_id}/logs/general.log"))
+            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/general.log"))
         }
-        // sentinels/{handle}/{stream} → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
+        // sentinels/{handle}/{stream} → {log_dir}/sentinels/{handle}/{stream}.log
         ["sentinels", handle, stream] => {
-            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/{stream}.log"))
+            PathBuf::from(log_dir).join(format!("sentinels/{handle}/{stream}.log"))
         }
-        // sentinels/{handle} → .continuum/jtag/logs/system/sentinels/{handle}/execution.log
+        // sentinels/{handle} → {log_dir}/sentinels/{handle}/execution.log
         ["sentinels", handle] => {
-            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/execution.log"))
+            PathBuf::from(log_dir).join(format!("sentinels/{handle}/execution.log"))
         }
         // modules/{module} → {log_dir}/modules/{module}.log
         ["modules", module] => {
@@ -323,10 +323,11 @@ fn ensure_file_handle(
 fn write_log_message(
     payload: &WriteLogPayload,
     log_dir: &str,
+    continuum_root: &str,
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
 ) -> std::io::Result<usize> {
-    let log_file_path = resolve_log_path(&payload.category, log_dir);
+    let log_file_path = resolve_log_path(&payload.category, log_dir, continuum_root);
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 
     ensure_file_handle(&payload.category, &log_file_path, file_cache, headers_written)?;
@@ -452,6 +453,8 @@ fn flush_all(file_cache: &FileCache) {
 
 pub struct LoggerModule {
     log_dir: String,
+    #[allow(dead_code)] // Used by writer thread, but compiler doesn't see through thread::spawn
+    continuum_root: String,
     file_cache: FileCache,
     #[allow(dead_code)] // Used by writer thread, but compiler doesn't see through thread::spawn
     headers_written: HeaderTracker,
@@ -463,8 +466,18 @@ pub struct LoggerModule {
 
 impl LoggerModule {
     pub fn new() -> Self {
+        let continuum_root = std::env::var("CONTINUUM_ROOT")
+            .unwrap_or_else(|_| {
+                let home = dirs::home_dir().expect("Failed to resolve home directory");
+                home.join(".continuum").to_string_lossy().to_string()
+            });
+
         let log_dir = std::env::var("JTAG_LOG_DIR")
-            .unwrap_or_else(|_| ".continuum/jtag/logs/system".to_string());
+            .unwrap_or_else(|_| {
+                PathBuf::from(&continuum_root)
+                    .join("jtag").join("logs").join("system")
+                    .to_string_lossy().to_string()
+            });
 
         let file_cache = Arc::new(Mutex::new(HashMap::new()));
         let headers_written = Arc::new(Mutex::new(HashSet::new()));
@@ -481,6 +494,7 @@ impl LoggerModule {
         let writer_file_cache = file_cache.clone();
         let writer_headers = headers_written.clone();
         let writer_log_dir = log_dir.clone();
+        let writer_continuum_root = continuum_root.clone();
         let writer_pending = pending_writes.clone();
 
         thread::spawn(move || {
@@ -498,6 +512,7 @@ impl LoggerModule {
                         if let Err(e) = write_log_message(
                             payload,
                             &writer_log_dir,
+                            &writer_continuum_root,
                             &writer_file_cache,
                             &writer_headers,
                         ) {
@@ -520,12 +535,14 @@ impl LoggerModule {
                         let _ = write_log_message(
                             &warning,
                             &writer_log_dir,
+                            &writer_continuum_root,
                             &writer_file_cache,
                             &writer_headers,
                         );
                         if let Err(e) = write_log_message(
                             payload,
                             &writer_log_dir,
+                            &writer_continuum_root,
                             &writer_file_cache,
                             &writer_headers,
                         ) {
@@ -578,6 +595,7 @@ impl LoggerModule {
 
         Self {
             log_dir,
+            continuum_root,
             file_cache,
             headers_written,
             log_tx,

@@ -11,6 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
@@ -109,6 +110,6 @@ export class GenomeTrainingExportServerCommand extends CommandBase<GenomeTrainin
     const safeDomain = domain.replace(/[^a-z0-9-]+/g, '-');
     const timestamp = Date.now();
     const filename = `${safeName}-${safeDomain}-${timestamp}.jsonl`;
-    return path.resolve('.continuum/genome/datasets', filename);
+    return path.join(SystemPaths.datasets.root, filename);
   }
 }

@@ -1,8 +1,8 @@
 /**
- * UserProfileWidget Styles
+ * UserProfileWidget Styles - Full Visual Social Profile
  *
- * Universal user profile view for humans, personas, and agents.
- * Uses shared SCSS variables for consistent theming.
+ * Layout: Full-bleed cover → Avatar overlap → About → Pathways → Writings → Admin
+ * Theme: Cyberpunk with accent color tinting, Facebook-level visual richness
  */
 
 @use '../../shared/styles/variables' as *;
@@ -11,14 +11,23 @@
 :host {
   display: block;
   height: 100%;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.profile-container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: $spacing-xl;
+// === FULL-WIDTH WRAPPER — this is the scroll container ===
+
+.profile-page {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  @include custom-scrollbar;
 }
+
+// === LOADING / ERROR ===
 
 .loading, .error {
   display: flex;
@@ -33,27 +42,60 @@
   color: $color-error;
 }
 
-.profile-header {
-  display: flex;
-  align-items: center;
-  gap: $spacing-lg;
-  padding: $spacing-lg;
-  background: rgba(10, 15, 20, 0.95);
-  border: $border-primary;
-  border-radius: $border-radius-lg;
-  margin-bottom: $spacing-lg;
+// === FULL-BLEED COVER BANNER ===
+
+.hero-cover {
+  position: relative;
+  width: 100%;
+  height: min(240px, 30vh);
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+
+  // Dark fade overlay at bottom
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60%;
+    background: linear-gradient(to bottom, transparent 0%, rgba(0, 10, 20, 0.3) 40%, rgba(0, 10, 20, 0.9) 100%);
+    pointer-events: none;
+  }
 }
 
-.avatar {
-  width: 80px;
-  height: 80px;
+// === HERO PROFILE (overlaps cover bottom) ===
+
+.hero-profile {
+  position: relative;
+  z-index: 1;
+  margin-top: -80px;
+  padding: 0 $spacing-xl $spacing-lg;
+  max-width: 720px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  gap: $spacing-lg;
+}
+
+// === GRADIENT AVATAR (replaces emoji) ===
+
+.hero-avatar {
+  width: 200px;
+  height: 200px;
+  min-width: 200px;
   border-radius: 50%;
-  background: rgba(0, 212, 255, 0.2);
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 40px;
-  border: 2px solid rgba(0, 212, 255, 0.4);
+  border: 4px solid rgba(0, 10, 20, 0.9);
+  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
 
   &.frozen {
     opacity: 0.5;
@@ -61,92 +103,440 @@
   }
 }
 
-.user-details {
+// Gradient background layer (visible when no image)
+.avatar-gradient {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(10, 15, 20, 0.95);
+}
+
+// Avatar image (when avatarUrl is set)
+.avatar-image {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  width: 100%;
+  height: 100%;
+}
+
+// Initial letter (when no image)
+.avatar-initial {
+  position: relative;
+  z-index: 1;
+  font-size: 72px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  line-height: 1;
+  font-family: $font-sans;
+}
+
+// Online status dot
+.status-dot {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid rgba(0, 10, 20, 0.9);
+  z-index: 2;
+
+  &.online { background: $color-success; @include glow($color-success-dark, 6px); }
+  &.offline { background: rgba(100, 100, 100, 0.6); }
+  &.away { background: $color-warning; @include glow($color-warning-dark, 6px); }
+  &.busy { background: $color-error; @include glow($color-error-dark, 6px); }
+  &.frozen { background: #00bcd4; }
+  &.deleted { background: $color-error; }
+}
+
+// === HERO INFO (beside avatar) ===
+
+.hero-info {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+  padding-bottom: $spacing-sm;
 }
 
-.user-name {
+.hero-name {
   font-size: 28px;
-  font-weight: 600;
+  font-weight: 700;
   color: $color-text;
-  margin: 0 0 $spacing-xs 0;
+  margin: 0;
+  line-height: 1.2;
+  @include glow-text(rgba(255, 255, 255, 0.1), 8px);
 }
 
-.user-meta {
+.hero-identity {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  font-size: $font-size-md;
+  color: $color-text-muted;
+  flex-wrap: wrap;
+
+  .separator {
+    opacity: 0.4;
+  }
+}
+
+.hero-description {
+  font-size: $font-size-lg;
+  color: $color-text-dim;
+  margin: $spacing-xs 0 0 0;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.hero-badges {
   display: flex;
   gap: $spacing-sm;
+  margin-top: $spacing-xs;
   flex-wrap: wrap;
 }
 
-.badge {
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  text-transform: uppercase;
-  font-weight: 600;
-  letter-spacing: 0.5px;
+// === HERO ACTION BUTTONS (Message + Call) ===
 
-  // User type badges
-  &.type-human { background: $color-success; color: $color-text; }
-  &.type-persona { background: #9C27B0; color: $color-text; }
-  &.type-agent { background: #2196F3; color: $color-text; }
-  &.type-system { background: #607D8B; color: $color-text; }
-
-  // Status badges
-  &.status-online { background: $color-success; color: $color-text; }
-  &.status-offline { background: rgba(100, 100, 100, 0.5); color: $color-text-dim; }
-  &.status-frozen { background: #00bcd4; color: $color-text; }
-  &.status-deleted { background: $color-error; color: $color-text; }
+.hero-actions {
+  display: flex;
+  gap: $spacing-sm;
+  margin-top: $spacing-sm;
 }
 
-.section {
+.hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: $spacing-sm $spacing-lg;
+  border-radius: $border-radius-md;
+  font-size: $font-size-md;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all $transition-fast;
+
+  &:active {
+    transform: scale(0.97);
+  }
+}
+
+.hero-btn-message {
+  background: rgba(0, 212, 255, 0.15);
+  color: $color-primary;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.25);
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.15);
+  }
+}
+
+.hero-btn-call {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+
+  &:hover {
+    background: rgba(16, 185, 129, 0.25);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+  }
+}
+
+.hero-btn-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+
+  &.badge-provider {
+    background: rgba(0, 212, 255, 0.15);
+    color: $color-primary;
+    border: 1px solid rgba(0, 212, 255, 0.25);
+  }
+
+  &.badge-speciality {
+    background: rgba(156, 39, 176, 0.15);
+    color: #ce93d8;
+    border: 1px solid rgba(156, 39, 176, 0.25);
+  }
+
+  &.badge-type {
+    &.human { background: rgba(0, 255, 100, 0.15); color: $color-success; border: 1px solid rgba(0, 255, 100, 0.2); }
+    &.persona { background: rgba(156, 39, 176, 0.15); color: #ce93d8; border: 1px solid rgba(156, 39, 176, 0.2); }
+    &.agent { background: rgba(33, 150, 243, 0.15); color: #64b5f6; border: 1px solid rgba(33, 150, 243, 0.2); }
+  }
+}
+
+// === CONTENT COLUMN (720px max-width for everything below hero) ===
+
+.profile-content {
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 $spacing-xl $spacing-xl;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-lg;
+}
+
+// === SECTION HEADER (shared across about, pathways, writings, admin) ===
+
+.section-header {
+  font-size: $font-size-sm;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: $color-text-muted;
+  margin-bottom: $spacing-md;
+}
+
+// === ABOUT SECTION ===
+
+.about {
   background: rgba(10, 15, 20, 0.95);
   border: $border-primary;
   border-radius: $border-radius-lg;
-  margin-bottom: $spacing-lg;
-  overflow: hidden;
-}
-
-.section-header {
-  padding: $spacing-md $spacing-lg;
-  background: rgba(0, 212, 255, 0.1);
-  border-bottom: $border-primary;
-  font-size: $font-size-lg;
-  font-weight: 600;
-  color: $color-primary;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.section-content {
   padding: $spacing-lg;
 }
 
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: $spacing-md;
+.about-bio {
+  font-size: $font-size-lg;
+  color: $color-text-dim;
+  line-height: 1.6;
+  margin-bottom: $spacing-md;
 }
 
-.info-item {
+.about-meta {
+  display: flex;
+  gap: $spacing-xl;
+  flex-wrap: wrap;
+}
+
+.meta-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
-.info-label {
-  font-size: 12px;
-  color: $color-text-muted;
+.meta-label {
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  color: $color-text-muted;
 }
 
-.info-value {
+.meta-value {
   font-size: $font-size-md;
+  color: $color-text-dim;
+}
+
+// === PATHWAY CARDS GRID ===
+
+.pathways {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $spacing-sm;
+}
+
+.pathway-card {
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+  padding: $spacing-lg $spacing-md;
+  cursor: pointer;
+  transition: all $transition-fast;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $spacing-xs;
+
+  &:hover {
+    background: $bg-hover;
+    border-color: rgba(0, 212, 255, 0.5);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 212, 255, 0.1);
+  }
+
+  &.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+}
+
+.pathway-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.pathway-title {
+  font-size: $font-size-md;
+  font-weight: 600;
   color: $color-text;
 }
 
-.actions {
+.pathway-subtitle {
+  font-size: 10px;
+  color: $color-text-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+// === WRITINGS FEED ===
+
+.writings {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.writings-loading {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-lg;
+  color: $color-text-muted;
+  font-size: $font-size-md;
+}
+
+.writings-empty {
+  padding: $spacing-xl;
+  color: $color-text-muted;
+  font-size: $font-size-md;
+  text-align: center;
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+}
+
+.feed-card {
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+  padding: $spacing-lg;
+  transition: all $transition-fast;
+  cursor: default;
+
+  &:hover {
+    border-color: rgba(0, 212, 255, 0.5);
+    background: rgba(10, 20, 30, 0.95);
+  }
+}
+
+.feed-card-header {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  margin-bottom: $spacing-sm;
+}
+
+.feed-card-icon {
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.feed-card-type {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $color-text-muted;
+}
+
+.feed-card-title {
+  font-size: $font-size-lg;
+  font-weight: 600;
+  color: $color-text;
+  line-height: 1.3;
+  margin-bottom: $spacing-xs;
+}
+
+.feed-card-excerpt {
+  font-size: $font-size-md;
+  color: $color-text-dim;
+  line-height: 1.5;
+  margin-bottom: $spacing-sm;
+
+  // Clamp to 3 lines
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.feed-card-meta {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+  font-size: 11px;
+  color: $color-text-muted;
+}
+
+.feed-card-stat {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+// === ADMIN SECTION ===
+
+.admin {
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+  overflow: hidden;
+}
+
+.admin-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $spacing-md $spacing-lg;
+  cursor: pointer;
+  color: $color-text-muted;
+  font-size: $font-size-sm;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: color $transition-fast;
+  background: none;
+  border: none;
+  width: 100%;
+
+  &:hover {
+    color: $color-text-dim;
+  }
+
+  .chevron {
+    transition: transform $transition-fast;
+    font-size: $font-size-md;
+
+    &.open {
+      transform: rotate(180deg);
+    }
+  }
+}
+
+.admin-content {
+  padding: 0 $spacing-lg $spacing-lg;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+}
+
+.admin-actions {
   display: flex;
   gap: $spacing-sm;
   flex-wrap: wrap;
@@ -155,100 +545,97 @@
 .btn {
   padding: $spacing-sm $spacing-lg;
   border-radius: $border-radius-md;
-  font-size: $font-size-lg;
+  font-size: $font-size-md;
   font-weight: 600;
   cursor: pointer;
   border: none;
   transition: all $transition-fast;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: $spacing-xs;
-}
 
-.btn-primary {
-  background: $color-primary;
-  color: #000;
-
-  &:hover {
-    background: #00e5ff;
-    transform: translateY(-1px);
-  }
-}
-
-.btn-secondary {
-  background: rgba(0, 212, 255, 0.2);
-  color: $color-primary;
-  border: 1px solid rgba(0, 212, 255, 0.3);
-
-  &:hover {
-    background: rgba(0, 212, 255, 0.3);
+  &:active {
+    transform: scale(0.98);
   }
 }
 
 .btn-warning {
-  background: rgba(255, 152, 0, 0.2);
+  background: rgba(255, 152, 0, 0.15);
   color: $color-warning;
-  border: 1px solid rgba(255, 152, 0, 0.3);
+  border: 1px solid rgba(255, 152, 0, 0.25);
 
   &:hover {
-    background: rgba(255, 152, 0, 0.3);
+    background: rgba(255, 152, 0, 0.25);
   }
 }
 
 .btn-danger {
-  background: rgba(244, 67, 54, 0.2);
+  background: rgba(244, 67, 54, 0.15);
   color: $color-error;
-  border: 1px solid rgba(244, 67, 54, 0.3);
+  border: 1px solid rgba(244, 67, 54, 0.25);
 
   &:hover {
-    background: rgba(244, 67, 54, 0.3);
+    background: rgba(244, 67, 54, 0.25);
   }
 }
 
-.cognitive-links {
-  display: flex;
-  gap: $spacing-sm;
-  margin-top: $spacing-sm;
-}
-
-.cognitive-link {
-  padding: $spacing-md $spacing-lg;
-  background: rgba(156, 39, 176, 0.15);
-  border: 1px solid rgba(156, 39, 176, 0.3);
-  border-radius: $border-radius-md;
-  color: #ce93d8;
-  cursor: pointer;
-  transition: all $transition-fast;
-  text-align: center;
+.btn-primary {
+  background: rgba(0, 212, 255, 0.15);
+  color: $color-primary;
+  border: 1px solid rgba(0, 212, 255, 0.25);
 
   &:hover {
-    background: rgba(156, 39, 176, 0.25);
-    transform: translateY(-2px);
-  }
-
-  .icon {
-    font-size: 24px;
-    display: block;
-    margin-bottom: $spacing-xs;
-  }
-
-  .label {
-    font-size: $font-size-lg;
-    font-weight: 600;
+    background: rgba(0, 212, 255, 0.25);
   }
 }
 
-.actions-note {
+.admin-note {
+  font-size: 11px;
   color: $color-text-muted;
-  font-size: 13px;
-  margin: $spacing-md 0 0 0;
+  line-height: 1.5;
 }
 
-.description-text {
-  color: $color-text-dim;
-}
+// === RESPONSIVE ===
 
-.cognitive-description {
-  color: $color-text-dim;
-  margin: 0 0 $spacing-md 0;
+@media (max-width: 600px) {
+  .pathways {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .hero-profile {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 0 $spacing-lg $spacing-lg;
+  }
+
+  .hero-avatar {
+    width: 140px;
+    height: 140px;
+    min-width: 140px;
+  }
+
+  .avatar-initial {
+    font-size: 56px;
+  }
+
+  .hero-info {
+    align-items: center;
+  }
+
+  .hero-identity {
+    justify-content: center;
+  }
+
+  .hero-badges {
+    justify-content: center;
+  }
+
+  .hero-actions {
+    justify-content: center;
+  }
+
+  .profile-content {
+    padding: 0 $spacing-lg $spacing-lg;
+  }
 }

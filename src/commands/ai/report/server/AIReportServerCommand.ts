@@ -15,6 +15,7 @@ import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 interface ParsedDecision {
   timestamp: string;
@@ -61,8 +62,8 @@ export class AIReportServerCommand extends AIReportCommand {
     try {
       // Get AI decision log path
       const logPath = path.join(
-        process.cwd(),
-        '.continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log'
+        SystemPaths.sessions.root,
+        'system', '00000000-0000-0000-0000-000000000000', 'logs', 'ai-decisions.log'
       );
 
       // Get coordination statistics (always available even without log file)

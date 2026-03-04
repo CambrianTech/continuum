@@ -7,6 +7,7 @@
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { createConnectionConfigAuto } from '../examples/shared/ConnectionConfigFactory';
 import type { ConnectionConfig } from '@continuum/jtag/types';
 
@@ -75,6 +76,15 @@ class MinimalServer {
             res.end('Proxy error: ' + error.message);
           }
         });
+      } else if (url.startsWith('/avatars/')) {
+        // Avatar snapshot PNGs from ~/.continuum/avatars/
+        const filename = url.substring('/avatars/'.length);
+        if (!/^[\w\-.]+\.png$/.test(filename)) {
+          this.serve404(res);
+        } else {
+          const avatarPath = path.join(os.homedir(), '.continuum', 'avatars', filename);
+          this.serveBinaryFile(res, avatarPath, 'image/png');
+        }
       } else {
         // SPA fallback: serve the main HTML for client-side routing
         // This allows routes like /settings, /help, /chat/academy to work
@@ -120,6 +130,27 @@ class MinimalServer {
       
     } catch (error) {
       console.error(`❌ Failed to serve ${filename}:`, error);
+      this.serve404(res);
+    }
+  }
+
+  private serveBinaryFile(res: http.ServerResponse, filePath: string, contentType: string): void {
+    try {
+      if (!fs.existsSync(filePath)) {
+        this.serve404(res);
+        return;
+      }
+      const data = fs.readFileSync(filePath);
+      if (!res.headersSent) {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': data.length,
+          'Cache-Control': 'public, max-age=3600',
+        });
+      }
+      res.end(data);
+    } catch (error) {
+      console.error(`Failed to serve binary file ${filePath}:`, error);
       this.serve404(res);
     }
   }

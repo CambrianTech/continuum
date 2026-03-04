@@ -32,6 +32,7 @@ import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
+import { SystemPaths } from './system/core/config/SystemPaths';
 
 // =============================================================================
 // TOOL CATEGORIES - Common tools listed first for discoverability
@@ -120,8 +121,7 @@ const MIME_TYPES: Record<string, string> = {
 /** Allowed base directories for image reading (security) */
 const ALLOWED_IMAGE_PATHS = [
   '/tmp',
-  '.continuum',  // Relative paths within project
-  path.join(__dirname, '.continuum'),  // Absolute path to project .continuum
+  SystemPaths.root,                    // $HOME/.continuum (all screenshots, artifacts, etc.)
   path.join(__dirname, 'examples'),    // Example outputs
 ];
 

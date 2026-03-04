@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { SystemPaths } from '../../../../../core/config/SystemPaths';
 
 type LogFn = (message: string) => void;
 
@@ -52,13 +53,9 @@ export class LongTermMemoryStore {
     this.personaId = personaId;
     this.log = logger || (() => {});
 
-    // Per-persona storage path
-    // TODO: Use PATHS constant from system/shared/Constants.ts
-    const baseDir = process.env.CONTINUUM_DIR || '.continuum';
+    // Per-persona storage path — persistent at $HOME/.continuum/personas/{id}
     this.storePath = path.join(
-      baseDir,
-      'personas',
-      personaId,
+      SystemPaths.personas.dir(personaId),
       'memory.json' // TODO: Change to memory.sqlite
     );
 

@@ -25,6 +25,7 @@ export type { SearchExecuteResult, SearchVectorResult } from './modules/search';
 export type { ChannelEnqueueResult, ChannelDequeueResult, ChannelServiceCycleResult, ChannelServiceCycleFullResult } from './modules/channel';
 export type { ModuleInfo, ModuleMetrics, SlowCommand } from './modules/runtime';
 export type { GpuStatsResponse, SubsystemInfo } from './modules/gpu';
+export type { AvatarSnapshotResult } from './modules/avatar';
 export type {
 	SentinelHandle,
 	SentinelRunParams,
@@ -54,6 +55,7 @@ import { GpuMixin } from './modules/gpu';
 import { SentinelMixin } from './modules/sentinel';
 import { ToolParsingMixin } from './modules/tool_parsing';
 import { SystemResourceMixin } from './modules/system_resources';
+import { AvatarMixin } from './modules/avatar';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -106,21 +108,23 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  * Compose all mixins into the full client class.
  * Order matters for TypeScript type inference.
  */
-const ComposedClient = ToolParsingMixin(
-	SentinelMixin(
-		SystemResourceMixin(
-			GpuMixin(
-				RuntimeMixin(
-					EmbeddingMixin(
-						AIMixin(
-							ModelsMixin(
-								RagMixin(
-									SearchMixin(
-										CodeMixin(
-											MemoryMixin(
-												ChannelMixin(
-													CognitionMixin(
-														VoiceMixin(RustCoreIPCClientBase)
+const ComposedClient = AvatarMixin(
+	ToolParsingMixin(
+		SentinelMixin(
+			SystemResourceMixin(
+				GpuMixin(
+					RuntimeMixin(
+						EmbeddingMixin(
+							AIMixin(
+								ModelsMixin(
+									RagMixin(
+										SearchMixin(
+											CodeMixin(
+												MemoryMixin(
+													ChannelMixin(
+														CognitionMixin(
+															VoiceMixin(RustCoreIPCClientBase)
+														)
 													)
 												)
 											)

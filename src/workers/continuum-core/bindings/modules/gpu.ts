@@ -62,6 +62,7 @@ export interface EvictionRegistrySnapshotInfo {
 export interface GpuMixin {
 	gpuStats(): Promise<GpuStatsResponse>;
 	gpuPressure(): Promise<number>;
+	gpuSetBudget(subsystem: string, budgetMb: number): Promise<GpuStatsResponse>;
 	gpuEvictionRegistry(): Promise<EvictionRegistrySnapshotInfo>;
 	gpuEvictionCandidates(): Promise<EvictableEntryInfo[]>;
 }
@@ -122,6 +123,36 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 			const response = await this.request({ command: 'gpu/pressure' });
 			if (!response.success) throw new Error(response.error || 'Failed to get GPU pressure');
 			return Number((response.result as { pressure: number }).pressure);
+		}
+
+		/**
+		 * Set a subsystem's VRAM budget. Returns full stats snapshot after the change.
+		 * Used by GpuGovernor to rebalance budgets based on workload.
+		 */
+		async gpuSetBudget(subsystem: string, budgetMb: number): Promise<GpuStatsResponse> {
+			const response = await this.request({ command: 'gpu/set-budget', subsystem, budgetMb });
+			if (!response.success) throw new Error(response.error || 'Failed to set GPU budget');
+			const r = response.result as RustGpuStats;
+			const abp = r.allocations_by_priority;
+			return {
+				gpuName: r.gpu_name,
+				totalVramMb: Number(r.total_vram_mb),
+				totalUsedMb: Number(r.total_used_mb),
+				pressure: Number(r.pressure),
+				reserveMb: Number(r.reserve_mb),
+				rendering: mapSubsystem(r.rendering),
+				inference: mapSubsystem(r.inference),
+				tts: mapSubsystem(r.tts),
+				warningThreshold: Number(r.warning_threshold),
+				highThreshold: Number(r.high_threshold),
+				criticalThreshold: Number(r.critical_threshold),
+				allocationsByPriority: {
+					realtime: Number(abp.realtime),
+					interactive: Number(abp.interactive),
+					background: Number(abp.background),
+					batch: Number(abp.batch),
+				},
+			};
 		}
 
 		/**

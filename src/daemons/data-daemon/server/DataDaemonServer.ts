@@ -18,6 +18,7 @@ import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { getDatabasePath, getDatabaseDir } from '../../../system/config/ServerConfig';
+import { GlobalPaths } from '../../../system/core/config/SystemPaths';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -185,7 +186,7 @@ export class DataDaemonServer extends DataDaemonBase {
       type: 'file' as any,  // Use 'file' type, actual behavior determined by adapter class
       namespace: 'logging',
       options: {
-        filePath: '.continuum/logging.json',
+        filePath: `${GlobalPaths.root}/logging.json`,
         collection: 'logging_config',
         singletonId: 'singleton',
         prettyPrint: true

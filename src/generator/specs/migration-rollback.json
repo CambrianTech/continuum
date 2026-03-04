@@ -24,8 +24,8 @@
   "examples": [
     {
       "description": "Roll back to SQLite after failed cutover",
-      "command": "./jtag migration/rollback --current=\"postgres://joel@localhost:5432/continuum\"",
-      "expectedResult": "{ rolledBack: true, restoredConnection: \"/Users/joel/.continuum/data/database.sqlite\" }"
+      "command": "./jtag migration/rollback --current=\"postgres://user@localhost:5432/continuum\"",
+      "expectedResult": "{ rolledBack: true, restoredConnection: \"$HOME/.continuum/data/database.sqlite\" }"
     }
   ],
   "accessLevel": "system",
