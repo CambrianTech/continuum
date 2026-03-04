@@ -5,15 +5,11 @@
  */
 
 import { AICostCommand } from '../shared/AICostCommand';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AICostParams, AICostResult } from '../shared/AICostTypes';
 import { AIGenerationEntity } from '../../../../system/data/entities/AIGenerationEntity';
-import { Commands } from '../../../../system/core/shared/Commands';
-import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
-import { createDataListParams } from '../../../data/list/shared/DataListTypes';
-
+import type { DataListResult } from '../../../data/list/shared/DataListTypes';
 import { DataList } from '../../../data/list/shared/DataListTypes';
 export class AICostServerCommand extends AICostCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -25,12 +21,11 @@ export class AICostServerCommand extends AICostCommand {
       // Parse time range
       const { startTime, endTime } = this.parseTimeRange(params.startTime || '24h', params.endTime);
 
-      // Build filter with range operators (SQLite adapter supports $gte, $lte, etc.)
+      // Rust ORM FieldFilter is a single-operator enum per field — combining
+      // $gte + $lte on the same field silently fails (serde falls through to Value).
+      // Use $gte only, then filter endTime in TS.
       const filter: Record<string, any> = {
-        timestamp: {
-          $gte: startTime,
-          $lte: endTime
-        }
+        timestamp: { $gte: startTime }
       };
 
       if (params.provider) {
@@ -41,27 +36,22 @@ export class AICostServerCommand extends AICostCommand {
         filter.model = params.model;
       }
 
-      // Query AIGenerationEntity from database using data/list - let SQL do the filtering
-      // Note: omitting 'limit' means no limit (Rust ORM Option<usize> defaults to None)
-      const listParams = createDataListParams(
-        params.context,
-        params.sessionId,
-        {
-          dbHandle: 'default' as const,
-          collection: 'ai_generations',
-          filter,
-          orderBy: [{ field: 'timestamp', direction: 'desc' }]
-        }
-      );
-
-      const listResult = await DataList.execute<AIGenerationEntity>(listParams
-      );
+      const listResult = await DataList.execute<AIGenerationEntity>({
+        collection: 'ai_generations',
+        filter,
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        dbHandle: 'default',
+        backend: 'server'
+      } as any);
 
       if (!listResult.success || !listResult.items) {
         throw new Error('Failed to query AI generations from database');
       }
 
-      const finalGens = Array.from(listResult.items);
+      // Filter by endTime in TS (Rust ORM can't combine $gte + $lte on same field)
+      const finalGens = Array.from(listResult.items).filter(
+        (gen: AIGenerationEntity) => gen.timestamp <= endTime
+      );
 
       // Calculate aggregates
       const totalCost = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.estimatedCost, 0);

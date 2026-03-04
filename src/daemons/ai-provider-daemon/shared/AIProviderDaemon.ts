@@ -263,7 +263,7 @@ export class AIProviderDaemon extends DaemonBase {
 
       // Log successful generation to database for cost tracking (fire-and-forget — non-blocking)
       // This is the SINGLE source of truth - only daemon logs, not individual adapters
-      this.logGeneration(finalResponse, request).catch(() => {});
+      this.logGeneration(finalResponse, request).catch(e => console.error('AIProviderDaemon: generation logging failed:', e));
       timer.mark('log_generation');
 
       // Log routing info for observability (routing is guaranteed to exist since we just built it)
@@ -284,7 +284,7 @@ export class AIProviderDaemon extends DaemonBase {
         error,
         request,
         adapter.providerId
-      ).catch(() => {});
+      ).catch(e => console.error('AIProviderDaemon: failed generation logging failed:', e));
 
       timer.finish();
       // TODO: Implement failover to alternative providers
@@ -797,7 +797,7 @@ export class AIProviderDaemon extends DaemonBase {
     try {
       const response = await rustClient.generateText(request);
       // Log generation via TypeScript (Rust only handles inference, not DB logging)
-      AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(() => {});
+      AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(e => console.error('AIProviderDaemon: generation logging failed:', e));
       return response;
     } catch (error) {
       // Log failed generation
@@ -807,7 +807,7 @@ export class AIProviderDaemon extends DaemonBase {
         error,
         request,
         request.provider || 'unknown'
-      ).catch(() => {});
+      ).catch(e => console.error('AIProviderDaemon: failed generation logging failed:', e));
       throw error;
     }
   }

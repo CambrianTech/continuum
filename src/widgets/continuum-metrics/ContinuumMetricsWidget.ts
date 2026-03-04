@@ -110,6 +110,10 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     await this.fetchData();
   }
 
+  private get hasData(): boolean {
+    return this.summary.requests > 0 || this.timeSeries.length > 0;
+  }
+
   protected override renderContent(): TemplateResult {
     return html`
       <div class="metrics-panel">
@@ -123,16 +127,20 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
         </div>
 
         <div class="chart-container">
-          <svg viewBox="0 0 200 80" preserveAspectRatio="none">
-            <polyline stroke="#00d4ff" stroke-width="2" fill="none" opacity="0.8"
-              points="${this.getPathPoints(p => p.generations)}" />
-            <polyline stroke="#ff6b6b" stroke-width="2" fill="none" opacity="0.8"
-              points="${this.getPathPoints(p => p.tokens / 1000)}" />
-            <polyline stroke="#ffd700" stroke-width="2" fill="none" opacity="0.8"
-              points="${this.getPathPoints(p => p.avgResponseTime / 1000)}" />
-            <polyline stroke="#4ade80" stroke-width="2" fill="none" opacity="0.8"
-              points="${this.getPathPoints(p => p.cost * 100)}" />
-          </svg>
+          ${this.hasData ? html`
+            <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+              <polyline stroke="#00d4ff" stroke-width="2" fill="none" opacity="0.8"
+                points="${this.getPathPoints(p => p.generations)}" />
+              <polyline stroke="#ff6b6b" stroke-width="2" fill="none" opacity="0.8"
+                points="${this.getPathPoints(p => p.tokens / 1000)}" />
+              <polyline stroke="#ffd700" stroke-width="2" fill="none" opacity="0.8"
+                points="${this.getPathPoints(p => p.avgResponseTime / 1000)}" />
+              <polyline stroke="#4ade80" stroke-width="2" fill="none" opacity="0.8"
+                points="${this.getPathPoints(p => p.cost * 100)}" />
+            </svg>
+          ` : html`
+            <div class="empty-state">No data yet</div>
+          `}
         </div>
 
         <div class="legend">

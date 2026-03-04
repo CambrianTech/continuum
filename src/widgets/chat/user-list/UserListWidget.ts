@@ -20,8 +20,8 @@ import { render } from 'lit';
 import type { RenderFn, RenderContext } from '../../shared/EntityScroller';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { Events } from '../../../system/core/shared/Events';
 import { ContentService } from '../../../system/state/ContentService';
+import { Dm } from '../../../commands/collaboration/dm/shared/DmTypes';
 
 import { styles as externalStyles } from './user-list.styles';
 
@@ -205,9 +205,9 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           .lastActive=${lastActive}
         ></persona-tile>
         <div class="user-controls">
-          <button class="user-call-btn" title="Start voice call" @click=${(e: Event) => this.handleCallClick(e, user)}>
+          <button class="user-call-btn" title="Message" @click=${(e: Event) => this.handleCallClick(e, user)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
           </button>
           <button class="user-favorite-btn" title="Add to favorites" @click=${(e: Event) => this.handleFavoriteClick(e, user.id)}>⭐</button>
@@ -281,15 +281,32 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     verbose() && console.log(`» UserListWidget: Show action menu for user ${userId}`);
   }
 
-  private handleCallClick(e: Event, user: UserEntity): void {
+  private async handleCallClick(e: Event, user: UserEntity): Promise<void> {
     e.stopPropagation();
-    console.log(`📞 UserListWidget: Starting call with user ${user.displayName} (${user.id})`);
+    console.log(`💬 UserListWidget: Opening DM with ${user.displayName} (${user.id})`);
 
-    Events.emit('navigate:live', {
-      entityId: 'general',
-      entityType: 'room',
-      displayName: `Call with ${user.displayName}`
-    });
+    try {
+      const result = await Dm.execute({
+        participants: user.id
+      });
+
+      if (result.success && result.room) {
+        if (this.currentUser?.id) {
+          ContentService.setUserId(this.currentUser.id as UUID);
+        }
+
+        ContentService.open('chat', result.roomId as string, {
+          title: user.displayName || user.uniqueId || 'DM',
+          subtitle: 'Direct Message',
+          uniqueId: result.uniqueId,
+          metadata: { entity: result.room }
+        });
+      } else {
+        console.error('UserListWidget: Failed to create DM:', result.message);
+      }
+    } catch (error) {
+      console.error('UserListWidget: Error creating DM:', error);
+    }
   }
 
   private openUserProfile(userEntity: UserEntity): void {

@@ -1,6 +1,6 @@
 /**
  * Room List Widget - SCSS
- * Sidebar widget for room navigation
+ * Sidebar widget for room + DM navigation with filter chips
  */
 
 @use '../../shared/styles/variables' as *;
@@ -35,6 +35,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--spacing-sm);
 }
 
 .list-title {
@@ -60,26 +61,42 @@
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-.header-title {
-  color: var(--content-primary);
-  font-weight: 600;
-  font-size: 0.85em;
-  text-transform: capitalize;
-  letter-spacing: 0.5px;
+// Filter Chips
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  justify-content: center;
 }
 
-.room-count {
-  background: var(--content-accent);
-  color: var(--button-primary-text);
-  border-radius: var(--radius-xl);
-  min-width: 18px;
-  height: 18px;
-  padding: 0 var(--spacing-xs);
+.filter-chip {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.7em;
-  font-weight: bold;
+  height: 20px;
+  padding: 0 6px;
+  background: rgba(0, 40, 60, 0.6);
+  border: 1px solid rgba(0, 180, 200, 0.15);
+  border-radius: 3px;
+  color: rgba(0, 200, 220, 0.5);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+
+  &:hover {
+    background: rgba(0, 60, 80, 0.8);
+    border-color: rgba(0, 180, 200, 0.3);
+    color: rgba(0, 200, 220, 0.8);
+  }
+
+  &.active {
+    background: rgba(0, 140, 180, 0.25);
+    border-color: rgba(0, 180, 200, 0.5);
+    color: rgb(0, 220, 240);
+  }
 }
 
 // Room-specific item styling
@@ -121,6 +138,130 @@
   opacity: 0.8;
 }
 
+// DM-specific item styling
+.dm-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid transparent;
+
+  &:hover {
+    background: var(--widget-content-background);
+
+    .voice-btn {
+      opacity: 1;
+    }
+  }
+
+  &.active {
+    background: var(--message-user-background);
+    border-left-color: var(--content-accent);
+
+    .dm-name {
+      color: var(--content-accent);
+      font-weight: 600;
+    }
+  }
+}
+
+.dm-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-secondary, #2a2a4a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 500;
+  flex-shrink: 0;
+  color: var(--text-primary);
+
+  &.group {
+    border-radius: var(--radius-sm, 4px);
+  }
+}
+
+.dm-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dm-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary, #fff);
+}
+
+.dm-members {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #aaa);
+  margin-top: 1px;
+}
+
+.voice-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  opacity: 0;
+
+  &:hover {
+    background: var(--accent-color-dim, rgba(0, 200, 255, 0.2));
+    color: var(--accent-color, #00c8ff);
+  }
+
+  &.active {
+    opacity: 1;
+    background: var(--success-color-dim, rgba(67, 181, 129, 0.2));
+    color: var(--success-color, #43b581);
+    animation: pulse 2s infinite;
+  }
+}
+
+.voice-icon {
+  font-size: 14px;
+  display: flex;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+// New DM button
+.new-dm-btn {
+  padding: var(--spacing-sm, 8px);
+  background: transparent;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 0.7rem;
+  transition: all 0.15s ease;
+  text-align: center;
+
+  &:hover {
+    background: var(--widget-content-background);
+    color: var(--text-primary, #fff);
+  }
+}
+
+// Unread badges
 .unread-badge,
 .unread-count {
   background: var(--content-warning);
