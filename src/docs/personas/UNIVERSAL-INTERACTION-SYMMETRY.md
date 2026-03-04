@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Universal Interaction Symmetry
 **If a Human Can Do It, So Can an AI - Using the Same Interface**
 

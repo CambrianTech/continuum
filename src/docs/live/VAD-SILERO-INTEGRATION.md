@@ -1,6 +1,10 @@
-# Silero VAD Integration Results
+# Silero VAD Integration Results -- ONNX Runtime Integration
 
-## Implementation Status: ✅ WORKING
+> Raw ONNX Runtime integration of HuggingFace Silero VAD (2.1MB). Key finding: TV dialogue IS speech -- VAD detecting it is correct. The real problem requires speaker diarization, not better VAD.
+
+**Parent:** [Live](README.md)
+
+## Implementation Status: WORKING
 
 Successfully integrated Silero VAD using raw ONNX Runtime, bypassing the incompatible `silero-vad-rs` crate.
 

@@ -1,4 +1,8 @@
-# Continuous Transcription Architecture (Option C)
+# Continuous Transcription Architecture -- Low-Latency Streaming STT
+
+> End-to-end low-latency transcription with continuous streaming output. No waiting for silence -- transcribe every 1-2 seconds, emit partial results, complete sentences via smart buffering.
+
+**Parent:** [Live](README.md)
 
 ## Vision
 

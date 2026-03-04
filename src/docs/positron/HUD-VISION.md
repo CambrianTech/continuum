@@ -2,6 +2,8 @@
 
 > "Not widgets in boxes. One cohesive display you're INSIDE of."
 
+**Parent:** [Positron](README.md)
+
 ---
 
 ## The Problem with Current UI

@@ -1,6 +1,10 @@
-# Practical Implementation Plan: Recipe Learning System
+# Practical Implementation Plan — Recipe Learning System
 
-## 🎯 Current Status (October 30, 2025)
+> Phase-by-phase roadmap from existing task/genome commands to a full recipe learning system with training data accumulation, AI teaching commands, and team dynamics.
+
+**Parent:** [Activities](../README.md)
+
+## Current Status (October 30, 2025)
 
 ### ✅ What We Have
 1. **Task System** (Phase 4 complete)

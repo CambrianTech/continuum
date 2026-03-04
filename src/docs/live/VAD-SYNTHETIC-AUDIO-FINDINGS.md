@@ -1,4 +1,8 @@
-# VAD Testing: Synthetic Audio Findings
+# VAD Testing -- Synthetic Audio Findings
+
+> Synthetic audio (sine waves and formant-based speech) cannot evaluate ML-based VAD. Silero correctly rejects formant synthesis as non-human -- this demonstrates quality, not limitation. Real speech samples needed for proper ML VAD testing.
+
+**Parent:** [Live](README.md)
 
 ## Summary
 

@@ -1,4 +1,7 @@
 # Elegance Audit: Systemic Issues & Technical Debt
+
+**Parent:** [Planning](README.md)
+
 **Date**: 2026-02-15 | **Scope**: Full stack (Rust + TypeScript)
 
 ## Executive Summary

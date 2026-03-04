@@ -1,6 +1,8 @@
-# Voice Synthesis Architecture
+# Voice Synthesis Architecture -- TTS for PersonaUser Speech
 
-PersonaUsers can now speak in live voice calls! This document describes the architecture and how to improve TTS quality.
+> PersonaUsers speak in live voice calls through VoiceOrchestrator (turn arbitration), AIAudioBridge (call integration), and VoiceService (TTS API). Piper TTS at 0.13x realtime factor -- fast enough for live conversations.
+
+**Parent:** [Live](README.md)
 
 ## Architecture Overview
 

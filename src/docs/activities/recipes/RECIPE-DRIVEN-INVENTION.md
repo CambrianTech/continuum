@@ -1,4 +1,8 @@
-# Recipe-Driven Invention - Autonomous Development at Machine Speed
+# Recipe-Driven Invention — Autonomous Development at Machine Speed
+
+> End-to-end automation from user requirements to deployed solution. Describe what you want, the system invents it while you sleep.
+
+**Parent:** [Activities](../README.md)
 
 **Status**: Vision (Future Phase)
 **Created**: 2025-11-23

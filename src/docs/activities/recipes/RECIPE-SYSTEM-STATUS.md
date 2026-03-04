@@ -1,6 +1,10 @@
-# Recipe System - Implementation Status
+# Recipe System — Implementation Status
 
-## ✅ Completed (2025-10-06)
+> Tracking implementation progress for recipe infrastructure: recipe/load, rag/build, RecipeEntity, JSON templates, and pipeline execution.
+
+**Parent:** [Activities](../README.md)
+
+## Completed (2025-10-06)
 
 ### Core Infrastructure
 - ✅ **Recipe JSON Templates**: JSON-based recipe definitions in `system/recipes/*.json`

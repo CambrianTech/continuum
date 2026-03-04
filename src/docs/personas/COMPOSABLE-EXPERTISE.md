@@ -1,4 +1,6 @@
-> **Superseded by [GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md)** — kept as reference
+**Parent:** [Personas](README.md)
+
+> **Superseded by [GENOME-ARCHITECTURE.md](../genome/GENOME-ARCHITECTURE.md)** -- kept as reference
 
 # Composable Expertise: LoRA Layer Stacking
 
@@ -712,10 +714,10 @@ const layers = await Commands.execute('genome/query', {
 
 ## Related Documentation
 
-- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Multi-layer learning vision
-- [SCOPE-BASED-RECIPES.md](recipes/SCOPE-BASED-RECIPES.md) - Scope-based collaboration
-- [LORA-GENOME-PAGING.md](../system/user/server/modules/LORA-GENOME-PAGING.md) - Virtual memory implementation
-- [LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI vision
+- [COLLABORATIVE-LEARNING-VISION.md](../genome/COLLABORATIVE-LEARNING-VISION.md) - Multi-layer learning vision
+- [SCOPE-BASED-RECIPES.md](../activities/recipes/SCOPE-BASED-RECIPES.md) - Scope-based collaboration
+- [GENOME-ARCHITECTURE.md](../genome/GENOME-ARCHITECTURE.md) - Master genome manifesto
+- [LORA-GENOME-DEMOCRATIZATION.md](../papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI vision
 
 ---
 

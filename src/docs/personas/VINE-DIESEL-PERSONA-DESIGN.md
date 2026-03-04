@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Vine Diesel - Multi-Layer LoRA Persona Design
 
 ## Overview

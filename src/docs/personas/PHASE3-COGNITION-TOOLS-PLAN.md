@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Phase 3: Cognition, Tool Calling & Streaming Integration
 
 **Status**: Planning → Implementation

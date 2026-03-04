@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Academy Architectural Design - Complete System Integration
 
 > **Status**: This is the **long-term vision** document for the Academy ecosystem. The foundational implementation (Phase 1) is complete as a sentinel-based dual-teacher/student system. For the current working implementation, see **[ACADEMY-DOJO-ARCHITECTURE.md](ACADEMY-DOJO-ARCHITECTURE.md)** — that document describes the actual sentinel pipelines, entities, events, and test results. The 512-vector genomic search, P2P mesh, and competitive tournament features described here are **Phase 2-4 future work**.

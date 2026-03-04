@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Non-Linear Importance Scoring & Adaptive Consolidation
 
 **Status**: Design Document (Implementation Pending)

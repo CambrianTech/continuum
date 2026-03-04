@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # NESTED-LEARNING-CONNECTION.md
 
 **How Our Memory Architecture Relates to Nested Learning (NeurIPS 2025)**

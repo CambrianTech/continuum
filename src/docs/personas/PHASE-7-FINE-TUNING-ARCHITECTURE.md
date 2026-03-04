@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Phase 7: LoRA Fine-Tuning Architecture
 
 **Goal**: Enable PersonaUsers to learn from experience by fine-tuning LoRA adapters based on mistakes and successful patterns.

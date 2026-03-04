@@ -1,6 +1,10 @@
-# Recipe Learning Dynamics: AI-Orchestrated Team Learning
+# Recipe Learning Dynamics — AI-Orchestrated Team Learning
 
-## 🎯 The Core Innovation
+> Recipes define complete team dynamics including learning. PersonaUsers with teaching capabilities make pedagogical decisions dynamically based on context.
+
+**Parent:** [Activities](../README.md)
+
+## The Core Innovation
 
 **Recipes define complete team dynamics including learning**, not just command sequences.
 

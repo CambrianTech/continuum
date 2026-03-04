@@ -1,4 +1,8 @@
-# Recipe System Architecture
+# Recipe System Architecture — Composable Command Pipelines
+
+> Recipes are composable command pipelines that define how humans and AIs collaborate. Every experience (chat, coding, gaming, learning) is a recipe: context gathering, decision making, action execution, artifact storage.
+
+**Parent:** [Activities](../README.md)
 
 ## Vision
 

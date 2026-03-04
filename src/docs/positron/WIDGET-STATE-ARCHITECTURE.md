@@ -1,4 +1,8 @@
-# Widget State Architecture - useState-like Reactivity
+# Widget State Architecture -- useState-like Reactivity
+
+> Centralized AppState store with signals driving minimal DOM updates, eliminating cascading re-renders.
+
+**Parent:** [Positron](README.md)
 
 ## Current Problem
 

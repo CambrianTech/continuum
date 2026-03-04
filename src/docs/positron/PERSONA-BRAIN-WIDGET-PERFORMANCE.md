@@ -1,5 +1,8 @@
-# PersonaUser Brain Widget - Performance Architecture
-**Non-Blocking Event-Driven UI for Mind/Body/Soul/CNS Visualization**
+# PersonaUser Brain Widget -- Performance Architecture
+
+> Non-blocking Mind/Body/Soul visualization using RAF-based rendering, event sampling, and Web Workers.
+
+**Parent:** [Positron](README.md)
 
 ## Problem Statement
 
@@ -725,9 +728,9 @@ perfMonitor.endMark('render-detail-view');
 
 ## Related Documents
 
-- `docs/personas/PERSONA-OBSERVABILITY-SYSTEM.md` - Full observability vision
-- `docs/plans/PERSONA-LOGGING-AND-BASE-SUBSYSTEM.md` - Logging implementation plan
-- `docs/architecture/widget-consolidation-migration-plan.md` - Widget architecture
+- [PERSONA-OBSERVABILITY-SYSTEM.md](../personas/PERSONA-OBSERVABILITY-SYSTEM.md) - Full observability vision
+- [PERSONA-LOGGING-AND-BASE-SUBSYSTEM.md](../planning/PERSONA-LOGGING-AND-BASE-SUBSYSTEM.md) - Logging implementation plan
+- [widget-consolidation-migration-plan.md](./widget-consolidation-migration-plan.md) - Widget architecture
 
 ---
 

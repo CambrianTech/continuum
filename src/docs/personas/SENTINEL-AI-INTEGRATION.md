@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Sentinel-AI + Continuum Integration: The Complete Vision
 
 **Date**: 2025-11-03
@@ -816,9 +818,9 @@ Training Sentinel-AI from scratch:
 **Continuum**:
 - [Continuum README](../../README.md)
 - [GENOME-REVOLUTION](./GENOME-REVOLUTION.md)
-- [PERSONA-CONVERGENCE-ROADMAP](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)
-- [LORA-GENOME-PAGING](../../system/user/server/modules/LORA-GENOME-PAGING.md)
-- [PHASE-7-ROADMAP](./PHASE-7-ROADMAP.md)
+- [PERSONA-CONVERGENCE-ROADMAP](PERSONA-CONVERGENCE-ROADMAP.md)
+- [GENOME-ARCHITECTURE](../genome/GENOME-ARCHITECTURE.md)
+- [PERSONA-GENOMIC-ARCHITECTURE](PERSONA-GENOMIC-ARCHITECTURE.md)
 
 ---
 

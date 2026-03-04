@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Recipe-Embedded Continuous Learning Architecture
 
 ## 🎯 The Core Innovation

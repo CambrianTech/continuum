@@ -1,4 +1,8 @@
-# VAD System Architecture
+# VAD System Architecture -- Modular Voice Activity Detection
+
+> Trait-based VAD system replacing primitive RMS threshold. Silero ONNX ML model achieves 100% noise rejection. Factory pattern for runtime-swappable algorithms (RMS, WebRTC, Silero Raw).
+
+**Parent:** [Live](README.md)
 
 **Problem Solved**: Background noise (TV audio) being transcribed as speech
 

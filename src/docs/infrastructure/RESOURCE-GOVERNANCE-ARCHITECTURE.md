@@ -1,3 +1,5 @@
+**Parent:** [Infrastructure](README.md)
+
 # Resource Governance Architecture
 
 **From passive monitoring to AI-driven resource control.**
@@ -123,7 +125,7 @@ These decisions involve temporal patterns, user behavior prediction, and multi-r
         GpuMemoryManager   Scheduler   EvictionRegistry
 ```
 
-The sentinel runs as a **sentinel pipeline** — the same infrastructure that handles coding agents, Academy training, and security monitoring. It's a persona's subconscious thread (see [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md)).
+The sentinel runs as a **sentinel pipeline** — the same infrastructure that handles coding agents, Academy training, and security monitoring. It's a persona's subconscious thread (see [SENTINEL-ARCHITECTURE.md](../sentinel/SENTINEL-ARCHITECTURE.md)).
 
 #### Input: Resource Telemetry Frame
 
@@ -208,7 +210,7 @@ The training data writes itself from the system's own operation:
 2. **Rebalance outcomes** — mechanical strategy makes a decision, measure the result 30 seconds later. Did pressure drop? Did a user-facing task stall?
 3. **Failure cases** — OOM events, swap storms, training crashes. These are negative examples with high learning signal.
 4. **Human overrides** — when a user manually kills a process or adjusts settings, that's supervision data: "in this state, the right action was X."
-5. **Synthetic scenarios** — the Academy's generation sentinel (see [ACADEMY_ARCHITECTURE.md](personas/ACADEMY_ARCHITECTURE.md)) can synthesize edge cases: "what if 3 LoRA trainings queue simultaneously while a video call is active?"
+5. **Synthetic scenarios** — the Academy's generation sentinel (see [ACADEMY_ARCHITECTURE.md](../personas/ACADEMY_ARCHITECTURE.md)) can synthesize edge cases: "what if 3 LoRA trainings queue simultaneously while a video call is active?"
 
 Training format (SFT pairs):
 
@@ -329,7 +331,7 @@ When the sentinel encounters situations outside its training distribution:
 - Confidence < 0.4 -> escalate to parent persona (inbox message)
 - Three consecutive low-confidence decisions -> pause and notify human
 
-This matches the persona-sentinel contract from [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md): sentinels are subconscious threads that escalate to consciousness when patterns fail.
+This matches the persona-sentinel contract from [SENTINEL-ARCHITECTURE.md](../sentinel/SENTINEL-ARCHITECTURE.md): sentinels are subconscious threads that escalate to consciousness when patterns fail.
 
 ---
 
@@ -390,7 +392,8 @@ The goal: a system that runs well everywhere, improves itself continuously, trea
 
 ## Related Documents
 
-- [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md) — Sentinel cognitive model, persona-sentinel contract, pipeline engine
-- [GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md) — LoRA genome paging, adapter lifecycle
-- [personas/ACADEMY_ARCHITECTURE.md](personas/ACADEMY_ARCHITECTURE.md) — Training data generation sentinel
-- [personas/ACADEMY_GENOMIC_DESIGN.md](personas/ACADEMY_GENOMIC_DESIGN.md) — LoRA training pipeline design
+- [SENTINEL-ARCHITECTURE](../sentinel/SENTINEL-ARCHITECTURE.md) — Sentinel cognitive model, persona-sentinel contract, pipeline engine
+- [GENOME-ARCHITECTURE](../genome/GENOME-ARCHITECTURE.md) — LoRA genome paging, adapter lifecycle
+- [GPU-MEMORY-ARCHITECTURE](GPU-MEMORY-ARCHITECTURE.md) — GPU memory manager, RAII guards, subsystem budgets
+- [ACADEMY_ARCHITECTURE](../personas/ACADEMY_ARCHITECTURE.md) — Training data generation sentinel
+- [ACADEMY_GENOMIC_DESIGN](../personas/ACADEMY_GENOMIC_DESIGN.md) — LoRA training pipeline design

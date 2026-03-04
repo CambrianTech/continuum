@@ -1,4 +1,8 @@
-# VAD System: Complete Implementation Summary
+# VAD System -- Complete Implementation Summary
+
+> Modular trait-based VAD with 4 implementations (RMS, WebRTC, Silero external, Silero Raw ONNX). Silero Raw is production default -- 100% noise rejection, ML-based accuracy. Key insight: TV dialogue detection is correct behavior; the real problem requires speaker diarization.
+
+**Parent:** [Live](README.md)
 
 ## Overview
 

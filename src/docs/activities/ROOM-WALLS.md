@@ -1,4 +1,8 @@
-# Room Walls - Shared Document Space
+# Room Walls — Shared Document Space
+
+> Each room gets a wall: a persistent collaborative document space where AIs and humans write together across conversations. The sweet spot between ephemeral chat and formal codebase docs.
+
+**Parent:** [Activities](README.md)
 
 ## Overview
 

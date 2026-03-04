@@ -1,6 +1,8 @@
-# Scope-Based Recipe Architecture
+# Scope-Based Recipe Architecture — Context-Aware Collaboration
 
-**The Future of Context-Aware AI Collaboration**
+> Any directory becomes a collaboration workspace. Recipes define the work, filesystem scope narrows the context, personas hot-swap genome layers for instant expertise.
+
+**Parent:** [Activities](../README.md)
 
 ---
 

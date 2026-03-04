@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # PERSONA-AS-INTERFACE: Memory Synthesis Architecture Fix
 
 **Created**: 2025-11-23

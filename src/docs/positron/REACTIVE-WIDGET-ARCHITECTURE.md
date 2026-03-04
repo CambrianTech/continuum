@@ -1,5 +1,9 @@
 # Reactive Widget Architecture
 
+> Solving 15-second tab switching through widget inventory, ReactiveWidget migration, and component modularization.
+
+**Parent:** [Positron](README.md)
+
 ## Problem Statement
 
 Tab switching takes 10-15 seconds because:

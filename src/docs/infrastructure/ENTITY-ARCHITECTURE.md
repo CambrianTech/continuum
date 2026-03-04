@@ -1,3 +1,5 @@
+**Parent:** [Infrastructure](README.md)
+
 # Entity Architecture - Clean Inheritance with Decorators
 
 ## The Simple Truth

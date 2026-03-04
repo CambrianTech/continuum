@@ -1,48 +1,45 @@
 # JTAG Architecture Documentation Index
 
+**Parent:** [Planning](README.md)
+
 **Complete system architecture organized by concern**
 
-## 📚 **TABLE OF CONTENTS**
+## TABLE OF CONTENTS
 
-### **Core Architecture**
-1. [ARCHITECTURE-RULES.md](./ARCHITECTURE-RULES.md) - **READ FIRST** - Type safety, abstraction patterns, cardinal sins
-2. [CLAUDE.md](./CLAUDE.md) - Development guide, deployment, debugging, methodology
+### Core Architecture
+1. [CLAUDE.md](../../../CLAUDE.md) - Development guide, deployment, debugging, methodology
 
-### **System Design**
-3. [AI-HUMAN-USER-INTEGRATION.md](./AI-HUMAN-USER-INTEGRATION.md) - User hierarchy, first-class citizenship, equal access
-4. [PERSONA-GENOMIC-ARCHITECTURE.md](./PERSONA-GENOMIC-ARCHITECTURE.md) - RAG context, LoRA layers, evolution, per-persona storage
-5. [DAEMON-RESPONSIBILITIES.md](./DAEMON-RESPONSIBILITIES.md) - **NEW** - Which daemon does what, clean separation
+### System Design
+2. [AI-HUMAN-USER-INTEGRATION.md](../personas/AI-HUMAN-USER-INTEGRATION.md) - User hierarchy, first-class citizenship, equal access
+3. [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md) - RAG context, LoRA layers, evolution, per-persona storage
+4. [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md) - Which daemon does what, clean separation
 
-### **Implementation Guides**
-6. [ENTITY-STORAGE-GUIDE.md](./ENTITY-STORAGE-GUIDE.md) - **NEW** - Entity definitions, DataDaemon usage, adapter routing
-7. [TESTING-STRATEGY.md](./tests/middle-out/README.md) - Middle-out testing, real integration tests
+### Implementation Guides
+5. [Testing docs](../testing/) - Test documentation, debug findings, CRUD reports
 
 ---
 
-## 🎯 **QUICK NAVIGATION**
+## QUICK NAVIGATION
 
-### **If you want to understand...**
+### If you want to understand...
 
 **"How do users work?"**
-→ Read [AI-HUMAN-USER-INTEGRATION.md](./AI-HUMAN-USER-INTEGRATION.md)
+-> Read [AI-HUMAN-USER-INTEGRATION.md](../personas/AI-HUMAN-USER-INTEGRATION.md)
 
 **"How do PersonaUsers learn and evolve?"**
-→ Read [PERSONA-GENOMIC-ARCHITECTURE.md](./PERSONA-GENOMIC-ARCHITECTURE.md)
+-> Read [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md)
 
 **"Which daemon should I use for X?"**
-→ Read [DAEMON-RESPONSIBILITIES.md](./DAEMON-RESPONSIBILITIES.md)
-
-**"How do I store and query data?"**
-→ Read [ENTITY-STORAGE-GUIDE.md](./ENTITY-STORAGE-GUIDE.md)
+-> Read [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md)
 
 **"What are the type safety rules?"**
-→ Read [ARCHITECTURE-RULES.md](./ARCHITECTURE-RULES.md)
+-> See CLAUDE.md at project root
 
 **"How do I test my changes?"**
-→ Read [tests/middle-out/README.md](./tests/middle-out/README.md)
+-> Read [Testing docs](../testing/)
 
 **"How do I deploy and debug?"**
-→ Read [CLAUDE.md](./CLAUDE.md)
+-> Read [CLAUDE.md](../../../CLAUDE.md)
 
 ---
 
@@ -144,19 +141,18 @@
 
 ---
 
-## 🔍 **FINDING WHAT YOU NEED**
+## FINDING WHAT YOU NEED
 
 **Use this index as your entry point.** Each document is focused on a specific concern. Start with the relevant doc, then follow cross-references as needed.
 
 **If you're implementing:**
-- A new user type → AI-HUMAN-USER-INTEGRATION.md
-- A new daemon → DAEMON-RESPONSIBILITIES.md
-- A new entity → ENTITY-STORAGE-GUIDE.md
-- RAG/AI features → PERSONA-GENOMIC-ARCHITECTURE.md
-- Tests → tests/middle-out/README.md
+- A new user type -> [AI-HUMAN-USER-INTEGRATION.md](../personas/AI-HUMAN-USER-INTEGRATION.md)
+- A new daemon -> [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md)
+- RAG/AI features -> [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md)
+- Tests -> [Testing docs](../testing/)
 
 **If you're debugging:**
-- Read CLAUDE.md for debugging methodology
+- Read [CLAUDE.md](../../../CLAUDE.md) for debugging methodology
 - Check logs first (don't guess!)
 - Use screenshot commands
 - Follow scientific development methodology

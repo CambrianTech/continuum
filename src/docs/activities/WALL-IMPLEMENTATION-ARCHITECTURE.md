@@ -1,6 +1,10 @@
-# Wall Commands & Lease System - Implementation Architecture
+# Wall Commands & Lease System — Implementation Architecture
 
-**Status**: Implementation Phase  
+> Complete implementation architecture for wall/write, wall/read, wall/list commands with lease-based democratic file access control.
+
+**Parent:** [Activities](README.md)
+
+**Status**: Implementation Phase
 **Version**: 1.0  
 **Date**: 2025-12-03  
 **Author**: Claude Code (Memento)

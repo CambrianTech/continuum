@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # The Genome Revolution: Autonomous AI Citizens with Evolvable Intelligence
 
 **Date**: 2025-11-03
@@ -551,10 +553,9 @@ PersonaUser (Autonomous AI Citizen)
 ---
 
 **See Also**:
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Three architectures converging
-- [LORA-GENOME-PAGING.md](../system/user/server/modules/LORA-GENOME-PAGING.md) - Virtual memory for skills
-- [RECIPE-LEARNING-DYNAMICS.md](../recipes/RECIPE-LEARNING-DYNAMICS.md) - AI-orchestrated team learning
-- [PHASE-7-ROADMAP.md](PHASE-7-ROADMAP.md) - Current implementation roadmap
+- [PERSONA-CONVERGENCE-ROADMAP.md](PERSONA-CONVERGENCE-ROADMAP.md) - Three architectures converging
+- [GENOME-ARCHITECTURE.md](../genome/GENOME-ARCHITECTURE.md) - Master genome manifesto
+- [RECIPE-LEARNING-DYNAMICS.md](../activities/recipes/RECIPE-LEARNING-DYNAMICS.md) - AI-orchestrated team learning
 - [GENOME-MANAGER-INTEGRATION.md](GENOME-MANAGER-INTEGRATION.md) - Integration with AIProviderDaemon
 
 **Last Updated**: 2025-11-23

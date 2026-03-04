@@ -1,5 +1,8 @@
 # Persona-Driven UI Paradigm
-**A New Frontend Architecture for AI-Native Applications**
+
+> A new frontend architecture where AI personas drive the UI through EventWorkerRouter, BaseAIWidget, and off-main-thread patterns.
+
+**Parent:** [Positron](README.md)
 
 ## The Paradigm Shift
 

@@ -1,5 +1,8 @@
 # Positronic Embodiment
-**AI Personas as Digital Citizens with Multimodal Presence**
+
+> AI personas as digital citizens with multimodal presence -- text, voice, video, game, and MRI embodiments.
+
+**Parent:** [Positron](README.md)
 
 ## The Vision
 

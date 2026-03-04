@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # User Storage Refactoring - Unified Architecture (DAEMON-BASED)
 
 **Goal**: Eliminate duplication between HumanUser and PersonaUser using EXISTING daemon architecture, not manager bloat.

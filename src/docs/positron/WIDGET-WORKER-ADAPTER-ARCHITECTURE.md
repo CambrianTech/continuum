@@ -1,5 +1,8 @@
 # Widget Worker Adapter Architecture
-**Generic, Easy-to-Use Pattern for Off-Loading Widget Work to Web Workers**
+
+> Generic pattern for off-loading widget computation to Web Workers: Render, Data, and Canvas adapters.
+
+**Parent:** [Positron](README.md)
 
 ## Problem Statement
 
@@ -886,9 +889,9 @@ const result = await api.render(data);  // Looks like local function!
 
 ## Related Documents
 
-- `docs/design/PERSONA-BRAIN-WIDGET-PERFORMANCE.md` - Brain widget specific performance
-- `docs/architecture/widget-consolidation-migration-plan.md` - Widget architecture
-- `docs/personas/PERSONA-OBSERVABILITY-SYSTEM.md` - Observability vision
+- [PERSONA-BRAIN-WIDGET-PERFORMANCE.md](./PERSONA-BRAIN-WIDGET-PERFORMANCE.md) - Brain widget specific performance
+- [widget-consolidation-migration-plan.md](./widget-consolidation-migration-plan.md) - Widget architecture
+- [PERSONA-OBSERVABILITY-SYSTEM.md](../personas/PERSONA-OBSERVABILITY-SYSTEM.md) - Observability vision
 
 ---
 

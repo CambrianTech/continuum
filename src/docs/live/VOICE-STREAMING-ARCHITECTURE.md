@@ -1,4 +1,8 @@
-# Voice Streaming Architecture
+# Voice Streaming Architecture -- Voice Chat Infrastructure
+
+> Voice chat infrastructure for real-time audio communication with AI personas. Commands (start/stop/transcribe/synthesize), TTS adapter registry with 5 adapters, gRPC bridge to Rust streaming-core worker.
+
+**Parent:** [Live](README.md)
 
 ## Overview
 

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Git as AI Cognition Architecture
 
 ## Vision: Git SHA as Complete Cognitive Snapshot

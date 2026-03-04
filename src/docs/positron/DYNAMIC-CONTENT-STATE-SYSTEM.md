@@ -1,6 +1,10 @@
 # FIRM DESIGN: Dynamic Content State System
 
-## 🎯 PROBLEM STATEMENT
+> FIRM design for state management using UserState entity, ContentType registry, and lifecycle management.
+
+**Parent:** [Positron](README.md)
+
+## PROBLEM STATEMENT
 
 Current state management is fundamentally broken:
 - ChatWidget hardcodes `currentRoomId = DEFAULT_ROOMS.GENERAL`

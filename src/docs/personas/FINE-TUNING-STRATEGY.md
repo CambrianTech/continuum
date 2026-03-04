@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # FINE-TUNING STRATEGY: Local vs API Training (2025)
 
 **Comprehensive guide to LoRA fine-tuning approaches for PersonaUser genome evolution**

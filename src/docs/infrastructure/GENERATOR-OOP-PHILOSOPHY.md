@@ -1,3 +1,5 @@
+**Parent:** [Infrastructure](README.md)
+
 # Generator + OOP: The Intertwined Architecture
 
 ## Core Principle
@@ -163,7 +165,8 @@ Over time:
 
 ## See Also
 
-- [ARCHITECTURE-RULES.md](ARCHITECTURE-RULES.md) - Type system and entity rules
-- [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) - Commands and Events
+- [ENTITY-ARCHITECTURE](ENTITY-ARCHITECTURE.md) - Entity system: type rules, decorator-driven schema
+- [EVENT-COMMANDS-ARCHITECTURE](EVENT-COMMANDS-ARCHITECTURE.md) - Commands and Events: the two universal primitives
+- [UNIFIED-GENERATION-SYSTEM](UNIFIED-GENERATION-SYSTEM.md) - Unified generation pipeline
 - `generator/` - All generator implementations
 - `system/recipes/` - Activity recipe definitions

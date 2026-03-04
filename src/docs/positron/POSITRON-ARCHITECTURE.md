@@ -1,8 +1,8 @@
 # Positron: AI-Native UI Framework
 
 > "Not AI bolted on, but AI as a core primitive."
->
-> "Describe your experience. We'll bring it to life."
+
+**Parent:** [Positron](README.md)
 
 ---
 
@@ -917,9 +917,9 @@ From the ground up, every component is designed to be perceivable and controllab
 
 ## See Also
 
-- [CONTINUUM-VISION.md](CONTINUUM-VISION.md) - The grand vision, The Stack, and Rooms architecture
-- [CONTINUUM-BUSINESS-MODEL.md](CONTINUUM-BUSINESS-MODEL.md) - Open source business model
-- [examples/ENTERPRISE-IVR.md](examples/ENTERPRISE-IVR.md) - First product: AI voice agents
+- [CONTINUUM-VISION.md](../CONTINUUM-VISION.md) - The grand vision, The Stack, and Rooms architecture
+- [CONTINUUM-BUSINESS-MODEL.md](../planning/CONTINUUM-BUSINESS-MODEL.md) - Open source business model
+- [ENTERPRISE-IVR.md](../examples/ENTERPRISE-IVR.md) - First product: AI voice agents
 
 ---
 

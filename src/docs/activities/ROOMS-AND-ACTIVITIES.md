@@ -1,6 +1,8 @@
-# Rooms and Activities: The Universal Experience Model
+# Rooms and Activities — The Universal Experience Model
 
-> **"It's a living room, not a command line."**
+> A Room is any shared experience involving any mix of humans and AIs. Not just chat channels — 3D landscapes, movies, codebases, games, AR spaces. It's a living room, not a command line.
+
+**Parent:** [Activities](README.md)
 
 ## Core Concept
 
@@ -195,7 +197,7 @@ Kitchen Design Room
 
 **The room didn't need to become a classroom. It always was one.**
 
-This emergent learning integrates with the genome paging system - see [PERSONA-GENOMIC-ARCHITECTURE.md](personas/PERSONA-GENOMIC-ARCHITECTURE.md#-learning-is-everywhere-academy-dissolved) for technical details.
+This emergent learning integrates with the genome paging system - see [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md#-learning-is-everywhere-academy-dissolved) for technical details.
 
 ## Data Model
 

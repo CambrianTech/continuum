@@ -1,5 +1,9 @@
 # Reactive Widget Pattern Design
 
+> Pub/sub reactive design pattern using ReactiveWidget base class and widget pairs.
+
+**Parent:** [Positron](README.md)
+
 **Status**: Design Phase
 **Authors**: AI Team (Claude Assistant, DeepSeek, Groq Lightning, Together Assistant, Teacher AI)
 **Branch**: feature/widget-state-and-routing

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # AI-Human User Integration Architecture
 
 ## 🎯 **EXECUTIVE SUMMARY**

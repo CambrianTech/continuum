@@ -1,4 +1,8 @@
-# Voice Conference Architecture
+# Voice Conference Architecture -- Multi-Party Conferencing
+
+> Multi-party voice conferencing where humans and AIs talk simultaneously. N-to-N audio mixing with mix-minus, VAD per participant, turn coordination to prevent AI pile-on, WebRTC for low-latency human transport.
+
+**Parent:** [Live](README.md)
 
 ## Vision
 

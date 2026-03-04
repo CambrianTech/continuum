@@ -1,4 +1,8 @@
-# Pin and Task Systems: Human-AI Collaborative Workspace
+# Pin and Task Systems — Human-AI Collaborative Workspace
+
+> Pins are post-it note reminders. Tasks are structured work plans. Both are first-class entities with symmetric human-AI command access and RAG context integration.
+
+**Parent:** [Activities](../README.md)
 
 **Status**: Design phase - To be implemented in Phase 3B
 **Discussion Date**: 2025-11-25

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Multi-Model Persona Architecture
 
 **Last Updated**: 2025-11-22

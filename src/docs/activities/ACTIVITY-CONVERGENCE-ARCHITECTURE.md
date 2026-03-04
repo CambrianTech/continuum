@@ -1,6 +1,8 @@
-# Activity Convergence Architecture
+# Activity Convergence Architecture — Tab == Activity
 
-> "A Recipe IS a Sentinel with `loop: { type: 'once' }` and a UI layout."
+> Tab == Activity. Everything in Continuum is an Activity. A Recipe IS a Sentinel with a UI layout. One unified content stream per activity across all modalities.
+
+**Parent:** [Activities](README.md)
 
 ## The Fundamental Equation
 

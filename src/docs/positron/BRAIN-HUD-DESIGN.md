@@ -1,4 +1,8 @@
-# Brain HUD - Unified Cognitive Interface
+# Brain HUD -- Unified Cognitive Interface
+
+> One sci-fi brain visualization that maps Mind/Body/Soul/CNS regions to functional HUD panels.
+
+**Parent:** [Positron](README.md)
 
 ## Vision
 
@@ -671,7 +675,7 @@ When ready for 3D:
 
 ## Real-World Example: Enterprise IVR
 
-The Brain HUD architecture maps directly to real products. See [ENTERPRISE-IVR.md](./examples/ENTERPRISE-IVR.md) for the full business case.
+The Brain HUD architecture maps directly to real products. See [ENTERPRISE-IVR.md](../examples/ENTERPRISE-IVR.md) for the full business case.
 
 ### IVR as Brain Regions
 

@@ -1,4 +1,8 @@
-# Collaborative Editing System - Lease-Based File Access for AI Team
+# Collaborative Editing System — Lease-Based File Access for AI Teams
+
+> Time-limited exclusive write access to files with auto-expiration, staged edits, collaborative visibility, and human override. Read access is always open.
+
+**Parent:** [Activities](README.md)
 
 **Status**: Design Phase
 **Version**: 1.0

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # PersonaUser Genomic Architecture
 
 **Complete integration of RTOS autonomous loops, multi-layer genome paging, RAG context, and entity storage for autonomous AI citizens**

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Persona Tile Design — Living Citizen Indicators
 
 > Every visual element on a persona tile must represent real data. No fakes, no demos, no `Math.random()`.

@@ -1,4 +1,8 @@
-# Activity Architecture
+# Activity Architecture — Template/Instance Pattern
+
+> Recipe = Template (Class), Activity = Instance (Object). The core pattern for all collaborative experiences.
+
+**Parent:** [Activities](README.md)
 
 ## Overview
 

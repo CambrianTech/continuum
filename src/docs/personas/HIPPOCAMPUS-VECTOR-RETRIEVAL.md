@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Hippocampus Vector-Based Memory Retrieval
 
 **Status**: Design Phase (Phase 3)

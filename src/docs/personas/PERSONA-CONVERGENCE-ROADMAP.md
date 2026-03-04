@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # PersonaUser Convergence Roadmap
 
 **Status**: Active development
@@ -119,7 +121,7 @@ Hardware Detection (Metal/CUDA)
   → ./jtag gpu/stats shows real-time usage
 ```
 
-See [GPU-MEMORY-ARCHITECTURE.md](../architecture/GPU-MEMORY-ARCHITECTURE.md) for complete details.
+See [GPU-MEMORY-ARCHITECTURE.md](../infrastructure/GPU-MEMORY-ARCHITECTURE.md) for complete details.
 
 ## Next Phases
 
@@ -144,9 +146,9 @@ Reticulum mesh for genome sharing across nodes. Performance-weighted 512-vector 
 
 ## Related Documentation
 
-- [LORA-GENOME-PHENOTYPES.md](../architecture/LORA-GENOME-PHENOTYPES.md) — Phenotype catalog and paging concept
-- [GPU-MEMORY-ARCHITECTURE.md](../architecture/GPU-MEMORY-ARCHITECTURE.md) — GPU memory system
+- [LORA-GENOME-PHENOTYPES.md](../genome/LORA-GENOME-PHENOTYPES.md) — Phenotype catalog and paging concept
+- [GPU-MEMORY-ARCHITECTURE.md](../infrastructure/GPU-MEMORY-ARCHITECTURE.md) — GPU memory system
 - [DYNAMIC-GENOME-ARCHITECTURE.md](../genome/DYNAMIC-GENOME-ARCHITECTURE.md) — Dynamic composition
 - [ACADEMY-DOJO-ARCHITECTURE.md](ACADEMY-DOJO-ARCHITECTURE.md) — Teacher/student training
 - [ACADEMY_ARCHITECTURE.md](ACADEMY_ARCHITECTURE.md) — Long-term Academy vision
-- [sentinel-lora-training.md](../sentinel-lora-training.md) — Sentinel training pipeline
+- [sentinel-lora-training.md](../genome/sentinel-lora-training.md) — Sentinel training pipeline

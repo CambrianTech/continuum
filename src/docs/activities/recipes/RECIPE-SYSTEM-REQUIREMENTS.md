@@ -1,4 +1,8 @@
-# RECIPE SYSTEM REQUIREMENTS
+# Recipe System Requirements — Case Study Analysis
+
+> Requirements derived from real use cases (Thronglets, Tarot Reading, chat system). Identifies what the recipe system needs and what gaps remain.
+
+**Parent:** [Activities](../README.md)
 
 **Based on Case Study Analysis**: Thronglets, Tarot Reading, and Real Chat System
 

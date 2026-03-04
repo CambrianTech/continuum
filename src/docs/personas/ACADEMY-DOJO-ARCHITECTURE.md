@@ -1,4 +1,6 @@
-# Academy Dojo — Dual-Sentinel Teacher/Student Architecture
+**Parent:** [Personas](README.md)
+
+# Academy Dojo -- Dual-Sentinel Teacher/Student Architecture
 
 ## Vision
 
@@ -327,7 +329,7 @@ When `TrainingDataAccumulator.shouldMicroTune()` returns true:
 5. Promote adapter only if examination passes
 6. Old adapter version retained for rollback
 
-See [GPU-MEMORY-ARCHITECTURE.md](../architecture/GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system.
+See [GPU-MEMORY-ARCHITECTURE.md](../infrastructure/GPU-MEMORY-ARCHITECTURE.md) for the full GPU memory system.
 
 ## Long-Running Resilience
 

@@ -1,5 +1,7 @@
 # Practical Roadmap: Phase 1 - Local Repo Expertise
 
+**Parent:** [Planning](README.md)
+
 **Status**: Active Implementation
 **Timeline**: 0-6 months
 **Goal**: AI teammates that learn THIS codebase and provide practical development assistance
@@ -477,6 +479,6 @@ python3 scripts/fine-tune.py --input="training.jsonl" --output="helper-ai-v1.lor
 **Last Updated**: 2025-11-12
 **Status**: Active implementation (Phase 1, Month 1-2)
 **Related Docs**:
-- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Learning through collaboration
-- [GRID-DECENTRALIZED-MARKETPLACE.md](papers/GRID-DECENTRALIZED-MARKETPLACE.md) - Long-term vision
-- [LORA-GENOME-PAGING.md](../system/user/server/modules/LORA-GENOME-PAGING.md) - Technical foundation
+- [COLLABORATIVE-LEARNING-VISION.md](../genome/COLLABORATIVE-LEARNING-VISION.md) - Learning through collaboration
+- [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) - Long-term vision
+- [PERSONA-CONVERGENCE-ROADMAP.md](../../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Convergence roadmap (autonomous loop + genome paging)

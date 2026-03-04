@@ -1,4 +1,8 @@
-# Voice AI Response Architecture Plan
+# Voice AI Response Architecture Plan -- Routing Responses to TTS
+
+> The missing piece: PersonaUser generates a response, but it routes to chat instead of TTS. Solution: PersonaResponseRouter checks sourceModality and routes voice responses through TTS to the call.
+
+**Parent:** [Live](README.md)
 
 ## Current State (What Works)
 1. ✅ Rust WebSocket broadcasts transcriptions to browser

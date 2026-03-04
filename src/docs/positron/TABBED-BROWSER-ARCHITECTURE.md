@@ -1,5 +1,9 @@
 # Tabbed Browser Architecture
 
+> Browser widget as center content panel with collaborative browsing, replacing destructive window.location navigation.
+
+**Parent:** [Positron](README.md)
+
 ## Problem
 
 The current `navigate` command uses `window.location.href` which navigates **the entire Continuum widget tab away**, breaking the UI. An AI running `./jtag navigate --url="http://localhost:9002"` destroys the widget interface.

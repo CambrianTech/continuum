@@ -1,8 +1,8 @@
 # Positron: Collaboration Architecture
 
 > **"Tab == Activity. Everything in Continuum is an Activity."**
->
-> **"AIs aren't trapped assistants — they're free agents who choose what to perceive."**
+
+**Parent:** [Positron](README.md)
 
 ---
 
@@ -30,13 +30,13 @@ Positron is Continuum's AI-native UI framework. Not AI bolted onto a chat app �
 | Document | Scope |
 |----------|-------|
 | **This document** | Collaboration umbrella — Positron framework, activities, state, recipes, AI perception |
-| [ACTIVITY-CONVERGENCE-ARCHITECTURE.md](ACTIVITY-CONVERGENCE-ARCHITECTURE.md) | Activity entity deep-dive, convergence phases, stress tests |
+| [ACTIVITY-CONVERGENCE-ARCHITECTURE.md](../activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md) | Activity entity deep-dive, convergence phases, stress tests |
 | [POSITRON-STATE-LAYERS.md](POSITRON-STATE-LAYERS.md) | Four-layer state system details, decorator API, performance comparison |
 | [POSITRON-HOOKS-AND-PERCEPTION.md](POSITRON-HOOKS-AND-PERCEPTION.md) | AI hook subscription, cognition budget, cross-context synthesis |
 | [POSITRON-ARCHITECTURE.md](POSITRON-ARCHITECTURE.md) | Framework vision — pluggability, marketplace, integration adapters |
-| [recipes/RECIPES.md](recipes/RECIPES.md) | Recipe entity spec, pipeline steps, 7 core recipes |
-| [recipes/RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) | Gap analysis, 10 missing features, priority matrix |
-| [widgets/WIDGET-CLASS-DESIGN.md](../widgets/WIDGET-CLASS-DESIGN.md) | Widget implementation — base classes, Shadow DOM, CSS system |
+| [RECIPES.md](../activities/recipes/RECIPES.md) | Recipe entity spec, pipeline steps, 7 core recipes |
+| [RECIPE-SYSTEM-REQUIREMENTS.md](../activities/recipes/RECIPE-SYSTEM-REQUIREMENTS.md) | Gap analysis, 10 missing features, priority matrix |
+| [REACTIVE-WIDGET-ARCHITECTURE.md](REACTIVE-WIDGET-ARCHITECTURE.md) | Widget implementation — base classes, Shadow DOM, CSS system |
 | [WIDGET-TECHNICAL-DEBT.md](WIDGET-TECHNICAL-DEBT.md) | innerHTML elimination, setTimeout hacks, migration tracker |
 
 ---
@@ -641,11 +641,10 @@ POSITRON-COLLABORATION-ARCHITECTURE.md (this document)
 
 **Related architecture:**
 
-- [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md) — Pipeline execution engine (recipes ARE sentinels)
-- [GENOME-ARCHITECTURE.md](GENOME-ARCHITECTURE.md) — LoRA genome paging (per-activity role loading)
-- [ROOMS-AND-ACTIVITIES.md](ROOMS-AND-ACTIVITIES.md) — Philosophy: "It's a living room, not a command line"
-- [RESOURCE-GOVERNANCE-ARCHITECTURE.md](RESOURCE-GOVERNANCE-ARCHITECTURE.md) — GPU governor manages widget rendering budgets
-- [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) — Commands.execute() and Events.subscribe() — the foundation
+- [SENTINEL-ARCHITECTURE.md](../sentinel/SENTINEL-ARCHITECTURE.md) — Pipeline execution engine (recipes ARE sentinels)
+- [GENOME-ARCHITECTURE.md](../genome/GENOME-ARCHITECTURE.md) — LoRA genome paging (per-activity role loading)
+- [ROOMS-AND-ACTIVITIES.md](../activities/ROOMS-AND-ACTIVITIES.md) — Philosophy: "It's a living room, not a command line"
+- [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) — GPU governor manages widget rendering budgets
 
 ---
 

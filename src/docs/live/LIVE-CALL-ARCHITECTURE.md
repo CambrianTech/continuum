@@ -1,4 +1,8 @@
-# Live Call Architecture
+# Live Call Architecture -- Game Engine Philosophy for Real-Time Calls
+
+> Handles not copies, command buffers not RPC, zero-copy pipelines, resource pools not per-frame allocation. Signaling and data transport are separate systems. This is how game engines work, and it's how live calls must work.
+
+**Parent:** [Live](README.md)
 
 ## Philosophy: Game Engine, Not Web Dev
 

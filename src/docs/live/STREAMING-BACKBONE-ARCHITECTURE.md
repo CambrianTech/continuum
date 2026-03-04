@@ -1,6 +1,8 @@
-# Streaming Backbone Architecture
+# Streaming Backbone Architecture -- Universal Real-Time Infrastructure
 
-**The universal real-time infrastructure for AI communication.**
+> The universal real-time infrastructure for AI communication. Voice, video, avatars, generation -- all built on ONE backbone with ring buffers, zero-copy handles, and event-driven pull. Adapters plug in. The core never changes.
+
+**Parent:** [Live](README.md)
 
 Voice, video, avatars, Sora-level generation - all built on ONE backbone. Adapters plug in. The core never changes.
 

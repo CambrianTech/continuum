@@ -1,4 +1,8 @@
-# Technical Debt - MUST FIX
+# Widget Technical Debt -- MUST FIX
+
+> Tracking innerHTML elimination, setTimeout hacks, and BaseWidget migration across the widget system.
+
+**Parent:** [Positron](README.md)
 
 **Branch:** `feature/widget-overhaul-vite`
 **Date:** 2026-01-10

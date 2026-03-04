@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Coordination as Artificial Brain Waves
 
 **Date**: 2025-11-16

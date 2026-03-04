@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Unified Consciousness Architecture
 
 ## Vision: True Cognitive Continuity

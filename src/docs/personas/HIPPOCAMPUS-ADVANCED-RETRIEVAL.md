@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Hippocampus Advanced Retrieval Architecture
 
 **Status**: Design Phase (Future Enhancement)

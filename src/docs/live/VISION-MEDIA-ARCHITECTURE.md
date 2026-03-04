@@ -1,8 +1,10 @@
-# Vision & Media Architecture
+# Vision & Media Architecture -- Image Processing for AI Providers
+
+> Three-layer system: capture/storage, media processing (analyze/convert/resize/optimize), adapter formatting. Context-aware resizing using flexbox-style budget allocation. Phase 1 (basic format handling) complete.
+
+**Parent:** [Live](README.md)
 
 **Status**: Phase 1 Complete (Basic Format Handling) | Phase 2-4 Planned
-**Author**: Claude Code
-**Date**: 2025-11-26
 
 ## Table of Contents
 1. [Current Implementation](#current-implementation)

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # GenomeManager Integration with AIProviderDaemon
 
 **Date**: 2025-10-29 (Original), Updated: 2025-11-22

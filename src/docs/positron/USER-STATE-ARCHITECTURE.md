@@ -1,5 +1,9 @@
 # User State Architecture
 
+> How BaseUser hierarchy initializes and manages persistent UserState across browser, test, and persona clients.
+
+**Parent:** [Positron](README.md)
+
 ## Overview
 
 Every client (browser, test, persona) that connects to JTAG gets a **User** object with persistent state. This document defines how UserState is initialized and managed across different client types.

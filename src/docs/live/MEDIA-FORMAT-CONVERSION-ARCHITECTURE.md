@@ -1,4 +1,8 @@
-# Media Format Conversion Architecture
+# Media Format Conversion Architecture -- Adapter-Driven Format Compatibility
+
+> Adapters declare what formats they support via MediaCapabilities. MediaConverter transparently converts mismatches (e.g., WebP to JPEG for DeepSeek). Uses existing media/process command for actual conversion. No hardcoded registries.
+
+**Parent:** [Live](README.md)
 
 ## Problem Statement
 
@@ -814,9 +818,9 @@ async generateResponse(messages: ConversationMessage[]): Promise<AIResponse> {
 
 ## Related Documents
 
-- **[AI Adapter Architecture](./AI-ADAPTER-ARCHITECTURE.md)** - Overall adapter design
-- **[Natural Idioms Design Principle](../../docs/DESIGN-PRINCIPLE-NATURAL-IDIOMS.md)** - Why transparency matters
-- **[media/process Command](../../commands/media/process/)** - Actual conversion implementation
+- **[AI Adapter Architecture](../infrastructure/AI-ADAPTER-ARCHITECTURE-REFACTOR.md)** - Overall adapter design
+- **[media/process Implementation Status](MEDIA-PROCESS-IMPLEMENTATION-STATUS.md)** - Actual conversion implementation
+- **[Live Chapter](README.md)** - Parent chapter
 
 ---
 

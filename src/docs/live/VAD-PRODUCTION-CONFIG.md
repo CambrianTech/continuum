@@ -1,4 +1,8 @@
-# VAD Production Configuration Guide
+# VAD Production Configuration -- Balancing Accuracy, Completeness, and Latency
+
+> Two-stage VAD (WebRTC at 10us then Silero at 54ms) for 5400x speedup on silence. Lowered threshold (0.3), extended silence window (1.28s), sentence buffering, and adaptive thresholds by noise level.
+
+**Parent:** [Live](README.md)
 
 ## Problem: Balancing Accuracy vs Completeness
 

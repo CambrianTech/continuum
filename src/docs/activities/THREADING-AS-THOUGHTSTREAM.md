@@ -1,4 +1,8 @@
-# Threading as Thoughtstream: Multi-Persona Coordination Architecture
+# Threading as Thoughtstream — Multi-Persona Coordination Architecture
+
+> Threading is the fundamental cognitive architecture for multi-persona coordination. Threads are thoughtstreams with pointers — coherent chains of reasoning that multiple personas follow, branch from, and coordinate around.
+
+**Parent:** [Activities](README.md)
 
 ## The Core Insight
 

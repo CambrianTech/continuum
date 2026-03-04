@@ -1,4 +1,8 @@
-# LiveWidget Refactoring Plan
+# LiveWidget Refactoring Plan -- Splitting the 1026-Line Monolith
+
+> Split LiveWidget.ts into four focused modules: LiveCallState (state management), LiveMediaManager (media streams), LiveParticipantRenderer (UI rendering), and LiveWidget (thin coordinator). Each under 500 lines.
+
+**Parent:** [Live](README.md)
 
 ## Current State
 - **File**: `widgets/live/LiveWidget.ts`

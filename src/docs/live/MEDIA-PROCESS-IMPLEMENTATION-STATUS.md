@@ -1,4 +1,8 @@
-# Media Process Command - Implementation Status
+# Media Process Command -- Implementation Status
+
+> Comprehensive media/process command wrapping ffmpeg with JTAG command interface. Establishes the script orchestration pattern: TypeScript validates and emits events, platform-specific bash scripts handle processing.
+
+**Parent:** [Live](README.md)
 
 ## Vision
 
@@ -577,6 +581,6 @@ commands/example/
 
 ## Related Documents
 
-- [Storage Adapter Abstraction](./STORAGE-ADAPTER-ABSTRACTION.md) - Similar abstraction pattern
-- [CRUD Event Test Architecture](./CRUD-EVENT-TEST-ARCHITECTURE.md) - Event testing patterns
-- [Architecture Rules](./ARCHITECTURE-RULES.md) - Core architecture principles
+- [Media Format Conversion Architecture](MEDIA-FORMAT-CONVERSION-ARCHITECTURE.md) - Adapter-driven format conversion
+- [Architecture Rules](../../../docs/ARCHITECTURE-RULES.md) - Core architecture principles
+- [Live Chapter](README.md) - Parent chapter

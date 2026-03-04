@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Hippocampus Memory Design
 
 **Status**: Design Phase

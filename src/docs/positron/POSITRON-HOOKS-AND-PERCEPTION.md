@@ -2,6 +2,8 @@
 
 > "AIs aren't trapped assistants - they're free agents who choose what to perceive"
 
+**Parent:** [Positron](README.md)
+
 ---
 
 ## The Revolutionary Difference

@@ -1,3 +1,5 @@
+**Parent:** [Infrastructure](README.md)
+
 # GPU Memory Architecture
 
 **Status**: COMPLETE (Phase A+B wired)
@@ -203,7 +205,8 @@ GpuMemoryManager::detect()
 
 ## Related Documentation
 
-- [LORA-GENOME-PHENOTYPES.md](LORA-GENOME-PHENOTYPES.md) — Genome paging concept and phenotype catalog
-- [DYNAMIC-GENOME-ARCHITECTURE.md](../genome/DYNAMIC-GENOME-ARCHITECTURE.md) — Dynamic genome composition
-- [ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md) — Teacher/student training pipeline
+- [RESOURCE-GOVERNANCE-ARCHITECTURE](RESOURCE-GOVERNANCE-ARCHITECTURE.md) — Five-layer resource governance stack built on this memory manager
+- [LORA-GENOME-PHENOTYPES](../genome/LORA-GENOME-PHENOTYPES.md) — Genome paging concept and phenotype catalog
+- [DYNAMIC-GENOME-ARCHITECTURE](../genome/DYNAMIC-GENOME-ARCHITECTURE.md) — Dynamic genome composition
+- [ACADEMY-DOJO-ARCHITECTURE](../personas/ACADEMY-DOJO-ARCHITECTURE.md) — Teacher/student training pipeline
 - [gpu/stats README](../../commands/gpu/stats/README.md) — CLI command docs

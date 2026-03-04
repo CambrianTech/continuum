@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Continuum: Artifacts, Persona, and AGI Architecture
 **Created**: 2025-10-05
 **Status**: Phase 1 Complete, Ready for Academy Integration

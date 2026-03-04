@@ -1,4 +1,8 @@
-# Handle-Addressable Office: The Freedom Architecture
+# Handle-Addressable Office — The Freedom Architecture
+
+> Everything is a handle. Every handle is an address. Every address is subscribable. Tool executions, workspaces, builds, personas — all observable through UUID-keyed event channels.
+
+**Parent:** [Activities](README.md)
 
 ## The Principle
 

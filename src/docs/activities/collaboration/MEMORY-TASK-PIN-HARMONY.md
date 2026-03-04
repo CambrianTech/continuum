@@ -1,4 +1,8 @@
-# Memory-Task-Pin Harmony: OOP Architecture for Cognitive Fluidity
+# Memory-Task-Pin Harmony — OOP Architecture for Cognitive Fluidity
+
+> Cognition converts directly into tasks, pins, or shared memory through BaseEntity polymorphism. Fluid conversions between all three enable AI thought to become actionable work.
+
+**Parent:** [Activities](../README.md)
 
 **Vision**: "We make everything harmonious through good OOP. Their cognition can directly convert into tasks, pins, or shared memory, into long term memories. So they can literally turn a pin into a long term memory same for tasks and whatnot." - Joel
 

@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # Consciousness Integration: The Practical Flow
 
 ## Core Insight

@@ -1,4 +1,8 @@
-# VAD System Test Results
+# VAD System Test Results -- Noisy Environment Benchmarks
+
+> RMS threshold VAD at 28.6% accuracy: treats all loud audio as speech. Factory floor 10/10 false positives. Even at 4x threshold, RMS still treats TV as speech. Silero ML model is the solution.
+
+**Parent:** [Live](README.md)
 
 **Date**: 2026-01-24
 **System**: Modular VAD for background noise rejection

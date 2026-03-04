@@ -1,4 +1,8 @@
-# Voice AI Response - What Was Fixed
+# Voice AI Response -- What Was Fixed
+
+> Critical bug: VoiceOrchestrator selected a responder but never sent them the message (TODO comment at line 262). Fix: directed event emission so only the arbiter-selected persona receives the transcription.
+
+**Parent:** [Live](README.md)
 
 ## The Problem
 

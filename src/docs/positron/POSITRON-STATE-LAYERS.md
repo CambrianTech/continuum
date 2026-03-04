@@ -2,6 +2,8 @@
 
 > "Beat React at rendering, beat databases at persistence, beat RAG at perception"
 
+**Parent:** [Positron](README.md)
+
 ---
 
 ## The Performance Challenge

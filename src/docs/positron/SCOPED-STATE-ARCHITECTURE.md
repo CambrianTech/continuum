@@ -1,5 +1,9 @@
 # Scoped State Architecture
 
+> Cascading state from Site to Page to Widget to Control, each level inheriting with override capability.
+
+**Parent:** [Positron](README.md)
+
 ## Problem
 
 The current widget system has fragmented state management:

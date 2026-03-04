@@ -1,4 +1,9 @@
 # Complete Widget Consolidation Migration Plan
+
+> Unifying UserListWidget, RoomListWidget, and ChatWidget under a single generic ListWidget architecture.
+
+**Parent:** [Positron](README.md)
+
 ## Unified Generic ListWidget Architecture
 
 ### 🎯 Objective

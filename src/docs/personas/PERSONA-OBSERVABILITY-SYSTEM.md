@@ -1,3 +1,5 @@
+**Parent:** [Personas](README.md)
+
 # PersonaUser Observability System
 **Industrial-Grade Brain Engineering: Logging, Introspection, and Visualization**
 

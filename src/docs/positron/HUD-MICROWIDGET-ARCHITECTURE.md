@@ -2,6 +2,8 @@
 
 > "Every gauge, ring, and readout is a proper component - same base class, same events, same Positron hooks"
 
+**Parent:** [Positron](README.md)
+
 ---
 
 ## The Principle

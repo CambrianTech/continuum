@@ -1,5 +1,9 @@
 # Widget Reactive Conversion Plan
 
+> Tracking the migration from innerHTML to reactive patterns across all widgets, with async state system phases.
+
+**Parent:** [Positron](README.md)
+
 ## Problem Statement
 
 Widgets using `.innerHTML =` for updates cause:
@@ -181,7 +185,7 @@ npm start
 ## Related Documents
 
 - [Plan: Infinite Recursion & Async State](~/.claude/plans/cozy-knitting-blossom.md)
-- [Architecture Rules](docs/ARCHITECTURE-RULES.md)
+- [Architecture Rules](../CONTINUUM-ARCHITECTURE.md)
 
 ---
 

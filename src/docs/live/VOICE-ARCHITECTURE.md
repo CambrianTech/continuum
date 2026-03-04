@@ -1,4 +1,8 @@
-# Real-Time Voice Architecture
+# Real-Time Voice Architecture -- WebSocket Pipeline with Rust Streaming Core
+
+> Real-time voice for rooms with humans and AIs. Single STT per room, AI turn-taking arbitration, lock-free audio pipeline, 500ms end-to-end latency budget. Rust handles all audio; TypeScript handles only conversation logic.
+
+**Parent:** [Live](README.md)
 
 ## Status
 
