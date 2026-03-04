@@ -91,6 +91,7 @@ export interface VoiceMixin {
 	voiceTranscribeWithAdapter(audio: string, adapter: string, language?: string): Promise<TranscribeResult>;
 	voiceTestAudioGenerate(noiseType: string, durationMs: number, params?: Record<string, any>): Promise<TestAudioGenerateResult>;
 	voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult>;
+	voiceSetCognitiveState(userId: string, state: 'evaluating' | 'generating' | 'idle'): Promise<{ set: boolean }>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -364,6 +365,24 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			}
 
 			return response.result as PollTranscriptionsResult;
+		}
+
+		/**
+		 * Set cognitive state for an AI persona's avatar.
+		 * Drives looping gesture animations (think, nod, open hands) while state persists.
+		 */
+		async voiceSetCognitiveState(userId: string, state: 'evaluating' | 'generating' | 'idle'): Promise<{ set: boolean }> {
+			const response = await this.request({
+				command: 'voice/set-cognitive-state',
+				user_id: userId,
+				state,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to set cognitive state');
+			}
+
+			return response.result as { set: boolean };
 		}
 	};
 }

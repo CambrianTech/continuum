@@ -52,6 +52,7 @@ import {
   calculateSpeedScore,
   getStageStatus
 } from '../../../conversation/shared/CognitionEventTypes';
+import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -535,6 +536,9 @@ export class PersonaMessageEvaluator {
           scopeId: messageEntity.roomId,
         }
       ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+      // Drive avatar gesture animation while evaluating
+      getAIAudioBridge().setCognitiveState(this.personaUser.id, 'evaluating').catch(() => {});
     }
 
     const gatingStart = Date.now();
@@ -589,6 +593,9 @@ export class PersonaMessageEvaluator {
             scopeId: messageEntity.roomId,
           }
         ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+        // Return avatar to idle after deciding silent
+        getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
       }
 
       return;
@@ -711,6 +718,9 @@ export class PersonaMessageEvaluator {
                 scopeId: messageEntity.roomId
               }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+            // Return avatar to idle after deciding silent
+            getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
           }
 
           this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${adequacyResult.reason}`, {
@@ -755,6 +765,9 @@ export class PersonaMessageEvaluator {
           scopeId: messageEntity.roomId
         }
       ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+      // Drive avatar gesture animation while generating
+      getAIAudioBridge().setCognitiveState(this.personaUser.id, 'generating').catch(() => {});
     }
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 2/3] GENERATING event emitted`);
 

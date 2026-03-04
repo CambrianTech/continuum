@@ -184,6 +184,9 @@ pub enum AvatarCommand {
     /// Trigger a body gesture. Duration controls how long the gesture plays.
     /// Gesture animation uses arm bones — can overlap with speech (head nod + arm gesture).
     SetGesture { slot: u8, gesture: Gesture, duration_ms: u32 },
+    /// Set the cognitive state for an avatar slot (evaluating, generating, idle).
+    /// Drives looping gesture animations while the state persists.
+    SetCognitiveState { slot: u8, state: crate::live::session::cognitive_animation::CognitiveState },
     /// Resize a slot's render target to new dimensions.
     /// Recreates the render target image, camera target, and readback entity.
     Resize { slot: u8, width: u32, height: u32 },
@@ -434,6 +437,22 @@ impl BevyAvatarSystem {
                 gesture,
                 duration_ms,
             });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Set cognitive state by persona identity (user_id).
+    /// Drives looping gesture animations while the cognitive state persists.
+    /// Returns false if identity has no registered slot.
+    pub fn set_cognitive_state_by_identity(
+        &self,
+        identity: &str,
+        state: crate::live::session::cognitive_animation::CognitiveState,
+    ) -> bool {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+            let _ = self.command_tx.send(AvatarCommand::SetCognitiveState { slot, state });
             true
         } else {
             false
@@ -790,6 +809,19 @@ struct SlotGestureAnimState {
 /// Duration of attack/release phases for gesture easing (seconds).
 const GESTURE_EASE_SECS: f32 = 0.3;
 
+/// Per-slot cognitive animation state — tracks active cognitive state and re-roll timing.
+#[derive(Resource, Default)]
+struct CognitiveAnimState {
+    slots: HashMap<u8, SlotCognitiveState>,
+}
+
+struct SlotCognitiveState {
+    state: crate::live::session::cognitive_animation::CognitiveState,
+    config: crate::live::session::cognitive_animation::CognitiveAnimationConfig,
+    /// Elapsed time since last gesture re-roll
+    time_since_reroll: f32,
+}
+
 /// Render cadence — staggered camera activation for GPU load distribution.
 ///
 /// Game engine LOD principle: not every object renders every frame.
@@ -890,6 +922,7 @@ fn run_bevy_app(
         .insert_resource(LegacyMouthWeights::default())
         .insert_resource(EmotionState::default())
         .insert_resource(ActiveGestures::default())
+        .insert_resource(CognitiveAnimState::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
         .insert_resource(RenderSchedule::default())
@@ -933,6 +966,7 @@ fn run_bevy_app(
             animate_breathing,
             animate_idle_gestures,
             animate_eye_gaze,
+            drive_cognitive_gestures,
             animate_body_gestures,
         ))
         .run();
@@ -1421,6 +1455,7 @@ fn process_commands(
     mut legacy_mouth: ResMut<LegacyMouthWeights>,
     mut emotion_state: ResMut<EmotionState>,
     mut active_gestures: ResMut<ActiveGestures>,
+    mut cognitive_anim: ResMut<CognitiveAnimState>,
     mut health: ResMut<SlotHealthStatus>,
     mut slot_dims: ResMut<SlotDimensions>,
     mut hd_pool: ResMut<HdRenderTargetPool>,
@@ -1585,6 +1620,7 @@ fn process_commands(
                     // Clean up animation state for this slot
                     emotion_state.slots.remove(&slot);
                     active_gestures.slots.remove(&slot);
+                    cognitive_anim.slots.remove(&slot);
                     clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
@@ -1669,6 +1705,22 @@ fn process_commands(
                         elapsed: 0.0,
                         weight: 0.0,
                     });
+                }
+            }
+            AvatarCommand::SetCognitiveState { slot, state } => {
+                use crate::live::session::cognitive_animation::CognitiveState;
+                match state {
+                    CognitiveState::Idle => {
+                        cognitive_anim.slots.remove(&slot);
+                        // Current gesture finishes naturally via release phase
+                    }
+                    _ => {
+                        cognitive_anim.slots.insert(slot, SlotCognitiveState {
+                            state,
+                            config: crate::live::session::cognitive_animation::CognitiveAnimationConfig::default(),
+                            time_since_reroll: 999.0, // Force immediate first gesture
+                        });
+                    }
                 }
             }
             AvatarCommand::Resize { slot, width, height } => {
@@ -2669,6 +2721,63 @@ fn animate_eye_gaze(
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Cognitive gesture driver — selects and triggers gestures based on cognitive state.
+///
+/// Runs BEFORE animate_body_gestures. Checks each slot's cognitive state and,
+/// when the re-roll interval expires and no gesture is active, selects a new
+/// weighted-random gesture. Yields to speech gestures (skips when Speaking).
+fn drive_cognitive_gestures(
+    time: Res<Time>,
+    mut cognitive_anim: ResMut<CognitiveAnimState>,
+    mut active_gestures: ResMut<ActiveGestures>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+) {
+    use crate::live::session::cognitive_animation::{CognitiveState, select_weighted_gesture};
+
+    let dt = time.delta_secs();
+    let elapsed = time.elapsed_secs();
+    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
+
+    for (slot, cog) in cognitive_anim.slots.iter_mut() {
+        cog.time_since_reroll += dt;
+
+        // Skip if currently speaking (speech gestures have priority)
+        if speaking_slots.contains(slot) {
+            continue;
+        }
+
+        // Skip if a gesture is still playing (let it finish naturally)
+        if active_gestures.slots.contains_key(slot) {
+            continue;
+        }
+
+        // Check if it's time to re-roll
+        if cog.time_since_reroll < cog.config.reroll_interval_secs {
+            continue;
+        }
+
+        cog.time_since_reroll = 0.0;
+
+        let table = match cog.state {
+            CognitiveState::Evaluating => &cog.config.evaluating,
+            CognitiveState::Generating => &cog.config.generating,
+            CognitiveState::Idle => continue,
+        };
+
+        if let Some((gesture, duration_ms)) = select_weighted_gesture(table, elapsed, *slot) {
+            if gesture != Gesture::None {
+                active_gestures.slots.insert(*slot, SlotGestureAnimState {
+                    gesture,
+                    phase: GesturePhase::Attack,
+                    duration_secs: duration_ms as f32 / 1000.0,
+                    elapsed: 0.0,
+                    weight: 0.0,
+                });
+            }
+        }
+    }
 }
 
 /// Body gesture animation system — drives arm/shoulder bones through gesture poses.

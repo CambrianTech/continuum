@@ -155,6 +155,18 @@ export class AIAudioBridge {
     }
     return participants;
   }
+
+  /**
+   * Set cognitive state for an AI persona's avatar animation.
+   * Fire-and-forget — errors are logged but don't propagate.
+   */
+  async setCognitiveState(userId: string, state: 'evaluating' | 'generating' | 'idle'): Promise<void> {
+    try {
+      await this.ipcClient.voiceSetCognitiveState(userId, state);
+    } catch {
+      // Fire-and-forget: avatar animation is non-critical
+    }
+  }
 }
 
 // Singleton accessor

@@ -58,6 +58,7 @@ import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { FitnessTracker } from '../../../genome/server/FitnessTracker';
+import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 // SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -851,6 +852,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+            // Return avatar to idle
+            getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
           }
 
           // Garbage returns failure; loops/truncated return redundant
@@ -1166,6 +1170,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               scopeId: originalMessage.roomId
             }
           ).catch(err => this.log(`⚠️ Failed to emit error event: ${err}`));
+
+          // Return avatar to idle on error
+          getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
         }
 
         // Log error to AI decisions log
@@ -1341,6 +1348,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scopeId: originalMessage.roomId
           }
         ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
+
+        // Return avatar to idle after posting
+        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
       }
 
       // 📊 PIPELINE SUMMARY — single line with all phase timings
@@ -1383,6 +1393,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scopeId: originalMessage.roomId
           }
         ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
+
+        // Return avatar to idle on error
+        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
       }
 
       return {
