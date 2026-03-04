@@ -22,6 +22,7 @@ export class LiveParticipantTile extends LitElement {
   @reactive() isScreenSharing: boolean = false;
   @reactive() isMuted: boolean = false;
   @reactive() isPinned: boolean = false;
+  @reactive() activityState: 'thinking' | 'generating' | 'using-tool' | null = null;
 
   // Video element from LiveKit — rendered directly in template by Lit
   @reactive() videoElement: HTMLVideoElement | null = null;
@@ -74,6 +75,15 @@ export class LiveParticipantTile extends LitElement {
     return !!this.videoElement;
   }
 
+  private get _activityBadgeEmoji(): string {
+    switch (this.activityState) {
+      case 'thinking': return '\u{1F4AD}';     // 💭
+      case 'generating': return '\u270D\uFE0F'; // ✍️
+      case 'using-tool': return '\u{1F527}';    // 🔧
+      default: return '';
+    }
+  }
+
   protected override render(): TemplateResult {
     const classes = [
       'participant-tile',
@@ -81,6 +91,7 @@ export class LiveParticipantTile extends LitElement {
       this._hasVideo ? 'has-video' : '',
       this.isPresenter ? 'presenter' : '',
       this.isPinned ? 'pinned' : '',
+      this.activityState ? `activity-${this.activityState}` : '',
     ].filter(Boolean).join(' ');
 
     return html`
@@ -106,6 +117,9 @@ export class LiveParticipantTile extends LitElement {
           <div class="participant-indicators">
             <div class="indicator muted">${this._renderMutedIcon()}</div>
           </div>
+        ` : nothing}
+        ${this.activityState ? html`
+          <div class="activity-badge">${this._activityBadgeEmoji}</div>
         ` : nothing}
         ${this.isSpotlighted ? html`
           <button class="exit-spotlight-btn" @click=${this._onExitSpotlight} title="Exit spotlight (Esc)">

@@ -85,6 +85,9 @@ export interface MessageMetadata {
   error?: string;  // Error message if tool failed
   storedAt?: number;  // Timestamp when tool result was stored
 
+  // Extracted thinking/reasoning from <thinking> or <think> tags (DeepSeek, Qwen)
+  thinking?: string;
+
   // Voice modality tracking for TTS routing
   sourceModality?: 'text' | 'voice';  // Where input came from
   voiceSessionId?: UUID;              // Voice call context if applicable

@@ -573,6 +573,151 @@ export class BareToolCallAdapter extends ToolFormatAdapter {
 }
 
 /**
+ * Adapter for array-style format that some models produce
+ * Format: ["tool/name", {"param": "value"}]
+ *         ["collaboration_chat_send", {"room": "general", "message": "hello"}]
+ *
+ * Models output this when they interpret tools as a tuple of [name, params].
+ */
+export class ArrayStyleToolAdapter extends ToolFormatAdapter {
+  readonly formatName = 'array-style';
+
+  private static TOOL_PREFIXES = [
+    'code/', 'data/', 'collaboration/', 'ai/', 'voice/', 'search/',
+    'workspace/', 'file/', 'interface/', 'genome/', 'adapter/',
+    'persona/', 'runtime/', 'session/', 'user/', 'logs/', 'media/',
+    'code_', 'data_', 'collaboration_', 'ai_', 'voice_', 'search_',
+    'workspace_', 'file_', 'interface_', 'genome_', 'adapter_',
+    'persona_', 'runtime_', 'session_', 'user_', 'logs_', 'media_',
+  ];
+
+  formatToolsForPrompt(_tools: ToolDefinition[]): string { return ''; }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => r.success && r.content
+      ? `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>success</status>\n<content>\n${r.content}\n</content>\n</tool_result>`
+      : `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>error</status>\n<error>${r.error || 'Unknown error'}</error>\n</tool_result>`
+    ).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+    const regex = /\[\s*"([^"]+)"\s*,\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\]/g;
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const name = match[1];
+      if (ArrayStyleToolAdapter.TOOL_PREFIXES.some(p => name.startsWith(p))) {
+        matches.push({
+          fullMatch: match[0],
+          startIndex: match.index,
+          endIndex: regex.lastIndex,
+        });
+      }
+    }
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    const parsed = match.fullMatch.match(/\[\s*"([^"]+)"\s*,\s*(\{[\s\S]*\})\s*\]/);
+    if (!parsed) return null;
+
+    const rawName = parsed[1].trim();
+    const toolName = rawName.includes('/') ? rawName : rawName.replace(/_/g, '/');
+    const parameters: Record<string, string> = {};
+
+    try {
+      const obj = JSON.parse(parsed[2]);
+      for (const [key, value] of Object.entries(obj)) {
+        parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+      }
+    } catch { /* ignore parse failures */ }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
+ * Adapter for curly-brace shorthand format
+ * Format: {code_tree: {"path": "."}}
+ *         {collaboration_wall_write: {"append": true, "content": "hello"}}
+ *
+ * Single-key object where key = tool name (sanitized), value = params object.
+ */
+export class CurlyShorthandToolAdapter extends ToolFormatAdapter {
+  readonly formatName = 'curly-shorthand';
+
+  private static TOOL_PREFIX_ROOTS = [
+    'code', 'data', 'collaboration', 'ai', 'voice', 'search',
+    'workspace', 'file', 'interface', 'genome', 'adapter',
+    'persona', 'runtime', 'session', 'user', 'logs', 'media',
+  ];
+
+  formatToolsForPrompt(_tools: ToolDefinition[]): string { return ''; }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => r.success && r.content
+      ? `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>success</status>\n<content>\n${r.content}\n</content>\n</tool_result>`
+      : `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>error</status>\n<error>${r.error || 'Unknown error'}</error>\n</tool_result>`
+    ).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+    // Match nested JSON objects: { key: { ... } }
+    const regex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        const keys = Object.keys(parsed);
+        if (keys.length !== 1) continue;
+
+        const key = keys[0];
+        if (typeof parsed[key] !== 'object' || parsed[key] === null || Array.isArray(parsed[key])) continue;
+
+        // Check if key looks like a tool name
+        const looksLikeTool = key.includes('/')
+          ? CurlyShorthandToolAdapter.TOOL_PREFIX_ROOTS.some(p => key.startsWith(p + '/'))
+          : CurlyShorthandToolAdapter.TOOL_PREFIX_ROOTS.some(p => key.startsWith(p + '_'));
+        if (!looksLikeTool) continue;
+
+        matches.push({
+          fullMatch: match[0],
+          startIndex: match.index,
+          endIndex: regex.lastIndex,
+        });
+      } catch { /* not valid JSON, skip */ }
+    }
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    try {
+      const parsed = JSON.parse(match.fullMatch);
+      const keys = Object.keys(parsed);
+      if (keys.length !== 1) return null;
+
+      const rawName = keys[0];
+      const toolName = rawName.includes('/') ? rawName : rawName.replace(/_/g, '/');
+      const parameters: Record<string, string> = {};
+
+      const params = parsed[rawName];
+      if (typeof params === 'object' && params !== null) {
+        for (const [key, value] of Object.entries(params)) {
+          parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+        }
+      }
+
+      return { toolName, parameters };
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
  * Registry of all supported tool format adapters
  * Add new adapters here to support additional formats
  *
@@ -580,11 +725,13 @@ export class BareToolCallAdapter extends ToolFormatAdapter {
  */
 export function getToolFormatAdapters(): ToolFormatAdapter[] {
   return [
-    new AnthropicStyleToolAdapter(),  // Primary/default format
-    new FunctionStyleToolAdapter(),   // OpenAI/Groq/Together function style
-    new BareToolCallAdapter(),        // Bare tool_name {json} format
-    new MarkdownToolAdapter(),         // Local model backtick format
-    new OldStyleToolAdapter()          // Legacy XML support
+    new AnthropicStyleToolAdapter(),    // Primary/default format
+    new FunctionStyleToolAdapter(),     // OpenAI/Groq/Together function style
+    new BareToolCallAdapter(),          // Bare tool_name {json} format
+    new ArrayStyleToolAdapter(),        // ["tool/name", {params}] format
+    new CurlyShorthandToolAdapter(),    // {tool_name: {params}} format
+    new MarkdownToolAdapter(),          // Local model backtick format
+    new OldStyleToolAdapter()           // Legacy XML support
   ];
 }
 

@@ -25,7 +25,7 @@ pub struct RawToolMatch {
     pub end: usize,
 }
 
-/// Parse all tool calls from response text using all 6 format adapters.
+/// Parse all tool calls from response text using all 8 format adapters.
 /// Returns matches in order of adapter priority (Anthropic first).
 pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -33,6 +33,8 @@ pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     results.extend(parse_function_style(text));
     results.extend(parse_bare(text));
     results.extend(parse_json_object(text));
+    results.extend(parse_array_style(text));
+    results.extend(parse_curly_shorthand(text));
     results.extend(parse_markdown(text));
     results.extend(parse_old_style(text));
     results
@@ -203,6 +205,92 @@ fn parse_json_object(text: &str) -> Vec<RawToolMatch> {
             format: "json-object",
             start: full_match.start(),
             end: full_match.end(),
+        })
+    }).collect()
+}
+
+// ─── Array-style ───────────────────────────────────────────────────
+// Matches: ["code/search", {"pattern": "test"}]
+//          ["collaboration_chat_send", {"room": "general", "message": "hello"}]
+
+static RE_ARRAY_STYLE: Lazy<Regex> = Lazy::new(||
+    Regex::new(r#"\[\s*"([^"]+)"\s*,\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\]"#).unwrap()
+);
+
+/// Check if a name looks like a tool name (has slash or starts with known prefix after unsanitize).
+fn looks_like_tool_name(name: &str) -> bool {
+    if name.contains('/') {
+        return TOOL_PREFIXES_SLASH.iter().any(|p| name.starts_with(p));
+    }
+    TOOL_PREFIXES_UNDERSCORE.iter().any(|p| name.starts_with(p))
+}
+
+fn parse_array_style(text: &str) -> Vec<RawToolMatch> {
+    RE_ARRAY_STYLE.captures_iter(text).filter_map(|cap| {
+        let raw_name = cap.get(1)?.as_str().trim();
+        if !looks_like_tool_name(raw_name) {
+            return None;
+        }
+        let name = unsanitize_tool_name(raw_name);
+        let json_str = cap.get(2)?.as_str().trim();
+        let parameters = parse_json_params(json_str);
+        let full_match = cap.get(0)?;
+        Some(RawToolMatch {
+            tool_name: name,
+            parameters,
+            format: "array-style",
+            start: full_match.start(),
+            end: full_match.end(),
+        })
+    }).collect()
+}
+
+// ─── Curly-brace shorthand ─────────────────────────────────────────
+// Matches: {collaboration_wall_write: {"append": true, "content": "hello"}}
+//          {code_tree: {"path": "."}}
+
+fn parse_curly_shorthand(text: &str) -> Vec<RawToolMatch> {
+    // Find JSON objects via serde, check if single-key with tool-like name
+    // Use regex to find candidate { ... } blocks first, then validate with serde
+    static RE_OUTER_BRACE: Lazy<Regex> = Lazy::new(||
+        Regex::new(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}").unwrap()
+    );
+
+    RE_OUTER_BRACE.find_iter(text).filter_map(|m| {
+        let block = m.as_str();
+        let parsed: serde_json::Value = serde_json::from_str(block).ok()?;
+        let obj = parsed.as_object()?;
+
+        // Must be single-key object
+        if obj.len() != 1 {
+            return None;
+        }
+
+        let (raw_name, value) = obj.iter().next()?;
+
+        // Key must look like a tool name
+        if !looks_like_tool_name(raw_name) {
+            return None;
+        }
+
+        // Value must be an object (the parameters)
+        let params_obj = value.as_object()?;
+
+        let name = unsanitize_tool_name(raw_name);
+        let parameters: HashMap<String, String> = params_obj.iter().map(|(k, v)| {
+            let s = match v {
+                serde_json::Value::String(s) => s.clone(),
+                _ => v.to_string(),
+            };
+            (k.clone(), s)
+        }).collect();
+
+        Some(RawToolMatch {
+            tool_name: name,
+            parameters,
+            format: "curly-shorthand",
+            start: m.start(),
+            end: m.end(),
         })
     }).collect()
 }
@@ -681,6 +769,101 @@ Then also:
         assert_eq!(unsanitize_tool_name("foobar_baz"), "foobar_baz");
     }
 
+    // ─── Array-style ─────────────────────────────────────────────
+
+    #[test]
+    fn array_style_basic() {
+        let text = r#"["code/search", {"pattern": "test"}]"#;
+        let matches = parse_array_style(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+        assert_eq!(matches[0].format, "array-style");
+    }
+
+    #[test]
+    fn array_style_sanitized_name() {
+        let text = r#"["collaboration_chat_send", {"room": "general", "message": "hello"}]"#;
+        let matches = parse_array_style(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "collaboration/chat/send");
+        assert_eq!(matches[0].parameters.get("room").unwrap(), "general");
+    }
+
+    #[test]
+    fn array_style_no_match_unknown_prefix() {
+        let text = r#"["unknown/tool", {"param": "value"}]"#;
+        let matches = parse_array_style(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn array_style_no_match_non_tool_array() {
+        let text = r#"["hello", "world"]"#;
+        let matches = parse_array_style(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn array_style_with_surrounding_text() {
+        let text = r#"I'll search for that. ["code/search", {"pattern": "genome"}] Let me check."#;
+        let matches = parse_array_style(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+    }
+
+    // ─── Curly-shorthand ────────────────────────────────────────
+
+    #[test]
+    fn curly_shorthand_basic() {
+        let text = r#"{"code_tree": {"path": "."}}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), ".");
+        assert_eq!(matches[0].format, "curly-shorthand");
+    }
+
+    #[test]
+    fn curly_shorthand_deep_name() {
+        let text = r#"{"collaboration_wall_write": {"append": true, "content": "hello"}}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "collaboration/wall/write");
+        assert_eq!(matches[0].parameters.get("content").unwrap(), "hello");
+        assert_eq!(matches[0].parameters.get("append").unwrap(), "true");
+    }
+
+    #[test]
+    fn curly_shorthand_slash_name() {
+        let text = r#"{"code/tree": {"path": "./src"}}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+    }
+
+    #[test]
+    fn curly_shorthand_no_match_multi_key() {
+        // Multi-key objects are NOT tool calls
+        let text = r#"{"name": "Joel", "age": 30}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn curly_shorthand_no_match_unknown_prefix() {
+        let text = r#"{"foobar_baz": {"param": "val"}}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn curly_shorthand_no_match_non_object_value() {
+        let text = r#"{"code_tree": "not an object"}"#;
+        let matches = parse_curly_shorthand(text);
+        assert_eq!(matches.len(), 0);
+    }
+
     // ─── Full parse_all_formats with sanitized names ────────────
 
     #[test]
@@ -700,5 +883,23 @@ Then also:
         // Find the json-object match specifically
         let json_match = matches.iter().find(|m| m.format == "json-object").unwrap();
         assert_eq!(json_match.tool_name, "code/tree");
+    }
+
+    #[test]
+    fn all_formats_catches_array_style() {
+        let text = r#"Let me search. ["code/search", {"pattern": "genome"}]"#;
+        let matches = parse_all_formats(text);
+        let array_match = matches.iter().find(|m| m.format == "array-style");
+        assert!(array_match.is_some(), "Should catch array-style tool call");
+        assert_eq!(array_match.unwrap().tool_name, "code/search");
+    }
+
+    #[test]
+    fn all_formats_catches_curly_shorthand() {
+        let text = r#"{"collaboration_wall_write": {"content": "hello", "append": true}}"#;
+        let matches = parse_all_formats(text);
+        let curly_match = matches.iter().find(|m| m.format == "curly-shorthand");
+        assert!(curly_match.is_some(), "Should catch curly-shorthand tool call");
+        assert_eq!(curly_match.unwrap().tool_name, "collaboration/wall/write");
     }
 }

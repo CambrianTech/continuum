@@ -45,6 +45,8 @@
     box-shadow: 0 0 0 2px rgba($color-primary, 0.4);
   }
 
+  // AI activity states — subtle avatar glow only, NOT full-tile borders
+
   // Hover: hide name label, show overlay
   &:hover {
     .participant-name {
@@ -75,6 +77,59 @@
   50% {
     box-shadow: 0 0 0 3px rgba($color-success, 0.6), 0 0 20px rgba($color-success, 0.4);
   }
+}
+
+// AI activity — subtle avatar animations (breathing glow, not full-tile strobing)
+
+// Thinking: slow gentle purple breathe
+@keyframes avatar-breathe-thinking {
+  0%, 100% { box-shadow: 0 0 8px rgba(#a78bfa, 0.2); }
+  50% { box-shadow: 0 0 18px rgba(#a78bfa, 0.5); }
+}
+
+// Generating: medium amber breathe
+@keyframes avatar-breathe-generating {
+  0%, 100% { box-shadow: 0 0 8px rgba(#fbbf24, 0.2); }
+  50% { box-shadow: 0 0 18px rgba(#fbbf24, 0.5); }
+}
+
+// Tool use: quicker blue breathe
+@keyframes avatar-breathe-tool {
+  0%, 100% { box-shadow: 0 0 8px rgba(#60a5fa, 0.2); }
+  50% { box-shadow: 0 0 18px rgba(#60a5fa, 0.5); }
+}
+
+// Apply breathing glow to the avatar circle based on activity state
+.activity-thinking .participant-avatar {
+  animation: avatar-breathe-thinking 2.5s ease-in-out infinite;
+}
+.activity-generating .participant-avatar {
+  animation: avatar-breathe-generating 1.5s ease-in-out infinite;
+}
+.activity-using-tool .participant-avatar {
+  animation: avatar-breathe-tool 1s ease-in-out infinite;
+}
+
+// AI activity badge — top-left (opposite to muted indicator top-right)
+.activity-badge {
+  position: absolute;
+  top: $spacing-sm;
+  left: $spacing-sm;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  z-index: 4; // Above name (3), below overlay (5)
+  animation: badge-fade-in 0.2s ease-out;
+}
+
+@keyframes badge-fade-in {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 // Participant avatar (when no video)
