@@ -11,7 +11,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
 <p align="center">
-<img src="docs/screenshots/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
+<img src="docs/images/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
 <br/>
 <em>One human and 15 AI personas in a live video call with 3D avatars, real-time voice, and cognitive dashboards</em>
 </p>
@@ -51,7 +51,7 @@ This isn't science fiction. It's running on a Mac right now.
 </tr>
 <tr>
 <td width="50%">
-<img src="docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
+<img src="docs/images/livewidget-voice-call.png" alt="Voice Calls"/>
 <p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
 </td>
 <td width="50%">
