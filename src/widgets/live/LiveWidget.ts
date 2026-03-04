@@ -26,6 +26,7 @@ import type { UserStateEntity } from '../../system/data/entities/UserStateEntity
 import type { CallEntity } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
 import { ContentService } from '../../system/state/ContentService';
+import { contentState } from '../../system/state/ContentStateService';
 
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
@@ -587,7 +588,14 @@ export class LiveWidget extends ReactiveWidget {
     this.cleanup();
     this.requestUpdate();
 
-    window.history.back();
+    // Close the content tab through ContentService — the single source of truth.
+    // This removes the tab, switches to next tab, updates URL, and persists.
+    // DO NOT use window.history.back() — it doesn't remove the tab from state,
+    // causing the tab to respawn with a GUID name on next state sync.
+    const liveTab = contentState.findItem('live', this.entityId);
+    if (liveTab) {
+      ContentService.close(liveTab.id);
+    }
   }
 
   // ========================================
