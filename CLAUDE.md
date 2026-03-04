@@ -1493,7 +1493,7 @@ grep -r "UserEntity\|ChatMessageEntity" daemons/data-daemon/ | grep -v EntityReg
 ### **[UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md)**
 Commands.execute() and Events.subscribe()/emit() - the two primitives everything is built on.
 
-### **[GENERATOR-OOP-PHILOSOPHY.md](src/docs/infrastructure/GENERATOR-OOP-PHILOSOPHY.md)** - CORE PHILOSOPHY
+### **[GENERATOR-OOP-PHILOSOPHY.md](docs/infrastructure/GENERATOR-OOP-PHILOSOPHY.md)** - CORE PHILOSOPHY
 Generators and OOP are intertwined parallel forces:
 - Generators ensure structural correctness at creation time
 - OOP/type system ensures behavioral correctness at runtime

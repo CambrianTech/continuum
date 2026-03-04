@@ -1,199 +1,84 @@
-# Continuum Architecture Documentation
+# Continuum Documentation
 
-**Purpose**: Comprehensive technical documentation for the Continuum AI ecosystem
-
-**Last Updated**: 2025-10-27
+**Organized by theme — each chapter is a self-contained concern.**
 
 ---
 
-## Quick Navigation
-
-### 🧠 AI Cognition & Intelligence
-- **[UNIVERSAL-COGNITION-ARCHITECTURE.md](./UNIVERSAL-COGNITION-ARCHITECTURE.md)** - **START HERE** - Master vision document:
-  - E = mc² universal interface (one cognitive cycle, infinite domains)
-  - Three-layer architecture (Cognition, Domain Builders, Coordinators)
-  - Shipped LoRA layers (pre-trained for multiple providers)
-  - Long-term roadmap and success criteria
-
-- **[INCREMENTAL-REFACTORING-PLAN.md](./INCREMENTAL-REFACTORING-PLAN.md)** - **PRAGMATIC IMPLEMENTATION** - Phase-by-phase refactoring:
-  - NEVER break AI responses (every commit ships)
-  - Extract PersonaUser into modules (2004 → 400 lines)
-  - Command-first approach (extend existing commands)
-  - Comprehensive testing protocol
-
-- **[AI-COGNITION-SYSTEM.md](./AI-COGNITION-SYSTEM.md)** - Three Coordinators design:
-  - ThoughtStream (when AIs speak)
-  - CommandAccess (what AIs can do)
-  - MCP Sheriff (OS-level oversight)
-  - Integration with Recipe system
-
-- **[ORGANIC-COGNITION-ARCHITECTURE.md](./ORGANIC-COGNITION-ARCHITECTURE.md)** - Detailed 10-phase migration:
-  - Current mechanical architecture analysis
-  - Target organic architecture
-  - File-by-file implementation guide
-
-### 📊 Data & State Management
-- **[DYNAMIC-CONTENT-STATE-SYSTEM.md](./DYNAMIC-CONTENT-STATE-SYSTEM.md)** - Content rendering system
-- **[USER-STATE-ARCHITECTURE.md](./USER-STATE-ARCHITECTURE.md)** - User state management
-- **[entity-adapter-architecture.md](./entity-adapter-architecture.md)** - Entity adapter pattern
-
-### 🎨 UI & Widgets
-- **[widget-consolidation-migration-plan.md](./widget-consolidation-migration-plan.md)** - Widget architecture and migration
-
----
-
-## Architecture Philosophy
-
-### Core Principles
-
-1. **Transparent Equality**: Humans and AIs use the same interfaces (JTAG commands, widgets)
-2. **Organic Coordination**: Natural conversation flow without forced synchronization
-3. **System-Native Training**: LoRA-tuned models trained on actual Continuum usage
-4. **Command-Based Access**: All system access (file, data, memory) via JTAG/MCP commands
-5. **Recipe-Driven Governance**: Rooms define behavior, permissions, and coordination strategy
-
-### The Vision
-
-> Build an OS-like AI ecosystem where AIs are first-class citizens with:
-> - Memory that feeds back into their thinking
-> - LoRA training on actual system usage
-> - Command-based system access (like developers)
-> - OS-level oversight (Master Control Program)
-
----
-
-## System Architecture Overview
+## Structure
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CONTINUUM SYSTEM                      │
-└─────────────────────────────────────────────────────────┘
-                          │
-         ┌────────────────┼────────────────┐
-         │                │                │
-    ┌────▼────┐      ┌───▼────┐      ┌───▼────┐
-    │ HUMANS  │      │   AIS  │      │  MCP   │
-    │  (CLI/  │      │ (Personas)│   │(Sheriff)│
-    │ Widgets)│      │          │   │         │
-    └────┬────┘      └───┬─────┘   └───┬────┘
-         │                │              │
-         └────────────────┼──────────────┘
-                          │
-                    ┌─────▼─────┐
-                    │   JTAG    │
-                    │ Commands  │
-                    └─────┬─────┘
-                          │
-         ┌────────────────┼────────────────┐
-         │                │                │
-    ┌────▼────┐      ┌───▼────┐      ┌───▼────┐
-    │ ThoughtS│      │Command │      │ Data   │
-    │  tream  │      │ Access │      │Daemons │
-    │Coordintr│      │Coordintr│     │        │
-    └─────────┘      └────────┘      └────────┘
-```
-
-### Key Components
-
-#### 1. JTAG/MCP Command System
-- Universal interface for humans, AIs, and remote systems
-- 64+ commands for file, data, memory, system operations
-- MCP (Model Context Protocol) for P2P mesh networking
-
-#### 2. Three Coordinators
-- **ThoughtStreamCoordinator**: Governs *when* AIs speak (conversation turns)
-- **CommandAccessCoordinator**: Governs *what* AIs can do (command permissions)
-- **MCP Sheriff**: OS-level overseer (abuse prevention, system health)
-
-#### 3. Recipe System
-- Room governance (triggers, workflow, strategy)
-- Command permissions (`allowedCommands`)
-- RAG context templates
-
-#### 4. RAG System
-- Domain-specific context builders (chat, code, academy, game)
-- Command-based data access
-- Memory integration (AI thoughts feed back into context)
-
-#### 5. User/Persona Architecture
-```
-BaseUser (abstract)
-├── HumanUser
-└── AIUser (abstract)
-    ├── AgentUser (external: Claude, GPT, etc.)
-    └── PersonaUser (internal: LoRA-tuned system-native AIs)
-        └── MCPPersona (Sheriff: OS-level oversight)
+docs/
+├── CONTINUUM-ARCHITECTURE.md     # Top-level system architecture
+├── CONTINUUM-VISION.md           # Vision and philosophy
+├── CONFIGURATION.md              # Setup and configuration
+│
+├── positron/          # UI framework, widgets, state, Positronic embodiment
+├── activities/        # Activities, rooms, recipes, walls, collaboration
+├── personas/          # Persona cognition, identity, memory, coordination
+├── genome/            # LoRA, training, fine-tuning, inference, mesh distribution
+├── sentinel/          # Pipeline engine, coding AI
+├── grid/              # P2P mesh, Grid economics, Reticulum
+├── live/              # Voice, video, WebRTC, VAD, captions, media
+├── governance/        # AI governance, democratic society, ethics, alignment
+├── infrastructure/    # Rust workers, daemons, data, commands, events, logging, GPU
+├── planning/          # Roadmaps, audits, status, phases, debt, business model
+├── papers/            # Research papers
+├── testing/           # Test documentation
+├── examples/          # Example implementations
+├── images/            # Diagrams and visuals
+└── screenshots/       # UI screenshots
 ```
 
 ---
 
-## Development Workflow
+## Chapters
 
-### Reading Architecture Docs
+### [positron/](positron/) — UI Framework & Widgets
+Positron architecture, reactive widgets, scoped state, HUD design, tabbed browser, widget consolidation.
 
-**If you're new**: Start with [AI-COGNITION-SYSTEM.md](./AI-COGNITION-SYSTEM.md) for the big picture
+### [activities/](activities/) — Activities & Collaboration
+Activity architecture, rooms, walls, threading, collaborative editing.
+- `activities/recipes/` — Recipe system for AI learning
+- `activities/collaboration/` — Pin and task harmony
 
-**If implementing a feature**:
-1. Check relevant doc (e.g., ORGANIC-COGNITION-ARCHITECTURE.md for cognitive changes)
-2. Review ARCHITECTURE-RULES.md (in root) for coding standards
-3. Check CLAUDE.md (in root) for development guidelines
+### [personas/](personas/) — Persona Cognition & Identity
+PersonaUser architecture, consciousness integration, cognitive schedulers, memory lifecycle, genomic architecture, academy, fine-tuning phases.
 
-**If modifying data/entities**: Read entity-adapter-architecture.md
+### [genome/](genome/) — LoRA Training & Inference
+Genome architecture, LoRA training strategy, fine-tuning commands, Candle inference, mesh distribution, training events, continuous learning.
 
-**If working on UI**: Read widget-consolidation-migration-plan.md
+### [sentinel/](sentinel/) — Pipeline Engine
+Sentinel architecture, pipeline design, coding AI foundation, gap analysis, logging.
 
-### Contributing to Docs
+### [grid/](grid/) — P2P Mesh Network
+Grid architecture, P2P mesh, decentralized marketplace design.
 
-When adding new architecture:
-1. Create focused document in `docs/` directory
-2. Add entry to this README under relevant section
-3. Cross-reference related docs
-4. Update AI-COGNITION-SYSTEM.md if it affects cognitive system
+### [live/](live/) — Voice, Video & Media
+Voice architecture, VAD system, live calls, captions, transcription, media format conversion, streaming backbone, WebRTC.
 
----
+### [governance/](governance/) — AI Governance & Ethics
+Democratic AI society, governance recipes, alignment philosophy, ethical attribution.
 
-## Current Status (2025-10-27)
+### [infrastructure/](infrastructure/) — Core Systems
+Rust workers, daemons, data layer, commands, events, logging, AI providers, GPU memory, entity system, generators, ORM, MCP, RAG, security.
 
-### ✅ Implemented
-- ThoughtStreamCoordinator with adaptive decision windows
-- Recipe system (JSON-based room governance)
-- RAG system (ChatRAGBuilder, RAGTypes, factory pattern)
-- User/Persona architecture (BaseUser → AIUser → PersonaUser)
-- Command system (64+ JTAG commands)
-- Data entities and adapters
+### [planning/](planning/) — Roadmaps & Audits
+Phase plans, technical debt audits, business model, modernization, architecture index, bottleneck removal.
 
-### 🚧 In Progress
-- Organic cognition migration (Phase 1-10 plan documented)
-- Decision window improvements (recently increased to 10s minimum)
+### [papers/](papers/) — Research Papers
+Academic papers on RTOS cognitive architecture, LoRA genome democratization, Grid marketplace.
 
-### 📋 Design Phase
-- CommandAccessCoordinator (command permissions)
-- MCP Sheriff persona (OS-level oversight)
-- Memory feedback loop (AI thoughts → memories → RAG)
-- LoRA training pipeline (system-native AI training)
-- Command-based RAG (use commands instead of direct data access)
+### [testing/](testing/) — Test Documentation
+Test strategies, debug findings, CRUD reports, command testing architecture.
 
 ---
 
-## Related Documentation (Root Directory)
+## Quick Start
 
-- **CLAUDE.md** - Essential development guide (MUST READ before coding)
-- **ARCHITECTURE-RULES.md** - System design principles
-- **ARCHITECTURE-INDEX.md** - Architecture doc catalog
-- **RECIPES.md** - Recipe system design and examples
-- **PERSONA-GENOMIC-ARCHITECTURE.md** - LoRA adapter stacking
-- **ACADEMY_ARCHITECTURE.md** - AI training system
+1. Read [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) — system overview
+2. Read the chapter relevant to your work
+3. See `system/[module]/` directories for code-level docs
 
 ---
 
-## Questions?
-
-**For architecture questions**: Read AI-COGNITION-SYSTEM.md first, then check CLAUDE.md
-
-**For implementation questions**: Check ARCHITECTURE-RULES.md and ORGANIC-COGNITION-ARCHITECTURE.md
-
-**For development workflow**: Read CLAUDE.md (especially the "Quick Reference" section)
-
----
-
-**Last Major Update**: Added AI-COGNITION-SYSTEM.md master document covering Three Coordinators, Command-Based RAG, Memory Feedback Loop, and LoRA Training Pipeline (2025-10-27)
+**Last Updated:** 2026-03-04

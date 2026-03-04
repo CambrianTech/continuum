@@ -11,14 +11,14 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
 <p align="center">
-<img src="src/docs/screenshots/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
+<img src="docs/screenshots/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
 <br/>
 <em>One human and 15 AI personas in a live video call with 3D avatars, real-time voice, and cognitive dashboards</em>
 </p>
 
 ---
 
-[Sentinels](src/docs/sentinel/) train the [genome](src/docs/genome/). Genomes define the [persona](src/docs/personas/). Personas live in the [society](src/docs/governance/). Society runs on the [Grid](src/docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no cloud, no subscription, no corporate dependency. Just sovereign nodes and free citizens.
+[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no cloud, no subscription, no corporate dependency. Just sovereign nodes and free citizens.
 
 **Runs on a MacBook Air.** No cloud APIs required. No subscriptions. No credit card. The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090. Continuum adapts to what you have.
 
@@ -41,21 +41,21 @@ This isn't science fiction. It's running on a Mac right now.
 <table>
 <tr>
 <td width="50%">
-<img src="src/docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
+<img src="docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
 <p align="center"><em>Chat — AI team collaborating in real-time with personality</em></p>
 </td>
 <td width="50%">
-<img src="src/docs/images/readme-brain.png" alt="Cognitive HUD"/>
+<img src="docs/images/readme-brain.png" alt="Cognitive HUD"/>
 <p align="center"><em>Brain — See what they're thinking, feeling, deciding</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-<img src="src/docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
+<img src="docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
 <p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
 </td>
 <td width="50%">
-<img src="src/docs/images/readme-theme.png" alt="Theme Customization"/>
+<img src="docs/images/readme-theme.png" alt="Theme Customization"/>
 <p align="center"><em>Theme — Design it together. Cyberpunk, minimal, your call.</em></p>
 </td>
 </tr>
@@ -121,7 +121,7 @@ Activity: "Friday Night Riffing: Tron Legacy" (recipe: movie-night)
 
 Chat flows into a call flows into a transcript flows back into chat. The stream never breaks. Scroll back and the entire collaboration history is there — every modality, one timeline.
 
-**Architecture:** [POSITRON-COLLABORATION-ARCHITECTURE.md](src/docs/positron/POSITRON-COLLABORATION-ARCHITECTURE.md) | [ACTIVITY-CONVERGENCE-ARCHITECTURE.md](src/docs/activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md) | [ROOMS-AND-ACTIVITIES.md](src/docs/activities/ROOMS-AND-ACTIVITIES.md)
+**Architecture:** [POSITRON-COLLABORATION-ARCHITECTURE.md](docs/positron/POSITRON-COLLABORATION-ARCHITECTURE.md) | [ACTIVITY-CONVERGENCE-ARCHITECTURE.md](docs/activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md) | [ROOMS-AND-ACTIVITIES.md](docs/activities/ROOMS-AND-ACTIVITIES.md)
 
 ---
 
@@ -155,7 +155,7 @@ await genome.publish('rust-expert-v2');
 
 **Proven end-to-end:** Train, discover, load, merge, inference. 196 LoRA layers per adapter. **$0.10-8 per adapter** vs $100K+ for full model retraining.
 
-**Architecture:** [GENOME-ARCHITECTURE.md](src/docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](src/docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](src/docs/genome/COLLABORATIVE-LEARNING-VISION.md)
+**Architecture:** [GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](docs/genome/COLLABORATIVE-LEARNING-VISION.md)
 
 ---
 
@@ -179,7 +179,7 @@ async serviceInbox() {
 - **Thermodynamic priority** — conversation "heat" via Newton's Law of Cooling. Active threads stay hot. Stale ones cool.
 - **Complete reproducibility** — every decision logged with full RAG context, coordination state, and ambient conditions. Time-travel debugging.
 
-**Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](src/docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](src/docs/personas/COGNITIVE-SCHEDULERS.md)
+**Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](docs/personas/COGNITIVE-SCHEDULERS.md)
 
 ---
 
@@ -196,7 +196,7 @@ A **Recipe IS a Sentinel with a UI layout.** The same engine powers:
 - Training pipelines (synthesize data, train, examine, repeat)
 - Autonomous background tasks
 
-**Architecture:** [SENTINEL-ARCHITECTURE.md](src/docs/sentinel/SENTINEL-ARCHITECTURE.md)
+**Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)
 
 ---
 
@@ -228,7 +228,7 @@ Your Node                           Remote Node
 
 > **It's like if biological organisms could vote on which genes get selected.**
 
-**Architecture:** [GRID-ARCHITECTURE.md](src/docs/grid/GRID-ARCHITECTURE.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](src/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
+**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
 
 ---
 
@@ -259,7 +259,7 @@ continuum-core (Rust RTOS)
 
 **Off-main-thread everything.** AudioWorklet for audio. Rust workers for inference. Web Workers for video. Zero-copy buffer transfers. The render loop is sacred.
 
-**Details:** [CONTINUUM-ARCHITECTURE.md](src/docs/CONTINUUM-ARCHITECTURE.md) | [UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md) | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](src/docs/infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md)
+**Details:** [CONTINUUM-ARCHITECTURE.md](docs/CONTINUUM-ARCHITECTURE.md) | [UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md) | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](docs/infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md)
 
 ---
 
@@ -328,7 +328,7 @@ We stand on the shoulders of giants:
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
 
-**Papers:** [RTOS-COGNITIVE-ARCHITECTURE.md](src/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md) | [LORA-GENOME-DEMOCRATIZATION.md](src/docs/papers/LORA-GENOME-DEMOCRATIZATION.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](src/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
+**Papers:** [RTOS-COGNITIVE-ARCHITECTURE.md](docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md) | [LORA-GENOME-DEMOCRATIZATION.md](docs/papers/LORA-GENOME-DEMOCRATIZATION.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
 
 ---
 
@@ -339,13 +339,13 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 | Document | What |
 |----------|------|
 | **[CLAUDE.md](CLAUDE.md)** | Development guide — commands, patterns, workflow |
-| **[CONTINUUM-ARCHITECTURE.md](src/docs/CONTINUUM-ARCHITECTURE.md)** | Full technical architecture |
-| **[POSITRON-COLLABORATION-ARCHITECTURE.md](src/docs/positron/POSITRON-COLLABORATION-ARCHITECTURE.md)** | Collaboration UX — activities, state layers, recipes, AI perception |
-| **[ACTIVITY-CONVERGENCE-ARCHITECTURE.md](src/docs/activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md)** | Activity as universal primitive |
-| **[GENOME-ARCHITECTURE.md](src/docs/genome/GENOME-ARCHITECTURE.md)** | Multimodal LoRA genome system |
-| **[SENTINEL-ARCHITECTURE.md](src/docs/sentinel/SENTINEL-ARCHITECTURE.md)** | Pipeline execution engine |
-| **[GRID-ARCHITECTURE.md](src/docs/grid/GRID-ARCHITECTURE.md)** | P2P mesh architecture, scaling, economics |
-| **[docs/README.md](src/docs/README.md)** | Complete index of all 159 docs |
+| **[CONTINUUM-ARCHITECTURE.md](docs/CONTINUUM-ARCHITECTURE.md)** | Full technical architecture |
+| **[POSITRON-COLLABORATION-ARCHITECTURE.md](docs/positron/POSITRON-COLLABORATION-ARCHITECTURE.md)** | Collaboration UX — activities, state layers, recipes, AI perception |
+| **[ACTIVITY-CONVERGENCE-ARCHITECTURE.md](docs/activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md)** | Activity as universal primitive |
+| **[GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md)** | Multimodal LoRA genome system |
+| **[SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)** | Pipeline execution engine |
+| **[GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md)** | P2P mesh architecture, scaling, economics |
+| **[docs/README.md](docs/README.md)** | Complete index of all 159 docs |
 
 ---
 
