@@ -163,6 +163,7 @@ export const COMMANDS = {
   GENOME_GAP_ANALYSIS: 'genome/gap-analysis',
   GENOME_JOB_CREATE: 'genome/job-create',
   GENOME_JOB_STATUS: 'genome/job-status',
+  GENOME_LAYERS: 'genome/layers',
   GENOME_PAGING_ACTIVATE: 'genome/paging-activate',
   GENOME_PAGING_ADAPTER_REGISTER: 'genome/paging-adapter-register',
   GENOME_PAGING_DEACTIVATE: 'genome/paging-deactivate',

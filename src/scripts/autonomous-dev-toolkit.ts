@@ -10,6 +10,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 import { SystemReadySignaler } from './signal-system-ready';
 
 const execAsync = promisify(exec);
@@ -79,7 +80,7 @@ class AutonomousDevToolkit {
       symptom: 'Signal file exists but system not responding',
       priority: 'medium',
       check: async () => {
-        const signalPath = '.continuum/jtag/signals/system-ready.json';
+        const signalPath = path.join(SystemPaths.registry.root, 'system-ready.json');
         try {
           const stat = await fs.promises.stat(signalPath);
           const ageMs = Date.now() - stat.mtime.getTime();

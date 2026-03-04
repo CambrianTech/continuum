@@ -10,9 +10,13 @@ NC='\033[0m' # No Color
 
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
 
-# Runtime root — all runtime data (logs, sockets, sessions) lives here.
-# Matches SystemPaths.root in TypeScript (composite factory routes runtime → $REPO).
-CONTINUUM_ROOT="${CONTINUUM_ROOT:-.continuum}"
+# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
+
+# Resolve .continuum paths from workers-config.json to absolute $HOME paths
+resolve_path() {
+  echo "$1" | sed "s|^\.continuum|$CONTINUUM_ROOT|"
+}
 
 # Memory limit helper - converts "8G" to bytes for ulimit
 parse_memory_limit() {
@@ -124,11 +128,11 @@ sleep 2.0
 
 # Remove old sockets (use process substitution to avoid subshell)
 while read -r socket_path; do
-  rm -f "$socket_path"
+  rm -f "$(resolve_path "$socket_path")"
 done < <(jq -r '.workers[].socket' "$CONFIG_FILE")
 
 while read -r socket_path; do
-  rm -f "$socket_path"
+  rm -f "$(resolve_path "$socket_path")"
 done < <(jq -r '.sharedSockets[]' "$CONFIG_FILE")
 
 # Extra safety: wait for sockets to be fully removed before starting new workers
@@ -146,14 +150,14 @@ DEFAULT_MEM_LIMIT=$(jq -r '.memoryLimits.default // "4G"' "$CONFIG_FILE")
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
-  socket=$(echo "$worker" | jq -r '.socket // empty')
+  socket=$(resolve_path "$(echo "$worker" | jq -r '.socket // empty')")
   port=$(echo "$worker" | jq -r '.port // empty')
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   description=$(echo "$worker" | jq -r '.description')
   mem_limit=$(echo "$worker" | jq -r '.memoryLimit // empty')
 
-  # Get args array (may be empty)
-  args=$(echo "$worker" | jq -r '.args[]?' || echo "")
+  # Get args array (may be empty) — resolve .continuum paths to absolute
+  args=$(echo "$worker" | jq -r '.args[]?' | while read -r arg; do resolve_path "$arg"; done || echo "")
 
   # Calculate memory limit in KB for ulimit
   MEM_LIMIT_KB=$(parse_memory_limit "$mem_limit" "$DEFAULT_MEM_LIMIT")
@@ -178,7 +182,7 @@ while read -r worker; do
       fi
       if [ $i -eq 40 ]; then
         echo -e "${RED}❌ ${name} failed to start (port $port not listening after 20s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/${name}.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -50 $CONTINUUM_ROOT/jtag/logs/system/${name}.log${NC}"
         # Don't exit - let other workers start
       fi
       sleep 0.5
@@ -208,7 +212,7 @@ while read -r worker; do
       fi
       if [ $i -eq 60 ]; then
         echo -e "${RED}❌ ${name} failed to start (socket not created after 30s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/${name}.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -20 $CONTINUUM_ROOT/jtag/logs/system/${name}.log${NC}"
         # Don't exit — non-critical workers shouldn't block server startup.
         # The server will degrade gracefully without search/archive.
         # CRITICAL workers (continuum-core, data-daemon, logger) are checked below.

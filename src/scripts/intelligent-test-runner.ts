@@ -33,6 +33,7 @@
 
 import { spawn } from 'child_process';
 import { getActiveExampleName } from '../examples/server/ExampleConfigServer';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
   const activeExample = getActiveExampleName();
@@ -138,14 +139,12 @@ async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
       const fs = await import('fs').then(m => m.promises);
       const path = await import('path');
       
-      // Clean metadata.json files in both widget-ui and test-bench examples
-      const exampleDirs = ['examples/widget-ui', 'examples/test-bench'];
-      
-      for (const exampleDir of exampleDirs) {
-        const metadataPath = path.join(exampleDir, '.continuum/jtag/sessions/metadata.json');
+      // Clean session metadata
+      {
+        const metadataPath = path.join(SystemPaths.sessions.root, 'metadata.json');
         try {
           const emptyMetadata = {
-            "projectContext": path.resolve(exampleDir),
+            "projectContext": SystemPaths.root,
             "sessions": [],
             "lastUpdated": new Date().toISOString(),
             "version": "1.0.0"

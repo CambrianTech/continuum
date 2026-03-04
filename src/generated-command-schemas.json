@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-03T04:02:33.052Z",
+  "generated": "2026-03-04T01:03:08.163Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3974,6 +3974,17 @@
           "type": "string",
           "required": true,
           "description": "adapterId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/layers",
+      "description": "Query a persona's real LoRA adapter stack from AdapterStore. Used by PersonaTile to render genome bars with actual data.",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
         }
       }
     },

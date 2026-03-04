@@ -72,15 +72,13 @@ export abstract class BaseUser {
         const { LoggingConfig } = require('../../core/logging/LoggingConfig');
         const path = require('path');
 
-        // Extract uniqueId from homeDirectory for config lookup
-        const uniqueIdMatch = this.homeDirectory.match(/personas\/([^/]+)/);
-        const uniqueId = uniqueIdMatch ? uniqueIdMatch[1] : this.entity.uniqueId;
+        // uniqueId is always available on the entity — no path parsing needed
+        const uniqueId = this.entity.uniqueId;
 
-        // Convert homeDirectory to category (like daemon logs)
-        // homeDirectory can be absolute or relative: extract just 'personas/{uniqueId}'
-        const category = this.homeDirectory
-          .replace(/^.*\.continuum\//, '')  // Strip everything up to .continuum/
-          + '/logs/user';
+        // Log category: flat namespace under the user type
+        // e.g. 'citizens/helper/user' — Logger creates file at {logDir}/citizens/helper/user.log
+        const userType = this.entity.type || 'persona';
+        const category = `citizens/${userType}/${uniqueId}`;
 
         const underlyingLogger = Logger.create(
           `${this.constructor.name}:${this.displayName}`,
@@ -293,9 +291,9 @@ export abstract class BaseUser {
    * NOT relative paths - SystemPaths handles .continuum/ root resolution.
    *
    * Examples:
-   * - PersonaUser: SystemPaths.personas.dir(uniqueId) → '.continuum/personas/claude-assistant-79a5e548'
-   * - HumanUser: SystemPaths.users.dir(uniqueId) → '.continuum/users/joel-a1b2c3d4'
-   * - AgentUser: SystemPaths.agents.dir(uniqueId) → '.continuum/agents/claude-code-e5f6g7h8'
+   * - PersonaUser: SystemPaths.personas.dir(uniqueId) → '$HOME/.continuum/personas/helper'
+   * - HumanUser: SystemPaths.users.dir(uniqueId) → '$HOME/.continuum/users/joel'
+   * - AgentUser: SystemPaths.agents.dir(uniqueId) → '$HOME/.continuum/agents/claude-code'
    *
    * ALL user-specific paths (logs, memory, sessions, databases) MUST be built from this.
    * DO NOT construct paths anywhere else - delegate to SystemPaths for all path construction.

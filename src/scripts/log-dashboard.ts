@@ -26,6 +26,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { AgentDetector } from '../system/core/detection/AgentDetector';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 // Dashboard configuration
 interface DashboardConfig {
@@ -52,10 +53,10 @@ interface LogEvent {
 const CONFIG: DashboardConfig = {
   sessionName: 'jtag-test',  // Use same session as main system
   logFiles: {
-    npm: '.continuum/jtag/logs/system/npm-start.log',
-    browser: 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log',
-    server: 'examples/test-bench/.continuum/jtag/currentUser/logs/server-console-log.log',
-    system: '.continuum/jtag/signals/system-ready.json'
+    npm: path.join(SystemPaths.logs.system, 'npm-start.log'),
+    browser: path.join(SystemPaths.sessions.user, 'logs', 'browser-console-log.log'),
+    server: path.join(SystemPaths.sessions.user, 'logs', 'server-console-log.log'),
+    system: path.join(SystemPaths.registry.root, 'system-ready.json')
   },
   refreshRate: 2 // 2 second refresh for better readability
 } as const;

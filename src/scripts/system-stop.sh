@@ -10,8 +10,8 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$PROJECT_DIR/workers/workers-config.json"
 
-# Runtime root — matches SystemPaths.root in TypeScript
-CONTINUUM_ROOT="$PROJECT_DIR/${CONTINUUM_ROOT:-.continuum}"
+# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
 
 echo -e "${YELLOW}🛑 Stopping JTAG system...${NC}"
 

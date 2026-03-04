@@ -17,9 +17,8 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 
 cd "$PROJECT_DIR"
 
-# Runtime root — all runtime data (logs, sockets, sessions) lives here.
-# Matches SystemPaths.root in TypeScript (composite factory routes runtime → $REPO).
-CONTINUUM_ROOT="${CONTINUUM_ROOT:-.continuum}"
+# All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
+CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
 
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)

@@ -1,24 +1,17 @@
 /**
  * SystemPaths - SINGLE SOURCE OF TRUTH for all filesystem paths
  *
- * Two-root architecture:
- * - PERSISTENT ($HOME/.continuum): genome, personas, databases, blobs, models, datasets
- * - RUNTIME ($REPO/.continuum): logs, sessions, sockets, registry, temp, shared, reports, media
- *
- * 25+ consumers import SystemPaths — the composite singleton routes each section
- * to the correct root transparently. Zero consumer code changes needed.
+ * Everything lives at $HOME/.continuum — one root, one location, no splits.
+ * Internal SSD is faster and more reliable than external drives.
+ * Repo stays clean (no .continuum directory in the repo at all).
  *
  * Example:
  * ```typescript
  * import { SystemPaths } from '@system/core/config/SystemPaths';
  *
- * // Persistent → $HOME/.continuum
- * const adapterDir = SystemPaths.genome.adapters;
- * const personaDb = SystemPaths.personas.longterm('helper-abc123');
- *
- * // Runtime → $REPO/.continuum
- * const logPath = SystemPaths.logs.system;
- * const socketPath = SystemPaths.sockets.core;
+ * const adapterDir = SystemPaths.genome.adapters;    // $HOME/.continuum/genome/adapters
+ * const logPath = SystemPaths.logs.system;            // $HOME/.continuum/jtag/logs/system
+ * const socketPath = SystemPaths.sockets.core;        // $HOME/.continuum/sockets/continuum-core.sock
  * ```
  */
 
@@ -317,8 +310,8 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
     sockets: {
       root: path.join(baseRoot, 'sockets'),
-      core: path.join(baseRoot, 'sockets', 'core.sock'),
-      archive: path.join(baseRoot, 'sockets', 'archive.sock'),
+      core: path.join(baseRoot, 'sockets', 'continuum-core.sock'),
+      archive: path.join(baseRoot, 'sockets', 'archive-worker.sock'),
       inference: path.join(baseRoot, 'sockets', 'inference.sock'),
     },
 
@@ -336,64 +329,20 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 }
 
 /**
- * Create a composite path tree that routes persistent data to one root
- * and runtime data to another.
- *
- * Persistent ($HOME): database, genome, personas, users, agents, blobs, models, datasets
- * Runtime ($REPO): logs, sessions, registry, temp, sockets, shared, reports, media
+ * Base location - THE ONLY PLACE this string should exist.
+ * Everything lives at $HOME/.continuum — one root, no splits.
+ * Works whether installed from git clone, npm, or curl.
  */
-export function createCompositeSystemPaths(
-  persistentRoot: string,
-  runtimeRoot: string,
-): ContinuumPaths {
-  const home = createPathsForBase(persistentRoot);
-  const repo = createPathsForBase(runtimeRoot);
-
-  return {
-    root: runtimeRoot,
-
-    // PERSISTENT → $HOME
-    database: home.database,
-    genome: home.genome,
-    personas: home.personas,
-    users: home.users,
-    agents: home.agents,
-    blobs: home.blobs,
-    models: home.models,
-    datasets: home.datasets,
-
-    // RUNTIME → $REPO
-    logs: repo.logs,
-    sessions: repo.sessions,
-    registry: repo.registry,
-    temp: repo.temp,
-    sockets: repo.sockets,
-    shared: repo.shared,
-    reports: repo.reports,
-    media: repo.media,
-  };
-}
-
-/**
- * Base locations - THE ONLY PLACES these strings should exist
- */
-const REPO_ROOT = path.join(process.cwd(), '.continuum');
 const HOME_ROOT = path.join(os.homedir(), '.continuum');
 
 /**
- * Default paths — composite: persistent data in $HOME, runtime data in $REPO.
- * 25+ consumers import this. The composite routing is transparent.
+ * Default paths — all data at $HOME/.continuum.
+ * 40+ consumers import this singleton. Zero code changes needed to move data.
  */
-export const SystemPaths: ContinuumPaths = createCompositeSystemPaths(HOME_ROOT, REPO_ROOT);
+export const SystemPaths: ContinuumPaths = createPathsForBase(HOME_ROOT);
 
 /**
- * Global paths ($HOME) - use for shared/user-global resources
- * Example: shared personas, global genomes, user preferences
+ * Alias for clarity in code that's explicitly about global/user-level resources.
+ * Same as SystemPaths (both point to $HOME/.continuum).
  */
-export const GlobalPaths: ContinuumPaths = createPathsForBase(HOME_ROOT);
-
-/**
- * Project paths ($REPO) - explicit repo-local tree
- * Use when you specifically need a repo-relative path regardless of composite routing.
- */
-export const ProjectPaths: ContinuumPaths = createPathsForBase(REPO_ROOT);
+export const GlobalPaths: ContinuumPaths = SystemPaths;

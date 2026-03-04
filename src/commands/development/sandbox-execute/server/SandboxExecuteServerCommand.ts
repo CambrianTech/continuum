@@ -116,12 +116,12 @@ export class SandboxExecuteServerCommand extends CommandBase<SandboxExecuteParam
       return { valid: false, error: `Path does not exist: ${absolutePath}` };
     }
 
-    // Security: Must be within .continuum/personas/*/sandbox/ OR test directories
-    const continuumPath = path.join(rootPath, '.continuum');
-    const sandboxPattern = /\.continuum[\/\\]personas[\/\\][^\/\\]+[\/\\]sandbox/;
+    // Security: Must be within personas/*/sandbox/ OR test directories
+    const personasRoot = SystemPaths.personas.root;
+    const sandboxPattern = /personas[\/\\][^\/\\]+[\/\\]sandbox/;
 
     const isInSandbox = sandboxPattern.test(absolutePath);
-    const isInContinuum = absolutePath.startsWith(continuumPath);
+    const isInContinuum = absolutePath.startsWith(personasRoot);
 
     // For testing, allow paths in /tmp or explicit test directories
     const isTestPath = absolutePath.startsWith('/tmp') ||
@@ -131,7 +131,7 @@ export class SandboxExecuteServerCommand extends CommandBase<SandboxExecuteParam
     if (!isInSandbox && !isTestPath) {
       return {
         valid: false,
-        error: `Security: Path must be within .continuum/personas/*/sandbox/ (got: ${absolutePath})`
+        error: `Security: Path must be within personas/*/sandbox/ (got: ${absolutePath})`
       };
     }
 

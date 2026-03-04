@@ -113,10 +113,12 @@ export class CallEntity extends BaseEntity {
    * Add a participant to the call
    */
   addParticipant(userId: UUID, displayName: string, avatar?: string): CallParticipant {
-    // Check if already in call
+    // Rejoin cleanup: if this user already has an active entry (e.g., browser
+    // refreshed without calling live/leave), mark the stale entry as left
+    // before creating a fresh one. Prevents ghost participants.
     const existing = this.participants.find(p => p.userId === userId && !p.leftAt);
     if (existing) {
-      return existing;
+      existing.leftAt = new Date();
     }
 
     const participant: CallParticipant = {

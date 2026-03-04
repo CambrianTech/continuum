@@ -5,13 +5,14 @@
  * workspace directory. Looks up the user entity to get the human-readable
  * uniqueId, then constructs the path using that (not the UUID).
  *
- * Path convention: .continuum/sessions/user/shared/{uniqueId}/workspace
+ * Path convention: SystemPaths.sessions.user/shared/{uniqueId}/workspace
  */
 
 import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 import * as path from 'path';
 
 /**
@@ -31,9 +32,9 @@ export async function resolveWorkspacePathFromUserId(userId: UUID): Promise<stri
     // Entity lookup failed — use UUID as fallback
   }
 
-  return path.resolve(
-    process.cwd(),
-    '.continuum/sessions/user/shared',
+  return path.join(
+    SystemPaths.sessions.user,
+    'shared',
     dirName,
     'workspace',
   );

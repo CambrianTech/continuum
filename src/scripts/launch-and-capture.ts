@@ -4,6 +4,7 @@ import path from 'path';
 import { SystemReadySignaler } from './signal-system-ready';
 import { TmuxSessionManager } from '../system/shared/TmuxSessionManager';
 import { loadInstanceConfigForContext } from '../system/shared/BrowserSafeConfig';
+import { SystemPaths } from '../system/core/config/SystemPaths';
 
 // Parse command line arguments for configurable behavior
 interface LaunchConfig {
@@ -76,7 +77,7 @@ const MONITORING_CONFIG: MonitoringConfig = {
 } as const;
 
 // Prepare paths
-const logDir = path.resolve('.continuum/jtag/logs/system');
+const logDir = SystemPaths.logs.system;
 const logFile = path.join(logDir, 'npm-start.log');
 const pidFile = path.join(logDir, 'npm-start.pid');
 
