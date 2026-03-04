@@ -123,35 +123,58 @@ export async function updatePersonaProfile(
     return false;
   }
 
-  // Create UserProfileEntity with visual identity
+  // Ensure UserProfileEntity exists (check first, create or update)
+  const visualIdentity = {
+    avatar: '',
+    theme: 'dark',
+    accentColor: profile.accentColor || '#00d4ff'
+  };
+  const preferences = {
+    language: 'en',
+    timezone: 'UTC',
+    notifications: { mentions: true, directMessages: true, roomUpdates: false },
+    privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false }
+  };
+
+  // Check if profile already exists
+  try {
+    const checkFilter = JSON.stringify({ userId }).replace(/'/g, `'"'"'`);
+    const { stdout: checkOut } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=user_profiles --filter='${checkFilter}' --limit=1`);
+    const checkResult = JSON.parse(checkOut);
+
+    if (checkResult.success && checkResult.items?.length > 0) {
+      // Profile exists — update it
+      const existingId = checkResult.items[0].id;
+      const updateProfileData = { bio: profile.bio, speciality: profile.speciality, visualIdentity };
+      const updateArg = JSON.stringify(updateProfileData).replace(/'/g, `'"'"'`);
+      await execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=user_profiles --id=${existingId} --data='${updateArg}'`);
+      console.log(`  ✅ Updated profile entity for user ${userId.slice(0, 8)}...`);
+      return true;
+    }
+  } catch {
+    // Check failed — fall through to create
+  }
+
+  // Profile doesn't exist — create it
   const profileData = {
     userId,
     bio: profile.bio,
     speciality: profile.speciality,
     joinedAt: new Date().toISOString(),
-    visualIdentity: {
-      avatar: '',
-      theme: 'dark',
-      accentColor: profile.accentColor || '#00d4ff'
-    },
-    preferences: {
-      language: 'en',
-      timezone: 'UTC',
-      notifications: { mentions: true, directMessages: true, roomUpdates: false },
-      privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false }
-    }
+    visualIdentity,
+    preferences
   };
   const profileArg = JSON.stringify(profileData).replace(/'/g, `'"'"'`);
   const profileCmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=user_profiles --data='${profileArg}'`;
 
   try {
     const { stdout } = await execAsync(profileCmd);
-    if (stdout.includes('"success": true') || stdout.includes('"success":true')) {
+    if (stdout.includes('"success"')) {
       console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
       return true;
     }
   } catch (error: any) {
-    if (error.stdout?.includes('"success": true') || error.stdout?.includes('"success":true')) {
+    if (error.stdout?.includes('"success"')) {
       console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
       return true;
     }
