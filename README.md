@@ -155,7 +155,7 @@ await genome.publish('rust-expert-v2');
 
 **Proven end-to-end:** Train, discover, load, merge, inference. 196 LoRA layers per adapter. **$0.10-8 per adapter** vs $100K+ for full model retraining.
 
-**Architecture:** [GENOME-ARCHITECTURE.md](src/docs/genome/GENOME-ARCHITECTURE.md) | [LORA-GENOME-PAGING.md](src/system/user/server/modules/LORA-GENOME-PAGING.md) | [COLLABORATIVE-LEARNING-VISION.md](src/docs/genome/COLLABORATIVE-LEARNING-VISION.md)
+**Architecture:** [GENOME-ARCHITECTURE.md](src/docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](src/docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](src/docs/genome/COLLABORATIVE-LEARNING-VISION.md)
 
 ---
 
@@ -179,7 +179,7 @@ async serviceInbox() {
 - **Thermodynamic priority** — conversation "heat" via Newton's Law of Cooling. Active threads stay hot. Stale ones cool.
 - **Complete reproducibility** — every decision logged with full RAG context, coordination state, and ambient conditions. Time-travel debugging.
 
-**Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) | [AUTONOMOUS-LOOP-ROADMAP.md](src/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)
+**Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](src/docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](src/docs/personas/COGNITIVE-SCHEDULERS.md)
 
 ---
 
@@ -328,7 +328,7 @@ We stand on the shoulders of giants:
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
 
-**Papers:** [RTOS-COGNITIVE-ARCHITECTURE.md](src/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md) | [LORA-GENOME-DEMOCRATIZATION.md](src/docs/papers/LORA-GENOME-DEMOCRATIZATION.md) | [Collaborative Memory Telepathy](src/docs/papers/collaborative-memory-telepathy/)
+**Papers:** [RTOS-COGNITIVE-ARCHITECTURE.md](src/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md) | [LORA-GENOME-DEMOCRATIZATION.md](src/docs/papers/LORA-GENOME-DEMOCRATIZATION.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](src/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
 
 ---
 
@@ -338,7 +338,7 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 
 | Document | What |
 |----------|------|
-| **[CLAUDE.md](src/CLAUDE.md)** | Development guide — commands, patterns, workflow |
+| **[CLAUDE.md](CLAUDE.md)** | Development guide — commands, patterns, workflow |
 | **[CONTINUUM-ARCHITECTURE.md](src/docs/CONTINUUM-ARCHITECTURE.md)** | Full technical architecture |
 | **[POSITRON-COLLABORATION-ARCHITECTURE.md](src/docs/positron/POSITRON-COLLABORATION-ARCHITECTURE.md)** | Collaboration UX — activities, state layers, recipes, AI perception |
 | **[ACTIVITY-CONVERGENCE-ARCHITECTURE.md](src/docs/activities/ACTIVITY-CONVERGENCE-ARCHITECTURE.md)** | Activity as universal primitive |
