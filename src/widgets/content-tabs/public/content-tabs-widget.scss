@@ -1,0 +1,89 @@
+/**
+ * Content Tabs Widget - SCSS
+ * Tab bar for switching between open content items (chat, live, settings, etc.)
+ */
+
+@use '../../shared/styles/variables' as *;
+
+.content-tabs-container {
+  display: flex;
+  gap: 0;
+  align-items: flex-end;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.content-tab {
+  padding: 8px 16px;
+  background: var(--widget-content-background, rgba(25, 30, 40, 0.8));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px 6px 0 0;
+  color: var(--content-secondary, #8a92a5);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all $transition-fast;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 2px;
+  position: relative;
+
+  &:hover {
+    background: var(--widget-surface-solid, #1a1f2e);
+    border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+    color: var(--content-primary, #e0e6ed);
+  }
+
+  &.active {
+    background: var(--widget-surface-solid, #1a1f2e);
+    border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+    border-bottom-color: transparent;
+    color: var(--content-accent, #00d4ff);
+    font-weight: 600;
+    z-index: 1;
+  }
+}
+
+.tab-type-icon {
+  font-size: 12px;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.tab-close {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 10px;
+  opacity: 0.6;
+  transition: all $transition-normal;
+
+  &:hover {
+    opacity: 1;
+    background: var(--content-error-dim, rgba(255, 80, 80, 0.2));
+    color: var(--content-error, #ff5050);
+  }
+}
+
+.empty-state {
+  padding: 8px 16px;
+  color: var(--content-secondary, #8a92a5);
+  font-size: 12px;
+  font-style: italic;
+}

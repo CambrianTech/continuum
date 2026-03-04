@@ -9,6 +9,8 @@
   --content-secondary: #666666;
   --content-accent: #000000;
   --content-warning: #000000;
+  --content-error: #000000;
+  --content-error-dim: rgba(0, 0, 0, 0.15);
   --content-success: #000000;
   
   /* === COLORS - CLASSIC MAC PANEL BACKGROUNDS === */

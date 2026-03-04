@@ -37,6 +37,8 @@
   --content-secondary: #8a92a5;
   --content-accent: #00d4ff;
   --content-warning: #ff6b35;
+  --content-error: #ff5050;
+  --content-error-dim: rgba(255, 80, 80, 0.2);
   --content-success: #00ff88;
   
   /* === COLORS - BACKGROUNDS === */
