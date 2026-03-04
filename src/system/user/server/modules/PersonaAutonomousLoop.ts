@@ -160,9 +160,15 @@ export class PersonaAutonomousLoop {
   async handleItem(item: QueueItem, decision?: FastPathDecision): Promise<void> {
     const handlerStart = performance.now();
 
-    // If this is a task, update status to 'in_progress' in database (prevents re-polling)
+    // If this is a task, verify it still exists then update status to 'in_progress'
+    // Rust queue holds stale references to deleted tasks — check before expensive update
     if (item.type === 'task') {
       try {
+        const existing = await ORM.read<TaskEntity>(COLLECTIONS.TASKS, item.taskId, 'default');
+        if (!existing || existing.status === 'completed') {
+          // Ghost task — deleted or already done. Skip silently (this is normal churn).
+          return;
+        }
         await ORM.update<TaskEntity>(
           COLLECTIONS.TASKS,
           item.taskId,
@@ -171,7 +177,7 @@ export class PersonaAutonomousLoop {
           'default'
         );
       } catch {
-        // Task was deleted between dequeue and execution — skip it
+        // Task vanished between read and update — skip it
         this.log(`⚠️ ${this.personaUser.displayName}: Task ${item.taskId.slice(0, 8)} vanished before execution`);
         return;
       }

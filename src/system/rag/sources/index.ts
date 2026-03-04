@@ -33,6 +33,8 @@ export { ProjectContextSource } from './ProjectContextSource';
 export { GovernanceSource } from './GovernanceSource';
 export { ActivityContextSource } from './ActivityContextSource';
 export { ToolDefinitionsSource } from './ToolDefinitionsSource';
+export { DocumentationSource } from './DocumentationSource';
+export { ToolMethodologySource } from './ToolMethodologySource';
 
 // Re-export types for convenience
 export type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
