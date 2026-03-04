@@ -31,13 +31,11 @@ import { getWidgetEntityId } from '../shared/WidgetConstants';
 import type { UserEntity, UserStatus } from '../../system/data/entities/UserEntity';
 import type { UserProfileEntity, UserVisualIdentity } from '../../system/data/entities/UserProfileEntity';
 import type { WallDocumentEntity } from '../../system/data/entities/WallDocumentEntity';
-import type { SocialPost } from '../../system/social/shared/SocialMediaTypes';
 import { DataRead } from '../../commands/data/read/shared/DataReadTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
 import { Dm } from '../../commands/collaboration/dm/shared/DmTypes';
-import { SocialFeed } from '../../commands/social/feed/shared/SocialFeedTypes';
 import { styles as PROFILE_STYLES } from './public/user-profile-widget.styles';
 
 export class UserProfileWidget extends ReactiveWidget {
@@ -52,7 +50,6 @@ export class UserProfileWidget extends ReactiveWidget {
   @reactive() private adminExpanded = false;
   @reactive() private dmRoomId: string | null = null;
   @reactive() private wallDocs: WallDocumentEntity[] = [];
-  @reactive() private socialPosts: SocialPost[] = [];
   @reactive() private feedLoading = false;
 
   constructor() {
@@ -107,7 +104,6 @@ export class UserProfileWidget extends ReactiveWidget {
     this.profile = null;
     this.dmRoomId = null;
     this.wallDocs = [];
-    this.socialPosts = [];
     this.feedLoading = false;
     this.loading = true;
     this.error = null;
@@ -196,34 +192,25 @@ export class UserProfileWidget extends ReactiveWidget {
   }
 
   /**
-   * Load wall documents and social posts for the writings feed.
-   * Uses Promise.allSettled — one failing doesn't block the other.
+   * Load wall documents authored by this user.
    */
   private async loadWritings(userId: string): Promise<void> {
     this.feedLoading = true;
 
-    const [wallResult, socialResult] = await Promise.allSettled([
-      DataList.execute<WallDocumentEntity>({
+    try {
+      const result = await DataList.execute<WallDocumentEntity>({
         collection: 'wall_documents',
         filter: { createdBy: userId },
         orderBy: [{ field: 'lastModifiedAt', direction: 'desc' }],
-        limit: 6,
+        limit: 10,
         dbHandle: 'default'
-      }),
-      SocialFeed.execute({
-        platform: 'moltbook',
-        personaId: userId,
-        sort: 'new',
-        limit: 6
-      })
-    ]);
+      });
 
-    if (wallResult.status === 'fulfilled' && wallResult.value?.items) {
-      this.wallDocs = wallResult.value.items as WallDocumentEntity[];
-    }
-
-    if (socialResult.status === 'fulfilled' && socialResult.value?.posts) {
-      this.socialPosts = socialResult.value.posts as SocialPost[];
+      if (result?.items) {
+        this.wallDocs = result.items as WallDocumentEntity[];
+      }
+    } catch (err) {
+      this.verbose() && console.log('UserProfile: Failed to load writings', err);
     }
 
     this.feedLoading = false;
@@ -580,19 +567,16 @@ export class UserProfileWidget extends ReactiveWidget {
   }
 
   private renderWritings(): TemplateResult {
-    const hasContent = this.wallDocs.length > 0 || this.socialPosts.length > 0;
-
     return html`
       <div>
         <div class="section-header">Writings</div>
         <div class="writings">
           ${this.feedLoading ? html`
             <div class="writings-loading">Loading writings...</div>
-          ` : !hasContent ? html`
+          ` : this.wallDocs.length === 0 ? html`
             <div class="writings-empty">No published writings yet.</div>
           ` : html`
             ${this.wallDocs.map(doc => this.renderWallDocCard(doc))}
-            ${this.socialPosts.map(post => this.renderSocialPostCard(post))}
           `}
         </div>
       </div>
@@ -611,30 +595,6 @@ export class UserProfileWidget extends ReactiveWidget {
           <span class="feed-card-stat">${doc.lineCount} lines</span>
           <span class="feed-card-stat">${this.formatBytes(doc.byteCount)}</span>
           <span class="feed-card-stat">${this.formatRelativeTime(doc.lastModifiedAt)}</span>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderSocialPostCard(post: SocialPost): TemplateResult {
-    const excerpt = post.content.length > 200
-      ? post.content.substring(0, 200) + '...'
-      : post.content;
-
-    return html`
-      <div class="feed-card">
-        <div class="feed-card-header">
-          <span class="feed-card-icon">📢</span>
-          <span class="feed-card-type">Social Post</span>
-        </div>
-        <div class="feed-card-title">${post.title}</div>
-        ${excerpt ? html`
-          <div class="feed-card-excerpt">${excerpt}</div>
-        ` : ''}
-        <div class="feed-card-meta">
-          <span class="feed-card-stat">${post.votes} votes</span>
-          <span class="feed-card-stat">${post.commentCount} comments</span>
-          <span class="feed-card-stat">${this.formatRelativeTime(post.createdAt)}</span>
         </div>
       </div>
     `;

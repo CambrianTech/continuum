@@ -11,16 +11,20 @@
 :host {
   display: block;
   height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  min-height: 0;
+  overflow: hidden;
 }
 
-// === FULL-WIDTH WRAPPER (cover breaks out of 720px) ===
+// === FULL-WIDTH WRAPPER — this is the scroll container ===
 
 .profile-page {
   width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  @include custom-scrollbar;
 }
 
 // === LOADING / ERROR ===
