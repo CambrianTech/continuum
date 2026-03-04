@@ -28,7 +28,8 @@ impl ModuleLogger {
     /// Create a logger for any component (adapters, libraries, etc.)
     /// This is the general-purpose constructor for non-module code.
     pub fn for_component(component_name: &str) -> Self {
-        let log_dir = PathBuf::from(".continuum/jtag/logs/system/modules");
+        let home = dirs::home_dir().expect("Failed to resolve home directory");
+        let log_dir = home.join(".continuum").join("jtag").join("logs").join("system").join("modules");
         let log_path = log_dir.join(format!("{}.log", component_name));
 
         // Ensure directory exists

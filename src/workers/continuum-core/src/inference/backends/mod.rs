@@ -17,7 +17,7 @@ pub mod llama_gguf;
 pub mod llama_safetensors;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -459,7 +459,8 @@ fn sanitize_logits_with_flag(
 /// Save a failed prompt to disk for replay in tests.
 fn save_prompt_replay(prompt: &str, tokens: &[u32], error: &str) {
     let log = runtime::logger("candle");
-    let replay_dir = PathBuf::from(".continuum/jtag/logs/prompt-replays");
+    let home = dirs::home_dir().expect("Failed to resolve home directory");
+    let replay_dir = home.join(".continuum").join("jtag").join("logs").join("prompt-replays");
     if std::fs::create_dir_all(&replay_dir).is_err() {
         log.warn("Failed to create prompt-replays directory");
         return;

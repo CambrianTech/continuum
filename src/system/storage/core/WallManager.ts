@@ -10,6 +10,7 @@
  */
 
 import * as path from 'path';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
@@ -92,8 +93,7 @@ export class WallManager {
   private readonly continuumRoot: string;
 
   constructor(continuumRoot?: string) {
-    // Default to .continuum in project root (3 levels up from jtag)
-    this.continuumRoot = continuumRoot || path.resolve(__dirname, '../../../.continuum');
+    this.continuumRoot = continuumRoot || SystemPaths.root;
   }
 
   /**
