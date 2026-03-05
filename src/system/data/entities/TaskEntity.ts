@@ -163,6 +163,8 @@ export class TaskEntity extends BaseEntity {
     // Code domain
     fileId?: UUID;
     pullRequestId?: UUID;
+    parentTaskId?: UUID;         // Links build/fix tasks back to original coding task
+    workspaceContextKey?: string; // Workspace context key this task ran in
 
     // Game domain
     gameId?: UUID;

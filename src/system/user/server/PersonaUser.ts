@@ -576,6 +576,7 @@ export class PersonaUser extends AIUser {
       limbicSystem: {
         loadGenomeFromDatabase: () => this.limbic?.loadGenomeFromDatabase() ?? Promise.resolve(),
       },
+      getWorkspace: (contextKey?: string) => this.getWorkspace(contextKey),
     });
 
     // CNS scheduling inlined into PersonaAutonomousLoop (calls Rust serviceCycleFull directly)
