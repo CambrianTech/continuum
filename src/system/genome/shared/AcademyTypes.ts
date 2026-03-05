@@ -494,3 +494,40 @@ export interface ProjectStudentPipelineConfig {
   milestones: MilestoneSpec[];
   config: AcademyConfig;
 }
+
+// ============================================================================
+// RealClassEval Academy Pipeline Types
+// ============================================================================
+
+/**
+ * Configuration for the RealClassEval teacher sentinel pipeline.
+ *
+ * The teacher selects challenging Python class problems from the RealClassEval
+ * benchmark, presents them to the student, and grades implementations using
+ * PYNGUIN-generated tests for deterministic scoring.
+ */
+export interface RealClassEvalTeacherPipelineConfig {
+  sessionId: UUID;
+  skill: string;
+  personaName: string;
+  baseModel: string;
+  /** Path to the imported RealClassEval dataset directory */
+  datasetDir: string;
+  config: AcademyConfig;
+}
+
+/**
+ * Configuration for the RealClassEval student sentinel pipeline.
+ *
+ * The student attempts to implement Python classes from skeletons,
+ * trains on targeted remediation data when failing, and retries.
+ */
+export interface RealClassEvalStudentPipelineConfig {
+  sessionId: UUID;
+  personaId: UUID;
+  personaName: string;
+  baseModel: string;
+  /** Path to the imported RealClassEval dataset directory */
+  datasetDir: string;
+  config: AcademyConfig;
+}

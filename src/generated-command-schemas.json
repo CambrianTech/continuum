@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-05T16:14:48.375Z",
+  "generated": "2026-03-05T21:50:00.487Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4246,6 +4246,57 @@
       }
     },
     {
+      "name": "genome/dataset-import",
+      "description": "Import training datasets from external sources into `.continuum/datasets/`.",
+      "params": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "description": "source parameter"
+        },
+        "csvPath": {
+          "type": "string",
+          "required": false,
+          "description": "csvPath parameter"
+        },
+        "testsDir": {
+          "type": "string",
+          "required": false,
+          "description": "testsDir parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        },
+        "splitRatio": {
+          "type": "number",
+          "required": false,
+          "description": "splitRatio parameter"
+        },
+        "userColumn": {
+          "type": "string",
+          "required": false,
+          "description": "userColumn parameter"
+        },
+        "assistantColumn": {
+          "type": "string",
+          "required": false,
+          "description": "assistantColumn parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "list": {
+          "type": "boolean",
+          "required": false,
+          "description": "list parameter"
+        }
+      }
+    },
+    {
       "name": "genome/convert",
       "description": "Convert LoRA adapters between formats. Supports: merge LoRA into full-precision model, merge + quantize to GGUF, quantize base model to GGUF, and validate converted models. Uses convert-adapter.py via Rust sentinel for process isolation.",
       "params": {
@@ -4441,6 +4492,11 @@
           "type": "string",
           "required": false,
           "description": "projectDir parameter"
+        },
+        "datasetDir": {
+          "type": "string",
+          "required": false,
+          "description": "datasetDir parameter"
         }
       }
     },

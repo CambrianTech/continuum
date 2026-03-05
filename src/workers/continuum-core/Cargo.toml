@@ -112,6 +112,9 @@ image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.31"
 
+# Dataset module — CSV parsing for training data import
+csv = "1"
+
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)

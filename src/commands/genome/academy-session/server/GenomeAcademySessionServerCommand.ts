@@ -25,12 +25,16 @@ import { buildCodingTeacherPipeline } from '@system/sentinel/pipelines/CodingTea
 import { buildCodingStudentPipeline } from '@system/sentinel/pipelines/CodingStudentPipeline';
 import { buildProjectTeacherPipeline } from '@system/sentinel/pipelines/ProjectTeacherPipeline';
 import { buildProjectStudentPipeline } from '@system/sentinel/pipelines/ProjectStudentPipeline';
+import { buildRealClassEvalTeacherPipeline } from '@system/sentinel/pipelines/RealClassEvalTeacherPipeline';
+import { buildRealClassEvalStudentPipeline } from '@system/sentinel/pipelines/RealClassEvalStudentPipeline';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
 import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
 import { LOCAL_MODELS } from '@system/shared/Constants';
+import { GenomeDatasetImport } from '@commands/genome/dataset-import/shared/GenomeDatasetImportTypes';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 
 export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademySessionParams, GenomeAcademySessionResult> {
 
@@ -73,6 +77,11 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       if (!params.projectDir) {
         throw new ValidationError('projectDir', 'Required for project mode. Path to project directory containing project.json.');
       }
+    }
+
+    // RealClassEval mode: auto-acquire dataset if not provided or not yet imported
+    if (mode === 'realclasseval') {
+      params = await this.ensureRealClassEvalDataset(params);
     }
 
     // Build config from params + defaults
@@ -129,7 +138,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
 
     // 2. Build pipelines based on mode
     let pipelineResult: { teacherPipeline: ReturnType<typeof buildTeacherPipeline>; studentPipeline: ReturnType<typeof buildStudentPipeline> };
-    if (mode === 'project') {
+    if (mode === 'realclasseval') {
+      pipelineResult = this.buildRealClassEvalPipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
+    } else if (mode === 'project') {
       pipelineResult = this.buildProjectPipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
     } else if (mode === 'coding') {
       pipelineResult = this.buildCodingPipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
@@ -144,9 +155,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // Academy sessions run multiple topics (curriculum → synthesize → train → exam per topic).
     // Each topic takes 3-7 minutes, so 30 minutes covers sessions up to ~6 topics comfortably.
     const pipelineTimeout = 1800;
-    const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-' } as const;
+    const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-', realclasseval: 'realclasseval-' } as const;
     const modePrefix = modePrefixMap[mode];
-    const modeLabel = mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';
+    const modeLabel = mode === 'realclasseval' ? 'RealClassEval' : mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';
     const teacherName = teacherPipeline.name ?? `academy-${modePrefix}teacher-${skill}`;
     const studentName = studentPipeline.name ?? `academy-${modePrefix}student-${skill}`;
 
@@ -326,5 +337,77 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     });
 
     return { teacherPipeline, studentPipeline };
+  }
+
+  /**
+   * Build realclasseval-mode pipelines (benchmark-based teacher/student).
+   * Teacher selects challenging Python classes from RealClassEval,
+   * student implements them, deterministic test scoring, LoRA remediation on failure.
+   */
+  private buildRealClassEvalPipelines(
+    sessionId: UUID,
+    personaId: UUID,
+    personaName: string,
+    skill: string,
+    baseModel: string,
+    config: AcademyConfig,
+    params: GenomeAcademySessionParams,
+  ) {
+    const datasetDir = params.datasetDir!;
+
+    const teacherPipeline = buildRealClassEvalTeacherPipeline({
+      sessionId,
+      skill,
+      personaName,
+      baseModel,
+      datasetDir,
+      config,
+    });
+
+    const studentPipeline = buildRealClassEvalStudentPipeline({
+      sessionId,
+      personaId,
+      personaName,
+      baseModel,
+      datasetDir,
+      config,
+    });
+
+    return { teacherPipeline, studentPipeline };
+  }
+
+  /**
+   * Ensure RealClassEval dataset is downloaded and imported.
+   * Auto-downloads from GitHub and imports via genome/dataset-import if needed.
+   * Returns params with datasetDir populated.
+   */
+  private async ensureRealClassEvalDataset(
+    params: GenomeAcademySessionParams,
+  ): Promise<GenomeAcademySessionParams> {
+    const defaultDatasetDir = path.join(SystemPaths.datasets.root, 'realclasseval');
+    const datasetDir = params.datasetDir ?? defaultDatasetDir;
+    const manifestPath = path.join(datasetDir, 'manifest.json');
+
+    if (fs.existsSync(manifestPath)) {
+      // Already imported — use it
+      console.log(`   RealClassEval dataset found at ${datasetDir}`);
+      return { ...params, datasetDir };
+    }
+
+    // Auto-import (which auto-downloads if needed)
+    console.log('   RealClassEval dataset not found — auto-importing...');
+    const importResult = await GenomeDatasetImport.execute({
+      source: 'realclasseval',
+    });
+
+    if (!importResult.success) {
+      throw new ValidationError(
+        'datasetDir',
+        `Failed to auto-import RealClassEval dataset: ${importResult.error ?? 'unknown error'}`,
+      );
+    }
+
+    console.log(`   Auto-imported ${importResult.totalExamples} examples to ${datasetDir}`);
+    return { ...params, datasetDir };
   }
 }

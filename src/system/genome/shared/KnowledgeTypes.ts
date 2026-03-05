@@ -72,6 +72,22 @@ export interface PureGenerationSourceConfig {
 }
 
 /**
+ * RealClassEval dataset as a knowledge source for coding teachers.
+ * Provides real-world Python class implementations and tests from arxiv:2510.26130.
+ */
+export interface RealClassEvalSourceConfig {
+  type: 'realclasseval';
+  /** Path to imported dataset directory (.continuum/datasets/realclasseval/) */
+  datasetDir: string;
+  /** Use eval split only (for grading), or both (for training context) */
+  split?: 'train' | 'eval' | 'both';
+  /** Filter by minimum cyclomatic complexity */
+  minComplexity?: number;
+  /** Max examples to include in teacher context */
+  maxExamples?: number;
+}
+
+/**
  * Union of all data source configurations.
  * The teacher sentinel uses these to determine what exploration steps to run.
  */
@@ -80,7 +96,8 @@ export type DataSourceConfig =
   | WebResearchSourceConfig
   | ConversationLogSourceConfig
   | DocumentSetSourceConfig
-  | PureGenerationSourceConfig;
+  | PureGenerationSourceConfig
+  | RealClassEvalSourceConfig;
 
 // ============================================================================
 // Extracted Knowledge — What was found

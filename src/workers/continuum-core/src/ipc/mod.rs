@@ -33,6 +33,7 @@ use crate::modules::sentinel::SentinelModule;
 use crate::modules::tool_parsing::ToolParsingModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::avatar::AvatarModule;
+use crate::modules::dataset::DatasetModule;
 use crate::system_resources::SystemResourceMonitor;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
@@ -711,6 +712,10 @@ pub fn start_server(
     // AvatarModule: Bevy 3D avatar snapshots for profile pictures
     // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
     runtime.register(Arc::new(AvatarModule::new()));
+
+    // DatasetModule: Training dataset import and management
+    // Provides dataset/import-csv, dataset/import-realclasseval, dataset/list, dataset/info
+    runtime.register(Arc::new(DatasetModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

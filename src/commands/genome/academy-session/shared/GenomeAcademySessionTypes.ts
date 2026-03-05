@@ -23,7 +23,7 @@ export interface GenomeAcademySessionParams extends CommandParams {
   /** Skill to teach (e.g., "typescript-generics", "ethical-reasoning") */
   skill: string;
   /** Session mode: 'knowledge' for exam-based, 'coding' for test-suite-based, 'project' for multi-milestone (default: 'knowledge') */
-  mode?: 'knowledge' | 'coding' | 'project';
+  mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
   /** Base model for training (default: LOCAL_MODELS.DEFAULT) */
   baseModel?: string;
   /** Maximum attempts per topic before failure (default: 3) */
@@ -48,6 +48,8 @@ export interface GenomeAcademySessionParams extends CommandParams {
   testCommand?: string;
   /** [project mode] Path to project directory containing project.json */
   projectDir?: string;
+  /** [realclasseval mode] Path to imported RealClassEval dataset directory */
+  datasetDir?: string;
 }
 
 /**
@@ -60,7 +62,7 @@ export const createGenomeAcademySessionParams = (
     personaId: UUID;
     personaName: string;
     skill: string;
-    mode?: 'knowledge' | 'coding' | 'project';
+    mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
     baseModel?: string;
     maxTopicAttempts?: number;
     passingScore?: number;
@@ -73,6 +75,7 @@ export const createGenomeAcademySessionParams = (
     testFile?: string;
     testCommand?: string;
     projectDir?: string;
+    datasetDir?: string;
   }
 ): GenomeAcademySessionParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
