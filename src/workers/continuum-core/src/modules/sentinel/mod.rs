@@ -148,10 +148,13 @@ impl SentinelModule {
             None
         };
 
+        let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
         self.sentinels.insert(handle_id.clone(), RunningSentinel {
             handle: handle.clone(),
             cancel_tx: Some(cancel_tx),
             escalation: escalation.clone(),
+            completion_tx: Some(completion_tx),
+            completion_rx,
         });
 
         let mode_str = if pipeline.is_some() { "pipeline" } else { "shell" };
@@ -275,6 +278,11 @@ impl SentinelModule {
                     }));
                 }
 
+                // Signal completion to any awaiting callers (replaces TS polling loop)
+                if let Some(tx) = entry.completion_tx.take() {
+                    let _ = tx.send(true);
+                }
+
                 // Push completion to TypeScript for persona escalation.
                 // Rust owns the lifecycle — TS just receives and routes.
                 if let Some(ref esc) = escalation_clone {
@@ -353,6 +361,56 @@ impl SentinelModule {
         Err(format!("Sentinel handle not found: {handle_id}"))
     }
 
+    /// Await sentinel completion — blocks until done, no polling.
+    /// Uses tokio::sync::watch channel instead of a sleep/poll loop.
+    async fn await_sentinel(&self, params: Value) -> Result<CommandResult, String> {
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
+        let timeout_secs = p.u64_or("timeout", 600);
+
+        // Clone the watch receiver while holding the DashMap ref briefly
+        let mut rx = {
+            let entry = self.sentinels.get(handle_id)
+                .ok_or_else(|| format!("Sentinel handle not found: {handle_id}"))?;
+
+            // Already done? Return immediately.
+            if entry.handle.status != SentinelStatus::Running {
+                return Ok(CommandResult::Json(json!({
+                    "handle": entry.handle,
+                })));
+            }
+
+            entry.completion_rx.clone()
+        };
+
+        // Await completion signal with timeout — zero polling
+        let result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            rx.wait_for(|done| *done),
+        ).await;
+
+        match result {
+            Ok(Ok(_)) => {
+                // Completed — read final status
+                if let Some(entry) = self.sentinels.get(handle_id) {
+                    Ok(CommandResult::Json(json!({
+                        "handle": entry.handle,
+                    })))
+                } else {
+                    Err(format!("Sentinel {handle_id} completed but handle was cleaned up"))
+                }
+            }
+            Ok(Err(_)) => {
+                // Watch channel closed without sending — shouldn't happen
+                Err(format!("Sentinel {handle_id} watch channel closed unexpectedly"))
+            }
+            Err(_) => {
+                // Timeout
+                Err(format!("Await timeout after {timeout_secs}s for sentinel {handle_id}"))
+            }
+        }
+    }
+
     /// Execute a pipeline (direct, synchronous path — not spawned)
     async fn execute_pipeline_command(&self, params: Value) -> Result<CommandResult, String> {
         let handle_id = Self::generate_handle_id();
@@ -415,6 +473,7 @@ impl ServiceModule for SentinelModule {
 
         match command {
             "sentinel/execute" | "sentinel/run" => self.run_sentinel(params).await,
+            "sentinel/await" => self.await_sentinel(params).await,
             "sentinel/status" => self.get_status(params).await,
             "sentinel/list" => self.list_handles(params).await,
             "sentinel/cancel" => self.cancel_sentinel(params).await,

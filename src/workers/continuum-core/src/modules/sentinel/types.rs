@@ -348,6 +348,10 @@ pub struct RunningSentinel {
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<()>>,
     /// Escalation metadata — pushed to TypeScript on completion
     pub escalation: Option<SentinelEscalation>,
+    /// Completion signal — subscribers receive () when sentinel finishes.
+    /// Replaces the TS polling loop with a proper async wait.
+    pub completion_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub completion_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Safety limit for while/until/continuous loops when maxIterations is omitted
