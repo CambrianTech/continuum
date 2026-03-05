@@ -34,6 +34,7 @@ import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../con
 import { Events } from '../../core/shared/Events';
 import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
+import { HumanPresenceTracker } from '../../user/server/HumanPresenceTracker';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
 // RAGSource pattern imports
@@ -424,6 +425,17 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = identity.systemPrompt +
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
+    }
+
+    // 2.4.4b. Inject human presence awareness (which room each user is viewing)
+    const allPresence = HumanPresenceTracker.allPresence;
+    if (allPresence.length > 0) {
+      const lines = allPresence.map(p => {
+        const viewingThis = p.roomId === contextId;
+        return `- ${p.displayName} is viewing: ${p.roomName}${viewingThis ? ' (this room — they can see your response in real-time)' : ''}`;
+      });
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
     }
 
     // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)

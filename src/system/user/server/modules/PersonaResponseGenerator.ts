@@ -59,6 +59,7 @@ import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
+import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 // SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -855,6 +856,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
             // Return avatar to idle
             getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+            // Clear typing indicator
+            Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+            }).catch(() => {});
           }
 
           // Garbage returns failure; loops/truncated return redundant
@@ -907,6 +913,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
           toolIterations++;
           this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
+
+          // Refresh typing indicator during tool loop (3s decay timer would otherwise expire)
+          if (DataDaemon.jtagContext) {
+            Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_START, {
+              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+            }).catch(() => {});
+          }
 
           if (hasNativeToolCalls || (useNativeProtocol && hasXmlToolCalls)) {
             // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
@@ -1173,6 +1186,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
           // Return avatar to idle on error
           getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+          // Clear typing indicator
+          Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+            userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+          }).catch(() => {});
         }
 
         // Log error to AI decisions log
@@ -1183,6 +1201,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       // 🔧 SUB-PHASE 3.5: Create and post response
+      // Guard: never post empty messages (provider returned blank completion)
+      if (!aiResponse.text.trim()) {
+        this.log(`⚠️ ${this.personaName}: [PHASE 3.5] Empty response from AI provider — skipping post`);
+        return { success: false, error: 'Empty response from provider', storedToolResultIds: [] };
+      }
       this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
@@ -1351,6 +1374,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         // Return avatar to idle after posting
         getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+        // Clear typing indicator
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+        }).catch(() => {});
       }
 
       // 📊 PIPELINE SUMMARY — single line with all phase timings
@@ -1396,6 +1424,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         // Return avatar to idle on error
         getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+        // Clear typing indicator
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+        }).catch(() => {});
       }
 
       return {

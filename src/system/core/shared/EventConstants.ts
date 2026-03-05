@@ -107,6 +107,7 @@ export const UI_EVENTS = {
 export const PRESENCE_EVENTS = {
   TYPING_START: 'presence:typing:start',
   TYPING_STOP: 'presence:typing:stop',
+  ROOM_ACTIVE: 'presence:room:active',
 } as const;
 
 /**
@@ -218,6 +219,14 @@ export interface TypingEventPayload {
   roomId: string;
 }
 
+/** Emitted when a user switches to a room. Personas use this for attention/presence awareness. */
+export interface RoomActivePayload {
+  userId: string;
+  displayName: string;
+  roomId: string;
+  roomName: string;
+}
+
 export interface EventPayloads {
   // Data events have generic entity payloads (defined by BaseEntity extensions)
   [key: `data:${string}:${CrudOperation}`]: any;
@@ -232,6 +241,7 @@ export interface EventPayloads {
   // Presence events
   'presence:typing:start': TypingEventPayload;
   'presence:typing:stop': TypingEventPayload;
+  'presence:room:active': RoomActivePayload;
 
   // System events
   'system:ready': { timestamp: string };

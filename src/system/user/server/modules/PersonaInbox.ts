@@ -20,6 +20,10 @@ import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 import { isInboxMessage, isInboxTask, toChannelEnqueueRequest } from './QueueItemTypes';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import type { RustCognitionBridge } from './RustCognitionBridge';
+import { HumanPresenceTracker } from '../HumanPresenceTracker';
+
+// Initialize presence tracking (idempotent — safe to call multiple times)
+HumanPresenceTracker.initialize();
 
 // Re-export types for backward compatibility and external use
 export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
@@ -507,6 +511,12 @@ export function calculateMessagePriority(
     if (hasRelevantKeyword) {
       priority += 0.1;
     }
+  }
+
+  // HUMAN PRESENCE: User is actively viewing this room right now (+0.15)
+  // Basic awareness — like knowing someone is in the room. Not surveillance.
+  if (HumanPresenceTracker.isViewingRoom(message.roomId)) {
+    priority += 0.15;
   }
 
   // Temperature is informational context — the AI's own cognition decides

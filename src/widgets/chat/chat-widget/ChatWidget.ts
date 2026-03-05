@@ -359,6 +359,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.currentRoomName = roomName;
       this.currentRoomUniqueId = roomUniqueId;
 
+      // Notify server: human user is now viewing this room (presence awareness for personas)
+      const humanUser = this.roomMembers.get(DEFAULT_USERS.HUMAN);
+      Events.emit(PRESENCE_EVENTS.ROOM_ACTIVE, {
+        userId: DEFAULT_USERS.HUMAN,
+        displayName: humanUser?.displayName || 'User',
+        roomId,
+        roomName,
+      });
+
       // Reset counters for new room
       this.totalMessageCount = 0;
       this.loadedMessageCount = 0;

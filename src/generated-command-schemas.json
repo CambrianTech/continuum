@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-04T21:23:22.274Z",
+  "generated": "2026-03-05T00:02:38.431Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5360,7 +5360,7 @@
     },
     {
       "name": "data/schema",
-      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation.",
+      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation. Pass collection=\"*\" or omit to list all registered collections.",
       "params": {
         "collection": {
           "type": "string",

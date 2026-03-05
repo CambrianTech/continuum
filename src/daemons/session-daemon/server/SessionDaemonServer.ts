@@ -191,7 +191,17 @@ export class SessionDaemonServer extends SessionDaemon {
       });
     });
 
-    // console.debug(`🏷️ ${this.toString()}: Session daemon server initialized with per-project persistence and expiry management`);
+    // Subscribe to user creation events — upgrade anonymous sessions when seeded owner arrives.
+    // Race condition: browser connects before seeding → anonymous session. When seeding creates
+    // the real human owner, upgrade all anonymous browser sessions to use them.
+    Events.subscribe('data:users:created', (payload: any) => {
+      const entity = payload?.entity || payload;
+      if (entity?.type === 'human' && entity?.uniqueId && !entity.uniqueId.startsWith('anon-')) {
+        this.upgradeAnonymousSessions().catch(error => {
+          this.log.error(`Failed to upgrade anonymous sessions:`, error);
+        });
+      }
+    });
   }
 
   /**
@@ -214,6 +224,31 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     await this.saveSessionsToFile();
+  }
+
+  /**
+   * Upgrade anonymous browser sessions to the seeded human owner.
+   * Called when a non-anonymous human user is created (seeding race condition fix).
+   */
+  private async upgradeAnonymousSessions(): Promise<void> {
+    const seededOwner = await this.findSeededHumanOwner();
+    if (!seededOwner) return;
+
+    let upgraded = 0;
+    for (const session of this.sessions) {
+      if (!session.user) continue;
+      const entity = (session.user as any).entity;
+      if (entity?.type === 'human' && entity?.uniqueId?.startsWith('anon-')) {
+        session.userId = seededOwner.id;
+        session.user = seededOwner;
+        upgraded++;
+      }
+    }
+
+    if (upgraded > 0) {
+      this.log.info(`✅ SessionDaemon: Upgraded ${upgraded} anonymous session(s) to seeded owner: ${seededOwner.displayName}`);
+      await this.saveSessionsToFile();
+    }
   }
 
   /**

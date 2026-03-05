@@ -1,142 +1,69 @@
 /**
- * Typing Indicator - Manages ephemeral "user is typing..." display
+ * Typing Indicator - Single persistent row: "Helper AI, Teacher AI are typing..."
  *
- * Follows the proven AIStatusIndicator pattern:
- * - Map-based state tracking per user
- * - Auto-decay timers (3 seconds)
- * - Container-based DOM rendering
- * - Room-scoped filtering
+ * One line. Always reserved. Names accumulate/drop. No layout shifts.
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { TypingEventPayload } from '@system/core/shared/EventConstants';
 
-/** How long before a typing indicator auto-expires (ms) */
-const TYPING_DECAY_MS = 3000;
+/** Safety net — TYPING_STOP is the real removal trigger. */
+const TYPING_DECAY_MS = 30_000;
 
-/**
- * Active typer state
- */
 interface TypingState {
-  userId: UUID;
   displayName: string;
-  roomId: UUID;
-  timestamp: number;
   decayTimer: ReturnType<typeof setTimeout>;
 }
 
-/**
- * Typing Indicator Manager
- * Renders "Name is typing..." below messages, above input
- */
 export class TypingIndicator {
-  private _activeTypers = new Map<UUID, TypingState>();
+  private _activeTypers = new Map<string, TypingState>();
   private _container?: HTMLElement;
   private _roomId?: UUID;
 
-  /**
-   * Set the DOM container for rendering typing text
-   */
   setContainer(container: HTMLElement): void {
     this._container = container;
+    container.style.cssText = 'height:20px;overflow:hidden;padding:0 12px;font-size:11px;color:var(--text-muted,#8899a6);line-height:20px;white-space:nowrap;text-overflow:ellipsis;';
   }
 
-  /**
-   * Set the current room — only shows typing from this room
-   */
-  setRoomId(roomId: UUID): void {
-    this._roomId = roomId;
-  }
+  setRoomId(roomId: UUID): void { this._roomId = roomId; }
 
-  /**
-   * Handle typing start event
-   */
   onTypingStart(data: TypingEventPayload): void {
-    // Filter to current room
     if (data.roomId !== this._roomId) return;
-
-    const userId = data.userId as UUID;
-    const existing = this._activeTypers.get(userId);
-
-    // Clear existing decay timer
+    const existing = this._activeTypers.get(data.userId);
     if (existing) {
       clearTimeout(existing.decayTimer);
-    }
-
-    // Set new decay timer
-    const decayTimer = setTimeout(() => {
-      this._activeTypers.delete(userId);
-      this.updateDisplay();
-    }, TYPING_DECAY_MS);
-
-    this._activeTypers.set(userId, {
-      userId,
-      displayName: data.displayName,
-      roomId: data.roomId as UUID,
-      timestamp: Date.now(),
-      decayTimer,
-    });
-
-    this.updateDisplay();
-  }
-
-  /**
-   * Handle typing stop event
-   */
-  onTypingStop(data: TypingEventPayload): void {
-    if (data.roomId !== this._roomId) return;
-
-    const userId = data.userId as UUID;
-    const existing = this._activeTypers.get(userId);
-    if (existing) {
-      clearTimeout(existing.decayTimer);
-      this._activeTypers.delete(userId);
-      this.updateDisplay();
-    }
-  }
-
-  /**
-   * Clear all typing indicators (e.g., room switch)
-   */
-  clearAll(): void {
-    for (const state of this._activeTypers.values()) {
-      clearTimeout(state.decayTimer);
-    }
-    this._activeTypers.clear();
-    this.updateDisplay();
-  }
-
-  /**
-   * Update the DOM container with current typing state
-   */
-  private updateDisplay(): void {
-    if (!this._container) return;
-
-    const typers = Array.from(this._activeTypers.values());
-
-    if (typers.length === 0) {
-      this._container.innerHTML = '';
+      existing.decayTimer = this._decay(data.userId);
       return;
     }
-
-    const names = typers.map(t => t.displayName);
-    let text: string;
-
-    if (names.length === 1) {
-      text = `${names[0]} is typing...`;
-    } else if (names.length === 2) {
-      text = `${names[0]} and ${names[1]} are typing...`;
-    } else {
-      text = `${names[0]} and ${names.length - 1} others are typing...`;
-    }
-
-    this._container.innerHTML = `<span class="typing-text">${text}</span>`;
+    this._activeTypers.set(data.userId, {
+      displayName: data.displayName,
+      decayTimer: this._decay(data.userId),
+    });
+    this._render();
   }
 
-  /**
-   * Get count of active typers (for testing/debugging)
-   */
-  get activeCount(): number {
-    return this._activeTypers.size;
+  onTypingStop(data: TypingEventPayload): void {
+    if (data.roomId !== this._roomId) return;
+    const s = this._activeTypers.get(data.userId);
+    if (s) { clearTimeout(s.decayTimer); this._activeTypers.delete(data.userId); this._render(); }
+  }
+
+  clearAll(): void {
+    for (const s of this._activeTypers.values()) clearTimeout(s.decayTimer);
+    this._activeTypers.clear();
+    this._render();
+  }
+
+  get activeCount(): number { return this._activeTypers.size; }
+
+  private _decay(userId: string) {
+    return setTimeout(() => { this._activeTypers.delete(userId); this._render(); }, TYPING_DECAY_MS);
+  }
+
+  private _render(): void {
+    if (!this._container) return;
+    const names = Array.from(this._activeTypers.values()).map(t => t.displayName);
+    if (names.length === 0) { this._container.textContent = ''; return; }
+    this._container.textContent = `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} typing...`;
   }
 }
