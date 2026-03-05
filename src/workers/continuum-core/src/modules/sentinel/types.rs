@@ -323,11 +323,31 @@ pub struct PipelineContext<'a> {
     pub steps_log_path: Option<&'a std::path::Path>,
 }
 
+/// Escalation metadata — owned by Rust, pushed to TypeScript on completion.
+/// This is the single source of truth for sentinel → persona routing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentinelEscalation {
+    /// Owning persona for inbox delivery
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_persona_id: Option<String>,
+    /// SentinelEntity ID for execution history persistence
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    /// Human-readable name for escalation messages
+    pub sentinel_name: String,
+    /// Escalation rules (JSON pass-through — TS owns the schema)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalation_rules: Option<Value>,
+}
+
 /// Internal state for a running sentinel
 pub struct RunningSentinel {
     pub handle: SentinelHandle,
     /// Channel to send cancellation signal
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Escalation metadata — pushed to TypeScript on completion
+    pub escalation: Option<SentinelEscalation>,
 }
 
 /// Safety limit for while/until/continuous loops when maxIterations is omitted

@@ -131,10 +131,9 @@ export class DataDaemonServer extends DataDaemonBase {
     initializeGovernanceNotifications();
     this.log.debug('Governance notifications initialized');
 
-    // Initialize sentinel escalation (sentinel lifecycle → persona inbox)
-    const { initializeSentinelEscalation } = await import('../../../system/sentinel/SentinelEscalationService');
-    initializeSentinelEscalation();
-    this.log.debug('Sentinel escalation service initialized');
+    // Sentinel escalation: Rust pushes to sentinel/escalate on completion.
+    // No TS-side event subscriptions needed — the command handles routing.
+    this.log.debug('Sentinel escalation via Rust push (sentinel/escalate command)');
 
     // Initialize sentinel trigger service (auto-execute sentinels on event/cron/immediate)
     const { initializeSentinelTriggers } = await import('../../../system/sentinel/SentinelTriggerService');

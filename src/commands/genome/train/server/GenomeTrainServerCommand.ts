@@ -21,7 +21,7 @@ import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { GpuPressureWatcher } from '@system/gpu/server/GpuPressureWatcher';
-import { trackSentinel } from '@system/sentinel/SentinelEscalationService';
+import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
 import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Logger } from '@system/core/logging/Logger';
@@ -149,7 +149,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     const wrapperPath = adapter.wrapperPath;
     const scriptPath = adapter.scriptPath;
 
-    // Start training via Rust sentinel (returns immediately)
+    // Start training via Rust sentinel — escalation metadata travels with the request.
+    // Rust owns the lifecycle and pushes to sentinel/escalate on completion.
+    const sentinelName = `genome-train-${personaName}-${traitType}`;
     const rustClient = RustCoreIPCClient.getInstance();
     const runResult = await rustClient.sentinelRun({
       command: wrapperPath,
@@ -157,23 +159,20 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       workingDir: process.cwd(),
       timeout: 600,
       type: 'training',
-    });
+      parentPersonaId: personaId,
+      sentinelName,
+    } as any);
 
     const handle = runResult.handle;
     this.log.info(`Async training started: handle=${handle}`);
 
-    // Track via universal Handle system — creates persistent Handle,
-    // starts EventBridge polling, routes completion to persona inbox.
-    const sentinelName = `genome-train-${personaName}-${traitType}`;
-    await trackSentinel(
-      handle,
-      personaId as UUID,
-      '', // No entity ID for ad-hoc training
+    // EventBridge still needed for TrainingCompletionHandler (listens for sentinel events)
+    sentinelEventBridge.watch(handle, 'training', {
       personaId,
-      undefined,
-      sentinelName,
-      'training',
-    );
+      personaName,
+      traitType,
+      baseModel,
+    });
 
     // Register completion context (TrainingCompletionHandler will process when done)
     registerTrainingCompletion({

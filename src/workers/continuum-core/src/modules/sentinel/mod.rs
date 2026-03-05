@@ -136,9 +136,22 @@ impl SentinelModule {
             logs_dir: logs_dir.to_string_lossy().to_string(),
         };
 
+        // Parse escalation metadata (if caller wants persona inbox routing)
+        let escalation = if p.str_opt("parentPersonaId").is_some() || p.str_opt("entityId").is_some() {
+            Some(SentinelEscalation {
+                parent_persona_id: p.str_opt("parentPersonaId").map(|s| s.to_string()),
+                entity_id: p.str_opt("entityId").map(|s| s.to_string()),
+                sentinel_name: p.str_or("sentinelName", "unnamed").to_string(),
+                escalation_rules: p.json_opt("escalationRules"),
+            })
+        } else {
+            None
+        };
+
         self.sentinels.insert(handle_id.clone(), RunningSentinel {
             handle: handle.clone(),
             cancel_tx: Some(cancel_tx),
+            escalation: escalation.clone(),
         });
 
         let mode_str = if pipeline.is_some() { "pipeline" } else { "shell" };
@@ -154,6 +167,7 @@ impl SentinelModule {
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
+        let escalation_clone = escalation;
 
         tokio::spawn(async move {
             let log = runtime::logger("sentinel");
@@ -241,6 +255,8 @@ impl SentinelModule {
                 entry.handle.end_time = Some(now);
                 entry.cancel_tx = None;
 
+                let duration_ms = entry.handle.end_time.unwrap_or(0).saturating_sub(entry.handle.start_time);
+
                 if let Some(ref bus) = bus {
                     let mut payload = json!({
                         "handle": handle_id_clone,
@@ -248,7 +264,7 @@ impl SentinelModule {
                         "status": final_status,
                         "exitCode": entry.handle.exit_code,
                     });
-                    if let Some(err) = error_msg {
+                    if let Some(ref err) = error_msg {
                         payload["error"] = json!(err);
                     }
                     bus.publish_async_only(&format!("sentinel:{handle_id_clone}:status"), payload);
@@ -257,6 +273,26 @@ impl SentinelModule {
                         "type": sentinel_type_clone,
                         "success": final_status == "completed",
                     }));
+                }
+
+                // Push completion to TypeScript for persona escalation.
+                // Rust owns the lifecycle — TS just receives and routes.
+                if let Some(ref esc) = escalation_clone {
+                    let escalation_payload = json!({
+                        "handle": handle_id_clone,
+                        "status": final_status,
+                        "durationMs": duration_ms,
+                        "error": error_msg,
+                        "parentPersonaId": esc.parent_persona_id,
+                        "entityId": esc.entity_id,
+                        "sentinelName": esc.sentinel_name,
+                        "escalationRules": esc.escalation_rules,
+                    });
+                    // Fire-and-forget — escalation failure shouldn't block sentinel cleanup
+                    let _ = crate::runtime::command_executor::execute_ts_json(
+                        "sentinel/escalate",
+                        escalation_payload,
+                    ).await;
                 }
             }
         });

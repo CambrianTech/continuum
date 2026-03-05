@@ -3,6 +3,9 @@
  *
  * Fire-and-forget wrapper that forwards to Rust SentinelModule.
  * Returns handle immediately. Status via sentinel/status.
+ *
+ * Escalation metadata (parentPersonaId, entityId, etc.) is passed to Rust,
+ * which owns the lifecycle and pushes completion to sentinel/escalate.
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -11,8 +14,6 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { Pipeline } from '../../../../workers/continuum-core/bindings/modules/sentinel';
-import { trackSentinel } from '../../../../system/sentinel/SentinelEscalationService';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, SentinelRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -38,10 +39,8 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
     }
 
     const workingDir = (params as any).workingDir || process.cwd();
-    const asyncMode = (params as SentinelRunParams).async !== false; // Default: async (fire-and-forget)
+    const asyncMode = (params as SentinelRunParams).async !== false;
 
-    // Build pipeline for Rust
-    // Timeout precedence: params.timeout > definition.timeoutSecs > definition.timeout_secs
     const timeoutSecs = (params as SentinelRunParams).timeout
       || definition.timeoutSecs
       || definition.timeout_secs;
@@ -54,8 +53,11 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
       inputs: definition.inputs || {},
     };
 
+    const runParams = params as SentinelRunParams;
     const rustClient = RustCoreIPCClient.getInstance();
-    const sentinelRunParams = {
+
+    // Build Rust params — escalation metadata travels with the sentinel
+    const sentinelRunParams: Record<string, unknown> = {
       type: 'pipeline',
       command: 'pipeline',
       args: [] as string[],
@@ -64,25 +66,21 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
       timeout: timeoutSecs,
     };
 
+    // Pass escalation metadata to Rust — it owns the lifecycle and will
+    // push to sentinel/escalate on completion. No TS-side tracking needed.
+    if (runParams.parentPersonaId) {
+      sentinelRunParams.parentPersonaId = runParams.parentPersonaId;
+    }
+    if (runParams.entityId) {
+      sentinelRunParams.entityId = runParams.entityId;
+    }
+    if (runParams.sentinelName || pipeline.name !== 'unnamed') {
+      sentinelRunParams.sentinelName = runParams.sentinelName ?? pipeline.name;
+    }
+
     try {
       if (asyncMode) {
-        // Fire-and-forget: return handle immediately
-        const result = await rustClient.sentinelRun(sentinelRunParams);
-
-        // Track sentinel via universal Handle system — creates persistent Handle,
-        // starts EventBridge polling, routes completion to persona inbox.
-        const runParams = params as SentinelRunParams;
-        if (result.handle && (runParams.entityId || runParams.parentPersonaId)) {
-          await trackSentinel(
-            result.handle,
-            (runParams.userId ?? runParams.parentPersonaId ?? '') as UUID,
-            runParams.entityId ?? '',
-            runParams.parentPersonaId,
-            undefined,
-            runParams.sentinelName ?? pipeline.name,
-            'pipeline',
-          );
-        }
+        const result = await rustClient.sentinelRun(sentinelRunParams as any);
 
         return transformPayload(params, {
           success: true,
@@ -90,10 +88,8 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
           completed: false,
         });
       } else {
-        // Synchronous: wait for pipeline completion, return results
-        const result = await rustClient.sentinelExecute(sentinelRunParams);
+        const result = await rustClient.sentinelExecute(sentinelRunParams as any);
 
-        // Parse step results from output if available
         let stepResults: unknown[] | undefined;
         if (result.output) {
           try {
@@ -104,7 +100,7 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
               stepResults = parsed.stepResults;
             }
           } catch {
-            // Output wasn't JSON — that's fine, raw text is also valid
+            // Output wasn't JSON — raw text is valid
           }
         }
 
