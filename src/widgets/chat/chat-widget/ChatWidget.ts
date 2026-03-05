@@ -31,6 +31,8 @@ import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { TextMessageAdapter } from '../adapters/TextMessageAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
+import { TypingIndicator } from './TypingIndicator';
+import { PRESENCE_EVENTS } from '@system/core/shared/EventConstants';
 import {
   AI_DECISION_EVENTS,
   AIDecisionEventData,
@@ -112,6 +114,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private aiStatusContainer?: HTMLElement;
   private headerUpdateTimeout?: number;
   private errorsHidden: boolean = true;
+  private typingIndicator: TypingIndicator;
+  private _typingDebounce?: ReturnType<typeof setTimeout>;
+  private _isTyping: boolean = false;
   private pendingAttachments: MediaItem[] = [];
   private isSending: boolean = false;
   private positronUnsubscribe?: () => void;
@@ -155,6 +160,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Initialize AI status indicator manager
     this.aiStatusIndicator = new AIStatusIndicator();
+
+    // Initialize typing indicator manager
+    this.typingIndicator = new TypingIndicator();
   }
 
   // Static property required by widget registration system
@@ -351,12 +359,23 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.currentRoomName = roomName;
       this.currentRoomUniqueId = roomUniqueId;
 
+      // Notify server: human user is now viewing this room (presence awareness for personas)
+      const humanUser = this.roomMembers.get(DEFAULT_USERS.HUMAN);
+      Events.emit(PRESENCE_EVENTS.ROOM_ACTIVE, {
+        userId: DEFAULT_USERS.HUMAN,
+        displayName: humanUser?.displayName || 'User',
+        roomId,
+        roomName,
+      });
+
       // Reset counters for new room
       this.totalMessageCount = 0;
       this.loadedMessageCount = 0;
 
-      // Clear AI status indicators for previous room
+      // Clear AI status indicators and typing indicators for previous room
       this.aiStatusIndicator.clearAll();
+      this.typingIndicator.clearAll();
+      this.typingIndicator.setRoomId(roomId);
 
       // Update header immediately
       this.updateHeader();
@@ -761,6 +780,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         await this.scroller?.refresh();
       }
     });
+
+    // Typing indicator events
+    this.subscribeWithCleanup(PRESENCE_EVENTS.TYPING_START, (data) => {
+      this.typingIndicator.onTypingStart(data);
+    });
+    this.subscribeWithCleanup(PRESENCE_EVENTS.TYPING_STOP, (data) => {
+      this.typingIndicator.onTypingStop(data);
+    });
   }
 
   /**
@@ -912,6 +939,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           <!-- EntityScroller will populate this container -->
         </div>
 
+        <div class="typing-indicator-container" id="typingIndicator"></div>
+
         ${this.renderFooter()}
       </div>
     `;
@@ -948,8 +977,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Setup error toggle handler
     this.setupErrorToggleHandler();
 
-    // Setup call button handler
+    // Setup call button handlers
     this.setupCallButtonHandler();
+    this.setupVideoCallHandler();
+
+    // Wire typing indicator container
+    const typingEl = this.shadowRoot?.getElementById('typingIndicator');
+    if (typingEl) this.typingIndicator.setContainer(typingEl);
 
     // Setup member click handlers (for initial HTML-rendered chips)
     this.setupMemberClickHandlers();
@@ -1115,9 +1149,98 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
+   * Whether the current room is a direct message (1:1 conversation)
+   */
+  private isDM(): boolean {
+    return this.currentRoom?.type === 'direct';
+  }
+
+  /**
+   * Get the other participant in a DM room (not the current user)
+   * Uses room ownerId to identify "self" since DEFAULT_USERS.HUMAN may not match runtime ID
+   */
+  private get dmRecipient(): UserEntity | null {
+    if (!this.isDM() || !this.currentRoom) return null;
+    const ownerId = this.currentRoom.ownerId;
+    for (const user of this.roomMembers.values()) {
+      if (user.id !== ownerId) return user;
+    }
+    return null;
+  }
+
+  /**
    * Override renderHeader to display room members
+   * DM rooms get a focused header with avatar + status; group rooms unchanged
    */
   protected override renderHeader(): string {
+    if (this.isDM()) {
+      return this.renderDMHeader();
+    }
+    return this.renderGroupHeader();
+  }
+
+  /**
+   * DM-specific header: avatar, status dot, name, subtitle, call buttons
+   */
+  private renderDMHeader(): string {
+    const recipient = this.dmRecipient;
+    const name = recipient?.displayName || this.currentRoomName;
+    const status = recipient?.status || 'offline';
+    const isOnline = status === 'online';
+    const uniqueId = recipient?.uniqueId || '';
+    const initial = name.charAt(0).toUpperCase();
+
+    // Status subtitle text
+    const subtitleText = isOnline ? 'Online' : status === 'away' ? 'Away' : 'Offline';
+
+    // Error count for toggle button indicator
+    const errorCount = this.aiStatusIndicator.getErrorCount();
+
+    // Avatar: try image, fall back to initial
+    const avatarContent = uniqueId
+      ? `<img class="dm-avatar-img" src="/avatars/${uniqueId}.png" alt="${name}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        + `<div class="dm-avatar-initial" style="display:none">${initial}</div>`
+      : `<div class="dm-avatar-initial">${initial}</div>`;
+
+    return `
+      <div class="entity-list-header dm-header">
+        <div class="dm-avatar">
+          ${avatarContent}
+          <span class="dm-status-dot ${isOnline ? 'online' : 'offline'}"></span>
+        </div>
+        <div class="dm-info">
+          <span class="dm-name">${name}</span>
+          <span class="dm-subtitle">${subtitleText}</span>
+        </div>
+        <div class="dm-actions">
+          <button class="call-btn" id="callBtn" title="Start voice call">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+            </svg>
+          </button>
+          <button class="video-call-btn" id="videoCallBtn" title="Start video call">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="23 7 16 12 23 17 23 7"></polygon>
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+            </svg>
+          </button>
+          <button
+            class="error-toggle ${!this.errorsHidden ? 'pressed' : ''}"
+            id="errorToggle"
+            title="${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}"
+          >
+            Errors ${errorCount > 0 ? ` (${errorCount})` : ''}
+          </button>
+          <span class="list-count">${this.getEntityCount()}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Group room header: title, call button, error toggle, member chips
+   */
+  private renderGroupHeader(): string {
     // Get member display (avatars/names)
     const memberDisplay = this.renderMemberList();
 
@@ -1147,7 +1270,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
             id="errorToggle"
             title="${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}"
           >
-            Errors 🗑️${errorCount > 0 ? ` (${errorCount})` : ''}
+            Errors ${errorCount > 0 ? ` (${errorCount})` : ''}
           </button>
           <span class="list-count">${this.getEntityCount()}</span>
         </div>
@@ -1238,7 +1361,28 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const headerElement = this.shadowRoot?.querySelector('.entity-list-header');
     if (!headerElement) return;
 
-    // Update title text
+    // Detect layout mismatch — header HTML doesn't match room type
+    const hasDMLayout = headerElement.classList.contains('dm-header');
+    const shouldBeDM = this.isDM();
+
+    if (hasDMLayout !== shouldBeDM) {
+      // Layout changed (e.g., room data loaded after initial render) — full re-render
+      headerElement.outerHTML = this.renderHeader();
+      // Re-attach event handlers on new DOM
+      this.setupCallButtonHandler();
+      this.setupVideoCallHandler();
+      this.setupErrorToggleHandler();
+      if (!shouldBeDM) this.setupMemberClickHandlers();
+      return;
+    }
+
+    // DM header: update recipient info
+    if (shouldBeDM) {
+      this.updateDMHeaderElements(headerElement);
+      return;
+    }
+
+    // Group header: update title text
     const titleElement = headerElement.querySelector('.header-title');
     if (titleElement) {
       const headerText = this.currentRoom?.topic
@@ -1254,17 +1398,61 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     // Update error toggle button
-    const errorToggle = headerElement.querySelector('#errorToggle') as HTMLButtonElement;
-    if (errorToggle) {
-      const errorCount = this.aiStatusIndicator.getErrorCount();
-      errorToggle.textContent = `Errors 🗑️${errorCount > 0 ? ` (${errorCount})` : ''}`;
-      errorToggle.title = `${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}`;
-    }
+    this.updateErrorToggleElement(headerElement);
 
     // Update members list (rebuild this section only)
     const membersContainer = headerElement.querySelector('.header-members');
     if (membersContainer) {
       this.updateMembersList(membersContainer as HTMLElement);
+    }
+  }
+
+  /**
+   * Targeted DOM updates for DM header elements
+   */
+  private updateDMHeaderElements(headerElement: Element): void {
+    const recipient = this.dmRecipient;
+    if (!recipient) return;
+
+    const name = recipient.displayName || this.currentRoomName;
+    const status = recipient.status || 'offline';
+    const isOnline = status === 'online';
+    const subtitleText = isOnline ? 'Online' : status === 'away' ? 'Away' : 'Offline';
+
+    // Update name
+    const nameEl = headerElement.querySelector('.dm-name');
+    if (nameEl) nameEl.textContent = name;
+
+    // Update subtitle
+    const subtitleEl = headerElement.querySelector('.dm-subtitle');
+    if (subtitleEl) subtitleEl.textContent = subtitleText;
+
+    // Update status dot
+    const dotEl = headerElement.querySelector('.dm-status-dot');
+    if (dotEl) {
+      dotEl.classList.toggle('online', isOnline);
+      dotEl.classList.toggle('offline', !isOnline);
+    }
+
+    // Update message count
+    const countElement = headerElement.querySelector('.list-count');
+    if (countElement) {
+      countElement.textContent = String(this.getEntityCount());
+    }
+
+    // Update error toggle
+    this.updateErrorToggleElement(headerElement);
+  }
+
+  /**
+   * Update error toggle button text and title
+   */
+  private updateErrorToggleElement(headerElement: Element): void {
+    const errorToggle = headerElement.querySelector('#errorToggle') as HTMLButtonElement;
+    if (errorToggle) {
+      const errorCount = this.aiStatusIndicator.getErrorCount();
+      errorToggle.textContent = `Errors${errorCount > 0 ? ` (${errorCount})` : ''}`;
+      errorToggle.title = `${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}`;
     }
   }
 
@@ -1475,6 +1663,26 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
+   * Setup click handler for video call button - starts video call in current room
+   */
+  private setupVideoCallHandler(): void {
+    const btn = this.shadowRoot?.getElementById('videoCallBtn');
+    if (!btn) return;
+
+    btn.addEventListener('click', () => {
+      if (!this.currentRoomId) return;
+
+      console.log(`📹 ChatWidget: Starting video call in room ${this.currentRoomId} (${this.currentRoomName})`);
+      Events.emit('navigate:live', {
+        entityId: this.currentRoomId,
+        entityType: 'room',
+        displayName: this.currentRoomName || 'Video Call',
+        video: true
+      });
+    });
+  }
+
+  /**
    * Toggle the error panel visibility (shared logic for button and member clicks)
    */
   private toggleErrorPanel(forceShow: boolean = false): void {
@@ -1572,13 +1780,60 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
     });
 
-    // Auto-grow textarea as user types
+    // Auto-grow textarea as user types + emit typing indicator
     this.messageInput.addEventListener('input', () => {
       this.autoGrowTextarea();
+      this.emitTypingStart();
+    });
+
+    // Stop typing on blur
+    this.messageInput.addEventListener('blur', () => {
+      this.emitTypingStop();
     });
 
     // Initial resize
     this.autoGrowTextarea();
+  }
+
+  /**
+   * Emit typing start event, debounced to max once per 2s
+   */
+  private emitTypingStart(): void {
+    if (!this.currentRoomId) return;
+
+    if (!this._isTyping) {
+      this._isTyping = true;
+      Events.emit(PRESENCE_EVENTS.TYPING_START, {
+        userId: DEFAULT_USERS.HUMAN,
+        displayName: 'Joel',
+        roomId: this.currentRoomId,
+      });
+    }
+
+    // Reset debounce — after 2s of no input, allow re-emission
+    if (this._typingDebounce) clearTimeout(this._typingDebounce);
+    this._typingDebounce = setTimeout(() => {
+      this._isTyping = false;
+    }, 2000);
+  }
+
+  /**
+   * Emit typing stop event and reset state
+   */
+  private emitTypingStop(): void {
+    if (!this._isTyping || !this.currentRoomId) return;
+
+    this._isTyping = false;
+    if (this._typingDebounce) {
+      clearTimeout(this._typingDebounce);
+      this._typingDebounce = undefined;
+    }
+
+    Events.emit(PRESENCE_EVENTS.TYPING_STOP, {
+      userId: DEFAULT_USERS.HUMAN,
+      displayName: 'Joel',
+      roomId: this.currentRoomId,
+    });
   }
 
   /**
@@ -1607,6 +1862,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     this.isSending = true;
+    this.emitTypingStop();
 
     if (!this.messageInput) {
       this.isSending = false;

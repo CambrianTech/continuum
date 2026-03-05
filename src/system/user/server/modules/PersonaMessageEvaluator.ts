@@ -46,12 +46,14 @@ import {
   type AIErrorEventData
 } from '../../../events/shared/AIDecisionEvents';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
+import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import {
   COGNITION_EVENTS,
   type StageCompleteEvent,
   calculateSpeedScore,
   getStageStatus
 } from '../../../conversation/shared/CognitionEventTypes';
+import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -535,6 +537,14 @@ export class PersonaMessageEvaluator {
           scopeId: messageEntity.roomId,
         }
       ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+      // Drive avatar gesture animation while evaluating
+      getAIAudioBridge().setCognitiveState(this.personaUser.id, 'evaluating').catch(() => {});
+
+      // Show typing indicator in chat widget
+      Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_START, {
+        userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+      }).catch(() => {});
     }
 
     const gatingStart = Date.now();
@@ -589,6 +599,14 @@ export class PersonaMessageEvaluator {
             scopeId: messageEntity.roomId,
           }
         ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+        // Return avatar to idle after deciding silent
+        getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
+
+        // Clear typing indicator
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+        }).catch(() => {});
       }
 
       return;
@@ -711,6 +729,14 @@ export class PersonaMessageEvaluator {
                 scopeId: messageEntity.roomId
               }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+            // Return avatar to idle after deciding silent
+            getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
+
+            // Clear typing indicator
+            Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+              userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+            }).catch(() => {});
           }
 
           this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${adequacyResult.reason}`, {
@@ -755,6 +781,14 @@ export class PersonaMessageEvaluator {
           scopeId: messageEntity.roomId
         }
       ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+      // Drive avatar gesture animation while generating
+      getAIAudioBridge().setCognitiveState(this.personaUser.id, 'generating').catch(() => {});
+
+      // Re-emit typing start to refresh the 3s decay timer
+      Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_START, {
+        userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+      }).catch(() => {});
     }
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 2/3] GENERATING event emitted`);
 

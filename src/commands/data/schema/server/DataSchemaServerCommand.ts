@@ -15,7 +15,7 @@ import { getFieldMetadata, hasFieldMetadata, type FieldMetadata } from '../../..
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 // Use the existing entity registry system - works with ANY registered entity type
-import { getRegisteredEntity } from '../../../../daemons/data-daemon/server/EntityRegistry';
+import { getRegisteredEntity, ENTITY_REGISTRY } from '../../../../daemons/data-daemon/server/EntityRegistry';
 
 export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataSchemaResult> {
 
@@ -25,6 +25,19 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
 
   async execute(params: DataSchemaParams): Promise<DataSchemaResult> {
     try {
+      // List all registered collections when no specific collection requested
+      if (!params.collection || params.collection === '*' || params.collection === 'list') {
+        const collections: Array<{ name: string; entityClass: string }> = [];
+        for (const [name, entityClass] of ENTITY_REGISTRY.entries()) {
+          collections.push({ name, entityClass: entityClass.name });
+        }
+        collections.sort((a, b) => a.name.localeCompare(b.name));
+        return createDataSchemaResultFromParams(params, {
+          success: true,
+          collections,
+        } as any);
+      }
+
       console.log(`🔍 DataSchema: Getting schema for collection "${params.collection}"`);
 
       let schema: EntitySchema;

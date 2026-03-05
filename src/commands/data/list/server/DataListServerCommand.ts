@@ -57,6 +57,22 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
+      // Normalize orderBy — AIs often pass a string, single object, or JSON string instead of an array
+      if (params.orderBy != null && !Array.isArray(params.orderBy)) {
+        const raw = params.orderBy as any;
+        if (typeof raw === 'string') {
+          // "asc" / "desc" → default sort on createdAt
+          const dir = raw.toLowerCase() === 'asc' ? 'asc' as const : 'desc' as const;
+          (params as any).orderBy = [{ field: 'createdAt', direction: dir }];
+        } else if (typeof raw === 'object' && raw.field) {
+          // Single object → wrap in array
+          (params as any).orderBy = [raw];
+        } else {
+          // Unrecognizable → drop it
+          (params as any).orderBy = undefined;
+        }
+      }
+
       // CRITICAL FIX: Use dbHandle when provided!
       // Previously, dbHandle was IGNORED and all queries went to the main database,
       // causing massive lock contention when multiple personas responded concurrently.

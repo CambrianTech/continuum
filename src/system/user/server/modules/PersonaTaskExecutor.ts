@@ -27,6 +27,7 @@ import { Commands } from '../../../core/shared/Commands';
 import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { CognitionLogger } from './cognition/CognitionLogger';
+import type { Workspace } from '../../../code/server/Workspace';
 
 /**
  * Interface for PersonaUser dependency injection into task executor.
@@ -37,6 +38,8 @@ export interface PersonaUserForTaskExecutor {
   readonly limbicSystem: {
     loadGenomeFromDatabase(): Promise<void>;
   };
+  /** Get the persona's workspace for a given context key (null if not yet created) */
+  getWorkspace(contextKey?: string): Workspace | null;
 }
 
 /**
@@ -117,6 +120,9 @@ export class PersonaTaskExecutor {
 
         case 'write-feature':
         case 'review-code':
+        case 'fix-error':
+        case 'shell-complete':
+        case 'shell-started':
           outcome = await this.executeCodeTask(task);
           break;
 
@@ -628,23 +634,227 @@ export class PersonaTaskExecutor {
     }
   }
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // Code Domain — Build-Test-Observe Loop
+  //
+  // Same event-driven feedback pattern as sentinels:
+  //   Persona → workspace.exec → Rust events → inbox → persona reacts
+  //
+  // Task types handled:
+  //   write-feature / review-code — Start coding work, then trigger build
+  //   fix-error                   — Analyze build error, apply fix, re-trigger build
+  //   shell-complete              — Build succeeded → commit changes
+  //   shell-started               — Acknowledge async shell started (tracking only)
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /** Maximum build retries before reverting with git stash pop */
+  private static readonly MAX_BUILD_RETRIES = 3;
+
   /**
-   * Code task execution (write-feature, review-code)
-   *
-   * Infrastructure hook for code-domain tasks. The workspace is guaranteed to exist
-   * by the time this runs (PersonaAutonomousLoop.ensureWorkspace called beforehand).
-   *
-   * The actual coding agent loop (read→reason→edit→verify→commit) is driven by the
-   * persona's tool execution pipeline with code/* tools — not by this method.
-   * This method logs the task and returns, allowing the recipe pipeline to handle execution.
+   * Code task execution — dispatches to specific handler based on taskType.
+   * Workspace is guaranteed to exist (PersonaAutonomousLoop.ensureWorkspace called beforehand).
    */
   private async executeCodeTask(task: InboxTask): Promise<string> {
-    this.log(`💻 ${this.displayName}: Code task received — ${task.taskType}: ${task.description}`);
+    this.log(`💻 ${this.displayName}: Code task — ${task.taskType}: ${task.description}`);
 
-    const roomId = task.metadata?.roomId ?? task.contextId;
-    this.log(`💻 ${this.displayName}: Code task for room=${roomId}, workspace ensured by caller`);
+    switch (task.taskType) {
+      case 'write-feature':
+      case 'review-code':
+        return this.startCodeWork(task);
 
-    return `Code task acknowledged: ${task.taskType} — ${task.description}`;
+      case 'fix-error':
+        return this.fixBuildError(task);
+
+      case 'shell-complete':
+        return this.handleShellComplete(task);
+
+      case 'shell-started':
+        return `Shell execution started: ${task.metadata?.command ?? 'unknown'}`;
+
+      default:
+        return `Unknown code task type: ${task.taskType}`;
+    }
+  }
+
+  /**
+   * Start coding work: safety stash → execute task → trigger build.
+   *
+   * The actual code modifications happen via the persona's tool pipeline
+   * (code/read, code/write, code/edit). This method:
+   * 1. Creates a git stash safety snapshot
+   * 2. Uses the ai/agent command to do the actual coding work
+   * 3. Triggers a build to verify the changes compile
+   * 4. Returns immediately — build result arrives as a new inbox task via shell events
+   */
+  private async startCodeWork(task: InboxTask): Promise<string> {
+    const workspace = this.getTaskWorkspace(task);
+    if (!workspace) {
+      return 'No workspace available — PersonaAutonomousLoop should have created one';
+    }
+
+    // 1. Safety stash before AI touches anything
+    try {
+      await workspace.exec(`git stash push -m "pre-task-${task.taskId.slice(0, 8)}"`, 10000);
+      this.log(`💻 ${this.displayName}: Safety stash created before code work`);
+    } catch {
+      // Stash fails on clean working tree — that's fine
+      this.log(`💻 ${this.displayName}: Working tree clean, no stash needed`);
+    }
+
+    // 2. Execute the coding work via ai/agent command
+    // This gives the persona the full agentic loop: read → reason → edit
+    try {
+      const agentPrompt = task.taskType === 'review-code'
+        ? `Review the code in this workspace. ${task.description}`
+        : `Implement the following in this workspace. ${task.description}`;
+
+      await Commands.execute('ai/agent', {
+        prompt: agentPrompt,
+        userId: this.personaId,
+        maxTurns: 10,
+      } as any);
+      this.log(`💻 ${this.displayName}: Coding work completed, triggering build verification`);
+    } catch (error) {
+      this.log(`⚠️ ${this.displayName}: Coding agent error: ${error}`);
+      // Continue to build anyway — partial work may still compile
+    }
+
+    // 3. Trigger build verification (async — result comes back via shell events → inbox)
+    await this.triggerBuild(workspace, task);
+
+    return `Code work started: ${task.description}. Build verification triggered.`;
+  }
+
+  /**
+   * Fix a build error: read error, apply fix, re-trigger build.
+   * Tracks retry count — reverts after MAX_BUILD_RETRIES failures.
+   */
+  private async fixBuildError(task: InboxTask): Promise<string> {
+    const failureCount = task.metadata?.failureCount ?? 0;
+    const errorPreview = task.metadata?.errorPreview ?? task.description;
+
+    this.log(`💻 ${this.displayName}: Fix build error (attempt ${failureCount + 1}/${PersonaTaskExecutor.MAX_BUILD_RETRIES}): ${errorPreview.slice(0, 100)}`);
+
+    // Check retry limit
+    if (failureCount >= PersonaTaskExecutor.MAX_BUILD_RETRIES) {
+      return this.revertCodeChanges(task);
+    }
+
+    const workspace = this.getTaskWorkspace(task);
+    if (!workspace) {
+      return 'No workspace available for error fix';
+    }
+
+    // Use ai/agent to analyze and fix the error
+    try {
+      const fixPrompt = `The build failed with the following error. Fix it:\n\n${errorPreview}`;
+
+      await Commands.execute('ai/agent', {
+        prompt: fixPrompt,
+        userId: this.personaId,
+        maxTurns: 5,
+      } as any);
+      this.log(`💻 ${this.displayName}: Error fix applied, re-triggering build`);
+    } catch (error) {
+      this.log(`⚠️ ${this.displayName}: Fix agent error: ${error}`);
+    }
+
+    // Re-trigger build — the shell event will create a new fix-error or shell-complete task
+    await this.triggerBuild(workspace, task);
+
+    return `Fix attempt ${failureCount + 1} applied for: ${errorPreview.slice(0, 80)}`;
+  }
+
+  /**
+   * Handle successful build completion: stage and commit changes.
+   */
+  private async handleShellComplete(task: InboxTask): Promise<string> {
+    const command = task.metadata?.command ?? '';
+    const exitCode = task.metadata?.exitCode;
+
+    // Only auto-commit for build commands that succeeded
+    if (exitCode !== 0) {
+      return `Shell completed with non-zero exit (${exitCode}): ${command}`;
+    }
+
+    const workspace = this.getTaskWorkspace(task);
+    if (!workspace) {
+      return `Build succeeded but no workspace for commit: ${command}`;
+    }
+
+    // Check if there are changes to commit
+    try {
+      const status = await workspace.gitStatus();
+      const hasChanges = status.modified?.length > 0 ||
+        status.added?.length > 0 ||
+        status.untracked?.length > 0;
+
+      if (!hasChanges) {
+        this.log(`💻 ${this.displayName}: Build passed, no changes to commit`);
+        return `Build passed (${command}), working tree clean`;
+      }
+
+      // Stage and commit
+      await workspace.gitAdd(['.']);
+      const parentDesc = task.metadata?.parentTaskId
+        ? task.description
+        : 'Build verification passed';
+      const result = await workspace.gitCommit(`[${this.displayName}] ${parentDesc}`);
+
+      this.log(`✅ ${this.displayName}: Changes committed: ${result.hash}`);
+      return `Build passed and committed: ${result.hash}`;
+    } catch (error) {
+      this.log(`⚠️ ${this.displayName}: Post-build commit failed: ${error}`);
+      return `Build passed but commit failed: ${error}`;
+    }
+  }
+
+  /**
+   * Revert code changes by popping the safety stash.
+   * Called when build retries are exhausted.
+   */
+  private async revertCodeChanges(task: InboxTask): Promise<string> {
+    this.log(`💻 ${this.displayName}: Max retries (${PersonaTaskExecutor.MAX_BUILD_RETRIES}) exhausted, reverting changes`);
+
+    const workspace = this.getTaskWorkspace(task);
+    if (!workspace) {
+      return `Max retries exhausted, no workspace to revert`;
+    }
+
+    try {
+      // Reset working tree then pop stash to restore pre-task state
+      await workspace.exec('git checkout -- .', 10000);
+      await workspace.exec('git stash pop', 10000);
+      this.log(`💻 ${this.displayName}: Changes reverted via stash pop`);
+      return `Build failed after ${PersonaTaskExecutor.MAX_BUILD_RETRIES} retries — changes reverted`;
+    } catch (error) {
+      this.log(`⚠️ ${this.displayName}: Revert failed: ${error}`);
+      return `Build failed after ${PersonaTaskExecutor.MAX_BUILD_RETRIES} retries — revert also failed: ${error}`;
+    }
+  }
+
+  /**
+   * Trigger an async build in the workspace.
+   * The Rust CodeModule emits shell events on completion, which ShellEventHandler
+   * converts to inbox tasks — completing the feedback loop.
+   */
+  private async triggerBuild(workspace: Workspace, parentTask: InboxTask): Promise<void> {
+    try {
+      const response = await workspace.execAsync('npm run build:ts', 300000);
+      this.log(`💻 ${this.displayName}: Build triggered (execution_id=${response.execution_id})`);
+    } catch (error) {
+      this.log(`❌ ${this.displayName}: Failed to trigger build: ${error}`);
+    }
+  }
+
+  /**
+   * Get the workspace for a code task.
+   * Looks up by workspaceContextKey in metadata, falls back to 'default'.
+   */
+  private getTaskWorkspace(task: InboxTask): Workspace | null {
+    if (!this.personaUser) return null;
+    const contextKey = task.metadata?.workspaceContextKey ?? 'default';
+    return this.personaUser.getWorkspace(contextKey);
   }
 
   /**

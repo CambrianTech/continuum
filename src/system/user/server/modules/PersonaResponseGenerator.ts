@@ -58,6 +58,8 @@ import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { FitnessTracker } from '../../../genome/server/FitnessTracker';
+import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
+import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 // SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -695,6 +697,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       });
 
       let aiResponse: TextGenerationResponse;
+      let extractedThinking: string | undefined;
       const generateStartTime = Date.now();
       try {
         // Wait for AIProviderDaemon to initialize (max 30 seconds)
@@ -787,8 +790,19 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         }
 
         const cleaned = await this._rustBridge.cleanResponse(aiResponse.text.trim());
-        if (cleaned.was_cleaned) {
+        if (cleaned.was_cleaned && cleaned.text.length > 0) {
           aiResponse.text = cleaned.text;
+        } else if (cleaned.was_cleaned && cleaned.text.length === 0) {
+          // Cleaning produced empty text (e.g. response was ONLY <thinking> tags).
+          // Keep original text stripped of thinking tags but don't post empty messages.
+          this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5] Response empty after cleaning — suppressing`);
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+          return { success: true, wasRedundant: true, storedToolResultIds: [] };
+        }
+        // Store extracted thinking content for cognition logging
+        if (cleaned.thinking) {
+          extractedThinking = cleaned.thinking;
+          this.log(`💭 ${this.personaName}: [thinking] ${truncate(cleaned.thinking, 200)}`);
         }
 
         // Combined validation gates (1 Rust IPC call)
@@ -839,6 +853,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+            // Return avatar to idle
+            getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+            // Clear typing indicator
+            Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+            }).catch(() => {});
           }
 
           // Garbage returns failure; loops/truncated return redundant
@@ -891,6 +913,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
           toolIterations++;
           this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
+
+          // Refresh typing indicator during tool loop (3s decay timer would otherwise expire)
+          if (DataDaemon.jtagContext) {
+            Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_START, {
+              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+            }).catch(() => {});
+          }
 
           if (hasNativeToolCalls || (useNativeProtocol && hasXmlToolCalls)) {
             // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
@@ -1046,7 +1075,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
             // Update full response state — clean via Rust IPC
             const loopCleaned = await this._rustBridge!.cleanResponse(regeneratedResponse.text?.trim() || '');
-            aiResponse.text = loopCleaned.text;
+            // Only update text if cleaning produced non-empty result
+            if (loopCleaned.text.length > 0) {
+              aiResponse.text = loopCleaned.text;
+            } else if (regeneratedResponse.text?.trim()) {
+              // Cleaning emptied it (thinking-only response) — keep previous text
+              this.log(`⚠️ ${this.personaName}: [AGENT-LOOP] Regenerated response empty after cleaning — keeping previous text`);
+            }
             aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
             aiResponse.content = regeneratedResponse.content ?? undefined;
             aiResponse.finishReason = regeneratedResponse.finishReason;
@@ -1148,6 +1183,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               scopeId: originalMessage.roomId
             }
           ).catch(err => this.log(`⚠️ Failed to emit error event: ${err}`));
+
+          // Return avatar to idle on error
+          getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+          // Clear typing indicator
+          Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+            userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+          }).catch(() => {});
         }
 
         // Log error to AI decisions log
@@ -1158,6 +1201,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       // 🔧 SUB-PHASE 3.5: Create and post response
+      // Guard: never post empty messages (provider returned blank completion)
+      if (!aiResponse.text.trim()) {
+        this.log(`⚠️ ${this.personaName}: [PHASE 3.5] Empty response from AI provider — skipping post`);
+        return { success: false, error: 'Empty response from provider', storedToolResultIds: [] };
+      }
       this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
@@ -1170,6 +1218,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       responseMessage.timestamp = new Date();
       responseMessage.reactions = [];
       responseMessage.replyToId = originalMessage.id; // Link response to trigger message
+      if (extractedThinking) {
+        responseMessage.metadata = { ...responseMessage.metadata, source: 'bot' as const, thinking: extractedThinking };
+      }
 
       // 🔊 VOICE ROUTING: Emit BEFORE DB write — voice gets response text instantly.
       // The DB write (500ms-1.5s under contention) should NOT delay TTS.
@@ -1320,6 +1371,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scopeId: originalMessage.roomId
           }
         ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
+
+        // Return avatar to idle after posting
+        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+        // Clear typing indicator
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+        }).catch(() => {});
       }
 
       // 📊 PIPELINE SUMMARY — single line with all phase timings
@@ -1362,6 +1421,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scopeId: originalMessage.roomId
           }
         ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
+
+        // Return avatar to idle on error
+        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+
+        // Clear typing indicator
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
+        }).catch(() => {});
       }
 
       return {

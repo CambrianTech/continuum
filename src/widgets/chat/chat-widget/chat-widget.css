@@ -945,3 +945,175 @@
 .entity-list-container.compact .errors-toggle {
   display: none;
 }
+
+/* ========================================
+   DM Header - Direct Message 1:1 Layout
+   ======================================== */
+
+.dm-header {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 12px;
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.dm-avatar {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.dm-avatar-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.dm-avatar-initial {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-color, #00d4ff), #6366f1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: white;
+}
+
+.dm-status-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--surface-secondary, rgba(10, 15, 20, 0.9));
+  z-index: 1;
+}
+
+.dm-status-dot.online {
+  background: #10b981;
+}
+
+.dm-status-dot.offline {
+  background: #6b7280;
+}
+
+.dm-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.dm-name {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-subtitle {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.5));
+}
+
+.dm-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Video call button - same base as call-btn */
+.video-call-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.video-call-btn:hover {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+}
+
+.video-call-btn:active {
+  transform: scale(0.95);
+}
+
+/* ========================================
+   Typing Indicator
+   ======================================== */
+
+.typing-indicator-container {
+  min-height: 0;
+  overflow: hidden;
+  transition: min-height 0.2s ease, padding 0.2s ease;
+  flex-shrink: 0;
+}
+
+.typing-indicator-container:not(:empty) {
+  min-height: 20px;
+  padding: 4px var(--spacing-lg, 16px);
+}
+
+.typing-text {
+  font-size: 0.75rem;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.5));
+  font-style: italic;
+}
+
+/* Compact mode: hide DM members equivalent (already hidden via .header-members) */
+.entity-list-container.compact .dm-header {
+  gap: 6px;
+  padding: var(--spacing-xxs, 2px) var(--spacing-xs, 6px);
+}
+
+.entity-list-container.compact .dm-avatar {
+  width: 24px;
+  height: 24px;
+}
+
+.entity-list-container.compact .dm-avatar-img,
+.entity-list-container.compact .dm-avatar-initial {
+  width: 24px;
+  height: 24px;
+  font-size: 0.7rem;
+}
+
+.entity-list-container.compact .dm-status-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.entity-list-container.compact .dm-name {
+  font-size: 0.75rem;
+}
+
+.entity-list-container.compact .dm-subtitle {
+  display: none;
+}
+
+.entity-list-container.compact .typing-indicator-container {
+  display: none;
+}

@@ -75,6 +75,11 @@ export class AIAudioBridge {
    * @param voice - Voice identifier for TTS. Named voice ("alba") or any string (hashed to pick voice).
    */
   async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
+    // Guard: never send empty text to TTS or captions
+    if (!text || !text.trim()) {
+      return;
+    }
+
     const key = `${callId}-${userId}`;
     const participant = this.participants.get(key);
     const displayName = participant?.displayName || userId.slice(0, 8);
@@ -149,6 +154,18 @@ export class AIAudioBridge {
       }
     }
     return participants;
+  }
+
+  /**
+   * Set cognitive state for an AI persona's avatar animation.
+   * Fire-and-forget — errors are logged but don't propagate.
+   */
+  async setCognitiveState(userId: string, state: 'evaluating' | 'generating' | 'idle'): Promise<void> {
+    try {
+      await this.ipcClient.voiceSetCognitiveState(userId, state);
+    } catch {
+      // Fire-and-forget: avatar animation is non-critical
+    }
   }
 }
 

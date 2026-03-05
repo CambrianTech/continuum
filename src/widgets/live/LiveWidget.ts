@@ -26,6 +26,8 @@ import type { UserStateEntity } from '../../system/data/entities/UserStateEntity
 import type { CallEntity } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
 import { ContentService } from '../../system/state/ContentService';
+import { contentState } from '../../system/state/ContentStateService';
+import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
@@ -36,6 +38,8 @@ import './LiveCaptions';
 import type { LiveControls } from './LiveControls';
 import type { LiveCaptions } from './LiveCaptions';
 
+type ActivityState = 'thinking' | 'generating' | 'using-tool' | null;
+
 interface Participant {
   userId: UUID;
   displayName: string;
@@ -44,6 +48,7 @@ interface Participant {
   cameraEnabled: boolean;
   screenShareEnabled: boolean;
   isSpeaking: boolean;
+  activityState: ActivityState;
 }
 
 export class LiveWidget extends ReactiveWidget {
@@ -406,7 +411,8 @@ export class LiveWidget extends ReactiveWidget {
           micEnabled: true,
           cameraEnabled: false,
           screenShareEnabled: false,
-          isSpeaking: false
+          isSpeaking: false,
+          activityState: null,
         }];
         console.log('LiveWidget: Starting with self, agents will appear as they connect');
         this.requestUpdate();
@@ -429,6 +435,7 @@ export class LiveWidget extends ReactiveWidget {
                 cameraEnabled: false,
                 screenShareEnabled: false,
                 isSpeaking: false,
+                activityState: null,
               }];
               console.log(`LiveWidget: Added ${displayName}, total now: ${this.participants.length}`);
             } else {
@@ -545,6 +552,7 @@ export class LiveWidget extends ReactiveWidget {
                   cameraEnabled: false,
                   screenShareEnabled: false,
                   isSpeaking: false,
+                  activityState: null,
                 });
               }
             }
@@ -587,7 +595,14 @@ export class LiveWidget extends ReactiveWidget {
     this.cleanup();
     this.requestUpdate();
 
-    window.history.back();
+    // Close the content tab through ContentService — the single source of truth.
+    // This removes the tab, switches to next tab, updates URL, and persists.
+    // DO NOT use window.history.back() — it doesn't remove the tab from state,
+    // causing the tab to respawn with a GUID name on next state sync.
+    const liveTab = contentState.findItem('live', this.entityId);
+    if (liveTab) {
+      ContentService.close(liveTab.id);
+    }
   }
 
   // ========================================
@@ -608,6 +623,26 @@ export class LiveWidget extends ReactiveWidget {
     // and timer-based `voice:ai:speech` events. Both are now replaced by LiveKit's
     // ActiveSpeakersChanged which tracks ACTUAL audio levels at the browser.
     // See onActiveSpeakersChanged callback in AudioStreamClient setup above.
+
+    // AI cognitive activity — surface thinking/generating/tool-use on live tiles.
+    // Same AI_DECISION_EVENTS the chat widget uses; no new events needed.
+    this.unsubscribers.push(
+      Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string }) => {
+        this._setParticipantActivity(data.personaId, 'thinking');
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string }) => {
+        this._setParticipantActivity(data.personaId, 'generating');
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string }) => {
+        this._setParticipantActivity(data.personaId, null);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: { personaId: string }) => {
+        this._setParticipantActivity(data.personaId, null);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string }) => {
+        this._setParticipantActivity(data.personaId, null);
+      }),
+    );
 
     // AI speech events — used ONLY for captions (text content + duration).
     // Speaking state (green highlight) is now driven by LiveKit ActiveSpeakersChanged
@@ -634,6 +669,20 @@ export class LiveWidget extends ReactiveWidget {
           }
         }
       })
+    );
+  }
+
+  // ========================================
+  // AI Activity State
+  // ========================================
+
+  /** Update a participant's cognitive activity state (immutable for Lit reactivity) */
+  private _setParticipantActivity(personaId: string, state: ActivityState): void {
+    const idx = this.participants.findIndex(p => p.userId === personaId);
+    if (idx === -1) return;
+    if (this.participants[idx].activityState === state) return; // no-op
+    this.participants = this.participants.map((p, i) =>
+      i === idx ? { ...p, activityState: state } : p
     );
   }
 
@@ -948,6 +997,7 @@ export class LiveWidget extends ReactiveWidget {
                     .userId=${p.userId}
                     .displayName=${p.displayName}
                     .isSpeaking=${p.isSpeaking}
+                    .activityState=${p.activityState}
                     .videoElement=${this._videoFor(p.userId)}
                     .isMuted=${!p.micEnabled}
                     .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
@@ -993,6 +1043,7 @@ export class LiveWidget extends ReactiveWidget {
               .userId=${presenter.userId}
               .displayName=${presenter.displayName}
               .isSpeaking=${presenter.isSpeaking}
+              .activityState=${presenter.activityState}
               .videoElement=${this._videoFor(presenter.userId)}
               .isPresenter=${true}
               .isSpotlighted=${!!this.spotlightUserId}
@@ -1016,6 +1067,7 @@ export class LiveWidget extends ReactiveWidget {
                   .userId=${p.userId}
                   .displayName=${p.displayName}
                   .isSpeaking=${p.isSpeaking}
+                  .activityState=${p.activityState}
                   .videoElement=${this._videoFor(p.userId)}
                   .isMuted=${!p.micEnabled}
                   .isPinned=${this.spotlightUserId === p.userId && this._spotlightPinned}
@@ -1055,7 +1107,8 @@ export class LiveWidget extends ReactiveWidget {
           micEnabled: p.micEnabled ?? true,
           cameraEnabled: p.cameraEnabled ?? false,
           screenShareEnabled: p.screenShareEnabled ?? false,
-          isSpeaking: false
+          isSpeaking: false,
+          activityState: null,
         }));
         console.log('LiveWidget: Found', this.participants.length, 'existing participants');
       }

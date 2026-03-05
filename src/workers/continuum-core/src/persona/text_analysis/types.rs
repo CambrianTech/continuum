@@ -127,6 +127,9 @@ pub struct CleanedResponse {
     pub text: String,
     /// Whether any cleaning was applied
     pub was_cleaned: bool,
+    /// Extracted thinking/reasoning content from <thinking> or <think> tags
+    #[ts(optional)]
+    pub thinking: Option<String>,
     /// Computation time in microseconds
     #[ts(type = "number")]
     pub compute_time_us: u64,

@@ -1,3 +1,4 @@
+pub mod cognitive_animation;
 pub mod orchestrator;
 pub mod sentiment;
 pub mod voice_service;

@@ -84,6 +84,8 @@ export interface InboxTask extends BaseQueueItem {
     stdoutLines?: number;    // Lines of stdout output
     stderrLines?: number;    // Lines of stderr output
     errorPreview?: string;   // Preview of error message (first ~100 chars)
+    parentTaskId?: UUID;     // Links build/fix tasks back to original coding task
+    workspaceContextKey?: string; // Workspace context key this task ran in
     // Academy enrollment metadata (from SelfTaskGenerator enrollment detection)
     domain?: string;                 // Skill domain for enrollment
     suggested_mode?: string;         // Academy mode: 'knowledge' | 'coding' | 'project'

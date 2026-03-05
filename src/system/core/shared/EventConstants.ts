@@ -101,6 +101,16 @@ export const UI_EVENTS = {
 } as const;
 
 /**
+ * Presence Events - User presence and activity indicators
+ * Pattern: presence:{action}
+ */
+export const PRESENCE_EVENTS = {
+  TYPING_START: 'presence:typing:start',
+  TYPING_STOP: 'presence:typing:stop',
+  ROOM_ACTIVE: 'presence:room:active',
+} as const;
+
+/**
  * System Events - Global lifecycle events
  * Pattern: system:{event}
  */
@@ -174,6 +184,7 @@ export const ALL_EVENT_NAMES = [
   ...Object.values(DATA_EVENTS.TRAINING_SESSION),
   ...Object.values(DATA_EVENTS.ALL),
   ...Object.values(UI_EVENTS),
+  ...Object.values(PRESENCE_EVENTS),
   ...Object.values(SYSTEM_EVENTS),
 ] as const;
 
@@ -199,6 +210,23 @@ export interface RightPanelConfigPayload {
   contentType: string;
 }
 
+/**
+ * Typing event payload - sent when a user starts/stops typing
+ */
+export interface TypingEventPayload {
+  userId: string;
+  displayName: string;
+  roomId: string;
+}
+
+/** Emitted when a user switches to a room. Personas use this for attention/presence awareness. */
+export interface RoomActivePayload {
+  userId: string;
+  displayName: string;
+  roomId: string;
+  roomName: string;
+}
+
 export interface EventPayloads {
   // Data events have generic entity payloads (defined by BaseEntity extensions)
   [key: `data:${string}:${CrudOperation}`]: any;
@@ -209,6 +237,11 @@ export interface EventPayloads {
   'sidebar:toggled': { collapsed: boolean };
   'layout:changed': { contentType: string };
   'layout:rightpanel:configure': RightPanelConfigPayload;
+
+  // Presence events
+  'presence:typing:start': TypingEventPayload;
+  'presence:typing:stop': TypingEventPayload;
+  'presence:room:active': RoomActivePayload;
 
   // System events
   'system:ready': { timestamp: string };

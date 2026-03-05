@@ -1,4 +1,4 @@
-//! Tool call parsing — 5 format adapters + correction + codec in Rust.
+//! Tool call parsing — 8 format adapters + correction + codec in Rust.
 //!
 //! Stateless CPU work that runs on every LLM response. Sub-microsecond parsing
 //! replaces 784 lines of TypeScript (ToolFormatAdapter hierarchy).
@@ -7,8 +7,11 @@
 //! 1. Anthropic XML: `<tool_use>...<tool_name>X</tool_name><parameters>...</parameters></tool_use>`
 //! 2. Function-style: `<function=tool_name>{"param": "value"}</function>`
 //! 3. Bare JSON: `tool/name {"param": "value"}`
-//! 4. Markdown backtick: `` `tool: name` `param=value` ``
-//! 5. Old-style XML: `<tool name="X"><param>value</param></tool>`
+//! 4. JSON Object: `{"name": "tool_name", "parameters": {"param": "value"}}`
+//! 5. Array-style: `["tool/name", {"param": "value"}]`
+//! 6. Curly-shorthand: `{tool_name: {"param": "value"}}`
+//! 7. Markdown backtick: `` `tool: name` `param=value` ``
+//! 8. Old-style XML: `<tool name="X"><param>value</param></tool>`
 
 pub mod types;
 pub mod parsers;
@@ -19,7 +22,7 @@ pub use types::*;
 pub use codec::ToolNameCodec;
 
 /// Parse tool calls from AI response text, apply corrections, strip tool blocks.
-/// Single entry point combining all 5 format adapters + correction.
+/// Single entry point combining all 8 format adapters + correction.
 pub fn parse_and_correct(response_text: &str) -> ToolParseResult {
     let start = std::time::Instant::now();
 

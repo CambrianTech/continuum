@@ -12,9 +12,9 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
 import { Commands } from '../../../../system/core/shared/Commands';
 
-/** Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation. */
+/** Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation. Pass collection="*" or omit to list all registered collections. */
 export interface DataSchemaParams extends CommandParams {
-  readonly collection: string; // Entity collection name to get schema for
+  readonly collection: string; // Entity collection name to get schema for (use "*" or "list" to see all collections)
   readonly examples?: boolean; // Include example JSON objects
   readonly sql?: boolean; // Include SQL CREATE statements
   readonly validateData?: Record<string, unknown>; // JSON data to validate against schema

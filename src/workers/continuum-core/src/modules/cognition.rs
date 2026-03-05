@@ -339,10 +339,11 @@ impl ServiceModule for CognitionModule {
                 let start = std::time::Instant::now();
                 let response_text = p.str("response_text")?;
 
-                let cleaned = text_analysis::clean_response(response_text);
+                let clean_result = text_analysis::clean_response(response_text);
                 let result = text_analysis::CleanedResponse {
-                    was_cleaned: cleaned != response_text.trim(),
-                    text: cleaned,
+                    was_cleaned: clean_result.text != response_text.trim(),
+                    text: clean_result.text,
+                    thinking: clean_result.thinking,
                     compute_time_us: start.elapsed().as_micros() as u64,
                 };
                 Ok(CommandResult::Json(serde_json::to_value(&result)

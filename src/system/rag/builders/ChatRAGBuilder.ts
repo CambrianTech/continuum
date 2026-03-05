@@ -34,6 +34,7 @@ import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../con
 import { Events } from '../../core/shared/Events';
 import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
+import { HumanPresenceTracker } from '../../user/server/HumanPresenceTracker';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
 // RAGSource pattern imports
@@ -50,7 +51,9 @@ import {
   ProjectContextSource,
   GovernanceSource,
   ActivityContextSource,
-  ToolDefinitionsSource
+  ToolDefinitionsSource,
+  DocumentationSource,
+  ToolMethodologySource
 } from '../sources';
 
 /**
@@ -139,11 +142,13 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
+        new ToolMethodologySource(),     // Priority 48: Non-code tool workflow guidance
         new ToolDefinitionsSource(),     // Priority 45: Tool definitions (native/XML, budget-aware)
         new ActivityContextSource(),     // Priority 40: Recipe/activity context
+        new DocumentationSource(),       // Priority 35: System documentation awareness
         new GovernanceSource()           // Priority 20: Democratic participation guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 11 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 13 sources');
     }
     return this.composer;
   }
@@ -160,10 +165,12 @@ export class ChatRAGBuilder extends RAGBuilder {
     globalAwareness: string | null;
     socialAwareness: string | null;
     codeToolGuidance: string | null;
+    toolMethodology: string | null;
     projectContext: string | null;
     consolidatedMemories: string | null;
     toolDefinitionsMetadata: Record<string, unknown> | null;
     toolDefinitionsPrompt: string | null;
+    documentationAwareness: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
@@ -172,10 +179,12 @@ export class ChatRAGBuilder extends RAGBuilder {
     let globalAwareness: string | null = null;
     let socialAwareness: string | null = null;
     let codeToolGuidance: string | null = null;
+    let toolMethodology: string | null = null;
     let projectContext: string | null = null;
     let consolidatedMemories: string | null = null;
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let toolDefinitionsPrompt: string | null = null;
+    let documentationAwareness: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -203,6 +212,12 @@ export class ChatRAGBuilder extends RAGBuilder {
       if (section.systemPromptSection && section.sourceName === 'code-tools') {
         codeToolGuidance = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'tool-methodology') {
+        toolMethodology = section.systemPromptSection;
+      }
+      if (section.systemPromptSection && section.sourceName === 'documentation') {
+        documentationAwareness = section.systemPromptSection;
+      }
       if (section.systemPromptSection && section.sourceName === 'project-context') {
         projectContext = section.systemPromptSection;
       }
@@ -218,8 +233,8 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     return {
       identity, conversationHistory, memories,
-      widgetContext, globalAwareness, socialAwareness, codeToolGuidance, projectContext,
-      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt
+      widgetContext, globalAwareness, socialAwareness, codeToolGuidance, toolMethodology, projectContext,
+      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt, documentationAwareness
     };
   }
 
@@ -254,7 +269,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     let globalAwareness: string | null;
     let socialAwareness: string | null;
     let codeToolGuidance: string | null;
+    let toolMethodology: string | null;
     let projectContext: string | null;
+    let documentationAwareness: string | null;
     let consolidatedMemories: string | null = null;
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let toolDefinitionsPrompt: string | null = null;
@@ -304,7 +321,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       globalAwareness = extracted.globalAwareness;
       socialAwareness = extracted.socialAwareness;
       codeToolGuidance = extracted.codeToolGuidance;
+      toolMethodology = extracted.toolMethodology;
       projectContext = extracted.projectContext;
+      documentationAwareness = extracted.documentationAwareness;
       consolidatedMemories = extracted.consolidatedMemories;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
       toolDefinitionsPrompt = extracted.toolDefinitionsPrompt;
@@ -382,7 +401,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
       socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
       codeToolGuidance = null; // Legacy path doesn't use CodeToolSource
+      toolMethodology = null;  // Legacy path doesn't use ToolMethodologySource
       projectContext = null;   // Legacy path doesn't use ProjectContextSource
+      documentationAwareness = null; // Legacy path doesn't use DocumentationSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -406,6 +427,17 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
     }
 
+    // 2.4.4b. Inject human presence awareness (which room each user is viewing)
+    const allPresence = HumanPresenceTracker.allPresence;
+    if (allPresence.length > 0) {
+      const lines = allPresence.map(p => {
+        const viewingThis = p.roomId === contextId;
+        return `- ${p.displayName} is viewing: ${p.roomName}${viewingThis ? ' (this room — they can see your response in real-time)' : ''}`;
+      });
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
+    }
+
     // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
     // This gives AIs unified knowledge that flows between rooms/contexts
     if (!isSmallContext && globalAwareness) {
@@ -427,6 +459,20 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${codeToolGuidance}`;
       this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
+    }
+
+    // 2.4.7a. Inject tool methodology (non-code tool workflows)
+    if (!isSmallContext && toolMethodology) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${toolMethodology}`;
+      this.log('🔧 ChatRAGBuilder: Injected tool methodology into system prompt');
+    }
+
+    // 2.4.7b. Inject documentation awareness (chapter map + exploration workflow)
+    if (!isSmallContext && documentationAwareness) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${documentationAwareness}`;
+      this.log('📚 ChatRAGBuilder: Injected documentation awareness into system prompt');
     }
 
     // 2.4.8. Inject project workspace context (git status, team activity, build info)

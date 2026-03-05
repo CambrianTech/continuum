@@ -6,7 +6,8 @@
 //!          voice/transcribe-with-adapter, voice/stt-list,
 //!          voice/test-audio-generate,
 //!          voice/inject-audio, voice/ambient-add, voice/ambient-inject,
-//!          voice/ambient-remove, voice/poll-transcriptions
+//!          voice/ambient-remove, voice/poll-transcriptions,
+//!          voice/set-cognitive-state
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
@@ -600,6 +601,27 @@ impl ServiceModule for VoiceModule {
 
                 log_info!("module", "voice_ambient_remove", "Removed ambient source from call {}", call_id);
                 Ok(CommandResult::Json(serde_json::json!({ "removed": true })))
+            }
+
+            "voice/set-cognitive-state" => {
+                let user_id = p.str("user_id")?;
+                let state_str = p.str("state")?;
+
+                use crate::live::session::cognitive_animation::CognitiveState;
+                let state = match state_str {
+                    "evaluating" => CognitiveState::Evaluating,
+                    "generating" => CognitiveState::Generating,
+                    "idle" => CognitiveState::Idle,
+                    _ => return Err(format!("Invalid cognitive state: {state_str} (expected evaluating|generating|idle)")),
+                };
+
+                let found = if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
+                    bevy_system.set_cognitive_state_by_identity(user_id, state)
+                } else {
+                    false
+                };
+
+                Ok(CommandResult::Json(serde_json::json!({ "set": found })))
             }
 
             _ => Err(format!("Unknown voice command: {command}")),
