@@ -52,6 +52,14 @@ export interface SentinelRunParams {
 	timeout?: number;
 	/** Sentinel type for categorization (default: "build") */
 	type?: string;
+	/** Parent persona ID for escalation routing on completion */
+	parentPersonaId?: string;
+	/** Entity ID for execution record persistence */
+	entityId?: string;
+	/** Human-readable sentinel name */
+	sentinelName?: string;
+	/** Escalation rules (e.g., retry, notify, block) */
+	escalationRules?: Record<string, unknown>;
 }
 
 /**
@@ -199,6 +207,11 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 				workingDir: params.workingDir,
 				env: params.env,
 				timeout: params.timeout,
+				// Escalation metadata — Rust stores alongside handle, pushes on completion
+				...(params.parentPersonaId && { parentPersonaId: params.parentPersonaId }),
+				...(params.entityId && { entityId: params.entityId }),
+				...(params.sentinelName && { sentinelName: params.sentinelName }),
+				...(params.escalationRules && { escalationRules: params.escalationRules }),
 			});
 
 			if (!response.success) {

@@ -177,6 +177,11 @@ export class JTAGSystemServer extends JTAGSystem {
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();
 
+    // 4.5. Initialize cross-cutting services (sentinel, governance, training)
+    // These depend on daemons being ready but aren't daemons themselves.
+    const { initializeServices } = await import('./ServiceInitializer');
+    await initializeServices();
+
     // 5. Setup cross-context transport
     await system.setupTransports();
 

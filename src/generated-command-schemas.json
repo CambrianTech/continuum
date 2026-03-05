@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-05T02:02:34.947Z",
+  "generated": "2026-03-05T16:14:48.375Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1818,6 +1818,52 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/escalate",
+      "description": "Pushed from Rust when a sentinel reaches a terminal state.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": true,
+          "description": "status parameter"
+        },
+        "durationMs": {
+          "type": "number",
+          "required": false,
+          "description": "durationMs parameter"
+        },
+        "error": {
+          "type": "string",
+          "required": false,
+          "description": "error parameter"
+        },
+        "parentPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "parentPersonaId parameter"
+        },
+        "entityId": {
+          "type": "string",
+          "required": false,
+          "description": "entityId parameter"
+        },
+        "sentinelName": {
+          "type": "string",
+          "required": true,
+          "description": "sentinelName parameter"
+        },
+        "escalationRules": {
+          "type": "array",
+          "required": false,
+          "description": "escalationRules parameter"
         }
       }
     },
