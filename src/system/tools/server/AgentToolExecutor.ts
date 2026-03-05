@@ -416,7 +416,7 @@ export class AgentToolExecutor {
     const internalCalls: ToolCall[] = nativeCalls.map(tc => ({
       toolName: unsanitizeToolName(tc.name),
       parameters: Object.fromEntries(
-        Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+        Object.entries(tc.input ?? {}).map(([k, v]) => [k, String(v)])
       ) as Record<string, string>,
     }));
 

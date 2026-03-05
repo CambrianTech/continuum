@@ -11,7 +11,8 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { Pipeline } from '../../../../workers/continuum-core/bindings/modules/sentinel';
-import { registerSentinelHandle } from '../../../../system/sentinel/SentinelEscalationService';
+import { trackSentinel } from '../../../../system/sentinel/SentinelEscalationService';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, SentinelRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -68,15 +69,18 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
         // Fire-and-forget: return handle immediately
         const result = await rustClient.sentinelRun(sentinelRunParams);
 
-        // Register handle for lifecycle tracking (escalation → persona inbox)
+        // Track sentinel via universal Handle system — creates persistent Handle,
+        // starts EventBridge polling, routes completion to persona inbox.
         const runParams = params as SentinelRunParams;
         if (result.handle && (runParams.entityId || runParams.parentPersonaId)) {
-          registerSentinelHandle(
+          await trackSentinel(
             result.handle,
+            (runParams.userId ?? runParams.parentPersonaId ?? '') as UUID,
             runParams.entityId ?? '',
             runParams.parentPersonaId,
             undefined,
             runParams.sentinelName ?? pipeline.name,
+            'pipeline',
           );
         }
 

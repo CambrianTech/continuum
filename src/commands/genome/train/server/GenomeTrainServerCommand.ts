@@ -21,8 +21,7 @@ import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { GpuPressureWatcher } from '@system/gpu/server/GpuPressureWatcher';
-import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
-import { registerSentinelHandle } from '@system/sentinel/SentinelEscalationService';
+import { trackSentinel } from '@system/sentinel/SentinelEscalationService';
 import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Logger } from '@system/core/logging/Logger';
@@ -163,21 +162,17 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     const handle = runResult.handle;
     this.log.info(`Async training started: handle=${handle}`);
 
-    // Register with event bridge (polls Rust, emits TypeScript Events)
-    sentinelEventBridge.watch(handle, 'training', {
-      personaId,
-      personaName,
-      traitType,
-      baseModel,
-    });
-
-    // Register with escalation service (routes completion to persona inbox)
-    registerSentinelHandle(
+    // Track via universal Handle system — creates persistent Handle,
+    // starts EventBridge polling, routes completion to persona inbox.
+    const sentinelName = `genome-train-${personaName}-${traitType}`;
+    await trackSentinel(
       handle,
+      personaId as UUID,
       '', // No entity ID for ad-hoc training
       personaId,
       undefined,
-      `genome-train-${personaName}-${traitType}`,
+      sentinelName,
+      'training',
     );
 
     // Register completion context (TrainingCompletionHandler will process when done)

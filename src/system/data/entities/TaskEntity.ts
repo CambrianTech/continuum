@@ -84,6 +84,7 @@ export type TaskType =
   | 'enroll-academy'
 
   // Sentinel domain (sentinel lifecycle events → persona inbox)
+  | 'launch-sentinel'        // Persona autonomously launches a sentinel pipeline
   | 'sentinel-complete'      // Sentinel finished successfully
   | 'sentinel-failed'        // Sentinel failed with error
   | 'sentinel-escalation'    // Sentinel needs human/persona attention

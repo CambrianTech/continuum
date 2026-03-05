@@ -6,10 +6,14 @@
  * conscious escalation pathway: sentinels run silently until something
  * needs the persona's attention, then it bubbles up as an inbox task.
  *
- * Subscribes to sentinel events emitted by the Rust engine:
+ * Tracking uses the universal Handles system (persistent, survives restarts,
+ * queryable). The ephemeral Rust handle is stored inside the Handle's params
+ * alongside escalation metadata. No in-memory maps — Handles is the single
+ * source of truth.
+ *
+ * Subscribes to sentinel events emitted by SentinelEventBridge:
  *   - sentinel:{handle}:complete → InboxTask with 'sentinel-complete'
  *   - sentinel:{handle}:error   → InboxTask with 'sentinel-failed'
- *   - sentinel:{handle}:step    → (future: progress tracking)
  *
  * The service also persists execution results to the SentinelEntity
  * when a sentinel finishes, linking the ephemeral Rust handle back
@@ -17,15 +21,19 @@
  */
 
 import { Events } from '../core/shared/Events';
+import { Handles } from '../core/shared/Handles';
 import { Commands } from '../core/shared/Commands';
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import { generateUUID } from '../core/types/CrossPlatformUUID';
+import type { HandleRecord } from '../core/types/Handle';
 import type { InboxTask } from '../user/server/modules/QueueItemTypes';
 import type { SentinelEntity, SentinelExecutionResult } from './SentinelDefinition';
 import type { EscalationRule, EscalationPriority } from './entities/SentinelEntity';
 import { DEFAULT_ESCALATION_RULES } from './entities/SentinelEntity';
 import type { MemoryEntity } from '../user/server/modules/MemoryTypes';
 import { CognitionLogger } from '../user/server/modules/cognition/CognitionLogger';
+import { getPersonaInbox } from '../user/server/PersonaInboxRegistry';
+import { sentinelEventBridge } from './SentinelEventBridge';
 
 /**
  * Priority mapping: escalation priority → numeric inbox priority
@@ -38,7 +46,24 @@ const PRIORITY_MAP: Record<EscalationPriority, number> = {
 };
 
 /**
- * Sentinel lifecycle event payload (emitted by Rust engine via MessageBus)
+ * Params stored in the universal Handle for sentinel tracking.
+ * This is the persistent equivalent of the old in-memory handleToEntityMap.
+ */
+export interface SentinelHandleParams {
+  /** Rust-side sentinel handle ID */
+  rustHandle: string;
+  /** SentinelEntity ID (empty string for ad-hoc runs) */
+  entityId: string;
+  /** Owning persona for escalation routing */
+  parentPersonaId?: string;
+  /** Rules governing when/how to escalate */
+  escalationRules: EscalationRule[];
+  /** Human-readable sentinel name */
+  sentinelName: string;
+}
+
+/**
+ * Sentinel lifecycle event payload (emitted by SentinelEventBridge)
  */
 interface SentinelLifecycleEvent {
   handle: string;
@@ -47,46 +72,61 @@ interface SentinelLifecycleEvent {
   durationMs?: number;
   stepsCompleted?: number;
   totalSteps?: number;
+  /** Universal Handle ID — injected via EventBridge watch metadata */
+  handleId?: string;
+  [key: string]: unknown;
 }
 
 /**
- * In-memory tracking of handle → entity ID mapping.
- * When sentinel/run is called, the caller can register the mapping
- * so we know which entity to update when the sentinel finishes.
+ * Synchronous processing guard — prevents duplicate processing when
+ * the same sentinel emits multiple events between await points.
+ * This is the TypeScript equivalent of Rust's Mutex::lock() + Option::take():
+ * the Set operation is synchronous, so no interleaving is possible.
+ *
+ * The Handle is the source of truth. This Set is purely a concurrency guard.
  */
-const handleToEntityMap = new Map<string, {
-  entityId: string;
-  parentPersonaId?: string;
-  escalationRules: EscalationRule[];
-  sentinelName: string;
-  startedAt: string;
-}>();
+const _processing = new Set<string>();
 
 /**
- * Register a sentinel handle for lifecycle tracking.
- * Called by sentinel/run or academy-session when spawning sentinels.
+ * Track a sentinel for lifecycle management.
+ *
+ * Creates a persistent Handle (survives restarts, queryable) and starts
+ * EventBridge polling. Replaces the old registerSentinelHandle + manual watch.
+ *
+ * @returns The created HandleRecord (caller can use handle.id or handle.shortId)
  */
-export function registerSentinelHandle(
-  handle: string,
+export async function trackSentinel(
+  rustHandle: string,
+  requestedBy: UUID,
   entityId: string,
   parentPersonaId?: string,
   escalationRules?: EscalationRule[],
   sentinelName?: string,
-): void {
-  handleToEntityMap.set(handle, {
+  watchType?: string,
+): Promise<HandleRecord> {
+  const name = sentinelName ?? 'unnamed';
+
+  const params: SentinelHandleParams = {
+    rustHandle,
     entityId,
     parentPersonaId,
     escalationRules: escalationRules ?? DEFAULT_ESCALATION_RULES,
-    sentinelName: sentinelName ?? 'unnamed',
-    startedAt: new Date().toISOString(),
-  });
-}
+    sentinelName: name,
+  };
 
-/**
- * Unregister a sentinel handle (cleanup after processing).
- */
-export function unregisterSentinelHandle(handle: string): void {
-  handleToEntityMap.delete(handle);
+  // Persistent handle — null TTL so it lives until the sentinel completes
+  const handle = await Handles.create('sentinel/run', params, requestedBy, null);
+  await Handles.markProcessing(handle.id);
+
+  // Start EventBridge polling — metadata carries the Handle ID so the
+  // lifecycle handler can retrieve all tracking data from the Handle.
+  sentinelEventBridge.watch(rustHandle, watchType ?? 'pipeline', {
+    handleId: handle.id,
+    parentPersonaId,
+    sentinelName: name,
+  });
+
+  return handle;
 }
 
 /**
@@ -94,7 +134,6 @@ export function unregisterSentinelHandle(handle: string): void {
  * Called once during server startup.
  */
 export function initializeSentinelEscalation(): void {
-  // Subscribe to sentinel completion events
   Events.subscribe('sentinel:*:complete', async (payload: SentinelLifecycleEvent) => {
     await handleSentinelLifecycle(payload, 'completed');
   });
@@ -106,8 +145,6 @@ export function initializeSentinelEscalation(): void {
   Events.subscribe('sentinel:*:cancelled', async (payload: SentinelLifecycleEvent) => {
     await handleSentinelLifecycle(payload, 'cancelled');
   });
-
-  // Listening for lifecycle events
 }
 
 /**
@@ -117,29 +154,49 @@ async function handleSentinelLifecycle(
   payload: SentinelLifecycleEvent,
   status: 'completed' | 'failed' | 'cancelled',
 ): Promise<void> {
-  const handle = payload.handle;
-  const tracking = handleToEntityMap.get(handle);
+  const handleId = payload.handleId as string | undefined;
+  if (!handleId) return;
 
-  if (!tracking) {
-    // Sentinel was not registered for tracking (e.g., ad-hoc run without save)
-    return;
-  }
+  // Synchronous take-guard: Set.has + Set.add are synchronous in JS,
+  // so no async interleaving between check and claim.
+  if (_processing.has(handleId)) return;
+  _processing.add(handleId);
 
   try {
+    // Read tracking data from persistent Handle
+    const handleRecord = await Handles.get(handleId as UUID);
+    if (!handleRecord || handleRecord.status === 'complete' || handleRecord.status === 'failed') {
+      return; // Already processed (by a concurrent event or previous run)
+    }
+
+    const tracking = handleRecord.params as SentinelHandleParams;
+    const startedAt = handleRecord.createdAt.toISOString();
+
     // 1. Build execution result
     const executionResult: SentinelExecutionResult = {
-      handle,
+      handle: tracking.rustHandle,
       success: status === 'completed',
-      startedAt: tracking.startedAt,
+      startedAt,
       completedAt: new Date().toISOString(),
       durationMs: payload.durationMs,
       error: payload.error,
     };
 
-    // 2. Persist execution result to entity
-    await persistExecutionResult(tracking.entityId, executionResult, status);
+    // 2. Mark Handle terminal BEFORE async work — prevents duplicate processing
+    //    even if the guard Set is cleared (e.g., on restart).
+    const terminalStatus = status === 'completed' ? 'complete' : 'failed';
+    if (terminalStatus === 'complete') {
+      await Handles.markComplete(handleId as UUID, executionResult);
+    } else {
+      await Handles.markFailed(handleId as UUID, payload.error ?? status);
+    }
 
-    // 3. Check escalation rules and route to persona inbox
+    // 3. Persist execution result to SentinelEntity
+    if (tracking.entityId) {
+      await persistExecutionResult(tracking.entityId, executionResult, status);
+    }
+
+    // 4. Check escalation rules and route to persona inbox
     const condition = status === 'completed' ? 'complete' :
                       status === 'failed' ? 'error' : 'error';
     const matchingRule = tracking.escalationRules.find(r => r.condition === condition);
@@ -149,14 +206,14 @@ async function handleSentinelLifecycle(
         tracking.parentPersonaId,
         tracking.sentinelName,
         tracking.entityId,
-        handle,
+        tracking.rustHandle,
         status,
         matchingRule,
         payload.error,
       );
     }
 
-    // 4. Store sentinel execution as persona memory (for pattern recall)
+    // 5. Store sentinel execution as persona memory (for pattern recall)
     if (tracking.parentPersonaId) {
       await storeSentinelMemory(
         tracking.parentPersonaId,
@@ -169,11 +226,10 @@ async function handleSentinelLifecycle(
         payload.error,
       );
     }
-
-    // 5. Cleanup tracking
-    handleToEntityMap.delete(handle);
   } catch (err) {
-    console.error(`[SentinelEscalation] Error handling lifecycle for ${handle}: ${err}`);
+    console.error(`[SentinelEscalation] Error handling lifecycle for handle ${handleId}: ${err}`);
+  } finally {
+    _processing.delete(handleId);
   }
 }
 
@@ -186,7 +242,6 @@ async function persistExecutionResult(
   status: string,
 ): Promise<void> {
   try {
-    // Fetch current entity
     const listResult = await Commands.execute('data/list', {
       collection: 'sentinels',
       filter: { id: entityId },
@@ -196,7 +251,6 @@ async function persistExecutionResult(
     const entity = listResult?.items?.[0] as SentinelEntity | undefined;
     if (!entity) return;
 
-    // Update execution history
     const executions = [result, ...(entity.executions || [])].slice(0, 50);
 
     await Commands.execute('data/update', {
@@ -261,9 +315,23 @@ async function escalateToPersonaInbox(
     },
   };
 
-  // Emit the task event — PersonaUser's event listener will pick it up
-  // and enqueue it into the persona's inbox
-  Events.emit(`task:${parentPersonaId}:created`, task);
+  // Deliver directly to persona's inbox (instant delivery, no polling needed)
+  const inbox = getPersonaInbox(parentPersonaId as UUID);
+  if (inbox) {
+    await inbox.enqueue(task);
+    console.log(`[SentinelEscalation] Delivered ${taskType} to persona inbox (sentinel=${sentinelName})`);
+  } else {
+    // Persona not active — persist to DB for pickup on next startup
+    try {
+      await Commands.execute('data/create', {
+        collection: 'tasks',
+        data: task,
+      } as any);
+      console.log(`[SentinelEscalation] Persona offline, persisted ${taskType} task to DB (sentinel=${sentinelName})`);
+    } catch (err) {
+      console.error(`[SentinelEscalation] Failed to create ${taskType} task: ${err}`);
+    }
+  }
 }
 
 /**
@@ -294,8 +362,6 @@ async function storeSentinelMemory(
       ? `Sentinel "${sentinelName}" failed after ${durationStr}: ${error ?? 'unknown error'}`
       : `Sentinel "${sentinelName}" was cancelled after ${durationStr}`;
 
-    // Importance: successful executions are more worth remembering than failures
-    // (we learn patterns from success; errors are already tracked in entity history)
     const importance = status === 'completed' ? 0.7 : status === 'failed' ? 0.5 : 0.3;
 
     const memory: Partial<MemoryEntity> = {
@@ -330,7 +396,6 @@ async function storeSentinelMemory(
 
     console.log(`[SentinelEscalation] Stored sentinel memory for persona ${parentPersonaId}: ${content.slice(0, 80)}`);
   } catch (err) {
-    // Non-critical — don't let memory storage failure break escalation flow
     console.error(`[SentinelEscalation] Failed to store sentinel memory: ${err}`);
   }
 }

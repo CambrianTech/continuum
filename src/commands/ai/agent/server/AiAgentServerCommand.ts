@@ -214,7 +214,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
               return {
                 id: `synth_${Date.now()}_${i}`,
                 name,
-                input: coerceParamsToSchema(tc.parameters, toolSpecs, name),
+                input: coerceParamsToSchema(tc.parameters ?? {}, toolSpecs, name),
               };
             });
           }

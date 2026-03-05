@@ -97,6 +97,7 @@ export interface InboxTask extends BaseQueueItem {
     sentinelHandle?: string;         // Ephemeral Rust-side handle
     sentinelStatus?: string;         // completed | failed | cancelled
     error?: string;                  // Error message for failed sentinels
+    definition?: unknown;            // Inline pipeline definition for launch-sentinel tasks
   };
 }
 

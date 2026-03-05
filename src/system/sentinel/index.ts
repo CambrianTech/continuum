@@ -50,8 +50,8 @@ export {
 // Escalation service (sentinel lifecycle → persona inbox)
 export {
   initializeSentinelEscalation,
-  registerSentinelHandle,
-  unregisterSentinelHandle,
+  trackSentinel,
+  type SentinelHandleParams,
 } from './SentinelEscalationService';
 
 // Trigger service (automatic sentinel execution: event, cron, immediate)

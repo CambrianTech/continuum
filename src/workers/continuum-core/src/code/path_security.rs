@@ -162,7 +162,9 @@ impl PathSecurity {
                 }
             })?;
 
-            if canonical.starts_with(root) {
+            // Re-canonicalize root at comparison time (macOS /Volumes vs /private/Volumes)
+            let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            if canonical.starts_with(&canonical_root) {
                 return Ok(canonical);
             }
 
@@ -202,7 +204,10 @@ impl PathSecurity {
                 }
             })?;
 
-            if !canonical.starts_with(&self.workspace_root) {
+            // Re-canonicalize workspace root at comparison time (macOS /Volumes vs /private/Volumes)
+            let canonical_ws = self.workspace_root.canonicalize()
+                .unwrap_or_else(|_| self.workspace_root.clone());
+            if !canonical.starts_with(&canonical_ws) {
                 return Err(PathSecurityError::TraversalBlocked {
                     path: relative_path.to_string(),
                     workspace: self.workspace_root.display().to_string(),
@@ -227,7 +232,10 @@ impl PathSecurity {
                         }
                     })?;
 
-                    if !canonical_ancestor.starts_with(&self.workspace_root) {
+                    // Re-canonicalize workspace root at comparison time (macOS /Volumes vs /private/Volumes)
+                    let canonical_ws = self.workspace_root.canonicalize()
+                        .unwrap_or_else(|_| self.workspace_root.clone());
+                    if !canonical_ancestor.starts_with(&canonical_ws) {
                         return Err(PathSecurityError::TraversalBlocked {
                             path: relative_path.to_string(),
                             workspace: self.workspace_root.display().to_string(),

@@ -63,11 +63,15 @@ export class SelfTaskGenerator {
    * Returns the number of tasks created.
    */
   async generateFromGaps(report: GapReport): Promise<number> {
-    // Gate 1: GPU pressure must be normal
+    // Gate 1: GPU pressure — graduated blocking
+    // high/critical → block all task generation
+    // warning → block GPU-heavy tasks only (enroll-academy, fine-tune-lora)
+    // normal → all allowed
+    let gpuLevel: string = 'normal';
     try {
-      const gpuLevel = GpuPressureWatcher.instance.currentLevel;
-      if (gpuLevel !== 'normal') {
-        this.log(`⏸️ SelfTaskGenerator: GPU pressure=${gpuLevel}, skipping task generation`);
+      gpuLevel = GpuPressureWatcher.instance.currentLevel;
+      if (gpuLevel === 'high' || gpuLevel === 'critical') {
+        this.log(`⏸️ SelfTaskGenerator: GPU pressure=${gpuLevel}, blocking all task generation`);
         return 0;
       }
     } catch {
@@ -96,6 +100,17 @@ export class SelfTaskGenerator {
       if (created >= slotsAvailable) break;
       if (gap.severity < MIN_SEVERITY) break;  // Gaps are sorted by severity desc
       if (gap.suggestedAction === 'none') continue;
+
+      // Gate: GPU warning blocks GPU-heavy tasks but allows lighter ones
+      if (gpuLevel === 'warning') {
+        const wouldBeGpuHeavy = gap.suggestedAction === 'retrain' ||
+          gap.suggestedAction === 'enroll-academy' ||
+          gap.suggestedAction === 'fine-tune-lora';
+        if (wouldBeGpuHeavy) {
+          this.log(`⏸️ SelfTaskGenerator: GPU pressure=warning, skipping GPU-heavy task: ${gap.suggestedAction} for ${gap.domain}`);
+          continue;
+        }
+      }
 
       // Gate 4: Per-domain cooldown
       const lastEnrollment = this.domainCooldowns.get(gap.domain) ?? 0;
