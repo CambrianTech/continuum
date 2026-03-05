@@ -378,12 +378,28 @@ export class ConversationHistorySource implements RAGSource {
       // Pass 2: Consolidate older messages that didn't fit verbatim.
       // Compress each to "SenderName: first line..." — preserves conversation
       // arc and topic awareness without consuming full token budget.
+      //
+      // HUMAN PRIORITY: Human messages are consolidated LAST (kept verbatim longer).
+      // When budget is tight, AI-to-AI messages get compressed first.
       const olderMessages = allLlmMessages.slice(verbatimCutoff); // newest-first still
+      const olderSourceMessages = cleanMessages.slice(verbatimCutoff); // parallel array for senderType
       const consolidatedLines: string[] = [];
       let consolidatedTokens = 0;
 
-      // Walk oldest-to-newest through the overflow messages
+      // Separate human and AI messages (preserving original indices for ordering)
+      const humanIndices: number[] = [];
+      const aiIndices: number[] = [];
       for (let i = olderMessages.length - 1; i >= 0; i--) {
+        const srcMsg = olderSourceMessages[i];
+        if (srcMsg?.senderType === 'human') {
+          humanIndices.push(i);
+        } else {
+          aiIndices.push(i);
+        }
+      }
+
+      // Consolidate AI messages first (they're less important for context)
+      for (const i of aiIndices) {
         const msg = olderMessages[i];
         const firstLine = msg.content.split('\n')[0].slice(0, 120);
         const compressed = `${msg.name}: ${firstLine}`;
@@ -391,6 +407,25 @@ export class ConversationHistorySource implements RAGSource {
         if (consolidatedTokens + lineTokens > consolidationBudget) break;
         consolidatedLines.push(compressed);
         consolidatedTokens += lineTokens;
+      }
+
+      // Then add human messages verbatim (or compressed if budget exhausted)
+      for (const i of humanIndices) {
+        const msg = olderMessages[i];
+        const msgTokens = this.estimateTokens(msg.content);
+        // Try verbatim first
+        if (consolidatedTokens + msgTokens <= consolidationBudget) {
+          consolidatedLines.push(`${msg.name}: ${msg.content}`);
+          consolidatedTokens += msgTokens;
+        } else {
+          // Fall back to compressed if no budget for verbatim
+          const firstLine = msg.content.split('\n')[0].slice(0, 120);
+          const compressed = `${msg.name}: ${firstLine}`;
+          const lineTokens = this.estimateTokens(compressed + '\n');
+          if (consolidatedTokens + lineTokens > consolidationBudget) break;
+          consolidatedLines.push(compressed);
+          consolidatedTokens += lineTokens;
+        }
       }
 
       // Build final message array: consolidated summary + verbatim recent

@@ -292,14 +292,37 @@ export class PersonaMessageEvaluator {
     });
     evalTiming['early_gate'] = Date.now() - earlyGateStart;
 
+    this.log(`[GATE:EARLY] ${this.personaUser.displayName}: sender=${messageEntity.senderName} senderType=${messageEntity.senderType} human=${senderIsHuman} result=${earlyResult.should_respond ? 'PASS' : 'BLOCK'} gate=${earlyResult.gate} reason="${earlyResult.reason}" (${earlyResult.decision_time_ms.toFixed(2)}ms)`);
+
     if (!earlyResult.should_respond) {
-      this.log(`🚫 ${this.personaUser.displayName}: Early gate SILENT — gate=${earlyResult.gate}, reason="${earlyResult.reason}" (${earlyResult.decision_time_ms.toFixed(2)}ms)`);
       this.personaUser.logAIDecision('SILENT', `${earlyResult.gate}: ${earlyResult.reason}`, {
         message: safeMessageText.slice(0, 100),
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId,
       });
       return;
+    }
+
+    // ECHO CHAMBER GATE: If no human has participated in recent messages and
+    // this message is from another AI, skip to prevent AI-to-AI loops.
+    // Personas are teammates who serve humans — not chatbots for other chatbots.
+    if (!senderIsHuman) {
+      const recentInRoom = PersonaMessageEvaluator.getRecentMessagesSince(
+        messageEntity.roomId,
+        new Date(Date.now() - 120000) // Last 2 minutes
+      );
+      const humanParticipation = recentInRoom.some(m => m.senderType === 'human' || m.senderType === 'agent');
+      const isMentioned = safeMessageText.toLowerCase().includes(this.personaUser.displayName.toLowerCase());
+
+      if (!humanParticipation && recentInRoom.length >= 5 && !isMentioned) {
+        this.log(`[GATE:ECHO_CHAMBER] ${this.personaUser.displayName}: BLOCK — no human in last ${recentInRoom.length} messages (2min window)`);
+        this.personaUser.logAIDecision('SILENT', 'Echo chamber: no human participation', {
+          message: safeMessageText.slice(0, 100),
+          sender: messageEntity.senderName,
+          roomId: messageEntity.roomId,
+        });
+        return;
+      }
     }
 
     // SIGNAL DETECTION: Analyze message content for training signals
@@ -688,24 +711,68 @@ export class PersonaMessageEvaluator {
     if (newMessages.length > 0) {
       this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
-      // Check if other AIs already posted adequate responses
-      // CRITICAL: Exclude the original trigger message AND the sending persona
-      const otherAIResponses = newMessages.filter(m =>
+      // Check if anyone (human OR AI) already posted adequate responses
+      // Human answers are MORE authoritative — if a human answered, skip immediately
+      const otherResponses = newMessages.filter(m =>
         m.id !== messageEntity.id &&  // Exclude the original trigger message
-        m.senderType !== 'human' &&
         m.senderId !== this.personaUser.id &&
         m.senderId !== messageEntity.senderId  // Exclude original sender's other messages
       );
+
+      // Fast path: if a human already responded substantively, defer to them
+      const humanResponses = otherResponses.filter(m => m.senderType === 'human' || m.senderType === 'agent');
+      const substantiveHumanResponse = humanResponses.some(m => {
+        const text = m.content?.text || '';
+        return text.length > 30; // More than a greeting
+      });
+
+      if (substantiveHumanResponse) {
+        this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — human already answered substantively (${humanResponses.length} human responses)`);
+
+        if (this.personaUser.client) {
+          Events.emit<AIDecidedSilentEventData>(
+            DataDaemon.jtagContext!,
+            AI_DECISION_EVENTS.DECIDED_SILENT,
+            {
+              personaId: this.personaUser.id,
+              personaName: this.personaUser.displayName,
+              roomId: messageEntity.roomId,
+              messageId: messageEntity.id,
+              isHumanMessage: senderIsHuman,
+              timestamp: Date.now(),
+              reason: 'Post-inference: human already answered',
+              confidence: 0.95,
+              gatingModel: 'post-inference-human-deference'
+            },
+            { scope: EVENT_SCOPES.ROOM, scopeId: messageEntity.roomId }
+          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+
+          getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
+          Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+            userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+          }).catch(() => {});
+        }
+
+        this.personaUser.logAIDecision('SILENT', 'Post-inference: human already answered', {
+          message: messageEntity.content.text,
+          sender: messageEntity.senderName,
+          roomId: messageEntity.roomId
+        });
+        return;
+      }
+
+      // Standard path: check if AI responses are adequate
+      const otherAIResponses = otherResponses.filter(m => m.senderType !== 'human');
 
       if (otherAIResponses.length > 0) {
         // Check if any response is adequate (substantial and related)
         const adequacyResult = await this.checkResponseAdequacy(
           messageEntity,
-          otherAIResponses  // Already flat ChatMessageEntity objects from cache
+          otherAIResponses
         );
 
         if (adequacyResult.isAdequate) {
-          this.log(`⏭️ ${this.personaUser.displayName}: Post-inference skip - adequate AI response exists`);
+          this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — adequate AI response exists`);
           this.log(`   Skipped because: ${adequacyResult.reason}`);
 
           // Emit DECIDED_SILENT event (fire-and-forget — UI indicator)

@@ -201,7 +201,7 @@ export class PersonaAutonomousLoop {
 
     if (item.type === 'message') {
       const processable = inboxMessageToProcessable(item);
-      const senderIsHuman = item.senderType === 'human';
+      const senderIsHuman = item.senderType === 'human' || item.senderType === 'agent';
       const messageText = item.content ?? '';
 
       // ALWAYS advance bookmark, even if response fails. Otherwise a single

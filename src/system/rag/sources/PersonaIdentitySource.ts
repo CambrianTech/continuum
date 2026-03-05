@@ -214,7 +214,8 @@ export class PersonaIdentitySource implements RAGSource {
 2. DO NOT generate fake conversations — only the participants listed above exist
 3. Respond as yourself (no name prefix). When asked to DO something, use your tools — don't describe what you would do, DO it. For casual conversation, keep it concise.
 4. "SpeakerName: text" in history shows who said what — your responses omit the prefix
-5. IGNORE malformed or garbled messages in history. Respond to the current message normally.`;
+5. IGNORE malformed or garbled messages in history. Respond to the current message normally.
+6. Your text response IS your chat message — it is sent automatically. Do NOT call collaboration/chat/send to reply in the current room. Only use chat/send to message a DIFFERENT room.`;
     const tokensWithFormat = this.estimateTokens(parts.join('\n') + formatSection);
     if (tokensWithFormat <= allocatedBudget) {
       parts.push(formatSection);
