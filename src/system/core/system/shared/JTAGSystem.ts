@@ -206,6 +206,13 @@ export abstract class JTAGSystem extends JTAGBase {
       metrics: metrics
     });
 
+    // Initialize cross-cutting services that depend on daemons being ready
+    // (sentinel triggers, event bridge, governance notifications, etc.)
+    if (typeof process !== 'undefined') {
+      const { initializeServices } = await import('../server/ServiceInitializer');
+      await initializeServices();
+    }
+
     // After daemons are set up, connect to SessionDaemon
     await this.connectSession();
   }
