@@ -54,10 +54,11 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
       timeoutSecs: 600,
     },
 
-    // Step 1: Challenge attempt loop
+    // Step 1: Challenge attempt loop — stops when student passes or max iterations
     {
       type: 'loop',
-      count: academyConfig.maxTopicAttempts,
+      until: '{{loop.3.data.payload.passed}}',
+      maxIterations: academyConfig.maxTopicAttempts,
       steps: [
         // loop.0: Watch for challenge:ready (teacher presents skeleton + tests)
         {
@@ -69,7 +70,6 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         // loop.1: LLM — Implement the Python class
         // Uses studentModel for inference (cloud model with adequate context),
         // while baseModel is the LoRA training target.
-        // If no studentModel configured, falls back to baseModel.
         {
           type: 'llm',
           prompt: [
@@ -83,11 +83,14 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
             '',
             'INSTRUCTIONS:',
             '- Output ONLY the complete Python class implementation',
-            '- Do NOT include markdown code fences',
-            '- Do NOT include explanations or comments',
+            '- Do NOT include markdown code fences or explanations',
             '- The implementation must pass all the tests',
+            '- Tests marked @pytest.mark.xfail(strict=True) EXPECT the code to RAISE an exception.',
+            '  If such a test passes without error, pytest counts it as XPASS (failure).',
+            '  Make sure your implementation raises appropriate errors for invalid inputs.',
             '- Implement ALL methods from the skeleton',
             '- Keep the same class name and method signatures',
+            '- Import any needed standard library modules at the top',
           ].join('\n'),
           model: academyConfig.studentModel ?? baseModel,
           ...(academyConfig.studentProvider && { provider: academyConfig.studentProvider }),
@@ -108,48 +111,55 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
           },
         },
 
-        // loop.3: Watch for teacher's verdict — either dataset:ready (need training)
-        // or topic:passed (move on). We watch for dataset:ready which means we need
-        // remediation. If topic:passed happens instead, the watch will timeout and
-        // we break out of the loop naturally.
+        // loop.3: Watch for teacher's verdict.
+        // Teacher always emits verdict:ready with result + optional datasetPath.
         {
           type: 'watch',
-          event: evt('dataset:ready'),
-          timeoutSecs: 120,
+          event: evt('verdict:ready'),
+          timeoutSecs: 600,
         },
 
-        // loop.4: Train on remediation data if received
+        // loop.4: Condition — did we get dataset:ready (need training)?
+        // If the event was dataset:ready, payload contains datasetPath (truthy).
+        // If the event was topic:passed, datasetPath is absent (empty = falsy).
         {
-          type: 'command',
-          command: 'genome/train',
-          params: {
-            personaId,
-            personaName,
-            traitType: `realclasseval-${sessionId.slice(0, 8)}-round-{{input.iteration}}`,
-            baseModel,
-            datasetPath: '{{loop.3.data.payload.datasetPath}}',
-            rank: academyConfig.rank,
-            epochs: academyConfig.epochs,
-            learningRate: academyConfig.learningRate,
-            batchSize: academyConfig.batchSize,
-          },
-        },
-
-        // loop.5: Emit training:complete
-        {
-          type: 'emit',
-          event: evt('training:complete'),
-          payload: {
-            sessionId,
-            personaId,
-            layerId: '{{loop.4.data.layerId}}',
-            metrics: {
-              finalLoss: '{{loop.4.data.metrics.finalLoss}}',
-              trainingTime: '{{loop.4.data.metrics.trainingTime}}',
-              examplesProcessed: '{{loop.4.data.metrics.examplesProcessed}}',
-              epochs: '{{loop.4.data.metrics.epochs}}',
+          type: 'condition',
+          if: '{{loop.3.data.payload.datasetPath}}',
+          then: [
+            // Then sub-step 0: Train on remediation data
+            {
+              type: 'command',
+              command: 'genome/train',
+              params: {
+                personaId,
+                personaName,
+                traitType: `realclasseval-${sessionId.slice(0, 8)}-round-{{input.iteration}}`,
+                baseModel,
+                datasetPath: '{{loop.3.data.payload.datasetPath}}',
+                rank: academyConfig.rank,
+                epochs: academyConfig.epochs,
+                learningRate: academyConfig.learningRate,
+                batchSize: academyConfig.batchSize,
+              },
             },
-          },
+            // Then sub-step 1: Emit training:complete
+            {
+              type: 'emit',
+              event: evt('training:complete'),
+              payload: {
+                sessionId,
+                personaId,
+                layerId: '{{loop.4.data.layerId}}',
+                metrics: {
+                  finalLoss: '{{loop.4.data.metrics.finalLoss}}',
+                  trainingTime: '{{loop.4.data.metrics.trainingTime}}',
+                  examplesProcessed: '{{loop.4.data.metrics.examplesProcessed}}',
+                  epochs: '{{loop.4.data.metrics.epochs}}',
+                },
+              },
+            },
+          ],
+          else: [],
         },
       ],
     },

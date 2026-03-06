@@ -84,14 +84,18 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
         '2. The test code (from the "user" message content, between the second code block)',
         '3. The reference implementation (from the "assistant" message content)',
         '',
-        'Output ONLY a JSON object (no markdown, no code fences):',
+        'IMPORTANT: The test code uses "import snippet_NNN as module_0". You MUST include the',
+        'module name (e.g. "snippet_191") in the moduleName field so tests can find the code.',
+        '',
+        'Output ONLY a raw JSON object. Do NOT wrap in ```json fences or any markdown:',
         '{',
         '  "challenges": [',
         '    {',
         '      "index": 0,',
         '      "className": "ClassName",',
+        '      "moduleName": "snippet_191",',
         '      "skeleton": "class Foo:\\n    def bar(self):\\n        pass",',
-        '      "testCode": "def test_bar():\\n    f = Foo()\\n    assert f.bar() == 42",',
+        '      "testCode": "import snippet_191 as module_0\\ndef test_bar():\\n    ...",',
         '      "referenceImpl": "class Foo:\\n    def bar(self):\\n        return 42",',
         '      "concepts": ["concept1", "concept2"]',
         '    }',
@@ -178,9 +182,9 @@ function buildChallengeSteps(
         sessionId,
         // Reference the curriculum from step 2 (outer pipeline)
         // The current challenge is determined by iteration index
-        skeleton: '{{steps.2.output.challenges[input.iteration].skeleton}}',
-        testCode: '{{steps.2.output.challenges[input.iteration].testCode}}',
-        className: '{{steps.2.output.challenges[input.iteration].className}}',
+        skeleton: '{{steps.2.output.challenges.{{input.iteration}}.skeleton}}',
+        testCode: '{{steps.2.output.challenges.{{input.iteration}}.testCode}}',
+        className: '{{steps.2.output.challenges.{{input.iteration}}.className}}',
         challengeIndex: '{{input.iteration}}',
       },
     },
@@ -192,16 +196,19 @@ function buildChallengeSteps(
       timeoutSecs: 600,
     },
 
-    // loop.2: Write student code to temp file + run tests
+    // loop.2: Write student code to module file (named to match test imports) + run tests
     {
       type: 'shell',
       cmd: [
         'TMPDIR=$(mktemp -d)',
-        "cat << 'STUDENT_CODE_EOF' > \"$TMPDIR/solution.py\"",
+        // Name the student file to match the test import (e.g. snippet_191.py)
+        'MODULE_NAME="{{steps.2.output.challenges.{{input.iteration}}.moduleName}}"',
+        '[ -z "$MODULE_NAME" ] && MODULE_NAME="solution"',
+        "cat << 'STUDENT_CODE_EOF' > \"$TMPDIR/${MODULE_NAME}.py\"",
         '{{loop.1.data.payload.implementation}}',
         'STUDENT_CODE_EOF',
         "cat << 'TEST_CODE_EOF' > \"$TMPDIR/test_solution.py\"",
-        '{{steps.2.output.challenges[input.iteration].testCode}}',
+        '{{steps.2.output.challenges.{{input.iteration}}.testCode}}',
         'TEST_CODE_EOF',
         'cd "$TMPDIR"',
         'python3 -m pytest test_solution.py -v 2>&1; true',
@@ -217,7 +224,7 @@ function buildChallengeSteps(
         `The passing score threshold is ${academyConfig.passingScore}%.`,
         '',
         '=== REFERENCE IMPLEMENTATION ===',
-        '{{steps.2.output.challenges[input.iteration].referenceImpl}}',
+        '{{steps.2.output.challenges.{{input.iteration}}.referenceImpl}}',
         '',
         '=== STUDENT IMPLEMENTATION ===',
         '{{loop.1.data.payload.implementation}}',
@@ -230,7 +237,7 @@ function buildChallengeSteps(
         '- Calculate score as (passed / total) * 100',
         `- A score >= ${academyConfig.passingScore} means the student passed`,
         '',
-        'Output ONLY a JSON object (no markdown, no code fences):',
+        'Output ONLY a raw JSON object. Do NOT wrap in ```json fences or any markdown:',
         '{',
         '  "totalTests": <number>,',
         '  "testsPassed": <number>,',
@@ -253,18 +260,20 @@ function buildChallengeSteps(
       type: 'condition',
       if: '{{loop.3.output.passed}}',
       then: [
+        // Student passed — emit verdict with no datasetPath
         {
           type: 'emit',
-          event: evt('topic:passed'),
+          event: evt('verdict:ready'),
           payload: {
             sessionId,
+            passed: true,
             challengeIndex: '{{input.iteration}}',
             score: '{{loop.3.output.score}}',
           },
         },
       ],
       else: [
-        // Synthesize targeted training data grounded in the failure
+        // Student failed — synthesize targeted training data grounded in the failure
         {
           type: 'command',
           command: 'genome/dataset-synthesize',
@@ -278,7 +287,7 @@ function buildChallengeSteps(
               'Student failed a RealClassEval Python class implementation.',
               '',
               'Reference implementation:',
-              '{{steps.2.output.challenges[input.iteration].referenceImpl}}',
+              '{{steps.2.output.challenges.{{input.iteration}}.referenceImpl}}',
               '',
               'Student attempt:',
               '{{loop.1.data.payload.implementation}}',
@@ -292,31 +301,23 @@ function buildChallengeSteps(
             ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
           },
         },
+        // Emit verdict with datasetPath so student knows to train
         {
           type: 'emit',
-          event: evt('dataset:ready'),
+          event: evt('verdict:ready'),
           payload: {
             sessionId,
+            passed: false,
             datasetPath: '{{loop.4.data.datasetPath}}',
             challengeIndex: '{{input.iteration}}',
             exampleCount: '{{loop.4.data.exampleCount}}',
-            isRemediation: true,
           },
         },
+        // Wait for student to finish training
         {
           type: 'watch',
           event: evt('training:complete'),
           timeoutSecs: 600,
-        },
-        {
-          type: 'emit',
-          event: evt('topic:remediate'),
-          payload: {
-            sessionId,
-            challengeIndex: '{{input.iteration}}',
-            feedback: '{{loop.3.output.feedback}}',
-            weakAreas: '{{loop.3.output.weakAreas}}',
-          },
         },
       ],
     },

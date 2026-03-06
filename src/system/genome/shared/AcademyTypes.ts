@@ -42,6 +42,7 @@ export type AcademyEventAction =
   | 'challenge:attempted'
   | 'topic:passed'
   | 'topic:remediate'
+  | 'verdict:ready'
   | 'inference:demo'
   | 'quality:gate:failed'
   | 'project:setup:complete'
