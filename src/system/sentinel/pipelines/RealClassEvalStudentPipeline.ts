@@ -54,11 +54,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
       timeoutSecs: 600,
     },
 
-    // Step 1: Challenge attempt loop — stops when student passes or max iterations
+    // Step 1: Challenge loop — one iteration per challenge
     {
       type: 'loop',
-      until: '{{loop.3.data.payload.passed}}',
-      maxIterations: academyConfig.maxTopicAttempts,
+      count: academyConfig.questionsPerExam,
       steps: [
         // loop.0: Watch for challenge:ready (teacher presents skeleton + tests)
         {
