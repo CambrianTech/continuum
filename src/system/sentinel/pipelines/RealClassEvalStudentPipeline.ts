@@ -44,6 +44,8 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
   } = config;
 
   const evt = (action: string) => academyEvent(sessionId, action as any);
+  // Per-iteration event name — matches teacher's iterEvt pattern
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action as any)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for teacher to publish curriculum
@@ -59,10 +61,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
       type: 'loop',
       count: academyConfig.questionsPerExam,
       steps: [
-        // loop.0: Watch for challenge:ready (teacher presents skeleton + tests)
+        // loop.0: Watch for challenge:ready (iteration-scoped)
         {
           type: 'watch',
-          event: evt('challenge:ready'),
+          event: iterEvt('challenge:ready'),
           timeoutSecs: 300,
         },
 
@@ -91,16 +93,18 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
             '- Keep the same class name and method signatures',
             '- Import any needed standard library modules at the top',
           ].join('\n'),
-          model: academyConfig.studentModel ?? baseModel,
+          // Only pass model when explicitly set — cloud providers use their own default.
+          // Passing baseModel (local Llama) to a cloud provider causes "Model Not Exist" errors.
+          ...(academyConfig.studentModel ? { model: academyConfig.studentModel } : !academyConfig.studentProvider ? { model: baseModel } : {}),
           ...(academyConfig.studentProvider && { provider: academyConfig.studentProvider }),
           temperature: 0.2,
           maxTokens: 4096,
         },
 
-        // loop.2: Emit challenge:attempted with the implementation
+        // loop.2: Emit challenge:attempted (iteration-scoped)
         {
           type: 'emit',
-          event: evt('challenge:attempted'),
+          event: iterEvt('challenge:attempted'),
           payload: {
             sessionId,
             personaId,
@@ -110,11 +114,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
           },
         },
 
-        // loop.3: Watch for teacher's verdict.
-        // Teacher always emits verdict:ready with result + optional datasetPath.
+        // loop.3: Watch for teacher's verdict (iteration-scoped).
         {
           type: 'watch',
-          event: evt('verdict:ready'),
+          event: iterEvt('verdict:ready'),
           timeoutSecs: 600,
         },
 

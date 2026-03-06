@@ -37,9 +37,12 @@ struct TimestampedEvent {
 }
 
 /// Maximum number of recent events to buffer.
-const RECENT_EVENT_BUFFER_SIZE: usize = 256;
-/// How long recent events remain available for replay (30 seconds).
-const RECENT_EVENT_TTL_SECS: u64 = 30;
+/// Sized for large pipeline sessions (e.g., 98-challenge RealClassEval with ~5 events/challenge).
+const RECENT_EVENT_BUFFER_SIZE: usize = 1024;
+/// How long recent events remain available for replay.
+/// 5 minutes — enough for the student sentinel to consume events even when
+/// the teacher runs far ahead (each challenge takes the student ~6s for LLM + grading).
+const RECENT_EVENT_TTL_SECS: u64 = 300;
 
 pub struct MessageBus {
     /// Subscriptions grouped by module name

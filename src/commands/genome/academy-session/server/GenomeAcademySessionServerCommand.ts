@@ -95,8 +95,11 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.examplesPerTopic !== undefined && { examplesPerTopic: params.examplesPerTopic }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
-      ...(params.studentModel && { studentModel: params.studentModel }),
-      ...(params.studentProvider && { studentProvider: params.studentProvider }),
+      // Student defaults to same model/provider as teacher when not explicitly set.
+      // This prevents the student from falling back to baseModel (local Llama 2048 context)
+      // when the teacher uses a cloud model with adequate context for code generation.
+      ...(params.studentModel ? { studentModel: params.studentModel } : params.model ? { studentModel: params.model } : {}),
+      ...(params.studentProvider ? { studentProvider: params.studentProvider } : params.provider ? { studentProvider: params.provider } : {}),
     };
 
     // 1. Create AcademySessionEntity (instantiate for auto-generated id)

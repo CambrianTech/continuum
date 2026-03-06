@@ -44,6 +44,10 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
   } = config;
 
   const evt = (action: string) => academyEvent(sessionId, action as any);
+  // Per-iteration event name — includes {{input.iteration}} so each challenge loop iteration
+  // has unique event names. Without this, the ring buffer's find_recent_event matches by name
+  // and consumes events from the wrong iteration when teacher/student run at different speeds.
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action as any)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Prepare challenges.json from eval.jsonl (deterministic, no LLM)
@@ -81,7 +85,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
     {
       type: 'loop',
       count: academyConfig.questionsPerExam,
-      steps: buildChallengeSteps(sessionId, skill, personaName, datasetDir, academyConfig, evt),
+      steps: buildChallengeSteps(sessionId, skill, personaName, datasetDir, academyConfig, evt, iterEvt),
     },
 
     // Step 4: Emit session:complete
@@ -128,12 +132,13 @@ function buildChallengeSteps(
   datasetDir: string,
   academyConfig: RealClassEvalTeacherPipelineConfig['config'],
   evt: (action: string) => string,
+  iterEvt: (action: string) => string,
 ): PipelineStep[] {
   return [
-    // loop.0: Emit challenge:ready
+    // loop.0: Emit challenge:ready (iteration-scoped event name)
     {
       type: 'emit',
-      event: evt('challenge:ready'),
+      event: iterEvt('challenge:ready'),
       payload: {
         sessionId,
         skeleton: '{{steps.1.output.challenges.{{input.iteration}}.skeleton}}',
@@ -144,10 +149,10 @@ function buildChallengeSteps(
       },
     },
 
-    // loop.1: Watch for student's implementation attempt
+    // loop.1: Watch for student's implementation attempt (iteration-scoped)
     {
       type: 'watch',
-      event: evt('challenge:attempted'),
+      event: iterEvt('challenge:attempted'),
       timeoutSecs: 600,
     },
 
@@ -206,10 +211,10 @@ function buildChallengeSteps(
       type: 'condition',
       if: '{{loop.3.output.passed}}',
       then: [
-        // Student passed
+        // Student passed (iteration-scoped verdict)
         {
           type: 'emit',
-          event: evt('verdict:ready'),
+          event: iterEvt('verdict:ready'),
           payload: {
             sessionId,
             passed: true,
@@ -225,7 +230,7 @@ function buildChallengeSteps(
         // raw Pass@1 first, then add remediation in a second pass.
         {
           type: 'emit',
-          event: evt('verdict:ready'),
+          event: iterEvt('verdict:ready'),
           payload: {
             sessionId,
             passed: false,
