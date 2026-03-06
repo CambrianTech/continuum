@@ -127,15 +127,25 @@ Nobody else combines:
 Local inference (Ollama/Candle)
   + Local LoRA fine-tuning (PEFT/QLoRA)
     + Multi-agent orchestration (Sentinel pipelines)
-      + Agent-to-agent training (Academy)
-        + Persistent identity and memory (PersonaUser + Hippocampus)
-          + GPU memory management for all of the above
-            + Real-time human-AI collaboration (chat, tools, shared workspace)
+      + Agent-to-agent training (Academy — 3 learning modes)
+        + Autonomous continuous learning (no human trigger required)
+          + Persistent identity and memory (PersonaUser + Hippocampus)
+            + GPU memory management for all of the above
+              + Real-time human-AI collaboration (chat, tools, shared workspace)
 ```
 
-**The one-liner**: "Your AI team lives on your machine, trains itself on your domain, and gets better every day — without sending a token to the cloud."
+**The one-liner**: "Your AI team lives on your machine, learns while you sleep, and is measurably smarter every morning — without sending a token to the cloud."
 
-**The demo that wins the room**: Start an Academy session. Teacher AI reads a codebase. Teacher generates training data. Student trains a LoRA adapter. Student takes an exam. Student fails some questions. Teacher generates targeted remediation data. Student retrains. Student scores higher. All local. All automatic. The human watches their AI get smarter in real-time.
+**The demo that wins the room**: Start an Academy session. Teacher AI selects the hardest Python challenges from RealClassEval. Student attempts each one. Real tests run — no LLM grading, just pytest. Student fails 47 out of 98. Teacher generates targeted training data from the failures. Student trains a LoRA adapter. Student retakes the exam. Score jumps from 53% to 67%. All local. All automatic. Now tell them: "This runs every night. Unattended. On three different learning modes. Your agent gets better at YOUR domain while you sleep."
+
+**The three modes** are the key differentiator nobody can copy quickly:
+1. **Matrix Dojo** — structured forms against known challenges (benchmarks + generated kata), deterministic grading, targeted remediation
+2. **Continuous Experiential** — learns from everything the persona does (conversations, coding, tool use), filters for verified successes, trains on cadence
+3. **Self-Directed** — persona identifies own gaps, searches existing adapters by cosine similarity, composes what exists, trains only the delta
+
+Each mode feeds LoRA adapters that compose into genome layers. A persona accumulates skills over weeks, months. It doesn't forget. It doesn't regress (regression guard re-runs benchmarks after every training). It compounds.
+
+And critically: **personas don't start from zero.** The genome registry is a shared skill library. When a new persona needs Python skills, it searches by capability embedding and finds adapters that other personas already trained. Load those, compose them, train only what's missing. The team's collective knowledge is reusable.
 
 ---
 
@@ -184,11 +194,136 @@ Local inference (Ollama/Candle)
 
 ## What To Build Next (Priority Order)
 
-### P0: Make Academy Demoable (The Room-Winner)
+### P0: Autonomous Academy — The Machine That Learns While You Sleep
 
-The meetup crowd goes wild for agents interacting and upskilling each other (#17, #18). Academy is our most differentiated feature. It needs to be a 2-minute demo, not a 20-minute setup.
+The meetup crowd goes wild for agents interacting and upskilling each other (#17, #18). Academy is our most differentiated feature — and it should not require a human to trigger it.
 
-- [ ] One-command Academy launch: `./jtag genome/academy-session --persona=helper --skill=python --mode=realclasseval`
+**Vision**: Academy runs continuously as a background process. Personas identify their own weaknesses, schedule training sessions, and get measurably better over time. You come back in the morning and your AI team is smarter than when you left.
+
+**Three Modes of Learning**:
+
+#### Mode 1: Matrix Dojo (Structured Forms)
+
+Deliberate practice against known challenges. Like kata in martial arts — structured forms that build specific capabilities through repetition and increasing difficulty.
+
+```
+Source:     RealClassEval, HumanEval, MBPP, SWE-bench, custom test suites, generated kata
+Teacher:    Selects challenges by difficulty, tracks which ones the student fails
+Student:    Attempts implementation, real tests run, pytest returns 0 or it doesn't
+Training:   Teacher generates targeted remediation JSONL from failed challenges
+Loop:       Train -> re-examine -> score improves or repeat with harder forms
+Metric:     Pass@1 (objective, reproducible, comparable across models)
+```
+
+This is what we have today with RealClassEval. 53.1% Pass@1 on first run, targeted retraining on failures. The score is real — not an LLM's opinion.
+
+But the dojo isn't limited to existing benchmarks. The teacher can generate NEW forms:
+- Point it at a codebase and it generates project-specific kata
+- Point it at an API and it generates integration challenges
+- Point it at documentation and it generates comprehension tests
+- The teacher's knowledge sources (KnowledgeExplorationPipeline) determine the curriculum
+
+A persona learning "TypeScript" starts with basic kata, but the teacher eventually generates forms for type-level programming, conditional types, variance — things no benchmark covers. There is no ceiling.
+
+#### Mode 2: Continuous Experiential (Learning From Living)
+
+The persona learns from everything it does. Every conversation, every tool call, every coding session is potential training data.
+
+```
+Source:     CodingAgent sessions, chat conversations, tool usage logs, all persona activity
+Capture:    TrainingDataAccumulator records user->assistant pairs during real tasks
+Filter:     Only verified successes — tests passed, human approved, task completed
+Training:   Accumulated pairs become LoRA training data on cadence (nightly, on threshold)
+Loop:       Do real work -> capture pairs -> train -> do work better -> capture better pairs
+Metric:     Task completion rate, time-to-completion, error rate trends
+```
+
+This is the most powerful mode because it encodes YOUR domain. The finance guy from the meetup (#5) who brought years of expertise — continuous learning captures that. When a human corrects an agent, that correction becomes training data. When an agent successfully completes a complex task verified by tests, those steps become training data. When a persona has a good conversation that the user upvotes — training data.
+
+The CodingAgent pipeline already captures user->assistant pairs via `captureTraining=true`. This extends to all persona activity. The persona is always learning from its own life.
+
+#### Mode 3: Self-Directed Skill Development (The Persona Drives)
+
+The persona identifies its own skill gaps and directs its own growth. Not assigned training — sought training.
+
+```
+Source:     Persona's own task history, failure patterns, skill profile, genome layer registry
+Discovery:  Persona analyzes what it struggles with, what tasks it declines, what takes too long
+Planning:   Persona requests dojo sessions in weak areas, or seeks experiential opportunities
+Genome:     Before training from scratch, search existing adapters by cosine similarity
+            — someone else's "python-async" adapter might be 80% of what you need
+Compose:    Stack multiple LoRA layers (coding + domain + style) into a composite genome
+Loop:       Self-assess -> find/compose existing skills -> train gaps -> self-assess again
+Metric:     Skill coverage breadth, self-reported confidence vs. benchmark truth
+```
+
+The key insight: **personas don't start from nothing.** The genome layer registry (AdapterStore) contains every adapter ever trained across all personas. When Helper AI needs "python-async" skills, it first searches by capability embedding (cosine similarity) across all existing layers. Maybe Teacher AI already trained a "python-concurrency" adapter that's 85% relevant. Helper AI loads that as a starting point and fine-tunes the delta — not from a blank base model, but from a nearby skill.
+
+This is the virtual memory system from the genome architecture: page in relevant adapters, compose them, train only what's missing. Skills are **transferable between personas**. A team of agents builds a shared skill library that compounds over time.
+
+Self-directed also means the persona can say: "I notice I keep failing at database migration tasks. I'm going to schedule a dojo session focused on SQL schema evolution." Or: "I found 3 existing adapters related to database work — let me compose those and see if that closes the gap before training new weights."
+
+**The Autonomous Loop**:
+
+```
+Academy Scheduler (background, continuous, per-persona)
+  |
+  +-- DOJO (scheduled, or on idle, or persona-requested):
+  |     1. Check persona's skill profile (benchmark scores over time)
+  |     2. Identify weakest areas (lowest Pass@1 categories)
+  |     3. Run dojo session on weak areas (deterministic + generated forms)
+  |     4. Train LoRA on failures
+  |     5. Re-benchmark to confirm improvement, reject adapter if regression
+  |
+  +-- EXPERIENTIAL (continuous, on threshold):
+  |     1. TrainingDataAccumulator fills from all persona activity
+  |     2. On threshold (N pairs, or nightly): flush -> filter for quality
+  |     3. Train LoRA on accumulated experiential data
+  |     4. Validate adapter doesn't regress on benchmarks
+  |     5. Compose with existing genome layers
+  |
+  +-- SELF-DIRECTED (persona-initiated):
+  |     1. Persona analyzes own failure patterns and task declines
+  |     2. Searches genome registry for existing adapters (cosine similarity)
+  |     3. Loads relevant adapters as starting point (not training from zero)
+  |     4. Trains delta on remaining gaps
+  |     5. Requests dojo sessions for areas with no existing adapters
+  |
+  +-- Report to human:
+        "Helper AI improved from 53% to 67% on Python class implementation.
+         Composed 2 existing adapters (python-core, testing-patterns).
+         Trained on 47 remediation examples from dojo failures.
+         Experiential data: 23 pairs from yesterday's coding sessions.
+         Self-identified gap: SQL migrations. Scheduling dojo session."
+```
+
+No human intervention required. The persona gets smarter every day. The human sees reports, can adjust priorities, can add knowledge sources, but the learning never stops. The persona doesn't start from nothing — it searches the shared skill library first, composes what exists, and only trains what's missing.
+
+**Build checklist**:
+
+Dojo infrastructure:
+- [ ] Academy Scheduler: background service that triggers sessions on cadence or idle
+- [ ] Persona skill profile: per-persona benchmark scores stored in DB, tracked over time
+- [ ] Weakness detection: identify lowest-scoring categories from benchmark history
+- [ ] Generated kata: teacher creates project-specific forms from any knowledge source
+- [ ] Regression guard: after any training, re-run core benchmarks to confirm no regression
+
+Continuous experiential:
+- [ ] TrainingDataAccumulator wired to all persona activity (not just CodingAgent)
+- [ ] Quality filter: only verified successes (tests passed, human approved, task completed)
+- [ ] Nightly training cycle: flush accumulated pairs -> filter -> train -> validate
+- [ ] Conversation pair capture: good chat interactions -> training data
+
+Self-directed skill development:
+- [ ] Capability embedding search: find existing adapters by cosine similarity
+- [ ] Adapter composition: stack multiple LoRA layers into composite genome
+- [ ] Gap analysis: persona identifies what it struggles with from task history
+- [ ] Self-scheduled dojo: persona requests training in areas with no existing adapters
+- [ ] Skill transfer: adapters trained by one persona discoverable by all others
+
+Visibility:
+- [ ] Progress reporting: daily/weekly summary of improvement metrics per persona
+- [ ] One-command demo: `./jtag genome/academy-session --persona=helper --skill=python --mode=realclasseval`
 - [ ] Live progress UI: show teacher assigning challenges, student attempting, scores updating
 - [ ] Before/after comparison: student Pass@1 before training vs. after
 - [ ] Works with local models only (no cloud dependency in the demo path)
@@ -197,17 +332,23 @@ The meetup crowd goes wild for agents interacting and upskilling each other (#17
 
 Point #8 was the most energy in the room. People want AI that messages them.
 
+Academy Scheduler (P0) is itself an instance of the proactive pattern — the agent decides to learn without being asked. This extends to all persona behavior.
+
 - [ ] Self-task generation: agents create their own work items
 - [ ] Notification system: agent pushes to chat when it finds something interesting
-- [ ] "Morning briefing" pattern: agent summarizes overnight findings
+- [ ] "Morning briefing" pattern: agent summarizes overnight findings, training progress
 - [ ] Human approval gates: agent proposes actions, human approves/rejects
+- [ ] Academy progress notifications: "I just improved 5% on Python — here's what I learned"
 
 ### P2: Agent Verification Pipeline (Trust Problem)
 
 Point #13 is the biggest pain. Agents lie.
 
+Academy Mode 1 (Benchmark) is the answer to trust. If a persona says it can write Python classes, it has a Pass@1 score to prove it. Verifiable, reproducible, not self-reported.
+
 - [ ] Sentinel verification templates: common patterns (test runner, linter, build check)
 - [ ] "Proof of work" attached to agent outputs: here's the test that passed, here's the screenshot
+- [ ] Skill badges: persona has verified scores on benchmarks (not self-assessed)
 - [ ] Secondary agent review: one agent checks another's work via Sentinel pipeline
 - [ ] Confidence scoring: agent self-reports uncertainty, system verifies high-confidence claims
 
