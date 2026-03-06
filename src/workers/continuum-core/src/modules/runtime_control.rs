@@ -54,10 +54,7 @@ impl ServiceModule for RuntimeModule {
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let registry = self
-            .registry
-            .get()
-            .ok_or("RuntimeModule not initialized")?;
+        let registry = self.registry.get().ok_or("RuntimeModule not initialized")?;
 
         match command {
             // Get stats for ALL modules

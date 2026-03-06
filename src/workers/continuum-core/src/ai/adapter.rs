@@ -226,7 +226,7 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Example: Anthropic returns ["claude"], OpenAI returns ["gpt"],
     /// Candle returns ["llama", "qwen", "phi", "mistral", ...].
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        vec![]  // Default: no auto-routing by model name
+        vec![] // Default: no auto-routing by model name
     }
 
     /// Check if this adapter can handle a specific model by name.
@@ -304,8 +304,11 @@ impl AdapterRegistry {
                 }
             }
             // Explicit provider requested but not found — fail hard, don't silently route elsewhere
-            clog_warn!("Provider '{}' explicitly requested but not available. Available: {:?}",
-                pref, self.available());
+            clog_warn!(
+                "Provider '{}' explicitly requested but not available. Available: {:?}",
+                pref,
+                self.available()
+            );
             return None;
         }
 

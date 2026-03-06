@@ -68,18 +68,51 @@ for port in 9000 9001 7880; do
   fi
 done
 
-# 8. Clean up sockets
+# 8. Kill orphaned sentinel child processes (training, builds, etc.)
+# Each sentinel writes a PID file — kill the process GROUP (setsid) to get all descendants.
+# This catches training processes that survive server death.
+SENTINEL_LOGS="$CONTINUUM_ROOT/jtag/logs/system/sentinels"
+if [ -d "$SENTINEL_LOGS" ]; then
+  orphan_count=0
+  for pid_file in "$SENTINEL_LOGS"/*/pid; do
+    if [ -f "$pid_file" ]; then
+      pid=$(cat "$pid_file" 2>/dev/null)
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo -e "   Killing sentinel process group (PID $pid)"
+        kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+        orphan_count=$((orphan_count + 1))
+      fi
+      rm -f "$pid_file" 2>/dev/null || true
+    fi
+  done
+  if [ "$orphan_count" -gt 0 ]; then
+    echo -e "   Killed $orphan_count orphaned sentinel process groups"
+    sleep 1
+    # Force kill any survivors
+    for pid_file in "$SENTINEL_LOGS"/*/pid; do
+      if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+          kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+        fi
+        rm -f "$pid_file" 2>/dev/null || true
+      fi
+    done
+  fi
+fi
+
+# 9. Clean up sockets
 if [ -d "$CONTINUUM_ROOT/sockets" ]; then
   echo -e "   Cleaning sockets..."
   rm -f "$CONTINUUM_ROOT/sockets/"*.sock 2>/dev/null || true
 fi
 
-# 9. Clear ready signal
+# 10. Clear ready signal
 if [ -f "$CONTINUUM_ROOT/jtag/system-ready.signal" ]; then
   rm -f "$CONTINUUM_ROOT/jtag/system-ready.signal"
 fi
 
-# 10. Remove PID files
+# 11. Remove PID files
 rm -f "$CONTINUUM_ROOT/jtag/logs/system/npm-start.pid" 2>/dev/null || true
 rm -f "$CONTINUUM_ROOT/jtag/system.lock" 2>/dev/null || true
 

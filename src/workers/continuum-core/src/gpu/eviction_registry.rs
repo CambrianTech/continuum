@@ -72,7 +72,10 @@ impl EvictableEntry {
 
 /// Full registry snapshot for IPC.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/gpu/EvictionRegistrySnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/gpu/EvictionRegistrySnapshot.ts"
+)]
 pub struct EvictionRegistrySnapshot {
     /// All registered entries
     pub entries: Vec<EvictableEntry>,
@@ -133,12 +136,11 @@ impl EvictionRegistry {
             Ok(m) => m,
             Err(_) => return Vec::new(),
         };
-        let mut candidates: Vec<EvictableEntry> = map.values()
-            .filter(|e| e.evictable)
-            .cloned()
-            .collect();
+        let mut candidates: Vec<EvictableEntry> =
+            map.values().filter(|e| e.evictable).cloned().collect();
         candidates.sort_by(|a, b| {
-            b.eviction_score().partial_cmp(&a.eviction_score())
+            b.eviction_score()
+                .partial_cmp(&a.eviction_score())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         candidates
@@ -148,11 +150,13 @@ impl EvictionRegistry {
     pub fn snapshot(&self) -> EvictionRegistrySnapshot {
         let map = match self.entries.lock() {
             Ok(m) => m,
-            Err(_) => return EvictionRegistrySnapshot {
-                entries: Vec::new(),
-                total_tracked_bytes: 0,
-                evictable_count: 0,
-            },
+            Err(_) => {
+                return EvictionRegistrySnapshot {
+                    entries: Vec::new(),
+                    total_tracked_bytes: 0,
+                    evictable_count: 0,
+                }
+            }
         };
         let entries: Vec<EvictableEntry> = map.values().cloned().collect();
         let total_tracked_bytes = entries.iter().map(|e| e.bytes).sum();
@@ -216,8 +220,18 @@ mod tests {
         let reg = EvictionRegistry::new();
         assert_eq!(reg.len(), 0);
 
-        reg.register(make_entry("model:llama", "Llama 3.2", GpuPriority::Interactive, 3_000_000_000));
-        reg.register(make_entry("tts:kokoro", "Kokoro TTS", GpuPriority::Interactive, 500_000_000));
+        reg.register(make_entry(
+            "model:llama",
+            "Llama 3.2",
+            GpuPriority::Interactive,
+            3_000_000_000,
+        ));
+        reg.register(make_entry(
+            "tts:kokoro",
+            "Kokoro TTS",
+            GpuPriority::Interactive,
+            500_000_000,
+        ));
 
         assert_eq!(reg.len(), 2);
 
@@ -230,7 +244,12 @@ mod tests {
     #[test]
     fn test_unregister() {
         let reg = EvictionRegistry::new();
-        reg.register(make_entry("model:test", "Test", GpuPriority::Interactive, 1000));
+        reg.register(make_entry(
+            "model:test",
+            "Test",
+            GpuPriority::Interactive,
+            1000,
+        ));
         assert_eq!(reg.len(), 1);
 
         reg.unregister("model:test");
@@ -253,11 +272,25 @@ mod tests {
     #[test]
     fn test_realtime_not_evictable() {
         let reg = EvictionRegistry::new();
-        reg.register(make_entry("render:targets", "Render Targets", GpuPriority::Realtime, 100_000_000));
-        reg.register(make_entry("model:llama", "Llama", GpuPriority::Interactive, 3_000_000_000));
+        reg.register(make_entry(
+            "render:targets",
+            "Render Targets",
+            GpuPriority::Realtime,
+            100_000_000,
+        ));
+        reg.register(make_entry(
+            "model:llama",
+            "Llama",
+            GpuPriority::Interactive,
+            3_000_000_000,
+        ));
 
         let candidates = reg.candidates();
-        assert_eq!(candidates.len(), 1, "Realtime should not appear in candidates");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "Realtime should not appear in candidates"
+        );
         assert_eq!(candidates[0].id, "model:llama");
     }
 
@@ -271,9 +304,12 @@ mod tests {
         let mut interactive = make_entry("model:llama", "Llama", GpuPriority::Interactive, 1000);
         interactive.last_used_ms = interactive.allocated_at_ms - 60_000; // same age
 
-        assert!(batch.eviction_score() > interactive.eviction_score(),
+        assert!(
+            batch.eviction_score() > interactive.eviction_score(),
             "Batch (score={:.1}) should score higher than Interactive (score={:.1})",
-            batch.eviction_score(), interactive.eviction_score());
+            batch.eviction_score(),
+            interactive.eviction_score()
+        );
     }
 
     #[test]
@@ -304,8 +340,18 @@ mod tests {
     #[test]
     fn test_replace_entry_on_duplicate_id() {
         let reg = EvictionRegistry::new();
-        reg.register(make_entry("model:llama", "Llama v1", GpuPriority::Interactive, 1000));
-        reg.register(make_entry("model:llama", "Llama v2", GpuPriority::Interactive, 2000));
+        reg.register(make_entry(
+            "model:llama",
+            "Llama v1",
+            GpuPriority::Interactive,
+            1000,
+        ));
+        reg.register(make_entry(
+            "model:llama",
+            "Llama v2",
+            GpuPriority::Interactive,
+            2000,
+        ));
 
         assert_eq!(reg.len(), 1);
         let snap = reg.snapshot();

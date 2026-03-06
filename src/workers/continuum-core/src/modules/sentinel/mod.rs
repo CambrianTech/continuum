@@ -12,11 +12,11 @@
 //! - **Event-driven**: Emits sentinel:{handle}:log events for real-time streaming
 //! - **Pipeline Support**: Multi-step pipelines with LLM, conditions, loops
 
-pub mod types;
-pub mod interpolation;
-pub mod steps;
 pub mod executor;
+pub mod interpolation;
 pub mod logs;
+pub mod steps;
+pub mod types;
 
 pub use types::*;
 
@@ -31,10 +31,26 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::runtime::{
-    CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
-    message_bus::MessageBus, ModuleRegistry,
+    message_bus::MessageBus, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
+    ModuleRegistry, ServiceModule,
 };
 use crate::utils::params::Params;
+
+/// Global sentinel module reference for shutdown from signal handlers.
+/// Set during server startup, read during SIGTERM/SIGINT.
+static GLOBAL_SENTINEL: std::sync::OnceLock<Arc<SentinelModule>> = std::sync::OnceLock::new();
+
+/// Register the sentinel module globally so signal handlers can shut it down.
+pub fn register_for_shutdown(module: Arc<SentinelModule>) {
+    GLOBAL_SENTINEL.set(module).ok();
+}
+
+/// Shutdown all running sentinels. Safe to call from signal handlers.
+pub fn shutdown_all_sentinels() {
+    if let Some(module) = GLOBAL_SENTINEL.get() {
+        module.shutdown_all();
+    }
+}
 
 /// Sentinel Module - manages concurrent sentinel execution and pipeline interpretation
 pub struct SentinelModule {
@@ -56,7 +72,11 @@ impl SentinelModule {
             sentinels: Arc::new(DashMap::new()),
             logs_base_dir: RwLock::new({
                 let home = dirs::home_dir().expect("Failed to resolve home directory");
-                home.join(".continuum").join("jtag").join("logs").join("system").join("sentinels")
+                home.join(".continuum")
+                    .join("jtag")
+                    .join("logs")
+                    .join("system")
+                    .join("sentinels")
             }),
             max_concurrent: 4,
             bus: RwLock::new(None),
@@ -80,7 +100,11 @@ impl SentinelModule {
         let log = runtime::logger("sentinel");
 
         // Check concurrent limit
-        let active_count = self.sentinels.iter().filter(|s| s.handle.status == SentinelStatus::Running).count();
+        let active_count = self
+            .sentinels
+            .iter()
+            .filter(|s| s.handle.status == SentinelStatus::Running)
+            .count();
         if active_count >= self.max_concurrent {
             return Err(format!(
                 "Maximum concurrent sentinels ({}) reached. Wait for completion or cancel existing.",
@@ -92,11 +116,13 @@ impl SentinelModule {
         let p = Params::new(&params);
 
         let sentinel_type = p.str_or("type", "build").to_string();
-        let working_dir = p.str_opt("workingDir")
+        let working_dir = p
+            .str_opt("workingDir")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let command = p.str_or("cmd", "npm").to_string();
-        let args: Vec<String> = p.json_opt("args")
+        let args: Vec<String> = p
+            .json_opt("args")
             .unwrap_or_else(|| vec!["run".to_string(), "build".to_string()]);
         let timeout_secs = p.u64_or("timeout", 600);
         let env: HashMap<String, String> = p.json_or("env");
@@ -104,16 +130,17 @@ impl SentinelModule {
         // Check if this is a pipeline execution
         let pipeline_json = env.get("PIPELINE_JSON").cloned();
 
-        let pipeline: Option<Pipeline> = if let Some(ref json_str) = pipeline_json.filter(|_| sentinel_type == "pipeline") {
-            match serde_json::from_str::<Pipeline>(json_str) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    return Err(format!("Failed to parse PIPELINE_JSON: {e}"));
+        let pipeline: Option<Pipeline> =
+            if let Some(ref json_str) = pipeline_json.filter(|_| sentinel_type == "pipeline") {
+                match serde_json::from_str::<Pipeline>(json_str) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        return Err(format!("Failed to parse PIPELINE_JSON: {e}"));
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // Generate handle
         let handle_id = Self::generate_handle_id();
@@ -137,27 +164,35 @@ impl SentinelModule {
         };
 
         // Parse escalation metadata (if caller wants persona inbox routing)
-        let escalation = if p.str_opt("parentPersonaId").is_some() || p.str_opt("entityId").is_some() {
-            Some(SentinelEscalation {
-                parent_persona_id: p.str_opt("parentPersonaId").map(|s| s.to_string()),
-                entity_id: p.str_opt("entityId").map(|s| s.to_string()),
-                sentinel_name: p.str_or("sentinelName", "unnamed").to_string(),
-                escalation_rules: p.json_opt("escalationRules"),
-            })
-        } else {
-            None
-        };
+        let escalation =
+            if p.str_opt("parentPersonaId").is_some() || p.str_opt("entityId").is_some() {
+                Some(SentinelEscalation {
+                    parent_persona_id: p.str_opt("parentPersonaId").map(|s| s.to_string()),
+                    entity_id: p.str_opt("entityId").map(|s| s.to_string()),
+                    sentinel_name: p.str_or("sentinelName", "unnamed").to_string(),
+                    escalation_rules: p.json_opt("escalationRules"),
+                })
+            } else {
+                None
+            };
 
         let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
-        self.sentinels.insert(handle_id.clone(), RunningSentinel {
-            handle: handle.clone(),
-            cancel_tx: Some(cancel_tx),
-            escalation: escalation.clone(),
-            completion_tx: Some(completion_tx),
-            completion_rx,
-        });
+        self.sentinels.insert(
+            handle_id.clone(),
+            RunningSentinel {
+                handle: handle.clone(),
+                cancel_tx: Some(cancel_tx),
+                escalation: escalation.clone(),
+                completion_tx: Some(completion_tx),
+                completion_rx,
+            },
+        );
 
-        let mode_str = if pipeline.is_some() { "pipeline" } else { "shell" };
+        let mode_str = if pipeline.is_some() {
+            "pipeline"
+        } else {
+            "shell"
+        };
         log.info(&format!(
             "Starting sentinel {handle_id} (type={sentinel_type}, mode={mode_str}, cmd={command} {args:?})"
         ));
@@ -177,18 +212,24 @@ impl SentinelModule {
 
             // Emit start event
             if let Some(ref bus) = bus {
-                bus.publish_async_only(&format!("sentinel:{handle_id_clone}:status"), json!({
-                    "handle": handle_id_clone,
-                    "type": sentinel_type_clone,
-                    "status": "running",
-                    "phase": "starting",
-                    "mode": if pipeline.is_some() { "pipeline" } else { "shell" },
-                }));
+                bus.publish_async_only(
+                    &format!("sentinel:{handle_id_clone}:status"),
+                    json!({
+                        "handle": handle_id_clone,
+                        "type": sentinel_type_clone,
+                        "status": "running",
+                        "phase": "starting",
+                        "mode": if pipeline.is_some() { "pipeline" } else { "shell" },
+                    }),
+                );
             }
 
             // Execute based on type
             let result: Result<(i32, String), String> = if let Some(pipeline) = pipeline {
-                log.info(&format!("[{handle_id_clone}] Executing pipeline with {} steps", pipeline.steps.len()));
+                log.info(&format!(
+                    "[{handle_id_clone}] Executing pipeline with {} steps",
+                    pipeline.steps.len()
+                ));
 
                 tokio::time::timeout(
                     Duration::from_secs(timeout_secs),
@@ -241,8 +282,17 @@ impl SentinelModule {
                         };
                         entry.handle.exit_code = Some(exit_code);
                         entry.handle.progress = 100;
-                        log.info(&format!("Sentinel {handle_id_clone} completed with exit code {exit_code}"));
-                        (if exit_code == 0 { "completed" } else { "failed" }, None)
+                        log.info(&format!(
+                            "Sentinel {handle_id_clone} completed with exit code {exit_code}"
+                        ));
+                        (
+                            if exit_code == 0 {
+                                "completed"
+                            } else {
+                                "failed"
+                            },
+                            None,
+                        )
                     }
                     Err(e) => {
                         entry.handle.status = if e == "Cancelled" {
@@ -252,13 +302,24 @@ impl SentinelModule {
                         };
                         entry.handle.error = Some(e.clone());
                         log.error(&format!("Sentinel {handle_id_clone} failed: {e}"));
-                        (if e == "Cancelled" { "cancelled" } else { "failed" }, Some(e))
+                        (
+                            if e == "Cancelled" {
+                                "cancelled"
+                            } else {
+                                "failed"
+                            },
+                            Some(e),
+                        )
                     }
                 };
                 entry.handle.end_time = Some(now);
                 entry.cancel_tx = None;
 
-                let duration_ms = entry.handle.end_time.unwrap_or(0).saturating_sub(entry.handle.start_time);
+                let duration_ms = entry
+                    .handle
+                    .end_time
+                    .unwrap_or(0)
+                    .saturating_sub(entry.handle.start_time);
 
                 if let Some(ref bus) = bus {
                     let mut payload = json!({
@@ -271,11 +332,14 @@ impl SentinelModule {
                         payload["error"] = json!(err);
                     }
                     bus.publish_async_only(&format!("sentinel:{handle_id_clone}:status"), payload);
-                    bus.publish_async_only("sentinel:complete", json!({
-                        "handle": handle_id_clone,
-                        "type": sentinel_type_clone,
-                        "success": final_status == "completed",
-                    }));
+                    bus.publish_async_only(
+                        "sentinel:complete",
+                        json!({
+                            "handle": handle_id_clone,
+                            "type": sentinel_type_clone,
+                            "success": final_status == "completed",
+                        }),
+                    );
                 }
 
                 // Signal completion to any awaiting callers (replaces TS polling loop)
@@ -300,7 +364,8 @@ impl SentinelModule {
                     let _ = crate::runtime::command_executor::execute_ts_json(
                         "sentinel/escalate",
                         escalation_payload,
-                    ).await;
+                    )
+                    .await;
                 }
             }
         });
@@ -328,7 +393,8 @@ impl SentinelModule {
 
     /// List all sentinel handles
     async fn list_handles(&self, _params: Value) -> Result<CommandResult, String> {
-        let handles: Vec<SentinelHandle> = self.sentinels
+        let handles: Vec<SentinelHandle> = self
+            .sentinels
             .iter()
             .map(|entry| entry.handle.clone())
             .collect();
@@ -370,7 +436,9 @@ impl SentinelModule {
 
         // Clone the watch receiver while holding the DashMap ref briefly
         let mut rx = {
-            let entry = self.sentinels.get(handle_id)
+            let entry = self
+                .sentinels
+                .get(handle_id)
                 .ok_or_else(|| format!("Sentinel handle not found: {handle_id}"))?;
 
             // Already done? Return immediately.
@@ -384,10 +452,9 @@ impl SentinelModule {
         };
 
         // Await completion signal with timeout — zero polling
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            rx.wait_for(|done| *done),
-        ).await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), rx.wait_for(|done| *done))
+                .await;
 
         match result {
             Ok(Ok(_)) => {
@@ -397,16 +464,22 @@ impl SentinelModule {
                         "handle": entry.handle,
                     })))
                 } else {
-                    Err(format!("Sentinel {handle_id} completed but handle was cleaned up"))
+                    Err(format!(
+                        "Sentinel {handle_id} completed but handle was cleaned up"
+                    ))
                 }
             }
             Ok(Err(_)) => {
                 // Watch channel closed without sending — shouldn't happen
-                Err(format!("Sentinel {handle_id} watch channel closed unexpectedly"))
+                Err(format!(
+                    "Sentinel {handle_id} watch channel closed unexpectedly"
+                ))
             }
             Err(_) => {
                 // Timeout
-                Err(format!("Await timeout after {timeout_secs}s for sentinel {handle_id}"))
+                Err(format!(
+                    "Await timeout after {timeout_secs}s for sentinel {handle_id}"
+                ))
             }
         }
     }
@@ -416,9 +489,10 @@ impl SentinelModule {
         let handle_id = Self::generate_handle_id();
 
         let p = Params::new(&params);
-        let pipeline: Pipeline = p.json("pipeline")
-            .or_else(|_| serde_json::from_value::<Pipeline>(params.clone())
-                .map_err(|e| format!("Failed to parse pipeline: {e}")))?;
+        let pipeline: Pipeline = p.json("pipeline").or_else(|_| {
+            serde_json::from_value::<Pipeline>(params.clone())
+                .map_err(|e| format!("Failed to parse pipeline: {e}"))
+        })?;
 
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();
@@ -430,9 +504,106 @@ impl SentinelModule {
             pipeline,
             bus.as_ref(),
             registry.as_ref(),
-        ).await;
+        )
+        .await;
 
-        Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or(json!({"error": "serialization failed"}))))
+        Ok(CommandResult::Json(
+            serde_json::to_value(&result).unwrap_or(json!({"error": "serialization failed"})),
+        ))
+    }
+}
+
+/// Reap dead sentinels older than this from the registry
+const REAP_AGE_SECS: u64 = 3600; // 1 hour
+
+impl SentinelModule {
+    /// Graceful shutdown — like iOS willTerminate / Android onDestroy.
+    ///
+    /// 1. Broadcast "system:shutdown" event so TypeScript can save persona state
+    /// 2. Send cancel to all running sentinels (they'll save checkpoints if they can)
+    /// 3. SIGTERM all process groups (graceful — lets training save checkpoints)
+    /// 4. Clean up PID files
+    ///
+    /// Non-blocking: doesn't wait for processes to exit (caller sleeps 2s then exits).
+    pub fn shutdown_all(&self) {
+        let log = crate::runtime::logger("sentinel");
+        let mut killed = 0;
+
+        // Phase 1: Broadcast shutdown event so TS side can save persona state, flush logs
+        if let Some(ref bus) = *self.bus.read() {
+            bus.publish_async_only(
+                "system:shutdown",
+                json!({
+                    "reason": "server_shutdown",
+                    "gracePeriodMs": 2000,
+                }),
+            );
+            log.info("Broadcast system:shutdown — TS side has 2s to save state");
+        }
+
+        // Phase 2: Cancel running sentinels via channel (triggers checkpoint save in training)
+        for mut entry in self.sentinels.iter_mut() {
+            if entry.handle.status == SentinelStatus::Running {
+                if let Some(tx) = entry.cancel_tx.take() {
+                    let _ = tx.try_send(());
+                }
+                entry.handle.status = SentinelStatus::Cancelled;
+                entry.handle.error = Some("Server shutdown".to_string());
+                killed += 1;
+            }
+        }
+
+        // Phase 3: SIGTERM all process groups (kills wrapper → micromamba → python tree)
+        let logs_dir = self.logs_base_dir.read().clone();
+        if let Ok(entries) = std::fs::read_dir(&logs_dir) {
+            for entry in entries.flatten() {
+                let pid_path = entry.path().join("pid");
+                if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        unsafe {
+                            libc::kill(-pid, libc::SIGTERM);
+                        }
+                        std::fs::remove_file(&pid_path).ok();
+                        killed += 1;
+                    }
+                }
+            }
+        }
+
+        if killed > 0 {
+            log.info(&format!(
+                "Shutdown: signalled {killed} sentinel process groups"
+            ));
+        }
+    }
+
+    /// Reap completed/failed sentinels older than REAP_AGE_SECS from the registry.
+    /// Prevents the DashMap from growing forever.
+    pub fn reap_dead(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let mut reaped = Vec::new();
+        for entry in self.sentinels.iter() {
+            if entry.handle.status != SentinelStatus::Running {
+                if let Some(end_time) = entry.handle.end_time {
+                    if now.saturating_sub(end_time) > REAP_AGE_SECS * 1000 {
+                        reaped.push(entry.key().clone());
+                    }
+                }
+            }
+        }
+
+        for handle_id in &reaped {
+            self.sentinels.remove(handle_id);
+        }
+
+        if !reaped.is_empty() {
+            let log = crate::runtime::logger("sentinel");
+            log.info(&format!("Reaped {} dead sentinels", reaped.len()));
+        }
     }
 }
 

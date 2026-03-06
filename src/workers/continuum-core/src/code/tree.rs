@@ -12,11 +12,7 @@ use super::types::{TreeNode, TreeResult};
 ///
 /// Respects .gitignore, skips hidden files by default,
 /// and limits depth to prevent runaway recursion.
-pub fn generate_tree(
-    root: &Path,
-    max_depth: u32,
-    include_hidden: bool,
-) -> TreeResult {
+pub fn generate_tree(root: &Path, max_depth: u32, include_hidden: bool) -> TreeResult {
     if !root.exists() || !root.is_dir() {
         return TreeResult {
             success: false,

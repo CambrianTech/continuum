@@ -21,8 +21,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use candle_core::{Device, Tensor};
 use candle_core::quantized::gguf_file;
+use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use rand::Rng;
 use tokenizers::Tokenizer;
@@ -119,12 +119,16 @@ pub trait ModelBackend: Send + Sync {
     /// Estimated VRAM consumed by this model's weights (bytes).
     /// Used by GpuMemoryManager to track real allocations.
     /// Default: 0 (unknown). Backends should override with file-size-based estimate.
-    fn estimated_vram_bytes(&self) -> u64 { 0 }
+    fn estimated_vram_bytes(&self) -> u64 {
+        0
+    }
 
     // ── Optional: LoRA Support ──
 
     /// Whether this backend supports LoRA adapter merging.
-    fn supports_lora(&self) -> bool { false }
+    fn supports_lora(&self) -> bool {
+        false
+    }
 
     /// Rebuild model with stacked LoRA adapters merged into weights.
     /// `gpu_manager` enables transient spike tracking during the rebuild
@@ -177,13 +181,20 @@ pub fn generate(
         return Err(format!(
             "Prompt ({} tokens) + max_tokens ({}) = {} exceeds context length ({}). \
              RAG builder must respect the model's context window.",
-            prompt_len, max_tokens, prompt_len + max_tokens, ctx_len
+            prompt_len,
+            max_tokens,
+            prompt_len + max_tokens,
+            ctx_len
         ));
     }
 
     log.debug(&format!(
         "generate: {} prompt tokens, max_tokens={}, context={}, arch={}, format={:?}",
-        prompt_len, max_tokens, ctx_len, backend.architecture(), backend.format()
+        prompt_len,
+        max_tokens,
+        ctx_len,
+        backend.architecture(),
+        backend.format()
     ));
 
     // Clear KV cache
@@ -196,7 +207,9 @@ pub fn generate(
     if had_nan {
         log.error("NaN/Inf on prefill — prompt may be malformed or too long");
         save_prompt_replay(prompt, &prompt_tokens, "NaN on prefill");
-        return Err("Model produced NaN on prefill — prompt may be malformed or too long".to_string());
+        return Err(
+            "Model produced NaN on prefill — prompt may be malformed or too long".to_string(),
+        );
     }
 
     // Setup sampler
@@ -229,7 +242,10 @@ pub fn generate(
 
         // Context length guard
         if pos >= ctx_len {
-            log.warn(&format!("Reached context limit ({}) at token {}", ctx_len, i));
+            log.warn(&format!(
+                "Reached context limit ({}) at token {}",
+                ctx_len, i
+            ));
             break;
         }
 
@@ -253,8 +269,15 @@ pub fn generate(
             if had_nan {
                 nan_count += 1;
                 if nan_count > 2 {
-                    log.error(&format!("Multiple NaN in first {} tokens — aborting", NAN_CHECK_TOKENS));
-                    save_prompt_replay(prompt, &all_tokens[..prompt_len], "Multiple NaN in early tokens");
+                    log.error(&format!(
+                        "Multiple NaN in first {} tokens — aborting",
+                        NAN_CHECK_TOKENS
+                    ));
+                    save_prompt_replay(
+                        prompt,
+                        &all_tokens[..prompt_len],
+                        "Multiple NaN in early tokens",
+                    );
                     break;
                 }
             }
@@ -272,8 +295,15 @@ pub fn generate(
             Err(e) => {
                 nan_count += 1;
                 if nan_count > 5 {
-                    log.warn(&format!("Aborting after {} consecutive NaN errors", nan_count));
-                    save_prompt_replay(prompt, &all_tokens[..prompt_len], &format!("{} consecutive NaN", nan_count));
+                    log.warn(&format!(
+                        "Aborting after {} consecutive NaN errors",
+                        nan_count
+                    ));
+                    save_prompt_replay(
+                        prompt,
+                        &all_tokens[..prompt_len],
+                        &format!("{} consecutive NaN", nan_count),
+                    );
                     break;
                 }
                 log.warn(&format!("Sampling failed at token {}, retrying: {}", i, e));
@@ -324,10 +354,9 @@ pub struct GgufMetadata {
 
 /// Read common metadata from a GGUF file without loading weights.
 pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open GGUF: {e}"))?;
-    let content = gguf_file::Content::read(&mut file)
-        .map_err(|e| format!("Failed to read GGUF: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open GGUF: {e}"))?;
+    let content =
+        gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
     let architecture = content
         .metadata
@@ -349,7 +378,11 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
         .and_then(|v| v.to_string().ok())
         .cloned();
 
-    Ok(GgufMetadata { architecture, context_length, model_name })
+    Ok(GgufMetadata {
+        architecture,
+        context_length,
+        model_name,
+    })
 }
 
 /// Load a GGUF model as a ModelBackend.
@@ -364,10 +397,10 @@ pub fn load_gguf_backend(
 ) -> Result<Box<dyn ModelBackend>, String> {
     let log = runtime::logger("candle");
 
-    let mut file = std::fs::File::open(model_path)
-        .map_err(|e| format!("Failed to open GGUF: {e}"))?;
-    let content = gguf_file::Content::read(&mut file)
-        .map_err(|e| format!("Failed to read GGUF: {e}"))?;
+    let mut file =
+        std::fs::File::open(model_path).map_err(|e| format!("Failed to open GGUF: {e}"))?;
+    let content =
+        gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
     let architecture = content
         .metadata
@@ -379,14 +412,18 @@ pub fn load_gguf_backend(
     log.info(&format!("GGUF architecture: {architecture}"));
 
     let mut reader = std::io::BufReader::new(
-        std::fs::File::open(model_path)
-            .map_err(|e| format!("Failed to reopen GGUF: {e}"))?,
+        std::fs::File::open(model_path).map_err(|e| format!("Failed to reopen GGUF: {e}"))?,
     );
 
     match architecture.as_str() {
         "llama" => {
             let backend = llama_gguf::LlamaGgufBackend::from_gguf(
-                content, &mut reader, tokenizer, model_id, model_path, device,
+                content,
+                &mut reader,
+                tokenizer,
+                model_id,
+                model_path,
+                device,
             )?;
             log.info(&format!(
                 "Loaded Llama GGUF backend: context_length={}",
@@ -422,10 +459,7 @@ fn extract_last_logits(logits: &Tensor) -> Result<Tensor, String> {
 }
 
 /// Sanitize logits to prevent NaN/Inf from crashing the sampler.
-fn sanitize_logits_with_flag(
-    logits: &Tensor,
-    device: &Device,
-) -> Result<(Tensor, bool), String> {
+fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor, bool), String> {
     let logits_vec: Vec<f32> = logits
         .to_vec1()
         .map_err(|e| format!("Failed to read logits: {e}"))?;
@@ -441,7 +475,11 @@ fn sanitize_logits_with_flag(
                 if x.is_nan() {
                     -100.0
                 } else if x.is_infinite() {
-                    if x > 0.0 { 100.0 } else { -100.0 }
+                    if x > 0.0 {
+                        100.0
+                    } else {
+                        -100.0
+                    }
                 } else {
                     x
                 }
@@ -460,7 +498,11 @@ fn sanitize_logits_with_flag(
 fn save_prompt_replay(prompt: &str, tokens: &[u32], error: &str) {
     let log = runtime::logger("candle");
     let home = dirs::home_dir().expect("Failed to resolve home directory");
-    let replay_dir = home.join(".continuum").join("jtag").join("logs").join("prompt-replays");
+    let replay_dir = home
+        .join(".continuum")
+        .join("jtag")
+        .join("logs")
+        .join("prompt-replays");
     if std::fs::create_dir_all(&replay_dir).is_err() {
         log.warn("Failed to create prompt-replays directory");
         return;

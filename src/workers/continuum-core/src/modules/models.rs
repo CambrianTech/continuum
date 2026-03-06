@@ -5,11 +5,11 @@
 //! Stateless module (like HealthModule) that performs async HTTP requests
 //! to provider APIs to discover available models.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
-use crate::models::{ProviderConfig, discover_all};
-use crate::logging::TimingGuard;
-use crate::utils::params::Params;
 use crate::log_info;
+use crate::logging::TimingGuard;
+use crate::models::{discover_all, ProviderConfig};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -40,11 +40,7 @@ impl ServiceModule for ModelsModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "models/discover" => {
                 let _timer = TimingGuard::new("module", "models_discover");
@@ -57,8 +53,13 @@ impl ServiceModule for ModelsModule {
                 let models = discover_all(providers).await;
 
                 let model_count = models.len();
-                log_info!("module", "models",
-                    "Discovered {} models from {} providers", model_count, provider_count);
+                log_info!(
+                    "module",
+                    "models",
+                    "Discovered {} models from {} providers",
+                    model_count,
+                    provider_count
+                );
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "models": models,
@@ -71,5 +72,7 @@ impl ServiceModule for ModelsModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

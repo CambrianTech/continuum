@@ -5,7 +5,7 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
-use crate::{clog_info, clog_debug};
+use crate::{clog_debug, clog_info};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 

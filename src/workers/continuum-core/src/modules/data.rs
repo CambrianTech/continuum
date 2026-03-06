@@ -7,8 +7,6 @@
 //! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
 //! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
 
-use chrono;
-use crate::{log_error, log_info};
 use crate::modules::embedding::generate_embeddings_batch;
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
@@ -19,7 +17,9 @@ use crate::orm::{
     types::{BatchOperation, CollectionSchema, DataRecord, RecordMetadata, UUID},
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::{log_error, log_info};
 use async_trait::async_trait;
+use chrono;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -177,18 +177,22 @@ impl DataModule {
         };
 
         // Route based on connection string
-        let adapter: Arc<dyn StorageAdapter> = if db_path.starts_with("postgres://")
-            || db_path.starts_with("postgresql://")
-        {
-            log_info!("data", "get_adapter", "Creating PostgresAdapter for: {}", db_path);
-            let mut pg = PostgresAdapter::new();
-            pg.initialize(config).await?;
-            Arc::new(pg)
-        } else {
-            let mut sqlite = SqliteAdapter::new();
-            sqlite.initialize(config).await?;
-            Arc::new(sqlite)
-        };
+        let adapter: Arc<dyn StorageAdapter> =
+            if db_path.starts_with("postgres://") || db_path.starts_with("postgresql://") {
+                log_info!(
+                    "data",
+                    "get_adapter",
+                    "Creating PostgresAdapter for: {}",
+                    db_path
+                );
+                let mut pg = PostgresAdapter::new();
+                pg.initialize(config).await?;
+                Arc::new(pg)
+            } else {
+                let mut sqlite = SqliteAdapter::new();
+                sqlite.initialize(config).await?;
+                Arc::new(sqlite)
+            };
 
         self.adapters.insert(db_path.to_string(), adapter.clone());
         Ok(adapter)
@@ -228,12 +232,14 @@ impl ServiceModule for DataModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
-        log_info!("data", "handle_command", "Received: {} params: {}", command, params);
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        log_info!(
+            "data",
+            "handle_command",
+            "Received: {} params: {}",
+            command,
+            params
+        );
         match command {
             "data/create" => self.handle_create(params).await,
             "data/read" => self.handle_read(params).await,
@@ -410,9 +416,15 @@ struct VectorSearchParams {
     include_data: bool,
 }
 
-fn default_k() -> usize { 10 }
-fn default_true() -> bool { true }
-fn default_batch_size() -> usize { 100 }
+fn default_k() -> usize {
+    10
+}
+fn default_true() -> bool {
+    true
+}
+fn default_batch_size() -> usize {
+    100
+}
 
 /// Index vector params - store embedding for a record
 #[derive(Debug, Deserialize)]
@@ -451,7 +463,9 @@ struct VectorStatsParams {
 // Paginated Query Params
 // ============================================================================
 
-fn default_page_size() -> usize { 100 }
+fn default_page_size() -> usize {
+    100
+}
 
 /// Open paginated query params
 #[derive(Debug, Deserialize)]
@@ -499,8 +513,12 @@ struct MigrationStartParams {
     collections: Option<Vec<String>>,
 }
 
-fn default_migration_batch() -> usize { 500 }
-fn default_migration_throttle() -> u64 { 10 }
+fn default_migration_batch() -> usize {
+    500
+}
+fn default_migration_throttle() -> u64 {
+    10
+}
 
 /// Cutover params - switch active connection
 #[derive(Debug, Deserialize)]
@@ -525,13 +543,14 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: CreateParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "create", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: CreateParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!("data", "create", "Parse error: {}, params: {}", e, params);
+            format!("Invalid params: {e}")
+        })?;
 
-        let id = params.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = params
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let collection = params.collection.clone();
 
         let record = DataRecord {
@@ -550,10 +569,14 @@ impl DataModule {
 
         // Publish event on success
         if result.success {
-            self.publish_event(&collection, "created", json!({
-                "id": id,
-                "collection": collection
-            }));
+            self.publish_event(
+                &collection,
+                "created",
+                json!({
+                    "id": id,
+                    "collection": collection
+                }),
+            );
         }
 
         CommandResult::json(&result)
@@ -577,11 +600,10 @@ impl DataModule {
     }
 
     async fn handle_update(&self, params: Value) -> Result<CommandResult, String> {
-        let params: UpdateParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "update", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: UpdateParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!("data", "update", "Parse error: {}, params: {}", e, params);
+            format!("Invalid params: {e}")
+        })?;
 
         let collection = params.collection.clone();
         let id = params.id.clone();
@@ -598,10 +620,14 @@ impl DataModule {
 
         // Publish event on success
         if result.success {
-            self.publish_event(&collection, "updated", json!({
-                "id": id,
-                "collection": collection
-            }));
+            self.publish_event(
+                &collection,
+                "updated",
+                json!({
+                    "id": id,
+                    "collection": collection
+                }),
+            );
         }
 
         CommandResult::json(&result)
@@ -619,10 +645,14 @@ impl DataModule {
 
         // Publish event on success
         if result.success {
-            self.publish_event(&collection, "deleted", json!({
-                "id": id,
-                "collection": collection
-            }));
+            self.publish_event(
+                &collection,
+                "deleted",
+                json!({
+                    "id": id,
+                    "collection": collection
+                }),
+            );
         }
 
         CommandResult::json(&result)
@@ -632,11 +662,10 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: QueryParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "query", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: QueryParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!("data", "query", "Parse error: {}, params: {}", e, params);
+            format!("Invalid params: {e}")
+        })?;
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -672,7 +701,7 @@ impl DataModule {
         };
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.query_with_join(query).await;
+        let result = adapter.query_with_join(query).await;
 
         CommandResult::json(&result)
     }
@@ -704,8 +733,16 @@ impl DataModule {
 
         let total_ms = start.elapsed().as_millis();
         if total_ms > 50 {
-            log_info!("data", "count", "TIMING: collection={}, total={}ms (adapter={}ms, count={}ms), success={}",
-                params.collection, total_ms, adapter_ms, count_ms, result.success);
+            log_info!(
+                "data",
+                "count",
+                "TIMING: collection={}, total={}ms (adapter={}ms, count={}ms), success={}",
+                params.collection,
+                total_ms,
+                adapter_ms,
+                count_ms,
+                result.success
+            );
         }
 
         CommandResult::json(&result)
@@ -722,10 +759,14 @@ impl DataModule {
 
         // Publish batch event on success
         if result.success {
-            self.publish_event("batch", "completed", json!({
-                "operationCount": op_count,
-                "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
-            }));
+            self.publish_event(
+                "batch",
+                "completed",
+                json!({
+                    "operationCount": op_count,
+                    "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
+                }),
+            );
         }
 
         CommandResult::json(&result)
@@ -736,7 +777,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.ensure_schema(params.schema).await;
+        let result = adapter.ensure_schema(params.schema).await;
 
         CommandResult::json(&result)
     }
@@ -746,7 +787,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.list_collections().await;
+        let result = adapter.list_collections().await;
 
         CommandResult::json(&result)
     }
@@ -756,7 +797,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.collection_stats(&params.collection).await;
+        let result = adapter.collection_stats(&params.collection).await;
 
         CommandResult::json(&result)
     }
@@ -766,7 +807,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.truncate(&params.collection).await;
+        let result = adapter.truncate(&params.collection).await;
 
         CommandResult::json(&result)
     }
@@ -776,7 +817,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.clear_all().await;
+        let result = adapter.clear_all().await;
 
         CommandResult::json(&result)
     }
@@ -786,7 +827,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let caps = adapter.capabilities();
+        let caps = adapter.capabilities();
 
         Ok(CommandResult::Json(json!({
             "supportsTransactions": caps.supports_transactions,
@@ -804,7 +845,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-                let caps = adapter.capabilities();
+        let caps = adapter.capabilities();
 
         Ok(CommandResult::Json(json!({
             "adapter": adapter.name(),
@@ -833,11 +874,16 @@ impl DataModule {
         use std::time::Instant;
         let search_start = Instant::now();
 
-        let params: VectorSearchParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "vector/search", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: VectorSearchParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "vector/search",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let cache_key = (params.db_path.clone(), params.collection.clone());
 
@@ -848,13 +894,22 @@ impl DataModule {
         };
 
         let corpus: Arc<Vec<CachedVector>> = if let Some(vectors) = cached_vectors {
-            log_info!("data", "vector/search", "Cache HIT for {} ({} vectors)",
-                params.collection, vectors.len());
+            log_info!(
+                "data",
+                "vector/search",
+                "Cache HIT for {} ({} vectors)",
+                params.collection,
+                vectors.len()
+            );
             vectors
         } else {
             // Cache MISS - load from SQLite
-            log_info!("data", "vector/search", "Cache MISS for {} - loading from SQLite",
-                params.collection);
+            log_info!(
+                "data",
+                "vector/search",
+                "Cache MISS for {} - loading from SQLite",
+                params.collection
+            );
             let load_start = Instant::now();
 
             // Get adapter and load vectors
@@ -898,11 +953,22 @@ impl DataModule {
             // Store in cache
             {
                 let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
-                cache.insert(cache_key, VectorCache { vectors: vectors_arc.clone() });
+                cache.insert(
+                    cache_key,
+                    VectorCache {
+                        vectors: vectors_arc.clone(),
+                    },
+                );
             }
 
-            log_info!("data", "vector/search", "Cached {} vectors for {} in {:?}",
-                count, params.collection, load_start.elapsed());
+            log_info!(
+                "data",
+                "vector/search",
+                "Cached {} vectors for {} in {:?}",
+                count,
+                params.collection,
+                load_start.elapsed()
+            );
             vectors_arc
         };
 
@@ -959,15 +1025,26 @@ impl DataModule {
             }
             full_results
         } else {
-            top_k.into_iter().map(|(id, score)| json!({
-                "id": id,
-                "score": score,
-                "distance": 1.0 - score
-            })).collect()
+            top_k
+                .into_iter()
+                .map(|(id, score)| {
+                    json!({
+                        "id": id,
+                        "score": score,
+                        "distance": 1.0 - score
+                    })
+                })
+                .collect()
         };
 
-        log_info!("data", "vector/search", "Complete: {} results from {} vectors in {:?}",
-            count, corpus_size, search_start.elapsed());
+        log_info!(
+            "data",
+            "vector/search",
+            "Complete: {} results from {} vectors in {:?}",
+            count,
+            corpus_size,
+            search_start.elapsed()
+        );
 
         Ok(CommandResult::Json(json!({
             "results": results,
@@ -979,9 +1056,7 @@ impl DataModule {
     /// Parse embedding from record data (supports BLOB and JSON array)
     fn parse_embedding(value: &Value) -> Vec<f64> {
         match value {
-            Value::Array(arr) => arr.iter()
-                .filter_map(|v| v.as_f64())
-                .collect(),
+            Value::Array(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
             Value::String(s) => {
                 // Try parsing as JSON array
                 serde_json::from_str(s).unwrap_or_default()
@@ -1031,7 +1106,11 @@ impl DataModule {
         }
 
         let denominator = (norm_a * norm_b).sqrt();
-        if denominator == 0.0 { 0.0 } else { dot / denominator }
+        if denominator == 0.0 {
+            0.0
+        } else {
+            dot / denominator
+        }
     }
 
     /// Index a vector - store embedding for a record
@@ -1040,11 +1119,16 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: IndexVectorParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "vector/index", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: IndexVectorParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "vector/index",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
@@ -1065,8 +1149,14 @@ impl DataModule {
         }
 
         let total_ms = start.elapsed().as_millis();
-        log_info!("data", "vector/index", "Indexed vector for {} in {}ms, success={}",
-            params.id, total_ms, result.success);
+        log_info!(
+            "data",
+            "vector/index",
+            "Indexed vector for {} in {}ms, success={}",
+            params.id,
+            total_ms,
+            result.success
+        );
 
         CommandResult::json(&result)
     }
@@ -1076,11 +1166,16 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: VectorStatsParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "vector/stats", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: VectorStatsParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "vector/stats",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
@@ -1126,8 +1221,16 @@ impl DataModule {
         };
 
         let total_ms = start.elapsed().as_millis();
-        log_info!("data", "vector/stats", "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
-            params.collection, total_ms, total_records, records_with_vectors, vector_dimensions);
+        log_info!(
+            "data",
+            "vector/stats",
+            "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
+            params.collection,
+            total_ms,
+            total_records,
+            records_with_vectors,
+            vector_dimensions
+        );
 
         // Wrap in StorageResult-style response for TypeScript compatibility
         Ok(CommandResult::Json(json!({
@@ -1146,11 +1249,16 @@ impl DataModule {
     /// Invalidate vector cache for a collection
     /// Called when records are modified outside of vector/index
     async fn handle_invalidate_vector_cache(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "vector/invalidate-cache", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: CollectionParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "vector/invalidate-cache",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let cache_key = (params.db_path.clone(), params.collection.clone());
         let removed = {
@@ -1158,8 +1266,13 @@ impl DataModule {
             cache.remove(&cache_key).is_some()
         };
 
-        log_info!("data", "vector/invalidate-cache", "Invalidated cache for {}: removed={}",
-            params.collection, removed);
+        log_info!(
+            "data",
+            "vector/invalidate-cache",
+            "Invalidated cache for {}: removed={}",
+            params.collection,
+            removed
+        );
 
         Ok(CommandResult::Json(json!({
             "success": true,
@@ -1178,7 +1291,13 @@ impl DataModule {
 
         let params: BackfillVectorsParams =
             serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "vector/backfill", "Parse error: {}, params: {}", e, params);
+                log_error!(
+                    "data",
+                    "vector/backfill",
+                    "Parse error: {}, params: {}",
+                    e,
+                    params
+                );
                 format!("Invalid params: {e}")
             })?;
 
@@ -1195,7 +1314,9 @@ impl DataModule {
         };
         let query_result = adapter.query(query).await;
         if !query_result.success {
-            return Err(query_result.error.unwrap_or_else(|| "Query failed".to_string()));
+            return Err(query_result
+                .error
+                .unwrap_or_else(|| "Query failed".to_string()));
         }
 
         let records = query_result.data.unwrap_or_default();
@@ -1204,8 +1325,13 @@ impl DataModule {
         let mut failed = 0usize;
         let mut skipped = 0usize;
 
-        log_info!("data", "vector/backfill", "Starting backfill for {} records in {}",
-            total, params.collection);
+        log_info!(
+            "data",
+            "vector/backfill",
+            "Starting backfill for {} records in {}",
+            total,
+            params.collection
+        );
 
         // Process in batches for memory efficiency
         for chunk in records.chunks(batch_size) {
@@ -1276,9 +1402,17 @@ impl DataModule {
         }
 
         let total_ms = start.elapsed().as_millis();
-        log_info!("data", "vector/backfill",
+        log_info!(
+            "data",
+            "vector/backfill",
             "Backfill complete for {}: total={}, processed={}, skipped={}, failed={} in {}ms",
-            params.collection, total, processed, skipped, failed, total_ms);
+            params.collection,
+            total,
+            processed,
+            skipped,
+            failed,
+            total_ms
+        );
 
         Ok(CommandResult::Json(json!({
             "success": true,
@@ -1307,11 +1441,16 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: QueryOpenParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "query-open", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: QueryOpenParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "query-open",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
@@ -1344,8 +1483,16 @@ impl DataModule {
         self.paginated_queries.insert(query_id.clone(), state);
 
         let total_ms = start.elapsed().as_millis();
-        log_info!("data", "query-open", "Opened query {} for {} (total={}, pageSize={}) in {}ms",
-            query_id, params.collection, total_count, params.page_size, total_ms);
+        log_info!(
+            "data",
+            "query-open",
+            "Opened query {} for {} (total={}, pageSize={}) in {}ms",
+            query_id,
+            params.collection,
+            total_count,
+            params.page_size,
+            total_ms
+        );
 
         // Wrap in StorageResult-style response for TypeScript compatibility
         Ok(CommandResult::Json(json!({
@@ -1368,15 +1515,20 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: QueryNextParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "query-next", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: QueryNextParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "query-next",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         // Get query state (immutable borrow for read)
-        let state_info = self.paginated_queries.get(&params.query_id)
-            .map(|s| (
+        let state_info = self.paginated_queries.get(&params.query_id).map(|s| {
+            (
                 s.db_path.clone(),
                 s.collection.clone(),
                 s.filter.clone(),
@@ -1386,10 +1538,20 @@ impl DataModule {
                 s.current_page,
                 s.cursor_id.clone(),
                 s.has_more,
-            ));
+            )
+        });
 
-        let (db_path, collection, filter, sort, page_size, total_count, current_page, _cursor_id, has_more) =
-            state_info.ok_or_else(|| format!("Query {} not found", params.query_id))?;
+        let (
+            db_path,
+            collection,
+            filter,
+            sort,
+            page_size,
+            total_count,
+            current_page,
+            _cursor_id,
+            has_more,
+        ) = state_info.ok_or_else(|| format!("Query {} not found", params.query_id))?;
 
         if !has_more {
             return Ok(CommandResult::Json(json!({
@@ -1437,21 +1599,32 @@ impl DataModule {
         }
 
         // Convert records to JSON
-        let items: Vec<Value> = records.into_iter().map(|r| {
-            json!({
-                "id": r.id,
-                "data": r.data,
-                "metadata": {
-                    "createdAt": r.metadata.created_at,
-                    "updatedAt": r.metadata.updated_at,
-                    "version": r.metadata.version
-                }
+        let items: Vec<Value> = records
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "data": r.data,
+                    "metadata": {
+                        "createdAt": r.metadata.created_at,
+                        "updatedAt": r.metadata.updated_at,
+                        "version": r.metadata.version
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         let total_ms = start.elapsed().as_millis();
-        log_info!("data", "query-next", "Page {} for query {} ({} items, hasMore={}) in {}ms",
-            current_page + 1, params.query_id, items_count, new_has_more, total_ms);
+        log_info!(
+            "data",
+            "query-next",
+            "Page {} for query {} ({} items, hasMore={}) in {}ms",
+            current_page + 1,
+            params.query_id,
+            items_count,
+            new_has_more,
+            total_ms
+        );
 
         // Wrap in StorageResult-style response for TypeScript compatibility
         Ok(CommandResult::Json(json!({
@@ -1467,15 +1640,26 @@ impl DataModule {
 
     /// Close paginated query and free resources
     async fn handle_query_close(&self, params: Value) -> Result<CommandResult, String> {
-        let params: QueryCloseParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "query-close", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: QueryCloseParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "query-close",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         let removed = self.paginated_queries.remove(&params.query_id).is_some();
 
-        log_info!("data", "query-close", "Closed query {}: removed={}", params.query_id, removed);
+        log_info!(
+            "data",
+            "query-close",
+            "Closed query {}: removed={}",
+            params.query_id,
+            removed
+        );
 
         Ok(CommandResult::Json(json!({
             "success": removed,
@@ -1489,11 +1673,16 @@ impl DataModule {
 
     /// Start a streaming migration between two adapters (async — returns immediately)
     async fn handle_migration_start(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationStartParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "migration/start", "Parse error: {}, params: {}", e, params);
-                format!("Invalid params: {e}")
-            })?;
+        let params: MigrationStartParams = serde_json::from_value(params.clone()).map_err(|e| {
+            log_error!(
+                "data",
+                "migration/start",
+                "Parse error: {}, params: {}",
+                e,
+                params
+            );
+            format!("Invalid params: {e}")
+        })?;
 
         // Get or create adapters for source and target
         let source = self.get_adapter(&params.source).await?;
@@ -1516,7 +1705,13 @@ impl DataModule {
 
         // Spawn migration as background task — returns immediately
         tokio::spawn(async move {
-            log_info!("data", "migration/start", "Background migration started: {} -> {}", src, tgt);
+            log_info!(
+                "data",
+                "migration/start",
+                "Background migration started: {} -> {}",
+                src,
+                tgt
+            );
             match engine.run().await {
                 Ok(status) => {
                     log_info!("data", "migration/start", "Migration completed: {}", status);
@@ -1583,7 +1778,13 @@ impl DataModule {
     async fn handle_migration_cutover(&self, params: Value) -> Result<CommandResult, String> {
         let params: MigrationCutoverParams =
             serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "migration/cutover", "Parse error: {}, params: {}", e, params);
+                log_error!(
+                    "data",
+                    "migration/cutover",
+                    "Parse error: {}, params: {}",
+                    e,
+                    params
+                );
                 format!("Invalid params: {e}")
             })?;
 
@@ -1596,7 +1797,13 @@ impl DataModule {
         // Pre-warm the target adapter
         let _target = self.get_adapter(&params.target).await?;
 
-        log_info!("data", "migration/cutover", "Cutover: {} -> {}", params.current, params.target);
+        log_info!(
+            "data",
+            "migration/cutover",
+            "Cutover: {} -> {}",
+            params.current,
+            params.target
+        );
 
         Ok(CommandResult::Json(json!({
             "previous": params.current,
@@ -1609,7 +1816,13 @@ impl DataModule {
     async fn handle_migration_rollback(&self, params: Value) -> Result<CommandResult, String> {
         let params: MigrationRollbackParams =
             serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!("data", "migration/rollback", "Parse error: {}, params: {}", e, params);
+                log_error!(
+                    "data",
+                    "migration/rollback",
+                    "Parse error: {}, params: {}",
+                    e,
+                    params
+                );
                 format!("Invalid params: {e}")
             })?;
 
@@ -1622,7 +1835,13 @@ impl DataModule {
                 // Pre-warm previous adapter
                 let _adapter = self.get_adapter(prev).await?;
 
-                log_info!("data", "migration/rollback", "Rolled back: {} -> {}", params.current, prev);
+                log_info!(
+                    "data",
+                    "migration/rollback",
+                    "Rolled back: {} -> {}",
+                    params.current,
+                    prev
+                );
 
                 Ok(CommandResult::Json(json!({
                     "rolledBackFrom": params.current,
@@ -1665,16 +1884,14 @@ mod tests {
         // Create table first
         let schema = CollectionSchema {
             collection: "test_users".to_string(),
-            fields: vec![
-                crate::orm::types::SchemaField {
-                    name: "name".to_string(),
-                    field_type: crate::orm::types::FieldType::String,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                },
-            ],
+            fields: vec![crate::orm::types::SchemaField {
+                name: "name".to_string(),
+                field_type: crate::orm::types::FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
             indexes: vec![],
         };
 
@@ -1906,7 +2123,11 @@ mod tests {
             assert_eq!(results.len(), 3);
             // First result should be most similar (score close to 1.0)
             let first_score = results[0]["score"].as_f64().unwrap();
-            assert!(first_score > 0.9, "Expected high similarity, got {}", first_score);
+            assert!(
+                first_score > 0.9,
+                "Expected high similarity, got {}",
+                first_score
+            );
         }
     }
 
@@ -1917,16 +2138,14 @@ mod tests {
         // Create schema
         let schema = CollectionSchema {
             collection: "test_cache".to_string(),
-            fields: vec![
-                crate::orm::types::SchemaField {
-                    name: "embedding".to_string(),
-                    field_type: crate::orm::types::FieldType::Json,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                },
-            ],
+            fields: vec![crate::orm::types::SchemaField {
+                name: "embedding".to_string(),
+                field_type: crate::orm::types::FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
             indexes: vec![],
         };
 
@@ -2025,16 +2244,14 @@ mod tests {
         // Create schema
         let schema = CollectionSchema {
             collection: "test_paginated".to_string(),
-            fields: vec![
-                crate::orm::types::SchemaField {
-                    name: "name".to_string(),
-                    field_type: crate::orm::types::FieldType::String,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                },
-            ],
+            fields: vec![crate::orm::types::SchemaField {
+                name: "name".to_string(),
+                field_type: crate::orm::types::FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
             indexes: vec![],
         };
 
@@ -2087,10 +2304,7 @@ mod tests {
 
         // Get first page
         let page1 = module
-            .handle_command(
-                "data/query-next",
-                json!({ "queryId": query_id }),
-            )
+            .handle_command("data/query-next", json!({ "queryId": query_id }))
             .await;
 
         assert!(page1.is_ok());
@@ -2103,10 +2317,7 @@ mod tests {
 
         // Get second page
         let page2 = module
-            .handle_command(
-                "data/query-next",
-                json!({ "queryId": query_id }),
-            )
+            .handle_command("data/query-next", json!({ "queryId": query_id }))
             .await;
 
         assert!(page2.is_ok());
@@ -2119,10 +2330,7 @@ mod tests {
 
         // Get third page (should have 5 items)
         let page3 = module
-            .handle_command(
-                "data/query-next",
-                json!({ "queryId": query_id }),
-            )
+            .handle_command("data/query-next", json!({ "queryId": query_id }))
             .await;
 
         assert!(page3.is_ok());
@@ -2135,10 +2343,7 @@ mod tests {
 
         // Close query
         let close_result = module
-            .handle_command(
-                "data/query-close",
-                json!({ "queryId": query_id }),
-            )
+            .handle_command("data/query-close", json!({ "queryId": query_id }))
             .await;
 
         assert!(close_result.is_ok());
@@ -2247,24 +2452,36 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
         let sim = DataModule::cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 0.001, "Identical vectors should have similarity 1.0");
+        assert!(
+            (sim - 1.0).abs() < 0.001,
+            "Identical vectors should have similarity 1.0"
+        );
 
         // Test orthogonal vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
         let sim = DataModule::cosine_similarity(&a, &b);
-        assert!(sim.abs() < 0.001, "Orthogonal vectors should have similarity 0.0");
+        assert!(
+            sim.abs() < 0.001,
+            "Orthogonal vectors should have similarity 0.0"
+        );
 
         // Test opposite vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
         let sim = DataModule::cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 0.001, "Opposite vectors should have similarity -1.0");
+        assert!(
+            (sim + 1.0).abs() < 0.001,
+            "Opposite vectors should have similarity -1.0"
+        );
 
         // Test with 384-dimension vectors (typical embedding size)
         let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
         let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
         let sim = DataModule::cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 0.001, "Identical 384-dim vectors should have similarity 1.0");
+        assert!(
+            (sim - 1.0).abs() < 0.001,
+            "Identical 384-dim vectors should have similarity 1.0"
+        );
     }
 }

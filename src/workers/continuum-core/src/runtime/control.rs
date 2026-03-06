@@ -4,9 +4,9 @@
 //! Exposed via runtime/control/* commands.
 //! TypeScript types generated via ts-rs for Ares (RTOS controller) integration.
 
+use super::module_metrics::ModuleStats;
 use super::registry::ModuleRegistry;
 use super::service_module::ModulePriority;
-use super::module_metrics::ModuleStats;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -46,7 +46,8 @@ impl RuntimeControl {
             return Err(format!("Module not found: {}", module_name));
         }
 
-        self.priority_overrides.insert(module_name.to_string(), priority);
+        self.priority_overrides
+            .insert(module_name.to_string(), priority);
         Ok(())
     }
 
@@ -68,7 +69,8 @@ impl RuntimeControl {
 
     /// List all modules with their info
     pub fn list_modules(&self) -> Vec<ModuleInfo> {
-        self.registry.module_names()
+        self.registry
+            .module_names()
             .into_iter()
             .filter_map(|name| {
                 let config = self.registry.get_config(&name)?;
@@ -79,7 +81,11 @@ impl RuntimeControl {
                     default_priority: config.priority,
                     effective_priority: self.effective_priority(&name).unwrap_or(config.priority),
                     needs_dedicated_thread: config.needs_dedicated_thread,
-                    command_prefixes: config.command_prefixes.iter().map(|s| s.to_string()).collect(),
+                    command_prefixes: config
+                        .command_prefixes
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
                     stats,
                 })
             })
@@ -94,9 +100,15 @@ impl RuntimeControl {
         Some(ModuleInfo {
             name: module_name.to_string(),
             default_priority: config.priority,
-            effective_priority: self.effective_priority(module_name).unwrap_or(config.priority),
+            effective_priority: self
+                .effective_priority(module_name)
+                .unwrap_or(config.priority),
             needs_dedicated_thread: config.needs_dedicated_thread,
-            command_prefixes: config.command_prefixes.iter().map(|s| s.to_string()).collect(),
+            command_prefixes: config
+                .command_prefixes
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             stats,
         })
     }

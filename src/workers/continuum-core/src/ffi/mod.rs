@@ -11,13 +11,13 @@
 //! Performance:
 //! - All FFI calls are timed and logged
 //! - Timing thresholds: >10ms = warn, >1ms = info, <1ms = debug
-use crate::live::{VoiceOrchestrator, UtteranceEvent, VoiceParticipant};
-use crate::persona::PersonaInbox;
+use crate::live::{UtteranceEvent, VoiceOrchestrator, VoiceParticipant};
 use crate::logging::{init_logger, logger, TimingGuard};
+use crate::persona::PersonaInbox;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use uuid::Uuid;
 use std::ptr;
+use uuid::Uuid;
 
 // ============================================================================
 // Initialization
@@ -74,7 +74,11 @@ pub extern "C" fn continuum_voice_create() -> *mut VoiceOrchestrator {
     let orchestrator = VoiceOrchestrator::new();
     let ptr = Box::into_raw(Box::new(orchestrator));
 
-    logger().info("ffi", "voice", &format!("Created VoiceOrchestrator at {ptr:?}"));
+    logger().info(
+        "ffi",
+        "voice",
+        &format!("Created VoiceOrchestrator at {ptr:?}"),
+    );
 
     ptr
 }
@@ -92,7 +96,11 @@ pub unsafe extern "C" fn continuum_voice_free(ptr: *mut VoiceOrchestrator) {
         unsafe {
             let _ = Box::from_raw(ptr);
         }
-        logger().debug("ffi", "voice", &format!("Freed VoiceOrchestrator at {ptr:?}"));
+        logger().debug(
+            "ffi",
+            "voice",
+            &format!("Freed VoiceOrchestrator at {ptr:?}"),
+        );
     }
 }
 
@@ -185,7 +193,7 @@ pub unsafe extern "C" fn continuum_voice_register_session(
     logger().info(
         "ffi",
         "voice",
-        &format!("Registered session {session_uuid} with {participant_count} participants")
+        &format!("Registered session {session_uuid} with {participant_count} participants"),
     );
 
     0
@@ -241,7 +249,7 @@ pub unsafe extern "C" fn continuum_voice_on_utterance(
         logger().debug(
             "ffi",
             "voice",
-            &format!("Utterance from {} → no AI participants", event.speaker_name)
+            &format!("Utterance from {} → no AI participants", event.speaker_name),
         );
         return 1;
     }
@@ -266,8 +274,9 @@ pub unsafe extern "C" fn continuum_voice_on_utterance(
         "voice",
         &format!(
             "Utterance from {} → {} AI participants",
-            event.speaker_name, responder_ids.len()
-        )
+            event.speaker_name,
+            responder_ids.len()
+        ),
     );
 
     0
@@ -317,7 +326,11 @@ pub unsafe extern "C" fn continuum_inbox_create(persona_id: *const c_char) -> *m
     let inbox = PersonaInbox::new(persona_uuid);
     let ptr = Box::into_raw(Box::new(inbox));
 
-    logger().info("ffi", "inbox", &format!("Created PersonaInbox for {persona_uuid}"));
+    logger().info(
+        "ffi",
+        "inbox",
+        &format!("Created PersonaInbox for {persona_uuid}"),
+    );
 
     ptr
 }
@@ -381,9 +394,7 @@ pub unsafe extern "C" fn continuum_get_stats(category: *const c_char) -> *mut c_
     let category_str = if category.is_null() {
         "all"
     } else {
-        unsafe {
-            CStr::from_ptr(category).to_str().unwrap_or("all")
-        }
+        unsafe { CStr::from_ptr(category).to_str().unwrap_or("all") }
     };
 
     let stats = serde_json::json!({

@@ -21,11 +21,11 @@ use std::time::Instant;
 
 use crate::secrets::get_secret;
 
-use super::adapter::{AdapterCapabilities, AIProviderAdapter, ApiStyle};
+use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
-    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent,
-    ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse, ToolCall,
-    ToolChoice, UsageMetrics, CostPer1kTokens,
+    ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
+    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
+    ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// Anthropic adapter implementation
@@ -61,7 +61,11 @@ impl AnthropicAdapter {
                 continue;
             }
 
-            let role = if msg.role == "assistant" { "assistant" } else { "user" };
+            let role = if msg.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
 
             match &msg.content {
                 MessageContent::Text(text) => {
@@ -72,8 +76,12 @@ impl AnthropicAdapter {
                 }
                 MessageContent::Parts(parts) => {
                     // Check for tool protocol blocks
-                    let has_tool_use = parts.iter().any(|p| matches!(p, ContentPart::ToolUse { .. }));
-                    let has_tool_result = parts.iter().any(|p| matches!(p, ContentPart::ToolResult { .. }));
+                    let has_tool_use = parts
+                        .iter()
+                        .any(|p| matches!(p, ContentPart::ToolUse { .. }));
+                    let has_tool_result = parts
+                        .iter()
+                        .any(|p| matches!(p, ContentPart::ToolResult { .. }));
 
                     if has_tool_use || has_tool_result {
                         // Anthropic native tool format
@@ -90,7 +98,11 @@ impl AnthropicAdapter {
                                     "name": name,
                                     "input": input
                                 })),
-                                ContentPart::ToolResult { tool_use_id, content, is_error } => {
+                                ContentPart::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                } => {
                                     let mut obj = json!({
                                         "type": "tool_result",
                                         "tool_use_id": tool_use_id,
@@ -190,7 +202,11 @@ enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,11 +273,15 @@ impl AIProviderAdapter for AnthropicAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| "Anthropic not initialized".to_string())?;
 
         let start = Instant::now();
-        let request_id = request.request_id.clone()
+        let request_id = request
+            .request_id
+            .clone()
             .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
         let model = request.model.as_deref().unwrap_or(CLAUDE_SONNET_4_5);
 
@@ -326,7 +346,8 @@ impl AIProviderAdapter for AnthropicAdapter {
         }
 
         // Make request
-        let response = self.client
+        let response = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
@@ -375,16 +396,21 @@ impl AIProviderAdapter for AnthropicAdapter {
             }
         }
 
-        let finish_reason = response_json.stop_reason.as_deref()
+        let finish_reason = response_json
+            .stop_reason
+            .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
 
-        let usage = response_json.usage.map(|u| UsageMetrics {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            total_tokens: u.input_tokens + u.output_tokens,
-            estimated_cost: Some(self.calculate_cost(u.input_tokens, u.output_tokens, model)),
-        }).unwrap_or_default();
+        let usage = response_json
+            .usage
+            .map(|u| UsageMetrics {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+                total_tokens: u.input_tokens + u.output_tokens,
+                estimated_cost: Some(self.calculate_cost(u.input_tokens, u.output_tokens, model)),
+            })
+            .unwrap_or_default();
 
         Ok(TextGenerationResponse {
             text,
@@ -394,8 +420,16 @@ impl AIProviderAdapter for AnthropicAdapter {
             usage,
             response_time_ms,
             request_id,
-            content: if content_blocks.is_empty() { None } else { Some(content_blocks) },
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            content: if content_blocks.is_empty() {
+                None
+            } else {
+                Some(content_blocks)
+            },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             routing: None,
             error: None,
         })
@@ -416,7 +450,8 @@ impl AIProviderAdapter for AnthropicAdapter {
         let start = Instant::now();
 
         // Anthropic doesn't have a health endpoint, so we do a minimal API call
-        let result = self.client
+        let result = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", self.api_key.as_deref().unwrap_or_default())
             .header("anthropic-version", "2023-06-01")
@@ -445,7 +480,11 @@ impl AIProviderAdapter for AnthropicAdapter {
                 let status = resp.status();
                 let is_billing = status.as_u16() == 402 || status.as_u16() == 429;
                 HealthStatus {
-                    status: if is_billing { HealthState::InsufficientFunds } else { HealthState::Unhealthy },
+                    status: if is_billing {
+                        HealthState::InsufficientFunds
+                    } else {
+                        HealthState::Unhealthy
+                    },
                     api_available: false,
                     response_time_ms,
                     error_rate: 1.0,

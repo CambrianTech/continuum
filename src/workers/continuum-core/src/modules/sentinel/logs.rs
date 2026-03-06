@@ -3,9 +3,9 @@
 use serde_json::{json, Value};
 use std::path::Path;
 
+use super::types::LogStreamInfo;
 use crate::runtime::CommandResult;
 use crate::utils::params::Params;
-use super::types::LogStreamInfo;
 
 /// List log streams for a sentinel handle
 pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandResult, String> {
@@ -26,7 +26,11 @@ pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandRes
         .await
         .map_err(|e| format!("Failed to read logs dir: {e}"))?;
 
-    while let Some(entry) = entries.next_entry().await.map_err(|e| format!("Read error: {e}"))? {
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("Read error: {e}"))?
+    {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str());
         if ext == Some("log") || ext == Some("jsonl") {
@@ -34,7 +38,8 @@ pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandRes
                 .await
                 .map_err(|e| format!("Metadata error: {e}"))?;
 
-            let modified = metadata.modified()
+            let modified = metadata
+                .modified()
                 .map(|t| {
                     let datetime: chrono::DateTime<chrono::Utc> = t.into();
                     datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
@@ -42,7 +47,11 @@ pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandRes
                 .unwrap_or_default();
 
             streams.push(LogStreamInfo {
-                name: path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+                name: path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
                 path: path.to_string_lossy().to_string(),
                 size: metadata.len(),
                 modified_at: modified,
@@ -84,11 +93,7 @@ pub async fn read_log(logs_base_dir: &Path, params: Value) -> Result<CommandResu
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
 
-    let selected_lines: Vec<&str> = lines
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+    let selected_lines: Vec<&str> = lines.into_iter().skip(offset).take(limit).collect();
 
     let truncated = offset + selected_lines.len() < total_lines;
 

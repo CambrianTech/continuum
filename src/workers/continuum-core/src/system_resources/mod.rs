@@ -10,6 +10,5 @@
 pub mod monitor;
 
 pub use monitor::{
-    SystemResourceMonitor, CpuStats, MemoryStats, SystemResourceSnapshot,
-    ProcessStats, TopProcess,
+    CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,
 };

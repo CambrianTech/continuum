@@ -3,8 +3,8 @@
 //! Used as fallback when Bevy/VRM is not available.
 
 use crate::clog_info;
-use crate::live::avatar::backend::{RenderBackend, AvatarError, ModelFormat};
-use crate::live::avatar::frame::{RgbaFrame, AvatarConfig};
+use crate::live::avatar::backend::{AvatarError, ModelFormat, RenderBackend};
+use crate::live::avatar::frame::{AvatarConfig, RgbaFrame};
 use crate::live::avatar::renderer::AvatarRenderer;
 use crate::live::avatar::types::AvatarModel;
 
@@ -20,10 +20,18 @@ impl ProceduralRenderer {
     pub fn new(config: AvatarConfig) -> Self {
         let size = (config.width * config.height * 4) as usize;
         let mut frame_data = vec![0u8; size];
-        generate_avatar_rgba(&mut frame_data, config.width, config.height, &config.identity);
+        generate_avatar_rgba(
+            &mut frame_data,
+            config.width,
+            config.height,
+            &config.identity,
+        );
         clog_info!(
             "ProceduralRenderer: initialized for '{}' ({}x{} @{}fps)",
-            config.identity, config.width, config.height, config.fps
+            config.identity,
+            config.width,
+            config.height,
+            config.fps
         );
         Self { config, frame_data }
     }
@@ -127,7 +135,9 @@ impl ProceduralBackend {
 }
 
 impl RenderBackend for ProceduralBackend {
-    fn name(&self) -> &'static str { "procedural" }
+    fn name(&self) -> &'static str {
+        "procedural"
+    }
 
     fn description(&self) -> &'static str {
         "CPU-rendered colored circle (zero-dependency fallback)"
@@ -136,10 +146,16 @@ impl RenderBackend for ProceduralBackend {
     fn supported_formats(&self) -> &[ModelFormat] {
         // Procedural can render "something" for any format — it ignores the model
         // and just draws a colored circle based on identity.
-        &[ModelFormat::StaticImage, ModelFormat::Svg, ModelFormat::SpriteSheet]
+        &[
+            ModelFormat::StaticImage,
+            ModelFormat::Svg,
+            ModelFormat::SpriteSheet,
+        ]
     }
 
-    fn is_initialized(&self) -> bool { self.initialized }
+    fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 
     fn initialize(&mut self) -> Result<(), AvatarError> {
         self.initialized = true;

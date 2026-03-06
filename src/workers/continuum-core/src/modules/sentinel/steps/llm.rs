@@ -7,9 +7,9 @@
 use serde_json::{json, Value};
 use std::time::Instant;
 
-use crate::runtime::CommandResult;
 use crate::modules::sentinel::interpolation;
 use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::runtime::CommandResult;
 
 /// LLM step configuration extracted from PipelineStep::Llm
 pub struct LlmStepParams<'a> {
@@ -49,12 +49,20 @@ const LLM_RETRY_BASE_MS: u64 = 2000;
 fn is_transient_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     lower.contains("error decoding response body")
+        || lower.contains("error sending request")
         || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("connection refused")
+        || lower.contains("broken pipe")
         || lower.contains("timeout")
+        || lower.contains("timed out")
         || lower.contains("502 bad gateway")
         || lower.contains("503 service")
+        || lower.contains("500 internal server")
         || lower.contains("429 too many")
         || lower.contains("rate limit")
+        || lower.contains("eof while parsing")
+        || lower.contains("unexpected eof")
 }
 
 /// agentMode=false: Fast in-process Rust call to ai/generate via ModuleRegistry
@@ -70,10 +78,17 @@ async fn execute_generate_mode(
     let start = Instant::now();
 
     let interpolated_prompt = interpolation::interpolate(params.prompt, ctx);
-    let interpolated_system = params.system_prompt.map(|s| interpolation::interpolate(s, ctx));
+    let interpolated_system = params
+        .system_prompt
+        .map(|s| interpolation::interpolate(s, ctx));
 
-    log.info(&format!("[{}] LLM step (generate): model={:?}, provider={:?}, prompt_len={}",
-        pipeline_ctx.handle_id, params.model, params.provider, interpolated_prompt.len()));
+    log.info(&format!(
+        "[{}] LLM step (generate): model={:?}, provider={:?}, prompt_len={}",
+        pipeline_ctx.handle_id,
+        params.model,
+        params.provider,
+        interpolated_prompt.len()
+    ));
 
     let mut ai_params = json!({
         "prompt": interpolated_prompt,
@@ -95,16 +110,25 @@ async fn execute_generate_mode(
         ai_params["system_prompt"] = json!(sys);
     }
 
-    let (module, cmd) = pipeline_ctx.registry.route_command("ai/generate")
-        .ok_or_else(|| format!("[{}] ai module not found in registry", pipeline_ctx.handle_id))?;
+    let (module, cmd) = pipeline_ctx
+        .registry
+        .route_command("ai/generate")
+        .ok_or_else(|| {
+            format!(
+                "[{}] ai module not found in registry",
+                pipeline_ctx.handle_id
+            )
+        })?;
 
     // Retry loop for transient API errors
     let mut last_error = String::new();
     for attempt in 0..=LLM_MAX_RETRIES {
         if attempt > 0 {
             let delay_ms = LLM_RETRY_BASE_MS * (1 << (attempt - 1)); // 2s, 4s, 8s
-            log.warn(&format!("[{}] LLM retry {}/{} after {}ms (error: {})",
-                pipeline_ctx.handle_id, attempt, LLM_MAX_RETRIES, delay_ms, last_error));
+            log.warn(&format!(
+                "[{}] LLM retry {}/{} after {}ms (error: {})",
+                pipeline_ctx.handle_id, attempt, LLM_MAX_RETRIES, delay_ms, last_error
+            ));
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
 
@@ -112,9 +136,18 @@ async fn execute_generate_mode(
 
         match result {
             Ok(CommandResult::Json(json)) => {
-                let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                let text = json.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let success = json
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let text = json
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let error = json
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let duration_ms = start.elapsed().as_millis() as u64;
 
                 // If the API returned an error that looks transient, retry
@@ -139,14 +172,20 @@ async fn execute_generate_mode(
                 });
             }
             Ok(CommandResult::Binary { .. }) => {
-                return Err(format!("[{}] Unexpected binary response from ai/generate", pipeline_ctx.handle_id));
+                return Err(format!(
+                    "[{}] Unexpected binary response from ai/generate",
+                    pipeline_ctx.handle_id
+                ));
             }
             Err(e) => {
                 if is_transient_error(&e) && attempt < LLM_MAX_RETRIES {
                     last_error = e;
                     continue;
                 }
-                return Err(format!("[{}] LLM step error: {}", pipeline_ctx.handle_id, e));
+                return Err(format!(
+                    "[{}] LLM step error: {}",
+                    pipeline_ctx.handle_id, e
+                ));
             }
         }
     }
@@ -159,7 +198,10 @@ async fn execute_generate_mode(
         success: false,
         duration_ms,
         output: None,
-        error: Some(format!("LLM failed after {} retries: {}", LLM_MAX_RETRIES, last_error)),
+        error: Some(format!(
+            "LLM failed after {} retries: {}",
+            LLM_MAX_RETRIES, last_error
+        )),
         exit_code: None,
         data: Value::Null,
     })
@@ -178,10 +220,18 @@ async fn execute_agent_mode(
     let start = Instant::now();
 
     let interpolated_prompt = interpolation::interpolate(params.prompt, ctx);
-    let interpolated_system = params.system_prompt.map(|s| interpolation::interpolate(s, ctx));
+    let interpolated_system = params
+        .system_prompt
+        .map(|s| interpolation::interpolate(s, ctx));
 
-    log.info(&format!("[{}] LLM step (agent): model={:?}, provider={:?}, tools={:?}, prompt_len={}",
-        pipeline_ctx.handle_id, params.model, params.provider, params.tools, interpolated_prompt.len()));
+    log.info(&format!(
+        "[{}] LLM step (agent): model={:?}, provider={:?}, tools={:?}, prompt_len={}",
+        pipeline_ctx.handle_id,
+        params.model,
+        params.provider,
+        params.tools,
+        interpolated_prompt.len()
+    ));
 
     // Build ai/agent command params
     let mut agent_params = json!({
@@ -214,22 +264,35 @@ async fn execute_agent_mode(
     // Route to TypeScript ai/agent directly via Unix socket (bypasses Rust registry).
     // MUST use execute_ts_json — the ai/ prefix is claimed by Rust's ai_provider module,
     // so execute_json would route back to Rust and never reach TypeScript.
-    let json = runtime::command_executor::execute_ts_json("ai/agent", agent_params).await
+    let json = runtime::command_executor::execute_ts_json("ai/agent", agent_params)
+        .await
         .map_err(|e| format!("[{}] LLM agent step error: {}", pipeline_ctx.handle_id, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-    let text = json.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let success = json
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = json
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let error = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let iterations = json.get("iterations").and_then(|v| v.as_u64()).unwrap_or(0);
-    let tool_calls_count = json.get("toolCalls")
+    let tool_calls_count = json
+        .get("toolCalls")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
 
-    log.info(&format!("[{}] LLM agent step complete: success={}, iterations={}, tool_calls={}, {}ms",
-        pipeline_ctx.handle_id, success, iterations, tool_calls_count, duration_ms));
+    log.info(&format!(
+        "[{}] LLM agent step complete: success={}, iterations={}, tool_calls={}, {}ms",
+        pipeline_ctx.handle_id, success, iterations, tool_calls_count, duration_ms
+    ));
 
     Ok(StepResult {
         step_index: index,

@@ -33,11 +33,13 @@ pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
 pub use migration::{MigrationEngine, MigrationHandle};
 pub use postgres::PostgresAdapter;
-pub use query::{QueryBuilder, StorageQuery, QueryOperator, SortDirection};
+pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};
 pub use sqlite::SqliteAdapter;
-pub use types::{DataRecord, RecordMetadata, StorageResult, CollectionSchema, SchemaField, FieldType};
+pub use types::{
+    CollectionSchema, DataRecord, FieldType, RecordMetadata, SchemaField, StorageResult,
+};
 pub use vector::{
+    BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,
+    GenerateEmbeddingResponse, IndexVectorRequest, VectorEmbedding, VectorIndexStats,
     VectorSearchAdapter, VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
-    VectorEmbedding, EmbeddingModel, GenerateEmbeddingRequest, GenerateEmbeddingResponse,
-    IndexVectorRequest, BackfillVectorsRequest, BackfillVectorsProgress, VectorIndexStats,
 };

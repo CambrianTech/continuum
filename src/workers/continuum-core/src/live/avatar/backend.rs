@@ -65,8 +65,11 @@ impl ModelFormat {
             Some(Self::Live2D)
         } else if lower.ends_with(".svg") {
             Some(Self::Svg)
-        } else if lower.ends_with(".png") || lower.ends_with(".jpg")
-            || lower.ends_with(".jpeg") || lower.ends_with(".webp") {
+        } else if lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp")
+        {
             Some(Self::StaticImage)
         } else {
             None
@@ -122,21 +125,54 @@ mod tests {
 
     #[test]
     fn test_model_format_from_filename() {
-        assert_eq!(ModelFormat::from_filename("vroid-female.vrm"), Some(ModelFormat::Vrm0x));
-        assert_eq!(ModelFormat::from_filename("scene.glb"), Some(ModelFormat::Gltf));
-        assert_eq!(ModelFormat::from_filename("scene.gltf"), Some(ModelFormat::Gltf));
-        assert_eq!(ModelFormat::from_filename("model.moc3"), Some(ModelFormat::Live2D));
-        assert_eq!(ModelFormat::from_filename("icon.svg"), Some(ModelFormat::Svg));
-        assert_eq!(ModelFormat::from_filename("avatar.png"), Some(ModelFormat::StaticImage));
-        assert_eq!(ModelFormat::from_filename("avatar.jpg"), Some(ModelFormat::StaticImage));
-        assert_eq!(ModelFormat::from_filename("avatar.webp"), Some(ModelFormat::StaticImage));
+        assert_eq!(
+            ModelFormat::from_filename("vroid-female.vrm"),
+            Some(ModelFormat::Vrm0x)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("scene.glb"),
+            Some(ModelFormat::Gltf)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("scene.gltf"),
+            Some(ModelFormat::Gltf)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("model.moc3"),
+            Some(ModelFormat::Live2D)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("icon.svg"),
+            Some(ModelFormat::Svg)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("avatar.png"),
+            Some(ModelFormat::StaticImage)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("avatar.jpg"),
+            Some(ModelFormat::StaticImage)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("avatar.webp"),
+            Some(ModelFormat::StaticImage)
+        );
         assert_eq!(ModelFormat::from_filename("unknown.xyz"), None);
     }
 
     #[test]
     fn test_model_format_case_insensitive() {
-        assert_eq!(ModelFormat::from_filename("Model.VRM"), Some(ModelFormat::Vrm0x));
-        assert_eq!(ModelFormat::from_filename("SCENE.GLB"), Some(ModelFormat::Gltf));
-        assert_eq!(ModelFormat::from_filename("Avatar.PNG"), Some(ModelFormat::StaticImage));
+        assert_eq!(
+            ModelFormat::from_filename("Model.VRM"),
+            Some(ModelFormat::Vrm0x)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("SCENE.GLB"),
+            Some(ModelFormat::Gltf)
+        );
+        assert_eq!(
+            ModelFormat::from_filename("Avatar.PNG"),
+            Some(ModelFormat::StaticImage)
+        );
     }
 }

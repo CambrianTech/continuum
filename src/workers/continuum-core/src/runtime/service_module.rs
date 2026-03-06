@@ -51,7 +51,10 @@ pub struct CommandSchema {
 ///
 /// Exposed to TypeScript via ts-rs for Ares (RTOS controller persona) to adjust priorities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/runtime/ModulePriority.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/runtime/ModulePriority.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ModulePriority {
     /// Voice, audio — must complete within frame budget (~10ms)
@@ -108,10 +111,7 @@ pub enum CommandResult {
     /// Binary response: JSON metadata + raw bytes.
     /// Wire format: [JSON header bytes][\0][raw binary bytes]
     /// Used for audio synthesis, embedding vectors, etc.
-    Binary {
-        metadata: Value,
-        data: Vec<u8>,
-    },
+    Binary { metadata: Value, data: Vec<u8> },
 }
 
 impl CommandResult {
@@ -148,11 +148,7 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Params is the full JSON request object.
     ///
     /// This is QueueThread<T>::handleItem() generalized to async request/response.
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String>;
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String>;
 
     /// Handle an event published on the message bus.
     /// Only called for events matching event_subscriptions globs.

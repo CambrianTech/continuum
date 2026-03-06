@@ -31,10 +31,12 @@ pub fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
     // Multi-pass: resolve innermost patterns first, then outer patterns
     // Safety limit of 5 passes prevents infinite loops
     for _ in 0..5 {
-        let new_result = INTERPOLATION_RE.replace_all(&result, |caps: &regex::Captures| {
-            let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-            resolve_path(path, ctx)
-        }).to_string();
+        let new_result = INTERPOLATION_RE
+            .replace_all(&result, |caps: &regex::Captures| {
+                let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                resolve_path(path, ctx)
+            })
+            .to_string();
 
         if new_result == result {
             break; // No more substitutions
@@ -128,7 +130,11 @@ fn resolve_steps_path(parts: &[&str], ctx: &ExecutionContext) -> String {
     let target_index: usize = parts[0].parse().unwrap_or(usize::MAX);
 
     // Search from end so top-level pipeline results shadow loop sub-step results
-    let result = ctx.step_results.iter().rev().find(|r| r.step_index == target_index);
+    let result = ctx
+        .step_results
+        .iter()
+        .rev()
+        .find(|r| r.step_index == target_index);
 
     match result {
         Some(r) => resolve_step_result_field(r, &parts[1..]),
@@ -160,7 +166,9 @@ fn resolve_loop_path(parts: &[&str], ctx: &ExecutionContext) -> String {
         return "".to_string();
     }
 
-    let base = ctx.inputs.get("_loop_base")
+    let base = ctx
+        .inputs
+        .get("_loop_base")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
 
@@ -180,7 +188,8 @@ fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
     if parts.is_empty() {
         return "".to_string();
     }
-    ctx.inputs.get(parts[0])
+    ctx.inputs
+        .get(parts[0])
         .map(|v| match v {
             Value::String(s) => s.clone(),
             _ => v.to_string(),
@@ -239,7 +248,8 @@ fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
         if *part == "*" {
             if let Value::Array(arr) = &current {
                 let remaining = &parts[i + 1..];
-                let collected: Vec<Value> = arr.iter()
+                let collected: Vec<Value> = arr
+                    .iter()
                     .map(|elem| {
                         let s = traverse_json_path(elem, remaining);
                         // Try to preserve the original type (number, bool, etc.)
@@ -277,7 +287,9 @@ fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) 
         "output" => {
             if parts.len() > 1 {
                 // Traverse into output (which may be a JSON string from LLM)
-                let output_val = result.output.as_ref()
+                let output_val = result
+                    .output
+                    .as_ref()
                     .map(|s| Value::String(s.clone()))
                     .unwrap_or(Value::Null);
                 traverse_json_path(&output_val, &parts[1..])
@@ -304,8 +316,8 @@ fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::StepResult;
+    use super::*;
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -343,16 +355,19 @@ mod tests {
             working_dir: PathBuf::from("/tmp/test"),
             named_outputs: {
                 let mut m = HashMap::new();
-                m.insert("build".to_string(), StepResult {
-                    step_index: 0,
-                    step_type: "shell".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: Some("build OK".to_string()),
-                    error: None,
-                    exit_code: Some(0),
-                    data: json!({ "artifacts": ["a.o", "b.o"] }),
-                });
+                m.insert(
+                    "build".to_string(),
+                    StepResult {
+                        step_index: 0,
+                        step_type: "shell".to_string(),
+                        success: true,
+                        duration_ms: 100,
+                        output: Some("build OK".to_string()),
+                        error: None,
+                        exit_code: Some(0),
+                        data: json!({ "artifacts": ["a.o", "b.o"] }),
+                    },
+                );
                 m
             },
         }
@@ -404,7 +419,10 @@ mod tests {
     #[test]
     fn test_steps_nested_data() {
         let ctx = make_ctx();
-        assert_eq!(interpolate("{{steps.1.data.stderr}}", &ctx), "command not found");
+        assert_eq!(
+            interpolate("{{steps.1.data.stderr}}", &ctx),
+            "command not found"
+        );
     }
 
     #[test]
@@ -460,7 +478,10 @@ mod tests {
     #[test]
     fn test_named_data_field() {
         let ctx = make_ctx();
-        assert_eq!(interpolate("{{named.build.data.artifacts}}", &ctx), "[\"a.o\",\"b.o\"]");
+        assert_eq!(
+            interpolate("{{named.build.data.artifacts}}", &ctx),
+            "[\"a.o\",\"b.o\"]"
+        );
     }
 
     #[test]
@@ -475,7 +496,10 @@ mod tests {
     fn test_env_var() {
         let ctx = make_ctx();
         std::env::set_var("SENTINEL_TEST_VAR", "sentinel_value");
-        assert_eq!(interpolate("{{env.SENTINEL_TEST_VAR}}", &ctx), "sentinel_value");
+        assert_eq!(
+            interpolate("{{env.SENTINEL_TEST_VAR}}", &ctx),
+            "sentinel_value"
+        );
         std::env::remove_var("SENTINEL_TEST_VAR");
     }
 
@@ -527,7 +551,10 @@ mod tests {
         let ctx = make_ctx();
         let val = json!({ "name": "{{input.name}}", "out": "{{steps.0.output}}" });
         let result = interpolate_value(&val, &ctx);
-        assert_eq!(result, json!({ "name": "test-pipeline", "out": "hello world" }));
+        assert_eq!(
+            result,
+            json!({ "name": "test-pipeline", "out": "hello world" })
+        );
     }
 
     #[test]
@@ -588,24 +615,22 @@ mod tests {
     #[test]
     fn test_data_array_indexing() {
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "command".to_string(),
-                    success: true,
-                    duration_ms: 10,
-                    output: None,
-                    error: None,
-                    exit_code: None,
-                    data: json!({
-                        "items": ["alpha", "beta", "gamma"],
-                        "topics": [
-                            { "name": "Generics", "difficulty": "beginner" },
-                            { "name": "Constraints", "difficulty": "intermediate" },
-                        ]
-                    }),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "command".to_string(),
+                success: true,
+                duration_ms: 10,
+                output: None,
+                error: None,
+                exit_code: None,
+                data: json!({
+                    "items": ["alpha", "beta", "gamma"],
+                    "topics": [
+                        { "name": "Generics", "difficulty": "beginner" },
+                        { "name": "Constraints", "difficulty": "intermediate" },
+                    ]
+                }),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
@@ -616,8 +641,14 @@ mod tests {
         assert_eq!(interpolate("{{steps.0.data.items.2}}", &ctx), "gamma");
 
         // Nested object inside array
-        assert_eq!(interpolate("{{steps.0.data.topics.0.name}}", &ctx), "Generics");
-        assert_eq!(interpolate("{{steps.0.data.topics.1.difficulty}}", &ctx), "intermediate");
+        assert_eq!(
+            interpolate("{{steps.0.data.topics.0.name}}", &ctx),
+            "Generics"
+        );
+        assert_eq!(
+            interpolate("{{steps.0.data.topics.1.difficulty}}", &ctx),
+            "intermediate"
+        );
 
         // Out of bounds returns empty
         assert_eq!(interpolate("{{steps.0.data.items.99}}", &ctx), "");
@@ -633,21 +664,20 @@ mod tests {
                 { "name": "Basics", "difficulty": "beginner" },
                 { "name": "Advanced Types", "difficulty": "advanced" },
             ]
-        }).to_string();
+        })
+        .to_string();
 
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "llm".to_string(),
-                    success: true,
-                    duration_ms: 5000,
-                    output: Some(curriculum_json),
-                    error: None,
-                    exit_code: None,
-                    data: json!({}),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "llm".to_string(),
+                success: true,
+                duration_ms: 5000,
+                output: Some(curriculum_json),
+                error: None,
+                exit_code: None,
+                data: json!({}),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
@@ -655,8 +685,14 @@ mod tests {
 
         // Traverse into LLM output (JSON string → parsed → path access)
         assert_eq!(interpolate("{{steps.0.output.skill}}", &ctx), "typescript");
-        assert_eq!(interpolate("{{steps.0.output.topics.0.name}}", &ctx), "Basics");
-        assert_eq!(interpolate("{{steps.0.output.topics.1.difficulty}}", &ctx), "advanced");
+        assert_eq!(
+            interpolate("{{steps.0.output.topics.0.name}}", &ctx),
+            "Basics"
+        );
+        assert_eq!(
+            interpolate("{{steps.0.output.topics.1.difficulty}}", &ctx),
+            "advanced"
+        );
 
         // Bare output still returns raw string
         assert!(interpolate("{{steps.0.output}}", &ctx).contains("typescript"));
@@ -671,21 +707,20 @@ mod tests {
                 { "name": "Basics", "difficulty": "beginner" },
                 { "name": "Advanced", "difficulty": "advanced" },
             ]
-        }).to_string();
+        })
+        .to_string();
 
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "llm".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: Some(curriculum_json),
-                    error: None,
-                    exit_code: None,
-                    data: json!({}),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "llm".to_string(),
+                success: true,
+                duration_ms: 100,
+                output: Some(curriculum_json),
+                error: None,
+                exit_code: None,
+                data: json!({}),
+            }],
             inputs: {
                 let mut m = HashMap::new();
                 m.insert("iteration".to_string(), json!(1));
@@ -701,7 +736,10 @@ mod tests {
             "Advanced"
         );
         assert_eq!(
-            interpolate("{{steps.0.output.topics.{{input.iteration}}.difficulty}}", &ctx),
+            interpolate(
+                "{{steps.0.output.topics.{{input.iteration}}.difficulty}}",
+                &ctx
+            ),
             "advanced"
         );
 
@@ -722,30 +760,46 @@ mod tests {
             step_results: vec![
                 // Step 0 (before loop): LLM output
                 StepResult {
-                    step_index: 0, step_type: "llm".to_string(),
-                    success: true, duration_ms: 100,
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 100,
                     output: Some("curriculum".to_string()),
-                    error: None, exit_code: None, data: json!({}),
+                    error: None,
+                    exit_code: None,
+                    data: json!({}),
                 },
                 // Step 1 (before loop): data/create
                 StepResult {
-                    step_index: 1, step_type: "command".to_string(),
-                    success: true, duration_ms: 5,
-                    output: None, error: None, exit_code: None,
+                    step_index: 1,
+                    step_type: "command".to_string(),
+                    success: true,
+                    duration_ms: 5,
+                    output: None,
+                    error: None,
+                    exit_code: None,
                     data: json!({ "id": "curr-123" }),
                 },
                 // Step 2 (loop iteration 0, sub-step 0): dataset-synthesize
                 StepResult {
-                    step_index: 2, step_type: "command".to_string(),
-                    success: true, duration_ms: 3000,
-                    output: None, error: None, exit_code: None,
+                    step_index: 2,
+                    step_type: "command".to_string(),
+                    success: true,
+                    duration_ms: 3000,
+                    output: None,
+                    error: None,
+                    exit_code: None,
                     data: json!({ "datasetPath": "/path/to/dataset.jsonl", "exampleCount": 20 }),
                 },
                 // Step 3 (loop iteration 0, sub-step 1): emit
                 StepResult {
-                    step_index: 3, step_type: "emit".to_string(),
-                    success: true, duration_ms: 0,
-                    output: None, error: None, exit_code: None,
+                    step_index: 3,
+                    step_type: "emit".to_string(),
+                    success: true,
+                    duration_ms: 0,
+                    output: None,
+                    error: None,
+                    exit_code: None,
                     data: json!({}),
                 },
             ],
@@ -760,7 +814,10 @@ mod tests {
         };
 
         // loop.0 = step_results[2] (the dataset-synthesize result)
-        assert_eq!(interpolate("{{loop.0.data.datasetPath}}", &ctx), "/path/to/dataset.jsonl");
+        assert_eq!(
+            interpolate("{{loop.0.data.datasetPath}}", &ctx),
+            "/path/to/dataset.jsonl"
+        );
         assert_eq!(interpolate("{{loop.0.data.exampleCount}}", &ctx), "20");
 
         // loop.1 = step_results[3] (the emit result)
@@ -775,20 +832,18 @@ mod tests {
     #[test]
     fn test_data_json_string_auto_parse() {
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "llm".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: None,
-                    error: None,
-                    exit_code: None,
-                    data: json!({
-                        "text": "{\"name\": \"Alice\", \"scores\": [95, 87, 92]}"
-                    }),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "llm".to_string(),
+                success: true,
+                duration_ms: 100,
+                output: None,
+                error: None,
+                exit_code: None,
+                data: json!({
+                    "text": "{\"name\": \"Alice\", \"scores\": [95, 87, 92]}"
+                }),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
@@ -806,7 +861,10 @@ mod tests {
     fn test_strip_markdown_fences_json() {
         let fenced = "```json\n{\"score\": 100, \"passed\": true}\n```";
         let result = strip_markdown_fences(fenced);
-        assert_eq!(result, Some("{\"score\": 100, \"passed\": true}".to_string()));
+        assert_eq!(
+            result,
+            Some("{\"score\": 100, \"passed\": true}".to_string())
+        );
     }
 
     #[test]
@@ -854,27 +912,28 @@ mod tests {
         // These would previously fail (return "") because JSON parse failed on fenced content
         assert_eq!(interpolate("{{steps.0.output.passed}}", &ctx), "true");
         assert_eq!(interpolate("{{steps.0.output.overallScore}}", &ctx), "100");
-        assert_eq!(interpolate("{{steps.0.output.feedback}}", &ctx), "Excellent");
+        assert_eq!(
+            interpolate("{{steps.0.output.feedback}}", &ctx),
+            "Excellent"
+        );
     }
 
     #[test]
     fn test_traverse_json_path_with_markdown_fenced_data() {
         // Markdown fences in data fields (e.g., LLM text stored in data.text)
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "llm".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: None,
-                    error: None,
-                    exit_code: None,
-                    data: json!({
-                        "text": "```json\n{\"items\": [\"alpha\", \"beta\"]}\n```"
-                    }),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "llm".to_string(),
+                success: true,
+                duration_ms: 100,
+                output: None,
+                error: None,
+                exit_code: None,
+                data: json!({
+                    "text": "```json\n{\"items\": [\"alpha\", \"beta\"]}\n```"
+                }),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
@@ -888,34 +947,32 @@ mod tests {
     fn test_wildcard_collection() {
         // Simulates loop iteration results: iterations[i][j] = sub-step result
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "loop".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: None,
-                    error: None,
-                    exit_code: None,
-                    data: json!({
-                        "iterations": [
-                            [
-                                {"stepType": "watch", "data": {}},
-                                {"stepType": "command", "data": {"layerId": "aaa-111"}},
-                            ],
-                            [
-                                {"stepType": "watch", "data": {}},
-                                {"stepType": "command", "data": {"layerId": "bbb-222"}},
-                            ],
-                            [
-                                {"stepType": "watch", "data": {}},
-                                {"stepType": "command", "data": {"layerId": "ccc-333"}},
-                            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "loop".to_string(),
+                success: true,
+                duration_ms: 100,
+                output: None,
+                error: None,
+                exit_code: None,
+                data: json!({
+                    "iterations": [
+                        [
+                            {"stepType": "watch", "data": {}},
+                            {"stepType": "command", "data": {"layerId": "aaa-111"}},
                         ],
-                        "iterationsCompleted": 3,
-                    }),
-                },
-            ],
+                        [
+                            {"stepType": "watch", "data": {}},
+                            {"stepType": "command", "data": {"layerId": "bbb-222"}},
+                        ],
+                        [
+                            {"stepType": "watch", "data": {}},
+                            {"stepType": "command", "data": {"layerId": "ccc-333"}},
+                        ],
+                    ],
+                    "iterationsCompleted": 3,
+                }),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
@@ -929,23 +986,24 @@ mod tests {
     #[test]
     fn test_wildcard_empty_array() {
         let ctx = ExecutionContext {
-            step_results: vec![
-                StepResult {
-                    step_index: 0,
-                    step_type: "loop".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output: None,
-                    error: None,
-                    exit_code: None,
-                    data: json!({"iterations": []}),
-                },
-            ],
+            step_results: vec![StepResult {
+                step_index: 0,
+                step_type: "loop".to_string(),
+                success: true,
+                duration_ms: 100,
+                output: None,
+                error: None,
+                exit_code: None,
+                data: json!({"iterations": []}),
+            }],
             inputs: HashMap::new(),
             working_dir: PathBuf::from("/tmp"),
             named_outputs: HashMap::new(),
         };
 
-        assert_eq!(interpolate("{{steps.0.data.iterations.*.1.data.layerId}}", &ctx), "[]");
+        assert_eq!(
+            interpolate("{{steps.0.data.iterations.*.1.data.layerId}}", &ctx),
+            "[]"
+        );
     }
 }

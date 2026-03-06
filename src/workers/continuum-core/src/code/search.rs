@@ -52,7 +52,9 @@ pub fn search_files(
             };
         }
         match overrides.build() {
-            Ok(ov) => { builder.overrides(ov); }
+            Ok(ov) => {
+                builder.overrides(ov);
+            }
             Err(e) => {
                 return SearchResult {
                     success: false,
@@ -142,11 +144,7 @@ mod tests {
             "export function greet(name: string) {\n  return `Hello ${name}`;\n}\n",
         )
         .unwrap();
-        fs::write(
-            dir.path().join("src/style.css"),
-            "body { color: red; }\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join("src/style.css"), "body { color: red; }\n").unwrap();
         fs::write(dir.path().join("readme.md"), "# Hello World\n").unwrap();
         dir
     }

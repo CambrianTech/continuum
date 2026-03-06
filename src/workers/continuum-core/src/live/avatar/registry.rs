@@ -7,15 +7,15 @@
 //!
 //! Follows the TTS registry pattern: OnceCell global, HashMap + priority Vec.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use super::backend::{AvatarError, ModelFormat, RenderBackend};
+use super::frame::AvatarConfig;
+use super::renderer::AvatarRenderer;
+use super::types::AvatarModel;
+use crate::clog_info;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
-use crate::clog_info;
-use super::backend::{RenderBackend, AvatarError, ModelFormat};
-use super::renderer::AvatarRenderer;
-use super::frame::AvatarConfig;
-use super::types::AvatarModel;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Registry that dispatches renderer creation by model format.
 ///
@@ -55,7 +55,9 @@ impl RenderBackendRegistry {
         self.priority
             .iter()
             .filter_map(|name| {
-                self.backends.get(name).map(|b| (*name, b.read().is_initialized()))
+                self.backends
+                    .get(name)
+                    .map(|b| (*name, b.read().is_initialized()))
             })
             .collect()
     }
@@ -64,7 +66,10 @@ impl RenderBackendRegistry {
     ///
     /// Iterates in priority order, returns the first initialized backend
     /// that supports the requested format.
-    pub fn backend_for_format(&self, format: ModelFormat) -> Option<Arc<RwLock<dyn RenderBackend>>> {
+    pub fn backend_for_format(
+        &self,
+        format: ModelFormat,
+    ) -> Option<Arc<RwLock<dyn RenderBackend>>> {
         for name in &self.priority {
             if let Some(backend) = self.backends.get(name) {
                 let guard = backend.read();
@@ -86,15 +91,16 @@ impl RenderBackendRegistry {
         model: &AvatarModel,
         config: &AvatarConfig,
     ) -> Result<Box<dyn AvatarRenderer>, AvatarError> {
-        let format = ModelFormat::from_filename(model.filename)
-            .ok_or_else(|| AvatarError::UnsupportedFormat(
-                format!("Cannot determine format for '{}'", model.filename)
-            ))?;
+        let format = ModelFormat::from_filename(model.filename).ok_or_else(|| {
+            AvatarError::UnsupportedFormat(format!(
+                "Cannot determine format for '{}'",
+                model.filename
+            ))
+        })?;
 
-        let backend = self.backend_for_format(format)
-            .ok_or_else(|| AvatarError::NotInitialized(
-                format!("No initialized backend for format {:?}", format)
-            ))?;
+        let backend = self.backend_for_format(format).ok_or_else(|| {
+            AvatarError::NotInitialized(format!("No initialized backend for format {:?}", format))
+        })?;
 
         let result = backend.read().create_renderer(model, config);
         result
@@ -117,14 +123,16 @@ static AVATAR_REGISTRY: OnceCell<Arc<RwLock<RenderBackendRegistry>>> = OnceCell:
 pub fn get_registry() -> Arc<RwLock<RenderBackendRegistry>> {
     AVATAR_REGISTRY.get().cloned().unwrap_or_else(|| {
         init_registry();
-        AVATAR_REGISTRY.get().cloned()
+        AVATAR_REGISTRY
+            .get()
+            .cloned()
             .expect("AVATAR_REGISTRY must be set after init_registry()")
     })
 }
 
 /// Initialize the global avatar backend registry with default backends.
 pub fn init_registry() {
-    use super::backends::{ProceduralBackend, Bevy3DBackend, Live2DBackend};
+    use super::backends::{Bevy3DBackend, Live2DBackend, ProceduralBackend};
 
     AVATAR_REGISTRY.get_or_init(|| {
         let mut reg = RenderBackendRegistry::new();
@@ -144,7 +152,10 @@ pub fn init_registry() {
         let _ = procedural.initialize(); // always succeeds
         reg.register(Arc::new(RwLock::new(procedural)));
 
-        clog_info!("🎨 Avatar registry initialized with {} backends", reg.backends.len());
+        clog_info!(
+            "🎨 Avatar registry initialized with {} backends",
+            reg.backends.len()
+        );
         Arc::new(RwLock::new(reg))
     });
 }
@@ -199,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_registry_multi_backend_dispatch() {
-        use super::super::backends::{ProceduralBackend, Live2DBackend};
+        use super::super::backends::{Live2DBackend, ProceduralBackend};
 
         let mut reg = RenderBackendRegistry::new();
 

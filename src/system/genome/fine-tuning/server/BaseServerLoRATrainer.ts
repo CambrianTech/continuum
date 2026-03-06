@@ -116,7 +116,8 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       batchSize: request.batchSize ?? capabilities.defaultBatchSize,
       quantize: request.quantize ?? true,
       quantizeBits: request.quantizeBits ?? 4,
-      outputDir: '' // Set by --output CLI arg
+      outputDir: '', // Set by --output CLI arg
+      resumeFromCheckpoint: (request as any).resumeFromCheckpoint ?? null,
     };
 
     const configPath = path.join(os.tmpdir(), `jtag-config-${Date.now()}.json`);

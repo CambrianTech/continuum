@@ -12,21 +12,21 @@
 //! - `tree` — Directory tree generation
 //! - `git_bridge` — Git status, diff, and branch operations
 
-pub mod types;
-pub mod shell_types;
-pub mod shell_session;
-pub mod diff_engine;
 pub mod change_graph;
-pub mod path_security;
+pub mod diff_engine;
 pub mod file_engine;
-pub mod search;
-pub mod tree;
 pub mod git_bridge;
+pub mod path_security;
+pub mod search;
+pub mod shell_session;
+pub mod shell_types;
+pub mod tree;
+pub mod types;
 
 // Re-export key types for convenience
-pub use types::*;
 pub use change_graph::ChangeGraph;
-pub use diff_engine::{compute_diff, compute_bidirectional_diff};
-pub use path_security::PathSecurity;
+pub use diff_engine::{compute_bidirectional_diff, compute_diff};
 pub use file_engine::FileEngine;
-pub use shell_session::{ShellSession, watch_execution};
+pub use path_security::PathSecurity;
+pub use shell_session::{watch_execution, ShellSession};
+pub use types::*;

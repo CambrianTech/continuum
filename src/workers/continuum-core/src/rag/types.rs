@@ -23,8 +23,8 @@ pub enum MessageRole {
 pub struct LlmMessage {
     pub role: MessageRole,
     pub content: String,
-        pub name: Option<String>,
-        pub timestamp: Option<i64>,
+    pub name: Option<String>,
+    pub timestamp: Option<i64>,
 }
 
 /// Section loaded by a RAG source (internal, not exported to TS)

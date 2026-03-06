@@ -275,16 +275,19 @@ impl McpServer {
     }
 
     fn handle_initialize(&self, id: Option<Value>, _params: Option<Value>) -> JsonRpcResponse {
-        JsonRpcResponse::success(id, json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": "jtag-mcp-server",
-                "version": "2.0.0"
-            }
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "jtag-mcp-server",
+                    "version": "2.0.0"
+                }
+            }),
+        )
     }
 
     fn handle_list_tools(&mut self, id: Option<Value>) -> JsonRpcResponse {
@@ -292,13 +295,14 @@ impl McpServer {
         match self.client.execute("mcp/list-tools", json!({})) {
             Ok(result) => {
                 let tools = result.get("tools").cloned().unwrap_or(json!([]));
-                JsonRpcResponse::success(id, json!({
-                    "tools": tools
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "tools": tools
+                    }),
+                )
             }
-            Err(e) => {
-                JsonRpcResponse::error(id, -32000, format!("Failed to list tools: {}", e))
-            }
+            Err(e) => JsonRpcResponse::error(id, -32000, format!("Failed to list tools: {}", e)),
         }
     }
 
@@ -347,7 +351,8 @@ impl McpServer {
         // Normalize parameter names: camelCase → snake_case
         // TypeScript uses camelCase (filePath) but Rust uses snake_case (file_path)
         let args_map = args.as_object().cloned().unwrap_or_default();
-        let args_normalized: Map<String, Value> = args_map.into_iter()
+        let args_normalized: Map<String, Value> = args_map
+            .into_iter()
             .map(|(k, v)| (camel_to_snake(&k), v))
             .collect();
 
@@ -363,9 +368,12 @@ impl McpServer {
                     "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
                 })];
 
-                JsonRpcResponse::success(id, json!({
-                    "content": content
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "content": content
+                    }),
+                )
             }
             Err(e) => {
                 let content = vec![json!({
@@ -373,10 +381,13 @@ impl McpServer {
                     "text": format!("Error: {}", e)
                 })];
 
-                JsonRpcResponse::success(id, json!({
-                    "content": content,
-                    "isError": true
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "content": content,
+                        "isError": true
+                    }),
+                )
             }
         }
     }
@@ -450,11 +461,8 @@ fn main() {
                     }
                     Err(e) => {
                         tracing::error!("Failed to parse request: {}", e);
-                        let response = JsonRpcResponse::error(
-                            None,
-                            -32700,
-                            format!("Parse error: {}", e),
-                        );
+                        let response =
+                            JsonRpcResponse::error(None, -32700, format!("Parse error: {}", e));
                         let response_str = serde_json::to_string(&response).unwrap();
                         writeln!(stdout_lock, "{}", response_str).ok();
                         stdout_lock.flush().ok();

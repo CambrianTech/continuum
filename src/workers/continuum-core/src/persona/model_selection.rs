@@ -20,7 +20,10 @@ use ts_rs::TS;
 
 /// Request to select the best model for a persona given optional task context.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ModelSelectionRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ModelSelectionRequest.ts"
+)]
 pub struct ModelSelectionRequest {
     #[ts(type = "string")]
     pub persona_id: uuid::Uuid,
@@ -35,7 +38,10 @@ pub struct ModelSelectionRequest {
 
 /// Result of model selection — which model to use and why.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ModelSelectionResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ModelSelectionResult.ts"
+)]
 pub struct ModelSelectionResult {
     /// The selected model name (Ollama model ID or base model).
     pub model: String,
@@ -242,7 +248,13 @@ mod tests {
         let mut registry = AdapterRegistry::default();
         registry.adapters.insert(
             "code-expert".into(),
-            make_adapter("code-expert", "reasoning_style", Some("codellama:7b"), true, false),
+            make_adapter(
+                "code-expert",
+                "reasoning_style",
+                Some("codellama:7b"),
+                true,
+                false,
+            ),
         );
 
         let req = make_request(Some("code"), "llama3:8b");
@@ -259,11 +271,23 @@ mod tests {
         let mut registry = AdapterRegistry::default();
         registry.adapters.insert(
             "code-unloaded".into(),
-            make_adapter("code-unloaded", "reasoning_style", Some("codellama:7b-unloaded"), false, false),
+            make_adapter(
+                "code-unloaded",
+                "reasoning_style",
+                Some("codellama:7b-unloaded"),
+                false,
+                false,
+            ),
         );
         registry.adapters.insert(
             "code-loaded".into(),
-            make_adapter("code-loaded", "reasoning_style", Some("codellama:7b-loaded"), true, false),
+            make_adapter(
+                "code-loaded",
+                "reasoning_style",
+                Some("codellama:7b-loaded"),
+                true,
+                false,
+            ),
         );
 
         let req = make_request(Some("code"), "llama3:8b");
@@ -279,7 +303,13 @@ mod tests {
         // No matching trait adapter, but has current adapter
         registry.adapters.insert(
             "conversational".into(),
-            make_adapter("conversational", "tone_and_voice", Some("llama3:8b-tuned"), true, true),
+            make_adapter(
+                "conversational",
+                "tone_and_voice",
+                Some("llama3:8b-tuned"),
+                true,
+                true,
+            ),
         );
 
         let req = make_request(Some("code"), "llama3:8b");
@@ -296,7 +326,13 @@ mod tests {
         // Not current, but has ollama model
         registry.adapters.insert(
             "creative-writer".into(),
-            make_adapter("creative-writer", "creative_expression", Some("mistral:7b-creative"), false, false),
+            make_adapter(
+                "creative-writer",
+                "creative_expression",
+                Some("mistral:7b-creative"),
+                false,
+                false,
+            ),
         );
 
         let req = make_request(Some("code"), "llama3:8b");
@@ -324,7 +360,13 @@ mod tests {
         let mut registry = AdapterRegistry::default();
         registry.adapters.insert(
             "code-expert".into(),
-            make_adapter("code-expert", "reasoning_style", Some("codellama:7b"), true, false),
+            make_adapter(
+                "code-expert",
+                "reasoning_style",
+                Some("codellama:7b"),
+                true,
+                false,
+            ),
         );
 
         // No task_domain → skip tier 1, no current → tier 3

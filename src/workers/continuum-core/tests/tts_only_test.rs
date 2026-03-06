@@ -64,8 +64,16 @@ fn test_tts_synthesize_via_ipc() {
     let duration_ms = meta["duration_ms"].as_u64().unwrap_or(0);
 
     println!("Sample rate: {sample_rate}Hz");
-    println!("Samples: {} (header), {} (from PCM bytes)", num_samples, pcm_bytes.len() / 2);
-    println!("Duration: {}ms ({:.2}s)", duration_ms, duration_ms as f64 / 1000.0);
+    println!(
+        "Samples: {} (header), {} (from PCM bytes)",
+        num_samples,
+        pcm_bytes.len() / 2
+    );
+    println!(
+        "Duration: {}ms ({:.2}s)",
+        duration_ms,
+        duration_ms as f64 / 1000.0
+    );
     println!("PCM bytes: {}", pcm_bytes.len());
 
     // Decode PCM samples from raw binary
@@ -77,10 +85,17 @@ fn test_tts_synthesize_via_ipc() {
     // Audio analysis
     let non_zero = samples.iter().filter(|&&s| s != 0).count();
     let max_amplitude = samples.iter().map(|&s| s.abs()).max().unwrap_or(0);
-    let rms = (samples.iter().map(|&s| (s as i64).pow(2)).sum::<i64>() as f64 / samples.len().max(1) as f64).sqrt();
+    let rms = (samples.iter().map(|&s| (s as i64).pow(2)).sum::<i64>() as f64
+        / samples.len().max(1) as f64)
+        .sqrt();
 
     println!("\n--- Audio Analysis ---");
-    println!("Non-zero samples: {} / {} ({:.1}%)", non_zero, samples.len(), non_zero as f64 / samples.len().max(1) as f64 * 100.0);
+    println!(
+        "Non-zero samples: {} / {} ({:.1}%)",
+        non_zero,
+        samples.len(),
+        non_zero as f64 / samples.len().max(1) as f64 * 100.0
+    );
     println!("Max amplitude: {max_amplitude} (max: 32767)");
     println!("RMS: {rms:.1}");
 
@@ -88,7 +103,10 @@ fn test_tts_synthesize_via_ipc() {
     assert_eq!(sample_rate, 16000, "Sample rate must be 16kHz");
 
     // Verify we have audio (not silence)
-    assert!(non_zero > samples.len() / 2, "Audio should not be mostly silent");
+    assert!(
+        non_zero > samples.len() / 2,
+        "Audio should not be mostly silent"
+    );
 
     // Verify PCM byte count matches header
     assert_eq!(
@@ -158,13 +176,18 @@ fn test_tts_audio_quality() {
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
-        let non_zero_pct = samples.iter().filter(|&&s| s.abs() > 10).count() as f64 / samples.len().max(1) as f64 * 100.0;
+        let non_zero_pct = samples.iter().filter(|&&s| s.abs() > 10).count() as f64
+            / samples.len().max(1) as f64
+            * 100.0;
         let max_amp = samples.iter().map(|&s| s.abs()).max().unwrap_or(0);
 
         println!("\"{phrase}\"");
         println!("  Rate: {sample_rate}Hz, Duration: {duration_ms}ms, Non-silence: {non_zero_pct:.1}%, Max: {max_amp}");
 
-        assert_eq!(sample_rate, 16000, "Sample rate must be 16kHz for \"{phrase}\"");
+        assert_eq!(
+            sample_rate, 16000,
+            "Sample rate must be 16kHz for \"{phrase}\""
+        );
     }
 
     println!("\nAudio quality test PASSED");

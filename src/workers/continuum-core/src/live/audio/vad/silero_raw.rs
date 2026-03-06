@@ -104,9 +104,9 @@ impl SileroRawVAD {
             .try_extract_array::<f32>()
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract output: {e}")))?;
 
-        let speech_prob = output.into_dimensionality::<ndarray::Ix2>()
-            .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?
-            [[0, 0]];
+        let speech_prob = output
+            .into_dimensionality::<ndarray::Ix2>()
+            .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?[[0, 0]];
 
         // Extract new state (HuggingFace model outputs "stateN")
         let state_n = outputs["stateN"]
@@ -114,13 +114,12 @@ impl SileroRawVAD {
             .map_err(|e| VADError::InferenceFailed(format!("Failed to extract stateN: {e}")))?;
 
         // Convert to 3D array (2x1x128)
-        let state_next = state_n.into_dimensionality::<ndarray::Ix3>()
+        let state_next = state_n
+            .into_dimensionality::<ndarray::Ix3>()
             .map_err(|e| VADError::InferenceFailed(format!("Invalid stateN shape: {e}")))?
             .to_owned();
 
-        let new_state = VadState {
-            state: state_next,
-        };
+        let new_state = VadState { state: state_next };
 
         Ok((speech_prob, new_state))
     }
@@ -196,7 +195,8 @@ impl VoiceActivityDetection for SileroRawVAD {
         // Run inference directly (CPU-bound, ~54ms)
         // This is called only when WebRTC pre-filter detects possible speech
         let mut session_guard = session.lock();
-        let (speech_prob, new_state) = Self::infer_sync(&mut session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)?;
+        let (speech_prob, new_state) =
+            Self::infer_sync(&mut session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)?;
         drop(session_guard);
 
         // Update state

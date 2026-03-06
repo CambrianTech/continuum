@@ -38,7 +38,12 @@ impl AvatarModule {
         let force = p.bool_or("force", false);
 
         if png_path.exists() && !force {
-            log_info!("module", "avatar", "Avatar snapshot already exists for '{}', returning cached", identity);
+            log_info!(
+                "module",
+                "avatar",
+                "Avatar snapshot already exists for '{}', returning cached",
+                identity
+            );
             return Ok(CommandResult::Json(serde_json::json!({
                 "path": format!("/avatars/{identity}.png"),
                 "cached": true,
@@ -76,7 +81,15 @@ impl AvatarModule {
         }
 
         let vrm_path_str = vrm_path.to_string_lossy().to_string();
-        log_info!("module", "avatar", "Capturing avatar snapshot for '{}' ({}x{}) from {}", identity, width, height, &vrm_path_str);
+        log_info!(
+            "module",
+            "avatar",
+            "Capturing avatar snapshot for '{}' ({}x{}) from {}",
+            identity,
+            width,
+            height,
+            &vrm_path_str
+        );
 
         let config = AvatarConfig {
             identity: identity.to_string(),
@@ -124,8 +137,15 @@ impl AvatarModule {
             )
         })?;
 
-        log_info!("module", "avatar", "Got frame {}x{} after {} frames in {}ms",
-            frame.width, frame.height, frames_received, start.elapsed().as_millis());
+        log_info!(
+            "module",
+            "avatar",
+            "Got frame {}x{} after {} frames in {}ms",
+            frame.width,
+            frame.height,
+            frames_received,
+            start.elapsed().as_millis()
+        );
 
         // Encode RGBA → PNG
         let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
@@ -143,11 +163,15 @@ impl AvatarModule {
         img.save(&png_path)
             .map_err(|e| format!("Failed to save PNG: {e}"))?;
 
-        let file_size = std::fs::metadata(&png_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = std::fs::metadata(&png_path).map(|m| m.len()).unwrap_or(0);
 
-        log_info!("module", "avatar", "Saved avatar snapshot: {} ({} bytes)", png_path.display(), file_size);
+        log_info!(
+            "module",
+            "avatar",
+            "Saved avatar snapshot: {} ({} bytes)",
+            png_path.display(),
+            file_size
+        );
 
         // SlotGuard drops here via RAII, releasing the Bevy slot back to the pool
 
@@ -174,11 +198,7 @@ impl ServiceModule for AvatarModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "avatar/snapshot" => self.snapshot(params).await,
             _ => Err(format!("Unknown avatar command: {command}")),

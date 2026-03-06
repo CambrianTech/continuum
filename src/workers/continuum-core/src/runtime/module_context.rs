@@ -7,10 +7,10 @@
 //! - Share lazy-computed values via shared compute cache
 //! - Per-module logging via logger factory
 
-use super::registry::ModuleRegistry;
 use super::message_bus::MessageBus;
-use super::shared_compute::SharedCompute;
 use super::module_logger::ModuleLogger;
+use super::registry::ModuleRegistry;
+use super::shared_compute::SharedCompute;
 use dashmap::DashMap;
 use std::sync::Arc;
 

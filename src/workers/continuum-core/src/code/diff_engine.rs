@@ -26,11 +26,7 @@ pub fn compute_diff(old: &str, new: &str, file_path: &str) -> FileDiff {
 }
 
 /// Compute forward (old→new) and reverse (new→old) diffs simultaneously.
-pub fn compute_bidirectional_diff(
-    old: &str,
-    new: &str,
-    file_path: &str,
-) -> (FileDiff, FileDiff) {
+pub fn compute_bidirectional_diff(old: &str, new: &str, file_path: &str) -> (FileDiff, FileDiff) {
     let forward = compute_diff(old, new, file_path);
     let reverse = compute_diff(new, old, file_path);
     (forward, reverse)

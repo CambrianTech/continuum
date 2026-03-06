@@ -20,10 +20,12 @@
 //!
 //! Priority: Normal — agents are long-running background tasks.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext, MessageBus};
-use crate::logging::TimingGuard;
-use crate::utils::params::Params;
 use crate::log_info;
+use crate::logging::TimingGuard;
+use crate::runtime::{
+    CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
+};
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rayon::prelude::*;
@@ -196,7 +198,12 @@ impl AgentModule {
         let bus = self.bus.get().cloned();
 
         // Create initial state
-        let state = AgentState::new(handle.clone(), task.clone(), working_dir.clone(), max_iterations);
+        let state = AgentState::new(
+            handle.clone(),
+            task.clone(),
+            working_dir.clone(),
+            max_iterations,
+        );
         let completion_notify = state.completion_notify.clone();
         agents.insert(handle.clone(), std::sync::Mutex::new(state));
 
@@ -210,7 +217,8 @@ impl AgentModule {
                 model,
                 agents.clone(),
                 bus,
-            ).await;
+            )
+            .await;
 
             // Update final state
             if let Some(entry) = agents.get(&handle) {
@@ -251,7 +259,6 @@ async fn run_agent_loop(
     agents: Arc<DashMap<String, std::sync::Mutex<AgentState>>>,
     bus: Option<Arc<MessageBus>>,
 ) -> Result<(String, Vec<String>, Vec<String>), String> {
-
     let mut conversation: Vec<Value> = vec![
         json!({
             "role": "system",
@@ -260,7 +267,7 @@ async fn run_agent_loop(
         json!({
             "role": "user",
             "content": task
-        })
+        }),
     ];
 
     let mut files_created: Vec<String> = Vec::new();
@@ -281,11 +288,14 @@ async fn run_agent_loop(
 
         // Emit progress event
         if let Some(ref b) = bus {
-            b.publish_async_only(&format!("agent:{}:progress", handle), json!({
-                "handle": handle,
-                "iteration": iteration,
-                "max_iterations": max_iterations,
-            }));
+            b.publish_async_only(
+                &format!("agent:{}:progress", handle),
+                json!({
+                    "handle": handle,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                }),
+            );
         }
 
         // Get LLM response
@@ -345,7 +355,9 @@ async fn run_agent_loop(
             // Track file changes
             if call.name == "write_file" {
                 if let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
-                    if !files_created.contains(&path.to_string()) && !files_modified.contains(&path.to_string()) {
+                    if !files_created.contains(&path.to_string())
+                        && !files_modified.contains(&path.to_string())
+                    {
                         // Check if file existed before
                         let full_path = working_dir.join(path);
                         if full_path.exists() {
@@ -381,16 +393,20 @@ async fn run_agent_loop(
 
             // Emit action event
             if let Some(ref b) = bus {
-                b.publish_async_only(&format!("agent:{}:action", handle), json!({
-                    "handle": handle,
-                    "tool": call.name,
-                    "success": result.success,
-                }));
+                b.publish_async_only(
+                    &format!("agent:{}:action", handle),
+                    json!({
+                        "handle": handle,
+                        "tool": call.name,
+                        "success": result.success,
+                    }),
+                );
             }
 
             // Check for completion
             if call.name == "complete" {
-                let summary = call.arguments
+                let summary = call
+                    .arguments
                     .get("summary")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Task completed")
@@ -398,20 +414,24 @@ async fn run_agent_loop(
 
                 // Emit complete event
                 if let Some(ref b) = bus {
-                    b.publish_async_only(&format!("agent:{}:complete", handle), json!({
-                        "handle": handle,
-                        "success": true,
-                        "summary": summary,
-                        "files_created": files_created,
-                        "files_modified": files_modified,
-                    }));
+                    b.publish_async_only(
+                        &format!("agent:{}:complete", handle),
+                        json!({
+                            "handle": handle,
+                            "success": true,
+                            "summary": summary,
+                            "files_created": files_created,
+                            "files_modified": files_modified,
+                        }),
+                    );
                 }
 
                 return Ok((summary, files_created, files_modified));
             }
 
             if call.name == "give_up" {
-                let reason = call.arguments
+                let reason = call
+                    .arguments
                     .get("reason")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Task failed")
@@ -419,11 +439,14 @@ async fn run_agent_loop(
 
                 // Emit complete event (failure)
                 if let Some(ref b) = bus {
-                    b.publish_async_only(&format!("agent:{}:complete", handle), json!({
-                        "handle": handle,
-                        "success": false,
-                        "reason": reason,
-                    }));
+                    b.publish_async_only(
+                        &format!("agent:{}:complete", handle),
+                        json!({
+                            "handle": handle,
+                            "success": false,
+                            "reason": reason,
+                        }),
+                    );
                 }
 
                 return Err(reason);
@@ -480,7 +503,8 @@ give_up: Signal that the task cannot be completed. Explain why.
   - reason: (required) Why the task cannot be completed
   - attempted: What was attempted"#;
 
-    format!(r#"You are an expert software engineer working on a coding task. You have access to the following tools:
+    format!(
+        r#"You are an expert software engineer working on a coding task. You have access to the following tools:
 
 {}
 
@@ -506,10 +530,14 @@ Working directory: {}"#,
 }
 
 /// Call the LLM for next response via AI provider module
-async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> Result<String, String> {
+async fn call_llm(
+    conversation: &[Value],
+    model: &str,
+    _working_dir: &Path,
+) -> Result<String, String> {
     use crate::ai::{
-        AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter,
-        ChatMessage, MessageContent, TextGenerationRequest,
+        AdapterRegistry, AnthropicAdapter, ChatMessage, MessageContent, OpenAICompatibleAdapter,
+        TextGenerationRequest,
     };
     use crate::secrets::get_secret;
 
@@ -556,16 +584,17 @@ async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> R
     registry.initialize_all().await?;
 
     // Select adapter based on model
-    let (_provider_id, adapter) = registry
-        .select(None, Some(model))
-        .ok_or_else(|| {
-            let available = registry.available();
-            if available.is_empty() {
-                "No AI providers available. Add API keys to ~/.continuum/config.env".to_string()
-            } else {
-                format!("Model {} not available. Available providers: {:?}", model, available)
-            }
-        })?;
+    let (_provider_id, adapter) = registry.select(None, Some(model)).ok_or_else(|| {
+        let available = registry.available();
+        if available.is_empty() {
+            "No AI providers available. Add API keys to ~/.continuum/config.env".to_string()
+        } else {
+            format!(
+                "Model {} not available. Available providers: {:?}",
+                model, available
+            )
+        }
+    })?;
 
     // Use AI provider module - routes to DeepSeek, Anthropic, OpenAI, etc.
     let request = TextGenerationRequest {
@@ -595,8 +624,9 @@ async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> R
 /// Static regexes for tool call parsing (compiled once)
 static TOOL_BLOCK_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap());
-static INLINE_TOOL_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap());
+static INLINE_TOOL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap()
+});
 
 /// Parse tool calls from LLM response
 fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
@@ -618,7 +648,10 @@ fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
                     arguments,
                 };
                 // Avoid duplicates
-                if !calls.iter().any(|c| c.name == call.name && c.arguments == call.arguments) {
+                if !calls
+                    .iter()
+                    .any(|c| c.name == call.name && c.arguments == call.arguments)
+                {
                     calls.push(call);
                 }
             }
@@ -659,11 +692,13 @@ fn execute_tool(call: &ToolCall, working_dir: &Path) -> ToolResult {
 fn tool_read_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let path = match call.arguments.get("path").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return ToolResult {
-            success: false,
-            output: "Missing path argument".to_string(),
-            error: Some("Missing path".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing path argument".to_string(),
+                error: Some("Missing path".to_string()),
+            }
+        }
     };
 
     let full_path = working_dir.join(path);
@@ -678,11 +713,15 @@ fn tool_read_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().collect();
-            let start = call.arguments.get("start_line")
+            let start = call
+                .arguments
+                .get("start_line")
                 .and_then(|v| v.as_u64())
                 .map(|n| (n as usize).saturating_sub(1))
                 .unwrap_or(0);
-            let end = call.arguments.get("end_line")
+            let end = call
+                .arguments
+                .get("end_line")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as usize)
                 .unwrap_or(lines.len());
@@ -696,8 +735,14 @@ fn tool_read_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
 
             ToolResult {
                 success: true,
-                output: format!("File: {} ({} lines, showing {}-{})\n\n{}",
-                    path, lines.len(), start + 1, end.min(lines.len()), selected),
+                output: format!(
+                    "File: {} ({} lines, showing {}-{})\n\n{}",
+                    path,
+                    lines.len(),
+                    start + 1,
+                    end.min(lines.len()),
+                    selected
+                ),
                 error: None,
             }
         }
@@ -712,20 +757,24 @@ fn tool_read_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
 fn tool_write_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let path = match call.arguments.get("path").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return ToolResult {
-            success: false,
-            output: "Missing path argument".to_string(),
-            error: Some("Missing path".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing path argument".to_string(),
+                error: Some("Missing path".to_string()),
+            }
+        }
     };
 
     let content = match call.arguments.get("content").and_then(|v| v.as_str()) {
         Some(c) => c,
-        None => return ToolResult {
-            success: false,
-            output: "Missing content argument".to_string(),
-            error: Some("Missing content".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing content argument".to_string(),
+                error: Some("Missing content".to_string()),
+            }
+        }
     };
 
     let full_path = working_dir.join(path);
@@ -745,7 +794,8 @@ fn tool_write_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
     match std::fs::write(&full_path, content) {
         Ok(_) => ToolResult {
             success: true,
-            output: format!("{} {} ({} bytes, {} lines)",
+            output: format!(
+                "{} {} ({} bytes, {} lines)",
                 if existed { "Updated" } else { "Created" },
                 path,
                 content.len(),
@@ -764,29 +814,35 @@ fn tool_write_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
 fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let path = match call.arguments.get("path").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return ToolResult {
-            success: false,
-            output: "Missing path argument".to_string(),
-            error: Some("Missing path".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing path argument".to_string(),
+                error: Some("Missing path".to_string()),
+            }
+        }
     };
 
     let search = match call.arguments.get("search").and_then(|v| v.as_str()) {
         Some(s) => s,
-        None => return ToolResult {
-            success: false,
-            output: "Missing search argument".to_string(),
-            error: Some("Missing search".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing search argument".to_string(),
+                error: Some("Missing search".to_string()),
+            }
+        }
     };
 
     let replace = match call.arguments.get("replace").and_then(|v| v.as_str()) {
         Some(r) => r,
-        None => return ToolResult {
-            success: false,
-            output: "Missing replace argument".to_string(),
-            error: Some("Missing replace".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing replace argument".to_string(),
+                error: Some("Missing replace".to_string()),
+            }
+        }
     };
 
     let full_path = working_dir.join(path);
@@ -820,7 +876,12 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
             match std::fs::write(&full_path, &new_content) {
                 Ok(_) => ToolResult {
                     success: true,
-                    output: format!("Edited {}: replaced {} chars with {} chars", path, search.len(), replace.len()),
+                    output: format!(
+                        "Edited {}: replaced {} chars with {} chars",
+                        path,
+                        search.len(),
+                        replace.len()
+                    ),
                     error: None,
                 },
                 Err(e) => ToolResult {
@@ -841,18 +902,24 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
 fn tool_search_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let pattern = match call.arguments.get("pattern").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return ToolResult {
-            success: false,
-            output: "Missing pattern argument".to_string(),
-            error: Some("Missing pattern".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing pattern argument".to_string(),
+                error: Some("Missing pattern".to_string()),
+            }
+        }
     };
 
-    let max_results = call.arguments.get("max_results")
+    let max_results = call
+        .arguments
+        .get("max_results")
         .and_then(|v| v.as_u64())
         .unwrap_or(50);
 
-    let file_glob = call.arguments.get("file_glob")
+    let file_glob = call
+        .arguments
+        .get("file_glob")
         .and_then(|v| v.as_str())
         .map(|g| format!("--include=\"{}\"", g))
         .unwrap_or_default();
@@ -876,8 +943,15 @@ fn tool_search_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
 
             ToolResult {
                 success: true,
-                output: format!("Found {} matches:\n{}", lines.len(),
-                    if stdout.is_empty() { "No matches found".to_string() } else { stdout.to_string() }),
+                output: format!(
+                    "Found {} matches:\n{}",
+                    lines.len(),
+                    if stdout.is_empty() {
+                        "No matches found".to_string()
+                    } else {
+                        stdout.to_string()
+                    }
+                ),
                 error: None,
             }
         }
@@ -890,16 +964,22 @@ fn tool_search_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
 }
 
 fn tool_list_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
-    let dir_path = call.arguments.get("path")
+    let dir_path = call
+        .arguments
+        .get("path")
         .and_then(|v| v.as_str())
         .map(|p| working_dir.join(p))
         .unwrap_or_else(|| working_dir.to_path_buf());
 
-    let depth = call.arguments.get("depth")
+    let depth = call
+        .arguments
+        .get("depth")
         .and_then(|v| v.as_u64())
         .unwrap_or(3);
 
-    let pattern = call.arguments.get("pattern")
+    let pattern = call
+        .arguments
+        .get("pattern")
         .and_then(|v| v.as_str())
         .map(|p| format!("-name \"{}\"", p))
         .unwrap_or_default();
@@ -935,9 +1015,18 @@ fn tool_list_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
 
             ToolResult {
                 success: true,
-                output: format!("Files in {}:\n{}",
-                    call.arguments.get("path").and_then(|v| v.as_str()).unwrap_or("."),
-                    if paths.is_empty() { "No files found".to_string() } else { paths.join("\n") }),
+                output: format!(
+                    "Files in {}:\n{}",
+                    call.arguments
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("."),
+                    if paths.is_empty() {
+                        "No files found".to_string()
+                    } else {
+                        paths.join("\n")
+                    }
+                ),
                 error: None,
             }
         }
@@ -952,14 +1041,18 @@ fn tool_list_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
 fn tool_run_command(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let command = match call.arguments.get("command").and_then(|v| v.as_str()) {
         Some(c) => c,
-        None => return ToolResult {
-            success: false,
-            output: "Missing command argument".to_string(),
-            error: Some("Missing command".to_string()),
-        },
+        None => {
+            return ToolResult {
+                success: false,
+                output: "Missing command argument".to_string(),
+                error: Some("Missing command".to_string()),
+            }
+        }
     };
 
-    let _timeout_ms = call.arguments.get("timeout_ms")
+    let _timeout_ms = call
+        .arguments
+        .get("timeout_ms")
         .and_then(|v| v.as_u64())
         .unwrap_or(60000);
 
@@ -994,7 +1087,10 @@ fn tool_run_command(call: &ToolCall, working_dir: &Path) -> ToolResult {
                         stdout.chars().take(2500).collect::<String>(),
                         stderr.chars().take(2500).collect::<String>()
                     ),
-                    error: Some(format!("Command failed with exit code {:?}", output.status.code())),
+                    error: Some(format!(
+                        "Command failed with exit code {:?}",
+                        output.status.code()
+                    )),
                 }
             }
         }
@@ -1035,7 +1131,12 @@ fn tool_git_status(working_dir: &Path) -> ToolResult {
 fn tool_git_diff(call: &ToolCall, working_dir: &Path) -> ToolResult {
     let mut args = vec!["diff"];
 
-    if call.arguments.get("staged").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if call
+        .arguments
+        .get("staged")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         args.push("--staged");
     }
 
@@ -1093,11 +1194,7 @@ impl ServiceModule for AgentModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "agent/start" => {
                 let _timer = TimingGuard::new("module", "agent_start");
@@ -1121,7 +1218,13 @@ impl ServiceModule for AgentModule {
                     model,
                 );
 
-                log_info!("module", "agent", "Started agent {} for task: {}", &handle, task);
+                log_info!(
+                    "module",
+                    "agent",
+                    "Started agent {} for task: {}",
+                    &handle,
+                    task
+                );
 
                 Ok(CommandResult::Json(json!({
                     "success": true,
@@ -1172,11 +1275,10 @@ impl ServiceModule for AgentModule {
             "agent/list" => {
                 let _timer = TimingGuard::new("module", "agent_list");
 
-                let agents: Vec<Value> = self.agents
+                let agents: Vec<Value> = self
+                    .agents
                     .iter()
-                    .filter_map(|entry| {
-                        entry.lock().ok().map(|state| state.to_status_json())
-                    })
+                    .filter_map(|entry| entry.lock().ok().map(|state| state.to_status_json()))
                     .collect();
 
                 Ok(CommandResult::Json(json!({
@@ -1234,5 +1336,7 @@ impl ServiceModule for AgentModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

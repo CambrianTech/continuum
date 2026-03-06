@@ -8,9 +8,9 @@ use super::types::BudgetAllocation;
 #[derive(Debug, Clone)]
 pub struct SourceConfig {
     pub name: String,
-    pub priority: u8,           // Higher = more important (0-100)
-    pub default_percent: u8,    // Default budget percentage
-    pub min_tokens: usize,      // Minimum tokens needed to be useful
+    pub priority: u8,        // Higher = more important (0-100)
+    pub default_percent: u8, // Default budget percentage
+    pub min_tokens: usize,   // Minimum tokens needed to be useful
 }
 
 /// Budget manager allocates tokens across RAG sources
@@ -87,8 +87,14 @@ mod tests {
         assert_eq!(allocations.len(), 3);
 
         // Identity has highest priority, should get most tokens proportionally
-        let identity = allocations.iter().find(|a| a.source_name == "identity").unwrap();
-        let conversation = allocations.iter().find(|a| a.source_name == "conversation").unwrap();
+        let identity = allocations
+            .iter()
+            .find(|a| a.source_name == "identity")
+            .unwrap();
+        let conversation = allocations
+            .iter()
+            .find(|a| a.source_name == "conversation")
+            .unwrap();
 
         // 95/(95+80+70) = 95/245 ≈ 0.388 → ~388 tokens
         assert!(identity.allocated_tokens > 350);
@@ -103,14 +109,12 @@ mod tests {
     fn test_minimum_tokens_respected() {
         let manager = BudgetManager::new(100); // Small budget
 
-        let sources = vec![
-            SourceConfig {
-                name: "identity".to_string(),
-                priority: 10,
-                default_percent: 10,
-                min_tokens: 200, // More than total budget!
-            },
-        ];
+        let sources = vec![SourceConfig {
+            name: "identity".to_string(),
+            priority: 10,
+            default_percent: 10,
+            min_tokens: 200, // More than total budget!
+        }];
 
         let allocations = manager.allocate(&sources);
 

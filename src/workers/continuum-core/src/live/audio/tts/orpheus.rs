@@ -20,11 +20,14 @@
 
 use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
+use crate::gpu::tracker::GpuModelTracker;
+use crate::inference::vendored::quantized_llama::ModelWeights;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use crate::inference::vendored::quantized_llama::ModelWeights;
 use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -33,11 +36,8 @@ use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
-use crate::gpu::tracker::GpuModelTracker;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
-use crate::{clog_info, clog_warn};
 
 // ─── Orpheus Token Constants ──────────────────────────────────────────────────
 // Audio tokens extend the Llama 3 vocabulary starting at this offset.
@@ -137,7 +137,10 @@ impl OrpheusTts {
                 clog_info!("Orpheus: Using model dir from ORPHEUS_MODEL_DIR: {:?}", p);
                 return p;
             }
-            clog_warn!("Orpheus: ORPHEUS_MODEL_DIR='{}' set but files not found", dir);
+            clog_warn!(
+                "Orpheus: ORPHEUS_MODEL_DIR='{}' set but files not found",
+                dir
+            );
         }
 
         for dir in &search_dirs {
@@ -203,15 +206,13 @@ impl OrpheusTts {
 
     /// Look up a special token ID from the tokenizer
     fn find_token_id(tokenizer: &Tokenizer, token: &str) -> Result<u32, TTSError> {
-        tokenizer
-            .token_to_id(token)
-            .ok_or_else(|| {
-                TTSError::ModelNotLoaded(format!(
-                    "Token '{token}' not found in Orpheus tokenizer. \
+        tokenizer.token_to_id(token).ok_or_else(|| {
+            TTSError::ModelNotLoaded(format!(
+                "Token '{token}' not found in Orpheus tokenizer. \
                      Ensure you're using the Orpheus-specific tokenizer.json, \
                      not the base Llama tokenizer."
-                ))
-            })
+            ))
+        })
     }
 
     /// Format the Orpheus prompt for TTS generation
@@ -242,12 +243,12 @@ impl OrpheusTts {
         let prompt_len = prompt_tokens.len();
         clog_info!(
             "Orpheus: Prompt tokenized to {} tokens for voice '{}'",
-            prompt_len, voice
+            prompt_len,
+            voice
         );
 
         // ── Step 2: Autoregressive generation ─────────────────────────────
-        let audio_tokens =
-            Self::generate_audio_tokens(model, &prompt_tokens)?;
+        let audio_tokens = Self::generate_audio_tokens(model, &prompt_tokens)?;
 
         if audio_tokens.is_empty() {
             return Err(TTSError::SynthesisFailed(
@@ -337,9 +338,7 @@ impl OrpheusTts {
             let logits = model
                 .llm
                 .forward(&input, pos)
-                .map_err(|e| {
-                    TTSError::SynthesisFailed(format!("LLM step {step}: {e}"))
-                })?;
+                .map_err(|e| TTSError::SynthesisFailed(format!("LLM step {step}: {e}")))?;
 
             // Sync GPU periodically (every 16 tokens) to prevent command buffer buildup
             if step % 16 == 0 {
@@ -375,9 +374,9 @@ impl OrpheusTts {
         let result = match dims.len() {
             2 => logits.squeeze(0),
             3 => {
-                let squeezed = logits.squeeze(0).map_err(|e| {
-                    TTSError::SynthesisFailed(format!("Squeeze logits: {e}"))
-                })?;
+                let squeezed = logits
+                    .squeeze(0)
+                    .map_err(|e| TTSError::SynthesisFailed(format!("Squeeze logits: {e}")))?;
                 let seq_len = squeezed.dims()[0];
                 if seq_len > 1 {
                     squeezed.get(seq_len - 1)
@@ -464,9 +463,9 @@ impl OrpheusTts {
             named_inputs.push((name, value));
         }
 
-        let outputs = session.run(named_inputs).map_err(|e| {
-            TTSError::SynthesisFailed(format!("SNAC decoder run: {e}"))
-        })?;
+        let outputs = session
+            .run(named_inputs)
+            .map_err(|e| TTSError::SynthesisFailed(format!("SNAC decoder run: {e}")))?;
 
         // Extract output audio waveform (f32)
         let (shape, data) = outputs[0]
@@ -481,7 +480,6 @@ impl OrpheusTts {
 
         Ok(data.to_vec())
     }
-
 }
 
 impl Default for OrpheusTts {
@@ -530,10 +528,12 @@ impl TextToSpeech for OrpheusTts {
 
         // Load tokenizer
         let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
-            TTSError::ModelNotLoaded(format!("Tokenizer load failed: {e}"))
-        })?;
-        clog_info!("Orpheus: Tokenizer loaded ({} tokens)", tokenizer.get_vocab_size(true));
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("Tokenizer load failed: {e}")))?;
+        clog_info!(
+            "Orpheus: Tokenizer loaded ({} tokens)",
+            tokenizer.get_vocab_size(true)
+        );
 
         // Look up special token IDs
         let audio_end_token_id = Self::find_token_id(&tokenizer, "<|audio_end|>")?;
@@ -548,24 +548,27 @@ impl TextToSpeech for OrpheusTts {
         })?;
         clog_info!("Orpheus: Loading GGUF model from {:?}", gguf_path);
 
-        let mut gguf_file = std::fs::File::open(&gguf_path).map_err(|e| {
-            TTSError::ModelNotLoaded(format!("Failed to open GGUF file: {e}"))
-        })?;
-        let gguf_content = gguf_file::Content::read(&mut gguf_file).map_err(|e| {
-            TTSError::ModelNotLoaded(format!("Failed to read GGUF content: {e}"))
-        })?;
+        let mut gguf_file = std::fs::File::open(&gguf_path)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to open GGUF file: {e}")))?;
+        let gguf_content = gguf_file::Content::read(&mut gguf_file)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to read GGUF content: {e}")))?;
 
-        let mut reader = BufReader::new(std::fs::File::open(&gguf_path).map_err(|e| {
-            TTSError::ModelNotLoaded(format!("Failed to reopen GGUF file: {e}"))
-        })?);
+        let mut reader =
+            BufReader::new(std::fs::File::open(&gguf_path).map_err(|e| {
+                TTSError::ModelNotLoaded(format!("Failed to reopen GGUF file: {e}"))
+            })?);
 
-        let llm = ModelWeights::from_gguf(gguf_content, &mut reader, &device).map_err(|e| {
-            TTSError::ModelNotLoaded(format!("GGUF model load failed: {e}"))
-        })?;
+        let llm = ModelWeights::from_gguf(gguf_content, &mut reader, &device)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("GGUF model load failed: {e}")))?;
         clog_info!("Orpheus: Llama model loaded on {:?}", device);
 
         // Track GPU allocation for LLM weights (non-critical: proceed on failure)
-        let _ = ORPHEUS_LLM_GPU.track_file(GpuSubsystem::Tts, &gguf_path, super::gpu_manager(), GpuPriority::Interactive);
+        let _ = ORPHEUS_LLM_GPU.track_file(
+            GpuSubsystem::Tts,
+            &gguf_path,
+            super::gpu_manager(),
+            GpuPriority::Interactive,
+        );
 
         // Load SNAC decoder
         let snac_path = model_dir.join("snac_decoder.onnx");
@@ -577,7 +580,12 @@ impl TextToSpeech for OrpheusTts {
         );
 
         // Track GPU allocation for SNAC decoder (non-critical)
-        let _ = ORPHEUS_SNAC_GPU.track_file(GpuSubsystem::Tts, &snac_path, super::gpu_manager(), GpuPriority::Interactive);
+        let _ = ORPHEUS_SNAC_GPU.track_file(
+            GpuSubsystem::Tts,
+            &snac_path,
+            super::gpu_manager(),
+            GpuPriority::Interactive,
+        );
 
         let model = OrpheusModel {
             llm,
@@ -587,8 +595,7 @@ impl TextToSpeech for OrpheusTts {
             audio_end_token_id,
         };
 
-        let _ = ORPHEUS_MODEL
-            .set(Arc::new(Mutex::new(model)));
+        let _ = ORPHEUS_MODEL.set(Arc::new(Mutex::new(model)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
         clog_info!("Orpheus: All models loaded successfully");
@@ -602,9 +609,7 @@ impl TextToSpeech for OrpheusTts {
         let model_arc = ORPHEUS_MODEL
             .get()
             .ok_or_else(|| {
-                TTSError::ModelNotLoaded(
-                    "Orpheus not initialized. Call initialize() first.".into(),
-                )
+                TTSError::ModelNotLoaded("Orpheus not initialized. Call initialize() first.".into())
             })?
             .clone();
 
@@ -613,10 +618,7 @@ impl TextToSpeech for OrpheusTts {
             voice.to_string()
         } else {
             // Use default voice for unknown voice IDs
-            clog_info!(
-                "Orpheus: Unknown voice '{}', using default 'tara'",
-                voice
-            );
+            clog_info!("Orpheus: Unknown voice '{}', using default 'tara'", voice);
             "tara".to_string()
         };
 
@@ -639,9 +641,7 @@ impl TextToSpeech for OrpheusTts {
                 name: name.to_string(),
                 language: "en".to_string(),
                 gender: Some(gender.to_string()),
-                description: Some(format!(
-                    "Orpheus {gender} voice — supports emotion tags"
-                )),
+                description: Some(format!("Orpheus {gender} voice — supports emotion tags")),
             })
             .collect()
     }

@@ -115,7 +115,10 @@ mod tests {
         assert_eq!(first.priority, 0.9, "First message should be high priority");
 
         let second = inbox.dequeue().unwrap();
-        assert_eq!(second.priority, 0.3, "Second message should be low priority");
+        assert_eq!(
+            second.priority, 0.3,
+            "Second message should be low priority"
+        );
 
         // Third should be None
         assert!(inbox.dequeue().is_none(), "Should be empty now");

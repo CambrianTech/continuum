@@ -15,7 +15,10 @@ use crate::live::video::bevy_renderer::Gesture;
 
 /// Cognitive state of an AI persona — drives avatar gesture selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/CognitiveState.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/CognitiveState.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub enum CognitiveState {
     /// Persona is evaluating whether to respond (reading, thinking)
@@ -28,7 +31,10 @@ pub enum CognitiveState {
 
 /// A gesture with its selection weight and duration range.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/WeightedGesture.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/WeightedGesture.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WeightedGesture {
     /// Gesture name matching the Gesture enum variant.
@@ -43,7 +49,10 @@ pub struct WeightedGesture {
 
 /// Per-state gesture configuration. Future: LoRA adapters output personalized configs.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/CognitiveAnimationConfig.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/CognitiveAnimationConfig.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CognitiveAnimationConfig {
     /// Gestures available during the Evaluating state.
@@ -141,7 +150,9 @@ pub fn select_weighted_gesture(
         if cumulative >= threshold {
             let gesture = gesture_from_name(&entry.gesture);
             // Duration pseudo-random within [min, max]
-            let duration_hash = ((elapsed_secs * 1337.0 + slot as f32 * 42.0) % 10000.0).sin().abs();
+            let duration_hash = ((elapsed_secs * 1337.0 + slot as f32 * 42.0) % 10000.0)
+                .sin()
+                .abs();
             let range = entry.duration_max_ms.saturating_sub(entry.duration_min_ms);
             let duration_ms = entry.duration_min_ms + (duration_hash * range as f32) as u32;
             return Some((gesture, duration_ms));
@@ -192,7 +203,10 @@ mod tests {
                     "Unexpected evaluating gesture: {:?}",
                     gesture
                 );
-                assert!(duration >= 2000 && duration <= 7000, "Duration out of range: {duration}");
+                assert!(
+                    duration >= 2000 && duration <= 7000,
+                    "Duration out of range: {duration}"
+                );
             }
         }
     }
@@ -205,11 +219,17 @@ mod tests {
             assert!(result.is_some());
             let (gesture, duration) = result.unwrap();
             assert!(
-                matches!(gesture, Gesture::OpenHands | Gesture::Nod | Gesture::Think | Gesture::Point),
+                matches!(
+                    gesture,
+                    Gesture::OpenHands | Gesture::Nod | Gesture::Think | Gesture::Point
+                ),
                 "Unexpected generating gesture: {:?}",
                 gesture
             );
-            assert!(duration >= 2000 && duration <= 6000, "Duration out of range: {duration}");
+            assert!(
+                duration >= 2000 && duration <= 6000,
+                "Duration out of range: {duration}"
+            );
         }
     }
 
@@ -224,7 +244,9 @@ mod tests {
         let mut gestures = std::collections::HashSet::new();
         // Sample across many time values — should get variety
         for i in 0..100 {
-            if let Some((gesture, _)) = select_weighted_gesture(&config.evaluating, i as f32 * 0.5, 0) {
+            if let Some((gesture, _)) =
+                select_weighted_gesture(&config.evaluating, i as f32 * 0.5, 0)
+            {
                 gestures.insert(format!("{:?}", gesture));
             }
         }

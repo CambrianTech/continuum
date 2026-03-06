@@ -92,7 +92,8 @@ impl Phonemizer {
             } else {
                 // Unknown phoneme - skip it
                 unknown_count += 1;
-                if unknown_count <= 5 {  // Only log first 5 to avoid spam
+                if unknown_count <= 5 {
+                    // Only log first 5 to avoid spam
                     let ch_code = ch as u32;
                     clog_warn!("Unknown phoneme '{}' (U+{:04X}), skipping", ch, ch_code);
                 }
@@ -120,10 +121,13 @@ impl Phonemizer {
 impl Default for Phonemizer {
     fn default() -> Self {
         // Load from default model config
-        Self::load_from_config("../models/piper/en_US-libritts_r-medium.onnx.json")
-            .unwrap_or_else(|e| {
+        Self::load_from_config("../models/piper/en_US-libritts_r-medium.onnx.json").unwrap_or_else(
+            |e| {
                 clog_error!("Failed to load phoneme map from config: {}", e);
-                Self { phoneme_to_id: HashMap::new() }
-            })
+                Self {
+                    phoneme_to_id: HashMap::new(),
+                }
+            },
+        )
     }
 }

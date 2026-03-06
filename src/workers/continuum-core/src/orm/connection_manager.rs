@@ -79,7 +79,8 @@ impl ManagedPool {
     }
 
     fn touch(&self) {
-        self.last_access.store(Self::now_millis(), Ordering::Relaxed);
+        self.last_access
+            .store(Self::now_millis(), Ordering::Relaxed);
     }
 
     fn last_access_millis(&self) -> u64 {
@@ -183,8 +184,7 @@ impl ConnectionManager {
 
     /// Evict pools that have been idle too long
     pub async fn evict_idle(&self) -> Result<usize, String> {
-        let cutoff =
-            ManagedPool::now_millis() - self.config.idle_timeout.as_millis() as u64;
+        let cutoff = ManagedPool::now_millis() - self.config.idle_timeout.as_millis() as u64;
         let mut evicted = 0;
 
         let idle_paths: Vec<PathBuf> = self
@@ -293,16 +293,13 @@ impl ConnectionManager {
             Err(e) => return StorageResult::err(e),
         };
         let adapter = pool.adapter.read().await;
-        adapter.update(collection, id, data, increment_version).await
+        adapter
+            .update(collection, id, data, increment_version)
+            .await
     }
 
     /// Delete a record
-    pub async fn delete(
-        &self,
-        db_path: &Path,
-        collection: &str,
-        id: &UUID,
-    ) -> StorageResult<bool> {
+    pub async fn delete(&self, db_path: &Path, collection: &str, id: &UUID) -> StorageResult<bool> {
         let pool = match self.get_or_create_pool(db_path).await {
             Ok(p) => p,
             Err(e) => return StorageResult::err(e),
@@ -393,10 +390,13 @@ mod tests {
 
         // Query creates pool on demand
         let _result = manager
-            .query(&db_path, StorageQuery {
-                collection: "users".to_string(),
-                ..Default::default()
-            })
+            .query(
+                &db_path,
+                StorageQuery {
+                    collection: "users".to_string(),
+                    ..Default::default()
+                },
+            )
             .await;
 
         // Pool was created (even if query fails because table doesn't exist)
@@ -412,15 +412,11 @@ mod tests {
         let db_path = dir.path().join("test.db");
 
         // First access creates pool
-        let _ = manager
-            .list_collections(&db_path)
-            .await;
+        let _ = manager.list_collections(&db_path).await;
         assert_eq!(manager.pool_count(), 1);
 
         // Second access reuses pool
-        let _ = manager
-            .list_collections(&db_path)
-            .await;
+        let _ = manager.list_collections(&db_path).await;
         assert_eq!(manager.pool_count(), 1);
 
         manager.close_all().await.unwrap();

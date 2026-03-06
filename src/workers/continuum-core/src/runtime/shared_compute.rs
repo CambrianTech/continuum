@@ -63,17 +63,13 @@ impl SharedCompute {
     /// # Type Safety
     /// The caller must use the same type T for the same (scope, key) pair.
     /// Mismatched types will return None (not panic).
-    pub async fn get_or_compute<T, F>(
-        &self,
-        scope: &str,
-        key: &str,
-        compute: F,
-    ) -> Arc<T>
+    pub async fn get_or_compute<T, F>(&self, scope: &str, key: &str, compute: F) -> Arc<T>
     where
         T: Any + Send + Sync + 'static,
         F: std::future::Future<Output = T>,
     {
-        let scope_map = self.cache
+        let scope_map = self
+            .cache
             .entry(scope.to_string())
             .or_insert_with(DashMap::new);
 
@@ -81,10 +77,13 @@ impl SharedCompute {
             .entry(key.to_string())
             .or_insert_with(LazyValue::new);
 
-        let any_arc = lazy.cell.get_or_init(|| async {
-            let val = compute.await;
-            Arc::new(val) as Arc<dyn Any + Send + Sync>
-        }).await;
+        let any_arc = lazy
+            .cell
+            .get_or_init(|| async {
+                let val = compute.await;
+                Arc::new(val) as Arc<dyn Any + Send + Sync>
+            })
+            .await;
 
         any_arc
             .clone()
@@ -94,16 +93,12 @@ impl SharedCompute {
 
     /// Get a cached value without computing.
     /// Returns None if not yet computed.
-    pub fn get<T: Any + Send + Sync + 'static>(
-        &self,
-        scope: &str,
-        key: &str,
-    ) -> Option<Arc<T>> {
+    pub fn get<T: Any + Send + Sync + 'static>(&self, scope: &str, key: &str) -> Option<Arc<T>> {
         self.cache.get(scope).and_then(|scope_map| {
             scope_map.get(key).and_then(|lazy| {
-                lazy.cell.get().and_then(|any_arc| {
-                    any_arc.clone().downcast::<T>().ok()
-                })
+                lazy.cell
+                    .get()
+                    .and_then(|any_arc| any_arc.clone().downcast::<T>().ok())
             })
         })
     }
@@ -148,16 +143,20 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
 
         let count = call_count.clone();
-        let result1: Arc<String> = compute.get_or_compute("scope1", "key1", async {
-            count.fetch_add(1, Ordering::SeqCst);
-            "hello".to_string()
-        }).await;
+        let result1: Arc<String> = compute
+            .get_or_compute("scope1", "key1", async {
+                count.fetch_add(1, Ordering::SeqCst);
+                "hello".to_string()
+            })
+            .await;
 
         let count = call_count.clone();
-        let result2: Arc<String> = compute.get_or_compute("scope1", "key1", async {
-            count.fetch_add(1, Ordering::SeqCst);
-            "should not run".to_string()
-        }).await;
+        let result2: Arc<String> = compute
+            .get_or_compute("scope1", "key1", async {
+                count.fetch_add(1, Ordering::SeqCst);
+                "should not run".to_string()
+            })
+            .await;
 
         assert_eq!(*result1, "hello");
         assert_eq!(*result2, "hello"); // Same cached value

@@ -32,11 +32,7 @@ pub struct PersonaCognition {
 impl PersonaCognition {
     /// Create a new PersonaCognition with default sub-states.
     /// Engine and inbox require persona_id; everything else uses defaults.
-    pub fn new(
-        persona_id: Uuid,
-        persona_name: String,
-        rag_engine: Arc<RagEngine>,
-    ) -> Self {
+    pub fn new(persona_id: Uuid, persona_name: String, rag_engine: Arc<RagEngine>) -> Self {
         Self::with_budget(persona_id, persona_name, rag_engine, 200.0)
     }
 
@@ -49,12 +45,7 @@ impl PersonaCognition {
     ) -> Self {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
-            engine: PersonaCognitionEngine::new(
-                persona_id,
-                persona_name,
-                rag_engine,
-                shutdown_rx,
-            ),
+            engine: PersonaCognitionEngine::new(persona_id, persona_name, rag_engine, shutdown_rx),
             inbox: PersonaInbox::new(persona_id),
             rate_limiter: RateLimiterState::default(),
             sleep_state: SleepState::default(),
@@ -78,7 +69,10 @@ mod tests {
         assert_eq!(pc.engine.persona_id(), id);
         assert!(pc.inbox.is_empty());
         assert!(!pc.rate_limiter.has_reached_response_cap(Uuid::new_v4()));
-        assert_eq!(pc.sleep_state.mode, crate::persona::evaluator::SleepMode::Active);
+        assert_eq!(
+            pc.sleep_state.mode,
+            crate::persona::evaluator::SleepMode::Active
+        );
         assert!(pc.adapter_registry.adapters.is_empty());
         assert!((pc.genome_engine.memory_pressure() - 0.0).abs() < 0.001);
     }

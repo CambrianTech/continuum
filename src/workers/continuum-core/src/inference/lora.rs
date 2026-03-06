@@ -7,8 +7,8 @@
 //! where A is [rank, in_features] and B is [out_features, rank]
 
 use candle_core::{DType, Device, Tensor};
-use tracing::{debug, info};
 use std::collections::HashMap;
+use tracing::{debug, info};
 
 /// LoRA weight pair (A and B matrices)
 #[derive(Clone)]
@@ -58,7 +58,9 @@ pub fn load_lora_adapter(
             info!("Resolved directory to: {}", safetensors.display());
             safetensors.to_string_lossy().to_string()
         } else {
-            return Err(format!("No adapter_model.safetensors found in directory: {adapter_path}").into());
+            return Err(
+                format!("No adapter_model.safetensors found in directory: {adapter_path}").into(),
+            );
         }
     } else {
         adapter_path.to_string()

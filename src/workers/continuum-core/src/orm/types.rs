@@ -40,7 +40,7 @@ pub struct SchemaField {
     #[serde(default)]
     pub nullable: bool,
     #[ts(optional)]
-        pub max_length: Option<usize>,
+    pub max_length: Option<usize>,
 }
 
 /// Composite index definition
@@ -56,7 +56,10 @@ pub struct SchemaIndex {
 
 /// Collection schema - defines table structure
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/CollectionSchema.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/CollectionSchema.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectionSchema {
     pub collection: String,
@@ -74,11 +77,11 @@ pub struct RecordMetadata {
     pub updated_at: String,
     pub version: u32,
     #[ts(optional)]
-        pub tags: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
     #[ts(optional)]
-        pub schema: Option<String>,
+    pub schema: Option<String>,
     #[ts(optional)]
-        pub ttl: Option<u64>,
+    pub ttl: Option<u64>,
 }
 
 impl Default for RecordMetadata {
@@ -114,11 +117,11 @@ pub struct DataRecord {
 pub struct StorageResult<T> {
     pub success: bool,
     #[ts(optional)]
-        pub data: Option<T>,
+    pub data: Option<T>,
     #[ts(optional)]
-        pub error: Option<String>,
+    pub error: Option<String>,
     #[ts(optional)]
-        pub metadata: Option<ResultMetadata>,
+    pub metadata: Option<ResultMetadata>,
 }
 
 impl<T> StorageResult<T> {
@@ -152,11 +155,11 @@ impl<T> StorageResult<T> {
 #[serde(rename_all = "camelCase")]
 pub struct ResultMetadata {
     #[ts(optional)]
-        pub total_count: Option<usize>,
+    pub total_count: Option<usize>,
     #[ts(optional)]
-        pub query_time_ms: Option<u64>,
+    pub query_time_ms: Option<u64>,
     #[ts(optional)]
-        pub cache_hit: Option<bool>,
+    pub cache_hit: Option<bool>,
 }
 
 /// Collection statistics
@@ -169,14 +172,17 @@ pub struct CollectionStats {
     pub total_size: usize,
     pub last_modified: String,
     #[ts(optional)]
-        pub schema: Option<String>,
+    pub schema: Option<String>,
     #[ts(optional)]
-        pub indices: Option<Vec<String>>,
+    pub indices: Option<Vec<String>>,
 }
 
 /// Batch operation type
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/BatchOperationType.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/BatchOperationType.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchOperationType {
     Create,
@@ -192,8 +198,8 @@ pub enum BatchOperationType {
 pub struct BatchOperation {
     pub operation_type: BatchOperationType,
     pub collection: String,
-        pub id: Option<UUID>,
-        #[ts(type = "Record<string, unknown> | undefined")]
+    pub id: Option<UUID>,
+    #[ts(type = "Record<string, unknown> | undefined")]
     pub data: Option<Value>,
 }
 

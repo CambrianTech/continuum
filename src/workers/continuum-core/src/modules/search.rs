@@ -46,7 +46,10 @@ pub struct SearchOutput {
 
 /// Input for vector-based search
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/search/VectorSearchInput.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/search/VectorSearchInput.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchInput {
     pub query_vector: Vec<f64>,
@@ -178,11 +181,15 @@ impl Default for BowAlgorithm {
 }
 
 impl SearchAlgorithm for BowAlgorithm {
-    fn name(&self) -> &'static str { "bow" }
+    fn name(&self) -> &'static str {
+        "bow"
+    }
 
     fn execute(&self, input: &SearchInput) -> SearchOutput {
         let query_terms: HashSet<String> = self.tokenize(&input.query).into_iter().collect();
-        let scores: Vec<f64> = input.corpus.iter()
+        let scores: Vec<f64> = input
+            .corpus
+            .iter()
             .map(|doc| self.score_document(&query_terms, doc))
             .collect();
         let mut ranked: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
@@ -208,7 +215,8 @@ impl SearchAlgorithm for BowAlgorithm {
                 Ok(())
             }
             "min_term_length" => {
-                self.min_term_length = value.as_u64().ok_or("min_term_length must be uint")? as usize;
+                self.min_term_length =
+                    value.as_u64().ok_or("min_term_length must be uint")? as usize;
                 Ok(())
             }
             _ => Err(format!("Unknown parameter: {name}")),
@@ -237,7 +245,11 @@ impl Bm25Algorithm {
     }
 
     fn tokenize(&self, text: &str) -> Vec<String> {
-        let text = if self.case_insensitive { text.to_lowercase() } else { text.to_string() };
+        let text = if self.case_insensitive {
+            text.to_lowercase()
+        } else {
+            text.to_string()
+        };
         text.split(|c: char| !c.is_alphanumeric())
             .filter(|s| s.len() >= self.min_term_length)
             .map(String::from)
@@ -253,8 +265,13 @@ impl Bm25Algorithm {
     }
 
     fn idf(&self, term: &str, doc_term_freqs: &[HashMap<String, usize>], n: usize) -> f64 {
-        let docs_containing = doc_term_freqs.iter().filter(|tf| tf.contains_key(term)).count();
-        if docs_containing == 0 { return 0.0; }
+        let docs_containing = doc_term_freqs
+            .iter()
+            .filter(|tf| tf.contains_key(term))
+            .count();
+        if docs_containing == 0 {
+            return 0.0;
+        }
         let n_f = n as f64;
         let df = docs_containing as f64;
         ((n_f - df + 0.5) / (df + 0.5) + 1.0).ln()
@@ -274,7 +291,8 @@ impl Bm25Algorithm {
             let tf = *doc_tf.get(term).unwrap_or(&0) as f64;
             if tf > 0.0 {
                 let numerator = tf * (self.k1 + 1.0);
-                let denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len as f64 / avg_doc_len));
+                let denominator =
+                    tf + self.k1 * (1.0 - self.b + self.b * (doc_len as f64 / avg_doc_len));
                 score += idf * (numerator / denominator);
             }
         }
@@ -284,30 +302,48 @@ impl Bm25Algorithm {
     fn normalize_scores(scores: &mut [f64]) {
         let max = scores.iter().cloned().fold(0.0_f64, f64::max);
         if max > 0.0 {
-            for score in scores.iter_mut() { *score /= max; }
+            for score in scores.iter_mut() {
+                *score /= max;
+            }
         }
     }
 }
 
 impl Default for Bm25Algorithm {
     fn default() -> Self {
-        Self { k1: 1.2, b: 0.75, case_insensitive: true, min_term_length: 2 }
+        Self {
+            k1: 1.2,
+            b: 0.75,
+            case_insensitive: true,
+            min_term_length: 2,
+        }
     }
 }
 
 impl SearchAlgorithm for Bm25Algorithm {
-    fn name(&self) -> &'static str { "bm25" }
+    fn name(&self) -> &'static str {
+        "bm25"
+    }
 
     fn execute(&self, input: &SearchInput) -> SearchOutput {
         let n = input.corpus.len();
         if n == 0 {
-            return SearchOutput { scores: vec![], ranked_indices: vec![] };
+            return SearchOutput {
+                scores: vec![],
+                ranked_indices: vec![],
+            };
         }
 
-        let doc_term_freqs: Vec<HashMap<String, usize>> = input.corpus.iter()
+        let doc_term_freqs: Vec<HashMap<String, usize>> = input
+            .corpus
+            .iter()
             .map(|doc| self.term_frequencies(doc))
             .collect();
-        let doc_lens: Vec<usize> = input.corpus.iter().map(|d| self.tokenize(d).len()).collect();
+        let doc_lens: Vec<usize> = input
+            .corpus
+            .iter()
+            .map(|d| self.tokenize(d).len())
+            .collect();
         let avg_doc_len = doc_lens.iter().sum::<usize>() as f64 / n as f64;
         let query_terms = self.tokenize(&input.query);
 
@@ -318,7 +354,9 @@ impl SearchAlgorithm for Bm25Algorithm {
             }
         }
 
-        let mut scores: Vec<f64> = doc_term_freqs.iter().zip(doc_lens.iter())
+        let mut scores: Vec<f64> = doc_term_freqs
+            .iter()
+            .zip(doc_lens.iter())
             .map(|(tf, &len)| self.score_document(&query_terms, tf, len, avg_doc_len, &idf_cache))
             .collect();
         Self::normalize_scores(&mut scores);
@@ -342,9 +380,18 @@ impl SearchAlgorithm for Bm25Algorithm {
 
     fn set_param(&mut self, name: &str, value: Value) -> Result<(), String> {
         match name {
-            "k1" => { self.k1 = value.as_f64().ok_or("k1 must be float")?; Ok(()) }
-            "b" => { self.b = value.as_f64().ok_or("b must be float")?; Ok(()) }
-            "case_insensitive" => { self.case_insensitive = value.as_bool().ok_or("case_insensitive must be bool")?; Ok(()) }
+            "k1" => {
+                self.k1 = value.as_f64().ok_or("k1 must be float")?;
+                Ok(())
+            }
+            "b" => {
+                self.b = value.as_f64().ok_or("b must be float")?;
+                Ok(())
+            }
+            "case_insensitive" => {
+                self.case_insensitive = value.as_bool().ok_or("case_insensitive must be bool")?;
+                Ok(())
+            }
             _ => Err(format!("Unknown parameter: {name}")),
         }
     }
@@ -370,7 +417,9 @@ impl CosineAlgorithm {
 
     #[inline]
     fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-        if a.len() != b.len() || a.is_empty() { return 0.0; }
+        if a.len() != b.len() || a.is_empty() {
+            return 0.0;
+        }
         let mut dot = 0.0;
         let mut norm_a = 0.0;
         let mut norm_b = 0.0;
@@ -380,24 +429,34 @@ impl CosineAlgorithm {
             norm_b += b[i] * b[i];
         }
         let denominator = (norm_a * norm_b).sqrt();
-        if denominator == 0.0 { 0.0 } else { dot / denominator }
+        if denominator == 0.0 {
+            0.0
+        } else {
+            dot / denominator
+        }
     }
 
     fn l2_normalize(v: &mut [f64]) {
         let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
         if norm > 0.0 {
-            for x in v.iter_mut() { *x /= norm; }
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
         }
     }
 
     fn vector_search(&self, input: &VectorSearchInput) -> SearchOutput {
         let mut query = input.query_vector.clone();
-        if self.normalize { Self::l2_normalize(&mut query); }
+        if self.normalize {
+            Self::l2_normalize(&mut query);
+        }
 
         let mut scores: Vec<f64> = Vec::with_capacity(input.corpus_vectors.len());
         for corpus_vec in &input.corpus_vectors {
             let mut cv = corpus_vec.clone();
-            if self.normalize { Self::l2_normalize(&mut cv); }
+            if self.normalize {
+                Self::l2_normalize(&mut cv);
+            }
             let sim = Self::cosine_similarity(&query, &cv);
             scores.push(if sim >= self.threshold { sim } else { 0.0 });
         }
@@ -413,22 +472,46 @@ impl CosineAlgorithm {
 
 impl Default for CosineAlgorithm {
     fn default() -> Self {
-        Self { normalize: true, threshold: 0.0 }
+        Self {
+            normalize: true,
+            threshold: 0.0,
+        }
     }
 }
 
 impl SearchAlgorithm for CosineAlgorithm {
-    fn name(&self) -> &'static str { "cosine" }
+    fn name(&self) -> &'static str {
+        "cosine"
+    }
 
     fn execute(&self, input: &SearchInput) -> SearchOutput {
-        let query_terms: HashSet<_> = input.query.to_lowercase().split_whitespace().map(String::from).collect();
-        let scores: Vec<f64> = input.corpus.iter().map(|doc| {
-            let doc_terms: HashSet<_> = doc.to_lowercase().split_whitespace().map(String::from).collect();
-            if query_terms.is_empty() || doc_terms.is_empty() { return 0.0; }
-            let intersection = query_terms.intersection(&doc_terms).count() as f64;
-            let union = query_terms.union(&doc_terms).count() as f64;
-            if union > 0.0 { intersection / union } else { 0.0 }
-        }).collect();
+        let query_terms: HashSet<_> = input
+            .query
+            .to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let scores: Vec<f64> = input
+            .corpus
+            .iter()
+            .map(|doc| {
+                let doc_terms: HashSet<_> = doc
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect();
+                if query_terms.is_empty() || doc_terms.is_empty() {
+                    return 0.0;
+                }
+                let intersection = query_terms.intersection(&doc_terms).count() as f64;
+                let union = query_terms.union(&doc_terms).count() as f64;
+                if union > 0.0 {
+                    intersection / union
+                } else {
+                    0.0
+                }
+            })
+            .collect();
 
         let mut ranked: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -448,8 +531,14 @@ impl SearchAlgorithm for CosineAlgorithm {
 
     fn set_param(&mut self, name: &str, value: Value) -> Result<(), String> {
         match name {
-            "normalize" => { self.normalize = value.as_bool().ok_or("normalize must be bool")?; Ok(()) }
-            "threshold" => { self.threshold = value.as_f64().ok_or("threshold must be float")?; Ok(()) }
+            "normalize" => {
+                self.normalize = value.as_bool().ok_or("normalize must be bool")?;
+                Ok(())
+            }
+            "threshold" => {
+                self.threshold = value.as_f64().ok_or("threshold must be float")?;
+                Ok(())
+            }
             _ => Err(format!("Unknown parameter: {name}")),
         }
     }
@@ -478,23 +567,30 @@ impl SearchModule {
         let p = Params::new(&params);
         let algorithm = p.str_or("algorithm", "bm25");
         let query = p.str("query")?;
-        let corpus: Vec<String> = p.array("corpus")?
+        let corpus: Vec<String> = p
+            .array("corpus")?
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
 
-        let algo_params: HashMap<String, Value> = p.value("params")
+        let algo_params: HashMap<String, Value> = p
+            .value("params")
             .and_then(|v| v.as_object())
             .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
 
         let algo = if algo_params.is_empty() {
-            self.registry.create(algorithm).ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?
+            self.registry
+                .create(algorithm)
+                .ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?
         } else {
             self.registry.create_with_params(algorithm, &algo_params)?
         };
 
-        let input = SearchInput { query: query.to_string(), corpus };
+        let input = SearchInput {
+            query: query.to_string(),
+            corpus,
+        };
         let output = algo.execute(&input);
 
         Ok(CommandResult::Json(json!({
@@ -530,14 +626,16 @@ impl SearchModule {
     fn handle_params(&self, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
         let algorithm = p.str("algorithm")?;
-        let algo = self.registry.create(algorithm).ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?;
+        let algo = self
+            .registry
+            .create(algorithm)
+            .ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?;
 
         // Build params with current values using get_param()
-        let param_values: serde_json::Map<String, Value> = algo.param_names()
+        let param_values: serde_json::Map<String, Value> = algo
+            .param_names()
             .iter()
-            .filter_map(|name| {
-                algo.get_param(name).map(|value| (name.to_string(), value))
-            })
+            .filter_map(|name| algo.get_param(name).map(|value| (name.to_string(), value)))
             .collect();
 
         Ok(CommandResult::Json(json!({
@@ -572,11 +670,7 @@ impl ServiceModule for SearchModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "search/execute" => self.handle_execute(params),
             "search/vector" => self.handle_vector(params),

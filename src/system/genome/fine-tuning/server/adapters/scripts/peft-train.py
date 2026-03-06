@@ -277,7 +277,7 @@ def format_chat_template(example, tokenizer):
     return {"text": text}
 
 
-def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
+def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume_from: str = None):
     """Execute LoRA training."""
     num_examples = len(dataset)
     batch_size = config['batchSize']
@@ -355,8 +355,9 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         lr_scheduler_type="linear",
         seed=42,
         report_to="none",
-        save_strategy="epoch",
-        save_total_limit=1,
+        save_strategy="steps",
+        save_steps=max(1, total_optimizer_steps // 6),  # ~6 checkpoints across training
+        save_total_limit=3,
     )
 
     # SFT Trainer (TRL 0.24+ simplified API)
@@ -368,9 +369,15 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         args=training_args,
     )
 
-    # Train!
-    print(f"🚀 Training started...")
-    trainer_stats = trainer.train()
+    # Train! Resume from checkpoint if available.
+    if resume_from and os.path.isdir(resume_from):
+        print(f"🔄 Resuming from checkpoint: {resume_from}")
+        trainer_stats = trainer.train(resume_from_checkpoint=resume_from)
+    else:
+        if resume_from:
+            print(f"⚠️  Checkpoint not found: {resume_from}, starting fresh")
+        print(f"🚀 Training started...")
+        trainer_stats = trainer.train()
 
     print(f"✅ Training complete!")
     print(f"   Final loss: {trainer_stats.training_loss:.4f}")
@@ -397,6 +404,7 @@ def main():
     parser = argparse.ArgumentParser(description="Standard PyTorch LoRA Training")
     parser.add_argument("--config", required=True, help="Path to config JSON")
     parser.add_argument("--output", required=True, help="Output directory for adapter")
+    parser.add_argument("--resume-from", default=None, help="Resume from checkpoint directory")
 
     args = parser.parse_args()
 
@@ -427,8 +435,19 @@ def main():
     dataset = load_dataset_from_jsonl(config['datasetPath'])
 
     # Step 6: Train LoRA adapter
+    # Determine checkpoint resume path: CLI arg > config > auto-detect in output dir
+    resume_from = args.resume_from or config.get('resumeFromCheckpoint')
+    if not resume_from:
+        # Auto-detect: look for checkpoint-* dirs in output directory
+        output_dir = Path(args.output)
+        if output_dir.exists():
+            checkpoints = sorted(output_dir.glob("checkpoint-*"), key=os.path.getmtime)
+            if checkpoints:
+                resume_from = str(checkpoints[-1])
+                print(f"🔄 Auto-detected checkpoint: {resume_from}")
+
     report_memory("pre_training", device)
-    trainer = train(config, model, tokenizer, dataset, device)
+    trainer = train(config, model, tokenizer, dataset, device, resume_from=resume_from)
     report_memory("post_training", device)
 
     # Step 7: Save adapter weights

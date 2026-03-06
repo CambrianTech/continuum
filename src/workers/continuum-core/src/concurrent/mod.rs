@@ -4,8 +4,8 @@
 //! - PriorityQueue<T>: Generic priority-based message queue
 //! - MessageProcessor<T>: Process messages concurrently
 //! - EventBus<T>: Publish-subscribe pattern
-pub mod priority_queue;
 pub mod message_processor;
+pub mod priority_queue;
 
-pub use priority_queue::*;
 pub use message_processor::*;
+pub use priority_queue::*;

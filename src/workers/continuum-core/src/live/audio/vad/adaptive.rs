@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 /// Noise level estimation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseLevel {
-    Quiet,      // Library, bedroom at night
-    Moderate,   // Office, home
-    Loud,       // Cafe, street
-    VeryLoud,   // Factory floor, construction site
+    Quiet,    // Library, bedroom at night
+    Moderate, // Office, home
+    Loud,     // Cafe, street
+    VeryLoud, // Factory floor, construction site
 }
 
 /// Adaptive VAD configuration that learns from environment
@@ -51,7 +51,7 @@ pub struct AdaptiveConfig {
 impl Default for AdaptiveConfig {
     fn default() -> Self {
         Self {
-            silero_threshold: 0.3,  // Start conservative
+            silero_threshold: 0.3, // Start conservative
             noise_level: NoiseLevel::Moderate,
             background_rms: 0.0,
             false_positive_rate: 0.0,
@@ -69,15 +69,20 @@ impl AdaptiveConfig {
 
         // Lower threshold in noisier environments to catch speech
         self.silero_threshold = match level {
-            NoiseLevel::Quiet => 0.4,      // Can be more selective
-            NoiseLevel::Moderate => 0.3,   // Standard
-            NoiseLevel::Loud => 0.25,      // Lower to catch speech in noise
-            NoiseLevel::VeryLoud => 0.2,   // Very low threshold
+            NoiseLevel::Quiet => 0.4,    // Can be more selective
+            NoiseLevel::Moderate => 0.3, // Standard
+            NoiseLevel::Loud => 0.25,    // Lower to catch speech in noise
+            NoiseLevel::VeryLoud => 0.2, // Very low threshold
         };
     }
 
     /// Adapt based on recent performance
-    pub fn adapt_from_metrics(&mut self, false_positives: usize, false_negatives: usize, total: usize) {
+    pub fn adapt_from_metrics(
+        &mut self,
+        false_positives: usize,
+        false_negatives: usize,
+        total: usize,
+    ) {
         if total == 0 || Instant::now() - self.last_adapted < self.adaptation_interval {
             return;
         }
@@ -86,12 +91,14 @@ impl AdaptiveConfig {
         self.false_negative_rate = false_negatives as f32 / total as f32;
 
         // Too many false positives (transcribing noise) - raise threshold
-        if self.false_positive_rate > 0.1 {  // >10% FP rate
+        if self.false_positive_rate > 0.1 {
+            // >10% FP rate
             self.silero_threshold = (self.silero_threshold + 0.05).min(0.6);
         }
 
         // Too many false negatives (missing speech) - lower threshold
-        if self.false_negative_rate > 0.1 {  // >10% FN rate
+        if self.false_negative_rate > 0.1 {
+            // >10% FN rate
             self.silero_threshold = (self.silero_threshold - 0.05).max(0.15);
         }
 
@@ -176,10 +183,7 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
             return 0.0;
         }
 
-        let sum_squares: f64 = samples
-            .iter()
-            .map(|&s| (s as f64) * (s as f64))
-            .sum();
+        let sum_squares: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
 
         ((sum_squares / samples.len() as f64).sqrt()) as f32
     }
@@ -190,7 +194,8 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
         let result = self.vad.detect(samples)?;
 
         // Track result
-        self.recent_results.push_back((result.is_speech, result.confidence));
+        self.recent_results
+            .push_back((result.is_speech, result.confidence));
         if self.recent_results.len() > self.max_history {
             self.recent_results.pop_front();
         }

@@ -37,7 +37,10 @@ pub enum Modality {
 //=============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/InboxMessage.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/InboxMessage.ts"
+)]
 pub struct InboxMessage {
     #[ts(type = "string")]
     pub id: Uuid,
@@ -73,7 +76,9 @@ impl PartialOrd for InboxMessage {
 // Binary heap is max-heap - higher priority pops first
 impl Ord for InboxMessage {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.priority.partial_cmp(&other.priority).unwrap_or(Ordering::Equal)
+        self.priority
+            .partial_cmp(&other.priority)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -112,7 +117,9 @@ impl PartialOrd for InboxTask {
 
 impl Ord for InboxTask {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.priority.partial_cmp(&other.priority).unwrap_or(Ordering::Equal)
+        self.priority
+            .partial_cmp(&other.priority)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -161,7 +168,9 @@ impl PartialOrd for QueueItem {
 
 impl Ord for QueueItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.priority().partial_cmp(&other.priority()).unwrap_or(Ordering::Equal)
+        self.priority()
+            .partial_cmp(&other.priority())
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -182,7 +191,10 @@ pub enum Mood {
 
 /// Persona internal state - energy, attention, mood
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/PersonaState.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/PersonaState.ts"
+)]
 pub struct PersonaState {
     /// Energy level 0.0-1.0 (depletes with work, recovers with rest)
     pub energy: f32,

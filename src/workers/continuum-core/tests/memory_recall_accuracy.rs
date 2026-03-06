@@ -10,13 +10,13 @@
 //! Test dataset: A persona's thought chain about learning Rust,
 //! with explicit tags forming an associative graph.
 
+use continuum_core::memory::recall::{
+    AssociativeRecallLayer, CoreRecallLayer, CrossContextLayer, DecayResurfaceLayer, RecallLayer,
+    RecallQuery, SemanticRecallLayer, TemporalRecallLayer,
+};
 use continuum_core::memory::{
     CorpusMemory, CorpusTimelineEvent, DeterministicEmbeddingProvider, EmbeddingProvider,
     MemoryCorpus, MemoryRecord, MultiLayerRecallRequest, PersonaMemoryManager, TimelineEvent,
-};
-use continuum_core::memory::recall::{
-    AssociativeRecallLayer, CoreRecallLayer, CrossContextLayer, DecayResurfaceLayer,
-    RecallLayer, RecallQuery, SemanticRecallLayer, TemporalRecallLayer,
 };
 use std::sync::Arc;
 
@@ -217,7 +217,10 @@ fn test_roundtrip_corpus_load_and_recall() {
     );
 
     // Verify content roundtrip
-    assert!(resp.memories.iter().any(|m| m.content.contains("ownership and borrowing")));
+    assert!(resp
+        .memories
+        .iter()
+        .any(|m| m.content.contains("ownership and borrowing")));
 }
 
 // ─── Test 2: Core Layer — Never-Forget Memories ──────────────────────────────
@@ -237,9 +240,13 @@ fn test_core_layer_finds_high_importance() {
     let results = CoreRecallLayer.recall(&corpus, &query, &provider);
 
     // Core layer: importance >= 0.8
-    assert!(!results.is_empty(), "Core layer should find high-importance memories");
+    assert!(
+        !results.is_empty(),
+        "Core layer should find high-importance memories"
+    );
     assert_eq!(
-        results.len(), 3,
+        results.len(),
+        3,
         "Should find 3 core memories (0.95, 0.85, 0.8), got {}",
         results.len()
     );
@@ -291,7 +298,10 @@ fn test_semantic_layer_finds_related_by_meaning() {
     );
 
     // Cooking memory should be ranked low (if present at all)
-    if let Some(pasta_idx) = results.iter().position(|r| r.memory.content.contains("pasta")) {
+    if let Some(pasta_idx) = results
+        .iter()
+        .position(|r| r.memory.content.contains("pasta"))
+    {
         assert!(
             pasta_idx >= results.len() - 2,
             "Cooking memory should be near the bottom, found at position {pasta_idx}/{}",
@@ -305,7 +315,9 @@ fn test_semantic_layer_cooking_query_finds_cooking() {
     let corpus = build_corpus(build_thought_chain(), vec![]);
     let provider = DeterministicEmbeddingProvider;
 
-    let query_emb = provider.embed("What do I know about cooking pasta?").unwrap();
+    let query_emb = provider
+        .embed("What do I know about cooking pasta?")
+        .unwrap();
 
     let query = RecallQuery {
         query_text: Some("What do I know about cooking pasta?".into()),
@@ -322,7 +334,10 @@ fn test_semantic_layer_cooking_query_finds_cooking() {
     );
 
     // The pasta memory should rank higher for a cooking query
-    let has_pasta_in_top = results.iter().take(3).any(|r| r.memory.content.contains("pasta"));
+    let has_pasta_in_top = results
+        .iter()
+        .take(3)
+        .any(|r| r.memory.content.contains("pasta"));
     assert!(
         has_pasta_in_top,
         "Cooking memory should appear in top 3 for cooking query"
@@ -426,7 +441,10 @@ fn test_decay_resurface_surfaces_unaccessed() {
 
     // All memories have access_count=0 and were created recently,
     // so decay score ~ 0 for recent ones. But any memory with importance >= 0.5 is eligible.
-    let eligible_count = results.iter().filter(|r| r.memory.importance >= 0.5).count();
+    let eligible_count = results
+        .iter()
+        .filter(|r| r.memory.importance >= 0.5)
+        .count();
     assert_eq!(
         eligible_count,
         results.len(),
@@ -771,7 +789,9 @@ fn test_corpus_replacement_clears_old_data() {
             layer: None,
             relevance_score: None,
         },
-        embedding: provider.embed("This is the old memory that should disappear").ok(),
+        embedding: provider
+            .embed("This is the old memory that should disappear")
+            .ok(),
     }];
     manager.load_corpus(PERSONA_ID, initial, vec![]);
 

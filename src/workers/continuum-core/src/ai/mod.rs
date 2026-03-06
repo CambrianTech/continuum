@@ -27,8 +27,8 @@ pub mod types;
 
 // Re-export commonly used types
 pub use adapter::{
-    AdapterCapabilities, AdapterConfig, AdapterRegistry, AIProviderAdapter, ApiStyle,
-    LoRACapabilities, LoRAAdapterInfo,
+    AIProviderAdapter, AdapterCapabilities, AdapterConfig, AdapterRegistry, ApiStyle,
+    LoRAAdapterInfo, LoRACapabilities,
 };
 pub use anthropic_adapter::AnthropicAdapter;
 pub use openai_adapter::OpenAICompatibleAdapter;

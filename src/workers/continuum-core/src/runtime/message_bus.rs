@@ -77,8 +77,13 @@ impl MessageBus {
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
         let mut buf = self.recent_events.lock().unwrap();
         // Search from newest to oldest, find position + clone event
-        let found_idx = buf.iter().enumerate().rev()
-            .find(|(_, te)| now.duration_since(te.at) < ttl && glob_matches(pattern, &te.event.name))
+        let found_idx = buf
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, te)| {
+                now.duration_since(te.at) < ttl && glob_matches(pattern, &te.event.name)
+            })
             .map(|(i, te)| (i, te.event.clone()));
         if let Some((idx, event)) = found_idx {
             buf.remove(idx);
@@ -110,10 +115,7 @@ impl MessageBus {
             module_name,
             synchronous,
         };
-        self.subscriptions
-            .entry(module_name)
-            .or_default()
-            .push(sub);
+        self.subscriptions.entry(module_name).or_default().push(sub);
     }
 
     /// Get a receiver for async event delivery.

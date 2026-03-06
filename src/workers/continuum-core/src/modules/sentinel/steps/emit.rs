@@ -24,9 +24,13 @@ pub async fn execute(
     let interpolated_event = interpolation::interpolate(event, ctx);
     let interpolated_payload = interpolation::interpolate_value(payload, ctx);
 
-    log.info(&format!("[{}] Emit step: event={}", pipeline_ctx.handle_id, interpolated_event));
+    log.info(&format!(
+        "[{}] Emit step: event={}",
+        pipeline_ctx.handle_id, interpolated_event
+    ));
 
-    let bus = pipeline_ctx.bus
+    let bus = pipeline_ctx
+        .bus
         .ok_or_else(|| format!("[{}] Emit step requires MessageBus", pipeline_ctx.handle_id))?;
 
     bus.publish_async_only(&interpolated_event, interpolated_payload.clone());
@@ -52,10 +56,10 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::ExecutionContext;
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -66,7 +70,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-emit",
             registry,
@@ -84,7 +91,9 @@ mod tests {
         let mut ctx = test_ctx();
 
         let payload = json!({"status": "done"});
-        let result = execute("build:complete", &payload, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("build:complete", &payload, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("build:complete"));
@@ -107,8 +116,12 @@ mod tests {
         let result = execute(
             "{{input.phase}}:complete",
             &json!({}),
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("deploy:complete"));
@@ -125,8 +138,12 @@ mod tests {
         let result = execute(
             "test:event",
             &json!({"pipeline": "{{input.name}}"}),
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["payload"]["pipeline"], "my-pipeline");

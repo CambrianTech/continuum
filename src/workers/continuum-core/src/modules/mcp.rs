@@ -11,19 +11,19 @@
 //! - mcp/search-tools: Search tools by keyword
 //! - mcp/tool-help: Get detailed help for a specific tool
 
-use crate::utils::params::Params;
 use crate::runtime::{
-    CommandResult, ModuleConfig, ModulePriority, ServiceModule, ModuleContext,
-    CommandSchema, ParamSchema,
+    CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
+    ServiceModule,
 };
+use crate::utils::params::Params;
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use parking_lot::RwLock;
 
 /// MCP tool definition (matches MCP protocol)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,29 +78,131 @@ impl MCPModule {
         let mut categories = HashMap::new();
 
         // Essential tools (always shown first)
-        categories.insert("ping", ToolCategory { priority: 0, description: "Health check" });
-        categories.insert("help", ToolCategory { priority: 0, description: "Documentation" });
-        categories.insert("list", ToolCategory { priority: 0, description: "List commands" });
+        categories.insert(
+            "ping",
+            ToolCategory {
+                priority: 0,
+                description: "Health check",
+            },
+        );
+        categories.insert(
+            "help",
+            ToolCategory {
+                priority: 0,
+                description: "Documentation",
+            },
+        );
+        categories.insert(
+            "list",
+            ToolCategory {
+                priority: 0,
+                description: "List commands",
+            },
+        );
 
         // Common interface tools
-        categories.insert("interface/screenshot", ToolCategory { priority: 1, description: "Screenshot" });
-        categories.insert("interface/navigate", ToolCategory { priority: 1, description: "Navigation" });
-        categories.insert("interface/click", ToolCategory { priority: 1, description: "Click" });
+        categories.insert(
+            "interface/screenshot",
+            ToolCategory {
+                priority: 1,
+                description: "Screenshot",
+            },
+        );
+        categories.insert(
+            "interface/navigate",
+            ToolCategory {
+                priority: 1,
+                description: "Navigation",
+            },
+        );
+        categories.insert(
+            "interface/click",
+            ToolCategory {
+                priority: 1,
+                description: "Click",
+            },
+        );
 
         // Chat tools
-        categories.insert("collaboration/chat/send", ToolCategory { priority: 1, description: "Send chat" });
-        categories.insert("collaboration/chat/export", ToolCategory { priority: 1, description: "Export chat" });
+        categories.insert(
+            "collaboration/chat/send",
+            ToolCategory {
+                priority: 1,
+                description: "Send chat",
+            },
+        );
+        categories.insert(
+            "collaboration/chat/export",
+            ToolCategory {
+                priority: 1,
+                description: "Export chat",
+            },
+        );
 
         // Category prefixes
-        categories.insert("interface/", ToolCategory { priority: 10, description: "Interface" });
-        categories.insert("collaboration/", ToolCategory { priority: 20, description: "Collaboration" });
-        categories.insert("ai/", ToolCategory { priority: 30, description: "AI" });
-        categories.insert("data/", ToolCategory { priority: 40, description: "Data" });
-        categories.insert("workspace/", ToolCategory { priority: 50, description: "Workspace" });
-        categories.insert("development/", ToolCategory { priority: 60, description: "Development" });
-        categories.insert("media/", ToolCategory { priority: 70, description: "Media" });
-        categories.insert("system/", ToolCategory { priority: 80, description: "System" });
-        categories.insert("mcp/", ToolCategory { priority: -1, description: "MCP meta-tools" });
+        categories.insert(
+            "interface/",
+            ToolCategory {
+                priority: 10,
+                description: "Interface",
+            },
+        );
+        categories.insert(
+            "collaboration/",
+            ToolCategory {
+                priority: 20,
+                description: "Collaboration",
+            },
+        );
+        categories.insert(
+            "ai/",
+            ToolCategory {
+                priority: 30,
+                description: "AI",
+            },
+        );
+        categories.insert(
+            "data/",
+            ToolCategory {
+                priority: 40,
+                description: "Data",
+            },
+        );
+        categories.insert(
+            "workspace/",
+            ToolCategory {
+                priority: 50,
+                description: "Workspace",
+            },
+        );
+        categories.insert(
+            "development/",
+            ToolCategory {
+                priority: 60,
+                description: "Development",
+            },
+        );
+        categories.insert(
+            "media/",
+            ToolCategory {
+                priority: 70,
+                description: "Media",
+            },
+        );
+        categories.insert(
+            "system/",
+            ToolCategory {
+                priority: 80,
+                description: "System",
+            },
+        );
+        categories.insert(
+            "mcp/",
+            ToolCategory {
+                priority: -1,
+                description: "MCP meta-tools",
+            },
+        );
 
         Self {
             tools_cache: RwLock::new(None),
@@ -129,17 +231,19 @@ impl MCPModule {
     /// Load TypeScript generated schemas from JSON file
     fn load_ts_schemas(&self) -> HashMap<String, Value> {
         match fs::read_to_string(&self.schemas_path) {
-            Ok(content) => {
-                match serde_json::from_str::<HashMap<String, Value>>(&content) {
-                    Ok(schemas) => schemas,
-                    Err(e) => {
-                        tracing::warn!("Failed to parse command schemas JSON: {}", e);
-                        HashMap::new()
-                    }
+            Ok(content) => match serde_json::from_str::<HashMap<String, Value>>(&content) {
+                Ok(schemas) => schemas,
+                Err(e) => {
+                    tracing::warn!("Failed to parse command schemas JSON: {}", e);
+                    HashMap::new()
                 }
-            }
+            },
             Err(e) => {
-                tracing::debug!("Could not read schemas file at {:?}: {}", self.schemas_path, e);
+                tracing::debug!(
+                    "Could not read schemas file at {:?}: {}",
+                    self.schemas_path,
+                    e
+                );
                 HashMap::new()
             }
         }
@@ -147,7 +251,8 @@ impl MCPModule {
 
     /// Convert TypeScript schema to MCP tool
     fn ts_schema_to_tool(&self, name: &str, schema: &Value) -> Option<MCPTool> {
-        let description = schema.get("description")
+        let description = schema
+            .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or(name);
 
@@ -158,7 +263,8 @@ impl MCPModule {
 
         if let Some(params_obj) = params {
             for (param_name, param_def) in params_obj {
-                let param_type = param_def.get("type")
+                let param_type = param_def
+                    .get("type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("string");
 
@@ -171,18 +277,23 @@ impl MCPModule {
                     _ => "string",
                 };
 
-                let is_required = param_def.get("required")
+                let is_required = param_def
+                    .get("required")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let param_description = param_def.get("description")
+                let param_description = param_def
+                    .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or(param_name);
 
-                properties.insert(param_name.clone(), MCPProperty {
-                    prop_type: json_type.to_string(),
-                    description: param_description.to_string(),
-                });
+                properties.insert(
+                    param_name.clone(),
+                    MCPProperty {
+                        prop_type: json_type.to_string(),
+                        description: param_description.to_string(),
+                    },
+                );
 
                 if is_required {
                     required.push(param_name.clone());
@@ -199,7 +310,11 @@ impl MCPModule {
             input_schema: MCPInputSchema {
                 schema_type: "object".to_string(),
                 properties,
-                required: if required.is_empty() { None } else { Some(required) },
+                required: if required.is_empty() {
+                    None
+                } else {
+                    Some(required)
+                },
             },
         })
     }
@@ -210,10 +325,13 @@ impl MCPModule {
         let mut required = Vec::new();
 
         for param in &schema.params {
-            properties.insert(param.name.to_string(), MCPProperty {
-                prop_type: param.param_type.to_string(),
-                description: param.description.to_string(),
-            });
+            properties.insert(
+                param.name.to_string(),
+                MCPProperty {
+                    prop_type: param.param_type.to_string(),
+                    description: param.description.to_string(),
+                },
+            );
 
             if param.required {
                 required.push(param.name.to_string());
@@ -228,7 +346,11 @@ impl MCPModule {
             input_schema: MCPInputSchema {
                 schema_type: "object".to_string(),
                 properties,
-                required: if required.is_empty() { None } else { Some(required) },
+                required: if required.is_empty() {
+                    None
+                } else {
+                    Some(required)
+                },
             },
         }
     }
@@ -241,19 +363,29 @@ impl MCPModule {
         // 1. Add MCP meta-tools first
         tools.push(MCPTool {
             name: "mcp_search_tools".to_string(),
-            description: "[JTAG] Search for tools by keyword. Returns matching tool names and descriptions.".to_string(),
+            description:
+                "[JTAG] Search for tools by keyword. Returns matching tool names and descriptions."
+                    .to_string(),
             input_schema: MCPInputSchema {
                 schema_type: "object".to_string(),
                 properties: {
                     let mut props = HashMap::new();
-                    props.insert("query".to_string(), MCPProperty {
-                        prop_type: "string".to_string(),
-                        description: "Search query - matches against tool names and descriptions".to_string(),
-                    });
-                    props.insert("limit".to_string(), MCPProperty {
-                        prop_type: "number".to_string(),
-                        description: "Max results to return (default: 10)".to_string(),
-                    });
+                    props.insert(
+                        "query".to_string(),
+                        MCPProperty {
+                            prop_type: "string".to_string(),
+                            description:
+                                "Search query - matches against tool names and descriptions"
+                                    .to_string(),
+                        },
+                    );
+                    props.insert(
+                        "limit".to_string(),
+                        MCPProperty {
+                            prop_type: "number".to_string(),
+                            description: "Max results to return (default: 10)".to_string(),
+                        },
+                    );
                     props
                 },
                 required: Some(vec!["query".to_string()]),
@@ -268,10 +400,13 @@ impl MCPModule {
                 schema_type: "object".to_string(),
                 properties: {
                     let mut props = HashMap::new();
-                    props.insert("tool".to_string(), MCPProperty {
-                        prop_type: "string".to_string(),
-                        description: "Tool name to get help for".to_string(),
-                    });
+                    props.insert(
+                        "tool".to_string(),
+                        MCPProperty {
+                            prop_type: "string".to_string(),
+                            description: "Tool name to get help for".to_string(),
+                        },
+                    );
                     props
                 },
                 required: Some(vec!["tool".to_string()]),
@@ -330,13 +465,23 @@ impl MCPModule {
             let desc_lower = tool.description.to_lowercase();
 
             let mut score = 0i32;
-            if name_lower.contains(&query_lower) { score += 10; }
-            if name_lower.starts_with(&query_lower) { score += 5; }
-            if desc_lower.contains(&query_lower) { score += 3; }
+            if name_lower.contains(&query_lower) {
+                score += 10;
+            }
+            if name_lower.starts_with(&query_lower) {
+                score += 5;
+            }
+            if desc_lower.contains(&query_lower) {
+                score += 3;
+            }
 
             // Exact segment match
-            let segments: Vec<&str> = name_lower.split(|c| c == '/' || c == '-' || c == '_').collect();
-            if segments.contains(&query_lower.as_str()) { score += 8; }
+            let segments: Vec<&str> = name_lower
+                .split(|c| c == '/' || c == '-' || c == '_')
+                .collect();
+            if segments.contains(&query_lower.as_str()) {
+                score += 8;
+            }
 
             if score > 0 {
                 results.push((score, tool));
@@ -345,7 +490,8 @@ impl MCPModule {
 
         results.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.name.cmp(&b.1.name)));
 
-        results.into_iter()
+        results
+            .into_iter()
             .take(limit)
             .map(|(_, tool)| {
                 json!({
@@ -362,12 +508,19 @@ impl MCPModule {
         // Normalize tool name
         let normalized = tool_name.replace('/', "_").replace("mcp__jtag__", "");
 
-        tools.iter()
+        tools
+            .iter()
             .find(|t| t.name == normalized || t.name == tool_name)
             .map(|tool| {
-                let params: Vec<Value> = tool.input_schema.properties.iter()
+                let params: Vec<Value> = tool
+                    .input_schema
+                    .properties
+                    .iter()
                     .map(|(name, prop)| {
-                        let required = tool.input_schema.required.as_ref()
+                        let required = tool
+                            .input_schema
+                            .required
+                            .as_ref()
                             .map(|r| r.contains(name))
                             .unwrap_or(false);
                         json!({
@@ -407,16 +560,18 @@ impl ServiceModule for MCPModule {
         // Pre-build tools cache
         let tools = self.build_tools(ctx);
         *self.tools_cache.write() = Some(tools);
-        tracing::info!("MCPModule initialized with {} tools",
-            self.tools_cache.read().as_ref().map(|t| t.len()).unwrap_or(0));
+        tracing::info!(
+            "MCPModule initialized with {} tools",
+            self.tools_cache
+                .read()
+                .as_ref()
+                .map(|t| t.len())
+                .unwrap_or(0)
+        );
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "mcp/list-tools" => {
                 let tools = self.tools_cache.read();
@@ -463,7 +618,7 @@ impl ServiceModule for MCPModule {
                         "success": false,
                         "error": format!("Tool not found: {}", tool_name),
                         "hint": "Use mcp/search-tools to find available tools"
-                    })))
+                    }))),
                 }
             }
 
@@ -509,14 +664,12 @@ impl ServiceModule for MCPModule {
             CommandSchema {
                 name: "mcp/tool-help",
                 description: "Get detailed help for a specific tool",
-                params: vec![
-                    ParamSchema {
-                        name: "tool",
-                        param_type: "string",
-                        required: true,
-                        description: "Tool name to get help for",
-                    },
-                ],
+                params: vec![ParamSchema {
+                    name: "tool",
+                    param_type: "string",
+                    required: true,
+                    description: "Tool name to get help for",
+                }],
             },
         ]
     }

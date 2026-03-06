@@ -47,8 +47,12 @@ pub async fn execute(
         _ => max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS),
     };
 
-    log.info(&format!("[{}] Loop step: mode={}, limit={}",
-        pipeline_ctx.handle_id, mode.name(), limit));
+    log.info(&format!(
+        "[{}] Loop step: mode={}, limit={}",
+        pipeline_ctx.handle_id,
+        mode.name(),
+        limit
+    ));
 
     let mut iteration: usize = 0;
     // Collect per-iteration sub-step results for post-loop access.
@@ -57,8 +61,10 @@ pub async fn execute(
 
     loop {
         if iteration >= limit {
-            log.info(&format!("[{}] Loop reached iteration limit {}",
-                pipeline_ctx.handle_id, limit));
+            log.info(&format!(
+                "[{}] Loop reached iteration limit {}",
+                pipeline_ctx.handle_id, limit
+            ));
             break;
         }
 
@@ -66,8 +72,10 @@ pub async fn execute(
         if let LoopMode::While(ref cond) = mode {
             let interpolated = interpolation::interpolate(cond, ctx);
             if !interpolation::evaluate_condition(&interpolated) {
-                log.info(&format!("[{}] While condition false at iteration {}",
-                    pipeline_ctx.handle_id, iteration));
+                log.info(&format!(
+                    "[{}] While condition false at iteration {}",
+                    pipeline_ctx.handle_id, iteration
+                ));
                 break;
             }
         }
@@ -75,17 +83,20 @@ pub async fn execute(
         // Save parent iteration for nested loop access: {{input.parent_iteration}}
         // If we're already inside a loop (iteration exists), promote it to parent_iteration
         if let Some(parent_iter) = ctx.inputs.get("iteration").cloned() {
-            ctx.inputs.insert("parent_iteration".to_string(), parent_iter);
+            ctx.inputs
+                .insert("parent_iteration".to_string(), parent_iter);
         }
 
         // Set iteration variable for interpolation: {{input.iteration}}
         ctx.inputs.insert("iteration".to_string(), json!(iteration));
         // Set loop base index for {{loop.N.field}} relative referencing
-        ctx.inputs.insert("_loop_base".to_string(), json!(ctx.step_results.len()));
+        ctx.inputs
+            .insert("_loop_base".to_string(), json!(ctx.step_results.len()));
 
         // Execute sub-steps
         for (sub_idx, step) in steps.iter().enumerate() {
-            let sub_result = super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
+            let sub_result =
+                super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
             if !sub_result.success {
                 log.error(&format!(
                     "[{}] Loop iteration {} sub-step {}/{} ({}) failed: error={:?}, output={:?}, exitCode={:?}",
@@ -134,17 +145,21 @@ pub async fn execute(
 
         // Snapshot this iteration's sub-step results for post-loop access.
         // Enables {{steps.N.data.iterations[i][j].data.field}} references.
-        let loop_base = ctx.inputs.get("_loop_base")
+        let loop_base = ctx
+            .inputs
+            .get("_loop_base")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
         let iter_snapshot: Vec<Value> = (loop_base..ctx.step_results.len())
             .filter_map(|idx| ctx.step_results.get(idx))
-            .map(|r| json!({
-                "stepType": r.step_type,
-                "success": r.success,
-                "data": r.data,
-                "output": r.output,
-            }))
+            .map(|r| {
+                json!({
+                    "stepType": r.step_type,
+                    "success": r.success,
+                    "data": r.data,
+                    "output": r.output,
+                })
+            })
             .collect();
         iteration_results.push(Value::Array(iter_snapshot));
 
@@ -154,8 +169,10 @@ pub async fn execute(
         if let LoopMode::Until(ref cond) = mode {
             let interpolated = interpolation::interpolate(cond, ctx);
             if interpolation::evaluate_condition(&interpolated) {
-                log.info(&format!("[{}] Until condition met at iteration {}",
-                    pipeline_ctx.handle_id, iteration));
+                log.info(&format!(
+                    "[{}] Until condition met at iteration {}",
+                    pipeline_ctx.handle_id, iteration
+                ));
                 break;
             }
         }
@@ -200,10 +217,10 @@ impl LoopMode {
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -214,7 +231,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-loop",
             registry,
@@ -229,7 +249,8 @@ mod tests {
             args: vec![msg.to_string()],
             timeout_secs: Some(10),
             working_dir: None,
-            allow_failure: None, env: None,
+            allow_failure: None,
+            env: None,
         }
     }
 
@@ -239,7 +260,8 @@ mod tests {
             args: vec!["iter-{{input.iteration}}".to_string()],
             timeout_secs: Some(10),
             working_dir: None,
-            allow_failure: None, env: None,
+            allow_failure: None,
+            env: None,
         }
     }
 
@@ -249,7 +271,8 @@ mod tests {
             args: vec!["-c".to_string(), "exit 1".to_string()],
             timeout_secs: Some(10),
             working_dir: None,
-            allow_failure: None, env: None,
+            allow_failure: None,
+            env: None,
         }
     }
 
@@ -261,10 +284,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            Some(3), None, None, None,
+            Some(3),
+            None,
+            None,
+            None,
             &[echo_step("counted")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "count");
@@ -280,10 +310,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            Some(0), None, None, None,
+            Some(0),
+            None,
+            None,
+            None,
             &[echo_step("should-not-run")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["iterationsCompleted"], 0);
@@ -298,10 +335,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            None, Some("false"), None, None,
+            None,
+            Some("false"),
+            None,
+            None,
             &[echo_step("should-not-run")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "while");
@@ -316,10 +360,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            None, Some("true"), None, Some(5),
+            None,
+            Some("true"),
+            None,
+            Some(5),
             &[echo_step("looping")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "while");
@@ -336,10 +387,17 @@ mod tests {
 
         // until "true" → executes once, then condition is true, so stops
         let result = execute(
-            None, None, Some("true"), None,
+            None,
+            None,
+            Some("true"),
+            None,
             &[echo_step("once")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "until");
@@ -355,10 +413,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            None, None, Some("false"), Some(4),
+            None,
+            None,
+            Some("false"),
+            Some(4),
             &[echo_step("repeating")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "until");
@@ -374,10 +439,17 @@ mod tests {
 
         // No count, no while, no until → continuous, uses maxIterations
         let result = execute(
-            None, None, None, Some(3),
+            None,
+            None,
+            None,
+            Some(3),
             &[echo_step("continuous")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["mode"], "continuous");
@@ -392,10 +464,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            Some(3), None, None, None,
+            Some(3),
+            None,
+            None,
+            None,
             &[echo_iteration_step()],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(ctx.step_results.len(), 3);
@@ -412,10 +491,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            Some(5), None, None, None,
+            Some(5),
+            None,
+            None,
+            None,
             &[failing_step()],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.success);
         assert_eq!(result.data["mode"], "count");
@@ -431,10 +517,17 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            Some(2), None, None, None,
+            Some(2),
+            None,
+            None,
+            None,
             &[echo_step("step-a"), echo_step("step-b")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["iterationsCompleted"], 2);
@@ -454,10 +547,17 @@ mod tests {
 
         // Inner loop should promote current iteration to parent_iteration
         let result = execute(
-            Some(1), None, None, None,
+            Some(1),
+            None,
+            None,
+            None,
             &[echo_step("inner")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
 

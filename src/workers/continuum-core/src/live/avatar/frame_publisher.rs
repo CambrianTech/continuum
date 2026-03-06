@@ -76,12 +76,20 @@ pub struct CpuI420Publisher {
 
 impl CpuI420Publisher {
     pub fn new(frame_rx: Receiver<RgbaFrame>, width: u32, height: u32) -> Self {
-        Self { frame_rx, width, height, frame_count: 0, started_at: std::time::Instant::now() }
+        Self {
+            frame_rx,
+            width,
+            height,
+            frame_count: 0,
+            started_at: std::time::Instant::now(),
+        }
     }
 }
 
 impl FramePublisher for CpuI420Publisher {
-    fn name(&self) -> &'static str { "cpu-i420" }
+    fn name(&self) -> &'static str {
+        "cpu-i420"
+    }
 
     fn try_publish(&mut self, source: &NativeVideoSource) -> Result<bool, PublishError> {
         match self.frame_rx.try_recv() {
@@ -102,10 +110,17 @@ impl FramePublisher for CpuI420Publisher {
                 // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
                 if self.frame_count == 1 || self.frame_count % 450 == 0 {
                     let elapsed = self.started_at.elapsed().as_secs_f64();
-                    let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
+                    let fps = if elapsed > 0.0 {
+                        self.frame_count as f64 / elapsed
+                    } else {
+                        0.0
+                    };
                     crate::clog_info!(
                         "📹 CpuI420Publisher: {} frames published ({}×{}, {:.1} fps avg)",
-                        self.frame_count, w, h, fps
+                        self.frame_count,
+                        w,
+                        h,
+                        fps
                     );
                 }
 
@@ -117,7 +132,13 @@ impl FramePublisher for CpuI420Publisher {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        crate::clog_info!("📹 CpuI420Publisher: resize {}×{} → {}×{}", self.width, self.height, width, height);
+        crate::clog_info!(
+            "📹 CpuI420Publisher: resize {}×{} → {}×{}",
+            self.width,
+            self.height,
+            width,
+            height
+        );
         self.width = width;
         self.height = height;
     }
@@ -150,7 +171,10 @@ pub fn create_publisher(
     #[cfg(target_os = "macos")]
     {
         // CONTINUUM_CPU_VIDEO=1 forces CpuI420Publisher on macOS (escape hatch)
-        if !std::env::var("CONTINUUM_CPU_VIDEO").map(|v| v == "1").unwrap_or(false) {
+        if !std::env::var("CONTINUUM_CPU_VIDEO")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
             // Tier 1: GpuBridgePublisher (IOSurface zero-copy)
             use super::publishers::gpu_bridge::GpuBridgePublisher;
             match GpuBridgePublisher::try_new(frame_rx.clone(), width, height, slot) {
@@ -222,9 +246,11 @@ pub(crate) fn rgba_to_i420_into(rgba: &[u8], buffer: &mut I420Buffer, width: u32
             let g = rgba[i + 1] as i32;
             let b = rgba[i + 2] as i32;
             // BT.601: U = (-38R - 74G + 112B + 128) >> 8 + 128
-            data_u[cy * cw + cx] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            data_u[cy * cw + cx] =
+                (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
             // BT.601: V = (112R - 94G - 18B + 128) >> 8 + 128
-            data_v[cy * cw + cx] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            data_v[cy * cw + cx] =
+                (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
         }
     }
 }
@@ -243,9 +269,18 @@ mod tests {
 
         let (y, u, v) = buffer.data();
         // Black in BT.601: Y=16, U=128, V=128
-        assert!(y.iter().all(|&val| val == 16), "Y plane should be 16 for black");
-        assert!(u.iter().all(|&val| val == 128), "U plane should be 128 for black");
-        assert!(v.iter().all(|&val| val == 128), "V plane should be 128 for black");
+        assert!(
+            y.iter().all(|&val| val == 16),
+            "Y plane should be 16 for black"
+        );
+        assert!(
+            u.iter().all(|&val| val == 128),
+            "U plane should be 128 for black"
+        );
+        assert!(
+            v.iter().all(|&val| val == 128),
+            "V plane should be 128 for black"
+        );
     }
 
     #[test]
@@ -258,8 +293,17 @@ mod tests {
 
         let (y, u, v) = buffer.data();
         // White in BT.601: Y=235, U=128, V=128
-        assert!(y.iter().all(|&val| val == 235), "Y plane should be 235 for white");
-        assert!(u.iter().all(|&val| val == 128), "U plane should be 128 for white");
-        assert!(v.iter().all(|&val| val == 128), "V plane should be 128 for white");
+        assert!(
+            y.iter().all(|&val| val == 235),
+            "Y plane should be 235 for white"
+        );
+        assert!(
+            u.iter().all(|&val| val == 128),
+            "U plane should be 128 for white"
+        );
+        assert!(
+            v.iter().all(|&val| val == 128),
+            "V plane should be 128 for white"
+        );
     }
 }

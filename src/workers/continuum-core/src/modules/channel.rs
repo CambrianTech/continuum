@@ -7,17 +7,17 @@
 //! Handles: channel/enqueue, channel/dequeue, channel/status,
 //!          channel/service-cycle, channel/service-cycle-full, channel/clear
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
-use crate::persona::{
-    ChannelRegistry, PersonaState, ChannelEnqueueRequest, ActivityDomain,
-    PersonaCognition, InboxMessage, SenderType, Modality,
-};
-use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
-use crate::persona::channel_items::TaskQueueItem;
-use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::logging::TimingGuard;
-use crate::utils::params::Params;
 use crate::log_info;
+use crate::logging::TimingGuard;
+use crate::persona::channel_items::TaskQueueItem;
+use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
+use crate::persona::self_task_generator::SelfTaskGenerator;
+use crate::persona::{
+    ActivityDomain, ChannelEnqueueRequest, ChannelRegistry, InboxMessage, Modality,
+    PersonaCognition, PersonaState, SenderType,
+};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,10 @@ use uuid::Uuid;
 /// Adjustable at runtime via `channel/tick-config` command, allowing TypeScript to
 /// tune scheduling for different scenarios (gaming = fast tick, idle = slow tick).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/runtime/ChannelTickConfig.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/runtime/ChannelTickConfig.ts"
+)]
 pub struct ChannelTickConfig {
     /// Tick interval in milliseconds (default: 60000 = 60s).
     /// Lower values = more responsive task polling, higher CPU.
@@ -114,7 +117,10 @@ impl ChannelModule {
 #[async_trait]
 impl ServiceModule for ChannelModule {
     fn config(&self) -> ModuleConfig {
-        let tick_ms = self.state.tick_config.read()
+        let tick_ms = self
+            .state
+            .tick_config
+            .read()
             .map(|c| c.tick_interval_ms)
             .unwrap_or(60_000);
         ModuleConfig {
@@ -132,11 +138,7 @@ impl ServiceModule for ChannelModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
 
         match command {
@@ -146,12 +148,15 @@ impl ServiceModule for ChannelModule {
                 let item = p.value("item").ok_or("Missing item")?;
 
                 // Parse the item as ChannelEnqueueRequest
-                let enqueue_request: ChannelEnqueueRequest = serde_json::from_value(item.clone())
-                    .map_err(|e| format!("Invalid item: {e}"))?;
+                let enqueue_request: ChannelEnqueueRequest =
+                    serde_json::from_value(item.clone())
+                        .map_err(|e| format!("Invalid item: {e}"))?;
 
                 let queue_item = enqueue_request.to_queue_item()?;
 
-                let mut entry = self.state.registries
+                let mut entry = self
+                    .state
+                    .registries
                     .entry(persona_uuid)
                     .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
                 let (registry, _state) = entry.value_mut();
@@ -182,8 +187,9 @@ impl ServiceModule for ChannelModule {
                 // Parse optional domain filter
                 let target_domain: Option<ActivityDomain> = match domain_str {
                     Some(d) => {
-                        let domain: ActivityDomain = serde_json::from_value(serde_json::json!(d))
-                            .map_err(|e| format!("Invalid domain '{d}': {e}"))?;
+                        let domain: ActivityDomain =
+                            serde_json::from_value(serde_json::json!(d))
+                                .map_err(|e| format!("Invalid domain '{d}': {e}"))?;
                         Some(domain)
                     }
                     None => None,
@@ -214,12 +220,10 @@ impl ServiceModule for ChannelModule {
                             "dequeued": true,
                         })))
                     }
-                    None => {
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "item": null,
-                            "dequeued": false,
-                        })))
-                    }
+                    None => Ok(CommandResult::Json(serde_json::json!({
+                        "item": null,
+                        "dequeued": false,
+                    }))),
                 }
             }
 
@@ -242,20 +246,26 @@ impl ServiceModule for ChannelModule {
                 let (registry, _state) = entry.value();
 
                 let status = registry.status();
-                Ok(CommandResult::Json(serde_json::to_value(&status).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&status).unwrap_or_default(),
+                ))
             }
 
             "channel/service-cycle" => {
                 let _timer = TimingGuard::new("module", "channel_service_cycle");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let mut entry = self.state.registries
+                let mut entry = self
+                    .state
+                    .registries
                     .entry(persona_uuid)
                     .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
                 let (registry, state) = entry.value_mut();
 
                 let result = registry.service_cycle(state);
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "channel/service-cycle-full" => {
@@ -264,7 +274,9 @@ impl ServiceModule for ChannelModule {
 
                 // Step 1: Service cycle — consolidate, schedule, return next item
                 let service_result = {
-                    let mut entry = self.state.registries
+                    let mut entry = self
+                        .state
+                        .registries
                         .entry(persona_uuid)
                         .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
                     let (registry, state) = entry.value_mut();
@@ -290,8 +302,13 @@ impl ServiceModule for ChannelModule {
                             content: ip.str_or("content", "").to_string(),
                             timestamp: ip.u64_or("timestamp", 0),
                             priority: ip.f32_or("priority", 0.5),
-                            source_modality: ip.str_opt("itemType")
-                                .and_then(|t| if t == "voice" { Some(Modality::Voice) } else { None }),
+                            source_modality: ip.str_opt("itemType").and_then(|t| {
+                                if t == "voice" {
+                                    Some(Modality::Voice)
+                                } else {
+                                    None
+                                }
+                            }),
                             voice_session_id: ip.uuid_opt("voiceSessionId"),
                         };
 
@@ -360,7 +377,10 @@ impl ServiceModule for ChannelModule {
                         if let Some(v) = params.get("self_task_enabled").and_then(|v| v.as_bool()) {
                             config.self_task_enabled = v;
                         }
-                        if let Some(v) = params.get("training_check_enabled").and_then(|v| v.as_bool()) {
+                        if let Some(v) = params
+                            .get("training_check_enabled")
+                            .and_then(|v| v.as_bool())
+                        {
                             config.training_check_enabled = v;
                         }
                         if let Some(v) = params.get("training_threshold").and_then(|v| v.as_u64()) {
@@ -371,11 +391,15 @@ impl ServiceModule for ChannelModule {
                 }
 
                 // Return current config
-                let config = self.state.tick_config.read()
+                let config = self
+                    .state
+                    .tick_config
+                    .read()
                     .map(|c| c.clone())
                     .unwrap_or_default();
-                Ok(CommandResult::Json(serde_json::to_value(&config)
-                    .unwrap_or_else(|_| serde_json::json!({}))))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&config).unwrap_or_else(|_| serde_json::json!({})),
+                ))
             }
 
             _ => Err(format!("Unknown channel command: {command}")),
@@ -395,7 +419,10 @@ impl ServiceModule for ChannelModule {
         let log = crate::runtime::logger("channel-tick");
 
         // Read config snapshot (cheap: std::sync::RwLock read, no contention)
-        let config = self.state.tick_config.read()
+        let config = self
+            .state
+            .tick_config
+            .read()
             .map(|c| c.clone())
             .unwrap_or_default();
 
@@ -404,7 +431,10 @@ impl ServiceModule for ChannelModule {
         let db_path = format!("{home}/.continuum/data/database.sqlite");
 
         // Collect persona IDs to avoid holding DashMap ref across await
-        let persona_ids: Vec<Uuid> = self.state.registries.iter()
+        let persona_ids: Vec<Uuid> = self
+            .state
+            .registries
+            .iter()
             .map(|entry| *entry.key())
             .collect();
 
@@ -419,20 +449,26 @@ impl ServiceModule for ChannelModule {
         for persona_id in &persona_ids {
             // ── 1. Poll pending tasks ──────────────────────────────────────
             if config.task_poll_enabled {
-                let query_result = executor.execute_json("data/query", serde_json::json!({
-                    "dbPath": db_path,
-                    "collection": "tasks",
-                    "filter": {
-                        "assigneeId": { "$eq": persona_id.to_string() },
-                        "status": { "$eq": "pending" }
-                    },
-                    "limit": 10
-                })).await;
+                let query_result = executor
+                    .execute_json(
+                        "data/query",
+                        serde_json::json!({
+                            "dbPath": db_path,
+                            "collection": "tasks",
+                            "filter": {
+                                "assigneeId": { "$eq": persona_id.to_string() },
+                                "status": { "$eq": "pending" }
+                            },
+                            "limit": 10
+                        }),
+                    )
+                    .await;
 
                 if let Ok(result_json) = query_result {
                     if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
                         for record in records {
-                            if let Some(item) = Self::record_to_task_queue_item(record, persona_id) {
+                            if let Some(item) = Self::record_to_task_queue_item(record, persona_id)
+                            {
                                 if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
                                     let (registry, _state) = entry.value_mut();
                                     if registry.route(Box::new(item)).is_ok() {
@@ -462,8 +498,12 @@ impl ServiceModule for ChannelModule {
                             let count = tasks.len() as u32;
                             if count > 0 {
                                 for task_json in &tasks {
-                                    if let Some(item) = Self::json_to_task_queue_item(task_json, persona_id) {
-                                        if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                    if let Some(item) =
+                                        Self::json_to_task_queue_item(task_json, persona_id)
+                                    {
+                                        if let Some(mut entry) =
+                                            self.state.registries.get_mut(persona_id)
+                                        {
                                             let (registry, _state) = entry.value_mut();
                                             let _ = registry.route(Box::new(item));
                                         }
@@ -472,7 +512,9 @@ impl ServiceModule for ChannelModule {
                                 total_self_tasks += count;
                             }
                         }
-                        Err(e) => log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e)),
+                        Err(e) => {
+                            log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e))
+                        }
                     }
                 }
             }
@@ -484,18 +526,27 @@ impl ServiceModule for ChannelModule {
                 if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
                     let gen = gen_entry.lock().await;
                     if let Some(persona) = self.state.personas.get(persona_id) {
-                        let enrollment_tasks = gen.detect_enrollment_opportunities(&persona.genome_engine);
+                        let enrollment_tasks =
+                            gen.detect_enrollment_opportunities(&persona.genome_engine);
                         if !enrollment_tasks.is_empty() {
                             for task_json in &enrollment_tasks {
-                                if let Some(item) = Self::json_to_task_queue_item(task_json, persona_id) {
-                                    if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                if let Some(item) =
+                                    Self::json_to_task_queue_item(task_json, persona_id)
+                                {
+                                    if let Some(mut entry) =
+                                        self.state.registries.get_mut(persona_id)
+                                    {
                                         let (registry, _state) = entry.value_mut();
                                         let _ = registry.route(Box::new(item));
                                     }
                                 }
                             }
                             total_self_tasks += enrollment_tasks.len() as u32;
-                            log.info(&format!("Enrollment opportunities for {}: {} tasks", persona_id, enrollment_tasks.len()));
+                            log.info(&format!(
+                                "Enrollment opportunities for {}: {} tasks",
+                                persona_id,
+                                enrollment_tasks.len()
+                            ));
                         }
                     }
                 }
@@ -503,19 +554,22 @@ impl ServiceModule for ChannelModule {
 
             // ── 3. Training readiness check ────────────────────────────────
             if config.training_check_enabled {
-                let training_result = executor.execute_json("data/count", serde_json::json!({
-                    "dbPath": db_path,
-                    "collection": "training_data",
-                    "filter": {
-                        "personaId": { "$eq": persona_id.to_string() },
-                        "consumed": { "$eq": false }
-                    }
-                })).await;
+                let training_result = executor
+                    .execute_json(
+                        "data/count",
+                        serde_json::json!({
+                            "dbPath": db_path,
+                            "collection": "training_data",
+                            "filter": {
+                                "personaId": { "$eq": persona_id.to_string() },
+                                "consumed": { "$eq": false }
+                            }
+                        }),
+                    )
+                    .await;
 
                 if let Ok(count_json) = training_result {
-                    let count = count_json.get("data")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let count = count_json.get("data").and_then(|v| v.as_u64()).unwrap_or(0);
 
                     if count >= config.training_threshold {
                         log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
@@ -525,7 +579,8 @@ impl ServiceModule for ChannelModule {
                                 "personaId": persona_id.to_string(),
                                 "trainingExamples": count,
                             }),
-                        ).await;
+                        )
+                        .await;
                     }
                 }
             }
@@ -534,20 +589,25 @@ impl ServiceModule for ChannelModule {
         if total_enqueued > 0 || total_self_tasks > 0 {
             log.info(&format!(
                 "Tick: {} personas, polled {} tasks, generated {} self-tasks",
-                persona_ids.len(), total_enqueued, total_self_tasks
+                persona_ids.len(),
+                total_enqueued,
+                total_self_tasks
             ));
         }
 
         Ok(())
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl ChannelModule {
     /// Convert a DB record (from data/query result) to a TaskQueueItem.
     fn record_to_task_queue_item(record: &Value, persona_id: &Uuid) -> Option<TaskQueueItem> {
-        let record_id = record.get("id")
+        let record_id = record
+            .get("id")
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok());
         let data = record.get("data")?;
@@ -556,7 +616,8 @@ impl ChannelModule {
 
     /// Convert a self-task JSON (from SelfTaskGenerator) to a TaskQueueItem.
     fn json_to_task_queue_item(task_json: &Value, persona_id: &Uuid) -> Option<TaskQueueItem> {
-        let task_id = task_json.get("id")
+        let task_id = task_json
+            .get("id")
             .and_then(|v| v.as_str())
             .and_then(|s| Uuid::parse_str(s).ok());
         Self::data_to_task_queue_item(task_json, task_id, persona_id)
@@ -577,31 +638,35 @@ impl ChannelModule {
             id: Uuid::new_v4(),
             task_id: task_id.unwrap_or_else(Uuid::new_v4),
             assignee_id: *persona_id,
-            created_by: data.get("createdBy")
+            created_by: data
+                .get("createdBy")
                 .and_then(|v| v.as_str())
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or(*persona_id),
-            task_domain: data.get("domain")
+            task_domain: data
+                .get("domain")
                 .and_then(|v| v.as_str())
                 .unwrap_or("self")
                 .to_string(),
-            task_type: data.get("taskType")
+            task_type: data
+                .get("taskType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            context_id: data.get("contextId")
+            context_id: data
+                .get("contextId")
                 .and_then(|v| v.as_str())
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or(*persona_id),
-            description: data.get("description")
+            description: data
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            priority: data.get("priority")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.5) as f32,
+            priority: data.get("priority").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32,
             status: "pending".to_string(),
-            timestamp: data.get("timestamp")
+            timestamp: data
+                .get("timestamp")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(now_ms),
             enqueued_at: now_ms,

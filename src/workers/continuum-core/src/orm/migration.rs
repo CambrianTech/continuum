@@ -36,8 +36,12 @@ pub struct MigrationConfig {
     pub collections: Option<Vec<String>>,
 }
 
-fn default_batch_size() -> usize { 500 }
-fn default_throttle_ms() -> u64 { 10 }
+fn default_batch_size() -> usize {
+    500
+}
+fn default_throttle_ms() -> u64 {
+    10
+}
 
 impl Default for MigrationConfig {
     fn default() -> Self {
@@ -111,9 +115,18 @@ impl MigrationHandle {
     pub fn status_json(&self) -> Value {
         let states = self.states.read().unwrap();
         let collections: Vec<Value> = states.values().map(|s| s.to_json()).collect();
-        let total: usize = states.values().map(|s| s.total.load(Ordering::Relaxed)).sum();
-        let migrated: usize = states.values().map(|s| s.migrated.load(Ordering::Relaxed)).sum();
-        let failed: usize = states.values().map(|s| s.failed.load(Ordering::Relaxed)).sum();
+        let total: usize = states
+            .values()
+            .map(|s| s.total.load(Ordering::Relaxed))
+            .sum();
+        let migrated: usize = states
+            .values()
+            .map(|s| s.migrated.load(Ordering::Relaxed))
+            .sum();
+        let failed: usize = states
+            .values()
+            .map(|s| s.failed.load(Ordering::Relaxed))
+            .sum();
 
         json!({
             "total": total,
@@ -235,7 +248,9 @@ impl MigrationEngine {
                 let result = self.source.list_collections().await;
                 result.data.ok_or_else(|| {
                     self.running.store(false, Ordering::Relaxed);
-                    result.error.unwrap_or_else(|| "Failed to list source collections".into())
+                    result
+                        .error
+                        .unwrap_or_else(|| "Failed to list source collections".into())
                 })?
             }
         };
@@ -280,7 +295,8 @@ impl MigrationEngine {
     async fn migrate_collection(&self, collection: &str) -> Result<(), String> {
         let state = {
             let states = self.states.read().unwrap();
-            states.get(collection)
+            states
+                .get(collection)
                 .ok_or_else(|| format!("No state for collection: {}", collection))?
                 .clone()
         };
@@ -396,9 +412,9 @@ impl MigrationEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::sqlite::SqliteAdapter;
     use crate::orm::adapter::AdapterConfig;
-    use crate::orm::types::{CollectionSchema, SchemaField, FieldType};
+    use crate::orm::sqlite::SqliteAdapter;
+    use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
 
     async fn setup_sqlite(path: &str) -> Arc<dyn StorageAdapter> {
         let mut adapter = SqliteAdapter::new();
@@ -552,11 +568,8 @@ mod tests {
             })
             .await;
 
-        let mut engine = MigrationEngine::new(
-            source.clone(),
-            target.clone(),
-            MigrationConfig::default(),
-        );
+        let mut engine =
+            MigrationEngine::new(source.clone(), target.clone(), MigrationConfig::default());
 
         let status = engine.run().await.unwrap();
         assert_eq!(status["total"], 0);

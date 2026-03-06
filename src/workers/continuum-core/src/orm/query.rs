@@ -113,9 +113,9 @@ pub enum CursorDirection {
 #[serde(rename_all = "camelCase")]
 pub struct TimeRange {
     #[ts(optional)]
-        pub start: Option<String>,
+    pub start: Option<String>,
     #[ts(optional)]
-        pub end: Option<String>,
+    pub end: Option<String>,
 }
 
 /// Join specification for related data loading
@@ -277,7 +277,10 @@ mod tests {
     fn test_query_builder_operators() {
         let query = QueryBuilder::new("messages")
             .filter("timestamp", QueryOperator::Gte(Value::from("2024-01-01")))
-            .filter("priority", QueryOperator::In(vec![Value::from(1), Value::from(2)]))
+            .filter(
+                "priority",
+                QueryOperator::In(vec![Value::from(1), Value::from(2)]),
+            )
             .build();
 
         let filter = query.filter.unwrap();

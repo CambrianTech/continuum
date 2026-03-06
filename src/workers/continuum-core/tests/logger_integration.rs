@@ -3,7 +3,6 @@
 /// NOTE: LoggerModule is now internal to continuum-core (Phase 4a).
 /// These tests verify the internal logging infrastructure works correctly.
 /// The logger connects to the unified runtime socket.
-
 use continuum_core::{init_logger, logger};
 use std::sync::Once;
 
@@ -25,10 +24,26 @@ fn test_logger_connection() {
     ensure_logger();
 
     // Send test messages at different levels
-    logger().debug("test", "logger_integration", "Debug message from continuum-core");
-    logger().info("test", "logger_integration", "Info message from continuum-core");
-    logger().warn("test", "logger_integration", "Warning message from continuum-core");
-    logger().error("test", "logger_integration", "Error message from continuum-core");
+    logger().debug(
+        "test",
+        "logger_integration",
+        "Debug message from continuum-core",
+    );
+    logger().info(
+        "test",
+        "logger_integration",
+        "Info message from continuum-core",
+    );
+    logger().warn(
+        "test",
+        "logger_integration",
+        "Warning message from continuum-core",
+    );
+    logger().error(
+        "test",
+        "logger_integration",
+        "Error message from continuum-core",
+    );
 
     // Give logger time to write
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -69,7 +84,7 @@ fn test_logger_performance() {
         logger().info(
             "test",
             "perf_test",
-            &format!("Performance test message {i}")
+            &format!("Performance test message {i}"),
         );
     }
 
@@ -80,5 +95,8 @@ fn test_logger_performance() {
     println!("   Average: {per_message}us per message");
 
     // Should be fast (non-blocking)
-    assert!(per_message < 100, "Logging is too slow: {per_message}us per message");
+    assert!(
+        per_message < 100,
+        "Logging is too slow: {per_message}us per message"
+    );
 }

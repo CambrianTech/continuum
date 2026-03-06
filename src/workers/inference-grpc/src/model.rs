@@ -66,7 +66,11 @@ fn sanitize_logits(logits: &Tensor, device: &Device) -> Result<Tensor, String> {
                 if x.is_nan() {
                     -100.0
                 } else if x.is_infinite() {
-                    if x > 0.0 { 100.0 } else { -100.0 }
+                    if x > 0.0 {
+                        100.0
+                    } else {
+                        -100.0
+                    }
                 } else {
                     x
                 }

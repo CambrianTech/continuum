@@ -70,11 +70,12 @@ impl PathSecurity {
     /// The workspace_root must exist and be a directory.
     /// It will be canonicalized (resolving symlinks).
     pub fn new(workspace_root: &Path) -> Result<Self, PathSecurityError> {
-        let canonical = workspace_root.canonicalize().map_err(|_| {
-            PathSecurityError::InvalidWorkspace {
-                path: workspace_root.display().to_string(),
-            }
-        })?;
+        let canonical =
+            workspace_root
+                .canonicalize()
+                .map_err(|_| PathSecurityError::InvalidWorkspace {
+                    path: workspace_root.display().to_string(),
+                })?;
 
         if !canonical.is_dir() {
             return Err(PathSecurityError::InvalidWorkspace {
@@ -92,11 +93,11 @@ impl PathSecurity {
     ///
     /// Paths within read_roots can be read but not written.
     pub fn add_read_root(&mut self, root: &Path) -> Result<(), PathSecurityError> {
-        let canonical = root.canonicalize().map_err(|_| {
-            PathSecurityError::InvalidWorkspace {
+        let canonical = root
+            .canonicalize()
+            .map_err(|_| PathSecurityError::InvalidWorkspace {
                 path: root.display().to_string(),
-            }
-        })?;
+            })?;
         self.read_roots.push(canonical);
         Ok(())
     }
@@ -151,16 +152,20 @@ impl PathSecurity {
     ///
     /// For existing files, uses canonicalize() to resolve symlinks.
     /// For new files, manually resolves the path and checks the prefix.
-    fn resolve_within(&self, root: &Path, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
+    fn resolve_within(
+        &self,
+        root: &Path,
+        relative_path: &str,
+    ) -> Result<PathBuf, PathSecurityError> {
         let joined = root.join(relative_path);
 
         // For existing paths, canonicalize resolves symlinks
         if joined.exists() {
-            let canonical = joined.canonicalize().map_err(|_| {
-                PathSecurityError::InvalidPath {
+            let canonical = joined
+                .canonicalize()
+                .map_err(|_| PathSecurityError::InvalidPath {
                     path: relative_path.to_string(),
-                }
-            })?;
+                })?;
 
             // Re-canonicalize root at comparison time (macOS /Volumes vs /private/Volumes)
             let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -198,14 +203,16 @@ impl PathSecurity {
 
         // If the file exists, canonicalize it
         if joined.exists() {
-            let canonical = joined.canonicalize().map_err(|_| {
-                PathSecurityError::InvalidPath {
+            let canonical = joined
+                .canonicalize()
+                .map_err(|_| PathSecurityError::InvalidPath {
                     path: relative_path.to_string(),
-                }
-            })?;
+                })?;
 
             // Re-canonicalize workspace root at comparison time (macOS /Volumes vs /private/Volumes)
-            let canonical_ws = self.workspace_root.canonicalize()
+            let canonical_ws = self
+                .workspace_root
+                .canonicalize()
                 .unwrap_or_else(|_| self.workspace_root.clone());
             if !canonical.starts_with(&canonical_ws) {
                 return Err(PathSecurityError::TraversalBlocked {
@@ -226,14 +233,17 @@ impl PathSecurity {
             // Walk up until we find an existing directory
             while let Some(parent) = ancestor.parent() {
                 if parent.exists() {
-                    let canonical_ancestor = parent.canonicalize().map_err(|_| {
-                        PathSecurityError::InvalidPath {
-                            path: relative_path.to_string(),
-                        }
-                    })?;
+                    let canonical_ancestor =
+                        parent
+                            .canonicalize()
+                            .map_err(|_| PathSecurityError::InvalidPath {
+                                path: relative_path.to_string(),
+                            })?;
 
                     // Re-canonicalize workspace root at comparison time (macOS /Volumes vs /private/Volumes)
-                    let canonical_ws = self.workspace_root.canonicalize()
+                    let canonical_ws = self
+                        .workspace_root
+                        .canonicalize()
                         .unwrap_or_else(|_| self.workspace_root.clone());
                     if !canonical_ancestor.starts_with(&canonical_ws) {
                         return Err(PathSecurityError::TraversalBlocked {
@@ -263,10 +273,7 @@ impl PathSecurity {
     /// Check that a file's extension is in the allowlist.
     fn check_extension(&self, path: &str) -> Result<(), PathSecurityError> {
         let path = Path::new(path);
-        let extension = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         if extension.is_empty() || !ALLOWED_EXTENSIONS.contains(&extension) {
             return Err(PathSecurityError::ExtensionBlocked {
@@ -342,7 +349,10 @@ mod tests {
     fn test_traversal_blocked() {
         let (_dir, security) = setup_workspace();
         let result = security.validate_read("../../etc/passwd");
-        assert!(matches!(result, Err(PathSecurityError::TraversalBlocked { .. })));
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::TraversalBlocked { .. })
+        ));
     }
 
     #[test]
@@ -371,14 +381,20 @@ mod tests {
     fn test_extension_blocked() {
         let (_dir, security) = setup_workspace();
         let result = security.validate_write("src/malware.exe");
-        assert!(matches!(result, Err(PathSecurityError::ExtensionBlocked { .. })));
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::ExtensionBlocked { .. })
+        ));
     }
 
     #[test]
     fn test_allowed_extensions() {
         let (_dir, security) = setup_workspace();
         // All these should pass extension check
-        for ext in &["ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml", "txt", "sh", "py"] {
+        for ext in &[
+            "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml",
+            "txt", "sh", "py",
+        ] {
             let path = format!("src/test.{}", ext);
             let result = security.check_extension(&path);
             assert!(result.is_ok(), "Extension '{}' should be allowed", ext);
@@ -389,7 +405,10 @@ mod tests {
     fn test_file_too_large() {
         let (_dir, security) = setup_workspace();
         let result = security.validate_size("test.ts", MAX_WRITE_SIZE + 1);
-        assert!(matches!(result, Err(PathSecurityError::FileTooLarge { .. })));
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::FileTooLarge { .. })
+        ));
     }
 
     #[test]
@@ -432,10 +451,16 @@ mod tests {
         // not in the read root. This is valid — the file will be at
         // workspace/libs/external.ts. The read root is untouched.
         let write_result = security.validate_write("libs/external.ts");
-        assert!(write_result.is_ok(), "Should be able to write new file in workspace subdirectory");
+        assert!(
+            write_result.is_ok(),
+            "Should be able to write new file in workspace subdirectory"
+        );
         let resolved = write_result.unwrap();
         let canonical_dir = dir.path().canonicalize().unwrap();
-        assert!(resolved.starts_with(&canonical_dir), "Write should resolve within workspace, not read root");
+        assert!(
+            resolved.starts_with(&canonical_dir),
+            "Write should resolve within workspace, not read root"
+        );
     }
 
     #[test]
@@ -450,6 +475,9 @@ mod tests {
     #[test]
     fn test_invalid_workspace() {
         let result = PathSecurity::new(Path::new("/nonexistent/path/that/does/not/exist"));
-        assert!(matches!(result, Err(PathSecurityError::InvalidWorkspace { .. })));
+        assert!(matches!(
+            result,
+            Err(PathSecurityError::InvalidWorkspace { .. })
+        ));
     }
 }

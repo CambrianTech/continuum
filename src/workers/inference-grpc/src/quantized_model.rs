@@ -182,7 +182,11 @@ pub fn generate_text_quantized(
     }
 
     // Log prompt length for debugging
-    log::debug!("📊 Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
+    log::debug!(
+        "📊 Quantized generation: {} tokens from {} char prompt",
+        prompt_len,
+        prompt.len()
+    );
 
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
@@ -239,10 +243,16 @@ pub fn generate_text_quantized(
                 nan_count += 1;
                 if i == 0 {
                     log::error!("❌ NaN/Inf on first token - prompt may be malformed");
-                    return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+                    return Err(
+                        "Model produced NaN on first token - prompt may be malformed or too long"
+                            .to_string(),
+                    );
                 }
                 if nan_count > 2 {
-                    log::error!("❌ Multiple NaN tokens in first {} - aborting", NAN_CHECK_TOKENS);
+                    log::error!(
+                        "❌ Multiple NaN tokens in first {} - aborting",
+                        NAN_CHECK_TOKENS
+                    );
                     break;
                 }
             }
@@ -311,7 +321,11 @@ fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor
                 if x.is_nan() {
                     -100.0
                 } else if x.is_infinite() {
-                    if x > 0.0 { 100.0 } else { -100.0 }
+                    if x > 0.0 {
+                        100.0
+                    } else {
+                        -100.0
+                    }
                 } else {
                     x
                 }

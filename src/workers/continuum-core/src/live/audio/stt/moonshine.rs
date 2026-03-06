@@ -16,6 +16,7 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray::{Array2, ArrayD, IxDyn};
 use once_cell::sync::OnceCell;
@@ -25,7 +26,6 @@ use ort::value::{Tensor, Value};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::{clog_info, clog_warn};
 
 // Token constants (SentencePiece, same as Llama)
 const BOS_TOKEN_ID: i64 = 1;
@@ -81,10 +81,8 @@ impl MoonshineStt {
     }
 
     /// Model variant preference: tiny first (fast), base second (more accurate)
-    const VARIANT_PREFERENCE: &'static [(&'static str, &'static str)] = &[
-        ("tiny", "tiny"),
-        ("base", "base"),
-    ];
+    const VARIANT_PREFERENCE: &'static [(&'static str, &'static str)] =
+        &[("tiny", "tiny"), ("base", "base")];
 
     /// Required files per model variant
     const REQUIRED_FILES: &'static [&'static str] = &[
@@ -124,7 +122,8 @@ impl MoonshineStt {
                 if Self::dir_has_all_files(&candidate) {
                     clog_info!(
                         "Moonshine: Using variant from MOONSHINE_MODEL env: {} ({:?})",
-                        variant, candidate
+                        variant,
+                        candidate
                     );
                     return candidate;
                 }
@@ -139,7 +138,11 @@ impl MoonshineStt {
             for dir in &search_dirs {
                 let candidate = dir.join(subdir);
                 if Self::dir_has_all_files(&candidate) {
-                    clog_info!("Moonshine: Auto-selected variant: {} ({:?})", name, candidate);
+                    clog_info!(
+                        "Moonshine: Auto-selected variant: {} ({:?})",
+                        name,
+                        candidate
+                    );
                     return candidate;
                 }
             }
@@ -158,9 +161,8 @@ impl MoonshineStt {
     /// Load vocabulary from tokens.txt (one token per line, line number = token ID)
     fn load_vocab(dir: &Path) -> Result<Vec<String>, STTError> {
         let vocab_path = dir.join("tokens.txt");
-        let content = std::fs::read_to_string(&vocab_path).map_err(|e| {
-            STTError::ModelNotLoaded(format!("Failed to read tokens.txt: {e}"))
-        })?;
+        let content = std::fs::read_to_string(&vocab_path)
+            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to read tokens.txt: {e}")))?;
 
         let tokens: Vec<String> = content
             .lines()
@@ -239,9 +241,9 @@ impl MoonshineStt {
         outputs: &ort::session::SessionOutputs,
         index: usize,
     ) -> Result<CacheTensor, STTError> {
-        let (shape, data) = outputs[index]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| STTError::InferenceFailed(format!("Tensor extraction at [{index}]: {e}")))?;
+        let (shape, data) = outputs[index].try_extract_tensor::<f32>().map_err(|e| {
+            STTError::InferenceFailed(format!("Tensor extraction at [{index}]: {e}"))
+        })?;
         Ok(CacheTensor {
             shape: shape.iter().map(|&s| s as usize).collect(),
             data: data.to_vec(),
@@ -298,13 +300,15 @@ impl MoonshineStt {
 
         // First decode step (uncached — no KV cache input)
         let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
-                .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
         let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
-        let token_tensor = Tensor::from_array(token_input)
-            .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder token tensor: {e}")))?;
-        let enc_tensor = Tensor::from_array(enc_array)
-            .map_err(|e| STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}")))?;
+        let token_tensor = Tensor::from_array(token_input).map_err(|e| {
+            STTError::InferenceFailed(format!("Uncached decoder token tensor: {e}"))
+        })?;
+        let enc_tensor = Tensor::from_array(enc_array).map_err(|e| {
+            STTError::InferenceFailed(format!("Uncached decoder encoder tensor: {e}"))
+        })?;
         let mut uncached_session = model.uncached_decoder.lock();
         let uncached_out = uncached_session
             .run(ort::inputs![token_tensor, enc_tensor])
@@ -461,10 +465,8 @@ impl SpeechToText for MoonshineStt {
 
         let preprocess = Self::build_session(&model_dir.join("preprocess.onnx"))?;
         let encoder = Self::build_session(&model_dir.join("encode.int8.onnx"))?;
-        let uncached_decoder =
-            Self::build_session(&model_dir.join("uncached_decode.int8.onnx"))?;
-        let cached_decoder =
-            Self::build_session(&model_dir.join("cached_decode.int8.onnx"))?;
+        let uncached_decoder = Self::build_session(&model_dir.join("uncached_decode.int8.onnx"))?;
+        let cached_decoder = Self::build_session(&model_dir.join("cached_decode.int8.onnx"))?;
 
         clog_info!(
             "Moonshine: Uncached decoder has {} outputs ({} KV cache tensors)",
@@ -542,12 +544,12 @@ mod tests {
     #[test]
     fn test_decode_tokens_basic() {
         let vocab: Vec<String> = vec![
-            "<unk>".into(),   // 0
-            "<s>".into(),     // 1  (BOS)
-            "</s>".into(),    // 2  (EOS)
-            "▁Hello".into(),  // 3
-            "▁world".into(),  // 4
-            "!".into(),       // 5
+            "<unk>".into(),  // 0
+            "<s>".into(),    // 1  (BOS)
+            "</s>".into(),   // 2  (EOS)
+            "▁Hello".into(), // 3
+            "▁world".into(), // 4
+            "!".into(),      // 5
         ];
 
         let tokens = vec![3, 4, 5];
@@ -557,12 +559,7 @@ mod tests {
 
     #[test]
     fn test_decode_tokens_skips_special() {
-        let vocab: Vec<String> = vec![
-            "<unk>".into(),
-            "<s>".into(),
-            "</s>".into(),
-            "▁Hi".into(),
-        ];
+        let vocab: Vec<String> = vec!["<unk>".into(), "<s>".into(), "</s>".into(), "▁Hi".into()];
 
         let tokens = vec![1, 3, 2];
         let text = MoonshineStt::decode_tokens(&vocab, &tokens);

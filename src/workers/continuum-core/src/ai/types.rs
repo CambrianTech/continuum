@@ -35,12 +35,30 @@ pub enum MessageContent {
 #[ts(export, export_to = "../../../shared/generated/ai/ContentPart.ts")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text { text: String },
-    Image { image: ImageInput },
-    Audio { audio: AudioInput },
-    Video { video: VideoInput },
-    ToolUse { id: String, name: String, #[ts(type = "Record<string, unknown>")] input: Value },
-    ToolResult { tool_use_id: String, content: String, #[serde(skip_serializing_if = "Option::is_none")] is_error: Option<bool> },
+    Text {
+        text: String,
+    },
+    Image {
+        image: ImageInput,
+    },
+    Audio {
+        audio: AudioInput,
+    },
+    Video {
+        video: VideoInput,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        #[ts(type = "Record<string, unknown>")]
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -115,7 +133,7 @@ pub struct ToolInputSchema {
     #[serde(rename = "type")]
     pub schema_type: String, // Always "object"
     #[ts(type = "Record<string, unknown>")]
-    pub properties: Value,   // JSON object describing properties
+    pub properties: Value, // JSON object describing properties
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub required: Option<Vec<String>>,
@@ -126,10 +144,10 @@ pub struct ToolInputSchema {
 #[ts(export, export_to = "../../../shared/generated/ai/ToolCall.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {
-    pub id: String,          // Unique ID for this tool use (e.g., "toolu_01A...")
-    pub name: String,        // Tool name
+    pub id: String,   // Unique ID for this tool use (e.g., "toolu_01A...")
+    pub name: String, // Tool name
     #[ts(type = "Record<string, unknown>")]
-    pub input: Value,        // Tool parameters as JSON
+    pub input: Value, // Tool parameters as JSON
 }
 
 /// Tool result to send back to AI after execution
@@ -159,7 +177,10 @@ pub enum ToolChoice {
 
 /// Active LoRA adapter to apply during generation
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/ai/ActiveAdapterRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/ai/ActiveAdapterRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveAdapterRequest {
     pub name: String,
@@ -176,7 +197,10 @@ fn default_adapter_scale() -> f64 {
 
 /// Text generation request
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/ai/TextGenerationRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/ai/TextGenerationRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TextGenerationRequest {
     pub messages: Vec<ChatMessage>,
@@ -237,7 +261,10 @@ pub struct TextGenerationRequest {
 
 /// Text generation response
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/ai/TextGenerationResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/ai/TextGenerationResponse.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TextGenerationResponse {
     pub text: String,
@@ -421,7 +448,10 @@ pub enum EmbeddingInput {
 
 /// Embedding response
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/ai/EmbeddingResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/ai/EmbeddingResponse.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingResponse {
     pub embeddings: Vec<Vec<f32>>,
@@ -447,16 +477,18 @@ impl ChatMessage {
     }
 
     /// Create a message with tool result
-    pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Self {
             role: "user".to_string(),
-            content: MessageContent::Parts(vec![
-                ContentPart::ToolResult {
-                    tool_use_id: tool_use_id.into(),
-                    content: content.into(),
-                    is_error: if is_error { Some(true) } else { None },
-                }
-            ]),
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error: if is_error { Some(true) } else { None },
+            }]),
             name: None,
         }
     }
@@ -465,15 +497,14 @@ impl ChatMessage {
     pub fn content_text(&self) -> String {
         match &self.content {
             MessageContent::Text(s) => s.clone(),
-            MessageContent::Parts(parts) => {
-                parts.iter()
-                    .filter_map(|p| match p {
-                        ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            }
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
         }
     }
 }
@@ -481,7 +512,10 @@ impl ChatMessage {
 impl TextGenerationResponse {
     /// Check if response has tool calls
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls.as_ref().map(|tc| !tc.is_empty()).unwrap_or(false)
+        self.tool_calls
+            .as_ref()
+            .map(|tc| !tc.is_empty())
+            .unwrap_or(false)
     }
 }
 

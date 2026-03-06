@@ -225,8 +225,7 @@ impl PriorityQueue {
         F: Fn(&str, usize, f64) -> Result<(String, usize), String> + Send + Sync + 'static,
     {
         // Priority heap for pending requests
-        let heap: Arc<Mutex<BinaryHeap<PriorityRequest>>> =
-            Arc::new(Mutex::new(BinaryHeap::new()));
+        let heap: Arc<Mutex<BinaryHeap<PriorityRequest>>> = Arc::new(Mutex::new(BinaryHeap::new()));
 
         // Spawn receiver that adds to heap
         let heap_clone = heap.clone();

@@ -8,11 +8,13 @@
 //! This enables heterogeneous conversations where GPT-4o can hear
 //! Claude's TTS output, and Claude gets transcriptions of GPT-4o's speech.
 
-use super::capabilities::{AudioCapabilities, AudioRouting, InputRoute, ModelCapabilityRegistry, OutputRoute};
+use super::capabilities::{
+    AudioCapabilities, AudioRouting, InputRoute, ModelCapabilityRegistry, OutputRoute,
+};
+use crate::{clog_debug, clog_info, clog_warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use crate::{clog_debug, clog_info, clog_warn};
 
 /// Participant in a voice conversation with routing info
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -362,10 +364,7 @@ mod tests {
 
         // Add human
         router
-            .add_participant(RoutedParticipant::human(
-                "user-1".into(),
-                "Joel".into(),
-            ))
+            .add_participant(RoutedParticipant::human("user-1".into(), "Joel".into()))
             .await;
 
         // Add GPT-4o (audio native)

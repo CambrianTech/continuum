@@ -6,14 +6,13 @@
 //! - `is_persona_mentioned`: @PersonaName, @uniqueid, or "Name," / "Name:" at start
 //! - `has_directed_mention`: any @word pattern (detects messages aimed at a specific persona)
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Regex for detecting directed @mentions anywhere in text.
 /// Matches @word at start or after whitespace. Excludes email-like patterns (word@word).
-static DIRECTED_MENTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\s)@[a-zA-Z][\w\s-]*").expect("directed mention regex")
-});
+static DIRECTED_MENTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)@[a-zA-Z][\w\s-]*").expect("directed mention regex"));
 
 /// Check if a specific persona is mentioned in the message text.
 ///
@@ -71,38 +70,70 @@ mod tests {
 
     #[test]
     fn test_at_mention_display_name() {
-        assert!(is_persona_mentioned("Hey @Teacher AI what's up?", "Teacher AI", "teacher-ai"));
+        assert!(is_persona_mentioned(
+            "Hey @Teacher AI what's up?",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_at_mention_unique_id() {
-        assert!(is_persona_mentioned("Hey @teacher-ai what's up?", "Teacher AI", "teacher-ai"));
+        assert!(is_persona_mentioned(
+            "Hey @teacher-ai what's up?",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_at_mention_case_insensitive() {
-        assert!(is_persona_mentioned("yo @TEACHER AI help", "Teacher AI", "teacher-ai"));
-        assert!(is_persona_mentioned("yo @TEACHER-AI help", "Teacher AI", "teacher-ai"));
+        assert!(is_persona_mentioned(
+            "yo @TEACHER AI help",
+            "Teacher AI",
+            "teacher-ai"
+        ));
+        assert!(is_persona_mentioned(
+            "yo @TEACHER-AI help",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_direct_address_comma() {
-        assert!(is_persona_mentioned("Teacher AI, explain closures", "Teacher AI", "teacher-ai"));
+        assert!(is_persona_mentioned(
+            "Teacher AI, explain closures",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_direct_address_colon() {
-        assert!(is_persona_mentioned("teacher-ai: what's up", "Teacher AI", "teacher-ai"));
+        assert!(is_persona_mentioned(
+            "teacher-ai: what's up",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_not_mentioned_substring() {
-        assert!(!is_persona_mentioned("mentioned the teacher today", "Teacher AI", "teacher-ai"));
+        assert!(!is_persona_mentioned(
+            "mentioned the teacher today",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]
     fn test_not_mentioned_no_at() {
-        assert!(!is_persona_mentioned("Teacher AI is great", "Teacher AI", "teacher-ai"));
+        assert!(!is_persona_mentioned(
+            "Teacher AI is great",
+            "Teacher AI",
+            "teacher-ai"
+        ));
     }
 
     #[test]

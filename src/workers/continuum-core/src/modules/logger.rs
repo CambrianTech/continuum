@@ -95,7 +95,10 @@ impl std::fmt::Display for LogLevel {
 
 /// Payload for log/write requests.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/logger/WriteLogPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/logger/WriteLogPayload.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogPayload {
     pub category: String,
@@ -109,7 +112,10 @@ pub struct WriteLogPayload {
 
 /// Result of log/write command.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/logger/WriteLogResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/logger/WriteLogResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogResult {
     pub bytes_written: usize,
@@ -131,7 +137,10 @@ pub struct WriteLogBatchResult {
 
 /// Result of log/ping command.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/logger/LoggerPingResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/logger/LoggerPingResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LoggerPingResult {
     pub uptime_ms: u64,
@@ -256,17 +265,11 @@ fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &str) -> Path
             PathBuf::from(log_dir).join(format!("sentinels/{handle}/execution.log"))
         }
         // modules/{module} → {log_dir}/modules/{module}.log
-        ["modules", module] => {
-            PathBuf::from(log_dir).join(format!("modules/{module}.log"))
-        }
+        ["modules", module] => PathBuf::from(log_dir).join(format!("modules/{module}.log")),
         // daemons/{name} → {log_dir}/daemons/{name}.log
-        ["daemons", name] => {
-            PathBuf::from(log_dir).join(format!("daemons/{name}.log"))
-        }
+        ["daemons", name] => PathBuf::from(log_dir).join(format!("daemons/{name}.log")),
         // system/{component} → {log_dir}/{component}.log
-        ["system", component] => {
-            PathBuf::from(log_dir).join(format!("{component}.log"))
-        }
+        ["system", component] => PathBuf::from(log_dir).join(format!("{component}.log")),
         // Legacy/fallback: put in system dir with category as filename
         _ => {
             // Replace slashes with underscores for legacy categories
@@ -292,13 +295,16 @@ fn ensure_file_handle(
         let needs_reopen = {
             let file = existing.lock().unwrap_or_else(|e| e.into_inner());
             match file.metadata() {
-                Err(_) => true, // File deleted
+                Err(_) => true,                             // File deleted
                 Ok(meta) => meta.len() > MAX_LOG_FILE_SIZE, // File too large
             }
         };
         if needs_reopen {
             cache.remove(category);
-            headers_written.lock().unwrap_or_else(|e| e.into_inner()).remove(category);
+            headers_written
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(category);
             // Truncate the oversized file
             if log_file_path.exists() {
                 let _ = fs::write(log_file_path, b"");
@@ -330,10 +336,18 @@ fn write_log_message(
     let log_file_path = resolve_log_path(&payload.category, log_dir, continuum_root);
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 
-    ensure_file_handle(&payload.category, &log_file_path, file_cache, headers_written)?;
+    ensure_file_handle(
+        &payload.category,
+        &log_file_path,
+        file_cache,
+        headers_written,
+    )?;
 
     let mut total_bytes = 0;
-    let needs_header = !headers_written.lock().unwrap_or_else(|e| e.into_inner()).contains(&payload.category);
+    let needs_header = !headers_written
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&payload.category);
 
     if needs_header {
         total_bytes += write_header(
@@ -389,8 +403,14 @@ fn write_header(
 
     let locked_file = {
         let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get(category)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("No file handle for {category}")))?
+        cache
+            .get(category)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("No file handle for {category}"),
+                )
+            })?
             .clone()
     };
 
@@ -399,15 +419,24 @@ fn write_header(
         file.write_all(header.as_bytes())?;
     }
 
-    headers_written.lock().unwrap_or_else(|e| e.into_inner()).insert(category.to_string());
+    headers_written
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(category.to_string());
     Ok(bytes)
 }
 
 fn write_entry(category: &str, log_entry: &str, file_cache: &FileCache) -> std::io::Result<usize> {
     let locked_file = {
         let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get(category)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("No file handle for {category}")))?
+        cache
+            .get(category)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("No file handle for {category}"),
+                )
+            })?
             .clone()
     };
 
@@ -466,18 +495,19 @@ pub struct LoggerModule {
 
 impl LoggerModule {
     pub fn new() -> Self {
-        let continuum_root = std::env::var("CONTINUUM_ROOT")
-            .unwrap_or_else(|_| {
-                let home = dirs::home_dir().expect("Failed to resolve home directory");
-                home.join(".continuum").to_string_lossy().to_string()
-            });
+        let continuum_root = std::env::var("CONTINUUM_ROOT").unwrap_or_else(|_| {
+            let home = dirs::home_dir().expect("Failed to resolve home directory");
+            home.join(".continuum").to_string_lossy().to_string()
+        });
 
-        let log_dir = std::env::var("JTAG_LOG_DIR")
-            .unwrap_or_else(|_| {
-                PathBuf::from(&continuum_root)
-                    .join("jtag").join("logs").join("system")
-                    .to_string_lossy().to_string()
-            });
+        let log_dir = std::env::var("JTAG_LOG_DIR").unwrap_or_else(|_| {
+            PathBuf::from(&continuum_root)
+                .join("jtag")
+                .join("logs")
+                .join("system")
+                .to_string_lossy()
+                .to_string()
+        });
 
         let file_cache = Arc::new(Mutex::new(HashMap::new()));
         let headers_written = Arc::new(Mutex::new(HashSet::new()));
@@ -504,54 +534,53 @@ impl LoggerModule {
             let mut pending: usize = 0;
             let mut limiter = RateLimiter::new(100);
 
-            let process_payload = |payload: &WriteLogPayload,
-                                   limiter: &mut RateLimiter,
-                                   pending: &mut usize| {
-                match limiter.check(&payload.category) {
-                    RateDecision::Allow => {
-                        if let Err(e) = write_log_message(
-                            payload,
-                            &writer_log_dir,
-                            &writer_continuum_root,
-                            &writer_file_cache,
-                            &writer_headers,
-                        ) {
-                            eprintln!("❌ LoggerModule write error: {e}");
+            let process_payload =
+                |payload: &WriteLogPayload, limiter: &mut RateLimiter, pending: &mut usize| {
+                    match limiter.check(&payload.category) {
+                        RateDecision::Allow => {
+                            if let Err(e) = write_log_message(
+                                payload,
+                                &writer_log_dir,
+                                &writer_continuum_root,
+                                &writer_file_cache,
+                                &writer_headers,
+                            ) {
+                                eprintln!("❌ LoggerModule write error: {e}");
+                            }
+                            *pending += 1;
                         }
-                        *pending += 1;
-                    }
-                    RateDecision::Drop => {}
-                    RateDecision::BurstEnded(dropped) => {
-                        let warning = WriteLogPayload {
-                            category: payload.category.clone(),
-                            level: LogLevel::Warn,
-                            component: "RateLimiter".to_string(),
-                            message: format!(
-                                "Rate limit: dropped {} messages from '{}' (>100/sec)",
-                                dropped, payload.category
-                            ),
-                            args: None,
-                        };
-                        let _ = write_log_message(
-                            &warning,
-                            &writer_log_dir,
-                            &writer_continuum_root,
-                            &writer_file_cache,
-                            &writer_headers,
-                        );
-                        if let Err(e) = write_log_message(
-                            payload,
-                            &writer_log_dir,
-                            &writer_continuum_root,
-                            &writer_file_cache,
-                            &writer_headers,
-                        ) {
-                            eprintln!("❌ LoggerModule write error: {e}");
+                        RateDecision::Drop => {}
+                        RateDecision::BurstEnded(dropped) => {
+                            let warning = WriteLogPayload {
+                                category: payload.category.clone(),
+                                level: LogLevel::Warn,
+                                component: "RateLimiter".to_string(),
+                                message: format!(
+                                    "Rate limit: dropped {} messages from '{}' (>100/sec)",
+                                    dropped, payload.category
+                                ),
+                                args: None,
+                            };
+                            let _ = write_log_message(
+                                &warning,
+                                &writer_log_dir,
+                                &writer_continuum_root,
+                                &writer_file_cache,
+                                &writer_headers,
+                            );
+                            if let Err(e) = write_log_message(
+                                payload,
+                                &writer_log_dir,
+                                &writer_continuum_root,
+                                &writer_file_cache,
+                                &writer_headers,
+                            ) {
+                                eprintln!("❌ LoggerModule write error: {e}");
+                            }
+                            *pending += 2;
                         }
-                        *pending += 2;
                     }
-                }
-            };
+                };
 
             loop {
                 match log_rx.recv_timeout(FLUSH_INTERVAL) {
@@ -636,8 +665,8 @@ impl LoggerModule {
             params.clone()
         };
 
-        let batch: WriteLogBatchPayload =
-            serde_json::from_value(payload_value).map_err(|e| format!("Invalid batch payload: {e}"))?;
+        let batch: WriteLogBatchPayload = serde_json::from_value(payload_value)
+            .map_err(|e| format!("Invalid batch payload: {e}"))?;
 
         let count = batch.entries.len();
         for entry in batch.entries {
@@ -653,7 +682,11 @@ impl LoggerModule {
     }
 
     fn handle_ping(&self) -> Result<CommandResult, String> {
-        let active_categories = self.file_cache.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let active_categories = self
+            .file_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
 
         CommandResult::json(&LoggerPingResult {
             uptime_ms: self.started_at.elapsed().as_millis() as u64,
@@ -686,16 +719,11 @@ impl ServiceModule for LoggerModule {
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // Ensure log directory exists
-        fs::create_dir_all(&self.log_dir)
-            .map_err(|e| format!("Failed to create log dir: {e}"))?;
+        fs::create_dir_all(&self.log_dir).map_err(|e| format!("Failed to create log dir: {e}"))?;
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "log/write" => self.handle_write(params),
             "log/write-batch" => self.handle_write_batch(params),

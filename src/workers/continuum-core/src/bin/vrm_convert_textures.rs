@@ -45,8 +45,16 @@ fn main() {
     let json_bytes = &data[20..20 + json_len];
 
     let bin_chunk_start = 20 + json_len;
-    let bin_len = u32::from_le_bytes(data[bin_chunk_start..bin_chunk_start + 4].try_into().unwrap()) as usize;
-    let bin_type = u32::from_le_bytes(data[bin_chunk_start + 4..bin_chunk_start + 8].try_into().unwrap());
+    let bin_len = u32::from_le_bytes(
+        data[bin_chunk_start..bin_chunk_start + 4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let bin_type = u32::from_le_bytes(
+        data[bin_chunk_start + 4..bin_chunk_start + 8]
+            .try_into()
+            .unwrap(),
+    );
     assert_eq!(bin_type, 0x004E4942, "Expected BIN chunk type");
     let bin_data = &data[bin_chunk_start + 8..bin_chunk_start + 8 + bin_len];
 
@@ -65,7 +73,11 @@ fn main() {
     if needs_basisu_fix {
         let ktx2_count = json["images"]
             .as_array()
-            .map(|imgs| imgs.iter().filter(|img| img["mimeType"].as_str() == Some("image/ktx2")).count())
+            .map(|imgs| {
+                imgs.iter()
+                    .filter(|img| img["mimeType"].as_str() == Some("image/ktx2"))
+                    .count()
+            })
             .unwrap_or(0);
         eprintln!("  [Texture] Found {} KTX2 textures", ktx2_count);
 
@@ -89,14 +101,22 @@ fn main() {
             }
             // Clean up empty extension objects
             for tex in textures.iter_mut() {
-                if tex.get("extensions").and_then(|e| e.as_object()).map(|o| o.is_empty()).unwrap_or(false) {
+                if tex
+                    .get("extensions")
+                    .and_then(|e| e.as_object())
+                    .map(|o| o.is_empty())
+                    .unwrap_or(false)
+                {
                     if let Some(obj) = tex.as_object_mut() {
                         obj.remove("extensions");
                     }
                 }
             }
         }
-        eprintln!("  [Texture] Moved {} sources from KHR_texture_basisu → standard field", moved);
+        eprintln!(
+            "  [Texture] Moved {} sources from KHR_texture_basisu → standard field",
+            moved
+        );
 
         for key in &["extensionsUsed", "extensionsRequired"] {
             if let Some(arr) = json[key].as_array_mut() {
@@ -109,7 +129,8 @@ fn main() {
     // =========================================================================
     // Fix 2: VRM 1.0 orientation — rotate skeleton root 180° Y
     // =========================================================================
-    let is_vrm_1_0 = json.get("extensions")
+    let is_vrm_1_0 = json
+        .get("extensions")
         .and_then(|e| e.get("VRMC_vrm"))
         .is_some();
 
@@ -148,8 +169,10 @@ fn main() {
                     .and_then(|n| n.get("name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                eprintln!("  [Orient] VRM 1.0 faces +Z → rotating skeleton root node {} '{}' by 180° Y",
-                    root_idx, node_name);
+                eprintln!(
+                    "  [Orient] VRM 1.0 faces +Z → rotating skeleton root node {} '{}' by 180° Y",
+                    root_idx, node_name
+                );
 
                 // Apply 180° Y rotation to skeleton root.
                 // Quaternion for 180° around Y: (x=0, y=sin(90°), z=0, w=cos(90°)) = (0, 1, 0, 0)
@@ -168,7 +191,9 @@ fn main() {
                 }
             }
         } else {
-            eprintln!("  [Orient] VRM 1.0 but no skeleton root found in skins — skipping orientation fix");
+            eprintln!(
+                "  [Orient] VRM 1.0 but no skeleton root found in skins — skipping orientation fix"
+            );
         }
     }
 

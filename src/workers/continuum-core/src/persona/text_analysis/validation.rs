@@ -5,9 +5,8 @@
 //! Called by the cognition module's `validate-response` handler.
 
 use super::{
-    is_garbage, has_truncated_tool_call, check_semantic_loop,
-    GarbageCheckResult, GarbageReason, SemanticLoopResult, ValidationResult,
-    ConversationMessage, LoopDetector,
+    check_semantic_loop, has_truncated_tool_call, is_garbage, ConversationMessage,
+    GarbageCheckResult, GarbageReason, LoopDetector, SemanticLoopResult, ValidationResult,
 };
 use uuid::Uuid;
 
@@ -105,7 +104,11 @@ pub fn validate_response(
 }
 
 /// Build a failed ValidationResult (short-circuit helper for garbage gate).
-fn failed(gate: &str, garbage_result: GarbageCheckResult, start: std::time::Instant) -> ValidationResult {
+fn failed(
+    gate: &str,
+    garbage_result: GarbageCheckResult,
+    start: std::time::Instant,
+) -> ValidationResult {
     ValidationResult {
         passed: false,
         gate_failed: Some(gate.to_string()),
@@ -141,7 +144,13 @@ mod tests {
     fn test_clean_response_passes() {
         let detector = make_detector();
         let id = Uuid::new_v4();
-        let result = validate_response("Hello, I can help you with that!", id, false, &[], &detector);
+        let result = validate_response(
+            "Hello, I can help you with that!",
+            id,
+            false,
+            &[],
+            &detector,
+        );
         assert!(result.passed);
         assert!(result.gate_failed.is_none());
     }
@@ -178,17 +187,18 @@ mod tests {
     fn test_semantic_loop_detected() {
         let detector = make_detector();
         let id = Uuid::new_v4();
-        let history = vec![
-            ConversationMessage {
-                role: "assistant".to_string(),
-                content: "The answer to life is forty-two, as we all know from the guide.".to_string(),
-                name: None,
-            },
-        ];
+        let history = vec![ConversationMessage {
+            role: "assistant".to_string(),
+            content: "The answer to life is forty-two, as we all know from the guide.".to_string(),
+            name: None,
+        }];
         // Same content should trigger semantic loop
         let result = validate_response(
             "The answer to life is forty-two, as we all know from the guide.",
-            id, false, &history, &detector,
+            id,
+            false,
+            &history,
+            &detector,
         );
         assert!(!result.passed);
         assert_eq!(result.gate_failed.as_deref(), Some("semantic_loop"));

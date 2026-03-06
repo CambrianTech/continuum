@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod tests {
     use crate::live::*;
-    use uuid::Uuid;
     use std::sync::Arc;
     use std::thread;
+    use uuid::Uuid;
 
     // Test constants
     const TEST_SESSION_1: &str = "00000000-0000-0000-0000-000000000001";
@@ -69,11 +69,7 @@ mod tests {
         let session_id = Uuid::parse_str(TEST_SESSION_1).unwrap();
         let room_id = Uuid::new_v4();
 
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
         orchestrator.unregister_session(session_id);
 
@@ -81,7 +77,11 @@ mod tests {
         let utterance = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, "test");
         let responders = orchestrator.on_utterance(utterance);
 
-        assert_eq!(responders.len(), 0, "Unregistered session should return no responders");
+        assert_eq!(
+            responders.len(),
+            0,
+            "Unregistered session should return no responders"
+        );
     }
 
     // ========================================================================
@@ -120,11 +120,7 @@ mod tests {
         let session_id = Uuid::parse_str(TEST_SESSION_1).unwrap();
         let room_id = Uuid::new_v4();
 
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
         // Statement (not a question)
         let statement = create_test_utterance(
@@ -134,7 +130,11 @@ mod tests {
         );
         let responders = orchestrator.on_utterance(statement);
 
-        assert_eq!(responders.len(), 1, "Statements should broadcast to all AIs");
+        assert_eq!(
+            responders.len(),
+            1,
+            "Statements should broadcast to all AIs"
+        );
     }
 
     #[test]
@@ -143,11 +143,7 @@ mod tests {
         let session_id = Uuid::parse_str(TEST_SESSION_1).unwrap();
         let room_id = Uuid::new_v4();
 
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
         // Question
         let question = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, "Can you hear me?");
@@ -183,7 +179,10 @@ mod tests {
         let responders = orchestrator.on_utterance(utterance);
 
         assert_eq!(responders.len(), 1, "Speaker should be excluded");
-        assert!(!responders.contains(&speaker_id), "Speaker should not be in responders");
+        assert!(
+            !responders.contains(&speaker_id),
+            "Speaker should not be in responders"
+        );
     }
 
     // ========================================================================
@@ -212,7 +211,11 @@ mod tests {
         let utterance = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, "test");
         let responders = orchestrator.on_utterance(utterance);
 
-        assert_eq!(responders.len(), 0, "No AI participants should return empty");
+        assert_eq!(
+            responders.len(),
+            0,
+            "No AI participants should return empty"
+        );
     }
 
     #[test]
@@ -222,7 +225,11 @@ mod tests {
         let utterance = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, "test");
         let responders = orchestrator.on_utterance(utterance);
 
-        assert_eq!(responders.len(), 0, "Unregistered session should return empty");
+        assert_eq!(
+            responders.len(),
+            0,
+            "Unregistered session should return empty"
+        );
     }
 
     #[test]
@@ -231,17 +238,17 @@ mod tests {
         let session_id = Uuid::parse_str(TEST_SESSION_1).unwrap();
         let room_id = Uuid::new_v4();
 
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
         let utterance = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, "");
         let responders = orchestrator.on_utterance(utterance);
 
         // Empty transcripts should still broadcast (AI can decide if they care)
-        assert_eq!(responders.len(), 1, "Empty transcript should still broadcast");
+        assert_eq!(
+            responders.len(),
+            1,
+            "Empty transcript should still broadcast"
+        );
     }
 
     #[test]
@@ -250,11 +257,7 @@ mod tests {
         let session_id = Uuid::parse_str(TEST_SESSION_1).unwrap();
         let room_id = Uuid::new_v4();
 
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
         let long_text = "a".repeat(10000);
         let utterance = create_test_utterance(TEST_SESSION_1, TEST_SPEAKER, &long_text);
@@ -340,7 +343,11 @@ mod tests {
         // All should succeed with 2 responders each
         for handle in handles {
             let responders = handle.join().unwrap();
-            assert_eq!(responders.len(), 2, "Concurrent utterances should all broadcast");
+            assert_eq!(
+                responders.len(),
+                2,
+                "Concurrent utterances should all broadcast"
+            );
         }
     }
 
@@ -355,11 +362,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 let session_id = Uuid::new_v4();
                 let room_id = Uuid::new_v4();
-                orch.register_session(
-                    session_id,
-                    room_id,
-                    vec![create_test_ai(TEST_AI_1, "AI 1")],
-                );
+                orch.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
                 session_id
             });
             handles.push(handle);
@@ -371,7 +374,11 @@ mod tests {
             session_ids.push(handle.join().unwrap());
         }
 
-        assert_eq!(session_ids.len(), 10, "All concurrent registrations should succeed");
+        assert_eq!(
+            session_ids.len(),
+            10,
+            "All concurrent registrations should succeed"
+        );
     }
 
     #[test]

@@ -8,7 +8,10 @@ use ts_rs::TS;
 
 /// Sentinel execution handle
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/SentinelHandle.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/SentinelHandle.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SentinelHandle {
     pub id: String,
@@ -27,7 +30,10 @@ pub struct SentinelHandle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/SentinelStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/SentinelStatus.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SentinelStatus {
     Running,
@@ -38,7 +44,10 @@ pub enum SentinelStatus {
 
 /// Log stream info
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/LogStreamInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/LogStreamInfo.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LogStreamInfo {
     pub name: String,
@@ -53,7 +62,10 @@ pub struct LogStreamInfo {
 /// Steps compose recursively — condition, loop, parallel, and sentinel
 /// all contain nested steps, enabling arbitrarily complex pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/PipelineStep.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineStep.ts"
+)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PipelineStep {
     /// Execute a shell command as an isolated child process
@@ -287,7 +299,10 @@ pub struct StepResult {
 
 /// Result of pipeline execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/PipelineResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineResult {
     pub handle: String,

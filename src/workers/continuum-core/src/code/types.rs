@@ -102,14 +102,9 @@ pub enum EditMode {
         all: bool,
     },
     /// Insert content at a specific line (pushes existing lines down).
-    InsertAt {
-        line: u32,
-        content: String,
-    },
+    InsertAt { line: u32, content: String },
     /// Append content to end of file.
-    Append {
-        content: String,
-    },
+    Append { content: String },
 }
 
 /// Result of a file write/edit/delete operation.
@@ -231,8 +226,8 @@ pub struct GitStatusInfo {
 
 /// Allowed file extensions for write operations.
 pub const ALLOWED_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "json", "md", "css", "html",
-    "rs", "toml", "yaml", "yml", "txt", "sh", "py",
+    "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml", "txt",
+    "sh", "py",
 ];
 
 /// Maximum file size for write operations (1MB).

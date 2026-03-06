@@ -19,24 +19,25 @@
 //! - ai/providers/health: Check provider health
 
 use crate::ai::{
-    AdapterRegistry, AnthropicAdapter, CandleAdapter, OpenAICompatibleAdapter,
-    TextGenerationRequest, TextGenerationResponse, RoutingInfo, ChatMessage, MessageContent,
+    AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
+    OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule, ModuleLogger};
 use crate::logging::TimingGuard;
-use crate::utils::params::Params;
+use crate::runtime::{
+    CommandResult, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority, ServiceModule,
+};
 use crate::secrets::get_secret;
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::{RwLock, OnceCell};
+use tokio::sync::{OnceCell, RwLock};
 
 /// Global singleton registry - survives module recreation on server restart
-static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> = Lazy::new(|| {
-    Arc::new(RwLock::new(AdapterRegistry::new()))
-});
+static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> =
+    Lazy::new(|| Arc::new(RwLock::new(AdapterRegistry::new())));
 
 /// Track if we've done first-time initialization
 static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -59,7 +60,9 @@ impl AIProviderModule {
     }
 
     /// Create with GPU memory manager for VRAM-aware local inference.
-    pub fn with_gpu_manager(gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>) -> Self {
+    pub fn with_gpu_manager(
+        gpu_manager: Arc<crate::gpu::memory_manager::GpuMemoryManager>,
+    ) -> Self {
         Self {
             registry: GLOBAL_REGISTRY.clone(),
             log: OnceCell::new(),
@@ -69,14 +72,18 @@ impl AIProviderModule {
 
     /// Get logger (panics if called before initialize)
     fn log(&self) -> &ModuleLogger {
-        self.log.get().expect("AIProviderModule not initialized").as_ref()
+        self.log
+            .get()
+            .expect("AIProviderModule not initialized")
+            .as_ref()
     }
 
     /// Register all available adapters
     async fn register_adapters(&self) -> Result<(), String> {
         // Check global flag to prevent re-initialization (survives module recreation)
         if INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            self.log().info("Adapters already initialized (global), skipping re-registration");
+            self.log()
+                .info("Adapters already initialized (global), skipping re-registration");
             return Ok(());
         }
 
@@ -140,10 +147,17 @@ impl AIProviderModule {
             || inference_mode.eq_ignore_ascii_case("hybrid");
 
         if enable_candle {
-            self.log().info("Registering Candle adapter (local inference)");
+            self.log()
+                .info("Registering Candle adapter (local inference)");
             // Priority 8: Local inference is fallback when cloud fails or for LoRA
             // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
-            let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 8 };
+            let priority = if inference_mode.eq_ignore_ascii_case("local")
+                || inference_mode.eq_ignore_ascii_case("candle")
+            {
+                0
+            } else {
+                8
+            };
             let mut candle = CandleAdapter::new();
             if let Some(mgr) = &self.gpu_manager {
                 candle.set_gpu_manager(mgr.clone());
@@ -155,11 +169,15 @@ impl AIProviderModule {
         registry.initialize_all().await?;
 
         let available = registry.available();
-        self.log().info(&format!("AIProviderModule initialized with {} providers: {:?}",
-            available.len(), available));
+        self.log().info(&format!(
+            "AIProviderModule initialized with {} providers: {:?}",
+            available.len(),
+            available
+        ));
 
         if available.is_empty() {
-            self.log().warn("No providers available! Add API keys to ~/.continuum/config.env");
+            self.log()
+                .warn("No providers available! Add API keys to ~/.continuum/config.env");
         }
 
         Ok(())
@@ -196,7 +214,8 @@ impl AIProviderModule {
             max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
             top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
             top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-            stop_sequences: p.json_opt("stop_sequences")
+            stop_sequences: p
+                .json_opt("stop_sequences")
                 .or_else(|| p.json_opt("stopSequences")),
             tools: p.json_opt("tools"),
             tool_choice: p.json_opt("tool_choice"),
@@ -271,11 +290,7 @@ impl ServiceModule for AIProviderModule {
         self.register_adapters().await
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "ai/generate" => {
                 let _timer = TimingGuard::new("module", "ai_generate");
@@ -292,14 +307,20 @@ impl ServiceModule for AIProviderModule {
                     .ok_or_else(|| {
                         let available = registry.available();
                         if available.is_empty() {
-                            "No AI providers configured. Add API keys to ~/.continuum/config.env".to_string()
+                            "No AI providers configured. Add API keys to ~/.continuum/config.env"
+                                .to_string()
                         } else {
-                            format!("Requested provider/model not available. Available: {:?}", available)
+                            format!(
+                                "Requested provider/model not available. Available: {:?}",
+                                available
+                            )
                         }
                     })?;
 
-                self.log().info(&format!("Using {} adapter for model {:?}",
-                    provider_id, request.model));
+                self.log().info(&format!(
+                    "Using {} adapter for model {:?}",
+                    provider_id, request.model
+                ));
 
                 // Generate text
                 let mut response = adapter.generate_text(request).await?;
@@ -309,15 +330,16 @@ impl ServiceModule for AIProviderModule {
                 response.routing = Some(RoutingInfo {
                     provider: provider_id.to_string(),
                     is_local: adapter.capabilities().is_local,
-                    routing_reason: prior_routing.as_ref()
+                    routing_reason: prior_routing
+                        .as_ref()
                         .map(|r| r.routing_reason.clone())
                         .unwrap_or_else(|| "adapter_selected".to_string()),
-                    adapters_applied: prior_routing.as_ref()
+                    adapters_applied: prior_routing
+                        .as_ref()
                         .map(|r| r.adapters_applied.clone())
                         .unwrap_or_default(),
                     model_mapped: None,
-                    model_requested: prior_routing
-                        .and_then(|r| r.model_requested),
+                    model_requested: prior_routing.and_then(|r| r.model_requested),
                 });
 
                 Ok(CommandResult::Json(self.response_to_json(&response)))
@@ -459,7 +481,10 @@ impl ServiceModule for AIProviderModule {
                 // the registry matches "ai/" prefix back to this module → infinite recursion.
                 use crate::runtime::command_executor;
                 let log = crate::runtime::logger("ai_provider");
-                log.info(&format!("Forwarding '{}' to TypeScript via Unix socket (bypassing registry)", command));
+                log.info(&format!(
+                    "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
+                    command
+                ));
                 command_executor::execute_ts(command, params).await
             }
         }
@@ -487,7 +512,10 @@ pub async fn generate_text(
             if available.is_empty() {
                 "No AI providers configured. Add API keys to ~/.continuum/config.env".to_string()
             } else {
-                format!("Requested provider/model not available. Available: {:?}", available)
+                format!(
+                    "Requested provider/model not available. Available: {:?}",
+                    available
+                )
             }
         })?;
 
@@ -500,7 +528,8 @@ pub async fn generate_text(
         routing_reason: "generate_text_call".to_string(),
         adapters_applied: vec![],
         model_mapped: None,
-        model_requested: response.routing
+        model_requested: response
+            .routing
             .as_ref()
             .and_then(|r| r.model_requested.clone()),
     });

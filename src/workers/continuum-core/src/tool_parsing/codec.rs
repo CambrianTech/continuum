@@ -10,8 +10,8 @@
 //!   code__write, $FUNCTIONS.code_write, code_write, code-write, etc.
 //! The codec handles all of these by registering normalized variants at startup.
 
-use std::collections::{HashMap, HashSet};
 use parking_lot::RwLock;
+use std::collections::{HashMap, HashSet};
 
 pub struct ToolNameCodec {
     originals: RwLock<HashSet<String>>,
@@ -109,8 +109,14 @@ impl ToolNameCodec {
 /// Strip model-added prefixes: $FUNCTIONS., functions., $tools., etc.
 fn strip_model_prefix(raw: &str) -> &str {
     const PREFIXES: &[&str] = &[
-        "$FUNCTIONS.", "$functions.", "FUNCTIONS.", "functions.",
-        "$tools.", "$TOOLS.", "tools.", "TOOLS.",
+        "$FUNCTIONS.",
+        "$functions.",
+        "FUNCTIONS.",
+        "functions.",
+        "$tools.",
+        "$TOOLS.",
+        "tools.",
+        "TOOLS.",
     ];
     for prefix in PREFIXES {
         if let Some(stripped) = raw.strip_prefix(prefix) {
@@ -142,7 +148,10 @@ mod tests {
     fn encode_basic() {
         let codec = ToolNameCodec::new();
         assert_eq!(codec.encode("code/write"), "code_write");
-        assert_eq!(codec.encode("collaboration/chat/send"), "collaboration_chat_send");
+        assert_eq!(
+            codec.encode("collaboration/chat/send"),
+            "collaboration_chat_send"
+        );
     }
 
     // ─── Decode: Step 1 (exact match) ───────────────────────────
@@ -212,14 +221,20 @@ mod tests {
     fn decode_double_underscore_reconstruct() {
         let codec = codec_with_tools();
         // collaboration__chat__send → collaboration/chat/send
-        assert_eq!(codec.decode("collaboration__chat__send"), "collaboration/chat/send");
+        assert_eq!(
+            codec.decode("collaboration__chat__send"),
+            "collaboration/chat/send"
+        );
     }
 
     #[test]
     fn decode_single_underscore_reconstruct() {
         let codec = codec_with_tools();
         // collaboration_chat_send → collaboration/chat/send
-        assert_eq!(codec.decode("collaboration_chat_send"), "collaboration/chat/send");
+        assert_eq!(
+            codec.decode("collaboration_chat_send"),
+            "collaboration/chat/send"
+        );
     }
 
     // ─── Decode: unknown ────────────────────────────────────────

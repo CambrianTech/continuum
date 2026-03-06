@@ -4,14 +4,17 @@
 //! Each call has multiple participants, audio is mixed with mix-minus.
 
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
-use crate::live::audio::router::{AudioRouter, RoutedParticipant};
 use crate::live::audio::capabilities::ModelCapabilityRegistry;
-use crate::live::handle::Handle;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
+use crate::live::audio::router::{AudioRouter, RoutedParticipant};
+use crate::live::audio::stt;
+use crate::live::handle::Handle;
 use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
-use crate::utils::audio::{base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k};
-use crate::live::audio::stt;
+use crate::utils::audio::{
+    base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k,
+};
+use crate::{clog_error, clog_info, clog_warn};
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -22,7 +25,6 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use crate::{clog_error, clog_info, clog_warn};
 use ts_rs::TS;
 
 /// Maximum characters to show in truncated text previews (logs, errors)
@@ -73,7 +75,7 @@ pub enum CallMessage {
         user_id: String,
         display_name: String,
         #[serde(default)]
-        is_ai: bool,  // AI participants get server-side audio buffering
+        is_ai: bool, // AI participants get server-side audio buffering
     },
 
     /// Leave the call
@@ -159,7 +161,9 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, AUDIO_FRAME_DURATION_MS, AUDIO_CHANNEL_CAPACITY};
+        use crate::audio_constants::{
+            AUDIO_CHANNEL_CAPACITY, AUDIO_FRAME_DURATION_MS, AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE,
+        };
         // Sample rate and frame size from audio constants (single source of truth)
         Self {
             sample_rate: AUDIO_SAMPLE_RATE,
@@ -372,7 +376,10 @@ impl CallManager {
             let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
             {
                 let mut shutdowns = self.video_source_shutdowns.write().await;
-                shutdowns.entry(call_id.to_string()).or_default().push(shutdown_tx);
+                shutdowns
+                    .entry(call_id.to_string())
+                    .or_default()
+                    .push(shutdown_tx);
             }
 
             call
@@ -405,7 +412,8 @@ impl CallManager {
 
             clog_info!(
                 "Audio loop started for call {} ({}ms frames)",
-                call_id_clone, frame_duration_ms
+                call_id_clone,
+                frame_duration_ms
             );
 
             loop {
@@ -485,7 +493,10 @@ impl CallManager {
         {
             let mut call = call.write().await;
             let stream = if is_ai {
-                clog_info!("🤖 Creating AI participant {} with ring buffer", display_name);
+                clog_info!(
+                    "🤖 Creating AI participant {} with ring buffer",
+                    display_name
+                );
                 ParticipantStream::new_ai(handle, user_id.to_string(), display_name.to_string())
             } else {
                 ParticipantStream::new(handle, user_id.to_string(), display_name.to_string())
@@ -520,7 +531,13 @@ impl CallManager {
             handle.short(),
             call_id
         );
-        CallJoinResult { handle, audio_rx, transcription_rx, video_rx, message_rx }
+        CallJoinResult {
+            handle,
+            audio_rx,
+            transcription_rx,
+            video_rx,
+            message_rx,
+        }
     }
 
     /// Join a participant to a call with model-specific capabilities
@@ -715,7 +732,8 @@ impl CallManager {
                                 // Queue full - drop this audio to stay current
                                 clog_warn!(
                                     "🚨 Dropping audio from {} - transcription queue full ({} max)",
-                                    display_name, MAX_CONCURRENT_TRANSCRIPTIONS
+                                    display_name,
+                                    MAX_CONCURRENT_TRANSCRIPTIONS
                                 );
                             }
                         }
@@ -738,7 +756,9 @@ impl CallManager {
             if let Some(call) = calls.get(&call_id) {
                 let call = call.read().await;
                 // Look up user_id from mixer — the sender's identity for client-side routing
-                let user_id = call.mixer.find_user_id_by_handle(handle)
+                let user_id = call
+                    .mixer
+                    .find_user_id_by_handle(handle)
                     .unwrap_or_else(|| "unknown".to_string());
                 // Broadcast with sender handle + user_id — receivers filter out their own frames
                 if call.video_tx.send((*handle, user_id, frame_data)).is_err() {
@@ -796,7 +816,8 @@ impl CallManager {
                 if !text.is_empty() {
                     clog_info!(
                         "[STEP 5] 📝 Whisper transcription DONE: \"{}\" (confidence: {:.2})",
-                        text, result.confidence
+                        text,
+                        result.confidence
                     );
 
                     // [STEP 6] Broadcast transcription to all participants
@@ -868,19 +889,25 @@ impl CallManager {
         // Step 1: Verify participant is in this call
         let (handle, display_name) = {
             let calls = self.calls.read().await;
-            let call = calls.get(call_id)
+            let call = calls
+                .get(call_id)
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?;
             let call = call.read().await;
-            let handle = call.mixer.find_handle_by_user_id(user_id)
+            let handle = call
+                .mixer
+                .find_handle_by_user_id(user_id)
                 .ok_or_else(|| format!("User '{user_id}' not in call '{call_id}'"))?;
-            let display_name = call.mixer.get_participant(&handle)
+            let display_name = call
+                .mixer
+                .get_participant(&handle)
                 .map(|p| p.display_name.clone())
                 .unwrap_or_else(|| user_id.to_string());
             (handle, display_name)
         };
 
         // Step 2: Synthesize (async — runs in current tokio context)
-        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None).await
+        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, None)
+            .await
             .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();
@@ -896,7 +923,8 @@ impl CallManager {
         );
 
         // Step 3: Inject directly into the call mixer (audio stays in Rust)
-        self.inject_tts_audio(call_id, &handle, &display_name, text, synthesis.samples).await;
+        self.inject_tts_audio(call_id, &handle, &display_name, text, synthesis.samples)
+            .await;
 
         Ok((num_samples, duration_ms, sample_rate))
     }
@@ -911,23 +939,31 @@ impl CallManager {
     ) -> Result<(), String> {
         let (handle, display_name) = {
             let calls = self.calls.read().await;
-            let call = calls.get(call_id)
+            let call = calls
+                .get(call_id)
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?;
             let call = call.read().await;
-            let handle = call.mixer.find_handle_by_user_id(user_id)
+            let handle = call
+                .mixer
+                .find_handle_by_user_id(user_id)
                 .ok_or_else(|| format!("User '{user_id}' not in call '{call_id}'"))?;
-            let display_name = call.mixer.get_participant(&handle)
+            let display_name = call
+                .mixer
+                .get_participant(&handle)
                 .map(|p| p.display_name.clone())
                 .unwrap_or_else(|| user_id.to_string());
             (handle, display_name)
         };
 
         let sample_count = samples.len();
-        self.inject_tts_audio(call_id, &handle, &display_name, "(handle-based)", samples).await;
+        self.inject_tts_audio(call_id, &handle, &display_name, "(handle-based)", samples)
+            .await;
 
         clog_info!(
             "inject_audio: {} samples into call {} for {}",
-            sample_count, call_id, display_name
+            sample_count,
+            call_id,
+            display_name
         );
 
         Ok(())
@@ -944,7 +980,9 @@ impl CallManager {
     ) -> Result<Handle, String> {
         let call = {
             let calls = self.calls.read().await;
-            calls.get(call_id).cloned()
+            calls
+                .get(call_id)
+                .cloned()
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?
         };
 
@@ -963,21 +1001,21 @@ impl CallManager {
 
         clog_info!(
             "🔊 Added ambient source '{}' ({}) to call {}",
-            source_name, handle.short(), call_id
+            source_name,
+            handle.short(),
+            call_id
         );
 
         Ok(handle)
     }
 
     /// Remove an ambient audio source from a call
-    pub async fn remove_ambient_source(
-        &self,
-        call_id: &str,
-        handle: Handle,
-    ) -> Result<(), String> {
+    pub async fn remove_ambient_source(&self, call_id: &str, handle: Handle) -> Result<(), String> {
         let call = {
             let calls = self.calls.read().await;
-            calls.get(call_id).cloned()
+            calls
+                .get(call_id)
+                .cloned()
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?
         };
 
@@ -993,7 +1031,8 @@ impl CallManager {
 
         clog_info!(
             "🔊 Removed ambient source ({}) from call {}",
-            handle.short(), call_id
+            handle.short(),
+            call_id
         );
 
         Ok(())
@@ -1009,7 +1048,9 @@ impl CallManager {
     ) -> Result<(), String> {
         let call = {
             let calls = self.calls.read().await;
-            calls.get(call_id).cloned()
+            calls
+                .get(call_id)
+                .cloned()
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?
         };
 
@@ -1028,12 +1069,11 @@ impl CallManager {
     ///
     /// Accepts the Call Arc directly to avoid deadlocks when called from
     /// get_or_create_call() which already holds the calls write lock.
-    fn start_test_video_source_for(
-        call: &Arc<RwLock<Call>>,
-        call_id: &str,
-    ) -> mpsc::Sender<()> {
+    fn start_test_video_source_for(call: &Arc<RwLock<Call>>, call_id: &str) -> mpsc::Sender<()> {
         let video_tx = {
-            let call_guard = call.try_read().expect("Call should be available (just created)");
+            let call_guard = call
+                .try_read()
+                .expect("Call should be available (just created)");
             call_guard.video_tx.clone()
         };
 
@@ -1054,7 +1094,9 @@ impl CallManager {
     ) -> Result<Handle, String> {
         let call = {
             let calls = self.calls.read().await;
-            calls.get(call_id).cloned()
+            calls
+                .get(call_id)
+                .cloned()
                 .ok_or_else(|| format!("Call '{call_id}' not found"))?
         };
 
@@ -1069,14 +1111,19 @@ impl CallManager {
 
         clog_info!(
             "Adding video source '{}' (user_id={}) to call {}",
-            source_name, source_user_id, call_id
+            source_name,
+            source_user_id,
+            call_id
         );
 
         let shutdown_tx = source.start(video_tx, handle);
 
         {
             let mut shutdowns = self.video_source_shutdowns.write().await;
-            shutdowns.entry(call_id.to_string()).or_default().push(shutdown_tx);
+            shutdowns
+                .entry(call_id.to_string())
+                .or_default()
+                .push(shutdown_tx);
         }
 
         Ok(handle)
@@ -1345,7 +1392,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
 
 /// Start the WebSocket call server with an externally-created CallManager.
 /// This allows the IPC server to share the same CallManager for direct audio injection.
-pub async fn start_call_server(addr: &str, manager: Arc<CallManager>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_call_server(
+    addr: &str,
+    manager: Arc<CallManager>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
 
     clog_info!("Call server listening on {}", addr);
@@ -1360,7 +1410,7 @@ pub async fn start_call_server(addr: &str, manager: Arc<CallManager>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
+    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::mixer::test_utils::*;
     use crate::utils::audio::base64_encode_i16;
 
@@ -1377,7 +1427,9 @@ mod tests {
         let manager = CallManager::new();
 
         // Join a call (false = not AI)
-        let join = manager.join_call("test-call", "user-1", "Alice", false).await;
+        let join = manager
+            .join_call("test-call", "user-1", "Alice", false)
+            .await;
 
         // Check stats
         let stats = manager.get_stats(&join.handle).await;
@@ -1398,7 +1450,9 @@ mod tests {
         let manager = CallManager::new();
 
         // Two participants join (humans)
-        let join_a = manager.join_call("test-call", "user-a", "Alice", false).await;
+        let join_a = manager
+            .join_call("test-call", "user-a", "Alice", false)
+            .await;
         let join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
 
         // Check count
@@ -1425,7 +1479,9 @@ mod tests {
     async fn test_mute() {
         let manager = CallManager::new();
 
-        let join = manager.join_call("test-call", "user-1", "Alice", false).await;
+        let join = manager
+            .join_call("test-call", "user-1", "Alice", false)
+            .await;
 
         // Mute
         manager.set_mute(&join.handle, true).await;
@@ -1441,7 +1497,9 @@ mod tests {
         let manager = CallManager::new();
 
         // Two participants join
-        let join_a = manager.join_call("test-call", "user-a", "Alice", false).await;
+        let join_a = manager
+            .join_call("test-call", "user-a", "Alice", false)
+            .await;
         let mut join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
 
         // Alice sends a video frame

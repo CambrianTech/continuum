@@ -3,8 +3,8 @@
 //! Maps voice names from all TTS backends (Edge, Kokoro, Orpheus, Piper, Pocket)
 //! to AvatarGender for model selection. Falls back to deterministic identity hashing.
 
-use super::types::AvatarGender;
 use super::hash::deterministic_pick;
+use super::types::AvatarGender;
 
 /// Extract gender from a TTS voice name.
 ///
@@ -27,16 +27,26 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
     }
 
     // Edge TTS: contains "Guy" or known male names → male, known female names → female
-    if lower.contains("guyneural") || lower.contains("andrewneural")
-        || lower.contains("brianneural") || lower.contains("ericneural")
-        || lower.contains("rogerneural") || lower.contains("steffanneural")
-        || lower.contains("christopherneural") || lower.contains("davisneural") {
+    if lower.contains("guyneural")
+        || lower.contains("andrewneural")
+        || lower.contains("brianneural")
+        || lower.contains("ericneural")
+        || lower.contains("rogerneural")
+        || lower.contains("steffanneural")
+        || lower.contains("christopherneural")
+        || lower.contains("davisneural")
+    {
         return Some(AvatarGender::Male);
     }
-    if lower.contains("jennyneural") || lower.contains("arianeural")
-        || lower.contains("emmaneural") || lower.contains("janeneural")
-        || lower.contains("nancyneural") || lower.contains("saraneural")
-        || lower.contains("michelleneural") || lower.contains("amberneural") {
+    if lower.contains("jennyneural")
+        || lower.contains("arianeural")
+        || lower.contains("emmaneural")
+        || lower.contains("janeneural")
+        || lower.contains("nancyneural")
+        || lower.contains("saraneural")
+        || lower.contains("michelleneural")
+        || lower.contains("amberneural")
+    {
         return Some(AvatarGender::Female);
     }
 
@@ -44,14 +54,18 @@ pub fn gender_from_voice_name(voice: &str) -> Option<AvatarGender> {
     let orpheus_female = ["tara", "leah", "jess", "mia", "zoe"];
     let orpheus_male = ["leo", "dan", "zac"];
     for name in &orpheus_female {
-        if lower == *name || lower.starts_with(&format!("{}_", name))
-            || lower.starts_with(&format!("{}.", name)) {
+        if lower == *name
+            || lower.starts_with(&format!("{}_", name))
+            || lower.starts_with(&format!("{}.", name))
+        {
             return Some(AvatarGender::Female);
         }
     }
     for name in &orpheus_male {
-        if lower == *name || lower.starts_with(&format!("{}_", name))
-            || lower.starts_with(&format!("{}.", name)) {
+        if lower == *name
+            || lower.starts_with(&format!("{}_", name))
+            || lower.starts_with(&format!("{}.", name))
+        {
             return Some(AvatarGender::Male);
         }
     }
@@ -89,21 +103,39 @@ mod tests {
 
     #[test]
     fn test_gender_from_voice_kokoro_female() {
-        assert_eq!(gender_from_voice_name("af_bella"), Some(AvatarGender::Female));
-        assert_eq!(gender_from_voice_name("bf_emma"), Some(AvatarGender::Female));
+        assert_eq!(
+            gender_from_voice_name("af_bella"),
+            Some(AvatarGender::Female)
+        );
+        assert_eq!(
+            gender_from_voice_name("bf_emma"),
+            Some(AvatarGender::Female)
+        );
     }
 
     #[test]
     fn test_gender_from_voice_kokoro_male() {
         assert_eq!(gender_from_voice_name("am_adam"), Some(AvatarGender::Male));
-        assert_eq!(gender_from_voice_name("bm_george"), Some(AvatarGender::Male));
+        assert_eq!(
+            gender_from_voice_name("bm_george"),
+            Some(AvatarGender::Male)
+        );
     }
 
     #[test]
     fn test_gender_from_voice_edge_tts() {
-        assert_eq!(gender_from_voice_name("en-US-GuyNeural"), Some(AvatarGender::Male));
-        assert_eq!(gender_from_voice_name("en-US-JennyNeural"), Some(AvatarGender::Female));
-        assert_eq!(gender_from_voice_name("en-US-BrianNeural"), Some(AvatarGender::Male));
+        assert_eq!(
+            gender_from_voice_name("en-US-GuyNeural"),
+            Some(AvatarGender::Male)
+        );
+        assert_eq!(
+            gender_from_voice_name("en-US-JennyNeural"),
+            Some(AvatarGender::Female)
+        );
+        assert_eq!(
+            gender_from_voice_name("en-US-BrianNeural"),
+            Some(AvatarGender::Male)
+        );
     }
 
     #[test]
@@ -137,10 +169,18 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for i in 0..100 {
             let g = gender_from_identity(&format!("persona-{}", i));
-            assert!(g == AvatarGender::Male || g == AvatarGender::Female,
-                "gender_from_identity should never return Neutral, got {:?}", g);
+            assert!(
+                g == AvatarGender::Male || g == AvatarGender::Female,
+                "gender_from_identity should never return Neutral, got {:?}",
+                g
+            );
             seen.insert(g);
         }
-        assert_eq!(seen.len(), 2, "Expected both Male and Female from 100 identities, got {:?}", seen);
+        assert_eq!(
+            seen.len(),
+            2,
+            "Expected both Male and Female from 100 identities, got {:?}",
+            seen
+        );
     }
 }

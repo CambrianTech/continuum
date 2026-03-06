@@ -36,7 +36,9 @@ pub fn ipc_socket_path() -> String {
         if candidate.exists() {
             return candidate.to_string_lossy().to_string();
         }
-        if !dir.pop() { break; }
+        if !dir.pop() {
+            break;
+        }
     }
     // Fallback for manual `cargo run` outside project
     "/tmp/continuum-core.sock".to_string()
@@ -124,16 +126,25 @@ pub fn ipc_connect_with_timeout(read_timeout: Duration) -> Option<UnixStream> {
 ///
 /// This is the ONLY correct way to read from the IPC server.
 /// DO NOT use `read_line()` or `BufReader` — the server uses binary framing.
-pub fn ipc_request<T: Serialize>(stream: &mut UnixStream, request: &T) -> Result<IpcResult, String> {
+pub fn ipc_request<T: Serialize>(
+    stream: &mut UnixStream,
+    request: &T,
+) -> Result<IpcResult, String> {
     // Send newline-delimited JSON request
     let json = serde_json::to_string(request).map_err(|e| format!("Serialize: {e}"))?;
-    stream.write_all(json.as_bytes()).map_err(|e| format!("Write: {e}"))?;
-    stream.write_all(b"\n").map_err(|e| format!("Write newline: {e}"))?;
+    stream
+        .write_all(json.as_bytes())
+        .map_err(|e| format!("Write: {e}"))?;
+    stream
+        .write_all(b"\n")
+        .map_err(|e| format!("Write newline: {e}"))?;
     stream.flush().map_err(|e| format!("Flush: {e}"))?;
 
     // Read 4-byte length prefix (u32 big-endian)
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).map_err(|e| format!("Read length prefix: {e}"))?;
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|e| format!("Read length prefix: {e}"))?;
     let length = u32::from_be_bytes(len_buf) as usize;
 
     if length == 0 {
@@ -142,18 +153,23 @@ pub fn ipc_request<T: Serialize>(stream: &mut UnixStream, request: &T) -> Result
 
     // Read the full payload
     let mut payload = vec![0u8; length];
-    stream.read_exact(&mut payload).map_err(|e| format!("Read payload ({length} bytes): {e}"))?;
+    stream
+        .read_exact(&mut payload)
+        .map_err(|e| format!("Read payload ({length} bytes): {e}"))?;
 
     // Detect binary frame: JSON header + \0 separator + raw bytes
     if let Some(sep_idx) = payload.iter().position(|&b| b == 0) {
         let json_bytes = &payload[..sep_idx];
         let binary_data = payload[sep_idx + 1..].to_vec();
-        let header: IpcResponse = serde_json::from_slice(json_bytes)
-            .map_err(|e| format!("Parse binary header: {e}"))?;
-        Ok(IpcResult::Binary { header, data: binary_data })
+        let header: IpcResponse =
+            serde_json::from_slice(json_bytes).map_err(|e| format!("Parse binary header: {e}"))?;
+        Ok(IpcResult::Binary {
+            header,
+            data: binary_data,
+        })
     } else {
-        let response: IpcResponse = serde_json::from_slice(&payload)
-            .map_err(|e| format!("Parse JSON response: {e}"))?;
+        let response: IpcResponse =
+            serde_json::from_slice(&payload).map_err(|e| format!("Parse JSON response: {e}"))?;
         Ok(IpcResult::Json(response))
     }
 }

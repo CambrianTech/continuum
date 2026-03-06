@@ -9,7 +9,7 @@
 //!
 //! IPC should ONLY call these functions, never touch domain logic directly.
 
-use crate::live::{VoiceOrchestrator, UtteranceEvent, VoiceParticipant};
+use crate::live::{UtteranceEvent, VoiceOrchestrator, VoiceParticipant};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -31,27 +31,29 @@ impl VoiceService {
         room_id: &str,
         participants: Vec<VoiceParticipant>,
     ) -> Result<(), String> {
-        let session_uuid = Uuid::parse_str(session_id)
-            .map_err(|e| format!("Invalid session_id: {e}"))?;
-        
-        let room_uuid = Uuid::parse_str(room_id)
-            .map_err(|e| format!("Invalid room_id: {e}"))?;
+        let session_uuid =
+            Uuid::parse_str(session_id).map_err(|e| format!("Invalid session_id: {e}"))?;
 
-        let orchestrator = self.orchestrator.lock()
+        let room_uuid = Uuid::parse_str(room_id).map_err(|e| format!("Invalid room_id: {e}"))?;
+
+        let orchestrator = self
+            .orchestrator
+            .lock()
             .map_err(|e| format!("Lock poisoned: {e}"))?;
-        
+
         orchestrator.register_session(session_uuid, room_uuid, participants);
         Ok(())
     }
 
     /// Process an utterance and get list of AI responders
     pub fn on_utterance(&self, event: UtteranceEvent) -> Result<Vec<Uuid>, String> {
-        let orchestrator = self.orchestrator.lock()
+        let orchestrator = self
+            .orchestrator
+            .lock()
             .map_err(|e| format!("Lock poisoned: {e}"))?;
-        
+
         Ok(orchestrator.on_utterance(event))
     }
-
 }
 
 impl Default for VoiceService {

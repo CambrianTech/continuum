@@ -13,13 +13,13 @@
 //! 7. Markdown backtick: `` `tool: name` `param=value` ``
 //! 8. Old-style XML: `<tool name="X"><param>value</param></tool>`
 
-pub mod types;
-pub mod parsers;
-pub mod correction;
 pub mod codec;
+pub mod correction;
+pub mod parsers;
+pub mod types;
 
-pub use types::*;
 pub use codec::ToolNameCodec;
+pub use types::*;
 
 /// Parse tool calls from AI response text, apply corrections, strip tool blocks.
 /// Single entry point combining all 8 format adapters + correction.
@@ -30,16 +30,23 @@ pub fn parse_and_correct(response_text: &str) -> ToolParseResult {
     let raw_matches = parsers::parse_all_formats(response_text);
 
     // Apply corrections and collect results
-    let tool_calls: Vec<ParsedToolCall> = raw_matches.iter().map(|m| {
-        let corrected = correction::correct_tool_call(&m.tool_name, &m.parameters);
-        ParsedToolCall {
-            tool_name: corrected.tool_name,
-            parameters: corrected.parameters,
-            format: m.format.to_string(),
-            original_name: if corrected.name_changed { Some(m.tool_name.clone()) } else { None },
-            param_corrections: corrected.param_corrections,
-        }
-    }).collect();
+    let tool_calls: Vec<ParsedToolCall> = raw_matches
+        .iter()
+        .map(|m| {
+            let corrected = correction::correct_tool_call(&m.tool_name, &m.parameters);
+            ParsedToolCall {
+                tool_name: corrected.tool_name,
+                parameters: corrected.parameters,
+                format: m.format.to_string(),
+                original_name: if corrected.name_changed {
+                    Some(m.tool_name.clone())
+                } else {
+                    None
+                },
+                param_corrections: corrected.param_corrections,
+            }
+        })
+        .collect();
 
     // Strip tool blocks from text
     let cleaned_text = strip_tool_blocks(response_text, &raw_matches);
@@ -90,7 +97,10 @@ Done."#;
         assert_eq!(result.tool_calls.len(), 1);
         // query -> pattern (param correction for code/search)
         assert_eq!(result.tool_calls[0].tool_name, "code/search");
-        assert_eq!(result.tool_calls[0].parameters.get("pattern").unwrap(), "memory clustering");
+        assert_eq!(
+            result.tool_calls[0].parameters.get("pattern").unwrap(),
+            "memory clustering"
+        );
         assert!(!result.tool_calls[0].param_corrections.is_empty());
         assert_eq!(result.tool_calls[0].format, "anthropic-style");
         assert!(result.cleaned_text.contains("Let me search."));
@@ -106,9 +116,15 @@ Done."#;
         assert_eq!(result.tool_calls.len(), 1);
         // workspace/tree -> code/tree (name correction)
         assert_eq!(result.tool_calls[0].tool_name, "code/tree");
-        assert_eq!(result.tool_calls[0].original_name.as_deref(), Some("workspace/tree"));
+        assert_eq!(
+            result.tool_calls[0].original_name.as_deref(),
+            Some("workspace/tree")
+        );
         // directory -> path (param correction for code/tree)
-        assert_eq!(result.tool_calls[0].parameters.get("path").unwrap(), "./src");
+        assert_eq!(
+            result.tool_calls[0].parameters.get("path").unwrap(),
+            "./src"
+        );
     }
 
     #[test]
@@ -124,7 +140,10 @@ Done."#;
         let result = parse_and_correct(text);
         assert_eq!(result.tool_calls.len(), 1);
         // CDATA stripped + HTML entities decoded
-        assert_eq!(result.tool_calls[0].parameters.get("content").unwrap(), "const x = 1 < 2;");
+        assert_eq!(
+            result.tool_calls[0].parameters.get("content").unwrap(),
+            "const x = 1 < 2;"
+        );
     }
 
     #[test]
@@ -148,7 +167,11 @@ Done."#;
         let text = "<tool_use><tool_name>code/read</tool_name><parameters><filePath>x.ts</filePath></parameters></tool_use>";
         let result = parse_and_correct(text);
         // Should complete in microseconds
-        assert!(result.parse_time_us < 10_000, "Parse should be sub-10ms, was {}us", result.parse_time_us);
+        assert!(
+            result.parse_time_us < 10_000,
+            "Parse should be sub-10ms, was {}us",
+            result.parse_time_us
+        );
     }
 
     #[test]
@@ -163,6 +186,9 @@ Then:
         assert_eq!(result.tool_calls[0].format, "anthropic-style");
         assert_eq!(result.tool_calls[1].format, "function-style");
         // query -> pattern for code/search
-        assert_eq!(result.tool_calls[1].parameters.get("pattern").unwrap(), "test");
+        assert_eq!(
+            result.tool_calls[1].parameters.get("pattern").unwrap(),
+            "test"
+        );
     }
 }

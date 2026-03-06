@@ -5,10 +5,10 @@
 //!
 //! Also handles content cleaning for code/write: CDATA stripping + HTML entity decode.
 
-use std::collections::HashMap;
+use super::types::CorrectedToolCall;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use super::types::CorrectedToolCall;
+use std::collections::HashMap;
 
 /// Tool name corrections: LLMs confuse similarly-named tools.
 static TOOL_CORRECTIONS: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
@@ -22,43 +22,89 @@ static TOOL_CORRECTIONS: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 static PARAM_CORRECTIONS: Lazy<HashMap<&str, Vec<(&str, &str)>>> = Lazy::new(|| {
     let mut m: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
 
-    m.insert("code/write", vec![
-        ("path", "filePath"), ("file", "filePath"), ("file_path", "filePath"),
-        ("filepath", "filePath"), ("filename", "filePath"), ("file_name", "filePath"),
-        ("name", "filePath"), ("contents", "content"), ("text", "content"),
-        ("body", "content"), ("data", "content"), ("code", "content"),
-        ("html", "content"), ("source", "content"),
-    ]);
+    m.insert(
+        "code/write",
+        vec![
+            ("path", "filePath"),
+            ("file", "filePath"),
+            ("file_path", "filePath"),
+            ("filepath", "filePath"),
+            ("filename", "filePath"),
+            ("file_name", "filePath"),
+            ("name", "filePath"),
+            ("contents", "content"),
+            ("text", "content"),
+            ("body", "content"),
+            ("data", "content"),
+            ("code", "content"),
+            ("html", "content"),
+            ("source", "content"),
+        ],
+    );
 
-    m.insert("code/read", vec![
-        ("path", "filePath"), ("file", "filePath"), ("file_path", "filePath"),
-        ("filepath", "filePath"), ("filename", "filePath"), ("name", "filePath"),
-        ("start", "startLine"), ("end", "endLine"),
-        ("from", "startLine"), ("to", "endLine"),
-    ]);
+    m.insert(
+        "code/read",
+        vec![
+            ("path", "filePath"),
+            ("file", "filePath"),
+            ("file_path", "filePath"),
+            ("filepath", "filePath"),
+            ("filename", "filePath"),
+            ("name", "filePath"),
+            ("start", "startLine"),
+            ("end", "endLine"),
+            ("from", "startLine"),
+            ("to", "endLine"),
+        ],
+    );
 
-    m.insert("code/edit", vec![
-        ("path", "filePath"), ("file", "filePath"), ("file_path", "filePath"),
-        ("filepath", "filePath"), ("filename", "filePath"), ("name", "filePath"),
-        ("mode", "editMode"), ("type", "editMode"),
-    ]);
+    m.insert(
+        "code/edit",
+        vec![
+            ("path", "filePath"),
+            ("file", "filePath"),
+            ("file_path", "filePath"),
+            ("filepath", "filePath"),
+            ("filename", "filePath"),
+            ("name", "filePath"),
+            ("mode", "editMode"),
+            ("type", "editMode"),
+        ],
+    );
 
-    m.insert("code/search", vec![
-        ("query", "pattern"), ("search", "pattern"),
-        ("term", "pattern"), ("regex", "pattern"),
-        ("glob", "fileGlob"), ("filter", "fileGlob"),
-    ]);
+    m.insert(
+        "code/search",
+        vec![
+            ("query", "pattern"),
+            ("search", "pattern"),
+            ("term", "pattern"),
+            ("regex", "pattern"),
+            ("glob", "fileGlob"),
+            ("filter", "fileGlob"),
+        ],
+    );
 
-    m.insert("code/tree", vec![
-        ("directory", "path"), ("dir", "path"), ("folder", "path"),
-        ("depth", "maxDepth"),
-    ]);
+    m.insert(
+        "code/tree",
+        vec![
+            ("directory", "path"),
+            ("dir", "path"),
+            ("folder", "path"),
+            ("depth", "maxDepth"),
+        ],
+    );
 
-    m.insert("code/git", vec![
-        ("subcommand", "operation"), ("command", "operation"),
-        ("action", "operation"), ("op", "operation"),
-        ("msg", "message"), ("files", "paths"),
-    ]);
+    m.insert(
+        "code/git",
+        vec![
+            ("subcommand", "operation"),
+            ("command", "operation"),
+            ("action", "operation"),
+            ("op", "operation"),
+            ("msg", "message"),
+            ("files", "paths"),
+        ],
+    );
 
     m
 });
@@ -76,9 +122,8 @@ static NAMED_ENTITIES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 });
 
 /// HTML entity regex.
-static RE_ENTITY: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);").unwrap()
-);
+static RE_ENTITY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);").unwrap());
 
 /// Correct a tool call: name mapping, parameter mapping, content cleaning.
 pub fn correct_tool_call(
@@ -141,27 +186,29 @@ fn clean_content(content: &str) -> String {
 
 /// Decode HTML entities: &lt; &gt; &amp; &#123; &#x1F; etc.
 fn decode_html_entities(text: &str) -> String {
-    RE_ENTITY.replace_all(text, |caps: &regex::Captures| {
-        let entity = &caps[1];
-        if let Some(&replacement) = NAMED_ENTITIES.get(entity) {
-            return replacement.to_string();
-        }
-        if let Some(hex) = entity.strip_prefix("#x") {
-            if let Ok(code) = u32::from_str_radix(hex, 16) {
-                if let Some(c) = char::from_u32(code) {
-                    return c.to_string();
+    RE_ENTITY
+        .replace_all(text, |caps: &regex::Captures| {
+            let entity = &caps[1];
+            if let Some(&replacement) = NAMED_ENTITIES.get(entity) {
+                return replacement.to_string();
+            }
+            if let Some(hex) = entity.strip_prefix("#x") {
+                if let Ok(code) = u32::from_str_radix(hex, 16) {
+                    if let Some(c) = char::from_u32(code) {
+                        return c.to_string();
+                    }
                 }
             }
-        }
-        if let Some(dec) = entity.strip_prefix('#') {
-            if let Ok(code) = dec.parse::<u32>() {
-                if let Some(c) = char::from_u32(code) {
-                    return c.to_string();
+            if let Some(dec) = entity.strip_prefix('#') {
+                if let Ok(code) = dec.parse::<u32>() {
+                    if let Some(c) = char::from_u32(code) {
+                        return c.to_string();
+                    }
                 }
             }
-        }
-        caps[0].to_string()
-    }).to_string()
+            caps[0].to_string()
+        })
+        .to_string()
 }
 
 #[cfg(test)]
@@ -196,8 +243,12 @@ mod tests {
         let result = correct_tool_call("code/write", &params);
         assert_eq!(result.parameters.get("filePath").unwrap(), "/test.ts");
         assert_eq!(result.parameters.get("content").unwrap(), "hello world");
-        assert!(result.param_corrections.contains(&"path -> filePath".to_string()));
-        assert!(result.param_corrections.contains(&"text -> content".to_string()));
+        assert!(result
+            .param_corrections
+            .contains(&"path -> filePath".to_string()));
+        assert!(result
+            .param_corrections
+            .contains(&"text -> content".to_string()));
     }
 
     #[test]
@@ -260,7 +311,10 @@ mod tests {
     fn clean_cdata_wrapper() {
         let mut params = HashMap::new();
         params.insert("filePath".to_string(), "test.ts".to_string());
-        params.insert("content".to_string(), "<![CDATA[const x = 1;]]>".to_string());
+        params.insert(
+            "content".to_string(),
+            "<![CDATA[const x = 1;]]>".to_string(),
+        );
         let result = correct_tool_call("code/write", &params);
         assert_eq!(result.parameters.get("content").unwrap(), "const x = 1;");
     }
@@ -269,7 +323,10 @@ mod tests {
     fn decode_html_entities_in_content() {
         let mut params = HashMap::new();
         params.insert("filePath".to_string(), "test.ts".to_string());
-        params.insert("content".to_string(), "if (a &lt; b &amp;&amp; c &gt; d) { return &quot;ok&quot;; }".to_string());
+        params.insert(
+            "content".to_string(),
+            "if (a &lt; b &amp;&amp; c &gt; d) { return &quot;ok&quot;; }".to_string(),
+        );
         let result = correct_tool_call("code/write", &params);
         assert_eq!(
             result.parameters.get("content").unwrap(),

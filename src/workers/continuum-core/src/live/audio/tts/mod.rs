@@ -14,21 +14,21 @@ pub(crate) mod audio_utils;
 mod edge;
 mod kokoro;
 mod orpheus;
+mod phonemizer;
 mod piper;
 mod pocket;
-mod phonemizer;
 mod silence;
 
 pub use edge::EdgeTTS;
 pub use kokoro::KokoroTTS;
 pub use orpheus::OrpheusTts;
+pub(crate) use phonemizer::Phonemizer;
 pub use piper::PiperTTS;
 pub use pocket::PocketTTS;
 pub use silence::SilenceTTS;
-pub(crate) use phonemizer::Phonemizer;
 
-use crate::{clog_info, clog_warn};
 use crate::gpu::memory_manager::GpuMemoryManager;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
@@ -263,7 +263,9 @@ impl TTSRegistry {
         self.priority
             .iter()
             .filter_map(|name| {
-                self.adapters.get(name).map(|adapter| (*name, adapter.is_initialized()))
+                self.adapters
+                    .get(name)
+                    .map(|adapter| (*name, adapter.is_initialized()))
             })
             .collect()
     }
@@ -325,7 +327,9 @@ pub fn init_registry() {
 pub fn get_registry() -> Arc<RwLock<TTSRegistry>> {
     TTS_REGISTRY.get().cloned().unwrap_or_else(|| {
         init_registry();
-        TTS_REGISTRY.get().cloned()
+        TTS_REGISTRY
+            .get()
+            .cloned()
             .expect("TTS_REGISTRY must be set after init_registry()")
     })
 }
@@ -341,7 +345,11 @@ pub fn is_initialized() -> bool {
 /// by gender before hashing. This ensures voice matches the avatar's gender.
 /// The gender hint flows from the caller who derives it from the agent's identity
 /// using `gender_from_identity()` — the same function the avatar system uses.
-fn resolve_voice_gendered(adapter: &dyn TextToSpeech, voice: &str, gender_hint: Option<&str>) -> String {
+fn resolve_voice_gendered(
+    adapter: &dyn TextToSpeech,
+    voice: &str,
+    gender_hint: Option<&str>,
+) -> String {
     let voices = adapter.available_voices();
 
     // 1. Known voice name → use directly (explicit choice overrides gender)
@@ -361,7 +369,8 @@ fn resolve_voice_gendered(adapter: &dyn TextToSpeech, voice: &str, gender_hint: 
         let seed = deterministic_hash(voice);
 
         if let Some(gender) = gender_hint {
-            let gendered: Vec<&VoiceInfo> = voices.iter()
+            let gendered: Vec<&VoiceInfo> = voices
+                .iter()
                 .filter(|v| v.gender.as_deref() == Some(gender))
                 .collect();
 
@@ -380,15 +389,24 @@ fn resolve_voice_gendered(adapter: &dyn TextToSpeech, voice: &str, gender_hint: 
 ///
 /// `gender_hint`: Optional "male" or "female" to filter voices by gender.
 /// When provided, ensures the TTS voice matches the avatar's gender.
-pub async fn synthesize(text: &str, voice: &str, gender_hint: Option<&str>) -> Result<SynthesisResult, TTSError> {
+pub async fn synthesize(
+    text: &str,
+    voice: &str,
+    gender_hint: Option<&str>,
+) -> Result<SynthesisResult, TTSError> {
     let adapter = get_registry()
         .read()
         .get_active()
         .ok_or_else(|| TTSError::AdapterNotFound("No active TTS adapter".to_string()))?;
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
-    clog_info!("TTS: voice '{}' → '{}' (gender={}) for '{}'",
-        voice, resolved, gender_hint.unwrap_or("any"), adapter.name());
+    clog_info!(
+        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        voice,
+        resolved,
+        gender_hint.unwrap_or("any"),
+        adapter.name()
+    );
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)
@@ -406,7 +424,8 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
     // Pocket: 117M Candle, voice cloning, 8 preset voices — but 23x slower than realtime on CPU, single Mutex
     // Kokoro: 82M ONNX, ~97ms, fast reliable fallback — SPEED
     // Orpheus: 3B GGUF, emotion tags, LoRA-trainable — CUSTOM VOICES
-    let default_priority: Vec<&str> = vec!["edge", "pocket", "kokoro", "orpheus", "piper", "silence"];
+    let default_priority: Vec<&str> =
+        vec!["edge", "pocket", "kokoro", "orpheus", "piper", "silence"];
 
     // Build final order: preferred first (if specified and exists), then remaining in priority
     let mut order: Vec<&str> = Vec::new();
@@ -433,13 +452,19 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
                     return Ok(());
                 }
                 Err(e) => {
-                    clog_warn!("TTS: '{}' failed to initialize: {}, trying next...", name, e);
+                    clog_warn!(
+                        "TTS: '{}' failed to initialize: {}, trying next...",
+                        name,
+                        e
+                    );
                 }
             }
         }
     }
 
-    Err(TTSError::ModelNotLoaded("No TTS adapter could be initialized".into()))
+    Err(TTSError::ModelNotLoaded(
+        "No TTS adapter could be initialized".into(),
+    ))
 }
 
 /// Initialize the active adapter with default priority (pocket → kokoro → edge → orpheus → piper → silence)
@@ -450,7 +475,12 @@ pub async fn initialize() -> Result<(), TTSError> {
 /// Synthesize using a specific adapter by name (bypasses active adapter)
 ///
 /// `gender_hint`: Optional "male" or "female" to filter voices by gender.
-pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str, gender_hint: Option<&str>) -> Result<SynthesisResult, TTSError> {
+pub async fn synthesize_with(
+    text: &str,
+    voice: &str,
+    adapter_name: &str,
+    gender_hint: Option<&str>,
+) -> Result<SynthesisResult, TTSError> {
     let adapter = get_registry()
         .read()
         .get(adapter_name)
@@ -461,8 +491,13 @@ pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str, gender
     }
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
-    clog_info!("TTS: voice '{}' → '{}' (gender={}) for '{}'",
-        voice, resolved, gender_hint.unwrap_or("any"), adapter_name);
+    clog_info!(
+        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        voice,
+        resolved,
+        gender_hint.unwrap_or("any"),
+        adapter_name
+    );
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)
@@ -504,7 +539,9 @@ mod tests {
         registry.register(Arc::new(KokoroTTS::new()));
 
         // Get by name
-        let silence = registry.get("silence").expect("Should find silence adapter");
+        let silence = registry
+            .get("silence")
+            .expect("Should find silence adapter");
         assert_eq!(silence.name(), "silence");
 
         let kokoro = registry.get("kokoro").expect("Should find kokoro adapter");
@@ -537,18 +574,23 @@ mod tests {
         let silence = SilenceTTS::new();
 
         // Must initialize first
-        rt.block_on(async { silence.initialize().await }).expect("Init should succeed");
+        rt.block_on(async { silence.initialize().await })
+            .expect("Init should succeed");
         assert!(silence.is_initialized());
 
-        let result = rt.block_on(async {
-            silence.synthesize("test text", "default").await
-        });
+        let result = rt.block_on(async { silence.synthesize("test text", "default").await });
 
         let synthesis = result.expect("Silence adapter should always succeed");
         assert!(synthesis.samples.len() > 0, "Should produce some samples");
-        assert_eq!(synthesis.sample_rate, crate::audio_constants::AUDIO_SAMPLE_RATE);
+        assert_eq!(
+            synthesis.sample_rate,
+            crate::audio_constants::AUDIO_SAMPLE_RATE
+        );
         // All samples should be zero (silence)
-        assert!(synthesis.samples.iter().all(|&s| s == 0), "Silence adapter should produce silence");
+        assert!(
+            synthesis.samples.iter().all(|&s| s == 0),
+            "Silence adapter should produce silence"
+        );
     }
 
     #[test]
@@ -628,8 +670,16 @@ mod tests {
         assert_eq!(v1, v2, "Same UUID must always resolve to same voice");
 
         // Result should be a valid Kokoro voice name
-        let valid_ids: Vec<String> = kokoro.available_voices().iter().map(|v| v.id.clone()).collect();
-        assert!(valid_ids.contains(&v1), "Resolved voice '{}' should be a valid Kokoro voice", v1);
+        let valid_ids: Vec<String> = kokoro
+            .available_voices()
+            .iter()
+            .map(|v| v.id.clone())
+            .collect();
+        assert!(
+            valid_ids.contains(&v1),
+            "Resolved voice '{}' should be a valid Kokoro voice",
+            v1
+        );
     }
 
     #[test]
@@ -653,7 +703,11 @@ mod tests {
         }
 
         // With 6 UUIDs and 11 voices, we should get at least 3 distinct voices
-        assert!(voices.len() >= 3,
-            "Expected at least 3 distinct voices from 6 UUIDs, got {}: {:?}", voices.len(), voices);
+        assert!(
+            voices.len() >= 3,
+            "Expected at least 3 distinct voices from 6 UUIDs, got {}: {:?}",
+            voices.len(),
+            voices
+        );
     }
 }

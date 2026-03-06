@@ -59,7 +59,9 @@ impl FastEmbedProvider {
         let model = fastembed::TextEmbedding::try_new(options)
             .map_err(|e| EmbeddingError(format!("Failed to load AllMiniLML6V2: {e}")))?;
 
-        Ok(Self { model: Mutex::new(model) })
+        Ok(Self {
+            model: Mutex::new(model),
+        })
     }
 }
 
@@ -73,7 +75,9 @@ impl EmbeddingProvider for FastEmbedProvider {
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let mut model = self.model.lock()
+        let mut model = self
+            .model
+            .lock()
             .map_err(|e| EmbeddingError(format!("Model lock poisoned: {e}")))?;
         let results = model
             .embed(vec![text], None)
@@ -88,7 +92,9 @@ impl EmbeddingProvider for FastEmbedProvider {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let mut model = self.model.lock()
+        let mut model = self
+            .model
+            .lock()
             .map_err(|e| EmbeddingError(format!("Model lock poisoned: {e}")))?;
         model
             .embed(texts.to_vec(), None)
@@ -265,7 +271,10 @@ mod tests {
     fn test_cosine_similarity_identical() {
         let v = vec![1.0, 2.0, 3.0];
         let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-6, "Identical vectors should have similarity 1.0");
+        assert!(
+            (sim - 1.0).abs() < 1e-6,
+            "Identical vectors should have similarity 1.0"
+        );
     }
 
     #[test]
@@ -273,7 +282,10 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![0.0, 1.0];
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-6, "Orthogonal vectors should have similarity 0.0");
+        assert!(
+            sim.abs() < 1e-6,
+            "Orthogonal vectors should have similarity 0.0"
+        );
     }
 
     #[test]
@@ -281,7 +293,10 @@ mod tests {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![-1.0, -2.0, -3.0];
         let sim = cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 1e-6, "Opposite vectors should have similarity -1.0");
+        assert!(
+            (sim + 1.0).abs() < 1e-6,
+            "Opposite vectors should have similarity -1.0"
+        );
     }
 
     #[test]
@@ -328,7 +343,9 @@ mod tests {
     fn test_deterministic_unrelated_texts() {
         let provider = DeterministicEmbeddingProvider;
         let a = provider.embed("Rust borrow checker rules").unwrap();
-        let b = provider.embed("Purple elephants dance at midnight").unwrap();
+        let b = provider
+            .embed("Purple elephants dance at midnight")
+            .unwrap();
         let sim = cosine_similarity(&a, &b);
         assert!(
             sim < 0.15,
@@ -348,10 +365,11 @@ mod tests {
     fn test_deterministic_batch_consistency() {
         let provider = DeterministicEmbeddingProvider;
         let single = provider.embed("hello world").unwrap();
-        let batch = provider
-            .embed_batch(&["hello world".to_string()])
-            .unwrap();
-        assert_eq!(single, batch[0], "Single and batch embed should produce identical vectors");
+        let batch = provider.embed_batch(&["hello world".to_string()]).unwrap();
+        assert_eq!(
+            single, batch[0],
+            "Single and batch embed should produce identical vectors"
+        );
     }
 
     #[test]

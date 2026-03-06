@@ -115,9 +115,7 @@ pub async fn handle_load_adapter(
             }
 
             let load_time_ms = start.elapsed().as_millis() as i64;
-            info!(
-                "✅ Adapter loaded: {adapter_id} ({num_layers} layer pairs, {load_time_ms}ms)"
-            );
+            info!("✅ Adapter loaded: {adapter_id} ({num_layers} layer pairs, {load_time_ms}ms)");
 
             Ok(Response::new(LoadAdapterResponse {
                 success: true,

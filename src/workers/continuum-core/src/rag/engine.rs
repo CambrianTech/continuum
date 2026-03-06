@@ -5,7 +5,7 @@
 
 use super::budget::{BudgetManager, SourceConfig};
 use super::sources::RagSource;
-use super::types::{RagContext, RagOptions, RagSection, SourceTiming, LlmMessage};
+use super::types::{LlmMessage, RagContext, RagOptions, RagSection, SourceTiming};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -34,7 +34,8 @@ impl RagEngine {
         let start = Instant::now();
 
         // 1. Filter applicable sources
-        let applicable: Vec<_> = self.sources
+        let applicable: Vec<_> = self
+            .sources
             .iter()
             .filter(|s| s.is_applicable(&options))
             .cloned()
@@ -53,10 +54,7 @@ impl RagEngine {
         );
 
         // 2. Get source configs for budget allocation
-        let source_configs: Vec<SourceConfig> = applicable
-            .iter()
-            .map(|s| s.config())
-            .collect();
+        let source_configs: Vec<SourceConfig> = applicable.iter().map(|s| s.config()).collect();
 
         // 3. Allocate budget
         let budget_manager = BudgetManager::new(options.max_tokens.max(self.default_budget));
@@ -92,7 +90,12 @@ impl RagEngine {
     }
 
     /// Compose sections into final context
-    fn compose(&self, options: RagOptions, sections: Vec<RagSection>, start: Instant) -> RagContext {
+    fn compose(
+        &self,
+        options: RagOptions,
+        sections: Vec<RagSection>,
+        start: Instant,
+    ) -> RagContext {
         let mut system_parts: Vec<String> = Vec::new();
         let mut messages: Vec<LlmMessage> = Vec::new();
         let mut total_tokens = 0;
@@ -162,8 +165,8 @@ impl Default for RagEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::sources::MockSource;
+    use super::*;
     use uuid::Uuid;
 
     #[tokio::test]

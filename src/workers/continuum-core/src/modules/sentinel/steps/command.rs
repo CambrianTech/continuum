@@ -32,15 +32,31 @@ pub async fn execute(
     let interpolated_command = interpolation::interpolate(command, ctx);
     let interpolated_params = interpolation::interpolate_value(params, ctx);
 
-    log.info(&format!("[{}] Command step: {}", pipeline_ctx.handle_id, interpolated_command));
+    log.info(&format!(
+        "[{}] Command step: {}",
+        pipeline_ctx.handle_id, interpolated_command
+    ));
 
-    let json = runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params).await
-        .map_err(|e| format!("[{}] Command '{}' failed: {}", pipeline_ctx.handle_id, interpolated_command, e))?;
+    let json =
+        runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params)
+            .await
+            .map_err(|e| {
+                format!(
+                    "[{}] Command '{}' failed: {}",
+                    pipeline_ctx.handle_id, interpolated_command, e
+                )
+            })?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
-    let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let success = json
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let error = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     Ok(StepResult {
         step_index: index,

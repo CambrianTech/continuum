@@ -243,7 +243,10 @@ pub struct AvatarState {
 /// Published via LiveKit data channel (topic='tile_resolution') as:
 /// `{ [userId]: TileResolution, ... }`
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/TileResolution.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/TileResolution.ts"
+)]
 pub struct TileResolution {
     /// Tile width in CSS pixels
     pub w: u32,
@@ -255,7 +258,10 @@ pub struct TileResolution {
 /// Prevents GPU readback thrashing from continuous resizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../shared/generated/voice/ResolutionTier.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/ResolutionTier.ts"
+)]
 pub enum ResolutionTierWire {
     /// 160x120 @15fps — thumbnails under 120px
     Tiny,

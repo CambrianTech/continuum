@@ -1,8 +1,7 @@
+use continuum_core::live::transport::call_server::CallManager;
 /// Integration tests for CallServer → VoiceOrchestrator flow
 /// Tests the complete path from audio transcription to AI participant selection
-
-use continuum_core::live::{VoiceOrchestrator, VoiceParticipant, SpeakerType};
-use continuum_core::live::transport::call_server::CallManager;
+use continuum_core::live::{SpeakerType, VoiceOrchestrator, VoiceParticipant};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -164,9 +163,16 @@ async fn test_multiple_participants_orchestrator_filtering() {
     let responders = orchestrator.on_utterance(utterance);
 
     // Should only broadcast to AI 2 (speaker excluded)
-    assert_eq!(responders.len(), 1, "Should only notify 1 AI (speaker excluded)");
+    assert_eq!(
+        responders.len(),
+        1,
+        "Should only notify 1 AI (speaker excluded)"
+    );
     assert!(responders.contains(&ai2_id), "Should contain AI 2");
-    assert!(!responders.contains(&ai1_id), "Should NOT contain AI 1 (speaker)");
+    assert!(
+        !responders.contains(&ai1_id),
+        "Should NOT contain AI 1 (speaker)"
+    );
 
     // Cleanup
     manager.leave_call(&join.handle).await;
@@ -199,7 +205,8 @@ async fn test_orchestrator_performance_target() {
         speaker_id: Uuid::parse_str(TEST_HUMAN_USER).unwrap(),
         speaker_name: "Human".to_string(),
         speaker_type: SpeakerType::Human,
-        transcript: "This is a test message with reasonable length to simulate real speech".to_string(),
+        transcript: "This is a test message with reasonable length to simulate real speech"
+            .to_string(),
         confidence: 0.95,
         timestamp: 1000,
     };
@@ -250,9 +257,7 @@ async fn test_concurrent_calls_different_sessions() {
     let orchestrator = Arc::new(VoiceOrchestrator::new());
 
     // Register 3 different sessions
-    let sessions: Vec<(Uuid, Uuid)> = (0..3)
-        .map(|_| (Uuid::new_v4(), Uuid::new_v4()))
-        .collect();
+    let sessions: Vec<(Uuid, Uuid)> = (0..3).map(|_| (Uuid::new_v4(), Uuid::new_v4())).collect();
 
     for (session_id, room_id) in &sessions {
         orchestrator.register_session(
@@ -271,7 +276,12 @@ async fn test_concurrent_calls_different_sessions() {
     let mut handles = Vec::new();
     for (session_id, _) in &sessions {
         let join = manager
-            .join_call(&session_id.to_string(), TEST_HUMAN_USER, "Human User", false)
+            .join_call(
+                &session_id.to_string(),
+                TEST_HUMAN_USER,
+                "Human User",
+                false,
+            )
             .await;
         handles.push(join.handle);
     }
@@ -289,7 +299,11 @@ async fn test_concurrent_calls_different_sessions() {
         };
 
         let responders = orchestrator.on_utterance(utterance);
-        assert_eq!(responders.len(), 2, "Each session should have 2 AI responders");
+        assert_eq!(
+            responders.len(),
+            2,
+            "Each session should have 2 AI responders"
+        );
     }
 
     // Cleanup all calls

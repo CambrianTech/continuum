@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use uuid::Uuid;
 
-use super::types::{ChangeNode, FileOperation, FileDiff};
+use super::types::{ChangeNode, FileDiff, FileOperation};
 
 /// Per-workspace DAG of change operations.
 ///
@@ -51,10 +51,7 @@ impl ChangeGraph {
         self.nodes.insert(id, node);
 
         // Update file index
-        self.file_index
-            .entry(file_path)
-            .or_default()
-            .push(id);
+        self.file_index.entry(file_path).or_default().push(id);
 
         // Append to chronological order
         self.chronological.write().push(id);
@@ -97,7 +94,10 @@ impl ChangeGraph {
             // Swap forward/reverse: undo's forward is the original's reverse
             forward_diff: target.reverse_diff.clone(),
             reverse_diff: target.forward_diff.clone(),
-            description: Some(format!("Undo: {}", target.description.as_deref().unwrap_or("previous change"))),
+            description: Some(format!(
+                "Undo: {}",
+                target.description.as_deref().unwrap_or("previous change")
+            )),
             workspace_id: self.workspace_id.clone(),
         };
 
@@ -217,7 +217,7 @@ impl ChangeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::code::types::{FileDiff, DiffHunk};
+    use crate::code::types::{DiffHunk, FileDiff};
 
     fn make_diff(content: &str) -> FileDiff {
         FileDiff {
@@ -328,7 +328,9 @@ mod tests {
         assert_eq!(undo_node.forward_diff.unified, original_reverse);
         // Undo node's reverse diff should be original's forward diff
         assert_eq!(undo_node.reverse_diff.unified, original_forward);
-        assert!(matches!(undo_node.operation, FileOperation::Undo { reverted_id } if reverted_id == original_id));
+        assert!(
+            matches!(undo_node.operation, FileOperation::Undo { reverted_id } if reverted_id == original_id)
+        );
         assert_eq!(graph.len(), 2);
     }
 

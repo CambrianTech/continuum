@@ -116,9 +116,9 @@ impl VoiceActivityDetection for WebRtcVAD {
         let is_speech = if samples.len() % CHUNK_SIZE == 0 {
             // Perfect size - process directly
             let mut detector = self.detector.lock();
-            detector
-                .predict_16khz(samples)
-                .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}")))?
+            detector.predict_16khz(samples).map_err(|e| {
+                VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}"))
+            })?
         } else {
             // Chunk into 240-sample pieces and use majority voting
             let mut speech_chunks = 0;
@@ -131,9 +131,9 @@ impl VoiceActivityDetection for WebRtcVAD {
                 }
 
                 let mut detector = self.detector.lock();
-                let chunk_is_speech = detector
-                    .predict_16khz(chunk)
-                    .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}")))?;
+                let chunk_is_speech = detector.predict_16khz(chunk).map_err(|e| {
+                    VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}"))
+                })?;
 
                 if chunk_is_speech {
                     speech_chunks += 1;
@@ -218,7 +218,10 @@ mod tests {
         let silence = vec![0i16; 320];
         let result = vad.detect(&silence).expect("Should detect");
 
-        assert!(!result.is_speech, "Silence should not be detected as speech");
+        assert!(
+            !result.is_speech,
+            "Silence should not be detected as speech"
+        );
         assert!(result.confidence < 0.5);
     }
 

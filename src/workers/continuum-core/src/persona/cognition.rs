@@ -27,7 +27,10 @@ use uuid::Uuid;
 
 /// Decision result from cognition engine
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/CognitionDecision.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/CognitionDecision.ts"
+)]
 pub struct CognitionDecision {
     pub should_respond: bool,
     pub confidence: f32,
@@ -38,7 +41,10 @@ pub struct CognitionDecision {
 
 /// Priority calculation result
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/PriorityScore.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/PriorityScore.ts"
+)]
 pub struct PriorityScore {
     pub score: f32,
     pub factors: PriorityFactors,
@@ -46,7 +52,10 @@ pub struct PriorityScore {
 
 /// Factors contributing to priority
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/PriorityFactors.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/PriorityFactors.ts"
+)]
 pub struct PriorityFactors {
     pub recency_score: f32,
     pub mention_score: f32,
@@ -114,11 +123,7 @@ impl PersonaCognitionEngine {
         let recency_score = 1.0 - (age_ms as f32 / 300_000.0).min(1.0);
 
         // Mention score (direct mentions = high priority)
-        let mention_score = if self.is_mentioned(content) {
-            1.0
-        } else {
-            0.3
-        };
+        let mention_score = if self.is_mentioned(content) { 1.0 } else { 0.3 };
 
         // Sender score (humans > AI for response priority)
         let sender_score = match sender_type {
@@ -168,8 +173,7 @@ impl PersonaCognitionEngine {
         let name_lower = self.persona_name.to_lowercase();
 
         // Check @mention
-        content_lower.contains(&format!("@{name_lower}"))
-            || content_lower.contains(&name_lower)
+        content_lower.contains(&format!("@{name_lower}")) || content_lower.contains(&name_lower)
     }
 
     /// Fast-path decision: should we even consider responding?
@@ -309,12 +313,7 @@ mod tests {
     async fn create_test_engine() -> PersonaCognitionEngine {
         let rag_engine = Arc::new(RagEngine::new());
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        PersonaCognitionEngine::new(
-            Uuid::new_v4(),
-            "TestBot".into(),
-            rag_engine,
-            shutdown_rx,
-        )
+        PersonaCognitionEngine::new(Uuid::new_v4(), "TestBot".into(), rag_engine, shutdown_rx)
     }
 
     #[tokio::test]
@@ -334,7 +333,10 @@ mod tests {
             Uuid::new_v4(),
             now,
         );
-        assert!(score.score > 0.8, "Mentioned human message should be high priority");
+        assert!(
+            score.score > 0.8,
+            "Mentioned human message should be high priority"
+        );
 
         // Low priority: AI sender, not mentioned, old
         let score = engine.calculate_priority(

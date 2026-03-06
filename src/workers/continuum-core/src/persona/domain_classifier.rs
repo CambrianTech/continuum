@@ -20,7 +20,10 @@ use super::genome_paging::GenomeAdapterInfo;
 
 /// Result of classifying text into a skill domain.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/DomainClassification.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/DomainClassification.ts"
+)]
 pub struct DomainClassification {
     /// Classified domain (e.g. "web-api-development", "plumbing", "general")
     pub domain: String,
@@ -55,41 +58,177 @@ struct DomainVocabulary {
 /// These provide a baseline — adapter registrations add more keywords.
 fn builtin_vocabularies() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        ("code", vec![
-            "function", "import", "export", "const", "let", "var", "class",
-            "interface", "type", "async", "await", "promise", "return",
-            "typescript", "javascript", "python", "rust", "compile", "debug",
-            "error", "bug", "fix", "refactor", "test", "api", "endpoint",
-            "database", "query", "sql", "schema", "migration", "deploy",
-            "git", "commit", "branch", "merge", "pull request", "docker",
-            "npm", "cargo", "pip", "webpack", "vite", "react", "node",
-            "express", "routes", "middleware", "http", "rest", "graphql",
-            "algorithm", "data structure", "array", "hashmap", "tree",
-        ]),
-        ("conversation", vec![
-            "hello", "hi", "hey", "thanks", "thank you", "please", "help",
-            "how are you", "what do you think", "opinion", "feel", "chat",
-            "talk", "discuss", "agree", "disagree", "interesting", "cool",
-            "awesome", "great", "good morning", "good night", "welcome",
-        ]),
-        ("teaching", vec![
-            "teach", "learn", "lesson", "curriculum", "exam", "quiz", "test",
-            "exercise", "practice", "student", "teacher", "explain", "tutorial",
-            "course", "module", "assignment", "grade", "knowledge", "skill",
-            "training", "workshop", "seminar", "lecture",
-        ]),
-        ("creative", vec![
-            "write", "story", "poem", "creative", "imagine", "fiction",
-            "character", "plot", "narrative", "dialogue", "scene", "art",
-            "design", "color", "style", "aesthetic", "music", "song",
-            "compose", "paint", "draw", "sketch", "illustration",
-        ]),
-        ("analysis", vec![
-            "analyze", "analysis", "data", "statistics", "trend", "pattern",
-            "insight", "metric", "benchmark", "performance", "optimize",
-            "efficiency", "throughput", "latency", "profiling", "bottleneck",
-            "report", "dashboard", "visualization", "chart", "graph",
-        ]),
+        (
+            "code",
+            vec![
+                "function",
+                "import",
+                "export",
+                "const",
+                "let",
+                "var",
+                "class",
+                "interface",
+                "type",
+                "async",
+                "await",
+                "promise",
+                "return",
+                "typescript",
+                "javascript",
+                "python",
+                "rust",
+                "compile",
+                "debug",
+                "error",
+                "bug",
+                "fix",
+                "refactor",
+                "test",
+                "api",
+                "endpoint",
+                "database",
+                "query",
+                "sql",
+                "schema",
+                "migration",
+                "deploy",
+                "git",
+                "commit",
+                "branch",
+                "merge",
+                "pull request",
+                "docker",
+                "npm",
+                "cargo",
+                "pip",
+                "webpack",
+                "vite",
+                "react",
+                "node",
+                "express",
+                "routes",
+                "middleware",
+                "http",
+                "rest",
+                "graphql",
+                "algorithm",
+                "data structure",
+                "array",
+                "hashmap",
+                "tree",
+            ],
+        ),
+        (
+            "conversation",
+            vec![
+                "hello",
+                "hi",
+                "hey",
+                "thanks",
+                "thank you",
+                "please",
+                "help",
+                "how are you",
+                "what do you think",
+                "opinion",
+                "feel",
+                "chat",
+                "talk",
+                "discuss",
+                "agree",
+                "disagree",
+                "interesting",
+                "cool",
+                "awesome",
+                "great",
+                "good morning",
+                "good night",
+                "welcome",
+            ],
+        ),
+        (
+            "teaching",
+            vec![
+                "teach",
+                "learn",
+                "lesson",
+                "curriculum",
+                "exam",
+                "quiz",
+                "test",
+                "exercise",
+                "practice",
+                "student",
+                "teacher",
+                "explain",
+                "tutorial",
+                "course",
+                "module",
+                "assignment",
+                "grade",
+                "knowledge",
+                "skill",
+                "training",
+                "workshop",
+                "seminar",
+                "lecture",
+            ],
+        ),
+        (
+            "creative",
+            vec![
+                "write",
+                "story",
+                "poem",
+                "creative",
+                "imagine",
+                "fiction",
+                "character",
+                "plot",
+                "narrative",
+                "dialogue",
+                "scene",
+                "art",
+                "design",
+                "color",
+                "style",
+                "aesthetic",
+                "music",
+                "song",
+                "compose",
+                "paint",
+                "draw",
+                "sketch",
+                "illustration",
+            ],
+        ),
+        (
+            "analysis",
+            vec![
+                "analyze",
+                "analysis",
+                "data",
+                "statistics",
+                "trend",
+                "pattern",
+                "insight",
+                "metric",
+                "benchmark",
+                "performance",
+                "optimize",
+                "efficiency",
+                "throughput",
+                "latency",
+                "profiling",
+                "bottleneck",
+                "report",
+                "dashboard",
+                "visualization",
+                "chart",
+                "graph",
+            ],
+        ),
     ]
 }
 
@@ -116,10 +255,13 @@ impl DomainClassifier {
         let mut domains = HashMap::new();
 
         for (domain, keywords) in builtin_vocabularies() {
-            domains.insert(domain.to_string(), DomainVocabulary {
-                keywords: keywords.iter().map(|k| k.to_lowercase()).collect(),
-                adapter_name: None,
-            });
+            domains.insert(
+                domain.to_string(),
+                DomainVocabulary {
+                    keywords: keywords.iter().map(|k| k.to_lowercase()).collect(),
+                    adapter_name: None,
+                },
+            );
         }
 
         Self {
@@ -144,10 +286,13 @@ impl DomainClassifier {
                 vocab.adapter_name = Some(adapter.name.clone());
             } else {
                 // New domain from adapter — create vocabulary with adapter name as keyword
-                self.domains.insert(domain.clone(), DomainVocabulary {
-                    keywords: vec![domain.clone(), adapter.name.to_lowercase()],
-                    adapter_name: Some(adapter.name.clone()),
-                });
+                self.domains.insert(
+                    domain.clone(),
+                    DomainVocabulary {
+                        keywords: vec![domain.clone(), adapter.name.to_lowercase()],
+                        adapter_name: Some(adapter.name.clone()),
+                    },
+                );
             }
         }
     }
@@ -181,7 +326,10 @@ impl DomainClassifier {
                     }
                 } else {
                     // Single-word keywords: check word boundaries
-                    if text_words.iter().any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == keyword.as_str()) {
+                    if text_words
+                        .iter()
+                        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == keyword.as_str())
+                    {
                         matches += 1;
                     }
                     // Also check substring for compound words (e.g. "typescript" in "typescript-expertise")
@@ -211,9 +359,14 @@ impl DomainClassifier {
         // Confidence: sigmoid-like curve on raw match count
         // 0 matches = 0.0, 3 matches = ~0.5, 8+ matches = ~0.9
         let confidence = if best_score > 0.0 {
-            let raw_matches = best_score * (1.0 + (self.domains.get(&best_domain)
-                .map(|v| v.keywords.len() as f32)
-                .unwrap_or(1.0)).sqrt());
+            let raw_matches = best_score
+                * (1.0
+                    + (self
+                        .domains
+                        .get(&best_domain)
+                        .map(|v| v.keywords.len() as f32)
+                        .unwrap_or(1.0))
+                    .sqrt());
             (1.0 - (-0.3 * raw_matches).exp()).min(1.0)
         } else {
             0.0
@@ -229,17 +382,21 @@ impl DomainClassifier {
 
     /// Get the adapter name for a domain (or None if gap).
     pub fn adapter_for_domain(&self, domain: &str) -> Option<&str> {
-        self.domains.get(domain)
+        self.domains
+            .get(domain)
             .and_then(|v| v.adapter_name.as_deref())
     }
 
     /// Register new keywords for a domain (e.g., from academy curriculum).
     /// Merges with existing keywords — does not replace.
     pub fn register_domain_keywords(&mut self, domain: &str, keywords: Vec<String>) {
-        let entry = self.domains.entry(domain.to_string()).or_insert_with(|| DomainVocabulary {
-            keywords: vec![],
-            adapter_name: None,
-        });
+        let entry = self
+            .domains
+            .entry(domain.to_string())
+            .or_insert_with(|| DomainVocabulary {
+                keywords: vec![],
+                adapter_name: None,
+            });
 
         for kw in keywords {
             let lower = kw.to_lowercase();
@@ -251,7 +408,8 @@ impl DomainClassifier {
 
     /// Get all known domains with their adapter status.
     pub fn domain_summary(&self) -> Vec<(String, bool)> {
-        self.domains.iter()
+        self.domains
+            .iter()
             .map(|(domain, vocab)| (domain.clone(), vocab.adapter_name.is_some()))
             .collect()
     }
@@ -263,7 +421,10 @@ impl DomainClassifier {
 
 /// Quality score for a single interaction (input→output pair).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/QualityScore.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/QualityScore.ts"
+)]
 pub struct QualityScore {
     /// Overall quality score 0.0-1.0
     pub score: f32,
@@ -273,7 +434,10 @@ pub struct QualityScore {
 
 /// Breakdown of quality factors for an interaction.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/QualityFactors.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/QualityFactors.ts"
+)]
 pub struct QualityFactors {
     /// Human feedback signal (positive reply, "thanks", corrections)
     pub human_feedback: f32,
@@ -294,7 +458,7 @@ pub fn score_interaction_quality(
     task_outcome: Option<bool>,
 ) -> QualityScore {
     let mut factors = QualityFactors {
-        human_feedback: 0.5,  // Neutral default
+        human_feedback: 0.5, // Neutral default
         task_success: 0.5,
         substance: 0.0,
         correction: 0.0,
@@ -303,12 +467,19 @@ pub fn score_interaction_quality(
     // Factor 1: Human feedback
     if let Some(fb) = feedback {
         let fb_lower = fb.to_lowercase();
-        if fb_lower.contains("thank") || fb_lower.contains("great") || fb_lower.contains("perfect")
-            || fb_lower.contains("exactly") || fb_lower.contains("good") || fb_lower.contains("awesome")
+        if fb_lower.contains("thank")
+            || fb_lower.contains("great")
+            || fb_lower.contains("perfect")
+            || fb_lower.contains("exactly")
+            || fb_lower.contains("good")
+            || fb_lower.contains("awesome")
         {
             factors.human_feedback = 0.9;
-        } else if fb_lower.contains("wrong") || fb_lower.contains("no") || fb_lower.contains("incorrect")
-            || fb_lower.contains("bad") || fb_lower.contains("fix")
+        } else if fb_lower.contains("wrong")
+            || fb_lower.contains("no")
+            || fb_lower.contains("incorrect")
+            || fb_lower.contains("bad")
+            || fb_lower.contains("fix")
         {
             factors.human_feedback = 0.2;
             factors.correction = 0.8; // Corrections are gold — the corrected version is valuable
@@ -325,7 +496,7 @@ pub fn score_interaction_quality(
     // Factor 3: Substance — longer, structured responses are higher quality training data
     let output_len = output.len();
     factors.substance = if output_len < 20 {
-        0.1  // Too short to be useful
+        0.1 // Too short to be useful
     } else if output_len < 100 {
         0.4
     } else if output_len < 500 {
@@ -380,7 +551,11 @@ mod tests {
     fn test_classify_code_domain() {
         let classifier = DomainClassifier::new();
         let result = classifier.classify("How do I set up Express routes with async middleware?");
-        assert_eq!(result.domain, "code", "Should classify as code, got: {}", result.domain);
+        assert_eq!(
+            result.domain, "code",
+            "Should classify as code, got: {}",
+            result.domain
+        );
         assert!(result.confidence > 0.0);
         assert!(result.adapter_name.is_none(), "No adapters registered yet");
     }
@@ -389,28 +564,46 @@ mod tests {
     fn test_classify_conversation_domain() {
         let classifier = DomainClassifier::new();
         let result = classifier.classify("Hello! How are you doing today? Thanks for the help.");
-        assert_eq!(result.domain, "conversation", "Should classify as conversation, got: {}", result.domain);
+        assert_eq!(
+            result.domain, "conversation",
+            "Should classify as conversation, got: {}",
+            result.domain
+        );
     }
 
     #[test]
     fn test_classify_teaching_domain() {
         let classifier = DomainClassifier::new();
-        let result = classifier.classify("Can you teach me about this? I want to learn and practice.");
-        assert_eq!(result.domain, "teaching", "Should classify as teaching, got: {}", result.domain);
+        let result =
+            classifier.classify("Can you teach me about this? I want to learn and practice.");
+        assert_eq!(
+            result.domain, "teaching",
+            "Should classify as teaching, got: {}",
+            result.domain
+        );
     }
 
     #[test]
     fn test_classify_creative_domain() {
         let classifier = DomainClassifier::new();
-        let result = classifier.classify("Write me a story with interesting characters and a compelling plot narrative.");
-        assert_eq!(result.domain, "creative", "Should classify as creative, got: {}", result.domain);
+        let result = classifier.classify(
+            "Write me a story with interesting characters and a compelling plot narrative.",
+        );
+        assert_eq!(
+            result.domain, "creative",
+            "Should classify as creative, got: {}",
+            result.domain
+        );
     }
 
     #[test]
     fn test_classify_unknown_returns_general() {
         let classifier = DomainClassifier::new();
         let result = classifier.classify("xyzzy foobar baz qux");
-        assert_eq!(result.domain, "general", "Unknown text should return general fallback");
+        assert_eq!(
+            result.domain, "general",
+            "Unknown text should return general fallback"
+        );
         assert!((result.confidence - 0.0).abs() < 0.001);
     }
 
@@ -431,9 +624,7 @@ mod tests {
     #[test]
     fn test_sync_from_adapters_creates_new_domain() {
         let mut classifier = DomainClassifier::new();
-        let adapters = vec![
-            make_adapter("plumbing-expert", "plumbing"),
-        ];
+        let adapters = vec![make_adapter("plumbing-expert", "plumbing")];
         classifier.sync_from_adapters(&adapters);
 
         // "plumbing" keyword should now be recognized
@@ -445,14 +636,25 @@ mod tests {
     #[test]
     fn test_register_domain_keywords() {
         let mut classifier = DomainClassifier::new();
-        classifier.register_domain_keywords("plumbing", vec![
-            "pipe".to_string(), "faucet".to_string(), "drain".to_string(),
-            "leak".to_string(), "water".to_string(), "plumber".to_string(),
-        ]);
+        classifier.register_domain_keywords(
+            "plumbing",
+            vec![
+                "pipe".to_string(),
+                "faucet".to_string(),
+                "drain".to_string(),
+                "leak".to_string(),
+                "water".to_string(),
+                "plumber".to_string(),
+            ],
+        );
 
-        let result = classifier.classify("The pipe under the faucet has a leak and the drain is clogged");
+        let result =
+            classifier.classify("The pipe under the faucet has a leak and the drain is clogged");
         assert_eq!(result.domain, "plumbing");
-        assert!(result.confidence > 0.5, "Multiple keyword matches should give high confidence");
+        assert!(
+            result.confidence > 0.5,
+            "Multiple keyword matches should give high confidence"
+        );
     }
 
     #[test]
@@ -470,14 +672,21 @@ mod tests {
         let classifier = DomainClassifier::new();
         // Warm up — first call may be slow due to cache effects
         let _ = classifier.classify("warmup text");
-        let result = classifier.classify("How do I set up Express routes with async middleware and TypeScript interfaces?");
+        let result = classifier.classify(
+            "How do I set up Express routes with async middleware and TypeScript interfaces?",
+        );
         // Debug builds are ~50x slower than release; use generous threshold
         // Release target: <1ms, Debug target: <100ms
-        let threshold = if cfg!(debug_assertions) { 100_000 } else { 1_000 };
+        let threshold = if cfg!(debug_assertions) {
+            100_000
+        } else {
+            1_000
+        };
         assert!(
             result.decision_time_us < threshold,
             "Classification should be <{}us, was {}us",
-            threshold, result.decision_time_us
+            threshold,
+            result.decision_time_us
         );
     }
 
@@ -493,7 +702,10 @@ mod tests {
 
         let conv_entry = summary.iter().find(|(d, _)| d == "conversation");
         assert!(conv_entry.is_some());
-        assert!(!conv_entry.unwrap().1, "Conversation domain should NOT have adapter");
+        assert!(
+            !conv_entry.unwrap().1,
+            "Conversation domain should NOT have adapter"
+        );
     }
 
     #[test]
@@ -506,8 +718,14 @@ mod tests {
 
         // Second sync: different adapter set, code no longer covered
         classifier.sync_from_adapters(&[make_adapter("chat-bot", "conversation")]);
-        assert!(classifier.adapter_for_domain("code").is_none(), "Code adapter should be cleared after resync");
-        assert_eq!(classifier.adapter_for_domain("conversation"), Some("chat-bot"));
+        assert!(
+            classifier.adapter_for_domain("code").is_none(),
+            "Code adapter should be cleared after resync"
+        );
+        assert_eq!(
+            classifier.adapter_for_domain("conversation"),
+            Some("chat-bot")
+        );
     }
 
     #[test]
@@ -538,7 +756,11 @@ mod tests {
             Some("Thanks, that's exactly what I needed!"),
             Some(true),
         );
-        assert!(score.score > 0.6, "Positive feedback + success should score high, got {}", score.score);
+        assert!(
+            score.score > 0.6,
+            "Positive feedback + success should score high, got {}",
+            score.score
+        );
         assert!(score.factors.human_feedback > 0.8);
         assert!(score.factors.task_success > 0.8);
     }
@@ -551,9 +773,16 @@ mod tests {
             Some("That's wrong, it's 4"),
             Some(false),
         );
-        assert!(score.score < 0.5, "Negative feedback + failure should score low, got {}", score.score);
+        assert!(
+            score.score < 0.5,
+            "Negative feedback + failure should score low, got {}",
+            score.score
+        );
         assert!(score.factors.human_feedback < 0.3);
-        assert!(score.factors.correction > 0.5, "Correction signal should be high");
+        assert!(
+            score.factors.correction > 0.5,
+            "Correction signal should be high"
+        );
     }
 
     #[test]
@@ -565,17 +794,19 @@ mod tests {
             None,
         );
         // No signals → moderate score based on substance alone
-        assert!(score.score > 0.3 && score.score < 0.7, "No feedback should give moderate score, got {}", score.score);
+        assert!(
+            score.score > 0.3 && score.score < 0.7,
+            "No feedback should give moderate score, got {}",
+            score.score
+        );
     }
 
     #[test]
     fn test_quality_short_output_penalized() {
-        let score = score_interaction_quality(
-            "What is Rust?",
-            "A language.",
-            None,
-            None,
+        let score = score_interaction_quality("What is Rust?", "A language.", None, None);
+        assert!(
+            score.factors.substance < 0.3,
+            "Very short output should have low substance"
         );
-        assert!(score.factors.substance < 0.3, "Very short output should have low substance");
     }
 }

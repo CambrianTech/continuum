@@ -14,15 +14,13 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{Config, Pool, Runtime, ManagerConfig, RecyclingMethod};
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::NoTls;
 
-use super::adapter::{
-    AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter, naming,
-};
+use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
@@ -96,12 +94,8 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
                     Box::new(Option::<i64>::None)
                 }
                 Some("boolean") => Box::new(Option::<bool>::None),
-                Some("jsonb") | Some("json") => {
-                    Box::new(Option::<Json<Value>>::None)
-                }
-                Some("timestamp with time zone") => {
-                    Box::new(Option::<DateTime<Utc>>::None)
-                }
+                Some("jsonb") | Some("json") => Box::new(Option::<Json<Value>>::None),
+                Some("timestamp with time zone") => Box::new(Option::<DateTime<Utc>>::None),
                 Some("timestamp without time zone") => {
                     Box::new(Option::<chrono::NaiveDateTime>::None)
                 }
@@ -211,9 +205,12 @@ fn pg_type_from_value(value: &Value, col_name: &str) -> &'static str {
     }
 
     // For ambiguous types (null, number, string), use naming convention hints
-    let is_boolean_col = col_name.starts_with("is_") || col_name.starts_with("has_")
-        || col_name.ends_with("_active") || col_name.ends_with("_enabled")
-        || col_name.ends_with("_visible") || col_name.ends_with("_deleted");
+    let is_boolean_col = col_name.starts_with("is_")
+        || col_name.starts_with("has_")
+        || col_name.ends_with("_active")
+        || col_name.ends_with("_enabled")
+        || col_name.ends_with("_visible")
+        || col_name.ends_with("_deleted");
 
     if is_boolean_col {
         return "BOOLEAN";
@@ -221,7 +218,11 @@ fn pg_type_from_value(value: &Value, col_name: &str) -> &'static str {
 
     match value {
         Value::Number(n) => {
-            if n.is_i64() { "BIGINT" } else { "DOUBLE PRECISION" }
+            if n.is_i64() {
+                "BIGINT"
+            } else {
+                "DOUBLE PRECISION"
+            }
         }
         Value::String(_) | Value::Null => "TEXT",
         _ => "TEXT", // unreachable — concrete types handled above
@@ -294,19 +295,25 @@ fn build_where_clause(
                         params.push(value_to_pg(v));
                     }
                     QueryOperator::In(values) => {
-                        let placeholders: Vec<String> = values.iter().map(|v| {
-                            idx += 1;
-                            params.push(value_to_pg(v));
-                            format!("${}", idx)
-                        }).collect();
+                        let placeholders: Vec<String> = values
+                            .iter()
+                            .map(|v| {
+                                idx += 1;
+                                params.push(value_to_pg(v));
+                                format!("${}", idx)
+                            })
+                            .collect();
                         conditions.push(format!("{} IN ({})", column, placeholders.join(", ")));
                     }
                     QueryOperator::NotIn(values) => {
-                        let placeholders: Vec<String> = values.iter().map(|v| {
-                            idx += 1;
-                            params.push(value_to_pg(v));
-                            format!("${}", idx)
-                        }).collect();
+                        let placeholders: Vec<String> = values
+                            .iter()
+                            .map(|v| {
+                                idx += 1;
+                                params.push(value_to_pg(v));
+                                format!("${}", idx)
+                            })
+                            .collect();
                         conditions.push(format!("{} NOT IN ({})", column, placeholders.join(", ")));
                     }
                     QueryOperator::Exists(exists) => {
@@ -381,48 +388,36 @@ fn row_to_record(
         let pg_type = col.type_();
 
         let value: Value = match pg_type {
-            &tokio_postgres::types::Type::BOOL => {
-                match row.try_get::<_, Option<bool>>(i) {
-                    Ok(Some(b)) => json!(b),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
-            &tokio_postgres::types::Type::INT2 => {
-                match row.try_get::<_, Option<i16>>(i) {
-                    Ok(Some(n)) => json!(n),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
-            &tokio_postgres::types::Type::INT4 => {
-                match row.try_get::<_, Option<i32>>(i) {
-                    Ok(Some(n)) => json!(n),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
-            &tokio_postgres::types::Type::INT8 => {
-                match row.try_get::<_, Option<i64>>(i) {
-                    Ok(Some(n)) => json!(n),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
-            &tokio_postgres::types::Type::FLOAT4 => {
-                match row.try_get::<_, Option<f32>>(i) {
-                    Ok(Some(n)) => json!(n),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
-            &tokio_postgres::types::Type::FLOAT8 => {
-                match row.try_get::<_, Option<f64>>(i) {
-                    Ok(Some(n)) => json!(n),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            }
+            &tokio_postgres::types::Type::BOOL => match row.try_get::<_, Option<bool>>(i) {
+                Ok(Some(b)) => json!(b),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT2 => match row.try_get::<_, Option<i16>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT4 => match row.try_get::<_, Option<i32>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT8 => match row.try_get::<_, Option<i64>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::FLOAT4 => match row.try_get::<_, Option<f32>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::FLOAT8 => match row.try_get::<_, Option<f64>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
             &tokio_postgres::types::Type::JSONB | &tokio_postgres::types::Type::JSON => {
                 match row.try_get::<_, Option<Json<Value>>>(i) {
                     Ok(Some(j)) => j.0,
@@ -471,7 +466,12 @@ fn row_to_record(
             "id" => id = value.as_str().map(|s| s.to_string()),
             "created_at" => created_at = value.as_str().map(|s| s.to_string()),
             "updated_at" => updated_at = value.as_str().map(|s| s.to_string()),
-            "version" => version = value.as_u64().map(|n| n as u32).or(value.as_i64().map(|n| n as u32)),
+            "version" => {
+                version = value
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .or(value.as_i64().map(|n| n as u32))
+            }
             _ => {
                 data.insert(camel_col, value);
             }
@@ -565,16 +565,14 @@ impl StorageAdapter for PostgresAdapter {
 
         // Ensure schema exists
         client
-            .execute(
-                &format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema),
-                &[],
-            )
+            .execute(&format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema), &[])
             .await
             .map_err(|e| format!("Failed to create schema: {}", e))?;
 
         clog_info!(
             "PostgresAdapter initialized: pool_size={}, schema={}",
-            config.max_connections, self.schema
+            config.max_connections,
+            self.schema
         );
 
         self.pool = Some(pool);
@@ -603,7 +601,15 @@ impl StorageAdapter for PostgresAdapter {
         let now_rfc3339 = now.to_rfc3339();
 
         // Ensure table exists (auto-create from data shape)
-        if let Err(e) = ensure_table_exists_pg(&client, &qualified_table, &bare_table, &self.schema, &record.data).await {
+        if let Err(e) = ensure_table_exists_pg(
+            &client,
+            &qualified_table,
+            &bare_table,
+            &self.schema,
+            &record.data,
+        )
+        .await
+        {
             return StorageResult::err(e);
         }
 
@@ -626,8 +632,11 @@ impl StorageAdapter for PostgresAdapter {
 
         if let Value::Object(data) = &record.data {
             for (key, value) in data {
-                if key == "id" || key == "createdAt" || key == "created_at"
-                    || key == "updatedAt" || key == "updated_at"
+                if key == "id"
+                    || key == "createdAt"
+                    || key == "created_at"
+                    || key == "updatedAt"
+                    || key == "updated_at"
                     || key == "version"
                 {
                     continue;
@@ -647,15 +656,14 @@ impl StorageAdapter for PostgresAdapter {
             placeholders.join(", ")
         );
 
-        let params_ref: Vec<&(dyn ToSql + Sync)> = params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
 
         match client.execute(&sql, &params_ref).await {
             Ok(rows) => {
                 if rows == 0 {
                     // ON CONFLICT DO NOTHING — record already exists
-                    return StorageResult::err(format!(
-                        "Record already exists: {}", record.id
-                    ));
+                    return StorageResult::err(format!("Record already exists: {}", record.id));
                 }
                 StorageResult::ok(DataRecord {
                     metadata: RecordMetadata {
@@ -669,13 +677,19 @@ impl StorageAdapter for PostgresAdapter {
             }
             Err(e) => {
                 // Diagnostic: include column names + types for debugging serialization errors
-                let col_info: Vec<String> = columns.iter().enumerate().map(|(i, c)| {
-                    let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
-                    format!("${}: {}({})", i + 1, c, pg_type)
-                }).collect();
+                let col_info: Vec<String> = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
+                        format!("${}: {}({})", i + 1, c, pg_type)
+                    })
+                    .collect();
                 StorageResult::err(format!(
                     "Insert failed [{}]: {:?} | columns: [{}]",
-                    qualified_table, e, col_info.join(", ")
+                    qualified_table,
+                    e,
+                    col_info.join(", ")
                 ))
             }
         }
@@ -693,10 +707,7 @@ impl StorageAdapter for PostgresAdapter {
 
         let table = self.table_ref(collection);
 
-        let sql = format!(
-            "SELECT * FROM {} WHERE id = $1 LIMIT 1",
-            table
-        );
+        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
 
         let rows = match client.query(&sql, &[&id]).await {
             Ok(r) => r,
@@ -749,7 +760,10 @@ impl StorageAdapter for PostgresAdapter {
             sql.push_str(&format!(" OFFSET {}", offset));
         }
 
-        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
 
         let rows = match client.query(&sql, &params_ref).await {
             Ok(r) => r,
@@ -849,7 +863,10 @@ impl StorageAdapter for PostgresAdapter {
             sql.push_str(&format!(" OFFSET {}", offset));
         }
 
-        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
 
         let rows = match client.query(&sql, &params_ref).await {
             Ok(r) => r,
@@ -886,7 +903,10 @@ impl StorageAdapter for PostgresAdapter {
             sql.push_str(&where_clause);
         }
 
-        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
 
         match client.query_one(&sql, &params_ref).await {
             Ok(row) => {
@@ -950,8 +970,14 @@ impl StorageAdapter for PostgresAdapter {
         idx += 1;
         params.push(Box::new(id.clone()));
 
-        let sql = format!("UPDATE {} SET {} WHERE id = ${}", table, sets.join(", "), idx);
-        let params_ref: Vec<&(dyn ToSql + Sync)> = params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = ${}",
+            table,
+            sets.join(", "),
+            idx
+        );
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
 
         match client.execute(&sql, &params_ref).await {
             Ok(rows) if rows > 0 => self.read(collection, id).await,
@@ -1087,7 +1113,11 @@ impl StorageAdapter for PostgresAdapter {
 
         // Create composite indexes
         for index in &schema.indexes {
-            let cols: Vec<String> = index.fields.iter().map(|f| naming::to_snake_case(f)).collect();
+            let cols: Vec<String> = index
+                .fields
+                .iter()
+                .map(|f| naming::to_snake_case(f))
+                .collect();
             let unique = if index.unique { "UNIQUE " } else { "" };
             let idx_sql = format!(
                 "CREATE {}INDEX IF NOT EXISTS {} ON {} ({})",
@@ -1190,10 +1220,7 @@ impl StorageAdapter for PostgresAdapter {
 
     async fn cleanup(&self) -> Result<(), String> {
         let pool = self.pool()?;
-        let client = pool
-            .get()
-            .await
-            .map_err(|e| format!("Pool error: {}", e))?;
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
         // VACUUM FULL requires exclusive lock, use regular VACUUM + ANALYZE
         client
@@ -1248,8 +1275,11 @@ async fn ensure_table_exists_pg(
             let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
 
             for (key, value) in obj {
-                if key == "id" || key == "createdAt" || key == "created_at"
-                    || key == "updatedAt" || key == "updated_at"
+                if key == "id"
+                    || key == "createdAt"
+                    || key == "created_at"
+                    || key == "updatedAt"
+                    || key == "updated_at"
                     || key == "version"
                 {
                     continue;
@@ -1281,8 +1311,11 @@ async fn ensure_table_exists_pg(
 
     if let Value::Object(obj) = data {
         for (key, value) in obj {
-            if key == "id" || key == "createdAt" || key == "created_at"
-                || key == "updatedAt" || key == "updated_at"
+            if key == "id"
+                || key == "createdAt"
+                || key == "created_at"
+                || key == "updatedAt"
+                || key == "updated_at"
                 || key == "version"
             {
                 continue;
@@ -1316,8 +1349,9 @@ mod tests {
     /// Or: DATABASE_URL=postgres://user:pass@localhost/testdb cargo test --lib -- --ignored
 
     fn get_test_url() -> String {
-        std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://continuum:continuum@localhost:5432/continuum_test".to_string())
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://continuum:continuum@localhost:5432/continuum_test".to_string()
+        })
     }
 
     async fn setup_pg_adapter() -> PostgresAdapter {
@@ -1374,7 +1408,11 @@ mod tests {
         };
 
         let create_result = adapter.create(record).await;
-        assert!(create_result.success, "Create failed: {:?}", create_result.error);
+        assert!(
+            create_result.success,
+            "Create failed: {:?}",
+            create_result.error
+        );
 
         let read_result = adapter.read("users", &"pg-test-123".to_string()).await;
         assert!(read_result.success, "Read failed: {:?}", read_result.error);
@@ -1493,7 +1531,12 @@ mod tests {
 
         // Update
         let updated = adapter
-            .update("update_test", &"upd-1".to_string(), json!({"name": "After"}), true)
+            .update(
+                "update_test",
+                &"upd-1".to_string(),
+                json!({"name": "After"}),
+                true,
+            )
             .await;
         assert!(updated.success);
         let data = updated.data.unwrap();
@@ -1532,7 +1575,10 @@ mod tests {
 
         let collections = adapter.list_collections().await;
         assert!(collections.success);
-        assert!(collections.data.unwrap().contains(&"stats_test".to_string()));
+        assert!(collections
+            .data
+            .unwrap()
+            .contains(&"stats_test".to_string()));
 
         let stats = adapter.collection_stats("stats_test").await;
         assert!(stats.success);

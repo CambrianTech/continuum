@@ -8,8 +8,8 @@
 //!
 //! Also used by loop detection, semantic loop checking, topic detection, etc.
 
-use std::collections::HashSet;
 use super::types::{ConversationMessage, SemanticLoopResult};
+use std::collections::HashSet;
 
 /// Character bigram Jaccard similarity.
 ///
@@ -256,10 +256,7 @@ mod tests {
 
     #[test]
     fn test_ngram_case_insensitive() {
-        assert_eq!(
-            jaccard_ngram_similarity("Hello World", "hello world"),
-            1.0
-        );
+        assert_eq!(jaccard_ngram_similarity("Hello World", "hello world"), 1.0);
     }
 
     #[test]
@@ -333,7 +330,8 @@ mod tests {
         let response = "This is a brand new response about artificial intelligence and machine learning models";
         let history = vec![ConversationMessage {
             role: "user".into(),
-            content: "Tell me about the weather forecast for tomorrow in the northern hemisphere".into(),
+            content: "Tell me about the weather forecast for tomorrow in the northern hemisphere"
+                .into(),
             name: None,
         }];
 
@@ -344,7 +342,8 @@ mod tests {
 
     #[test]
     fn test_semantic_loop_respects_max_history() {
-        let response = "This is a sufficiently long response that appears in old history but not recent";
+        let response =
+            "This is a sufficiently long response that appears in old history but not recent";
         let mut history = Vec::new();
         // Identical message at position 0
         history.push(ConversationMessage {
@@ -356,7 +355,11 @@ mod tests {
         for i in 0..15 {
             history.push(ConversationMessage {
                 role: "user".into(),
-                content: format!("Completely unrelated message number {} about topic {}", i, i * 7),
+                content: format!(
+                    "Completely unrelated message number {} about topic {}",
+                    i,
+                    i * 7
+                ),
                 name: None,
             });
         }

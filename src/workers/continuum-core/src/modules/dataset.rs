@@ -49,9 +49,7 @@ impl DatasetModule {
     pub fn new() -> Self {
         // Default datasets root — overridable per-request via params
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let datasets_root = PathBuf::from(home)
-            .join(".continuum")
-            .join("datasets");
+        let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
         Self { datasets_root }
     }
 
@@ -66,22 +64,27 @@ impl DatasetModule {
 
     /// Import a generic CSV file as a JSONL training dataset.
     async fn import_csv(&self, params: Value) -> Result<CommandResult, String> {
-        let csv_path = params.get("csvPath")
+        let csv_path = params
+            .get("csvPath")
             .and_then(|v| v.as_str())
             .ok_or("Missing required param: csvPath")?;
 
         let output_dir = self.resolve_datasets_root(&params);
-        let name = params.get("name")
+        let name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("imported");
-        let split_ratio = params.get("splitRatio")
+        let split_ratio = params
+            .get("splitRatio")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.8);
 
-        let user_col = params.get("userColumn")
+        let user_col = params
+            .get("userColumn")
             .and_then(|v| v.as_str())
             .unwrap_or("input");
-        let assistant_col = params.get("assistantColumn")
+        let assistant_col = params
+            .get("assistantColumn")
             .and_then(|v| v.as_str())
             .unwrap_or("output");
 
@@ -97,14 +100,26 @@ impl DatasetModule {
             .from_path(&csv_path)
             .map_err(|e| format!("Failed to open CSV: {e}"))?;
 
-        let headers = reader.headers()
+        let headers = reader
+            .headers()
             .map_err(|e| format!("Failed to read CSV headers: {e}"))?
             .clone();
 
-        let user_idx = headers.iter().position(|h| h == user_col)
-            .ok_or_else(|| format!("Column '{user_col}' not found in CSV. Available: {:?}", headers.iter().collect::<Vec<_>>()))?;
-        let assistant_idx = headers.iter().position(|h| h == assistant_col)
-            .ok_or_else(|| format!("Column '{assistant_col}' not found in CSV. Available: {:?}", headers.iter().collect::<Vec<_>>()))?;
+        let user_idx = headers.iter().position(|h| h == user_col).ok_or_else(|| {
+            format!(
+                "Column '{user_col}' not found in CSV. Available: {:?}",
+                headers.iter().collect::<Vec<_>>()
+            )
+        })?;
+        let assistant_idx = headers
+            .iter()
+            .position(|h| h == assistant_col)
+            .ok_or_else(|| {
+                format!(
+                    "Column '{assistant_col}' not found in CSV. Available: {:?}",
+                    headers.iter().collect::<Vec<_>>()
+                )
+            })?;
 
         let mut examples: Vec<Value> = Vec::new();
         for result in reader.records() {
@@ -144,19 +159,25 @@ impl DatasetModule {
     ///   - `repoDir`: path to cloned repo root (auto-discovers CSVs + tests)
     ///   - `csvPath` + `testsDir`: legacy single-CSV mode (backward compat)
     async fn import_realclasseval(&self, params: Value) -> Result<CommandResult, String> {
-        let output_dir = params.get("outputDir")
+        let output_dir = params
+            .get("outputDir")
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| self.datasets_root.join("realclasseval"));
 
-        let split_ratio = params.get("splitRatio")
+        let split_ratio = params
+            .get("splitRatio")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.8);
 
         // Collect (csv_path, tests_dir, is_post_cutoff) pairs
-        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) = params.get("repoDir").and_then(|v| v.as_str()) {
+        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) =
+            params.get("repoDir").and_then(|v| v.as_str())
+        {
             // Auto-discover from repo directory structure
-            let base = PathBuf::from(repo_dir).join("data").join("functional_correctness_data");
+            let base = PathBuf::from(repo_dir)
+                .join("data")
+                .join("functional_correctness_data");
             if !base.exists() {
                 return Err(format!(
                     "RealClassEval repo structure not found at {}. Expected data/functional_correctness_data/",
@@ -176,7 +197,9 @@ impl DatasetModule {
                 // Use no_docstr CSV (most challenging — no docstring hints)
                 let csv_path = split_dir.join("dfs").join("no_docstr.csv");
                 // Tests under pynguin_generated_tests/full_docstr/ (best coverage)
-                let tests_dir = split_dir.join("pynguin_generated_tests").join("full_docstr");
+                let tests_dir = split_dir
+                    .join("pynguin_generated_tests")
+                    .join("full_docstr");
 
                 if csv_path.exists() {
                     found.push((csv_path, tests_dir, *is_post));
@@ -192,12 +215,16 @@ impl DatasetModule {
             found
         } else if let Some(csv_path) = params.get("csvPath").and_then(|v| v.as_str()) {
             // Legacy single-CSV mode
-            let tests_dir = params.get("testsDir")
+            let tests_dir = params
+                .get("testsDir")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing required param: testsDir (or use repoDir for auto-discovery)")?;
             vec![(PathBuf::from(csv_path), PathBuf::from(tests_dir), false)]
         } else {
-            return Err("Missing required param: repoDir (path to cloned RealClassEval repo) or csvPath".to_string());
+            return Err(
+                "Missing required param: repoDir (path to cloned RealClassEval repo) or csvPath"
+                    .to_string(),
+            );
         };
 
         let mut all_examples: Vec<Value> = Vec::new();
@@ -219,7 +246,8 @@ impl DatasetModule {
                 .from_path(csv_path)
                 .map_err(|e| format!("Failed to open CSV {}: {e}", csv_path.display()))?;
 
-            let headers = reader.headers()
+            let headers = reader
+                .headers()
                 .map_err(|e| format!("Failed to read CSV headers: {e}"))?
                 .clone();
 
@@ -298,8 +326,16 @@ impl DatasetModule {
         }
 
         let metrics = DatasetMetrics {
-            avg_cyclomatic_complexity: if cc_count > 0 { Some(total_cc / cc_count as f64) } else { None },
-            avg_lines_of_code: if loc_count > 0 { Some(total_loc / loc_count as f64) } else { None },
+            avg_cyclomatic_complexity: if cc_count > 0 {
+                Some(total_cc / cc_count as f64)
+            } else {
+                None
+            },
+            avg_lines_of_code: if loc_count > 0 {
+                Some(total_loc / loc_count as f64)
+            } else {
+                None
+            },
         };
 
         let mut manifest = self.split_and_write(
@@ -341,7 +377,8 @@ impl DatasetModule {
                     let manifest_path = path.join("manifest.json");
                     if manifest_path.exists() {
                         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content) {
+                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content)
+                            {
                                 datasets.push(manifest);
                             }
                         }
@@ -359,7 +396,8 @@ impl DatasetModule {
 
     /// Read manifest for a specific dataset.
     async fn dataset_info(&self, params: Value) -> Result<CommandResult, String> {
-        let name = params.get("name")
+        let name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or("Missing required param: name")?;
 
@@ -367,13 +405,17 @@ impl DatasetModule {
         let manifest_path = root.join(name).join("manifest.json");
 
         if !manifest_path.exists() {
-            return Err(format!("Dataset '{}' not found at {}", name, manifest_path.display()));
+            return Err(format!(
+                "Dataset '{}' not found at {}",
+                name,
+                manifest_path.display()
+            ));
         }
 
         let content = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("Failed to read manifest: {e}"))?;
-        let manifest: DatasetManifest = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse manifest: {e}"))?;
+        let manifest: DatasetManifest =
+            serde_json::from_str(&content).map_err(|e| format!("Failed to parse manifest: {e}"))?;
 
         CommandResult::json(&manifest)
     }
@@ -442,11 +484,7 @@ impl ServiceModule for DatasetModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "dataset/import-csv" => self.import_csv(params).await,
             "dataset/import-realclasseval" => self.import_realclasseval(params).await,
@@ -466,16 +504,13 @@ impl ServiceModule for DatasetModule {
 // ============================================================================
 
 fn find_column(headers: &csv::StringRecord, name: &str) -> Result<usize, String> {
-    headers
-        .iter()
-        .position(|h| h == name)
-        .ok_or_else(|| {
-            format!(
-                "Required column '{}' not found in CSV. Available: {:?}",
-                name,
-                headers.iter().collect::<Vec<_>>()
-            )
-        })
+    headers.iter().position(|h| h == name).ok_or_else(|| {
+        format!(
+            "Required column '{}' not found in CSV. Available: {:?}",
+            name,
+            headers.iter().collect::<Vec<_>>()
+        )
+    })
 }
 
 /// Locate a test file for a given snippet_id in the tests directory.
@@ -518,8 +553,7 @@ fn write_jsonl(path: &Path, examples: &[Value]) -> Result<(), String> {
     for example in examples {
         serde_json::to_writer(&mut writer, example)
             .map_err(|e| format!("Failed to write JSONL: {e}"))?;
-        writeln!(&mut writer)
-            .map_err(|e| format!("Failed to write newline: {e}"))?;
+        writeln!(&mut writer).map_err(|e| format!("Failed to write newline: {e}"))?;
     }
 
     Ok(())
@@ -528,8 +562,8 @@ fn write_jsonl(path: &Path, examples: &[Value]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::io::Write;
+    use tempfile::TempDir;
 
     fn create_test_csv(dir: &Path, filename: &str, content: &str) -> PathBuf {
         let path = dir.join(filename);
@@ -646,7 +680,10 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         create_test_csv(&csn_dfs, "no_docstr.csv",
             "snippet_id,class_name,human_written_code,class_skeleton\nsnippet_10,Foo,\"class Foo:\\n    pass\",\"class Foo:\\n    pass\"\n");
 
-        let csn_tests = base.join("csn").join("pynguin_generated_tests").join("full_docstr");
+        let csn_tests = base
+            .join("csn")
+            .join("pynguin_generated_tests")
+            .join("full_docstr");
         std::fs::create_dir_all(&csn_tests).unwrap();
         create_test_csv(&csn_tests, "test_snippet_10.py", "def test_foo(): pass\n");
 
@@ -656,7 +693,10 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         create_test_csv(&post_dfs, "no_docstr.csv",
             "snippet_id,class_name,human_written_code,class_skeleton\nsnippet_300,Bar,\"class Bar:\\n    pass\",\"class Bar:\\n    pass\"\n");
 
-        let post_tests = base.join("post_cut-off").join("pynguin_generated_tests").join("full_docstr");
+        let post_tests = base
+            .join("post_cut-off")
+            .join("pynguin_generated_tests")
+            .join("full_docstr");
         std::fs::create_dir_all(&post_tests).unwrap();
         create_test_csv(&post_tests, "test_snippet_300.py", "def test_bar(): pass\n");
 
@@ -674,7 +714,7 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
             assert_eq!(v["name"], "realclasseval");
             assert_eq!(v["total_examples"], 2);
             assert_eq!(v["source"], "arxiv:2510.26130");
-            assert_eq!(v["pre_cutoff"], 1);  // csn
+            assert_eq!(v["pre_cutoff"], 1); // csn
             assert_eq!(v["post_cutoff"], 1); // post_cut-off
         } else {
             panic!("Expected JSON result");
@@ -710,7 +750,8 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         std::fs::write(
             dataset_dir.join("manifest.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let module = DatasetModule::new();
         let params = json!({ "outputDir": tmp.path().to_str().unwrap() });
@@ -748,7 +789,8 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         std::fs::write(
             dataset_dir.join("manifest.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let module = DatasetModule::new();
         let params = json!({

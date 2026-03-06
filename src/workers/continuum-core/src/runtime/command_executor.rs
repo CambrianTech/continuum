@@ -20,12 +20,12 @@
 //! - TypeScript commands: Routed via Unix socket to CommandRouterServer
 //!   (socket: /tmp/jtag-command-router.sock)
 
-use std::sync::Arc;
 use serde_json::Value;
-use tokio::net::UnixStream;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
-use super::{ModuleRegistry, CommandResult};
+use super::{CommandResult, ModuleRegistry};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -53,7 +53,10 @@ impl CommandExecutor {
         }
 
         // 2. Route to TypeScript via Unix socket (CommandRouterServer)
-        log.debug(&format!("Routing '{}' to TypeScript via CommandRouterServer", command));
+        log.debug(&format!(
+            "Routing '{}' to TypeScript via CommandRouterServer",
+            command
+        ));
         let json = self.execute_ts_command(command, params).await?;
         Ok(CommandResult::Json(json))
     }
@@ -88,10 +91,16 @@ impl CommandExecutor {
         let log = super::logger("command-executor");
 
         // Connect to CommandRouterServer
-        log.debug(&format!("Connecting to TypeScript socket: {}", TS_COMMAND_SOCKET));
-        let stream = UnixStream::connect(TS_COMMAND_SOCKET)
-            .await
-            .map_err(|e| format!("Failed to connect to CommandRouterServer at {}: {}", TS_COMMAND_SOCKET, e))?;
+        log.debug(&format!(
+            "Connecting to TypeScript socket: {}",
+            TS_COMMAND_SOCKET
+        ));
+        let stream = UnixStream::connect(TS_COMMAND_SOCKET).await.map_err(|e| {
+            format!(
+                "Failed to connect to CommandRouterServer at {}: {}",
+                TS_COMMAND_SOCKET, e
+            )
+        })?;
 
         let (reader, mut writer) = stream.into_split();
         let mut buf_reader = BufReader::new(reader);
@@ -104,24 +113,32 @@ impl CommandExecutor {
         let request_line = format!("{}\n", request.to_string());
 
         log.debug(&format!("Sending: {}", command));
-        writer.write_all(request_line.as_bytes())
+        writer
+            .write_all(request_line.as_bytes())
             .await
             .map_err(|e| format!("Failed to send command: {}", e))?;
-        writer.flush()
+        writer
+            .flush()
             .await
             .map_err(|e| format!("Failed to flush: {}", e))?;
 
         // Read response
         let mut response_line = String::new();
-        buf_reader.read_line(&mut response_line)
+        buf_reader
+            .read_line(&mut response_line)
             .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
         log.debug(&format!("Received response: {} bytes", response_line.len()));
 
         // Parse response
-        let response: Value = serde_json::from_str(&response_line)
-            .map_err(|e| format!("Invalid response JSON: {} (raw: {})", e, response_line.trim()))?;
+        let response: Value = serde_json::from_str(&response_line).map_err(|e| {
+            format!(
+                "Invalid response JSON: {} (raw: {})",
+                e,
+                response_line.trim()
+            )
+        })?;
 
         // Check success
         if response.get("success").and_then(|v| v.as_bool()) == Some(true) {
@@ -129,7 +146,8 @@ impl CommandExecutor {
             log.info(&format!("Command '{}' succeeded", command));
             Ok(result)
         } else {
-            let error = response.get("error")
+            let error = response
+                .get("error")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown error from TypeScript");
             log.error(&format!("Command '{}' failed: {}", command, error));
@@ -151,7 +169,8 @@ pub fn init_executor(registry: Arc<ModuleRegistry>) {
 /// Get the global command executor
 /// Panics if not initialized - this is intentional, executor MUST be initialized at startup
 pub fn executor() -> Arc<CommandExecutor> {
-    GLOBAL_EXECUTOR.get()
+    GLOBAL_EXECUTOR
+        .get()
         .expect("CommandExecutor not initialized - call init_executor() at startup")
         .clone()
 }

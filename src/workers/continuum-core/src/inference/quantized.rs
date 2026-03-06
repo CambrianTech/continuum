@@ -92,7 +92,10 @@ pub fn load_quantized_model(
     }
 
     let tokenizer = tokenizer.ok_or_else(|| {
-        format!("Could not load tokenizer from any source. Last error: {}", last_error)
+        format!(
+            "Could not load tokenizer from any source. Last error: {}",
+            last_error
+        )
     })?;
 
     // Load backend (reads architecture + context_length from GGUF metadata)
@@ -112,7 +115,8 @@ pub fn load_quantized_model(
 }
 
 /// Load default quantized model (Q8_0 Llama 3.2 3B).
-pub fn load_default_quantized() -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
+pub fn load_default_quantized(
+) -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
     let gguf_path = download_gguf_model(
         "hugging-quants/Llama-3.2-3B-Instruct-Q8_0-GGUF",
         "llama-3.2-3b-instruct-q8_0.gguf",
@@ -127,8 +131,8 @@ pub fn load_default_quantized() -> Result<Box<dyn ModelBackend>, Box<dyn std::er
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::backends;
+    use super::*;
 
     #[test]
     #[ignore] // Requires model download
@@ -147,8 +151,8 @@ mod tests {
         let mut backend = load_default_quantized().expect("Failed to load");
 
         let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nSay hello.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
-        let (output, tokens) = backends::generate(&mut *backend, prompt, 30, 0.3)
-            .expect("Generation failed");
+        let (output, tokens) =
+            backends::generate(&mut *backend, prompt, 30, 0.3).expect("Generation failed");
 
         println!("Generated {} tokens: {}", tokens, output);
         assert!(!output.contains('\u{FFFD}'), "Output contains garbage");

@@ -9,7 +9,7 @@
 //! - WAL mode: readers never block writers, writers never block readers
 //! - Round-robin dispatch across reader pool
 
-use crate::{clog_info, clog_error, clog_warn};
+use crate::{clog_error, clog_info, clog_warn};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -17,9 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
-use super::adapter::{
-    AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter, naming,
-};
+use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
@@ -178,7 +176,11 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
                 let result = do_create(&conn, record);
                 let _ = reply.send(result);
             }
-            SqliteCommand::Read { collection, id, reply } => {
+            SqliteCommand::Read {
+                collection,
+                id,
+                reply,
+            } => {
                 let result = do_read(&conn, &collection, &id);
                 let _ = reply.send(result);
             }
@@ -186,7 +188,13 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
                 let collection = query.collection.clone();
                 let result = do_query(&conn, query);
                 if start.elapsed().as_millis() > 100 {
-                    clog_warn!("SLOW query #{} on {}: {}ms ({})", query_count, collection, start.elapsed().as_millis(), role);
+                    clog_warn!(
+                        "SLOW query #{} on {}: {}ms ({})",
+                        query_count,
+                        collection,
+                        start.elapsed().as_millis(),
+                        role
+                    );
                 }
                 let _ = reply.send(result);
             }
@@ -194,11 +202,21 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
                 let result = do_count(&conn, query);
                 let _ = reply.send(result);
             }
-            SqliteCommand::Update { collection, id, data, increment_version, reply } => {
+            SqliteCommand::Update {
+                collection,
+                id,
+                data,
+                increment_version,
+                reply,
+            } => {
                 let result = do_update(&conn, &collection, &id, data, increment_version);
                 let _ = reply.send(result);
             }
-            SqliteCommand::Delete { collection, id, reply } => {
+            SqliteCommand::Delete {
+                collection,
+                id,
+                reply,
+            } => {
                 let result = do_delete(&conn, &collection, &id);
                 let _ = reply.send(result);
             }
@@ -227,7 +245,11 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
             }
         }
     }
-    clog_info!("SQLite {} worker shutting down (processed {} commands)", role, query_count);
+    clog_info!(
+        "SQLite {} worker shutting down (processed {} commands)",
+        role,
+        query_count
+    );
 }
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
@@ -246,9 +268,13 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
     if let Value::Object(obj) = data {
         for (key, value) in obj {
             // Skip fields already in base columns to avoid duplicates
-            if key == "id" || key == "createdAt" || key == "created_at"
-                || key == "updatedAt" || key == "updated_at"
-                || key == "version" {
+            if key == "id"
+                || key == "createdAt"
+                || key == "created_at"
+                || key == "updatedAt"
+                || key == "updated_at"
+                || key == "version"
+            {
                 continue;
             }
             let col_name = naming::to_snake_case(key);
@@ -263,7 +289,7 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
                 }
                 Value::String(_) => "TEXT",
                 Value::Array(_) | Value::Object(_) => "TEXT", // JSON stored as text
-                Value::Null => "TEXT", // Default to TEXT for null
+                Value::Null => "TEXT",                        // Default to TEXT for null
             };
             columns.push(format!("{} {}", col_name, col_type));
         }
@@ -288,7 +314,12 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
     ensure_table_exists(conn, &table, &record.data);
 
     // Build column list and values from data
-    let mut columns = vec!["id".to_string(), "created_at".to_string(), "updated_at".to_string(), "version".to_string()];
+    let mut columns = vec![
+        "id".to_string(),
+        "created_at".to_string(),
+        "updated_at".to_string(),
+        "version".to_string(),
+    ];
     let mut placeholders = vec!["?", "?", "?", "?"];
     let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
         Box::new(record.id.clone()),
@@ -300,9 +331,13 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
     if let Value::Object(data) = &record.data {
         for (key, value) in data {
             // Skip fields already in base columns to avoid duplicates
-            if key == "id" || key == "createdAt" || key == "created_at"
-                || key == "updatedAt" || key == "updated_at"
-                || key == "version" {
+            if key == "id"
+                || key == "createdAt"
+                || key == "created_at"
+                || key == "updatedAt"
+                || key == "updated_at"
+                || key == "version"
+            {
                 continue;
             }
             columns.push(naming::to_snake_case(key));
@@ -321,20 +356,16 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
     let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params.as_slice()) {
-        Ok(_) => {
-            StorageResult::ok(DataRecord {
-                metadata: RecordMetadata {
-                    created_at: now.clone(),
-                    updated_at: now,
-                    version: 1,
-                    ..record.metadata
-                },
-                ..record
-            })
-        }
-        Err(e) => {
-            StorageResult::err(format!("Insert failed: {}", e))
-        }
+        Ok(_) => StorageResult::ok(DataRecord {
+            metadata: RecordMetadata {
+                created_at: now.clone(),
+                updated_at: now,
+                version: 1,
+                ..record.metadata
+            },
+            ..record
+        }),
+        Err(e) => StorageResult::err(format!("Insert failed: {}", e)),
     }
 }
 
@@ -391,7 +422,8 @@ fn do_query(conn: &Connection, query: StorageQuery) -> StorageResult<Vec<DataRec
     };
 
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let params: Vec<Box<dyn rusqlite::ToSql>> = where_params.iter().map(value_to_sql_boxed).collect();
+    let params: Vec<Box<dyn rusqlite::ToSql>> =
+        where_params.iter().map(value_to_sql_boxed).collect();
     let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
 
     let rows = match stmt.query_map(params_ref.as_slice(), |row| {
@@ -418,7 +450,8 @@ fn do_count(conn: &Connection, query: StorageQuery) -> StorageResult<usize> {
         sql.push_str(&where_clause);
     }
 
-    let params: Vec<Box<dyn rusqlite::ToSql>> = where_params.iter().map(value_to_sql_boxed).collect();
+    let params: Vec<Box<dyn rusqlite::ToSql>> =
+        where_params.iter().map(value_to_sql_boxed).collect();
     let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
 
     match conn.query_row(&sql, params_ref.as_slice(), |row| row.get::<_, i64>(0)) {
@@ -534,7 +567,11 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
 
     // Create composite indexes from schema
     for index in &schema.indexes {
-        let cols: Vec<String> = index.fields.iter().map(|f| naming::to_snake_case(f)).collect();
+        let cols: Vec<String> = index
+            .fields
+            .iter()
+            .map(|f| naming::to_snake_case(f))
+            .collect();
         let unique = if index.unique { "UNIQUE " } else { "" };
         let idx_sql = format!(
             "CREATE {}INDEX IF NOT EXISTS {} ON {} ({})",
@@ -552,9 +589,9 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
 }
 
 fn do_list_collections(conn: &Connection) -> StorageResult<Vec<String>> {
-    let mut stmt = match conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    {
         Ok(s) => s,
         Err(e) => return StorageResult::err(format!("Prepare failed: {}", e)),
     };
@@ -639,9 +676,12 @@ fn row_to_record(
 
     for (i, col) in columns.iter().enumerate() {
         // Check if this column is likely a boolean (is_*, has_*, *_active, etc.)
-        let is_boolean_col = col.starts_with("is_") || col.starts_with("has_")
-            || col.ends_with("_active") || col.ends_with("_enabled")
-            || col.ends_with("_visible") || col.ends_with("_deleted");
+        let is_boolean_col = col.starts_with("is_")
+            || col.starts_with("has_")
+            || col.ends_with("_active")
+            || col.ends_with("_enabled")
+            || col.ends_with("_visible")
+            || col.ends_with("_deleted");
 
         let value: Value = match row.get_ref(i)? {
             rusqlite::types::ValueRef::Null => Value::Null,
@@ -713,9 +753,7 @@ fn row_to_record(
     })
 }
 
-fn build_where_clause(
-    filter: &Option<HashMap<String, FieldFilter>>,
-) -> (String, Vec<Value>) {
+fn build_where_clause(filter: &Option<HashMap<String, FieldFilter>>) -> (String, Vec<Value>) {
     let mut conditions = Vec::new();
     let mut params = Vec::new();
 
@@ -864,7 +902,8 @@ impl StorageAdapter for SqliteAdapter {
 
         clog_info!(
             "SQLite adapter initialized: 1 writer + {} readers for {}",
-            reader_count, path
+            reader_count,
+            path
         );
         Ok(())
     }
@@ -887,14 +926,20 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Read {
-            collection: collection.to_string(),
-            id: id.clone(),
-            reply: reply_tx,
-        }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Read {
+                collection: collection.to_string(),
+                id: id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -903,10 +948,19 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Query { query, reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Query {
+                query,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -920,10 +974,19 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Count { query, reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Count {
+                query,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
@@ -932,10 +995,16 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::ListCollections { reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::ListCollections { reply: reply_tx })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
@@ -966,10 +1035,19 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Create { record, reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Create {
+                record,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn update(
@@ -984,16 +1062,22 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Update {
-            collection: collection.to_string(),
-            id: id.clone(),
-            data,
-            increment_version,
-            reply: reply_tx,
-        }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Update {
+                collection: collection.to_string(),
+                id: id.clone(),
+                data,
+                increment_version,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
@@ -1002,14 +1086,20 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Delete {
-            collection: collection.to_string(),
-            id: id.clone(),
-            reply: reply_tx,
-        }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Delete {
+                collection: collection.to_string(),
+                id: id.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
@@ -1066,10 +1156,19 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::EnsureSchema { schema, reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::EnsureSchema {
+                schema,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
@@ -1078,13 +1177,19 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::Truncate {
-            collection: collection.to_string(),
-            reply: reply_tx,
-        }).await.is_err() {
+        if sender
+            .send(SqliteCommand::Truncate {
+                collection: collection.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
@@ -1093,16 +1198,24 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        if sender.send(SqliteCommand::ClearAll { reply: reply_tx }).await.is_err() {
+        if sender
+            .send(SqliteCommand::ClearAll { reply: reply_tx })
+            .await
+            .is_err()
+        {
             return StorageResult::err("Channel closed");
         }
-        reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        reply_rx
+            .await
+            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
     async fn cleanup(&self) -> Result<(), String> {
         let sender = self.get_writer()?;
         let (reply_tx, reply_rx) = oneshot::channel();
-        sender.send(SqliteCommand::Cleanup { reply: reply_tx }).await
+        sender
+            .send(SqliteCommand::Cleanup { reply: reply_tx })
+            .await
             .map_err(|_| "Channel closed".to_string())?;
         reply_rx.await.map_err(|_| "Channel closed".to_string())?
     }
@@ -1192,7 +1305,9 @@ mod tests {
         let mut success_count = 0;
         for handle in handles {
             if let Ok(result) = handle.await {
-                if result.success { success_count += 1; }
+                if result.success {
+                    success_count += 1;
+                }
             }
         }
         assert_eq!(success_count, 20, "All concurrent reads should succeed");
