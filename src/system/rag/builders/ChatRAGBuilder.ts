@@ -54,7 +54,8 @@ import {
   ToolDefinitionsSource,
   DocumentationSource,
   ToolMethodologySource,
-  OpenProposalsSource
+  OpenProposalsSource,
+  CodebaseSearchSource
 } from '../sources';
 
 /**
@@ -141,6 +142,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource(),      // Priority 60: Long-term memories
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
+        new CodebaseSearchSource(),      // Priority 55: Semantic code search from indexed codebase
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
         new ToolMethodologySource(),     // Priority 48: Non-code tool workflow guidance
@@ -173,6 +175,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     toolDefinitionsMetadata: Record<string, unknown> | null;
     toolDefinitionsPrompt: string | null;
     documentationAwareness: string | null;
+    codebaseContext: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
@@ -187,6 +190,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let toolDefinitionsPrompt: string | null = null;
     let documentationAwareness: string | null = null;
+    let codebaseContext: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -223,6 +227,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       if (section.systemPromptSection && section.sourceName === 'project-context') {
         projectContext = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'codebase-search') {
+        codebaseContext = section.systemPromptSection;
+      }
       if (section.sourceName === 'tool-definitions') {
         // Tool definitions — metadata contains nativeToolSpecs for native providers,
         // systemPromptSection contains XML for text-based providers
@@ -236,7 +243,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     return {
       identity, conversationHistory, memories,
       widgetContext, globalAwareness, socialAwareness, codeToolGuidance, toolMethodology, projectContext,
-      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt, documentationAwareness
+      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt, documentationAwareness, codebaseContext
     };
   }
 
@@ -274,6 +281,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolMethodology: string | null;
     let projectContext: string | null;
     let documentationAwareness: string | null;
+    let codebaseContext: string | null;
     let consolidatedMemories: string | null = null;
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let toolDefinitionsPrompt: string | null = null;
@@ -326,6 +334,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       toolMethodology = extracted.toolMethodology;
       projectContext = extracted.projectContext;
       documentationAwareness = extracted.documentationAwareness;
+      codebaseContext = extracted.codebaseContext;
       consolidatedMemories = extracted.consolidatedMemories;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
       toolDefinitionsPrompt = extracted.toolDefinitionsPrompt;
@@ -406,6 +415,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       toolMethodology = null;  // Legacy path doesn't use ToolMethodologySource
       projectContext = null;   // Legacy path doesn't use ProjectContextSource
       documentationAwareness = null; // Legacy path doesn't use DocumentationSource
+      codebaseContext = null; // Legacy path doesn't use CodebaseSearchSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -475,6 +485,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${documentationAwareness}`;
       this.log('📚 ChatRAGBuilder: Injected documentation awareness into system prompt');
+    }
+
+    // 2.4.7c. Inject codebase search results (semantic code search from indexed codebase)
+    if (codebaseContext) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${codebaseContext}`;
+      this.log('🔍 ChatRAGBuilder: Injected codebase search results into system prompt');
     }
 
     // 2.4.8. Inject project workspace context (git status, team activity, build info)

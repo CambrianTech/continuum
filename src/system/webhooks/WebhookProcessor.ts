@@ -92,7 +92,7 @@ export class WebhookProcessor {
     }
 
     try {
-      await ORM.store(WebhookEventEntity.collection, entity, 'default');
+      await ORM.store(WebhookEventEntity.collection, entity, false, 'default');
       log.info(`Ingested webhook: ${source}:${eventType} → ${entity.id}`);
       return { success: true, eventId: entity.id };
     } catch (err) {
@@ -178,7 +178,7 @@ export class WebhookProcessor {
     // Mark as processing
     event.status = 'processing';
     event.attempts++;
-    await ORM.store(WebhookEventEntity.collection, event, 'default');
+    await ORM.store(WebhookEventEntity.collection, event, false, 'default');
 
     try {
       // Validate source is supported
@@ -202,7 +202,7 @@ export class WebhookProcessor {
       event.status = 'completed';
       event.processed = true;
       event.processedAt = Date.now();
-      await ORM.store(WebhookEventEntity.collection, event, 'default');
+      await ORM.store(WebhookEventEntity.collection, event, false, 'default');
 
       log.info(`Processed webhook ${event.id}: ${eventPath}`);
 
@@ -218,7 +218,7 @@ export class WebhookProcessor {
         log.warn(`Webhook ${event.id} failed (attempt ${event.attempts}/${MAX_ATTEMPTS}): ${err}`);
       }
 
-      await ORM.store(WebhookEventEntity.collection, event, 'default');
+      await ORM.store(WebhookEventEntity.collection, event, false, 'default');
     }
   }
 }

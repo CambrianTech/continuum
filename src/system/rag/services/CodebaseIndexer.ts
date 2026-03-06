@@ -15,11 +15,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
-import { COLLECTIONS } from '../../shared/Constants';
-import type { CodeIndexEntry, IndexingResult, CodeExportType } from '../shared/CodebaseTypes';
+import { CodeIndexEntity } from '../../data/entities/CodeIndexEntity';
+import type { IndexingResult, CodeExportType } from '../shared/CodebaseTypes';
+import type { CodeIndexEntry } from '../shared/CodebaseTypes';
 import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('CodebaseIndexer', 'rag');
@@ -27,8 +27,8 @@ const log = Logger.create('CodebaseIndexer', 'rag');
 /** Maximum content length per chunk (chars). Longer chunks are split. */
 const MAX_CHUNK_CHARS = 2000;
 
-/** Batch size for embedding generation */
-const EMBEDDING_BATCH_SIZE = 32;
+/** Batch size for embedding generation — one Rust IPC call per batch */
+const EMBEDDING_BATCH_SIZE = 64;
 
 /** File extensions to index */
 const INDEXABLE_EXTENSIONS = new Set(['.ts', '.md', '.js']);
@@ -107,30 +107,30 @@ export class CodebaseIndexer {
       const texts = batch.map(c => this.chunkToEmbeddingText(c));
 
       try {
+        // Single Rust IPC call for entire batch — fastembed handles batches natively
         const embeddings = await ipc.embeddingGenerateBatch(texts);
 
-        // 5. Store each chunk with its embedding
         for (let j = 0; j < batch.length; j++) {
           const chunk = batch[j];
           const embedding = embeddings[j];
 
-          const entry: CodeIndexEntry = {
-            id: generateUUID(),
-            filePath: chunk.filePath,
-            fileType: chunk.fileType,
-            content: chunk.content,
-            startLine: chunk.startLine,
-            endLine: chunk.endLine,
-            exportType: chunk.exportType,
-            exportName: chunk.exportName,
-            embedding: embedding.embedding,
-            embeddingModel: embedding.model,
-            lastIndexed: new Date(),
-          };
+          const entry = new CodeIndexEntity();
+          entry.filePath = chunk.filePath;
+          entry.fileType = chunk.fileType;
+          entry.content = chunk.content;
+          entry.startLine = chunk.startLine;
+          entry.endLine = chunk.endLine;
+          entry.exportType = chunk.exportType;
+          entry.exportName = chunk.exportName;
+          entry.embedding = embedding.embedding;
+          entry.embeddingModel = embedding.model;
+          entry.lastIndexed = new Date();
 
-          await ORM.store(COLLECTIONS.CODE_INDEX, entry, 'default');
+          await ORM.store(CodeIndexEntity.collection, entry, false, 'default');
           entriesCreated++;
         }
+
+        log.info(`Indexed batch ${i}-${i + batch.length}/${allChunks.length}`);
       } catch (err) {
         log.error(`Embedding batch ${i}-${i + batch.length} failed: ${err}`);
         errors.push({ file: `batch-${i}`, error: String(err) });
@@ -157,15 +157,15 @@ export class CodebaseIndexer {
    * @param maxResults - Maximum results to return
    * @returns Matching code entries sorted by relevance
    */
-  async query(query: string, maxResults: number = 10): Promise<CodeIndexEntry[]> {
+  async query(queryText: string, maxResults: number = 10): Promise<CodeIndexEntry[]> {
     const ipc = await this.getIPC();
 
     // 1. Generate query embedding
-    const queryEmbedding = await ipc.embeddingGenerate(query);
+    const queryEmbedding = await ipc.embeddingGenerate(queryText);
 
     // 2. Load all indexed entries with embeddings
-    const result = await ORM.query<CodeIndexEntry>({
-      collection: COLLECTIONS.CODE_INDEX,
+    const result = await ORM.query<CodeIndexEntity>({
+      collection: CodeIndexEntity.collection,
       filter: {},
       limit: 1000,  // Load all for vector search
     }, 'default');
@@ -174,7 +174,9 @@ export class CodebaseIndexer {
       return [];
     }
 
-    const entries = result.data.map(r => r.data).filter(e => e.embedding && e.embedding.length > 0);
+    const entries = result.data
+      .map(r => r.data)
+      .filter(e => e.embedding && e.embedding.length > 0);
     if (entries.length === 0) return [];
 
     // 3. Use Rust top-K for fast cosine similarity
@@ -187,10 +189,13 @@ export class CodebaseIndexer {
     );
 
     // 4. Map results back to entries with relevance scores
-    return topK.results.map(r => ({
-      ...entries[r.index],
-      relevanceScore: r.similarity,
-    }));
+    return topK.results.map(r => {
+      const entry = entries[r.index];
+      return {
+        ...entry,
+        relevanceScore: r.similarity,
+      } as CodeIndexEntry;
+    });
   }
 
   /**
@@ -198,15 +203,15 @@ export class CodebaseIndexer {
    */
   async clearIndex(): Promise<void> {
     try {
-      const result = await ORM.query<CodeIndexEntry>({
-        collection: COLLECTIONS.CODE_INDEX,
+      const result = await ORM.query<CodeIndexEntity>({
+        collection: CodeIndexEntity.collection,
         filter: {},
         limit: 10000,
       }, 'default');
 
       if (result.success && result.data) {
         for (const record of result.data) {
-          await ORM.delete(COLLECTIONS.CODE_INDEX, record.data.id as UUID, 'default');
+          await ORM.remove(CodeIndexEntity.collection, record.data.id as UUID, false, 'default');
         }
         log.info(`Cleared ${result.data.length} entries from code index`);
       }

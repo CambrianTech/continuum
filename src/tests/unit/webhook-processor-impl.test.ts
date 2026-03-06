@@ -16,9 +16,9 @@ vi.mock('../../daemons/data-daemon/server/ORM', () => {
 
   return {
     ORM: {
-      store: vi.fn(async (_collection: string, entity: any) => {
+      store: vi.fn(async (_collection: string, entity: any, _suppressEvents?: boolean, _handle?: string) => {
         storedEvents.set(entity.id, entity);
-        return { success: true };
+        return entity;
       }),
       query: vi.fn(async ({ filter }: any) => {
         const results = Array.from(storedEvents.values())
@@ -29,7 +29,7 @@ vi.mock('../../daemons/data-daemon/server/ORM', () => {
           .map(data => ({ data }));
         return { success: true, data: results };
       }),
-      delete: vi.fn(async () => ({ success: true })),
+      remove: vi.fn(async () => ({ success: true })),
       // Expose for test assertions
       _storedEvents: storedEvents,
     },
@@ -80,6 +80,7 @@ describe('WebhookProcessor Implementation', () => {
           attempts: 0,
           processed: false,
         }),
+        false,
         'default',
       );
     });
