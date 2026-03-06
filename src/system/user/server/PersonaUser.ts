@@ -594,6 +594,20 @@ export class PersonaUser extends AIUser {
       const gapDetector = new GapDetector(this.id, this._rustCognition, trainingBuffer, cognitionLogger);
       const selfTaskGenerator = new SelfTaskGenerator(this.id, cognitionLogger);
       this.autonomousLoop.setGapDetection(gapDetector, selfTaskGenerator);
+
+      // Wire training outcome recording — closes the meta-learning loop.
+      // When training completes, record pre/post fitness so GapDetector learns
+      // which training strategies actually improve performance.
+      Events.subscribe('genome:training:complete', (payload: any) => {
+        if (payload.personaId !== this.id) return;
+        const domain = payload.traitType ?? 'unknown';
+        const preFitness = payload.metrics?.preFitness ?? 0;
+        const postFitness = payload.metrics?.finalLoss != null
+          ? Math.max(0, 1 - payload.metrics.finalLoss)  // Convert loss → fitness (0=worst, 1=best)
+          : 0;
+        gapDetector.recordTrainingOutcome(domain, preFitness, postFitness, 'fine-tune-lora');
+        cognitionLogger(`[GapDetector] Recorded training outcome: ${domain} pre=${preFitness.toFixed(2)} post=${postFitness.toFixed(2)}`);
+      });
     }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
