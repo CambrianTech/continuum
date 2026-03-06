@@ -20,7 +20,7 @@ import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import { GpuPressureWatcher } from '@system/gpu/server/GpuPressureWatcher';
+import { TrainingMemoryGuard } from '@system/genome/fine-tuning/server/TrainingMemoryGuard';
 import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
 import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -97,17 +97,17 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
     this.log.info(`Loaded ${dataset.examples.length} examples`);
 
-    // 4. Check GPU pressure — refuse training if system is under memory pressure.
-    // On Apple Silicon, VRAM IS system RAM. Training a 3B model with optimizer states
-    // can consume 4-8GB. If inference/TTS/rendering are already using memory, training
-    // will OOM-kill the process.
-    // Uses GpuPressureWatcher's cached value — no blocking IPC call.
-    const watcher = GpuPressureWatcher.instance;
-    this.log.info(`GPU pressure: ${(watcher.pressure * 100).toFixed(1)}% (${watcher.currentLevel})`);
-    if (watcher.currentLevel !== 'normal') {
+    // 4. Memory safety: check available memory, register with GPU system, monitor during training.
+    // On Apple Silicon, VRAM IS system RAM. Training processes are invisible to the memory
+    // management system without explicit registration — causing OOM and machine freezes.
+    const memGuard = new TrainingMemoryGuard(baseModel, personaName, traitType);
+    const estimate = await memGuard.preflight();
+    this.log.info(`Memory preflight: need=${estimate.estimatedGb.toFixed(1)}GB, available=${estimate.availableGb.toFixed(1)}GB, sufficient=${estimate.sufficient}`);
+
+    if (!estimate.sufficient) {
       return createGenomeTrainResultFromParams(params, {
         success: false,
-        error: `GPU pressure ${watcher.currentLevel} (${(watcher.pressure * 100).toFixed(0)}%). Training deferred — would risk OOM. Free memory by unloading models or wait for inference to finish.`,
+        error: estimate.reason!,
         adapterPath: '',
         metrics: { finalLoss: 0, trainingTime: 0, examplesProcessed: 0, epochs: 0 },
       });
@@ -115,11 +115,16 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
     // ── ASYNC MODE: fire-and-forget, return handle immediately ──────────────
     if (asyncMode) {
-      return this._executeAsync(params, adapter, dataset, personaId, personaName, traitType, baseModel);
+      // Register with memory system (unregister happens in TrainingCompletionHandler)
+      await memGuard.register();
+      memGuard.startMonitoring();
+      return this._executeAsync(params, adapter, dataset, personaId, personaName, traitType, baseModel, memGuard);
     }
 
-    // ── SYNC MODE: block until complete (default, backward compatible) ──────
-    return this._executeSync(params, adapter, dataset, personaId, personaName, traitType, baseModel);
+    // ── SYNC MODE: block until complete, with memory guard lifecycle ──────
+    return memGuard.guard(() =>
+      this._executeSync(params, adapter, dataset, personaId, personaName, traitType, baseModel)
+    );
   }
 
   /**
@@ -134,6 +139,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     personaName: string,
     traitType: string,
     baseModel: string,
+    memGuard?: TrainingMemoryGuard,
   ): Promise<GenomeTrainResult> {
     // Prepare training files (same as sync path)
     const hfModelName = LOCAL_MODELS.mapToHuggingFace(baseModel);
@@ -165,6 +171,11 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
     const handle = runResult.handle;
     this.log.info(`Async training started: handle=${handle}`);
+
+    // Watch for real memory reports from the training process
+    if (memGuard) {
+      memGuard.watchMemoryReports(handle);
+    }
 
     // EventBridge still needed for TrainingCompletionHandler (listens for sentinel events)
     sentinelEventBridge.watch(handle, 'training', {

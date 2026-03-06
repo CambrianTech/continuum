@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Any
 
@@ -36,6 +37,50 @@ except ImportError as e:
     print(f"❌ ERROR: Missing dependency: {e}")
     print("   Install with: pip install torch transformers datasets trl peft accelerate")
     sys.exit(1)
+
+
+def report_memory(phase: str, device: str):
+    """Emit a structured memory report line that the Rust sentinel parses.
+
+    The sentinel watches stdout for lines starting with 'MEMORY_REPORT:' and
+    emits a sentinel:{handle}:memory-report event so TrainingMemoryGuard can
+    update the registered consumer with real memory data instead of estimates.
+    """
+    report = {
+        "phase": phase,
+        "device": device,
+        "timestamp": time.time(),
+        "allocated_bytes": 0,
+        "peak_bytes": 0,
+        "process_rss_bytes": 0,
+    }
+
+    # Device-specific memory
+    if device == "mps" and hasattr(torch.mps, "current_allocated_memory"):
+        report["allocated_bytes"] = torch.mps.current_allocated_memory()
+        # MPS doesn't expose peak — use driver_allocated as upper bound
+        if hasattr(torch.mps, "driver_allocated_memory"):
+            report["peak_bytes"] = torch.mps.driver_allocated_memory()
+        else:
+            report["peak_bytes"] = report["allocated_bytes"]
+    elif device == "cuda":
+        report["allocated_bytes"] = torch.cuda.memory_allocated()
+        report["peak_bytes"] = torch.cuda.max_memory_allocated()
+
+    # Process-level RSS (works on all platforms)
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS reports bytes, Linux reports KB
+        if sys.platform == "darwin":
+            report["process_rss_bytes"] = rss
+        else:
+            report["process_rss_bytes"] = rss * 1024
+    except Exception:
+        pass
+
+    # Structured line — sentinel parses this prefix
+    print(f"MEMORY_REPORT: {json.dumps(report)}", flush=True)
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -375,11 +420,16 @@ def main():
     # Step 4: Configure LoRA
     model = configure_lora(model, config['rank'], config['alpha'])
 
+    # Report memory after model + LoRA are loaded (the big allocation)
+    report_memory("model_loaded", device)
+
     # Step 5: Load training dataset
     dataset = load_dataset_from_jsonl(config['datasetPath'])
 
     # Step 6: Train LoRA adapter
+    report_memory("pre_training", device)
     trainer = train(config, model, tokenizer, dataset, device)
+    report_memory("post_training", device)
 
     # Step 7: Save adapter weights
     save_adapter(model, tokenizer, args.output)

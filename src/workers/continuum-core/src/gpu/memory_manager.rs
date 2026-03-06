@@ -337,6 +337,20 @@ impl GpuMemoryManager {
         })
     }
 
+    /// Account for external memory usage (e.g., training subprocess).
+    /// Unlike `allocate()`, this doesn't check pressure gates or return a guard.
+    /// The caller MUST call `release()` when the external process finishes.
+    pub fn account_external(&self, subsystem: GpuSubsystem, bytes: u64) {
+        self.subsystems[subsystem.index()].allocate(bytes);
+        let pressure = self.pressure();
+        let _ = self.pressure_tx.send(pressure);
+        let mb = bytes as f64 / (1024.0 * 1024.0);
+        log_info!("gpu", "manager",
+            "GPU: Accounted {:.0}MB external in {} (pressure={:.0}%)",
+            mb, subsystem.name(), pressure * 100.0
+        );
+    }
+
     /// Manual release (when RAII guard isn't suitable, e.g. non-Drop contexts).
     pub fn release(&self, subsystem: GpuSubsystem, bytes: u64) {
         self.subsystems[subsystem.index()].release(bytes);

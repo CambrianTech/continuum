@@ -11,6 +11,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use sysinfo::System;
 
 use crate::runtime::{self, message_bus::MessageBus, ModuleRegistry};
 use super::steps;
@@ -232,6 +233,16 @@ pub async fn execute_isolated(
     let mut stdout_closed = false;
     let mut stderr_closed = false;
 
+    // Memory watchdog: check system memory every 5s. Kill child if <1GB available.
+    // On Apple Silicon, VRAM IS system RAM. Training processes can consume 4-8GB
+    // and spiral the machine into swap death. This is the last line of defense.
+    const MEMORY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    const CRITICAL_AVAILABLE_BYTES: u64 = 1_024 * 1_024 * 1_024; // 1 GB
+    let mut memory_check = tokio::time::interval(MEMORY_CHECK_INTERVAL);
+    memory_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Skip the immediate first tick
+    memory_check.tick().await;
+
     loop {
         tokio::select! {
             biased;
@@ -240,6 +251,63 @@ pub async fn execute_isolated(
                 log.warn(&format!("Sentinel {handle_id} cancelled"));
                 child.kill().await.ok();
                 return Err("Cancelled".to_string());
+            }
+
+            _ = memory_check.tick() => {
+                let mut sys = System::new();
+                sys.refresh_memory();
+                let available = sys.total_memory().saturating_sub(sys.used_memory());
+                if available < CRITICAL_AVAILABLE_BYTES {
+                    let available_mb = available / (1024 * 1024);
+                    log.error(&format!(
+                        "MEMORY WATCHDOG: Only {}MB available. Sending SIGTERM to sentinel {handle_id}.",
+                        available_mb,
+                    ));
+
+                    // Graceful shutdown: SIGTERM first, give 5s to clean up
+                    if let Some(pid) = child.id() {
+                        // Send SIGTERM via kill command (no libc dependency needed)
+                        std::process::Command::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .output().ok();
+                        log.info(&format!("Sent SIGTERM to PID {pid}, waiting 5s for graceful exit..."));
+
+                        // Wait up to 5s for graceful exit
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            child.wait()
+                        ).await {
+                            Ok(Ok(status)) => {
+                                log.info(&format!("Process exited gracefully: {status}"));
+                            }
+                            _ => {
+                                // Didn't exit in time — force kill
+                                log.warn(&format!("Process didn't exit after SIGTERM. Sending SIGKILL."));
+                                child.kill().await.ok();
+                            }
+                        }
+                    } else {
+                        // No PID available, force kill
+                        child.kill().await.ok();
+                    }
+
+                    stdout_writer.flush().await.ok();
+                    stderr_writer.flush().await.ok();
+                    combined_writer.flush().await.ok();
+
+                    if let Some(ref bus) = bus {
+                        bus.publish_async_only(&format!("sentinel:{handle_id}:memory-kill"), json!({
+                            "handle": handle_id,
+                            "availableMb": available_mb,
+                            "reason": "System memory critically low",
+                        }));
+                    }
+
+                    return Err(format!(
+                        "Killed by memory watchdog: only {}MB available (threshold: {}MB)",
+                        available_mb, CRITICAL_AVAILABLE_BYTES / (1024 * 1024)
+                    ));
+                }
             }
 
             line = stdout_reader.next_line(), if !stdout_closed => {
@@ -253,6 +321,22 @@ pub async fn execute_isolated(
                         last_output = line.clone();
 
                         if let Some(ref bus) = bus {
+                            // Parse structured memory reports from training processes
+                            if line.starts_with("MEMORY_REPORT: ") {
+                                if let Some(json_str) = line.strip_prefix("MEMORY_REPORT: ") {
+                                    if let Ok(report) = serde_json::from_str::<Value>(json_str) {
+                                        bus.publish_async_only(&format!("sentinel:{handle_id}:memory-report"), json!({
+                                            "handle": handle_id,
+                                            "phase": report.get("phase").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                                            "device": report.get("device").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                                            "allocatedBytes": report.get("allocated_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                            "peakBytes": report.get("peak_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                            "processRssBytes": report.get("process_rss_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                        }));
+                                    }
+                                }
+                            }
+
                             bus.publish_async_only(&format!("sentinel:{handle_id}:log"), json!({
                                 "handle": handle_id,
                                 "stream": "stdout",
