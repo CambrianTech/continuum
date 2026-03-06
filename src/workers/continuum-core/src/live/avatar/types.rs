@@ -88,21 +88,35 @@ pub struct VoiceProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PitchRange { Low, Mid, High }
+pub enum PitchRange {
+    Low,
+    Mid,
+    High,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/voice/AvatarGender.ts")]
 #[serde(rename_all = "snake_case")]
-pub enum AvatarGender { Male, Female }
+pub enum AvatarGender {
+    Male,
+    Female,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EnergyLevel { Calm, Moderate, Energetic }
+pub enum EnergyLevel {
+    Calm,
+    Moderate,
+    Energetic,
+}
 
 /// Catalog entry for the browser widget — serializable subset of DynamicAvatarModel.
 /// Sent to the browser so users can see available models and make selections.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/AvatarCatalogEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/AvatarCatalogEntry.ts"
+)]
 pub struct AvatarCatalogEntry {
     /// Unique model identifier
     pub id: String,
@@ -134,7 +148,10 @@ impl From<&DynamicAvatarModel> for AvatarCatalogEntry {
 
 /// User preference for avatar selection (sent from browser widget).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/voice/AvatarPreference.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/voice/AvatarPreference.ts"
+)]
 pub struct AvatarPreference {
     /// Preferred art style (None = any)
     #[serde(skip_serializing_if = "Option::is_none")]

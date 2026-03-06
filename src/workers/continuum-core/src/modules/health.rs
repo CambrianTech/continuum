@@ -4,7 +4,7 @@
 //! This is Phase 1: if this module routes correctly through the registry,
 //! the ServiceModule trait design is proven for the simplest case.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -40,11 +40,7 @@ impl ServiceModule for HealthModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         match command {
             "health-check" => {
                 let uptime_secs = self.started_at.elapsed().as_secs();
@@ -66,7 +62,9 @@ impl ServiceModule for HealthModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]

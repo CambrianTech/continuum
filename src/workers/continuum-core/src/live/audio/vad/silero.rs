@@ -15,6 +15,7 @@
 
 use super::{VADError, VADResult, VoiceActivityDetection};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_warn};
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -22,7 +23,6 @@ use ort::session::Session;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::{clog_info, clog_warn};
 
 /// Silero VAD model session (loaded once)
 static SILERO_SESSION: OnceCell<Arc<Mutex<Session>>> = OnceCell::new();
@@ -84,8 +84,8 @@ impl SileroVAD {
         }
 
         // Get model preference from SILERO_VAD_MODEL env var
-        let model_name = std::env::var("SILERO_VAD_MODEL")
-            .unwrap_or_else(|_| "silero_vad.onnx".to_string());
+        let model_name =
+            std::env::var("SILERO_VAD_MODEL").unwrap_or_else(|_| "silero_vad.onnx".to_string());
 
         // Search for the model in common locations
         let candidates = vec![
@@ -165,8 +165,7 @@ impl SileroVAD {
         // Get speech probability (output is [1, 1])
         let speech_prob = output
             .into_dimensionality::<ndarray::Ix2>()
-            .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?
-            [[0, 0]];
+            .map_err(|e| VADError::InferenceFailed(format!("Invalid output shape: {e}")))?[[0, 0]];
 
         // Convert h and c to owned arrays for next iteration
         let h_3d = hn

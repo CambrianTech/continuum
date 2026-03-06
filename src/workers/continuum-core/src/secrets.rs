@@ -73,8 +73,12 @@ impl Secrets {
 
     /// Get a secret, returning error if missing
     pub fn require(&self, key: &str) -> Result<&str, String> {
-        self.get(key)
-            .ok_or_else(|| format!("Missing required secret: {}. Add it to ~/.continuum/config.env", key))
+        self.get(key).ok_or_else(|| {
+            format!(
+                "Missing required secret: {}. Add it to ~/.continuum/config.env",
+                key
+            )
+        })
     }
 
     /// Check if a secret exists

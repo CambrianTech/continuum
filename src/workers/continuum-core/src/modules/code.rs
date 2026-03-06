@@ -8,12 +8,12 @@
 //!
 //! Priority: Normal — code operations are important but not time-critical.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::code::{self, FileEngine, PathSecurity, ShellSession};
 use crate::code::{git_bridge, search, tree};
-use crate::logging::TimingGuard;
-use crate::utils::params::Params;
 use crate::log_info;
+use crate::logging::TimingGuard;
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -37,7 +37,11 @@ impl CodeState {
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         rt_handle: tokio::runtime::Handle,
     ) -> Self {
-        Self { file_engines, shell_sessions, rt_handle }
+        Self {
+            file_engines,
+            shell_sessions,
+            rt_handle,
+        }
     }
 }
 
@@ -85,18 +89,13 @@ impl ServiceModule for CodeModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
 
         match command {
             // ================================================================
             // File Operations
             // ================================================================
-
             "code/create-workspace" => {
                 let _timer = TimingGuard::new("module", "code_create_workspace");
                 let persona_id = p.str("persona_id")?;
@@ -104,19 +103,29 @@ impl ServiceModule for CodeModule {
                 let read_roots: Vec<String> = p.json_or("read_roots");
 
                 let root = std::path::Path::new(workspace_root);
-                let mut security = PathSecurity::new(root)
-                    .map_err(|e| format!("Invalid workspace: {}", e))?;
+                let mut security =
+                    PathSecurity::new(root).map_err(|e| format!("Invalid workspace: {}", e))?;
 
                 for rr in &read_roots {
-                    security.add_read_root(std::path::Path::new(rr))
+                    security
+                        .add_read_root(std::path::Path::new(rr))
                         .map_err(|e| format!("Invalid read root '{}': {}", rr, e))?;
                 }
 
                 let engine = FileEngine::new(persona_id, security);
-                self.state.file_engines.insert(persona_id.to_string(), engine);
+                self.state
+                    .file_engines
+                    .insert(persona_id.to_string(), engine);
 
-                log_info!("module", "code", "Created workspace for {} at {} with {} read roots: {:?}",
-                    persona_id, workspace_root, read_roots.len(), read_roots);
+                log_info!(
+                    "module",
+                    "code",
+                    "Created workspace for {} at {} with {} read roots: {:?}",
+                    persona_id,
+                    workspace_root,
+                    read_roots.len(),
+                    read_roots
+                );
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
@@ -127,12 +136,18 @@ impl ServiceModule for CodeModule {
                 let start_line = p.u32_opt("start_line");
                 let end_line = p.u32_opt("end_line");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = engine.read(file_path, start_line, end_line)
+                let result = engine
+                    .read(file_path, start_line, end_line)
                     .map_err(|e| format!("{}", e))?;
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/write" => {
@@ -142,13 +157,26 @@ impl ServiceModule for CodeModule {
                 let content = p.str("content")?;
                 let description = p.str_opt("description");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = engine.write(file_path, content, description)
+                let result = engine
+                    .write(file_path, content, description)
                     .map_err(|e| format!("{}", e))?;
-                log_info!("module", "code", "Write {} ({} bytes) by {}", file_path, result.bytes_written, persona_id);
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                log_info!(
+                    "module",
+                    "code",
+                    "Write {} ({} bytes) by {}",
+                    file_path,
+                    result.bytes_written,
+                    persona_id
+                );
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/edit" => {
@@ -158,13 +186,19 @@ impl ServiceModule for CodeModule {
                 let edit: crate::code::EditMode = p.json("edit_mode")?;
                 let description = p.str_opt("description");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = engine.edit(file_path, &edit, description)
+                let result = engine
+                    .edit(file_path, &edit, description)
                     .map_err(|e| format!("{}", e))?;
                 log_info!("module", "code", "Edit {} by {}", file_path, persona_id);
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/delete" => {
@@ -173,13 +207,19 @@ impl ServiceModule for CodeModule {
                 let file_path = p.str("file_path")?;
                 let description = p.str_opt("description");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = engine.delete(file_path, description)
+                let result = engine
+                    .delete(file_path, description)
                     .map_err(|e| format!("{}", e))?;
                 log_info!("module", "code", "Delete {} by {}", file_path, persona_id);
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/diff" => {
@@ -188,12 +228,18 @@ impl ServiceModule for CodeModule {
                 let file_path = p.str("file_path")?;
                 let edit: crate::code::EditMode = p.json("edit_mode")?;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = engine.preview_diff(file_path, &edit)
+                let result = engine
+                    .preview_diff(file_path, &edit)
                     .map_err(|e| format!("{}", e))?;
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/undo" => {
@@ -202,14 +248,16 @@ impl ServiceModule for CodeModule {
                 let change_id = p.str_opt("change_id");
                 let count = p.u64_opt("count").map(|n| n as usize);
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 if let Some(id_str) = change_id {
-                    let change_uuid = Uuid::parse_str(id_str)
-                        .map_err(|e| format!("Invalid change_id: {}", e))?;
-                    let result = engine.undo(&change_uuid)
-                        .map_err(|e| format!("{}", e))?;
+                    let change_uuid =
+                        Uuid::parse_str(id_str).map_err(|e| format!("Invalid change_id: {}", e))?;
+                    let result = engine.undo(&change_uuid).map_err(|e| format!("{}", e))?;
                     log_info!("module", "code", "Undo {} by {}", id_str, persona_id);
                     Ok(CommandResult::Json(serde_json::json!({
                         "success": true,
@@ -218,10 +266,17 @@ impl ServiceModule for CodeModule {
                     })))
                 } else {
                     let n = count.unwrap_or(1);
-                    let result = engine.undo_last(n)
-                        .map_err(|e| format!("{}", e))?;
-                    log_info!("module", "code", "Undo {} changes by {}", result.changes_undone.len(), persona_id);
-                    Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                    let result = engine.undo_last(n).map_err(|e| format!("{}", e))?;
+                    log_info!(
+                        "module",
+                        "code",
+                        "Undo {} changes by {}",
+                        result.changes_undone.len(),
+                        persona_id
+                    );
+                    Ok(CommandResult::Json(
+                        serde_json::to_value(&result).unwrap_or_default(),
+                    ))
                 }
             }
 
@@ -231,7 +286,10 @@ impl ServiceModule for CodeModule {
                 let file_path = p.str_opt("file_path");
                 let limit = p.u64_or("limit", 50) as usize;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let result = if let Some(fp) = file_path {
@@ -239,7 +297,9 @@ impl ServiceModule for CodeModule {
                 } else {
                     engine.workspace_history(limit)
                 };
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/search" => {
@@ -249,16 +309,17 @@ impl ServiceModule for CodeModule {
                 let file_glob = p.str_opt("file_glob");
                 let max_results = p.u64_or("max_results", 100) as u32;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result = search::search_files(
-                    &engine.workspace_root(),
-                    pattern,
-                    file_glob,
-                    max_results,
-                );
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                let result =
+                    search::search_files(&engine.workspace_root(), pattern, file_glob, max_results);
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/tree" => {
@@ -268,28 +329,39 @@ impl ServiceModule for CodeModule {
                 let max_depth = p.u64_or("max_depth", 10) as u32;
                 let include_hidden = p.bool_or("include_hidden", false);
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let root = engine.workspace_root();
-                let target = path.map(|p| root.join(p)).unwrap_or_else(|| root.to_path_buf());
+                let target = path
+                    .map(|p| root.join(p))
+                    .unwrap_or_else(|| root.to_path_buf());
                 let result = tree::generate_tree(&target, max_depth, include_hidden);
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             // ================================================================
             // Git Operations
             // ================================================================
-
             "code/git-status" => {
                 let _timer = TimingGuard::new("module", "code_git_status");
                 let persona_id = p.str("persona_id")?;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let result = git_bridge::git_status(&engine.workspace_root());
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/git-diff" => {
@@ -297,7 +369,10 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let staged = p.bool_or("staged", false);
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let diff = git_bridge::git_diff(&engine.workspace_root(), staged)?;
@@ -309,7 +384,10 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let count = p.u64_or("limit", 10) as u32;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let log = git_bridge::git_log(&engine.workspace_root(), count)?;
@@ -321,7 +399,10 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let paths: Vec<String> = p.json_or("paths");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -334,11 +415,20 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let message = p.str("message")?;
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let hash = git_bridge::git_commit(&engine.workspace_root(), message)?;
-                log_info!("module", "code", "Git commit by {}: {}", persona_id, message);
+                log_info!(
+                    "module",
+                    "code",
+                    "Git commit by {}: {}",
+                    persona_id,
+                    message
+                );
                 Ok(CommandResult::Json(serde_json::json!({ "hash": hash })))
             }
 
@@ -348,7 +438,10 @@ impl ServiceModule for CodeModule {
                 let remote = p.str_or("remote", "");
                 let branch = p.str_or("branch", "");
 
-                let engine = self.state.file_engines.get(persona_id)
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
                 let output = git_bridge::git_push(&engine.workspace_root(), remote, branch)?;
@@ -359,7 +452,6 @@ impl ServiceModule for CodeModule {
             // ================================================================
             // Shell Sessions
             // ================================================================
-
             "code/shell-create" => {
                 let _timer = TimingGuard::new("module", "code_shell_create");
                 let persona_id = p.str("persona_id")?;
@@ -370,12 +462,22 @@ impl ServiceModule for CodeModule {
                     &session_id,
                     persona_id,
                     std::path::Path::new(workspace_root),
-                ).map_err(|e| format!("Failed to create shell: {}", e))?;
+                )
+                .map_err(|e| format!("Failed to create shell: {}", e))?;
 
                 let shell_id = shell.id().to_string();
-                self.state.shell_sessions.insert(persona_id.to_string(), shell);
+                self.state
+                    .shell_sessions
+                    .insert(persona_id.to_string(), shell);
 
-                log_info!("module", "code", "Created shell {} for {} at {}", &shell_id[..8], persona_id, workspace_root);
+                log_info!(
+                    "module",
+                    "code",
+                    "Created shell {} for {} at {}",
+                    &shell_id[..8],
+                    persona_id,
+                    workspace_root
+                );
                 Ok(CommandResult::Json(serde_json::json!({
                     "created": true,
                     "session_id": shell_id,
@@ -390,12 +492,17 @@ impl ServiceModule for CodeModule {
                 let wait = p.bool_or("wait", false);
 
                 let (execution_id, state_arc) = {
-                    let mut shell = self.state.shell_sessions.get_mut(persona_id)
+                    let mut shell = self
+                        .state
+                        .shell_sessions
+                        .get_mut(persona_id)
                         .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
-                    let exec_id = shell.execute(cmd, timeout_ms, &self.state.rt_handle)
+                    let exec_id = shell
+                        .execute(cmd, timeout_ms, &self.state.rt_handle)
                         .map_err(|e| format!("{}", e))?;
-                    let state = shell.get_execution_state(&exec_id)
+                    let state = shell
+                        .get_execution_state(&exec_id)
                         .ok_or_else(|| "Execution vanished".to_string())?;
                     (exec_id, state)
                 };
@@ -403,7 +510,8 @@ impl ServiceModule for CodeModule {
                 if wait {
                     let result = loop {
                         let (is_done, response, notify) = {
-                            let s = state_arc.lock()
+                            let s = state_arc
+                                .lock()
                                 .map_err(|e| format!("Lock poisoned: {e}"))?;
                             if s.status != crate::code::shell_types::ShellExecutionStatus::Running {
                                 let resp = crate::code::shell_types::ShellExecuteResponse {
@@ -441,22 +549,33 @@ impl ServiceModule for CodeModule {
 
                     if has_error {
                         if let Some(stderr) = &result.stderr {
-                            let error_preview: String = stderr.lines().take(5).collect::<Vec<_>>().join("\n");
-                            self.publish_shell_event(persona_id, "error", serde_json::json!({
-                                "execution_id": result.execution_id,
-                                "command": cmd,
-                                "exit_code": exit_code,
-                                "error_preview": error_preview,
-                            }));
+                            let error_preview: String =
+                                stderr.lines().take(5).collect::<Vec<_>>().join("\n");
+                            self.publish_shell_event(
+                                persona_id,
+                                "error",
+                                serde_json::json!({
+                                    "execution_id": result.execution_id,
+                                    "command": cmd,
+                                    "exit_code": exit_code,
+                                    "error_preview": error_preview,
+                                }),
+                            );
                         }
                     }
 
-                    Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                    Ok(CommandResult::Json(
+                        serde_json::to_value(&result).unwrap_or_default(),
+                    ))
                 } else {
-                    self.publish_shell_event(persona_id, "started", serde_json::json!({
-                        "execution_id": execution_id,
-                        "command": cmd,
-                    }));
+                    self.publish_shell_event(
+                        persona_id,
+                        "started",
+                        serde_json::json!({
+                            "execution_id": execution_id,
+                            "command": cmd,
+                        }),
+                    );
                     Ok(CommandResult::Json(serde_json::json!({
                         "execution_id": execution_id,
                         "started": true,
@@ -469,11 +588,16 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let execution_id = p.str("execution_id")?;
 
-                let shell = self.state.shell_sessions.get(persona_id)
+                let shell = self
+                    .state
+                    .shell_sessions
+                    .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
                 let result = shell.poll(execution_id).map_err(|e| format!("{}", e))?;
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/shell-kill" => {
@@ -481,7 +605,10 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let execution_id = p.str("execution_id")?;
 
-                let shell = self.state.shell_sessions.get(persona_id)
+                let shell = self
+                    .state
+                    .shell_sessions
+                    .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
                 shell.kill(execution_id).map_err(|e| format!("{}", e))?;
@@ -493,22 +620,32 @@ impl ServiceModule for CodeModule {
                 let persona_id = p.str("persona_id")?;
                 let path = p.str("path")?;
 
-                let mut shell = self.state.shell_sessions.get_mut(persona_id)
+                let mut shell = self
+                    .state
+                    .shell_sessions
+                    .get_mut(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
                 let new_cwd = shell.cd(path).map_err(|e| format!("{}", e))?;
-                Ok(CommandResult::Json(serde_json::json!({ "changed": true, "cwd": new_cwd })))
+                Ok(CommandResult::Json(
+                    serde_json::json!({ "changed": true, "cwd": new_cwd }),
+                ))
             }
 
             "code/shell-status" => {
                 let _timer = TimingGuard::new("module", "code_shell_status");
                 let persona_id = p.str("persona_id")?;
 
-                let shell = self.state.shell_sessions.get(persona_id)
+                let shell = self
+                    .state
+                    .shell_sessions
+                    .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
                 let info = shell.info();
-                Ok(CommandResult::Json(serde_json::to_value(&info).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&info).unwrap_or_default(),
+                ))
             }
 
             "code/shell-watch" => {
@@ -517,18 +654,26 @@ impl ServiceModule for CodeModule {
                 let execution_id = p.str("execution_id")?;
 
                 let (exec_state, notify) = {
-                    let shell = self.state.shell_sessions.get(persona_id)
+                    let shell = self
+                        .state
+                        .shell_sessions
+                        .get(persona_id)
                         .ok_or_else(|| format!("No shell session for {}", persona_id))?;
-                    shell.get_watch_handles(execution_id)
+                    shell
+                        .get_watch_handles(execution_id)
                         .map_err(|e| format!("{}", e))?
                 };
 
                 let exec_id = execution_id.to_string();
-                let result = self.state.rt_handle.block_on(async {
-                    code::watch_execution(&exec_id, exec_state, notify).await
-                }).map_err(|e| format!("{}", e))?;
+                let result = self
+                    .state
+                    .rt_handle
+                    .block_on(async { code::watch_execution(&exec_id, exec_state, notify).await })
+                    .map_err(|e| format!("{}", e))?;
 
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             "code/shell-sentinel" => {
@@ -537,12 +682,18 @@ impl ServiceModule for CodeModule {
                 let execution_id = p.str("execution_id")?;
                 let rules: Vec<code::shell_types::SentinelRule> = p.json_or("rules");
 
-                let shell = self.state.shell_sessions.get(persona_id)
+                let shell = self
+                    .state
+                    .shell_sessions
+                    .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
-                let count = shell.set_sentinel(execution_id, &rules)
+                let count = shell
+                    .set_sentinel(execution_id, &rules)
                     .map_err(|e| format!("{}", e))?;
-                Ok(CommandResult::Json(serde_json::json!({ "rules_applied": count })))
+                Ok(CommandResult::Json(
+                    serde_json::json!({ "rules_applied": count }),
+                ))
             }
 
             "code/shell-destroy" => {
@@ -551,12 +702,16 @@ impl ServiceModule for CodeModule {
 
                 let removed = self.state.shell_sessions.remove(persona_id).is_some();
                 log_info!("module", "code", "Destroyed shell for {}", persona_id);
-                Ok(CommandResult::Json(serde_json::json!({ "destroyed": removed })))
+                Ok(CommandResult::Json(
+                    serde_json::json!({ "destroyed": removed }),
+                ))
             }
 
             _ => Err(format!("Unknown code command: {command}")),
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

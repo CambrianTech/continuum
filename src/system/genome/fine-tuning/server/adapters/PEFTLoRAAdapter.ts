@@ -178,10 +178,13 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
 
     try {
       // 4. Execute Python training script via Rust sentinel (process isolation + management)
-      const metrics = await this.executePythonScript('peft-train.py', configPath, outputDir);
+      // Scale timeout with dataset size: base 300s + 15s per example per epoch.
+      // 98 examples × 3 epochs × 15s = 4410s ≈ 74min. Minimum 600s for small datasets.
+      const epochs = request.epochs ?? 3;
+      const timeoutSecs = Math.max(600, 300 + request.dataset.examples.length * epochs * 15);
+      const metrics = await this.executePythonScript('peft-train.py', configPath, outputDir, timeoutSecs);
 
       const trainingTime = Date.now() - startTime;
-      const epochs = request.epochs ?? 3;
 
       // 5. Build training metadata for manifest
       const trainingMetadata = {

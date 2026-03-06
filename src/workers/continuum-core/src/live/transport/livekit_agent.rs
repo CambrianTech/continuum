@@ -14,25 +14,27 @@
 //!
 //! Audio format: 16kHz mono i16 PCM — matches our TTS output and LiveKit's AudioFrame.data (Cow<[i16]>).
 
-use crate::audio_constants::{AUDIO_SAMPLE_RATE, LIVEKIT_DEV_KEY, LIVEKIT_DEV_SECRET, LIVEKIT_PORT};
+use crate::audio_constants::{
+    AUDIO_SAMPLE_RATE, LIVEKIT_DEV_KEY, LIVEKIT_DEV_SECRET, LIVEKIT_PORT,
+};
 use crate::secrets::get_secret;
 
-use livekit::prelude::*;
 use livekit::options::{TrackPublishOptions, VideoEncoding};
+use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
-use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
-use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
+use crate::{clog_error, clog_info, clog_warn};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use tokio::sync::{mpsc, Mutex};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use crate::{clog_info, clog_warn, clog_error};
+use tokio::sync::{mpsc, Mutex};
 
 // =============================================================================
 // Video publishing constants
@@ -64,7 +66,7 @@ const VIDEO_LOOP_TIMEOUT_MS: u64 = 100;
 /// The publisher MUST match the Bevy render target size — mismatched dimensions
 /// cause `write_frame` to silently drop every frame (size check fails).
 fn bevy_effective_dimensions(requested_w: u32, requested_h: u32) -> (u32, u32) {
-    use crate::live::video::bevy_renderer::{AVATAR_WIDTH, AVATAR_HEIGHT};
+    use crate::live::video::bevy_renderer::{AVATAR_HEIGHT, AVATAR_WIDTH};
     // HD pool threshold matches bevy_renderer's HD_WIDTH/HD_HEIGHT (1280×720).
     if requested_w >= 1280 && requested_h >= 720 {
         (1280, 720)
@@ -148,14 +150,9 @@ pub enum AgentEvent {
         samples: Vec<i16>,
     },
     /// Participant joined the room
-    ParticipantJoined {
-        identity: String,
-        name: String,
-    },
+    ParticipantJoined { identity: String, name: String },
     /// Participant left the room
-    ParticipantLeft {
-        identity: String,
-    },
+    ParticipantLeft { identity: String },
 }
 
 /// Lazily-initialized video publishing state.
@@ -240,7 +237,8 @@ impl LiveKitAgent {
 
         clog_info!(
             "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona)",
-            persona_name, call_id
+            persona_name,
+            call_id
         );
 
         // Create audio source for TTS output (16kHz mono, 30s buffer).
@@ -249,7 +247,7 @@ impl LiveKitAgent {
         let audio_source = NativeAudioSource::new(
             AudioSourceOptions::default(),
             AUDIO_SAMPLE_RATE,
-            1, // mono
+            1,      // mono
             30_000, // 30 second queue — handles long AI responses
         );
 
@@ -258,7 +256,8 @@ impl LiveKitAgent {
             &format!("{}-voice", persona_id),
             RtcAudioSource::Native(audio_source.clone()),
         );
-        let audio_publication = room.local_participant()
+        let audio_publication = room
+            .local_participant()
             .publish_track(
                 LocalTrack::Audio(audio_track),
                 TrackPublishOptions {
@@ -285,7 +284,8 @@ impl LiveKitAgent {
         // Watch channel for adaptive resolution — event handler sends, video loop receives.
         let initial_width = crate::live::video::bevy_renderer::AVATAR_WIDTH;
         let initial_height = crate::live::video::bevy_renderer::AVATAR_HEIGHT;
-        let (resolution_tx, resolution_rx) = tokio::sync::watch::channel((initial_width, initial_height));
+        let (resolution_tx, resolution_rx) =
+            tokio::sync::watch::channel((initial_width, initial_height));
 
         // Spawn event handler task — routes room events to the agent's event channel.
         // Uses participant metadata for role classification, not identity string matching.
@@ -304,9 +304,13 @@ impl LiveKitAgent {
                             // Parse JSON: { "persona-uuid": TileResolution, ... }
                             // TileResolution is the ts-rs shared type (voice/types.rs)
                             if let Ok(text) = std::str::from_utf8(&payload) {
-                                if let Ok(data) = serde_json::from_str::<HashMap<String, crate::live::types::TileResolution>>(text) {
+                                if let Ok(data) = serde_json::from_str::<
+                                    HashMap<String, crate::live::types::TileResolution>,
+                                >(text)
+                                {
                                     if let Some(dims) = data.get(&identity_for_events) {
-                                        let requested_tier = ResolutionTier::from_tile_width(dims.w);
+                                        let requested_tier =
+                                            ResolutionTier::from_tile_width(dims.w);
 
                                         if requested_tier == current_tier {
                                             pending_downgrade = None;
@@ -325,8 +329,14 @@ impl LiveKitAgent {
                                         if requested_pixels >= current_pixels {
                                             // Upgrade: apply immediately
                                             let (rw, rh) = requested_tier.dimensions();
-                                            if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-                                                bevy_system.resize_by_identity(&identity_for_events, rw, rh);
+                                            if let Some(bevy_system) =
+                                                crate::live::video::bevy_renderer::try_get()
+                                            {
+                                                bevy_system.resize_by_identity(
+                                                    &identity_for_events,
+                                                    rw,
+                                                    rh,
+                                                );
                                             }
                                             // Publisher must match Bevy's ACTUAL render target dimensions.
                                             // Bevy snaps to HD pool (1280×720) or default (640×360).
@@ -342,13 +352,16 @@ impl LiveKitAgent {
                                         } else {
                                             // Downgrade: require 2s hold-down
                                             match &pending_downgrade {
-                                                Some((pending_tier, since)) if *pending_tier == requested_tier => {
+                                                Some((pending_tier, since))
+                                                    if *pending_tier == requested_tier =>
+                                                {
                                                     if since.elapsed() >= DOWNGRADE_HOLDOFF {
                                                         let (rw, rh) = requested_tier.dimensions();
                                                         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
                                                             bevy_system.resize_by_identity(&identity_for_events, rw, rh);
                                                         }
-                                                        let effective = bevy_effective_dimensions(rw, rh);
+                                                        let effective =
+                                                            bevy_effective_dimensions(rw, rh);
                                                         let _ = resolution_tx.send(effective);
                                                         current_tier = requested_tier;
                                                         pending_downgrade = None;
@@ -358,7 +371,10 @@ impl LiveKitAgent {
                                                     }
                                                 }
                                                 _ => {
-                                                    pending_downgrade = Some((requested_tier, tokio::time::Instant::now()));
+                                                    pending_downgrade = Some((
+                                                        requested_tier,
+                                                        tokio::time::Instant::now(),
+                                                    ));
                                                 }
                                             }
                                         }
@@ -376,7 +392,8 @@ impl LiveKitAgent {
                         let meta = ParticipantMetadata::from_json(&participant.metadata());
 
                         // Only process audio from human participants
-                        let is_human = meta.as_ref()
+                        let is_human = meta
+                            .as_ref()
                             .map(|m| m.role == ParticipantRole::Human)
                             .unwrap_or(true); // Unknown = probably human
                         if !is_human {
@@ -395,31 +412,39 @@ impl LiveKitAgent {
                     }
                     RoomEvent::ParticipantConnected(participant) => {
                         let meta = ParticipantMetadata::from_json(&participant.metadata());
-                        let is_visible = meta.as_ref()
-                            .map(|m| m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona)
+                        let is_visible = meta
+                            .as_ref()
+                            .map(|m| {
+                                m.role == ParticipantRole::Human
+                                    || m.role == ParticipantRole::AiPersona
+                            })
                             .unwrap_or(true);
-                        if !is_visible { continue; }
+                        if !is_visible {
+                            continue;
+                        }
 
                         let name = participant.name().to_string();
                         let id = participant.identity().to_string();
                         clog_info!("👤 Participant joined: {} ({})", name, id);
-                        let _ = event_tx_clone.send(AgentEvent::ParticipantJoined {
-                            identity: id,
-                            name,
-                        });
+                        let _ = event_tx_clone
+                            .send(AgentEvent::ParticipantJoined { identity: id, name });
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
                         let meta = ParticipantMetadata::from_json(&participant.metadata());
-                        let is_visible = meta.as_ref()
-                            .map(|m| m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona)
+                        let is_visible = meta
+                            .as_ref()
+                            .map(|m| {
+                                m.role == ParticipantRole::Human
+                                    || m.role == ParticipantRole::AiPersona
+                            })
                             .unwrap_or(true);
-                        if !is_visible { continue; }
+                        if !is_visible {
+                            continue;
+                        }
 
                         let id = participant.identity().to_string();
                         clog_info!("👤 Participant left: {}", id);
-                        let _ = event_tx_clone.send(AgentEvent::ParticipantLeft {
-                            identity: id,
-                        });
+                        let _ = event_tx_clone.send(AgentEvent::ParticipantLeft { identity: id });
                     }
                     _ => {}
                 }
@@ -476,7 +501,12 @@ impl LiveKitAgent {
     /// The video track is NOT created at connect() time — it's published on the first
     /// `publish_video_frame()` call so the browser only shows a video tile when there's
     /// real content to display.
-    pub async fn publish_video_frame(&self, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+    pub async fn publish_video_frame(
+        &self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
         let mut state = self.video_state.lock().await;
 
         // Lazily create and publish video source on first frame
@@ -509,7 +539,12 @@ impl LiveKitAgent {
                 .await
                 .map_err(|e| format!("Failed to publish video track: {}", e))?;
 
-            clog_info!("📹 Video track published for '{}' ({}x{})", self.identity, width, height);
+            clog_info!(
+                "📹 Video track published for '{}' ({}x{})",
+                self.identity,
+                width,
+                height
+            );
             state.source = Some(video_source);
         }
 
@@ -530,12 +565,8 @@ impl LiveKitAgent {
 
     /// Add a named ambient audio source (hold music, background noise, etc.)
     pub async fn add_ambient_source(&self, name: &str) -> Result<String, String> {
-        let source = NativeAudioSource::new(
-            AudioSourceOptions::default(),
-            AUDIO_SAMPLE_RATE,
-            1,
-            1000,
-        );
+        let source =
+            NativeAudioSource::new(AudioSourceOptions::default(), AUDIO_SAMPLE_RATE, 1, 1000);
 
         // Publish as a separate audio track
         let track = LocalAudioTrack::create_audio_track(
@@ -560,16 +591,23 @@ impl LiveKitAgent {
             .await
             .insert(handle.clone(), source);
 
-        clog_info!("🎵 Added ambient source '{}' (handle: {})", name, &handle[..8]);
+        clog_info!(
+            "🎵 Added ambient source '{}' (handle: {})",
+            name,
+            &handle[..8]
+        );
         Ok(handle)
     }
 
     /// Inject audio into an ambient source by handle.
     pub async fn inject_ambient(&self, handle: &str, samples: Vec<i16>) -> Result<(), String> {
         let sources = self.ambient_sources.lock().await;
-        let source = sources
-            .get(handle)
-            .ok_or_else(|| format!("Ambient source not found: {}", &handle[..8.min(handle.len())]))?;
+        let source = sources.get(handle).ok_or_else(|| {
+            format!(
+                "Ambient source not found: {}",
+                &handle[..8.min(handle.len())]
+            )
+        })?;
 
         let chunk_size = SAMPLES_PER_10MS as usize;
         for chunk in samples.chunks(chunk_size) {
@@ -593,10 +631,16 @@ impl LiveKitAgent {
         let mut sources = self.ambient_sources.lock().await;
         if sources.remove(handle).is_some() {
             // Track will be unpublished when the source is dropped
-            clog_info!("🎵 Removed ambient source (handle: {})", &handle[..8.min(handle.len())]);
+            clog_info!(
+                "🎵 Removed ambient source (handle: {})",
+                &handle[..8.min(handle.len())]
+            );
             Ok(())
         } else {
-            Err(format!("Ambient source not found: {}", &handle[..8.min(handle.len())]))
+            Err(format!(
+                "Ambient source not found: {}",
+                &handle[..8.min(handle.len())]
+            ))
         }
     }
 
@@ -618,7 +662,8 @@ impl LiveKitAgent {
         _speaker_id: &str,
         _is_final: bool,
     ) -> Result<(), String> {
-        publish_data_channel_transcription(&self.room, text, &self.identity, &self.display_name).await
+        publish_data_channel_transcription(&self.room, text, &self.identity, &self.display_name)
+            .await
     }
 
     /// Disconnect from the room.
@@ -715,8 +760,11 @@ async fn publish_data_channel_transcription(
 
     let text_preview: String = text.chars().take(40).collect();
     let speaker_preview: String = speaker_id.chars().take(8).collect();
-    clog_info!("📝 Published data channel transcription: \"{}\" (speaker={})",
-        text_preview, speaker_preview);
+    clog_info!(
+        "📝 Published data channel transcription: \"{}\" (speaker={})",
+        text_preview,
+        speaker_preview
+    );
     Ok(())
 }
 
@@ -741,9 +789,7 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
     // First pass: calculate raw RMS per window
     let mut raw_rms = Vec::new();
     for chunk in samples.chunks(window_samples) {
-        let sum_sq: f64 = chunk.iter()
-            .map(|&s| (s as f64) * (s as f64))
-            .sum();
+        let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
         let rms = (sum_sq / chunk.len() as f64).sqrt();
         if rms > max_rms {
             max_rms = rms;
@@ -795,7 +841,10 @@ use crate::live::avatar::frame_publisher::rgba_to_i420_into;
 /// that can block for up to 5s waiting for slots. Wrapped in spawn_blocking to avoid
 /// starving the tokio runtime.
 fn start_video_loop(agent: Arc<LiveKitAgent>) {
-    use crate::live::avatar::{AvatarConfig, select_dynamic_avatar, avatar_model_path, allocate_bevy_slot, create_publisher};
+    use crate::live::avatar::{
+        allocate_bevy_slot, avatar_model_path, create_publisher, select_dynamic_avatar,
+        AvatarConfig,
+    };
 
     let agent_clone = agent.clone();
     tokio::spawn(async move {
@@ -806,13 +855,20 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         let vrm_model_path = if vrm_path.exists() {
             Some(vrm_path.to_string_lossy().to_string())
         } else {
-            clog_warn!("📹 VRM model not found for '{}': {}", agent.identity, vrm_path.display());
+            clog_warn!(
+                "📹 VRM model not found for '{}': {}",
+                agent.identity,
+                vrm_path.display()
+            );
             None
         };
 
         // Skip video loop if no VRM model — only the human user should lack a model
         if vrm_model_path.is_none() {
-            clog_info!("📹 No VRM model for '{}', skipping video loop", agent.identity);
+            clog_info!(
+                "📹 No VRM model for '{}', skipping video loop",
+                agent.identity
+            );
             return;
         }
 
@@ -831,18 +887,24 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
 
         // allocate_bevy_slot acquires std::sync::Mutex locks (slot pool, identity map)
         // which can block up to 5s waiting for slot availability. Run off the tokio runtime.
-        let alloc_result = tokio::task::spawn_blocking(move || {
-            allocate_bevy_slot(config)
-        }).await;
+        let alloc_result = tokio::task::spawn_blocking(move || allocate_bevy_slot(config)).await;
 
         let allocation = match alloc_result {
             Ok(Ok(alloc)) => alloc,
             Ok(Err(e)) => {
-                clog_warn!("📹 allocate_bevy_slot failed for '{}': {}", agent.identity, e);
+                clog_warn!(
+                    "📹 allocate_bevy_slot failed for '{}': {}",
+                    agent.identity,
+                    e
+                );
                 return;
             }
             Err(e) => {
-                clog_warn!("📹 allocate_bevy_slot panicked for '{}': {}", agent.identity, e);
+                clog_warn!(
+                    "📹 allocate_bevy_slot panicked for '{}': {}",
+                    agent.identity,
+                    e
+                );
                 return;
             }
         };
@@ -859,15 +921,13 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         let video_source = {
             let mut state = agent.video_state.lock().await;
             if state.source.is_none() {
-                let vs = NativeVideoSource::new(
-                    VideoResolution { width, height },
-                    false,
-                );
+                let vs = NativeVideoSource::new(VideoResolution { width, height }, false);
                 let video_track = LocalVideoTrack::create_video_track(
                     &format!("{}-avatar", agent.identity),
                     RtcVideoSource::Native(vs.clone()),
                 );
-                if let Err(e) = agent.room
+                if let Err(e) = agent
+                    .room
                     .local_participant()
                     .publish_track(
                         LocalTrack::Video(video_track),
@@ -883,10 +943,19 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                     )
                     .await
                 {
-                    clog_warn!("📹 Failed to publish video track for '{}': {}", agent.identity, e);
+                    clog_warn!(
+                        "📹 Failed to publish video track for '{}': {}",
+                        agent.identity,
+                        e
+                    );
                     return;
                 }
-                clog_info!("📹 Video track published for '{}' ({}x{})", agent.identity, width, height);
+                clog_info!(
+                    "📹 Video track published for '{}' ({}x{})",
+                    agent.identity,
+                    width,
+                    height
+                );
                 state.source = Some(vs);
             }
             state.source.clone().unwrap()
@@ -895,8 +964,13 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
         // Create platform-appropriate frame publisher.
         // Reads directly from Bevy's FrameChannels (no render thread middleman).
         let mut publisher = create_publisher(frame_rx, width, height, slot);
-        clog_info!("📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
-            agent.identity, avatar.name, avatar.filename, publisher.name());
+        clog_info!(
+            "📹 Video loop started for '{}' → model '{}' ({}) [publisher={}]",
+            agent.identity,
+            avatar.name,
+            avatar.filename,
+            publisher.name()
+        );
 
         // Watch channel for adaptive resolution — check for tier changes each iteration.
         let mut resolution_rx = agent.resolution_rx.clone();
@@ -927,17 +1001,29 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
                     // One-time confirmation that notify-driven publish is working
                     if !first_frame_logged {
                         let latency_ms = loop_started.elapsed().as_millis();
-                        clog_info!("📹 First frame published for '{}' ({}ms after loop start)",
-                            agent.identity, latency_ms);
+                        clog_info!(
+                            "📹 First frame published for '{}' ({}ms after loop start)",
+                            agent.identity,
+                            latency_ms
+                        );
                         first_frame_logged = true;
                     }
                 }
                 Ok(false) => {} // Spurious wake or stale notify — harmless
                 Err(_) => {
                     let elapsed = loop_started.elapsed().as_secs_f64();
-                    let fps = if elapsed > 0.0 { frames_published as f64 / elapsed } else { 0.0 };
-                    clog_info!("📹 Video loop ended for '{}' ({} frames, {:.1} fps avg, {:.0}s)",
-                        agent.identity, frames_published, fps, elapsed);
+                    let fps = if elapsed > 0.0 {
+                        frames_published as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    clog_info!(
+                        "📹 Video loop ended for '{}' ({} frames, {:.1} fps avg, {:.0}s)",
+                        agent.identity,
+                        frames_published,
+                        fps,
+                        elapsed
+                    );
                     break;
                 }
             }
@@ -956,9 +1042,9 @@ async fn process_audio_stream_with_vad(
     speaker_id: String,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
+    use crate::live::audio::vad::ProductionVAD;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
     use tokio_stream::StreamExt;
-    use crate::live::audio::vad::ProductionVAD;
 
     let mut audio_stream = NativeAudioStream::new(
         audio_track.rtc_track(),
@@ -1035,7 +1121,11 @@ async fn spawn_stt_listener(
     call_id: &str,
     transcription_buffer: TranscriptionBuffer,
 ) -> Result<Arc<Room>, String> {
-    let listener_id = format!("{}{}", STT_IDENTITY_PREFIX, &call_id[..8.min(call_id.len())]);
+    let listener_id = format!(
+        "{}{}",
+        STT_IDENTITY_PREFIX,
+        &call_id[..8.min(call_id.len())]
+    );
     let metadata = ParticipantMetadata::new(ParticipantRole::SttListener);
     let token = generate_token(&listener_id, "STT", call_id, true, &metadata)?;
 
@@ -1043,7 +1133,11 @@ async fn spawn_stt_listener(
         .await
         .map_err(|e| format!("Failed to connect STT listener: {}", e))?;
 
-    clog_info!("🎤 STT listener connected to room '{}' as '{}' (role=stt_listener)", call_id, listener_id);
+    clog_info!(
+        "🎤 STT listener connected to room '{}' as '{}' (role=stt_listener)",
+        call_id,
+        listener_id
+    );
 
     let room = Arc::new(room);
     let room_for_events = room.clone();
@@ -1066,20 +1160,28 @@ async fn spawn_stt_listener(
                     // Only transcribe audio from human participants.
                     // AI persona TTS, STT listeners, and ambient audio are skipped.
                     // Without this, AI TTS gets transcribed → infinite echo loop.
-                    let is_human = meta.as_ref()
+                    let is_human = meta
+                        .as_ref()
                         .map(|m| m.role == ParticipantRole::Human)
                         .unwrap_or(true); // Unknown metadata = probably human
                     if !is_human {
-                        clog_info!("🎤 STT: Skipping non-human track from '{}' (role={:?})",
-                            speaker_id, meta.as_ref().map(|m| &m.role));
+                        clog_info!(
+                            "🎤 STT: Skipping non-human track from '{}' (role={:?})",
+                            speaker_id,
+                            meta.as_ref().map(|m| &m.role)
+                        );
                         continue;
                     }
 
                     if let RemoteTrack::Audio(audio_track) = track {
                         // Capture the remote track SID for native transcription sync
                         let track_sid: String = publication.sid().into();
-                        clog_info!("🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
-                            speaker_name, speaker_id, &track_sid[..8.min(track_sid.len())]);
+                        clog_info!(
+                            "🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
+                            speaker_name,
+                            speaker_id,
+                            &track_sid[..8.min(track_sid.len())]
+                        );
 
                         let room_ref = room_for_events.clone();
                         let cid = call_id_owned.clone();
@@ -1093,13 +1195,17 @@ async fn spawn_stt_listener(
                                 room_ref,
                                 cid,
                                 tbuf,
-                            ).await;
+                            )
+                            .await;
                         });
                     }
                 }
                 RoomEvent::Disconnected { reason } => {
-                    clog_info!("🎤 STT listener disconnected from '{}': {:?}",
-                        call_id_owned, reason);
+                    clog_info!(
+                        "🎤 STT listener disconnected from '{}': {:?}",
+                        call_id_owned,
+                        reason
+                    );
                     break;
                 }
                 _ => {}
@@ -1124,10 +1230,10 @@ async fn listen_and_transcribe(
     call_id: String,
     transcription_buffer: TranscriptionBuffer,
 ) {
+    use crate::live::audio::stt_service;
+    use crate::live::audio::vad::ProductionVAD;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
     use tokio_stream::StreamExt;
-    use crate::live::audio::vad::ProductionVAD;
-    use crate::live::audio::stt_service;
 
     let mut audio_stream = NativeAudioStream::new(
         audio_track.rtc_track(),
@@ -1161,8 +1267,14 @@ async fn listen_and_transcribe(
         // Log first frame + every 3000th frame
         if frame_count == 1 || frame_count % 3000 == 0 {
             let max_amp = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-            clog_info!("🎤 STT: Frame #{} from '{}' — {} samples, max_amp={}, sr={}",
-                frame_count, speaker_name, samples.len(), max_amp, frame.sample_rate);
+            clog_info!(
+                "🎤 STT: Frame #{} from '{}' — {} samples, max_amp={}, sr={}",
+                frame_count,
+                speaker_name,
+                samples.len(),
+                max_amp,
+                frame.sample_rate
+            );
         }
 
         // Accumulate until we have a full VAD frame
@@ -1181,8 +1293,10 @@ async fn listen_and_transcribe(
                     let permit = match semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
                         Err(_) => {
-                            clog_warn!("🎤 STT: Dropping utterance from '{}' — transcription queue full",
-                                speaker_name);
+                            clog_warn!(
+                                "🎤 STT: Dropping utterance from '{}' — transcription queue full",
+                                speaker_name
+                            );
                             continue;
                         }
                     };
@@ -1197,7 +1311,9 @@ async fn listen_and_transcribe(
                     tokio::spawn(async move {
                         let _permit = permit; // Hold until done
 
-                        match stt_service::transcribe_speech_async(&sentence_samples, Some("en")).await {
+                        match stt_service::transcribe_speech_async(&sentence_samples, Some("en"))
+                            .await
+                        {
                             Ok(transcript) => {
                                 let text = transcript.text.trim();
                                 if text.is_empty() {
@@ -1206,8 +1322,11 @@ async fn listen_and_transcribe(
 
                                 let text_preview: String = text.chars().take(60).collect();
                                 let ellipsis = if text.chars().count() > 60 { "..." } else { "" };
-                                clog_info!("📝 STT: {} said: \"{}{}\"",
-                                    sname, text_preview, ellipsis,
+                                clog_info!(
+                                    "📝 STT: {} said: \"{}{}\"",
+                                    sname,
+                                    text_preview,
+                                    ellipsis,
                                 );
 
                                 // Store in transcription buffer (for test polling via voice/poll-transcriptions)
@@ -1221,7 +1340,8 @@ async fn listen_and_transcribe(
                                         timestamp_ms: std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .unwrap_or_default()
-                                            .as_millis() as u64,
+                                            .as_millis()
+                                            as u64,
                                     });
                                     while buf.len() > MAX_TRANSCRIPTION_BUFFER {
                                         buf.pop_front();
@@ -1234,7 +1354,9 @@ async fn listen_and_transcribe(
                                 // cross-participant resolution issues on the browser.
                                 if let Err(e) = publish_data_channel_transcription(
                                     &room_ref, text, &sid, &sname,
-                                ).await {
+                                )
+                                .await
+                                {
                                     clog_warn!("📝 STT: Failed to publish transcription: {}", e);
                                 }
 
@@ -1253,13 +1375,19 @@ async fn listen_and_transcribe(
                                         .as_millis() as u64,
                                 });
                                 match crate::runtime::command_executor::execute_ts_json(
-                                    "collaboration/live/transcription", ts_params
-                                ).await {
+                                    "collaboration/live/transcription",
+                                    ts_params,
+                                )
+                                .await
+                                {
                                     Ok(result) => {
                                         clog_info!("📝 STT: AI routing result: {}", result);
                                     }
                                     Err(e) => {
-                                        clog_warn!("📝 STT: Failed to route transcription to AI: {}", e);
+                                        clog_warn!(
+                                            "📝 STT: Failed to route transcription to AI: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -1333,15 +1461,29 @@ impl LiveKitAgentManager {
         {
             let listeners = self.listeners.read().await;
             if listeners.contains_key(call_id) {
-                clog_info!("🎤 STT listener already active for call {}", &call_id[..8.min(call_id.len())]);
+                clog_info!(
+                    "🎤 STT listener already active for call {}",
+                    &call_id[..8.min(call_id.len())]
+                );
                 return Ok(());
             }
         }
 
-        let room = spawn_stt_listener(&self.livekit_url, call_id, self.transcription_buffer.clone()).await?;
-        self.listeners.write().await.insert(call_id.to_string(), room);
+        let room = spawn_stt_listener(
+            &self.livekit_url,
+            call_id,
+            self.transcription_buffer.clone(),
+        )
+        .await?;
+        self.listeners
+            .write()
+            .await
+            .insert(call_id.to_string(), room);
 
-        clog_info!("🎤 STT listener registered for call {}", &call_id[..8.min(call_id.len())]);
+        clog_info!(
+            "🎤 STT listener registered for call {}",
+            &call_id[..8.min(call_id.len())]
+        );
         Ok(())
     }
 
@@ -1378,9 +1520,9 @@ impl LiveKitAgentManager {
         // then all call connect(), creating 3 agents and 3 video loops
         // that burn 3 Bevy render slots for the same identity.
         let creation_lock = {
-            static CREATION_LOCKS: std::sync::Mutex<Option<std::collections::HashMap<
-                (String, String), Arc<tokio::sync::Mutex<()>>
-            >>> = std::sync::Mutex::new(None);
+            static CREATION_LOCKS: std::sync::Mutex<
+                Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
+            > = std::sync::Mutex::new(None);
             let mut locks = CREATION_LOCKS.lock().unwrap();
             let map = locks.get_or_insert_with(std::collections::HashMap::new);
             map.entry(key.clone())
@@ -1402,9 +1544,10 @@ impl LiveKitAgentManager {
         let (agent, _event_rx) = LiveKitAgent::connect(
             &self.livekit_url,
             call_id,
-            user_id,  // Identity = persona's userId (unique UUID, no prefix needed)
-            name,     // Display name shown in browser
-        ).await?;
+            user_id, // Identity = persona's userId (unique UUID, no prefix needed)
+            name,    // Display name shown in browser
+        )
+        .await?;
 
         let agent = Arc::new(agent);
         self.agents.write().await.insert(key, agent.clone());
@@ -1449,18 +1592,18 @@ impl LiveKitAgentManager {
             AvatarGender::Female => "female",
         };
 
-        let synthesis = tts_service::synthesize_speech_async(
-            text,
-            voice,
-            adapter,
-            Some(gender_str),
-        ).await.map_err(|e| format!("TTS synthesis failed: {}", e))?;
+        let synthesis =
+            tts_service::synthesize_speech_async(text, voice, adapter, Some(gender_str))
+                .await
+                .map_err(|e| format!("TTS synthesis failed: {}", e))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
         let sample_rate = synthesis.sample_rate;
 
-        let agent = self.get_or_create_agent(call_id, user_id, display_name).await?;
+        let agent = self
+            .get_or_create_agent(call_id, user_id, display_name)
+            .await?;
 
         // Set resolved voice name for gender-matched avatar selection (first-speak-wins).
         // Use the resolved name from TTS (e.g., "af_bella") not the input voice param
@@ -1473,7 +1616,8 @@ impl LiveKitAgentManager {
 
         // Calculate per-chunk RMS amplitude for mouth weight animation.
         // 66ms windows = ~15Hz update rate, matching effective readback cadence.
-        let mouth_weights = calculate_rms_weights(&synthesis.samples, sample_rate, LIP_SYNC_WINDOW_MS);
+        let mouth_weights =
+            calculate_rms_weights(&synthesis.samples, sample_rate, LIP_SYNC_WINDOW_MS);
 
         // Extract sentiment from text for emotional expression BEFORE sending to Bevy.
         // Sub-microsecond: emoji/keyword pattern matching, no ML model.
@@ -1482,8 +1626,13 @@ impl LiveKitAgentManager {
             || sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None
         {
             let text_preview: String = text.chars().take(40).collect();
-            clog_info!("🎭 Sentiment: {:?} ({:.1}) + {:?} — \"{}...\"",
-                sentiment.emotion, sentiment.intensity, sentiment.gesture, text_preview);
+            clog_info!(
+                "🎭 Sentiment: {:?} ({:.1}) + {:?} — \"{}...\"",
+                sentiment.emotion,
+                sentiment.intensity,
+                sentiment.gesture,
+                text_preview
+            );
         }
 
         // Send unified speech animation clip BEFORE audio starts playing.
@@ -1514,20 +1663,29 @@ impl LiveKitAgentManager {
                 );
             }
 
-            if !bevy_system.play_speech_by_identity(user_id, SpeechAnimationClip {
-                mouth_weights,
-                interval_ms: LIP_SYNC_WINDOW_MS,
-                duration_ms,
-            }) {
-                clog_warn!("🤖 play_speech failed for '{}' — identity not registered",
-                    &user_id[..8.min(user_id.len())]);
+            if !bevy_system.play_speech_by_identity(
+                user_id,
+                SpeechAnimationClip {
+                    mouth_weights,
+                    interval_ms: LIP_SYNC_WINDOW_MS,
+                    duration_ms,
+                },
+            ) {
+                clog_warn!(
+                    "🤖 play_speech failed for '{}' — identity not registered",
+                    &user_id[..8.min(user_id.len())]
+                );
             }
         }
 
         // Publish subtitle BEFORE audio — browser receives text at the same time as
         // (or slightly before) the first audio frames arrive via WebRTC.
         if let Err(e) = agent.publish_transcription(text, user_id, true).await {
-            clog_warn!("🤖 Failed to publish AI subtitle for {}: {}", &user_id[..8.min(user_id.len())], e);
+            clog_warn!(
+                "🤖 Failed to publish AI subtitle for {}: {}",
+                &user_id[..8.min(user_id.len())],
+                e
+            );
         }
 
         // Feed audio frames to LiveKit. Speech clip is already queued in Bevy,
@@ -1587,8 +1745,8 @@ impl LiveKitAgentManager {
     pub async fn poll_transcriptions(&self, call_id: Option<&str>) -> Vec<TranscriptionEntry> {
         let mut buf = self.transcription_buffer.lock().await;
         if let Some(cid) = call_id {
-            let (matching, remaining): (VecDeque<_>, VecDeque<_>) = buf.drain(..)
-                .partition(|e| e.call_id == cid);
+            let (matching, remaining): (VecDeque<_>, VecDeque<_>) =
+                buf.drain(..).partition(|e| e.call_id == cid);
             *buf = remaining;
             matching.into_iter().collect()
         } else {
@@ -1597,11 +1755,7 @@ impl LiveKitAgentManager {
     }
 
     /// Remove an ambient audio source (replaces CallManager::remove_ambient_source).
-    pub async fn remove_ambient_source(
-        &self,
-        call_id: &str,
-        handle: &str,
-    ) -> Result<(), String> {
+    pub async fn remove_ambient_source(&self, call_id: &str, handle: &str) -> Result<(), String> {
         let agents = self.agents.read().await;
         for ((cid, _), agent) in agents.iter() {
             if cid == call_id {
@@ -1624,7 +1778,11 @@ impl LiveKitAgentManager {
 
         tokio::spawn(async move {
             if let Err(e) = run_ambient_audio_loop(&agents_ref, &url, &cid).await {
-                clog_warn!("🎵 Ambient audio error for call {}: {}", &cid[..8.min(cid.len())], e);
+                clog_warn!(
+                    "🎵 Ambient audio error for call {}: {}",
+                    &cid[..8.min(cid.len())],
+                    e
+                );
             }
         });
 
@@ -1641,7 +1799,11 @@ async fn run_ambient_audio_loop(
 ) -> Result<(), String> {
     use crate::live::audio::vad::test_audio::TestAudioGenerator;
 
-    let identity = format!("{}{}", AMBIENT_IDENTITY_PREFIX, &call_id[..8.min(call_id.len())]);
+    let identity = format!(
+        "{}{}",
+        AMBIENT_IDENTITY_PREFIX,
+        &call_id[..8.min(call_id.len())]
+    );
     let metadata = ParticipantMetadata::new(ParticipantRole::AmbientAudio);
     let token = generate_token(&identity, "Background Audio", call_id, true, &metadata)?;
 
@@ -1656,16 +1818,17 @@ async fn run_ambient_audio_loop(
         1,
         1000, // 1 second queue
     );
-    let track = LocalAudioTrack::create_audio_track(
-        "ambient-rain",
-        RtcAudioSource::Native(source.clone()),
-    );
+    let track =
+        LocalAudioTrack::create_audio_track("ambient-rain", RtcAudioSource::Native(source.clone()));
     room.local_participant()
         .publish_track(LocalTrack::Audio(track), TrackPublishOptions::default())
         .await
         .map_err(|e| format!("Failed to publish ambient track: {}", e))?;
 
-    clog_info!("🎵 Ambient audio started for call {} (rain)", &call_id[..8.min(call_id.len())]);
+    clog_info!(
+        "🎵 Ambient audio started for call {} (rain)",
+        &call_id[..8.min(call_id.len())]
+    );
 
     // Wait for other participants (human, STT listener) to join the room
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -1688,7 +1851,10 @@ async fn run_ambient_audio_loop(
             empty_checks += 1;
             // Wait for 5 consecutive empty checks (5 seconds) before stopping
             if empty_checks >= 5 {
-                clog_info!("🎵 Ambient audio stopping — room empty for call {}", &call_id[..8.min(call_id.len())]);
+                clog_info!(
+                    "🎵 Ambient audio stopping — room empty for call {}",
+                    &call_id[..8.min(call_id.len())]
+                );
                 break;
             }
         } else {
@@ -1720,6 +1886,9 @@ async fn run_ambient_audio_loop(
     }
 
     room.close().await.ok();
-    clog_info!("🎵 Ambient audio stopped for call {}", &call_id[..8.min(call_id.len())]);
+    clog_info!(
+        "🎵 Ambient audio stopped for call {}",
+        &call_id[..8.min(call_id.len())]
+    );
     Ok(())
 }

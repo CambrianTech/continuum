@@ -12,10 +12,10 @@
 //! Buffers expire after a configurable TTL (default: 5 minutes).
 
 use crate::live::handle::Handle;
+use crate::{clog_info, clog_warn};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use crate::{clog_info, clog_warn};
 
 /// Default time-to-live for audio buffers (5 minutes)
 const DEFAULT_TTL: Duration = Duration::from_secs(300);
@@ -141,7 +141,10 @@ impl AudioBufferPool {
 
         if buffer.is_expired() {
             buffers.remove(handle);
-            clog_info!("AudioBufferPool: Handle {} expired on access", handle.short());
+            clog_info!(
+                "AudioBufferPool: Handle {} expired on access",
+                handle.short()
+            );
             return None;
         }
 

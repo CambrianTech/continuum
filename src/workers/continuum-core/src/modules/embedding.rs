@@ -11,7 +11,7 @@
 //!
 //! Priority: Normal — embedding is not time-critical like voice.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::gpu::make_entry;
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::utils::params::Params;
 
 /// Global model cache - models loaded on demand
@@ -40,7 +40,8 @@ fn get_gpu_guards() -> &'static Mutex<HashMap<String, GpuAllocationGuard>> {
 }
 
 /// GPU memory manager — set during IPC startup
-static EMBEDDING_GPU_MANAGER: std::sync::OnceLock<Arc<GpuMemoryManager>> = std::sync::OnceLock::new();
+static EMBEDDING_GPU_MANAGER: std::sync::OnceLock<Arc<GpuMemoryManager>> =
+    std::sync::OnceLock::new();
 
 /// Set the GPU memory manager (called from ipc/mod.rs during startup)
 pub fn set_gpu_manager(mgr: Arc<GpuMemoryManager>) {
@@ -102,7 +103,8 @@ impl EmbeddingResultCache {
         // Evict oldest if at capacity
         if self.entries.len() >= self.max_entries {
             // Find oldest entry
-            if let Some(oldest_key) = self.entries
+            if let Some(oldest_key) = self
+                .entries
                 .iter()
                 .min_by_key(|(_, v)| v.created_at)
                 .map(|(k, _)| k.clone())
@@ -152,13 +154,13 @@ fn get_cache_dir() -> PathBuf {
 /// Based on known model sizes from fastembed/sentence-transformers catalog.
 fn estimate_embedding_model_bytes(model_name: &str) -> u64 {
     match model_name.to_lowercase().as_str() {
-        "allminilml6v2" | "all-minilm-l6-v2" | "default" => 90 * 1024 * 1024,   // ~90MB
-        "allminilml6v2q" | "all-minilm-l6-v2-q" => 25 * 1024 * 1024,            // ~25MB quantized
-        "bgesmallenv15" | "bge-small-en-v1.5" => 130 * 1024 * 1024,             // ~130MB
-        "bgebaseenv15" | "bge-base-en-v1.5" => 440 * 1024 * 1024,              // ~440MB
-        "bgelargeenv15" | "bge-large-en-v1.5" => 1300 * 1024 * 1024,            // ~1.3GB
-        "nomicembedtextv1" | "nomic-embed-text-v1" => 550 * 1024 * 1024,        // ~550MB
-        "nomicembedtextv15" | "nomic-embed-text-v1.5" => 550 * 1024 * 1024,     // ~550MB
+        "allminilml6v2" | "all-minilm-l6-v2" | "default" => 90 * 1024 * 1024, // ~90MB
+        "allminilml6v2q" | "all-minilm-l6-v2-q" => 25 * 1024 * 1024,          // ~25MB quantized
+        "bgesmallenv15" | "bge-small-en-v1.5" => 130 * 1024 * 1024,           // ~130MB
+        "bgebaseenv15" | "bge-base-en-v1.5" => 440 * 1024 * 1024,             // ~440MB
+        "bgelargeenv15" | "bge-large-en-v1.5" => 1300 * 1024 * 1024,          // ~1.3GB
+        "nomicembedtextv1" | "nomic-embed-text-v1" => 550 * 1024 * 1024,      // ~550MB
+        "nomicembedtextv15" | "nomic-embed-text-v1.5" => 550 * 1024 * 1024,   // ~550MB
         _ => 100 * 1024 * 1024, // Conservative default for unknown models
     }
 }
@@ -192,7 +194,9 @@ fn parse_model_name(name: &str) -> Result<EmbeddingModel, String> {
 fn get_or_load_model(model_name: &str) -> Result<(), String> {
     // Fast path: model already loaded
     {
-        let models = get_model_cache().lock().map_err(|e| format!("Lock error: {e}"))?;
+        let models = get_model_cache()
+            .lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
         if models.contains_key(model_name) {
             return Ok(());
         }
@@ -205,8 +209,7 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
     let model_enum = parse_model_name(model_name)?;
     let cache_dir = get_cache_dir();
 
-    std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
     let model = TextEmbedding::try_new(
         InitOptions::new(model_enum)
@@ -216,17 +219,26 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
     .map_err(|e| format!("Failed to load model: {e}"))?;
 
     let elapsed = start.elapsed();
-    info!("Model loaded in {:.2}s: {}", elapsed.as_secs_f64(), model_name);
+    info!(
+        "Model loaded in {:.2}s: {}",
+        elapsed.as_secs_f64(),
+        model_name
+    );
 
     // Track GPU allocation for embedding model
     if let Some(mgr) = gpu_manager() {
         let model_bytes = estimate_embedding_model_bytes(model_name);
         if model_bytes > 0 {
-            match mgr.allocate(GpuSubsystem::Inference, model_bytes, GpuPriority::Interactive) {
+            match mgr.allocate(
+                GpuSubsystem::Inference,
+                model_bytes,
+                GpuPriority::Interactive,
+            ) {
                 Ok(guard) => {
                     info!(
                         "Embedding GPU: {} allocation {:.0}MB",
-                        model_name, model_bytes as f64 / (1024.0 * 1024.0)
+                        model_name,
+                        model_bytes as f64 / (1024.0 * 1024.0)
                     );
                     mgr.eviction_registry.register(make_entry(
                         &format!("embed:{}", model_name),
@@ -239,14 +251,19 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
                     }
                 }
                 Err(e) => {
-                    warn!("Embedding GPU: allocation for {} failed ({}), proceeding", model_name, e);
+                    warn!(
+                        "Embedding GPU: allocation for {} failed ({}), proceeding",
+                        model_name, e
+                    );
                 }
             }
         }
     }
 
     // Re-acquire lock and insert (double-check to avoid overwriting concurrent load)
-    let mut models = get_model_cache().lock().map_err(|e| format!("Lock error: {e}"))?;
+    let mut models = get_model_cache()
+        .lock()
+        .map_err(|e| format!("Lock error: {e}"))?;
     models.entry(model_name.to_string()).or_insert(model);
 
     Ok(())
@@ -277,7 +294,10 @@ pub fn generate_embedding(text: &str, model_name: &str) -> Result<Vec<f32>, Stri
 }
 
 /// Batch embedding generation for efficiency
-pub fn generate_embeddings_batch(texts: &[&str], model_name: &str) -> Result<Vec<Vec<f32>>, String> {
+pub fn generate_embeddings_batch(
+    texts: &[&str],
+    model_name: &str,
+) -> Result<Vec<Vec<f32>>, String> {
     if texts.is_empty() {
         return Ok(vec![]);
     }
@@ -320,7 +340,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 { 0.0 } else { dot / denom }
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 /// Compute pairwise cosine similarity matrix in parallel.
@@ -344,11 +368,12 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
 
     // Generate all (i,j) pairs where i < j
     let pairs: Vec<(usize, usize)> = (0..n)
-        .flat_map(|i| (i+1..n).map(move |j| (i, j)))
+        .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
         .collect();
 
     // Compute similarities in parallel with Rayon
-    pairs.par_iter()
+    pairs
+        .par_iter()
         .zip(result.par_iter_mut())
         .for_each(|((i, j), sim)| {
             *sim = cosine_similarity(&embeddings[*i], &embeddings[*j]);
@@ -361,7 +386,8 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
 /// Returns Vec<f32> of similarities (one per target), parallelized with Rayon.
 /// Use case: semantic search - find most similar items to a query.
 pub fn query_similarity_batch(query: &[f32], targets: &[Vec<f32>]) -> Vec<f32> {
-    targets.par_iter()
+    targets
+        .par_iter()
         .map(|target| cosine_similarity(query, target))
         .collect()
 }
@@ -374,7 +400,8 @@ pub fn top_k_similar(
     k: usize,
     threshold: f32,
 ) -> Vec<(usize, f32)> {
-    let similarities: Vec<(usize, f32)> = targets.par_iter()
+    let similarities: Vec<(usize, f32)> = targets
+        .par_iter()
         .enumerate()
         .map(|(i, target)| (i, cosine_similarity(query, target)))
         .filter(|(_, sim)| *sim >= threshold)
@@ -465,15 +492,22 @@ pub fn detect_clusters(
                     count += 1;
                 }
             }
-            let strength = if count > 0 { total_sim / count as f32 } else { 1.0 };
+            let strength = if count > 0 {
+                total_sim / count as f32
+            } else {
+                1.0
+            };
 
             // Find representative (highest avg similarity to others in cluster)
-            let representative = component.iter()
+            let representative = component
+                .iter()
                 .map(|&item| {
-                    let avg: f32 = component.iter()
+                    let avg: f32 = component
+                        .iter()
                         .filter(|&&other| other != item)
                         .map(|&other| get_sim(item, other))
-                        .sum::<f32>() / (component.len() - 1).max(1) as f32;
+                        .sum::<f32>()
+                        / (component.len() - 1).max(1) as f32;
                     (item, avg)
                 })
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -489,7 +523,11 @@ pub fn detect_clusters(
     }
 
     // Sort by strength descending
-    clusters.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
+    clusters.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     clusters
 }
 
@@ -582,7 +620,9 @@ impl EmbeddingModule {
         let mut texts_to_generate: Vec<(usize, String)> = Vec::new(); // (index, text)
 
         {
-            let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+            let mut cache = embed_cache
+                .lock()
+                .map_err(|e| format!("Cache lock error: {e}"))?;
             for (i, text) in texts.iter().enumerate() {
                 let text_hash = hash_text(text);
                 if let Some(cached) = cache.get(model_name, text_hash) {
@@ -615,7 +655,9 @@ impl EmbeddingModule {
                 .map_err(|e| format!("Embedding generation failed: {e}"))?;
 
             // Store in cache and update result vector
-            let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+            let mut cache = embed_cache
+                .lock()
+                .map_err(|e| format!("Cache lock error: {e}"))?;
             for ((idx, text), emb) in texts_to_generate.iter().zip(new_embeddings.into_iter()) {
                 let text_hash = hash_text(text);
                 cache.insert(model_name, text_hash, emb.clone());
@@ -639,9 +681,7 @@ impl EmbeddingModule {
         }
 
         // Reinterpret as bytes - zero copy
-        let bytes: Vec<u8> = flat.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = flat.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         Ok(CommandResult::Binary {
             metadata: json!({
@@ -688,7 +728,7 @@ impl EmbeddingModule {
         let models = get_model_info_list();
         match models.into_iter().find(|m| m.name == model) {
             Some(info) => Ok(CommandResult::Json(
-                serde_json::to_value(info).unwrap_or(json!({}))
+                serde_json::to_value(info).unwrap_or(json!({})),
             )),
             None => Err(format!("Unknown model: {model}")),
         }
@@ -753,7 +793,9 @@ impl EmbeddingModule {
             if emb.len() != dim {
                 return Err(format!(
                     "Dimension mismatch at index {}: expected {}, got {}",
-                    i, dim, emb.len()
+                    i,
+                    dim,
+                    emb.len()
                 ));
             }
         }
@@ -769,9 +811,7 @@ impl EmbeddingModule {
         );
 
         // Return as binary for efficiency (avoid JSON number serialization overhead)
-        let bytes: Vec<u8> = similarities.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = similarities.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         Ok(CommandResult::Binary {
             metadata: json!({
@@ -811,7 +851,9 @@ impl EmbeddingModule {
             if target.len() != dim {
                 return Err(format!(
                     "Dimension mismatch at target index {}: expected {}, got {}",
-                    i, dim, target.len()
+                    i,
+                    dim,
+                    target.len()
                 ));
             }
         }
@@ -822,11 +864,15 @@ impl EmbeddingModule {
 
         info!(
             "Found {} top-k matches from {} targets ({}d) in {}ms",
-            results.len(), targets.len(), dim, duration_ms
+            results.len(),
+            targets.len(),
+            dim,
+            duration_ms
         );
 
         // Return as array of {index, similarity} objects
-        let result_objects: Vec<Value> = results.iter()
+        let result_objects: Vec<Value> = results
+            .iter()
             .map(|(idx, sim)| json!({ "index": idx, "similarity": sim }))
             .collect();
 
@@ -844,7 +890,9 @@ impl EmbeddingModule {
     /// Handle embedding/cache/stats - get cache hit/miss statistics
     fn handle_cache_stats(&self) -> Result<CommandResult, String> {
         let embed_cache = get_embedding_cache();
-        let cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+        let cache = embed_cache
+            .lock()
+            .map_err(|e| format!("Cache lock error: {e}"))?;
         let (hits, misses, size) = cache.stats();
         let hit_rate = if hits + misses > 0 {
             (hits as f64) / ((hits + misses) as f64) * 100.0
@@ -865,7 +913,9 @@ impl EmbeddingModule {
     /// Handle embedding/cache/clear - clear the embedding cache
     fn handle_cache_clear(&self) -> Result<CommandResult, String> {
         let embed_cache = get_embedding_cache();
-        let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+        let mut cache = embed_cache
+            .lock()
+            .map_err(|e| format!("Cache lock error: {e}"))?;
         let cleared = cache.entries.len();
         cache.entries.clear();
         cache.hits = 0;
@@ -904,7 +954,9 @@ impl EmbeddingModule {
             if emb.len() != dim {
                 return Err(format!(
                     "Dimension mismatch at index {}: expected {}, got {}",
-                    i, dim, emb.len()
+                    i,
+                    dim,
+                    emb.len()
                 ));
             }
         }
@@ -959,11 +1011,7 @@ impl ServiceModule for EmbeddingModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "embedding/generate" => self.handle_generate(&params),
             "embedding/similarity" => self.handle_similarity(&params),
@@ -980,5 +1028,7 @@ impl ServiceModule for EmbeddingModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }

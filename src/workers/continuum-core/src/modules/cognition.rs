@@ -28,19 +28,19 @@
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::gpu::GpuMemoryManager;
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
-use crate::persona::{PersonaCognition, InboxMessage, SenderType, Modality};
-use crate::persona::{SleepMode, RecentResponse};
-use crate::persona::{AdapterInfo, ModelSelectionRequest};
-use crate::persona::GenomeAdapterInfo;
+use crate::log_info;
+use crate::logging::TimingGuard;
 use crate::persona::evaluator;
 use crate::persona::model_selection;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
+use crate::persona::GenomeAdapterInfo;
+use crate::persona::{AdapterInfo, ModelSelectionRequest};
+use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
+use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
-use crate::logging::TimingGuard;
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
-use crate::log_info;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -108,7 +108,9 @@ impl CognitionModule {
 /// Uses GPU manager's per-persona budget when available, 200MB otherwise.
 macro_rules! get_or_create_persona {
     ($self:expr, $persona_uuid:expr) => {
-        $self.state.personas
+        $self
+            .state
+            .personas
             .entry($persona_uuid)
             .or_insert_with(|| {
                 let budget = $self.state.per_persona_budget_mb();
@@ -140,18 +142,13 @@ impl ServiceModule for CognitionModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
 
         match command {
             // ================================================================
             // Persona Lifecycle
             // ================================================================
-
             "cognition/create-engine" => {
                 let _timer = TimingGuard::new("module", "cognition_create_engine");
                 let persona_uuid = p.uuid("persona_id")?;
@@ -164,7 +161,12 @@ impl ServiceModule for CognitionModule {
                 );
                 self.state.personas.insert(persona_uuid, cognition);
 
-                log_info!("module", "cognition", "Created cognition for {}", persona_uuid);
+                log_info!(
+                    "module",
+                    "cognition",
+                    "Created cognition for {}",
+                    persona_uuid
+                );
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
@@ -178,12 +180,18 @@ impl ServiceModule for CognitionModule {
                 let timestamp = p.u64("timestamp")?;
 
                 let sender = parse_sender_type(sender_type_str)?;
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let score = persona.engine.calculate_priority(content, sender, is_voice, room_uuid, timestamp);
-                Ok(CommandResult::Json(serde_json::to_value(&score)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                let score = persona
+                    .engine
+                    .calculate_priority(content, sender, is_voice, room_uuid, timestamp);
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&score).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/fast-path-decision" => {
@@ -192,12 +200,16 @@ impl ServiceModule for CognitionModule {
                 let message = p.value("message").ok_or("Missing message")?;
                 let inbox_msg = parse_inbox_message(message)?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let decision = persona.engine.fast_path_decision(&inbox_msg);
-                Ok(CommandResult::Json(serde_json::to_value(&decision)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/enqueue-message" => {
@@ -219,7 +231,10 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_get_state");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let state = persona.engine.state();
@@ -247,23 +262,30 @@ impl ServiceModule for CognitionModule {
             // ================================================================
             // Message Deduplication (single source of truth in Rust)
             // ================================================================
-
             "cognition/has-evaluated" => {
                 let persona_uuid = p.uuid("persona_id")?;
                 let message_uuid = p.uuid("message_id")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let evaluated = persona.engine.has_evaluated_message(message_uuid);
-                Ok(CommandResult::Json(serde_json::json!({ "evaluated": evaluated })))
+                Ok(CommandResult::Json(
+                    serde_json::json!({ "evaluated": evaluated }),
+                ))
             }
 
             "cognition/mark-evaluated" => {
                 let persona_uuid = p.uuid("persona_id")?;
                 let message_uuid = p.uuid("message_id")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 persona.engine.mark_message_evaluated(message_uuid);
@@ -273,7 +295,6 @@ impl ServiceModule for CognitionModule {
             // ================================================================
             // Text Analysis (stateless pure compute + loop detector state)
             // ================================================================
-
             "cognition/text-similarity" => {
                 let _timer = TimingGuard::new("module", "cognition_text_similarity");
                 let text1 = p.str("text1")?;
@@ -285,8 +306,9 @@ impl ServiceModule for CognitionModule {
                     char_similarity: text_analysis::jaccard_char_bigram_similarity(text1, text2),
                     compute_time_us: start.elapsed().as_micros() as u64,
                 };
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/check-semantic-loop" => {
@@ -295,9 +317,11 @@ impl ServiceModule for CognitionModule {
                 let max_history = p.u64_or("max_history", 10) as usize;
                 let history = parse_conversation_history(&params, "history")?;
 
-                let result = text_analysis::check_semantic_loop(response_text, &history, max_history);
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                let result =
+                    text_analysis::check_semantic_loop(response_text, &history, max_history);
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/validate-response" => {
@@ -314,8 +338,9 @@ impl ServiceModule for CognitionModule {
                     &history,
                     &self.state.loop_detector,
                 );
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/check-mentions" => {
@@ -326,12 +351,17 @@ impl ServiceModule for CognitionModule {
                 let unique_id = p.str_opt("persona_unique_id").unwrap_or("");
 
                 let result = text_analysis::MentionCheckResult {
-                    is_persona_mentioned: text_analysis::is_persona_mentioned(message_text, display_name, unique_id),
+                    is_persona_mentioned: text_analysis::is_persona_mentioned(
+                        message_text,
+                        display_name,
+                        unique_id,
+                    ),
                     has_directed_mention: text_analysis::has_directed_mention(message_text),
                     compute_time_us: start.elapsed().as_micros() as u64,
                 };
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/clean-response" => {
@@ -346,20 +376,23 @@ impl ServiceModule for CognitionModule {
                     thinking: clean_result.thinking,
                     compute_time_us: start.elapsed().as_micros() as u64,
                 };
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // ================================================================
             // Unified Evaluation (6-gate pipeline, single lock)
             // ================================================================
-
             "cognition/full-evaluate" => {
                 let _timer = TimingGuard::new("module", "cognition_full_evaluate");
                 let persona_uuid = p.uuid("persona_id")?;
 
                 // Single lock — atomic access to engine + rate_limiter + sleep_state
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let request = evaluator::FullEvaluateRequest {
@@ -394,13 +427,19 @@ impl ServiceModule for CognitionModule {
                 );
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "full-evaluate {}: respond={}, gate={}, confidence={:.2} ({:.2}ms)",
-                    persona_uuid, result.should_respond, result.gate, result.confidence, result.decision_time_ms
+                    persona_uuid,
+                    result.should_respond,
+                    result.gate,
+                    result.confidence,
+                    result.decision_time_ms
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/track-response" => {
@@ -418,9 +457,12 @@ impl ServiceModule for CognitionModule {
 
                 let count = persona.rate_limiter.response_count(room_uuid);
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "track-response {}: room={}, count={}",
-                    persona_uuid, room_uuid, count
+                    persona_uuid,
+                    room_uuid,
+                    count
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -463,9 +505,13 @@ impl ServiceModule for CognitionModule {
                 };
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "set-sleep-mode {}: {} → {:?} (reason: {})",
-                    persona_uuid, previous, mode, reason
+                    persona_uuid,
+                    previous,
+                    mode,
+                    reason
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -487,9 +533,12 @@ impl ServiceModule for CognitionModule {
                 persona.rate_limiter.max_responses_per_session = max_responses;
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "configure-rate-limiter {}: min_seconds={}, max_responses={}",
-                    persona_uuid, min_seconds, max_responses
+                    persona_uuid,
+                    min_seconds,
+                    max_responses
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -502,11 +551,11 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Model Selection
             // =================================================================
-
             "cognition/select-model" => {
                 let _timer = TimingGuard::new("module", "cognition_select_model");
                 let persona_uuid = p.uuid("persona_id")?;
-                let task_domain = params.get("task_domain")
+                let task_domain = params
+                    .get("task_domain")
                     .and_then(|v| v.as_str())
                     .map(String::from);
                 let base_model = p.str("base_model")?.to_string();
@@ -520,14 +569,16 @@ impl ServiceModule for CognitionModule {
                 let persona = get_or_create_persona!(self, persona_uuid);
                 let result = model_selection::select_model(&request, &persona.adapter_registry);
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/sync-adapters" => {
                 let _timer = TimingGuard::new("module", "cognition_sync_adapters");
                 let persona_uuid = p.uuid("persona_id")?;
-                let adapters_json = params.get("adapters")
+                let adapters_json = params
+                    .get("adapters")
                     .and_then(|v| v.as_array())
                     .ok_or("Missing adapters array")?;
 
@@ -539,15 +590,20 @@ impl ServiceModule for CognitionModule {
                 for adapter_val in adapters_json {
                     let adapter: AdapterInfo = serde_json::from_value(adapter_val.clone())
                         .map_err(|e| format!("Invalid adapter: {e}"))?;
-                    persona.adapter_registry.adapters.insert(adapter.name.clone(), adapter);
+                    persona
+                        .adapter_registry
+                        .adapters
+                        .insert(adapter.name.clone(), adapter);
                 }
 
                 let count = persona.adapter_registry.adapters.len();
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "sync-adapters {}: synced {} adapters",
-                    persona_uuid, count
+                    persona_uuid,
+                    count
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -559,7 +615,6 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Genome Paging (LRU eviction + memory budget decisions)
             // =================================================================
-
             "cognition/genome-activate-skill" => {
                 let _timer = TimingGuard::new("module", "cognition_genome_activate_skill");
                 let persona_uuid = p.uuid("persona_id")?;
@@ -567,7 +622,11 @@ impl ServiceModule for CognitionModule {
                 let gpu_budget = self.state.per_persona_budget_mb();
                 // 0 or missing = use GPU-detected budget
                 let ts_budget = p.f32_or("memory_budget_mb", 0.0);
-                let memory_budget_mb = if ts_budget > 0.0 { ts_budget } else { gpu_budget };
+                let memory_budget_mb = if ts_budget > 0.0 {
+                    ts_budget
+                } else {
+                    gpu_budget
+                };
 
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -585,8 +644,9 @@ impl ServiceModule for CognitionModule {
                     result.evicted, result.to_load, result.decision_time_us
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/genome-sync" => {
@@ -595,12 +655,18 @@ impl ServiceModule for CognitionModule {
                 let gpu_budget = self.state.per_persona_budget_mb();
                 // 0 or missing = use GPU-detected budget
                 let ts_budget = p.f32_or("memory_budget_mb", 0.0);
-                let memory_budget_mb = if ts_budget > 0.0 { ts_budget } else { gpu_budget };
-                let adapters_json = params.get("adapters")
+                let memory_budget_mb = if ts_budget > 0.0 {
+                    ts_budget
+                } else {
+                    gpu_budget
+                };
+                let adapters_json = params
+                    .get("adapters")
                     .and_then(|v| v.as_array())
                     .ok_or("Missing adapters array")?;
 
-                let adapters: Vec<GenomeAdapterInfo> = adapters_json.iter()
+                let adapters: Vec<GenomeAdapterInfo> = adapters_json
+                    .iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
 
@@ -612,10 +678,14 @@ impl ServiceModule for CognitionModule {
                 persona.genome_engine.sync_state(adapters);
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "genome-sync {}: {} adapters ({} active), budget={}MB, used={}MB",
-                    persona_uuid, adapter_count, active_count,
-                    persona.genome_engine.memory_budget_mb, persona.genome_engine.memory_used_mb
+                    persona_uuid,
+                    adapter_count,
+                    active_count,
+                    persona.genome_engine.memory_budget_mb,
+                    persona.genome_engine.memory_used_mb
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -631,24 +701,30 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_genome_state");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let state = persona.genome_engine.state();
-                Ok(CommandResult::Json(serde_json::to_value(&state)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&state).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // =================================================================
             // Domain Classification (adapter-aware keyword scoring)
             // =================================================================
-
             "cognition/classify-domain" => {
                 let _timer = TimingGuard::new("module", "cognition_classify_domain");
                 let persona_uuid = p.uuid("persona_id")?;
                 let text = p.str("text")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let result = persona.domain_classifier.classify(text);
@@ -661,8 +737,9 @@ impl ServiceModule for CognitionModule {
                     result.domain, result.confidence, result.adapter_name, result.decision_time_us
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             "cognition/sync-domain-classifier" => {
@@ -673,7 +750,9 @@ impl ServiceModule for CognitionModule {
 
                 // Build adapter list from genome engine state
                 let state = persona.genome_engine.state();
-                let all_adapters: Vec<_> = state.active_adapters.iter()
+                let all_adapters: Vec<_> = state
+                    .active_adapters
+                    .iter()
                     .chain(state.available_adapters.iter())
                     .cloned()
                     .collect();
@@ -684,9 +763,12 @@ impl ServiceModule for CognitionModule {
                 let covered = summary.iter().filter(|(_, has)| *has).count();
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "sync-domain-classifier {}: {} domains ({} with adapters)",
-                    persona_uuid, summary.len(), covered
+                    persona_uuid,
+                    summary.len(),
+                    covered
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -700,22 +782,29 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_register_domain_keywords");
                 let persona_uuid = p.uuid("persona_id")?;
                 let domain = p.str("domain")?.to_string();
-                let keywords_json = params.get("keywords")
+                let keywords_json = params
+                    .get("keywords")
                     .and_then(|v| v.as_array())
                     .ok_or("Missing keywords array")?;
 
-                let keywords: Vec<String> = keywords_json.iter()
+                let keywords: Vec<String> = keywords_json
+                    .iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect();
 
                 let keyword_count = keywords.len();
                 let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.domain_classifier.register_domain_keywords(&domain, keywords);
+                persona
+                    .domain_classifier
+                    .register_domain_keywords(&domain, keywords);
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "register-domain-keywords {}: added {} keywords to domain '{}'",
-                    persona_uuid, keyword_count, domain
+                    persona_uuid,
+                    keyword_count,
+                    domain
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
@@ -728,7 +817,6 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Domain Activity Tracking & Gap Detection
             // =================================================================
-
             "cognition/genome-record-activity" => {
                 let _timer = TimingGuard::new("module", "cognition_genome_record_activity");
                 let persona_uuid = p.uuid("persona_id")?;
@@ -749,45 +837,59 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_genome_coverage_report");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let persona = self.state.personas.get(&persona_uuid)
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let report = persona.genome_engine.coverage_report();
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "genome-coverage-report {}: {} covered, {} gaps, ratio={:.2}",
-                    persona_uuid, report.covered.len(), report.gaps.len(), report.coverage_ratio
+                    persona_uuid,
+                    report.covered.len(),
+                    report.gaps.len(),
+                    report.coverage_ratio
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&report)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&report).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // =================================================================
             // GPU Budget Query (for TypeScript genome initialization)
             // =================================================================
-
             "cognition/gpu-budget" => {
                 let per_persona = self.state.per_persona_budget_mb();
-                let gpu_info = self.state.gpu_manager.as_ref().map(|mgr| {
-                    let stats = mgr.stats();
-                    serde_json::json!({
-                        "gpu_name": stats.gpu_name,
-                        "total_vram_mb": stats.total_vram_mb,
-                        "inference_budget_mb": stats.inference.budget_mb,
-                        "persona_count": self.state.personas.len(),
-                        "per_persona_budget_mb": per_persona,
-                        "pressure": stats.pressure,
+                let gpu_info = self
+                    .state
+                    .gpu_manager
+                    .as_ref()
+                    .map(|mgr| {
+                        let stats = mgr.stats();
+                        serde_json::json!({
+                            "gpu_name": stats.gpu_name,
+                            "total_vram_mb": stats.total_vram_mb,
+                            "inference_budget_mb": stats.inference.budget_mb,
+                            "persona_count": self.state.personas.len(),
+                            "per_persona_budget_mb": per_persona,
+                            "pressure": stats.pressure,
+                        })
                     })
-                }).unwrap_or_else(|| serde_json::json!({
-                    "gpu_name": "unknown",
-                    "total_vram_mb": 0,
-                    "inference_budget_mb": 0,
-                    "persona_count": self.state.personas.len(),
-                    "per_persona_budget_mb": per_persona,
-                    "pressure": 0.0,
-                }));
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "gpu_name": "unknown",
+                            "total_vram_mb": 0,
+                            "inference_budget_mb": 0,
+                            "persona_count": self.state.personas.len(),
+                            "per_persona_budget_mb": per_persona,
+                            "pressure": 0.0,
+                        })
+                    });
 
                 Ok(CommandResult::Json(gpu_info))
             }
@@ -795,7 +897,6 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Interaction Quality Scoring
             // =================================================================
-
             "cognition/score-interaction" => {
                 let _timer = TimingGuard::new("module", "cognition_score_interaction");
                 let input = p.str("input")?;
@@ -804,25 +905,30 @@ impl ServiceModule for CognitionModule {
                 let task_success = p.bool_opt("task_success");
 
                 let result = crate::persona::domain_classifier::score_interaction_quality(
-                    input, output, feedback, task_success,
+                    input,
+                    output,
+                    feedback,
+                    task_success,
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // =================================================================
             // Post-Inference Adequacy Check
             // =================================================================
-
             "cognition/check-adequacy" => {
                 let _timer = TimingGuard::new("module", "cognition_check_adequacy");
                 let original_text = p.str("original_text")?.to_string();
-                let responses_json = params.get("responses")
+                let responses_json = params
+                    .get("responses")
                     .and_then(|v| v.as_array())
                     .ok_or("Missing responses array")?;
 
-                let responses: Vec<RecentResponse> = responses_json.iter()
+                let responses: Vec<RecentResponse> = responses_json
+                    .iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
 
@@ -835,15 +941,18 @@ impl ServiceModule for CognitionModule {
                     result.responder_name, result.check_time_us, responses.len()
                 );
 
-                Ok(CommandResult::Json(serde_json::to_value(&result)
-                    .map_err(|e| format!("Serialize error: {e}"))?))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             _ => Err(format!("Unknown cognition command: {command}")),
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 // ============================================================================
@@ -861,16 +970,24 @@ fn parse_sender_type(s: &str) -> Result<SenderType, String> {
 }
 
 /// Parse ConversationMessage array from a required JSON field.
-fn parse_conversation_history(params: &Value, key: &str) -> Result<Vec<text_analysis::ConversationMessage>, String> {
-    let arr = params.get(key)
+fn parse_conversation_history(
+    params: &Value,
+    key: &str,
+) -> Result<Vec<text_analysis::ConversationMessage>, String> {
+    let arr = params
+        .get(key)
         .and_then(|v| v.as_array())
         .ok_or_else(|| format!("Missing {key} array"))?;
     Ok(parse_messages(arr))
 }
 
 /// Parse ConversationMessage array from an optional JSON field.
-fn parse_conversation_history_optional(params: &Value, key: &str) -> Vec<text_analysis::ConversationMessage> {
-    params.get(key)
+fn parse_conversation_history_optional(
+    params: &Value,
+    key: &str,
+) -> Vec<text_analysis::ConversationMessage> {
+    params
+        .get(key)
         .and_then(|v| v.as_array())
         .map(|arr| parse_messages(arr))
         .unwrap_or_default()
@@ -905,7 +1022,8 @@ fn parse_inbox_message(value: &Value) -> Result<InboxMessage, String> {
             "voice" => Modality::Voice,
             _ => Modality::Chat,
         }),
-        voice_session_id: p.str_opt("voice_session_id")
+        voice_session_id: p
+            .str_opt("voice_session_id")
             .and_then(|s| Uuid::parse_str(s).ok()),
     })
 }

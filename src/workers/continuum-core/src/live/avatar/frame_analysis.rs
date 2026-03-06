@@ -138,9 +138,7 @@ pub fn analyze(frame: &RgbaFrame) -> FrameAnalysis {
         // Sample every 8th pixel for diversity (full enumeration is expensive)
         if i % 8 == 0 {
             // Quantize to 6-bit per channel for reasonable bucket size
-            let key = ((r >> 2) as u32) << 12
-                | ((g >> 2) as u32) << 6
-                | (b >> 2) as u32;
+            let key = ((r >> 2) as u32) << 12 | ((g >> 2) as u32) << 6 | (b >> 2) as u32;
             color_set.insert(key);
         }
     }
@@ -157,7 +155,11 @@ pub fn analyze(frame: &RgbaFrame) -> FrameAnalysis {
             white_fg += 1;
         }
     }
-    let white_ratio = if non_bg > 0 { white_fg as f32 / non_bg as f32 } else { 0.0 };
+    let white_ratio = if non_bg > 0 {
+        white_fg as f32 / non_bg as f32
+    } else {
+        0.0
+    };
 
     // --- Edge roughness: avg foreground/background transitions per scanline ---
     // A smooth humanoid silhouette has ~2 transitions per row (left edge, right edge).
@@ -239,7 +241,9 @@ pub fn frame_difference(a: &RgbaFrame, b: &RgbaFrame) -> f32 {
         return 1.0; // Different dimensions = completely different
     }
     let total = (a.width * a.height) as usize;
-    if total == 0 { return 0.0; }
+    if total == 0 {
+        return 0.0;
+    }
 
     let mut changed = 0usize;
     for i in 0..total {
@@ -258,8 +262,8 @@ pub fn frame_difference(a: &RgbaFrame, b: &RgbaFrame) -> f32 {
 mod tests {
     use super::*;
     use crate::live::avatar::backends::ProceduralRenderer;
-    use crate::live::avatar::renderer::AvatarRenderer;
     use crate::live::avatar::frame::AvatarConfig;
+    use crate::live::avatar::renderer::AvatarRenderer;
 
     fn make_procedural_frame(identity: &str, w: u32, h: u32) -> RgbaFrame {
         let config = AvatarConfig {
@@ -278,10 +282,24 @@ mod tests {
         let frame = make_procedural_frame("test-agent", 320, 240);
         let analysis = analyze(&frame);
 
-        assert!(!analysis.is_solid, "Procedural frame should not be solid color");
-        assert!(!analysis.is_background_only, "Procedural frame should have visible content");
-        assert!(analysis.coverage > 0.1, "Circle should cover >10% of frame, got {:.1}%", analysis.coverage * 100.0);
-        assert!(analysis.coverage < 0.9, "Circle should not cover >90% of frame, got {:.1}%", analysis.coverage * 100.0);
+        assert!(
+            !analysis.is_solid,
+            "Procedural frame should not be solid color"
+        );
+        assert!(
+            !analysis.is_background_only,
+            "Procedural frame should have visible content"
+        );
+        assert!(
+            analysis.coverage > 0.1,
+            "Circle should cover >10% of frame, got {:.1}%",
+            analysis.coverage * 100.0
+        );
+        assert!(
+            analysis.coverage < 0.9,
+            "Circle should not cover >90% of frame, got {:.1}%",
+            analysis.coverage * 100.0
+        );
     }
 
     #[test]
@@ -290,8 +308,11 @@ mod tests {
         let analysis = analyze(&frame);
 
         // A centered circle should be highly symmetric
-        assert!(analysis.symmetry > 0.85,
-            "Centered circle should be symmetric, got {:.2}", analysis.symmetry);
+        assert!(
+            analysis.symmetry > 0.85,
+            "Centered circle should be symmetric, got {:.2}",
+            analysis.symmetry
+        );
     }
 
     #[test]
@@ -300,8 +321,11 @@ mod tests {
         let analysis = analyze(&frame);
 
         // Circle + background = at least 2 distinct color regions
-        assert!(analysis.color_diversity >= 2,
-            "Should have at least 2 color regions (circle + bg), got {}", analysis.color_diversity);
+        assert!(
+            analysis.color_diversity >= 2,
+            "Should have at least 2 color regions (circle + bg), got {}",
+            analysis.color_diversity
+        );
     }
 
     #[test]
@@ -311,8 +335,11 @@ mod tests {
 
         // Same identity → same frame (static image)
         let diff = frame_difference(&frame_a, &frame_b);
-        assert!(diff < 0.001,
-            "Same identity should produce identical frames, got {:.1}% different", diff * 100.0);
+        assert!(
+            diff < 0.001,
+            "Same identity should produce identical frames, got {:.1}% different",
+            diff * 100.0
+        );
     }
 
     #[test]
@@ -321,19 +348,32 @@ mod tests {
         let frame_b = make_procedural_frame("bob", 160, 120);
 
         let diff = frame_difference(&frame_a, &frame_b);
-        assert!(diff > 0.05,
-            "Different identities should produce different frames, got {:.1}% different", diff * 100.0);
+        assert!(
+            diff > 0.05,
+            "Different identities should produce different frames, got {:.1}% different",
+            diff * 100.0
+        );
     }
 
     #[test]
     fn test_solid_frame_detection() {
         let mut data = vec![0u8; 4 * 4 * 4];
         for pixel in data.chunks_exact_mut(4) {
-            pixel[0] = 100; pixel[1] = 100; pixel[2] = 100; pixel[3] = 255;
+            pixel[0] = 100;
+            pixel[1] = 100;
+            pixel[2] = 100;
+            pixel[3] = 255;
         }
-        let frame = RgbaFrame { width: 4, height: 4, data };
+        let frame = RgbaFrame {
+            width: 4,
+            height: 4,
+            data,
+        };
         let analysis = analyze(&frame);
-        assert!(analysis.is_solid, "Uniform color frame should be detected as solid");
+        assert!(
+            analysis.is_solid,
+            "Uniform color frame should be detected as solid"
+        );
     }
 
     #[test]
@@ -346,14 +386,25 @@ mod tests {
             pixel[2] = BG_B;
             pixel[3] = 255;
         }
-        let frame = RgbaFrame { width: 4, height: 4, data };
+        let frame = RgbaFrame {
+            width: 4,
+            height: 4,
+            data,
+        };
         let analysis = analyze(&frame);
-        assert!(analysis.is_background_only, "All-background frame should be detected");
+        assert!(
+            analysis.is_background_only,
+            "All-background frame should be detected"
+        );
     }
 
     #[test]
     fn test_empty_frame() {
-        let frame = RgbaFrame { width: 0, height: 0, data: vec![] };
+        let frame = RgbaFrame {
+            width: 0,
+            height: 0,
+            data: vec![],
+        };
         let analysis = analyze(&frame);
         assert!(analysis.is_solid);
         assert!(analysis.is_background_only);
@@ -365,10 +416,16 @@ mod tests {
         // A smooth circle has ~2 transitions per scanline (enter + exit)
         let frame = make_procedural_frame("smooth-test", 320, 240);
         let analysis = analyze(&frame);
-        assert!(analysis.edge_roughness < 6.0,
-            "Smooth circle should have low edge roughness, got {:.1}", analysis.edge_roughness);
-        assert!(analysis.is_healthy(),
-            "Procedural circle should be healthy, verdict={:?}", analysis.verdict());
+        assert!(
+            analysis.edge_roughness < 6.0,
+            "Smooth circle should have low edge roughness, got {:.1}",
+            analysis.edge_roughness
+        );
+        assert!(
+            analysis.is_healthy(),
+            "Procedural circle should be healthy, verdict={:?}",
+            analysis.verdict()
+        );
     }
 
     #[test]
@@ -386,19 +443,33 @@ mod tests {
                 // Only in the central region (like a head-sized area)
                 let in_region = x > w / 4 && x < 3 * w / 4 && y > h / 4 && y < 3 * h / 4;
                 if spike && in_region {
-                    data[off] = 255; data[off + 1] = 255; data[off + 2] = 255; // white fg
+                    data[off] = 255;
+                    data[off + 1] = 255;
+                    data[off + 2] = 255; // white fg
                 } else {
-                    data[off] = BG_R; data[off + 1] = BG_G; data[off + 2] = BG_B;
+                    data[off] = BG_R;
+                    data[off + 1] = BG_G;
+                    data[off + 2] = BG_B;
                 }
                 data[off + 3] = 255;
             }
         }
-        let frame = RgbaFrame { width: w, height: h, data };
+        let frame = RgbaFrame {
+            width: w,
+            height: h,
+            data,
+        };
         let analysis = analyze(&frame);
-        assert!(analysis.edge_roughness > 8.0,
-            "Jagged spiky pattern should have high edge roughness, got {:.1}", analysis.edge_roughness);
-        assert!(!analysis.is_healthy(),
-            "Exploding mesh should NOT be healthy, verdict={:?}", analysis.verdict());
+        assert!(
+            analysis.edge_roughness > 8.0,
+            "Jagged spiky pattern should have high edge roughness, got {:.1}",
+            analysis.edge_roughness
+        );
+        assert!(
+            !analysis.is_healthy(),
+            "Exploding mesh should NOT be healthy, verdict={:?}",
+            analysis.verdict()
+        );
     }
 
     #[test]
@@ -418,19 +489,34 @@ mod tests {
                 let dy = (y as f32 - cy) / ry;
                 if dx * dx + dy * dy < 1.0 {
                     // All white — no texture
-                    data[off] = 255; data[off + 1] = 255; data[off + 2] = 255;
+                    data[off] = 255;
+                    data[off + 1] = 255;
+                    data[off + 2] = 255;
                 } else {
-                    data[off] = BG_R; data[off + 1] = BG_G; data[off + 2] = BG_B;
+                    data[off] = BG_R;
+                    data[off + 1] = BG_G;
+                    data[off + 2] = BG_B;
                 }
                 data[off + 3] = 255;
             }
         }
-        let frame = RgbaFrame { width: w, height: h, data };
+        let frame = RgbaFrame {
+            width: w,
+            height: h,
+            data,
+        };
         let analysis = analyze(&frame);
-        assert!(analysis.white_ratio > 0.9,
-            "Untextured white model should have high white ratio, got {:.2}", analysis.white_ratio);
-        assert_eq!(analysis.verdict(), HealthVerdict::MissingTextures,
-            "Smooth white shape should be MissingTextures, got {:?}", analysis.verdict());
+        assert!(
+            analysis.white_ratio > 0.9,
+            "Untextured white model should have high white ratio, got {:.2}",
+            analysis.white_ratio
+        );
+        assert_eq!(
+            analysis.verdict(),
+            HealthVerdict::MissingTextures,
+            "Smooth white shape should be MissingTextures, got {:?}",
+            analysis.verdict()
+        );
     }
 
     #[test]
@@ -449,16 +535,22 @@ mod tests {
                 let dy = y as f32 - cy;
                 if dx * dx + dy * dy < r * r {
                     // Skin tone + varied colors (simulate hair, eyes, skin)
-                    data[off] = (180 + (y % 40) as u8).min(240);     // R varies
+                    data[off] = (180 + (y % 40) as u8).min(240); // R varies
                     data[off + 1] = (140 + (x % 30) as u8).min(220); // G varies
                     data[off + 2] = (120 + ((x + y) % 20) as u8).min(200); // B varies
                 } else {
-                    data[off] = BG_R; data[off + 1] = BG_G; data[off + 2] = BG_B;
+                    data[off] = BG_R;
+                    data[off + 1] = BG_G;
+                    data[off + 2] = BG_B;
                 }
                 data[off + 3] = 255;
             }
         }
-        let frame = RgbaFrame { width: w, height: h, data };
+        let frame = RgbaFrame {
+            width: w,
+            height: h,
+            data,
+        };
         let analysis = analyze(&frame);
         assert!(analysis.is_healthy(),
             "Textured smooth model should be healthy. roughness={:.1}, white={:.2}, diversity={}, verdict={:?}",
@@ -479,9 +571,14 @@ mod tests {
             edge_roughness: 13.7,
             white_ratio: 0.07,
         };
-        assert_eq!(detailed_model.verdict(), HealthVerdict::Healthy,
+        assert_eq!(
+            detailed_model.verdict(),
+            HealthVerdict::Healthy,
             "Detailed model (roughness={:.1}, colors={}, sym={:.2}) should be HEALTHY",
-            detailed_model.edge_roughness, detailed_model.color_diversity, detailed_model.symmetry);
+            detailed_model.edge_roughness,
+            detailed_model.color_diversity,
+            detailed_model.symmetry
+        );
 
         // Truly broken geometry: high roughness + low colors + low symmetry
         let broken_model = FrameAnalysis {
@@ -493,9 +590,14 @@ mod tests {
             edge_roughness: 15.8,
             white_ratio: 0.15,
         };
-        assert_eq!(broken_model.verdict(), HealthVerdict::BrokenGeometry,
+        assert_eq!(
+            broken_model.verdict(),
+            HealthVerdict::BrokenGeometry,
             "Broken geometry (roughness={:.1}, colors={}, sym={:.2}) should be BrokenGeometry",
-            broken_model.edge_roughness, broken_model.color_diversity, broken_model.symmetry);
+            broken_model.edge_roughness,
+            broken_model.color_diversity,
+            broken_model.symmetry
+        );
 
         // Edge case: high roughness + high colors but LOW symmetry = still broken
         // (asymmetric chaos with varied colors from random triangle faces)
@@ -508,8 +610,11 @@ mod tests {
             edge_roughness: 20.0,
             white_ratio: 0.10,
         };
-        assert_eq!(chaotic_model.verdict(), HealthVerdict::BrokenGeometry,
-            "Chaotic asymmetric model should still be BrokenGeometry");
+        assert_eq!(
+            chaotic_model.verdict(),
+            HealthVerdict::BrokenGeometry,
+            "Chaotic asymmetric model should still be BrokenGeometry"
+        );
 
         // Edge case: high roughness + low colors but HIGH symmetry = still broken
         // (symmetric exploding mesh with uniform color)
@@ -522,8 +627,11 @@ mod tests {
             edge_roughness: 12.0,
             white_ratio: 0.05,
         };
-        assert_eq!(uniform_broken.verdict(), HealthVerdict::BrokenGeometry,
-            "Uniform-color high-roughness model should still be BrokenGeometry");
+        assert_eq!(
+            uniform_broken.verdict(),
+            HealthVerdict::BrokenGeometry,
+            "Uniform-color high-roughness model should still be BrokenGeometry"
+        );
     }
 
     #[test]
@@ -536,16 +644,27 @@ mod tests {
             for x in 0..w {
                 let off = ((y * w + x) * 4) as usize;
                 if x < w / 2 {
-                    data[off] = 255; data[off+1] = 255; data[off+2] = 255;
+                    data[off] = 255;
+                    data[off + 1] = 255;
+                    data[off + 2] = 255;
                 } else {
-                    data[off] = 0; data[off+1] = 0; data[off+2] = 0;
+                    data[off] = 0;
+                    data[off + 1] = 0;
+                    data[off + 2] = 0;
                 }
                 data[off + 3] = 255;
             }
         }
-        let frame = RgbaFrame { width: w, height: h, data };
+        let frame = RgbaFrame {
+            width: w,
+            height: h,
+            data,
+        };
         let analysis = analyze(&frame);
-        assert!(analysis.symmetry < 0.3,
-            "Left-white/right-black should have low symmetry, got {:.2}", analysis.symmetry);
+        assert!(
+            analysis.symmetry < 0.3,
+            "Left-white/right-black should have low symmetry, got {:.2}",
+            analysis.symmetry
+        );
     }
 }

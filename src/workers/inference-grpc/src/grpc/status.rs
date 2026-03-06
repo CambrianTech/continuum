@@ -71,9 +71,7 @@ pub async fn handle_status(
             } else {
                 0.0
             };
-            info!(
-                "Pool stats: {completed} requests, {tokens} tokens, {tokens_per_sec:.1} tok/s"
-            );
+            info!("Pool stats: {completed} requests, {tokens} tokens, {tokens_per_sec:.1} tok/s");
         }
         (completed as i32, pending as i32)
     } else {

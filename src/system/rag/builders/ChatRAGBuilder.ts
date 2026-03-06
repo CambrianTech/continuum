@@ -53,7 +53,8 @@ import {
   ActivityContextSource,
   ToolDefinitionsSource,
   DocumentationSource,
-  ToolMethodologySource
+  ToolMethodologySource,
+  OpenProposalsSource
 } from '../sources';
 
 /**
@@ -146,9 +147,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ToolDefinitionsSource(),     // Priority 45: Tool definitions (native/XML, budget-aware)
         new ActivityContextSource(),     // Priority 40: Recipe/activity context
         new DocumentationSource(),       // Priority 35: System documentation awareness
+        new OpenProposalsSource(),        // Priority 25: Open voting proposals (actionable)
         new GovernanceSource()           // Priority 20: Democratic participation guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 13 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 14 sources');
     }
     return this.composer;
   }

@@ -33,7 +33,8 @@ impl<'a> Params<'a> {
 
     /// Required string parameter. Returns error if missing or not a string.
     pub fn str(&self, key: &str) -> Result<&'a str, String> {
-        self.0.get(key)
+        self.0
+            .get(key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("Missing {key}"))
     }
@@ -44,7 +45,10 @@ impl<'a> Params<'a> {
     }
 
     /// Optional string with default.
-    pub fn str_or<'b>(&'a self, key: &str, default: &'b str) -> &'b str where 'a: 'b {
+    pub fn str_or<'b>(&'a self, key: &str, default: &'b str) -> &'b str
+    where
+        'a: 'b,
+    {
         self.str_opt(key).unwrap_or(default)
     }
 
@@ -74,7 +78,8 @@ impl<'a> Params<'a> {
 
     /// Required u64 parameter.
     pub fn u64(&self, key: &str) -> Result<u64, String> {
-        self.0.get(key)
+        self.0
+            .get(key)
             .and_then(|v| v.as_u64())
             .ok_or_else(|| format!("Missing {key}"))
     }
@@ -184,14 +189,17 @@ impl<'a> Params<'a> {
 
     /// Optional typed parameter via serde deserialization, with default.
     pub fn json_or<T: DeserializeOwned + Default>(&self, key: &str) -> T {
-        self.0.get(key)
+        self.0
+            .get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default()
     }
 
     /// Optional typed parameter via serde deserialization.
     pub fn json_opt<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.0.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.0
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     // ================================================================
@@ -378,7 +386,10 @@ mod tests {
     fn test_str_opt_alias() {
         let v = json!({"systemPrompt": "hello"});
         let p = Params::new(&v);
-        assert_eq!(p.str_opt_alias("system_prompt", "systemPrompt"), Some("hello"));
+        assert_eq!(
+            p.str_opt_alias("system_prompt", "systemPrompt"),
+            Some("hello")
+        );
         assert_eq!(p.str_opt_alias("system_prompt", "sys_prompt"), None);
     }
 

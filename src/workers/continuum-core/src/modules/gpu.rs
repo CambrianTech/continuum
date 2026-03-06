@@ -9,8 +9,8 @@
 //!
 //! Follows the HealthModule pattern: stateless handler wrapping shared state.
 
-use crate::gpu::{GpuMemoryManager, GpuSubsystem};
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
+use crate::gpu::{GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -44,11 +44,7 @@ impl ServiceModule for GpuModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "gpu/stats" => {
                 let stats = self.manager.stats();
@@ -65,11 +61,13 @@ impl ServiceModule for GpuModule {
             }
 
             "gpu/set-budget" => {
-                let subsystem_name = params.get("subsystem")
+                let subsystem_name = params
+                    .get("subsystem")
                     .and_then(|v| v.as_str())
                     .ok_or("gpu/set-budget requires 'subsystem' string param")?;
 
-                let budget_mb = params.get("budgetMb")
+                let budget_mb = params
+                    .get("budgetMb")
                     .and_then(|v| v.as_f64())
                     .ok_or("gpu/set-budget requires 'budgetMb' number param")?;
 
@@ -77,11 +75,12 @@ impl ServiceModule for GpuModule {
                     return Err("budgetMb must be > 0".to_string());
                 }
 
-                let subsystem = GpuSubsystem::from_name(subsystem_name)
-                    .ok_or_else(|| format!(
+                let subsystem = GpuSubsystem::from_name(subsystem_name).ok_or_else(|| {
+                    format!(
                         "Unknown subsystem '{}'. Valid: rendering, inference, tts",
                         subsystem_name
-                    ))?;
+                    )
+                })?;
 
                 let budget_bytes = (budget_mb * 1024.0 * 1024.0) as u64;
                 self.manager.set_budget(subsystem, budget_bytes);
@@ -107,11 +106,73 @@ impl ServiceModule for GpuModule {
                 Ok(CommandResult::Json(json))
             }
 
+            // Register a GPU consumer from TypeScript (e.g., training process).
+            // Params: id (string), label (string), priority (string), bytes (number)
+            "gpu/register-consumer" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("gpu/register-consumer requires 'id' string")?;
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .ok_or("gpu/register-consumer requires 'label' string")?;
+                let priority_str = params
+                    .get("priority")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("batch");
+                let bytes = params.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                let priority = match priority_str {
+                    "realtime" => GpuPriority::Realtime,
+                    "interactive" => GpuPriority::Interactive,
+                    "background" => GpuPriority::Background,
+                    _ => GpuPriority::Batch,
+                };
+
+                use crate::gpu::make_entry;
+                self.manager
+                    .eviction_registry
+                    .register(make_entry(id, label, priority, bytes));
+
+                // Account for memory in the inference subsystem budget
+                self.manager
+                    .account_external(GpuSubsystem::Inference, bytes);
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "registered": true,
+                    "id": id,
+                    "bytes": bytes,
+                    "pressure": self.manager.pressure(),
+                })))
+            }
+
+            // Unregister a GPU consumer from TypeScript.
+            // Params: id (string), bytes (number) — bytes to release from budget
+            "gpu/unregister-consumer" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("gpu/unregister-consumer requires 'id' string")?;
+                let bytes = params.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                self.manager.eviction_registry.unregister(id);
+                self.manager.release(GpuSubsystem::Inference, bytes);
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "unregistered": true,
+                    "id": id,
+                    "pressure": self.manager.pressure(),
+                })))
+            }
+
             _ => Err(format!("Unknown GPU command: {command}")),
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -152,7 +213,9 @@ mod tests {
     #[tokio::test]
     async fn test_eviction_registry_empty() {
         let module = test_gpu_module();
-        let result = module.handle_command("gpu/eviction-registry", Value::Null).await;
+        let result = module
+            .handle_command("gpu/eviction-registry", Value::Null)
+            .await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             assert_eq!(json["entries"].as_array().unwrap().len(), 0);
@@ -166,11 +229,16 @@ mod tests {
         let module = test_gpu_module();
         use crate::gpu::{make_entry, GpuPriority};
 
-        module.manager.eviction_registry.register(
-            make_entry("candle:llama", "Llama 3.2", GpuPriority::Interactive, 3_000_000_000)
-        );
+        module.manager.eviction_registry.register(make_entry(
+            "candle:llama",
+            "Llama 3.2",
+            GpuPriority::Interactive,
+            3_000_000_000,
+        ));
 
-        let result = module.handle_command("gpu/eviction-registry", Value::Null).await;
+        let result = module
+            .handle_command("gpu/eviction-registry", Value::Null)
+            .await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             assert_eq!(json["entries"].as_array().unwrap().len(), 1);
@@ -182,7 +250,9 @@ mod tests {
     #[tokio::test]
     async fn test_eviction_candidates_empty() {
         let module = test_gpu_module();
-        let result = module.handle_command("gpu/eviction-candidates", Value::Null).await;
+        let result = module
+            .handle_command("gpu/eviction-candidates", Value::Null)
+            .await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             assert!(json.as_array().unwrap().is_empty());
@@ -194,18 +264,30 @@ mod tests {
         let module = test_gpu_module();
         use crate::gpu::{make_entry, GpuPriority};
 
-        module.manager.eviction_registry.register(
-            make_entry("render:targets", "Render Targets", GpuPriority::Realtime, 100_000_000)
-        );
-        module.manager.eviction_registry.register(
-            make_entry("candle:llama", "Llama 3.2", GpuPriority::Interactive, 3_000_000_000)
-        );
+        module.manager.eviction_registry.register(make_entry(
+            "render:targets",
+            "Render Targets",
+            GpuPriority::Realtime,
+            100_000_000,
+        ));
+        module.manager.eviction_registry.register(make_entry(
+            "candle:llama",
+            "Llama 3.2",
+            GpuPriority::Interactive,
+            3_000_000_000,
+        ));
 
-        let result = module.handle_command("gpu/eviction-candidates", Value::Null).await;
+        let result = module
+            .handle_command("gpu/eviction-candidates", Value::Null)
+            .await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             let candidates = json.as_array().unwrap();
-            assert_eq!(candidates.len(), 1, "Realtime should be excluded from candidates");
+            assert_eq!(
+                candidates.len(),
+                1,
+                "Realtime should be excluded from candidates"
+            );
             assert_eq!(candidates[0]["id"].as_str().unwrap(), "candle:llama");
         }
     }
@@ -260,6 +342,67 @@ mod tests {
     async fn test_unknown_command() {
         let module = test_gpu_module();
         let result = module.handle_command("gpu/unknown", Value::Null).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_register_and_unregister_consumer() {
+        let module = test_gpu_module();
+
+        // Register a training consumer
+        let params = serde_json::json!({
+            "id": "training:test:coding",
+            "label": "Training: test / coding (Llama-3.2-3B)",
+            "bytes": 6_000_000_000_u64,
+            "priority": "batch"
+        });
+        let result = module.handle_command("gpu/register-consumer", params).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = &result {
+            assert_eq!(json["registered"], true);
+            assert!(json["pressure"].as_f64().unwrap() > 0.0);
+        }
+
+        // Verify it appears in the registry
+        let reg = module
+            .handle_command("gpu/eviction-registry", Value::Null)
+            .await
+            .unwrap();
+        if let CommandResult::Json(json) = reg {
+            assert_eq!(json["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                json["entries"][0]["id"].as_str().unwrap(),
+                "training:test:coding"
+            );
+            assert_eq!(json["total_tracked_bytes"].as_u64().unwrap(), 6_000_000_000);
+        }
+
+        // Unregister
+        let unreg_params = serde_json::json!({
+            "id": "training:test:coding",
+            "bytes": 6_000_000_000_u64
+        });
+        let unreg_result = module
+            .handle_command("gpu/unregister-consumer", unreg_params)
+            .await;
+        assert!(unreg_result.is_ok());
+
+        // Verify it's gone
+        let reg2 = module
+            .handle_command("gpu/eviction-registry", Value::Null)
+            .await
+            .unwrap();
+        if let CommandResult::Json(json) = reg2 {
+            assert_eq!(json["entries"].as_array().unwrap().len(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_consumer_missing_params() {
+        let module = test_gpu_module();
+        let result = module
+            .handle_command("gpu/register-consumer", Value::Null)
+            .await;
         assert!(result.is_err());
     }
 }

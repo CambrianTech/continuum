@@ -15,11 +15,11 @@
 
 use std::collections::HashMap;
 
-use candle_transformers::quantized_nn::RmsNorm;
 use candle_core::quantized::QTensor;
 use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module};
+use candle_transformers::quantized_nn::RmsNorm;
 
 /// Default fallback if GGUF metadata doesn't contain context_length.
 const DEFAULT_CONTEXT_LENGTH: usize = 4096;
@@ -52,7 +52,13 @@ impl QMatMul {
     /// QMatMul stores weights transposed: [in_features, out_features] for the
     /// QTensor variant, but dequantize() returns it in the same layout.
     /// After merging, we wrap in QMatMul::Tensor which uses regular matmul.
-    fn merge_lora(&mut self, lora_a: &Tensor, lora_b: &Tensor, scale: f64, device: &Device) -> Result<()> {
+    fn merge_lora(
+        &mut self,
+        lora_a: &Tensor,
+        lora_b: &Tensor,
+        scale: f64,
+        device: &Device,
+    ) -> Result<()> {
         // Dequantize the current weight to F32
         let base_weight = match &self.inner {
             candle_core::quantized::QMatMul::QTensor(qt) => qt.dequantize(device)?,
@@ -78,7 +84,9 @@ impl QMatMul {
             } else {
                 return Err(candle_core::Error::Msg(format!(
                     "Shape mismatch: base={:?}, delta={:?}, delta_t={:?}",
-                    base_weight.dims(), scaled_delta.dims(), delta_t.dims()
+                    base_weight.dims(),
+                    scaled_delta.dims(),
+                    delta_t.dims()
                 )));
             }
         };
@@ -251,7 +259,15 @@ impl LayerWeights {
 
         let y = if q.device().is_metal() && seq_len == 1 {
             // Metal SDPA kernel — fast path for single-token generation.
-            candle_nn::ops::sdpa(&q, &k, &v, None, false, 1. / (self.head_dim as f32).sqrt(), 1.)?
+            candle_nn::ops::sdpa(
+                &q,
+                &k,
+                &v,
+                None,
+                false,
+                1. / (self.head_dim as f32).sqrt(),
+                1.,
+            )?
         } else {
             // Fallback: manual Q*K^T attention with causal mask.
             // WARNING: This path creates O(seq_len^2) attention matrices that corrupt
@@ -281,7 +297,13 @@ impl LayerWeights {
 /// Projection types for LoRA weight mapping.
 #[derive(Debug, Clone, Copy)]
 enum Projection {
-    Q, K, V, O, Gate, Up, Down,
+    Q,
+    K,
+    V,
+    O,
+    Gate,
+    Up,
+    Down,
 }
 
 /// Parse a LoRA weight name to extract layer index and projection type.
@@ -601,15 +623,24 @@ impl ModelWeights {
                     Projection::O => &mut layer.attention_wo,
                     Projection::Gate => match &mut layer.mlp_or_moe {
                         MlpOrMoe::Mlp(mlp) => &mut mlp.feed_forward_w1,
-                        MlpOrMoe::MoE { .. } => { failed += 1; continue; }
+                        MlpOrMoe::MoE { .. } => {
+                            failed += 1;
+                            continue;
+                        }
                     },
                     Projection::Up => match &mut layer.mlp_or_moe {
                         MlpOrMoe::Mlp(mlp) => &mut mlp.feed_forward_w3,
-                        MlpOrMoe::MoE { .. } => { failed += 1; continue; }
+                        MlpOrMoe::MoE { .. } => {
+                            failed += 1;
+                            continue;
+                        }
                     },
                     Projection::Down => match &mut layer.mlp_or_moe {
                         MlpOrMoe::Mlp(mlp) => &mut mlp.feed_forward_w2,
-                        MlpOrMoe::MoE { .. } => { failed += 1; continue; }
+                        MlpOrMoe::MoE { .. } => {
+                            failed += 1;
+                            continue;
+                        }
                     },
                 };
 
@@ -663,21 +694,18 @@ mod tests {
     #[test]
     fn test_parse_lora_layer_name_peft_format() {
         // Full PEFT format: base_model.model.model.layers.N.module.proj
-        let (idx, proj) = parse_lora_layer_name(
-            "base_model.model.model.layers.5.self_attn.q_proj"
-        ).unwrap();
+        let (idx, proj) =
+            parse_lora_layer_name("base_model.model.model.layers.5.self_attn.q_proj").unwrap();
         assert_eq!(idx, 5);
         assert!(matches!(proj, Projection::Q));
 
-        let (idx, proj) = parse_lora_layer_name(
-            "base_model.model.model.layers.0.self_attn.v_proj"
-        ).unwrap();
+        let (idx, proj) =
+            parse_lora_layer_name("base_model.model.model.layers.0.self_attn.v_proj").unwrap();
         assert_eq!(idx, 0);
         assert!(matches!(proj, Projection::V));
 
-        let (idx, proj) = parse_lora_layer_name(
-            "base_model.model.model.layers.27.mlp.gate_proj"
-        ).unwrap();
+        let (idx, proj) =
+            parse_lora_layer_name("base_model.model.model.layers.27.mlp.gate_proj").unwrap();
         assert_eq!(idx, 27);
         assert!(matches!(proj, Projection::Gate));
     }
@@ -685,21 +713,15 @@ mod tests {
     #[test]
     fn test_parse_lora_layer_name_short_format() {
         // Short format: model.layers.N.module.proj
-        let (idx, proj) = parse_lora_layer_name(
-            "model.layers.3.self_attn.o_proj"
-        ).unwrap();
+        let (idx, proj) = parse_lora_layer_name("model.layers.3.self_attn.o_proj").unwrap();
         assert_eq!(idx, 3);
         assert!(matches!(proj, Projection::O));
 
-        let (idx, proj) = parse_lora_layer_name(
-            "model.layers.10.mlp.up_proj"
-        ).unwrap();
+        let (idx, proj) = parse_lora_layer_name("model.layers.10.mlp.up_proj").unwrap();
         assert_eq!(idx, 10);
         assert!(matches!(proj, Projection::Up));
 
-        let (idx, proj) = parse_lora_layer_name(
-            "model.layers.0.mlp.down_proj"
-        ).unwrap();
+        let (idx, proj) = parse_lora_layer_name("model.layers.0.mlp.down_proj").unwrap();
         assert_eq!(idx, 0);
         assert!(matches!(proj, Projection::Down));
     }
@@ -707,9 +729,7 @@ mod tests {
     #[test]
     fn test_parse_lora_layer_name_bare_format() {
         // Bare format: layers.N.module.proj (no model. prefix)
-        let (idx, proj) = parse_lora_layer_name(
-            "layers.7.self_attn.k_proj"
-        ).unwrap();
+        let (idx, proj) = parse_lora_layer_name("layers.7.self_attn.k_proj").unwrap();
         assert_eq!(idx, 7);
         assert!(matches!(proj, Projection::K));
     }

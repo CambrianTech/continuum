@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::live::{VoiceOrchestrator, VoiceParticipant, SpeakerType, UtteranceEvent};
+    use crate::live::{SpeakerType, UtteranceEvent, VoiceOrchestrator, VoiceParticipant};
     use uuid::Uuid;
 
     #[test]

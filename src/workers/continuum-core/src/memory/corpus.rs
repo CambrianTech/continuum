@@ -122,11 +122,7 @@ impl MemoryCorpus {
     pub fn memories_with_embeddings(&self) -> Vec<(&MemoryRecord, &[f32])> {
         self.memories
             .iter()
-            .filter_map(|m| {
-                self.memory_embeddings
-                    .get(&m.id)
-                    .map(|e| (m, e.as_slice()))
-            })
+            .filter_map(|m| self.memory_embeddings.get(&m.id).map(|e| (m, e.as_slice())))
             .collect()
     }
 

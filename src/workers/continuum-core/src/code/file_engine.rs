@@ -127,7 +127,8 @@ impl FileEngine {
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
         let abs_path = self.security.validate_write(relative_path)?;
-        self.security.validate_size(relative_path, content.len() as u64)?;
+        self.security
+            .validate_size(relative_path, content.len() as u64)?;
 
         // Read old content (empty string for new files)
         let old_content = if abs_path.exists() {
@@ -198,7 +199,8 @@ impl FileEngine {
         let old_content = fs::read_to_string(&abs_path)?;
         let new_content = apply_edit(&old_content, edit_mode)?;
 
-        self.security.validate_size(relative_path, new_content.len() as u64)?;
+        self.security
+            .validate_size(relative_path, new_content.len() as u64)?;
 
         // Compute diffs
         let (forward_diff, reverse_diff) =
@@ -304,10 +306,10 @@ impl FileEngine {
 
     /// Undo a specific change by applying its reverse diff.
     pub fn undo(&self, change_id: &Uuid) -> Result<WriteResult, FileEngineError> {
-        let (reverse_diff, file_path) = self
-            .graph
-            .reverse_diff_for(change_id)
-            .ok_or_else(|| FileEngineError::EditFailed(format!("Change {} not found", change_id)))?;
+        let (reverse_diff, file_path) =
+            self.graph.reverse_diff_for(change_id).ok_or_else(|| {
+                FileEngineError::EditFailed(format!("Change {} not found", change_id))
+            })?;
 
         // Read current file content
         let abs_path = self.security.validate_write(&file_path)?;
@@ -319,10 +321,9 @@ impl FileEngine {
 
         // The reverse diff's unified text tells us what to apply.
         // For a proper undo, we use the stored old content from the original node.
-        let original_node = self
-            .graph
-            .get(change_id)
-            .ok_or_else(|| FileEngineError::EditFailed(format!("Change {} not found", change_id)))?;
+        let original_node = self.graph.get(change_id).ok_or_else(|| {
+            FileEngineError::EditFailed(format!("Change {} not found", change_id))
+        })?;
 
         // Reconstruct: the original node's reverse_diff goes old→new when applied backward.
         // We apply the reverse_diff to the current content. Since we stored the complete
@@ -334,7 +335,9 @@ impl FileEngine {
         let undo_node = self
             .graph
             .record_undo(*change_id, &self.persona_id)
-            .ok_or_else(|| FileEngineError::EditFailed(format!("Change {} not found for undo", change_id)))?;
+            .ok_or_else(|| {
+                FileEngineError::EditFailed(format!("Change {} not found for undo", change_id))
+            })?;
 
         // For the undo, we need to apply the reverse diff to the file.
         // The simplest correct approach: re-read the original diff to determine
@@ -389,7 +392,10 @@ impl FileEngine {
             file_path,
             bytes_written: 0,
             error: if !is_latest {
-                Some("Warning: undone change was not the latest; result may have conflicts".to_string())
+                Some(
+                    "Warning: undone change was not the latest; result may have conflicts"
+                        .to_string(),
+                )
             } else {
                 None
             },
@@ -547,7 +553,10 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
             Ok(result)
         }
 
-        EditMode::InsertAt { line, content: new_content } => {
+        EditMode::InsertAt {
+            line,
+            content: new_content,
+        } => {
             let lines: Vec<&str> = content.lines().collect();
             let total = lines.len() as u32;
 
@@ -584,7 +593,9 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
             Ok(result)
         }
 
-        EditMode::Append { content: new_content } => {
+        EditMode::Append {
+            content: new_content,
+        } => {
             let mut result = content.to_string();
             if !result.ends_with('\n') && !result.is_empty() {
                 result.push('\n');
@@ -686,11 +697,7 @@ mod tests {
     fn setup_engine() -> (tempfile::TempDir, FileEngine) {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(
-            dir.path().join("src/main.ts"),
-            "line 1\nline 2\nline 3\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join("src/main.ts"), "line 1\nline 2\nline 3\n").unwrap();
 
         let security = PathSecurity::new(dir.path()).unwrap();
         let engine = FileEngine::new("test-persona", security);
@@ -726,7 +733,11 @@ mod tests {
     fn test_write_new_file() {
         let (_dir, engine) = setup_engine();
         let result = engine
-            .write("src/new.ts", "export const x = 1;\n", Some("Create new file"))
+            .write(
+                "src/new.ts",
+                "export const x = 1;\n",
+                Some("Create new file"),
+            )
             .unwrap();
         assert!(result.success);
         assert!(result.change_id.is_some());

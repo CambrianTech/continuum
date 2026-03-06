@@ -1,7 +1,7 @@
-use tokio::sync::{mpsc, Notify};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
+use tokio::sync::{mpsc, Notify};
 
 /// Trait for items that can be prioritized
 pub trait Prioritized: Send + Sync + 'static {
@@ -111,7 +111,10 @@ impl<T: Prioritized> PartialOrd for PriorityWrapper<T> {
 
 impl<T: Prioritized> Ord for PriorityWrapper<T> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.inner.priority().partial_cmp(&other.inner.priority()).unwrap_or(Ordering::Equal)
+        self.inner
+            .priority()
+            .partial_cmp(&other.inner.priority())
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -148,7 +151,9 @@ mod tests {
 
     impl Ord for TestMessage {
         fn cmp(&self, other: &Self) -> Ordering {
-            self.priority.partial_cmp(&other.priority).unwrap_or(Ordering::Equal)
+            self.priority
+                .partial_cmp(&other.priority)
+                .unwrap_or(Ordering::Equal)
         }
     }
 
@@ -157,9 +162,18 @@ mod tests {
     async fn test_concurrent_priority_queue() {
         let mut queue = ConcurrentPriorityQueue::new();
 
-        queue.enqueue(TestMessage { priority: 0.3, content: "Low".to_string() });
-        queue.enqueue(TestMessage { priority: 0.9, content: "High".to_string() });
-        queue.enqueue(TestMessage { priority: 0.5, content: "Medium".to_string() });
+        queue.enqueue(TestMessage {
+            priority: 0.3,
+            content: "Low".to_string(),
+        });
+        queue.enqueue(TestMessage {
+            priority: 0.9,
+            content: "High".to_string(),
+        });
+        queue.enqueue(TestMessage {
+            priority: 0.5,
+            content: "Medium".to_string(),
+        });
 
         // Wait for processing (worker task needs time to process)
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

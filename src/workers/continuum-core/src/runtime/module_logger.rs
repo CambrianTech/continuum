@@ -29,7 +29,12 @@ impl ModuleLogger {
     /// This is the general-purpose constructor for non-module code.
     pub fn for_component(component_name: &str) -> Self {
         let home = dirs::home_dir().expect("Failed to resolve home directory");
-        let log_dir = home.join(".continuum").join("jtag").join("logs").join("system").join("modules");
+        let log_dir = home
+            .join(".continuum")
+            .join("jtag")
+            .join("logs")
+            .join("system")
+            .join("modules");
         let log_path = log_dir.join(format!("{}.log", component_name));
 
         // Ensure directory exists
@@ -51,7 +56,10 @@ impl ModuleLogger {
 
     fn write(&self, level: &str, msg: &str) {
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let line = format!("[{}] [{}] [{}] {}\n", timestamp, level, &self.module_name, msg);
+        let line = format!(
+            "[{}] [{}] [{}] {}\n",
+            timestamp, level, &self.module_name, msg
+        );
 
         if let Ok(mut guard) = self.log_file.lock() {
             if let Some(ref mut file) = *guard {
@@ -84,7 +92,10 @@ impl ModuleLogger {
 
     /// Timing with metadata
     pub fn timing_with_meta(&self, operation: &str, duration_ms: u64, meta: &str) {
-        self.write("TIMING", &format!("{} took {}ms | {}", operation, duration_ms, meta));
+        self.write(
+            "TIMING",
+            &format!("{} took {}ms | {}", operation, duration_ms, meta),
+        );
     }
 
     pub fn log_path(&self) -> &PathBuf {

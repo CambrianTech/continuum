@@ -939,7 +939,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 return {
                   id: `synth_${Date.now()}_${i}`,
                   name,
-                  input: coerceParamsToSchema(tc.parameters, toolSpecs, name),
+                  input: coerceParamsToSchema(tc.parameters ?? {}, toolSpecs, name),
                 };
               });
             }

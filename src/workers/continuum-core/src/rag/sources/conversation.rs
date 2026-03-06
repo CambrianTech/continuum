@@ -58,7 +58,7 @@ impl RagSource for ConversationHistorySource {
 
         RagSection {
             source_name: self.name().to_string(),
-            token_count: 0, // Will be calculated from actual messages
+            token_count: 0,    // Will be calculated from actual messages
             load_time_ms: 0.0, // Will be set by engine
             messages,
             system_prompt_section: None, // Conversation goes in messages, not system prompt

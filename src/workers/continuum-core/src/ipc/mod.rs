@@ -1,3 +1,25 @@
+use crate::code::{FileEngine, ShellSession};
+use crate::gpu::GpuMemoryManager;
+use crate::modules::agent::AgentModule;
+use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::avatar::AvatarModule;
+use crate::modules::channel::{ChannelModule, ChannelState};
+use crate::modules::code::{CodeModule, CodeState};
+use crate::modules::cognition::{CognitionModule, CognitionState};
+use crate::modules::data::DataModule;
+use crate::modules::dataset::DatasetModule;
+use crate::modules::embedding::EmbeddingModule;
+use crate::modules::gpu::GpuModule;
+use crate::modules::health::HealthModule;
+use crate::modules::live::{VoiceModule, VoiceState};
+use crate::modules::logger::LoggerModule;
+use crate::modules::memory::{MemoryModule, MemoryState};
+use crate::modules::models::ModelsModule;
+use crate::modules::rag::{RagModule, RagState};
+use crate::modules::search::SearchModule;
+use crate::modules::sentinel::SentinelModule;
+use crate::modules::system_resources::SystemResourceModule;
+use crate::modules::tool_parsing::ToolParsingModule;
 /// IPC server for continuum-core
 ///
 /// Unix socket server that accepts JSON requests and returns JSON responses.
@@ -11,38 +33,17 @@
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
 use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
-use crate::code::{FileEngine, ShellSession};
-use crate::runtime::{Runtime, CommandResult};
-use crate::gpu::GpuMemoryManager;
-use crate::modules::gpu::GpuModule;
-use crate::modules::health::HealthModule;
-use crate::modules::cognition::{CognitionModule, CognitionState};
-use crate::modules::channel::{ChannelModule, ChannelState};
-use crate::modules::models::ModelsModule;
-use crate::modules::memory::{MemoryModule, MemoryState};
-use crate::modules::live::{VoiceModule, VoiceState};
-use crate::modules::code::{CodeModule, CodeState};
-use crate::modules::rag::{RagModule, RagState};
-use crate::modules::data::DataModule;
-use crate::modules::logger::LoggerModule;
-use crate::modules::search::SearchModule;
-use crate::modules::embedding::EmbeddingModule;
-use crate::modules::agent::AgentModule;
-use crate::modules::ai_provider::AIProviderModule;
-use crate::modules::sentinel::SentinelModule;
-use crate::modules::tool_parsing::ToolParsingModule;
-use crate::modules::system_resources::SystemResourceModule;
-use crate::modules::avatar::AvatarModule;
+use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
-use ts_rs::TS;
-use crate::{log_debug, log_info, log_error};
+use crate::{log_debug, log_error, log_info};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
+use ts_rs::TS;
 use uuid::Uuid;
-use dashmap::DashMap;
 
 // ============================================================================
 // Request/Response Protocol
@@ -50,20 +51,23 @@ use dashmap::DashMap;
 
 /// Inbox message for IPC (mirrors InboxMessage but with string UUIDs for JSON transport)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/ipc/InboxMessageRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/ipc/InboxMessageRequest.ts"
+)]
 pub struct InboxMessageRequest {
     pub id: String,
     pub room_id: String,
     pub sender_id: String,
     pub sender_name: String,
-    pub sender_type: String,  // "human", "persona", "agent", "system"
+    pub sender_type: String, // "human", "persona", "agent", "system"
     pub content: String,
     /// Timestamp in milliseconds (fits in JS number, max safe ~9 quadrillion)
     #[ts(type = "number")]
     pub timestamp: u64,
     pub priority: f32,
     #[ts(optional)]
-    pub source_modality: Option<String>,  // "chat", "voice"
+    pub source_modality: Option<String>, // "chat", "voice"
     #[ts(optional)]
     pub voice_session_id: Option<String>,
 }
@@ -211,11 +215,20 @@ fn send_json_frame(stream: &mut UnixStream, response: &Response) -> std::io::Res
 /// Send a length-prefixed binary response frame.
 /// Frame format: [4 bytes u32 BE total_length][JSON header bytes][\0][raw binary bytes]
 /// The \0 separator is unambiguous — serde_json encodes null chars as \u0000.
-fn send_binary_frame(stream: &mut UnixStream, response: &Response, binary_data: &[u8]) -> std::io::Result<()> {
+fn send_binary_frame(
+    stream: &mut UnixStream,
+    response: &Response,
+    binary_data: &[u8],
+) -> std::io::Result<()> {
     let json = match serde_json::to_string(response) {
         Ok(j) => j,
         Err(e) => {
-            log_error!("ipc", "server", "Failed to serialize binary response header: {}", e);
+            log_error!(
+                "ipc",
+                "server",
+                "Failed to serialize binary response header: {}",
+                e
+            );
             r#"{"success":false,"error":"Internal serialization error"}"#.to_string()
         }
     };
@@ -259,7 +272,10 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
                     let response = response.with_request_id(request_id);
                     send_json_frame(&mut writer_stream, &response)
                 }
-                HandleResult::Binary { json_header, binary_data } => {
+                HandleResult::Binary {
+                    json_header,
+                    binary_data,
+                } => {
                     let json_header = json_header.with_request_id(request_id);
                     send_binary_frame(&mut writer_stream, &json_header, &binary_data)
                 }
@@ -283,13 +299,19 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         let json_value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = tx.send((None, HandleResult::Json(Response::error(format!("Invalid JSON: {e}")))));
+                let _ = tx.send((
+                    None,
+                    HandleResult::Json(Response::error(format!("Invalid JSON: {e}"))),
+                ));
                 continue;
             }
         };
 
         let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
-        let command = json_value.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let command = json_value
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Dispatch to tokio directly — NO RAYON THREAD BLOCKED.
         //
@@ -315,7 +337,9 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
                 let result = state.runtime.route_command(cmd, json_value.clone()).await;
 
                 match result {
-                    Some(Ok(CommandResult::Json(value))) => HandleResult::Json(Response::success(value)),
+                    Some(Ok(CommandResult::Json(value))) => {
+                        HandleResult::Json(Response::success(value))
+                    }
                     Some(Ok(CommandResult::Binary { metadata, data })) => HandleResult::Binary {
                         json_header: Response::success(metadata),
                         binary_data: data,
@@ -327,7 +351,9 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
                     ))),
                 }
             } else {
-                HandleResult::Json(Response::error("Missing 'command' field in request".to_string()))
+                HandleResult::Json(Response::error(
+                    "Missing 'command' field in request".to_string(),
+                ))
             };
             let _ = tx.send((request_id, handle_result));
         });
@@ -371,7 +397,8 @@ mod tests {
         let parsed_length = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
         assert_eq!(parsed_length, payload.len());
 
-        let parsed_json: serde_json::Value = serde_json::from_slice(&frame[4..4 + parsed_length]).unwrap();
+        let parsed_json: serde_json::Value =
+            serde_json::from_slice(&frame[4..4 + parsed_length]).unwrap();
         assert_eq!(parsed_json["success"], true);
         assert_eq!(parsed_json["result"]["healthy"], true);
     }
@@ -389,9 +416,7 @@ mod tests {
 
         // Simulate PCM audio data (4 samples of i16)
         let audio_samples: Vec<i16> = vec![1000, -2000, 3000, -4000];
-        let pcm_bytes: Vec<u8> = audio_samples.iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        let pcm_bytes: Vec<u8> = audio_samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
         // Build binary frame: [4-byte BE total_length][JSON][\0][PCM]
         let total_length = (json_bytes.len() + 1 + pcm_bytes.len()) as u32;
@@ -406,7 +431,10 @@ mod tests {
         let payload = &frame[4..4 + parsed_total];
 
         // Find \0 separator
-        let sep_idx = payload.iter().position(|&b| b == 0).expect("Should have separator");
+        let sep_idx = payload
+            .iter()
+            .position(|&b| b == 0)
+            .expect("Should have separator");
         let parsed_json_bytes = &payload[..sep_idx];
         let parsed_binary = &payload[sep_idx + 1..];
 
@@ -433,11 +461,16 @@ mod tests {
         let bytes = serialized.as_bytes();
 
         // Should NOT contain raw 0x00 byte
-        assert!(!bytes.contains(&0u8),
-            "serde_json should never emit raw 0x00 byte, got: {:?}", serialized);
+        assert!(
+            !bytes.contains(&0u8),
+            "serde_json should never emit raw 0x00 byte, got: {:?}",
+            serialized
+        );
         // Should contain the escaped form
-        assert!(serialized.contains("\\u0000"),
-            "Null should be escaped as \\u0000");
+        assert!(
+            serialized.contains("\\u0000"),
+            "Null should be escaped as \\u0000"
+        );
     }
 
     // ========================================================================
@@ -486,8 +519,8 @@ mod tests {
         use std::os::unix::net::UnixStream;
 
         let socket_path = "/tmp/continuum-core.sock";
-        let mut stream = UnixStream::connect(socket_path)
-            .expect("Failed to connect to continuum-core socket");
+        let mut stream =
+            UnixStream::connect(socket_path).expect("Failed to connect to continuum-core socket");
 
         // Send health-check request
         let request = r#"{"command":"health-check","requestId":1}"#;
@@ -521,7 +554,8 @@ mod tests {
             .expect("Failed to connect to continuum-core socket");
 
         // Send voice/synthesize request
-        let request = r#"{"command":"voice/synthesize","text":"Hello world","voice":"af","requestId":2}"#;
+        let request =
+            r#"{"command":"voice/synthesize","text":"Hello world","voice":"af","requestId":2}"#;
         stream.write_all(request.as_bytes()).unwrap();
         stream.write_all(b"\n").unwrap();
         stream.flush().unwrap();
@@ -554,7 +588,11 @@ mod tests {
             assert_eq!(sample_rate, 16000);
             assert!(num_samples > 100, "Should have >100 samples");
             assert!(duration_ms > 50, "Should be >50ms");
-            assert_eq!(pcm_bytes.len(), num_samples as usize * 2, "PCM bytes should be 2 * num_samples");
+            assert_eq!(
+                pcm_bytes.len(),
+                num_samples as usize * 2,
+                "PCM bytes should be 2 * num_samples"
+            );
 
             // Verify PCM data is valid i16 audio (not all zeros)
             let samples: Vec<i16> = pcm_bytes
@@ -562,11 +600,19 @@ mod tests {
                 .map(|c| i16::from_le_bytes([c[0], c[1]]))
                 .collect();
             let max_amp = samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-            assert!(max_amp > 100, "Audio should not be silence, max amplitude: {}", max_amp);
+            assert!(
+                max_amp > 100,
+                "Audio should not be silence, max amplitude: {}",
+                max_amp
+            );
 
             println!(
                 "IPC voice/synthesize: {} samples, {}Hz, {}ms, {} bytes PCM, max amp: {}",
-                num_samples, sample_rate, duration_ms, pcm_bytes.len(), max_amp
+                num_samples,
+                sample_rate,
+                duration_ms,
+                pcm_bytes.len(),
+                max_amp
             );
         } else {
             // JSON-only response (likely an error)
@@ -617,15 +663,14 @@ pub fn start_server(
 
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
-    let cognition_state = Arc::new(
-        CognitionState::new(rag_engine.clone())
-            .with_gpu_manager(gpu_manager.clone())
-    );
+    let cognition_state =
+        Arc::new(CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()));
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
 
     // Channel module shares the unified personas map for fast-path decisions
-    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> = Arc::new(DashMap::new());
+    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> =
+        Arc::new(DashMap::new());
     let channel_state = Arc::new(ChannelState::from_existing(
         channel_registries.clone(),
         personas,
@@ -681,7 +726,9 @@ pub fn start_server(
 
     // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
     // Provides runtime/metrics/{all,module,slow}, runtime/list
-    runtime.register(Arc::new(crate::modules::runtime_control::RuntimeModule::new()));
+    runtime.register(Arc::new(
+        crate::modules::runtime_control::RuntimeModule::new(),
+    ));
 
     // MCPModule: Dynamic tool discovery for MCP servers
     // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
@@ -694,13 +741,17 @@ pub fn start_server(
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
     // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
-    runtime.register(Arc::new(AIProviderModule::with_gpu_manager(gpu_manager.clone())));
+    runtime.register(Arc::new(AIProviderModule::with_gpu_manager(
+        gpu_manager.clone(),
+    )));
 
     // SentinelModule: Concurrent, fault-tolerant build/task execution
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
     // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
     // Process isolation via child processes - safe for Xcode, cargo, etc.
-    runtime.register(Arc::new(SentinelModule::new()));
+    let sentinel_module = Arc::new(SentinelModule::new());
+    runtime.register(sentinel_module.clone());
+    crate::modules::sentinel::register_for_shutdown(sentinel_module);
 
     // ToolParsingModule: Stateless tool call parsing + correction
     // Provides tool-parsing/parse, tool-parsing/correct, tool-parsing/register-tools,
@@ -712,6 +763,10 @@ pub fn start_server(
     // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
     runtime.register(Arc::new(AvatarModule::new()));
 
+    // DatasetModule: Training dataset import and management
+    // Provides dataset/import-csv, dataset/import-realclasseval, dataset/list, dataset/info
+    runtime.register(Arc::new(DatasetModule::new()));
+
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {
@@ -722,9 +777,7 @@ pub fn start_server(
     // Start periodic tick loops for modules that declare a tick_interval.
     // Replaces TypeScript's per-persona setIntervals (task polling, self-task gen, training checks).
     // Tick loops run as tokio tasks — they're lightweight and don't block the IPC thread.
-    let _tick_handles = rt_handle.block_on(async {
-        runtime.start_tick_loops()
-    });
+    let _tick_handles = rt_handle.block_on(async { runtime.start_tick_loops() });
 
     // Verify all expected modules are registered (fails server if any missing)
     if let Err(e) = runtime.verify_registration() {
@@ -732,9 +785,13 @@ pub fn start_server(
         return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
     }
 
-    log_info!("ipc", "server", "Modular runtime ready with {} modules: {:?}",
+    log_info!(
+        "ipc",
+        "server",
+        "Modular runtime ready with {} modules: {:?}",
         runtime.registry().list_modules().len(),
-        runtime.registry().list_modules());
+        runtime.registry().list_modules()
+    );
 
     // Initialize global CommandExecutor for all spawned processes (sentinels, agents, etc.)
     // This allows ANY async task to execute ANY command (Rust or TypeScript)

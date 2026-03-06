@@ -22,11 +22,17 @@ pub async fn execute(
 
     let pipeline_name = pipeline.name.as_deref().unwrap_or("nested");
 
-    log.info(&format!("[{}] Sentinel step: executing nested pipeline '{}' with {} steps",
-        pipeline_ctx.handle_id, pipeline_name, pipeline.steps.len()));
+    log.info(&format!(
+        "[{}] Sentinel step: executing nested pipeline '{}' with {} steps",
+        pipeline_ctx.handle_id,
+        pipeline_name,
+        pipeline.steps.len()
+    ));
 
     // Create a child execution context inheriting from parent
-    let working_dir = pipeline.working_dir.clone()
+    let working_dir = pipeline
+        .working_dir
+        .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.working_dir.clone());
 
@@ -39,7 +45,10 @@ pub async fn execute(
 
     // Inherit parent inputs where child doesn't override
     for (key, value) in &ctx.inputs {
-        child_ctx.inputs.entry(key.clone()).or_insert_with(|| value.clone());
+        child_ctx
+            .inputs
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
     }
 
     let mut success = true;
@@ -68,12 +77,17 @@ pub async fn execute(
     let steps_completed = child_ctx.step_results.len();
 
     // Last step output becomes this step's output
-    let last_output = child_ctx.step_results.last()
-        .and_then(|r| r.output.clone());
+    let last_output = child_ctx.step_results.last().and_then(|r| r.output.clone());
 
-    log.info(&format!("[{}] Sentinel step '{}' completed: success={}, steps={}/{}, duration={}ms",
-        pipeline_ctx.handle_id, pipeline_name, success,
-        steps_completed, pipeline.steps.len(), duration_ms));
+    log.info(&format!(
+        "[{}] Sentinel step '{}' completed: success={}, steps={}/{}, duration={}ms",
+        pipeline_ctx.handle_id,
+        pipeline_name,
+        success,
+        steps_completed,
+        pipeline.steps.len(),
+        duration_ms
+    ));
 
     Ok(StepResult {
         step_index: index,
@@ -96,9 +110,9 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -109,7 +123,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-sentinel",
             registry,
@@ -125,6 +142,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -135,6 +153,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -153,7 +172,9 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["pipelineName"], "child");
@@ -169,7 +190,8 @@ mod tests {
         let bus = Arc::new(MessageBus::new());
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
-        ctx.inputs.insert("parent_var".to_string(), json!("inherited"));
+        ctx.inputs
+            .insert("parent_var".to_string(), json!("inherited"));
 
         let pipeline = Pipeline {
             name: Some("child".to_string()),
@@ -179,13 +201,16 @@ mod tests {
                 timeout_secs: Some(10),
                 working_dir: None,
                 allow_failure: None,
+                env: None,
             }],
             working_dir: None,
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("inherited\n"));
@@ -210,13 +235,16 @@ mod tests {
                 timeout_secs: Some(10),
                 working_dir: None,
                 allow_failure: None,
+                env: None,
             }],
             working_dir: None,
             timeout_secs: None,
             inputs: child_inputs,
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("child_value\n"));
@@ -237,7 +265,9 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(!result.success);
         assert_eq!(result.data["stepsCompleted"], 2); // echo ok + failing step
@@ -259,7 +289,9 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["stepsCompleted"], 0);
@@ -281,7 +313,9 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["pipelineName"], "nested");

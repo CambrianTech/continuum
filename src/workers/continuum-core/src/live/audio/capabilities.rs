@@ -84,20 +84,35 @@ impl ModelCapabilityRegistry {
         // OpenAI models
         capabilities.insert("gpt-4o".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gpt-4o-realtime".into(), AudioCapabilities::AUDIO_NATIVE);
-        capabilities.insert("gpt-4o-realtime-preview".into(), AudioCapabilities::AUDIO_NATIVE);
-        capabilities.insert("gpt-4o-mini-realtime".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert(
+            "gpt-4o-realtime-preview".into(),
+            AudioCapabilities::AUDIO_NATIVE,
+        );
+        capabilities.insert(
+            "gpt-4o-mini-realtime".into(),
+            AudioCapabilities::AUDIO_NATIVE,
+        );
         capabilities.insert("gpt-4".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("gpt-4-turbo".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("gpt-3.5-turbo".into(), AudioCapabilities::TEXT_ONLY);
 
         // Google models
-        capabilities.insert("gemini-2.5-flash-native-audio-preview".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert(
+            "gemini-2.5-flash-native-audio-preview".into(),
+            AudioCapabilities::AUDIO_NATIVE,
+        );
         capabilities.insert("gemini-2.5-flash".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gemini-live".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gemini-2.0-flash".into(), AudioCapabilities::AUDIO_NATIVE);
-        capabilities.insert("gemini-2.0-flash-exp".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert(
+            "gemini-2.0-flash-exp".into(),
+            AudioCapabilities::AUDIO_NATIVE,
+        );
         capabilities.insert("gemini-1.5-pro".into(), AudioCapabilities::AUDIO_INPUT_ONLY);
-        capabilities.insert("gemini-1.5-flash".into(), AudioCapabilities::AUDIO_INPUT_ONLY);
+        capabilities.insert(
+            "gemini-1.5-flash".into(),
+            AudioCapabilities::AUDIO_INPUT_ONLY,
+        );
         capabilities.insert("gemini-pro".into(), AudioCapabilities::TEXT_ONLY);
 
         // Anthropic models (text only for now)
@@ -123,7 +138,10 @@ impl ModelCapabilityRegistry {
         // Alibaba Qwen3-Omni (audio native, open source)
         capabilities.insert("qwen3-omni".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("qwen3-omni-flash".into(), AudioCapabilities::AUDIO_NATIVE);
-        capabilities.insert("qwen3-omni-flash-realtime".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert(
+            "qwen3-omni-flash-realtime".into(),
+            AudioCapabilities::AUDIO_NATIVE,
+        );
         capabilities.insert("qwen3-omni-30b".into(), AudioCapabilities::AUDIO_NATIVE);
 
         // Amazon Nova Sonic (audio native)
@@ -295,8 +313,14 @@ mod tests {
 
         // Claude gets transcription, outputs via TTS
         let claude_routing = AudioRouting::for_model("claude-3-sonnet", &registry);
-        assert!(matches!(claude_routing.input_route, InputRoute::Transcription { .. }));
-        assert!(matches!(claude_routing.output_route, OutputRoute::TextToSpeech { .. }));
+        assert!(matches!(
+            claude_routing.input_route,
+            InputRoute::Transcription { .. }
+        ));
+        assert!(matches!(
+            claude_routing.output_route,
+            OutputRoute::TextToSpeech { .. }
+        ));
         assert!(!claude_routing.needs_mixed_audio());
         assert!(claude_routing.tts_should_be_audible());
     }
@@ -310,11 +334,14 @@ mod tests {
         assert!(gemini.audio_input);
         assert!(!gemini.audio_output);
         assert!(!gemini.needs_stt()); // Can hear directly
-        assert!(gemini.needs_tts());  // But needs TTS for output
+        assert!(gemini.needs_tts()); // But needs TTS for output
 
         let routing = AudioRouting::for_model("gemini-1.5-pro", &registry);
         assert_eq!(routing.input_route, InputRoute::RawAudio);
-        assert!(matches!(routing.output_route, OutputRoute::TextToSpeech { .. }));
+        assert!(matches!(
+            routing.output_route,
+            OutputRoute::TextToSpeech { .. }
+        ));
     }
 
     #[test]

@@ -21,8 +21,8 @@ struct JTAGRequest<T> {
     r#type: String,
     timestamp: String,
     payload: T,
-        user_id: Option<String>,
-        session_id: Option<String>,
+    user_id: Option<String>,
+    session_id: Option<String>,
 }
 
 /// Logger client — fire-and-forget via bounded channel.
@@ -101,13 +101,7 @@ impl LoggerClient {
     }
 
     /// Log with explicit level
-    pub fn log_level(
-        &self,
-        category: &str,
-        level: LogLevel,
-        component: &str,
-        message: &str,
-    ) {
+    pub fn log_level(&self, category: &str, level: LogLevel, component: &str, message: &str) {
         self.log(category, level, component, message, None);
     }
 

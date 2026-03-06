@@ -60,12 +60,12 @@ impl ChannelQueue {
         while self.items.len() > self.max_size {
             let now = now_ms();
             // Find kickable items sorted by resistance (lowest first)
-            let mut kickable_indices: Vec<(usize, f32)> = self.items.iter()
+            let mut kickable_indices: Vec<(usize, f32)> = self
+                .items
+                .iter()
                 .enumerate()
                 .filter(|(_, item)| item.can_be_kicked())
-                .map(|(i, item)| {
-                    (i, item.kick_resistance(now, item.timestamp()))
-                })
+                .map(|(i, item)| (i, item.kick_resistance(now, item.timestamp())))
                 .collect();
 
             if kickable_indices.is_empty() {
@@ -73,7 +73,8 @@ impl ChannelQueue {
             }
 
             // Sort by resistance ascending (lowest kicked first)
-            kickable_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            kickable_indices
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
             let kick_idx = kickable_indices[0].0;
             let kicked = self.items.remove(kick_idx);
@@ -191,8 +192,11 @@ impl ChannelQueue {
         anchor_idx: usize,
         group_indices: &[usize],
     ) -> Option<Box<dyn QueueItemBehavior>> {
-        let anchor = self.items[anchor_idx].as_any().downcast_ref::<ChatQueueItem>()?;
-        let others: Vec<&ChatQueueItem> = group_indices.iter()
+        let anchor = self.items[anchor_idx]
+            .as_any()
+            .downcast_ref::<ChatQueueItem>()?;
+        let others: Vec<&ChatQueueItem> = group_indices
+            .iter()
             .filter_map(|&idx| self.items[idx].as_any().downcast_ref::<ChatQueueItem>())
             .collect();
 
@@ -205,8 +209,11 @@ impl ChannelQueue {
         anchor_idx: usize,
         group_indices: &[usize],
     ) -> Option<Box<dyn QueueItemBehavior>> {
-        let anchor = self.items[anchor_idx].as_any().downcast_ref::<TaskQueueItem>()?;
-        let others: Vec<&TaskQueueItem> = group_indices.iter()
+        let anchor = self.items[anchor_idx]
+            .as_any()
+            .downcast_ref::<TaskQueueItem>()?;
+        let others: Vec<&TaskQueueItem> = group_indices
+            .iter()
             .filter_map(|&idx| self.items[idx].as_any().downcast_ref::<TaskQueueItem>())
             .collect();
 
@@ -240,7 +247,8 @@ impl ChannelQueue {
     /// Get the priority of the highest-priority item (for state gating check)
     pub fn peek_priority(&self) -> f32 {
         let now = now_ms();
-        self.items.first()
+        self.items
+            .first()
             .map(|i| i.effective_priority(now, i.timestamp()))
             .unwrap_or(0.0)
     }
@@ -297,9 +305,9 @@ impl ChannelQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::channel_items::*;
     use super::super::types::SenderType;
+    use super::*;
     use uuid::Uuid;
 
     fn make_chat_queue() -> ChannelQueue {

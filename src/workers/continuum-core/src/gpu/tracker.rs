@@ -111,9 +111,13 @@ impl GpuModelTracker {
             Ok(guard) => {
                 let mb = bytes as f64 / (1024.0 * 1024.0);
                 log_info!(
-                    "gpu", self.label,
+                    "gpu",
+                    self.label,
                     "{}: GPU {} [{}] allocation {:.0}MB",
-                    self.label, subsystem.name(), priority.name(), mb
+                    self.label,
+                    subsystem.name(),
+                    priority.name(),
+                    mb
                 );
 
                 // Register in eviction registry for visibility
@@ -126,7 +130,9 @@ impl GpuModelTracker {
                 ));
 
                 // Store guard and registry state for cleanup on release
-                let mut slot = self.guard.lock()
+                let mut slot = self
+                    .guard
+                    .lock()
                     .map_err(|e| format!("{}: lock poisoned: {e}", self.label))?;
                 // If replacing an existing guard, the old one drops here (releases old allocation)
                 *slot = Some(guard);
@@ -135,9 +141,7 @@ impl GpuModelTracker {
                 }
                 Ok(())
             }
-            Err(e) => {
-                Err(format!("{}: GPU allocation failed — {}", self.label, e))
-            }
+            Err(e) => Err(format!("{}: GPU allocation failed — {}", self.label, e)),
         }
     }
 
@@ -148,9 +152,11 @@ impl GpuModelTracker {
             if let Some(guard) = slot.take() {
                 let mb = guard.bytes() as f64 / (1024.0 * 1024.0);
                 log_info!(
-                    "gpu", self.label,
+                    "gpu",
+                    self.label,
                     "{}: GPU released {:.0}MB",
-                    self.label, mb
+                    self.label,
+                    mb
                 );
                 // guard.release() called by Drop
                 drop(guard);
@@ -176,14 +182,18 @@ impl GpuModelTracker {
 
     /// Current tracked bytes (0 if not tracking or lock poisoned).
     pub fn tracked_bytes(&self) -> u64 {
-        self.guard.lock().ok()
+        self.guard
+            .lock()
+            .ok()
             .and_then(|slot| slot.as_ref().map(|g| g.bytes()))
             .unwrap_or(0)
     }
 
     /// Whether this tracker holds an active allocation.
     pub fn is_tracked(&self) -> bool {
-        self.guard.lock().ok()
+        self.guard
+            .lock()
+            .ok()
             .map(|slot| slot.is_some())
             .unwrap_or(false)
     }
@@ -254,7 +264,12 @@ mod tests {
     #[test]
     fn test_track_bytes_no_manager() {
         let tracker = GpuModelTracker::new("NoMgr");
-        let result = tracker.track_bytes(GpuSubsystem::Tts, 100_000_000, None, GpuPriority::Interactive);
+        let result = tracker.track_bytes(
+            GpuSubsystem::Tts,
+            100_000_000,
+            None,
+            GpuPriority::Interactive,
+        );
         assert!(result.is_ok());
         assert!(!tracker.is_tracked()); // No guard stored
     }
@@ -263,7 +278,8 @@ mod tests {
     fn test_track_zero_bytes_noop() {
         let tracker = GpuModelTracker::new("ZeroBytes");
         let mgr = test_manager();
-        let result = tracker.track_bytes(GpuSubsystem::Tts, 0, Some(&mgr), GpuPriority::Interactive);
+        let result =
+            tracker.track_bytes(GpuSubsystem::Tts, 0, Some(&mgr), GpuPriority::Interactive);
         assert!(result.is_ok());
         assert!(!tracker.is_tracked());
     }
@@ -273,7 +289,14 @@ mod tests {
         let tracker = GpuModelTracker::new("ReleaseTest");
         let mgr = test_manager();
 
-        tracker.track_bytes(GpuSubsystem::Inference, 200 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        tracker
+            .track_bytes(
+                GpuSubsystem::Inference,
+                200 * 1024 * 1024,
+                Some(&mgr),
+                GpuPriority::Interactive,
+            )
+            .unwrap();
         assert!(tracker.is_tracked());
 
         tracker.release();
@@ -287,11 +310,25 @@ mod tests {
         let mgr = test_manager();
 
         // First allocation
-        tracker.track_bytes(GpuSubsystem::Tts, 50 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        tracker
+            .track_bytes(
+                GpuSubsystem::Tts,
+                50 * 1024 * 1024,
+                Some(&mgr),
+                GpuPriority::Interactive,
+            )
+            .unwrap();
         assert_eq!(tracker.tracked_bytes(), 50 * 1024 * 1024);
 
         // Replace with larger allocation — old guard drops, releases old memory
-        tracker.track_bytes(GpuSubsystem::Tts, 80 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        tracker
+            .track_bytes(
+                GpuSubsystem::Tts,
+                80 * 1024 * 1024,
+                Some(&mgr),
+                GpuPriority::Interactive,
+            )
+            .unwrap();
         assert_eq!(tracker.tracked_bytes(), 80 * 1024 * 1024);
     }
 
@@ -304,7 +341,14 @@ mod tests {
         assert_eq!(mgr.eviction_registry.len(), 0);
 
         // Track → registered
-        tracker.track_bytes(GpuSubsystem::Tts, 100 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        tracker
+            .track_bytes(
+                GpuSubsystem::Tts,
+                100 * 1024 * 1024,
+                Some(&mgr),
+                GpuPriority::Interactive,
+            )
+            .unwrap();
         assert_eq!(mgr.eviction_registry.len(), 1);
 
         let snap = mgr.eviction_registry.snapshot();
@@ -322,7 +366,14 @@ mod tests {
         let tracker = GpuModelTracker::new("TouchTest");
         let mgr = test_manager();
 
-        tracker.track_bytes(GpuSubsystem::Inference, 50 * 1024 * 1024, Some(&mgr), GpuPriority::Interactive).unwrap();
+        tracker
+            .track_bytes(
+                GpuSubsystem::Inference,
+                50 * 1024 * 1024,
+                Some(&mgr),
+                GpuPriority::Interactive,
+            )
+            .unwrap();
 
         let snap_before = mgr.eviction_registry.snapshot();
         let ts_before = snap_before.entries[0].last_used_ms;

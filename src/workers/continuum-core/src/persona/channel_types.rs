@@ -20,7 +20,10 @@ use uuid::Uuid;
 /// Each domain has one ChannelQueue. Items route to their domain's queue.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-#[ts(export, export_to = "../../../shared/generated/persona/ActivityDomain.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ActivityDomain.ts"
+)]
 pub enum ActivityDomain {
     /// Voice/audio: always urgent, never kicked, no consolidation
     Audio,
@@ -174,7 +177,10 @@ pub trait QueueItemBehavior: Send + Sync + Any {
 
 /// Per-channel status snapshot
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ChannelStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ChannelStatus.ts"
+)]
 pub struct ChannelStatus {
     pub domain: ActivityDomain,
     pub size: u32,
@@ -184,7 +190,10 @@ pub struct ChannelStatus {
 
 /// Full channel registry status
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ChannelRegistryStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ChannelRegistryStatus.ts"
+)]
 pub struct ChannelRegistryStatus {
     pub channels: Vec<ChannelStatus>,
     pub total_size: u32,
@@ -194,7 +203,10 @@ pub struct ChannelRegistryStatus {
 
 /// Result from service_cycle() — what the TS loop should do next
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ServiceCycleResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ServiceCycleResult.ts"
+)]
 pub struct ServiceCycleResult {
     /// Should TS process an item?
     pub should_process: bool,

@@ -8,7 +8,10 @@ use ts_rs::TS;
 
 /// Sentinel execution handle
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/SentinelHandle.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/SentinelHandle.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SentinelHandle {
     pub id: String,
@@ -27,7 +30,10 @@ pub struct SentinelHandle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/SentinelStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/SentinelStatus.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SentinelStatus {
     Running,
@@ -38,7 +44,10 @@ pub enum SentinelStatus {
 
 /// Log stream info
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/LogStreamInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/LogStreamInfo.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct LogStreamInfo {
     pub name: String,
@@ -53,7 +62,10 @@ pub struct LogStreamInfo {
 /// Steps compose recursively — condition, loop, parallel, and sentinel
 /// all contain nested steps, enabling arbitrarily complex pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/PipelineStep.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineStep.ts"
+)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PipelineStep {
     /// Execute a shell command as an isolated child process
@@ -72,6 +84,11 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "allowFailure")]
         allow_failure: Option<bool>,
+        /// Environment variables set on the child process. Values are interpolated.
+        /// Use this to pass arbitrary data (code, JSON) safely — env vars bypass
+        /// shell quoting issues that break heredocs and embedded strings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<std::collections::HashMap<String, String>>,
     },
 
     /// LLM inference via AIProviderModule (default) or agentic loop via ai/agent command
@@ -282,7 +299,10 @@ pub struct StepResult {
 
 /// Result of pipeline execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/sentinel/PipelineResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineResult {
     pub handle: String,
@@ -323,11 +343,35 @@ pub struct PipelineContext<'a> {
     pub steps_log_path: Option<&'a std::path::Path>,
 }
 
+/// Escalation metadata — owned by Rust, pushed to TypeScript on completion.
+/// This is the single source of truth for sentinel → persona routing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentinelEscalation {
+    /// Owning persona for inbox delivery
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_persona_id: Option<String>,
+    /// SentinelEntity ID for execution history persistence
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    /// Human-readable name for escalation messages
+    pub sentinel_name: String,
+    /// Escalation rules (JSON pass-through — TS owns the schema)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalation_rules: Option<Value>,
+}
+
 /// Internal state for a running sentinel
 pub struct RunningSentinel {
     pub handle: SentinelHandle,
     /// Channel to send cancellation signal
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    /// Escalation metadata — pushed to TypeScript on completion
+    pub escalation: Option<SentinelEscalation>,
+    /// Completion signal — subscribers receive () when sentinel finishes.
+    /// Replaces the TS polling loop with a proper async wait.
+    pub completion_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub completion_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Safety limit for while/until/continuous loops when maxIterations is omitted

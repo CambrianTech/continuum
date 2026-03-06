@@ -4,10 +4,10 @@
 //! Each participant hears everyone except themselves.
 
 use crate::audio_constants::AUDIO_FRAME_SIZE;
-use crate::live::handle::Handle;
 use crate::live::audio::vad::{ProductionVAD, VADError};
-use std::collections::HashMap;
+use crate::live::handle::Handle;
 use crate::{clog_debug, clog_info, clog_warn};
+use std::collections::HashMap;
 
 /// Audio test utilities for generating synthetic audio
 pub mod test_utils {
@@ -79,7 +79,8 @@ pub const FRAME_SIZE: usize = AUDIO_FRAME_SIZE;
 const AI_RING_BUFFER_SECONDS: usize = 60;
 
 /// Ring buffer size for AI audio (samples)
-const AI_RING_BUFFER_SIZE: usize = crate::audio_constants::AUDIO_SAMPLE_RATE as usize * AI_RING_BUFFER_SECONDS;
+const AI_RING_BUFFER_SIZE: usize =
+    crate::audio_constants::AUDIO_SAMPLE_RATE as usize * AI_RING_BUFFER_SECONDS;
 
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
@@ -104,8 +105,8 @@ pub struct ParticipantStream {
     // This eliminates JavaScript timing jitter from the audio pipeline
     // Vec<i16> instead of Box<[i16; N]> to avoid stack overflow during allocation
     ai_ring_buffer: Option<Vec<i16>>,
-    ai_ring_write: usize,  // Write position
-    ai_ring_read: usize,   // Read position
+    ai_ring_write: usize,     // Write position
+    ai_ring_read: usize,      // Read position
     ai_ring_available: usize, // Samples available
 
     // === Voice Activity Detection (Production Two-Stage VAD) ===
@@ -225,7 +226,9 @@ impl ParticipantStream {
         // This eliminates JavaScript timing jitter - AI can dump all TTS audio at once
         if self.is_ai {
             if let Some(ref mut ring) = self.ai_ring_buffer {
-                let samples_to_write = samples.len().min(AI_RING_BUFFER_SIZE - self.ai_ring_available);
+                let samples_to_write = samples
+                    .len()
+                    .min(AI_RING_BUFFER_SIZE - self.ai_ring_available);
 
                 if samples_to_write < samples.len() {
                     clog_warn!(
@@ -252,7 +255,8 @@ impl ParticipantStream {
                         self.display_name,
                         samples_to_write,
                         self.ai_ring_available,
-                        self.ai_ring_available as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32
+                        self.ai_ring_available as f32
+                            / crate::audio_constants::AUDIO_SAMPLE_RATE as f32
                     );
                 }
             }
@@ -284,7 +288,9 @@ impl ParticipantStream {
             match vad_result {
                 Ok(Some(complete_sentence)) => {
                     // Complete sentence ready for transcription
-                    let duration_ms = (complete_sentence.len() as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32) * 1000.0;
+                    let duration_ms = (complete_sentence.len() as f32
+                        / crate::audio_constants::AUDIO_SAMPLE_RATE as f32)
+                        * 1000.0;
                     clog_info!(
                         "📤 Complete sentence ready for {} ({} samples, {:.0}ms)",
                         self.display_name,
@@ -401,7 +407,6 @@ pub struct AudioMixer {
     // === Pre-allocated scratch buffers for the 20ms mix tick ===
     // These eliminate per-tick HashMap/Vec allocations on the real-time audio path.
     // At 50Hz tick rate with 5 participants, this saves ~800KB/sec of allocation churn.
-
     /// Cached audio frames pulled from participants (reused across ticks)
     tick_audio_cache: HashMap<Handle, Vec<i16>>,
     /// i32 accumulation buffer for mixing (avoids per-target allocation)
@@ -425,7 +430,7 @@ impl AudioMixer {
 
     /// Create mixer with default settings (uses audio_constants)
     pub fn default_voice() -> Self {
-        use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
+        use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
         Self::new(AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE)
     }
 
@@ -436,7 +441,10 @@ impl AudioMixer {
     }
 
     /// Add a participant and initialize VAD
-    pub async fn add_participant_with_init(&mut self, mut stream: ParticipantStream) -> Result<(), VADError> {
+    pub async fn add_participant_with_init(
+        &mut self,
+        mut stream: ParticipantStream,
+    ) -> Result<(), VADError> {
         stream.initialize_vad()?;
         self.participants.insert(stream.handle, stream);
         Ok(())
@@ -500,7 +508,9 @@ impl AudioMixer {
     /// Note: Requires &mut self because AI participants pull from ring buffer
     pub fn mix_all(&mut self) -> Vec<i16> {
         // Reuse pre-allocated i32 buffer
-        for s in self.tick_mix_buffer.iter_mut() { *s = 0; }
+        for s in self.tick_mix_buffer.iter_mut() {
+            *s = 0;
+        }
 
         for participant in self.participants.values_mut() {
             let audio = participant.get_audio();
@@ -521,7 +531,9 @@ impl AudioMixer {
     /// Note: Requires &mut self because AI participants pull from ring buffer
     pub fn mix_minus(&mut self, exclude_handle: &Handle) -> Vec<i16> {
         // Reuse pre-allocated i32 buffer
-        for s in self.tick_mix_buffer.iter_mut() { *s = 0; }
+        for s in self.tick_mix_buffer.iter_mut() {
+            *s = 0;
+        }
 
         for (handle, participant) in &mut self.participants {
             if handle == exclude_handle {
@@ -559,7 +571,8 @@ impl AudioMixer {
         audio_cache.clear();
         for (handle, participant) in &mut self.participants {
             let audio = participant.get_audio();
-            let entry = audio_cache.entry(*handle)
+            let entry = audio_cache
+                .entry(*handle)
                 .or_insert_with(|| Vec::with_capacity(self.frame_size));
             entry.clear();
             entry.extend_from_slice(audio);
@@ -583,7 +596,9 @@ impl AudioMixer {
             }
 
             // Zero the pre-allocated mixing buffer
-            for s in mix_buffer.iter_mut() { *s = 0; }
+            for s in mix_buffer.iter_mut() {
+                *s = 0;
+            }
 
             // Mix all OTHER participants' cached audio
             for (handle, audio) in &audio_cache {
@@ -628,7 +643,8 @@ impl AudioMixer {
 
     /// Find a participant's handle by user_id
     pub fn find_handle_by_user_id(&self, user_id: &str) -> Option<Handle> {
-        self.participants.iter()
+        self.participants
+            .iter()
             .find(|(_, stream)| stream.user_id == user_id)
             .map(|(handle, _)| *handle)
     }
@@ -658,9 +674,9 @@ impl AudioMixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_utils::*;
+    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::utils::audio::is_silence;
-    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
+    use test_utils::*;
 
     #[test]
     fn test_generate_sine_wave() {
@@ -712,8 +728,16 @@ mod tests {
         stream_b.initialize_vad().expect("VAD init failed");
 
         // Alice plays 440Hz, Bob plays 880Hz
-        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_a.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_b.push_audio(generate_sine_wave(
+            880.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -741,9 +765,21 @@ mod tests {
         stream_c.initialize_vad().expect("VAD init failed");
 
         // Each plays a different frequency
-        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_c.push_audio(generate_sine_wave(1320.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_a.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_b.push_audio(generate_sine_wave(
+            880.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_c.push_audio(generate_sine_wave(
+            1320.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -807,8 +843,16 @@ mod tests {
         stream_a.initialize_vad().expect("VAD init failed");
         stream_b.initialize_vad().expect("VAD init failed");
 
-        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_a.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_b.push_audio(generate_sine_wave(
+            880.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
         stream_a.muted = true; // Alice is muted
 
         mixer.add_participant(stream_a);
@@ -845,12 +889,20 @@ mod tests {
         assert!(stream_ai.is_ai);
 
         // Human speaks (3 frames - mix_all() + mix_minus() x2 each consume from human)
-        stream_human.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_human.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
 
         // AI injects TTS audio (3 frames - each mixing call consumes one frame from ring buffer)
         // mix_all(), mix_minus(&human), mix_minus(&ai) each pull one frame
         let mut stream_ai_mut = stream_ai;
-        stream_ai_mut.push_audio(generate_sine_wave(220.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE * 3));
+        stream_ai_mut.push_audio(generate_sine_wave(
+            220.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE * 3,
+        ));
 
         mixer.add_participant(stream_human);
         mixer.add_participant(stream_ai_mut);
@@ -881,8 +933,16 @@ mod tests {
         stream_a.initialize_vad().expect("VAD init failed");
         stream_b.initialize_vad().expect("VAD init failed");
 
-        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_a.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_b.push_audio(generate_sine_wave(
+            880.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -909,8 +969,16 @@ mod tests {
         stream_b.initialize_vad().expect("VAD init failed");
         // Charlie doesn't push audio — should not appear in result
 
-        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
-        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_a.push_audio(generate_sine_wave(
+            440.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
+        stream_b.push_audio(generate_sine_wave(
+            880.0,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_FRAME_SIZE,
+        ));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -919,7 +987,12 @@ mod tests {
         let frames = mixer.pull_all_audio();
 
         // Should have exactly 2 frames (Alice and Bob have audio, Charlie is silent)
-        assert_eq!(frames.len(), 2, "Expected 2 active senders, got {}", frames.len());
+        assert_eq!(
+            frames.len(),
+            2,
+            "Expected 2 active senders, got {}",
+            frames.len()
+        );
 
         // Check user_ids are correct
         let user_ids: Vec<&str> = frames.iter().map(|(_, uid, _)| uid.as_str()).collect();
@@ -928,8 +1001,16 @@ mod tests {
 
         // Check audio is not empty
         for (_, user_id, audio) in &frames {
-            assert!(!audio.is_empty(), "Audio for {} should not be empty", user_id);
-            assert!(!is_silence(audio, 100.0), "Audio for {} should not be silence", user_id);
+            assert!(
+                !audio.is_empty(),
+                "Audio for {} should not be empty",
+                user_id
+            );
+            assert!(
+                !is_silence(audio, 100.0),
+                "Audio for {} should not be silence",
+                user_id
+            );
         }
     }
 
@@ -944,7 +1025,11 @@ mod tests {
                 ParticipantStream::new(handle, format!("user-{i}"), format!("User {i}"));
             stream.initialize_vad().expect("VAD init failed");
             // Max amplitude sine wave
-            stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+            stream.push_audio(generate_sine_wave(
+                440.0 + (i as f32 * 100.0),
+                AUDIO_SAMPLE_RATE,
+                AUDIO_FRAME_SIZE,
+            ));
             mixer.add_participant(stream);
         }
 

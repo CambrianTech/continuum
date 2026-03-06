@@ -4,7 +4,9 @@ use serde_json::json;
 use std::time::Instant;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, PipelineStep, StepResult};
+use crate::modules::sentinel::types::{
+    ExecutionContext, PipelineContext, PipelineStep, StepResult,
+};
 
 /// Execute a condition step
 pub async fn execute(
@@ -20,10 +22,15 @@ pub async fn execute(
     let interpolated = interpolation::interpolate(condition, ctx);
     let condition_result = interpolation::evaluate_condition(&interpolated);
 
-    let steps_to_run = if condition_result { then_steps } else { else_steps };
+    let steps_to_run = if condition_result {
+        then_steps
+    } else {
+        else_steps
+    };
 
     for (i, step) in steps_to_run.iter().enumerate() {
-        let sub_result = super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
+        let sub_result =
+            super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
         if !sub_result.success {
             return Ok(StepResult {
                 step_index: index,
@@ -63,10 +70,10 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -77,7 +84,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-cond",
             registry,
@@ -93,6 +103,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -103,6 +114,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -117,8 +129,12 @@ mod tests {
             "true",
             &[echo_step("then-branch")],
             &[echo_step("else-branch")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["conditionResult"], true);
@@ -140,8 +156,12 @@ mod tests {
             "false",
             &[echo_step("then-branch")],
             &[echo_step("else-branch")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["conditionResult"], false);
@@ -160,9 +180,13 @@ mod tests {
         let result = execute(
             "false",
             &[echo_step("then-branch")],
-            &[],  // empty else
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            &[], // empty else
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["branch"], "else");
@@ -176,18 +200,26 @@ mod tests {
         let bus = Arc::new(MessageBus::new());
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
-        ctx.inputs.insert("flag".to_string(), serde_json::json!("true"));
+        ctx.inputs
+            .insert("flag".to_string(), serde_json::json!("true"));
 
         let result = execute(
             "{{input.flag}}",
             &[echo_step("flag-was-true")],
             &[echo_step("flag-was-false")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["conditionResult"], true);
-        assert_eq!(ctx.step_results[0].output.as_deref(), Some("flag-was-true\n"));
+        assert_eq!(
+            ctx.step_results[0].output.as_deref(),
+            Some("flag-was-true\n")
+        );
     }
 
     #[tokio::test]
@@ -196,14 +228,19 @@ mod tests {
         let bus = Arc::new(MessageBus::new());
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
-        ctx.inputs.insert("flag".to_string(), serde_json::json!("0"));
+        ctx.inputs
+            .insert("flag".to_string(), serde_json::json!("0"));
 
         let result = execute(
             "{{input.flag}}",
             &[echo_step("flag-truthy")],
             &[echo_step("flag-falsy")],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["conditionResult"], false);
@@ -217,12 +254,9 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute(
-            "true",
-            &[failing_step()],
-            &[],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+        let result = execute("true", &[failing_step()], &[], 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(!result.success);
         assert_eq!(result.data["conditionResult"], true);
@@ -239,10 +273,18 @@ mod tests {
 
         let result = execute(
             "true",
-            &[echo_step("step-a"), echo_step("step-b"), echo_step("step-c")],
+            &[
+                echo_step("step-a"),
+                echo_step("step-b"),
+                echo_step("step-c"),
+            ],
             &[],
-            0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["stepsExecuted"], 3);

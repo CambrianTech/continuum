@@ -19,15 +19,15 @@
 use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::clog_info;
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
+use crate::gpu::tracker::GpuModelTracker;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::clog_info;
-use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
-use crate::gpu::tracker::GpuModelTracker;
 
 /// Preset voices shipped with Pocket-TTS (Les Misérables characters)
 const PRESET_VOICES: &[(&str, &str, &str)] = &[
@@ -175,25 +175,30 @@ impl PocketTTS {
             .unwrap_or_else(|| {
                 let hf_path = format!("hf://kyutai/pocket-tts/embeddings/{name}.safetensors");
                 clog_info!("Pocket-TTS: Downloading preset voice '{}' from HF", name);
-                pocket_tts::weights::download_if_necessary(&hf_path)
-                    .map_err(|e| {
-                        let msg = format!("{e}");
-                        if msg.contains("403") || msg.contains("401") {
-                            TTSError::ModelNotLoaded(format!(
-                                "Pocket-TTS voice '{name}' requires HuggingFace access. \
+                pocket_tts::weights::download_if_necessary(&hf_path).map_err(|e| {
+                    let msg = format!("{e}");
+                    if msg.contains("403") || msg.contains("401") {
+                        TTSError::ModelNotLoaded(format!(
+                            "Pocket-TTS voice '{name}' requires HuggingFace access. \
                                  Accept terms at: https://huggingface.co/kyutai/pocket-tts \
                                  then set HF_TOKEN in .continuum/config.env"
-                            ))
-                        } else {
-                            TTSError::SynthesisFailed(format!("Voice download failed: {e}"))
-                        }
-                    })
+                        ))
+                    } else {
+                        TTSError::SynthesisFailed(format!("Voice download failed: {e}"))
+                    }
+                })
             })?;
 
-        clog_info!("Pocket-TTS: Loading preset voice '{}' from {:?}", name, file_path);
+        clog_info!(
+            "Pocket-TTS: Loading preset voice '{}' from {:?}",
+            name,
+            file_path
+        );
         model
             .get_voice_state_from_prompt_file(&file_path)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Preset voice '{name}' load failed: {e}")))
+            .map_err(|e| {
+                TTSError::SynthesisFailed(format!("Preset voice '{name}' load failed: {e}"))
+            })
     }
 
     /// Find a local .safetensors embedding file for a preset voice
@@ -336,7 +341,8 @@ impl TextToSpeech for PocketTTS {
         let native_sample_rate = model.sample_rate as u32;
         clog_info!(
             "Pocket-TTS: Model loaded (native rate: {}Hz, output: {}Hz)",
-            native_sample_rate, AUDIO_SAMPLE_RATE
+            native_sample_rate,
+            AUDIO_SAMPLE_RATE
         );
 
         let pocket_state = PocketState {
@@ -353,8 +359,7 @@ impl TextToSpeech for PocketTTS {
             GpuPriority::Interactive,
         );
 
-        let _ = POCKET_MODEL
-            .set(Arc::new(Mutex::new(pocket_state)));
+        let _ = POCKET_MODEL.set(Arc::new(Mutex::new(pocket_state)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
         clog_info!(
@@ -370,7 +375,9 @@ impl TextToSpeech for PocketTTS {
         let model_arc = POCKET_MODEL
             .get()
             .ok_or_else(|| {
-                TTSError::ModelNotLoaded("Pocket-TTS not initialized. Call initialize() first.".into())
+                TTSError::ModelNotLoaded(
+                    "Pocket-TTS not initialized. Call initialize() first.".into(),
+                )
             })?
             .clone();
 
@@ -476,10 +483,17 @@ mod tests {
         let synthesis = result.expect("Synthesis should succeed");
         assert!(synthesis.samples.len() > 1000, "Should produce audio");
         assert_eq!(synthesis.sample_rate, AUDIO_SAMPLE_RATE);
-        assert!(synthesis.duration_ms > 200, "Should be >200ms for a sentence");
+        assert!(
+            synthesis.duration_ms > 200,
+            "Should be >200ms for a sentence"
+        );
 
         let max_amp = synthesis.samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-        assert!(max_amp > 100, "Audio should not be silence, max amp: {}", max_amp);
+        assert!(
+            max_amp > 100,
+            "Audio should not be silence, max amp: {}",
+            max_amp
+        );
 
         println!(
             "Pocket-TTS: {} samples, {}Hz, {}ms, max amp: {}",

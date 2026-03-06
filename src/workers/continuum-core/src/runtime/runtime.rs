@@ -6,36 +6,37 @@
 //! This is the top-level coordinator — like CBAR's RenderingEngine
 //! that owns the CBP_Analyzer pipeline and orchestrates frame flow.
 
-use super::registry::ModuleRegistry;
 use super::message_bus::MessageBus;
-use super::shared_compute::SharedCompute;
 use super::module_context::ModuleContext;
-use super::service_module::{ServiceModule, CommandResult};
+use super::registry::ModuleRegistry;
+use super::service_module::{CommandResult, ServiceModule};
+use super::shared_compute::SharedCompute;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Expected modules that MUST be registered for a complete runtime.
 /// Adding a module here ensures it cannot be forgotten during registration.
 /// The server will fail to start if any expected module is missing.
 pub const EXPECTED_MODULES: &[&str] = &[
-    "gpu",        // Phase 0: GPU memory management
-    "health",     // Phase 1: stateless health checks
-    "cognition",  // Phase 2: persona cognition engines
-    "channel",    // Phase 2: persona channel registries
-    "models",     // Phase 3: async model discovery
-    "memory",     // Phase 3: persona memory manager
-    "rag",        // Phase 3: batched RAG composition
-    "live",       // Phase 3: live experience (voice, video, transport)
-    "code",       // Phase 3: file engines, shell sessions
-    "data",       // Phase 4: database ORM operations
-    "logger",     // Phase 4a: structured logging
-    "search",     // Phase 4b: BM25, TF-IDF, vector search
-    "embedding",  // Phase 4c: fastembed vector generation
-    "runtime",    // RuntimeModule: metrics and control
-    "mcp",        // MCP server: dynamic tool discovery
-    "system",     // System resources: CPU, memory, process monitoring
-    "avatar",     // Avatar snapshots: Bevy 3D renders → PNG
+    "gpu",       // Phase 0: GPU memory management
+    "health",    // Phase 1: stateless health checks
+    "cognition", // Phase 2: persona cognition engines
+    "channel",   // Phase 2: persona channel registries
+    "models",    // Phase 3: async model discovery
+    "memory",    // Phase 3: persona memory manager
+    "rag",       // Phase 3: batched RAG composition
+    "live",      // Phase 3: live experience (voice, video, transport)
+    "code",      // Phase 3: file engines, shell sessions
+    "data",      // Phase 4: database ORM operations
+    "logger",    // Phase 4a: structured logging
+    "search",    // Phase 4b: BM25, TF-IDF, vector search
+    "embedding", // Phase 4c: fastembed vector generation
+    "runtime",   // RuntimeModule: metrics and control
+    "mcp",       // MCP server: dynamic tool discovery
+    "system",    // System resources: CPU, memory, process monitoring
+    "avatar",    // Avatar snapshots: Bevy 3D renders → PNG
+    "dataset",   // Dataset import/management for Academy training
 ];
 
 pub struct Runtime {
@@ -59,8 +60,10 @@ impl Runtime {
     /// Like CBAR's appendAnalyzer() — one call, everything connected.
     pub fn register(&self, module: Arc<dyn ServiceModule>) {
         let config = module.config();
-        info!("  Registering module: {} (priority: {:?}, commands: {:?})",
-            config.name, config.priority, config.command_prefixes);
+        info!(
+            "  Registering module: {} (priority: {:?}, commands: {:?})",
+            config.name, config.priority, config.command_prefixes
+        );
 
         // Wire event subscriptions into the message bus
         for pattern in config.event_subscriptions {
@@ -114,7 +117,10 @@ impl Runtime {
                 if let Some(initial_interval) = config.tick_interval {
                     let module_name = config.name;
                     let module = module.clone();
-                    info!("Starting tick loop for '{}' (interval: {:?})", module_name, initial_interval);
+                    info!(
+                        "Starting tick loop for '{}' (interval: {:?})",
+                        module_name, initial_interval
+                    );
 
                     let handle = tokio::spawn(async move {
                         // Initial delay — don't tick before system is warmed up
@@ -126,8 +132,8 @@ impl Runtime {
                             }
                             // Re-read interval from module config each iteration.
                             // This allows dynamic cadence changes (e.g. via channel/tick-config).
-                            let interval = module.config().tick_interval
-                                .unwrap_or(initial_interval);
+                            let interval =
+                                module.config().tick_interval.unwrap_or(initial_interval);
                             tokio::time::sleep(interval).await;
                         }
                     });
@@ -287,14 +293,21 @@ impl Runtime {
 
         // Log warnings for unexpected modules
         for name in &unexpected {
-            warn!("Unexpected module registered (not in EXPECTED_MODULES): {}", name);
+            warn!(
+                "Unexpected module registered (not in EXPECTED_MODULES): {}",
+                name
+            );
         }
 
         // Fail if any expected modules are missing
         if !missing.is_empty() {
             let missing_list = missing.join(", ");
             error!("Missing required modules: {}", missing_list);
-            error!("Expected {} modules, found {}", EXPECTED_MODULES.len(), registered.len());
+            error!(
+                "Expected {} modules, found {}",
+                EXPECTED_MODULES.len(),
+                registered.len()
+            );
             error!("Add missing module registrations in ipc/mod.rs or update EXPECTED_MODULES in runtime.rs");
             return Err(format!(
                 "Module registration incomplete: missing [{}]. Server cannot start.",
@@ -302,7 +315,10 @@ impl Runtime {
             ));
         }
 
-        info!("✅ All {} expected modules registered", EXPECTED_MODULES.len());
+        info!(
+            "✅ All {} expected modules registered",
+            EXPECTED_MODULES.len()
+        );
         Ok(())
     }
 }

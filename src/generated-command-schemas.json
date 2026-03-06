@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-05T02:02:34.947Z",
+  "generated": "2026-03-06T19:32:40.515Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1818,6 +1818,52 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/escalate",
+      "description": "Pushed from Rust when a sentinel reaches a terminal state.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": true,
+          "description": "status parameter"
+        },
+        "durationMs": {
+          "type": "number",
+          "required": false,
+          "description": "durationMs parameter"
+        },
+        "error": {
+          "type": "string",
+          "required": false,
+          "description": "error parameter"
+        },
+        "parentPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "parentPersonaId parameter"
+        },
+        "entityId": {
+          "type": "string",
+          "required": false,
+          "description": "entityId parameter"
+        },
+        "sentinelName": {
+          "type": "string",
+          "required": true,
+          "description": "sentinelName parameter"
+        },
+        "escalationRules": {
+          "type": "array",
+          "required": false,
+          "description": "escalationRules parameter"
         }
       }
     },
@@ -4200,6 +4246,57 @@
       }
     },
     {
+      "name": "genome/dataset-import",
+      "description": "Import training datasets from external sources into `.continuum/datasets/`.",
+      "params": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "description": "source parameter"
+        },
+        "csvPath": {
+          "type": "string",
+          "required": false,
+          "description": "csvPath parameter"
+        },
+        "testsDir": {
+          "type": "string",
+          "required": false,
+          "description": "testsDir parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        },
+        "splitRatio": {
+          "type": "number",
+          "required": false,
+          "description": "splitRatio parameter"
+        },
+        "userColumn": {
+          "type": "string",
+          "required": false,
+          "description": "userColumn parameter"
+        },
+        "assistantColumn": {
+          "type": "string",
+          "required": false,
+          "description": "assistantColumn parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "list": {
+          "type": "boolean",
+          "required": false,
+          "description": "list parameter"
+        }
+      }
+    },
+    {
       "name": "genome/convert",
       "description": "Convert LoRA adapters between formats. Supports: merge LoRA into full-precision model, merge + quantize to GGUF, quantize base model to GGUF, and validate converted models. Uses convert-adapter.py via Rust sentinel for process isolation.",
       "params": {
@@ -4361,6 +4458,16 @@
           "required": false,
           "description": "rank parameter"
         },
+        "questionsPerExam": {
+          "type": "number",
+          "required": false,
+          "description": "questionsPerExam parameter"
+        },
+        "examplesPerTopic": {
+          "type": "number",
+          "required": false,
+          "description": "examplesPerTopic parameter"
+        },
         "model": {
           "type": "string",
           "required": false,
@@ -4370,6 +4477,16 @@
           "type": "string",
           "required": false,
           "description": "provider parameter"
+        },
+        "studentModel": {
+          "type": "string",
+          "required": false,
+          "description": "studentModel parameter"
+        },
+        "studentProvider": {
+          "type": "string",
+          "required": false,
+          "description": "studentProvider parameter"
         },
         "challengeDir": {
           "type": "string",
@@ -4395,6 +4512,11 @@
           "type": "string",
           "required": false,
           "description": "projectDir parameter"
+        },
+        "datasetDir": {
+          "type": "string",
+          "required": false,
+          "description": "datasetDir parameter"
         }
       }
     },

@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-escalate",
+  "version": "1.0.0",
+  "description": "Receive sentinel lifecycle push from Rust and route to persona inbox"
+}

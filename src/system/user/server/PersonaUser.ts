@@ -69,6 +69,7 @@ import {
   type AIInteractionCapturedEventData
 } from '../../events/shared/AILearningEvents';
 import { Events } from '../../core/shared/Events';
+import { registerPersonaInbox, unregisterPersonaInbox } from './PersonaInboxRegistry';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
@@ -844,6 +845,9 @@ export class PersonaUser extends AIUser {
     }
 
     this.isInitialized = true;
+
+    // Register inbox for external task delivery (sentinel escalation, etc.)
+    registerPersonaInbox(this.id, this.inbox);
 
     // STEP 3: Update status to 'online' in database.
     // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
@@ -2111,6 +2115,9 @@ export class PersonaUser extends AIUser {
     } catch (e) {
       this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
     }
+
+    // Unregister inbox from global registry
+    unregisterPersonaInbox(this.id);
 
     // MEMORY LEAK FIX: Unsubscribe from all events first
     const subCount = this._eventUnsubscribes.length;

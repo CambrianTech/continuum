@@ -13,17 +13,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ai::{
-    ActiveAdapterRequest, AdapterCapabilities, AdapterConfig, AIProviderAdapter, ApiStyle,
-    FinishReason, HealthState, HealthStatus, LoRACapabilities, LoRAAdapterInfo,
-    ModelCapability, ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-    UsageMetrics,
+    AIProviderAdapter, ActiveAdapterRequest, AdapterCapabilities, AdapterConfig, ApiStyle,
+    FinishReason, HealthState, HealthStatus, LoRAAdapterInfo, LoRACapabilities, ModelCapability,
+    ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::gpu::make_entry;
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
 
-use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
 use super::backends::llama_safetensors::BF16_PRACTICAL_CONTEXT;
+use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
 use super::lora::{load_lora_adapter, LoadedAdapter};
 use super::model::load_model_by_id;
 use super::quantized::load_default_quantized;
@@ -136,9 +135,15 @@ impl CandleAdapter {
         if let Some(mgr) = &self.gpu_manager {
             let adapter_bytes = estimate_adapter_vram(path);
             if adapter_bytes > 0 {
-                match mgr.allocate(GpuSubsystem::Inference, adapter_bytes, GpuPriority::Interactive) {
+                match mgr.allocate(
+                    GpuSubsystem::Inference,
+                    adapter_bytes,
+                    GpuPriority::Interactive,
+                ) {
                     Ok(guard) => {
-                        self.adapter_guards.write().insert(adapter_id.to_string(), guard);
+                        self.adapter_guards
+                            .write()
+                            .insert(adapter_id.to_string(), guard);
                         mgr.eviction_registry.register(make_entry(
                             &format!("candle:adapter:{}", adapter_id),
                             &format!("LoRA {}", adapter_id),
@@ -148,7 +153,8 @@ impl CandleAdapter {
                     }
                     Err(e) => {
                         runtime::logger("candle").error(&format!(
-                            "GPU CRITICAL: Cannot load adapter {} — {}", adapter_id, e
+                            "GPU CRITICAL: Cannot load adapter {} — {}",
+                            adapter_id, e
                         ));
                         return Err(format!("GPU memory critical — cannot load adapter: {e}"));
                     }
@@ -156,7 +162,10 @@ impl CandleAdapter {
             }
         }
 
-        runtime::logger("candle").info(&format!("Loaded LoRA adapter: {} from {}", adapter_id, path));
+        runtime::logger("candle").info(&format!(
+            "Loaded LoRA adapter: {} from {}",
+            adapter_id, path
+        ));
         Ok(())
     }
 
@@ -214,7 +223,8 @@ impl CandleAdapter {
         self.adapter_guards.write().remove(adapter_id);
         // Unregister from eviction registry
         if let Some(mgr) = &self.gpu_manager {
-            mgr.eviction_registry.unregister(&format!("candle:adapter:{}", adapter_id));
+            mgr.eviction_registry
+                .unregister(&format!("candle:adapter:{}", adapter_id));
         }
         runtime::logger("candle").info(&format!("Unloaded LoRA adapter: {}", adapter_id));
         Ok(())
@@ -235,14 +245,21 @@ impl CandleAdapter {
     }
 
     /// Ensure exactly these adapters are loaded and active, rebuilding model once.
-    async fn ensure_adapters(&self, adapters: &[ActiveAdapterRequest]) -> Result<Vec<String>, String> {
+    async fn ensure_adapters(
+        &self,
+        adapters: &[ActiveAdapterRequest],
+    ) -> Result<Vec<String>, String> {
         let log = runtime::logger("candle");
 
         for adapter in adapters {
             let needs_load = !self.loaded_adapters.read().contains_key(&adapter.name);
             if needs_load {
-                log.info(&format!("Loading LoRA adapter: {} from {} (scale={})", adapter.name, adapter.path, adapter.scale));
-                self.load_lora(&adapter.name, &adapter.path, adapter.scale).await?;
+                log.info(&format!(
+                    "Loading LoRA adapter: {} from {} (scale={})",
+                    adapter.name, adapter.path, adapter.scale
+                ));
+                self.load_lora(&adapter.name, &adapter.path, adapter.scale)
+                    .await?;
             }
         }
 
@@ -398,7 +415,10 @@ impl AIProviderAdapter for CandleAdapter {
         }
 
         let prompt_len = prompt.len();
-        log.info(&format!("Prompt length: {} chars, max_tokens: {}", prompt_len, max_tokens));
+        log.info(&format!(
+            "Prompt length: {} chars, max_tokens: {}",
+            prompt_len, max_tokens
+        ));
 
         let backend_arc = Arc::clone(&self.backend);
         let default_model = self.config.default_model.clone();
@@ -471,9 +491,11 @@ impl AIProviderAdapter for CandleAdapter {
 
         // Touch eviction registry entries (model + active adapters) on use
         if let Some(mgr) = &self.gpu_manager {
-            mgr.eviction_registry.touch(&format!("candle:model:{}", default_model));
+            mgr.eviction_registry
+                .touch(&format!("candle:model:{}", default_model));
             for adapter_id in &applied_adapters {
-                mgr.eviction_registry.touch(&format!("candle:adapter:{}", adapter_id));
+                mgr.eviction_registry
+                    .touch(&format!("candle:adapter:{}", adapter_id));
             }
         }
 
@@ -541,7 +563,11 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        let format_label = if self.use_quantized { "quantized" } else { "safetensors" };
+        let format_label = if self.use_quantized {
+            "quantized"
+        } else {
+            "safetensors"
+        };
 
         vec![ModelInfo {
             id: self.config.default_model.clone(),
@@ -558,9 +584,21 @@ impl AIProviderAdapter for CandleAdapter {
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
         vec![
-            "llama", "qwen", "phi", "mistral", "codellama", "gemma",
-            "tinyllama", "orca", "vicuna", "wizardlm", "neural-chat",
-            "stablelm", "yi", "deepseek-coder", "unsloth/",
+            "llama",
+            "qwen",
+            "phi",
+            "mistral",
+            "codellama",
+            "gemma",
+            "tinyllama",
+            "orca",
+            "vicuna",
+            "wizardlm",
+            "neural-chat",
+            "stablelm",
+            "yi",
+            "deepseek-coder",
+            "unsloth/",
         ]
     }
 }
@@ -574,9 +612,7 @@ fn estimate_adapter_vram(path: &str) -> u64 {
     } else {
         p.to_path_buf()
     };
-    std::fs::metadata(&file_path)
-        .map(|m| m.len())
-        .unwrap_or(0)
+    std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Build a prompt string from chat messages using Llama 3 chat template.
@@ -599,19 +635,17 @@ fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
 
         let content = match &msg.content {
             crate::ai::MessageContent::Text(text) => text.clone(),
-            crate::ai::MessageContent::Parts(parts) => {
-                parts
-                    .iter()
-                    .filter_map(|p| {
-                        if let crate::ai::ContentPart::Text { text } = p {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            crate::ai::MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| {
+                    if let crate::ai::ContentPart::Text { text } = p {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         };
 
         prompt.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n", role));
@@ -651,10 +685,7 @@ mod tests {
 
     #[test]
     fn test_prompt_format_with_system() {
-        let messages = vec![
-            msg("system", "You are a pirate."),
-            msg("user", "Hello!"),
-        ];
+        let messages = vec![msg("system", "You are a pirate."), msg("user", "Hello!")];
         let prompt = build_prompt_from_messages(&messages);
 
         assert!(prompt.contains("You are a pirate."));
@@ -672,9 +703,13 @@ mod tests {
         let prompt = build_prompt_from_messages(&messages);
 
         assert!(prompt.starts_with("<|begin_of_text|>"));
-        assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|>"));
+        assert!(
+            prompt.contains("<|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|>")
+        );
         assert!(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>"));
-        assert!(prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nHello!<|eot_id|>"));
+        assert!(
+            prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nHello!<|eot_id|>")
+        );
         assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
     }
 }

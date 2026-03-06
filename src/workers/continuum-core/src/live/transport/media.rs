@@ -225,7 +225,12 @@ impl MediaSession {
     }
 
     /// Create a session with audio + video tracks (huddle mode)
-    pub fn with_audio_video(handle: Handle, user_id: String, display_name: String, is_ai: bool) -> Self {
+    pub fn with_audio_video(
+        handle: Handle,
+        user_id: String,
+        display_name: String,
+        is_ai: bool,
+    ) -> Self {
         let mut session = Self::new(handle, user_id, display_name, is_ai);
         session.add_track(MediaTrack::default_audio(0));
         session.add_track(MediaTrack::default_video(1));
@@ -422,7 +427,8 @@ mod tests {
     #[test]
     fn test_session_add_screen_share() {
         let handle = test_handle();
-        let mut session = MediaSession::with_audio_video(handle, "user1".into(), "Carol".into(), false);
+        let mut session =
+            MediaSession::with_audio_video(handle, "user1".into(), "Carol".into(), false);
 
         // Add screen share as a second video track
         let mut screen = MediaTrack::default_video(2);
@@ -437,7 +443,8 @@ mod tests {
     #[test]
     fn test_session_mute_audio() {
         let handle = test_handle();
-        let mut session = MediaSession::with_audio_video(handle, "user1".into(), "Dan".into(), false);
+        let mut session =
+            MediaSession::with_audio_video(handle, "user1".into(), "Dan".into(), false);
 
         session.mute_kind(TrackKind::Audio, true);
 
@@ -457,8 +464,18 @@ mod tests {
         let h1 = test_handle();
         let h2 = test_handle();
 
-        room.add_session(MediaSession::with_audio(h1, "u1".into(), "Alice".into(), false));
-        room.add_session(MediaSession::with_audio_video(h2, "u2".into(), "Bob".into(), false));
+        room.add_session(MediaSession::with_audio(
+            h1,
+            "u1".into(),
+            "Alice".into(),
+            false,
+        ));
+        room.add_session(MediaSession::with_audio_video(
+            h2,
+            "u2".into(),
+            "Bob".into(),
+            false,
+        ));
 
         assert_eq!(room.participant_count(), 2);
         assert!(room.has_video()); // Bob has video
@@ -473,7 +490,12 @@ mod tests {
         let mut room = MediaRoom::new("room1".into());
         let h1 = test_handle();
 
-        room.add_session(MediaSession::with_audio(h1, "u1".into(), "Alice".into(), false));
+        room.add_session(MediaSession::with_audio(
+            h1,
+            "u1".into(),
+            "Alice".into(),
+            false,
+        ));
         assert_eq!(room.participant_count(), 1);
 
         let removed = room.remove_session(&h1);

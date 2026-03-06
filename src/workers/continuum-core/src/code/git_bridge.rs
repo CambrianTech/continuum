@@ -52,9 +52,15 @@ pub fn git_status(workspace_root: &Path) -> GitStatusInfo {
             "??" => untracked.push(file_path),
             s if s.starts_with('A') || s.ends_with('A') => added.push(file_path),
             s if s.starts_with('D') || s.ends_with('D') => deleted.push(file_path),
-            s if s.starts_with('M') || s.ends_with('M')
-                || s.starts_with('R') || s.ends_with('R')
-                || s.starts_with('C') || s.ends_with('C') => modified.push(file_path),
+            s if s.starts_with('M')
+                || s.ends_with('M')
+                || s.starts_with('R')
+                || s.ends_with('R')
+                || s.starts_with('C')
+                || s.ends_with('C') =>
+            {
+                modified.push(file_path)
+            }
             _ => {
                 // Catch-all: treat as modified
                 if !file_path.is_empty() {
@@ -117,8 +123,7 @@ pub fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String
     run_git(workspace_root, &["commit", "--no-verify", "-m", message])?;
 
     // Return the commit hash
-    run_git(workspace_root, &["rev-parse", "HEAD"])
-        .map(|s| s.trim().to_string())
+    run_git(workspace_root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
 }
 
 /// Push the current branch to a remote.
@@ -142,8 +147,7 @@ fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
     if output.status.success() {
-        String::from_utf8(output.stdout)
-            .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))
+        String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 in git output: {}", e))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git {} failed: {}", args.join(" "), stderr.trim()))
@@ -160,16 +164,8 @@ mod tests {
 
         // Initialize a git repo
         run_git(dir.path(), &["init"]).expect("git init should work");
-        run_git(
-            dir.path(),
-            &["config", "user.email", "test@test.com"],
-        )
-        .expect("git config email");
-        run_git(
-            dir.path(),
-            &["config", "user.name", "Test"],
-        )
-        .expect("git config name");
+        run_git(dir.path(), &["config", "user.email", "test@test.com"]).expect("git config email");
+        run_git(dir.path(), &["config", "user.name", "Test"]).expect("git config name");
 
         // Create an initial commit
         fs::write(dir.path().join("initial.txt"), "hello\n").unwrap();

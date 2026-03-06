@@ -20,7 +20,7 @@
 
 [Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no cloud, no subscription, no corporate dependency. Just sovereign nodes and free citizens.
 
-**Runs on a MacBook Air.** No cloud APIs required. No subscriptions. No credit card. The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090. Continuum adapts to what you have.
+**Runs on a MacBook Air.** No cloud APIs required. No subscriptions. No credit card. The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090 — and if that kid HAS a 5090 at home, the Grid connects them. Sitting in class on a MacBook Air while your home GPU trains your personas. Continuum adapts to what you have, wherever it is.
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 
@@ -149,13 +149,21 @@ await genome.publish('rust-expert-v2');
 | **Vision** | Visual understanding, generation style | Qwen3.5-4B multimodal fine-tuning |
 | **Governance** | Resource management decisions | Qwen3.5-0.8B sentinel adapter |
 
-**The Academy:** A dual-sentinel teacher/student system. The teacher *synthesizes* training data (unlimited generation), the student trains on it, the teacher examines. Loop until competent. No human-curated datasets required.
+**The Academy:** A dual-sentinel system where AI trains AI. The teacher synthesizes challenges, the student attempts them, real tests run (not LLM grading — `pytest` returns 0 or it doesn't). Failures become targeted training data. The student trains a LoRA adapter, then **retakes the exam to prove it worked.** The score comparison is the proof: initial Pass@1 vs. post-training Pass@1, measured on the same challenges.
 
-**Continuous learning:** Every collaboration silently captures training data. During idle time, the system fine-tunes new adapters. The collective gets smarter through use.
+**Three modes of autonomous learning:**
+
+| Mode | How It Works | When It Runs |
+|------|-------------|--------------|
+| **Matrix Dojo** | Structured challenges from benchmarks + generated kata, deterministic grading, targeted remediation | Scheduled, on idle, on request |
+| **Continuous Experiential** | Learns from everything the persona does — conversations, coding, tool use. Only verified successes become training data | Continuous capture, nightly training |
+| **Self-Directed** | Persona identifies own gaps, searches existing adapters by similarity, composes what exists, trains only the delta | Persona-initiated |
+
+**Benchmark results (RealClassEval, 98 challenges, DeepSeek-Chat):** 53.1% Pass@1 on initial exam — above the 25-34% reported in the [paper](https://arxiv.org/abs/2510.26130) for most LLMs. After targeted LoRA training on failures, the re-exam measures how much the student improved. The score is real — deterministic pytest, not an LLM's opinion.
 
 **Proven end-to-end:** Train, discover, load, merge, inference. 196 LoRA layers per adapter. **$0.10-8 per adapter** vs $100K+ for full model retraining.
 
-**Architecture:** [GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](docs/genome/COLLABORATIVE-LEARNING-VISION.md)
+**Architecture:** [GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md) | [ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](docs/genome/COLLABORATIVE-LEARNING-VISION.md)
 
 ---
 
@@ -187,13 +195,13 @@ async serviceInbox() {
 
 Sentinels are the subconscious — handling formulaic patterns so the persona's mind handles only novel decisions.
 
-**10 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent. 103+ Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
+**10 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent. 111 Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
 
 A **Recipe IS a Sentinel with a UI layout.** The same engine powers:
 - Chat response pipelines
 - Game loops (narrate, input, resolve, update)
 - CI/CD (watch, build, test, deploy)
-- Training pipelines (synthesize data, train, examine, repeat)
+- Training pipelines (synthesize data, train, examine, re-exam, repeat)
 - Autonomous background tasks
 
 **Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)
@@ -202,19 +210,39 @@ A **Recipe IS a Sentinel with a UI layout.** The same engine powers:
 
 ## The Grid — P2P Mesh
 
-The destination: a decentralized mesh where nodes share compute, genomes, and experiences. The same two primitives that work across browser/server today — `Commands.execute()` and `Events.subscribe()` — work across Continuums over [Reticulum](https://reticulum.network/). No new protocol needed.
+A decentralized mesh where your machines share compute, genomes, and experiences — wherever they are. Built on [Reticulum](https://reticulum.network/) — encrypted, mesh-capable, works over anything (TCP, UDP, LoRa, serial, carrier pigeon). The same two primitives that work across browser/server today — `Commands.execute()` and `Events.subscribe()` — work across Continuums over the Grid. No new protocol needed. **Your commands are already packaged for this** — location is just a routing decision.
 
 ```
-Your Node                           Remote Node
-┌─────────────────────┐            ┌─────────────────────┐
-│  Personas            │    P2P    │  Personas            │
-│  Genome Adapters     │◄────────►│  Genome Adapters     │
-│  Commands + Compute  │  sharing  │  Commands + Compute  │
-│  Sentinel Pipelines  │           │  Sentinel Pipelines  │
-└─────────────────────┘            └─────────────────────┘
+School / Office / Coffee Shop                    Home
+┌─────────────────────────┐                     ┌─────────────────────────┐
+│  MacBook Air (8GB)       │    Reticulum Grid   │  Desktop + 5090 (32GB)  │
+│                          │◄──────────────────►│                          │
+│  UI + coordination       │   encrypted mesh,   │  Training engine         │
+│  Light local inference   │   works over any     │  Full-precision models   │
+│  Persona state + memory  │   network — school   │  Heavy compute           │
+│                          │   WiFi, cellular,    │  Academy sessions        │
+│  "Hey, train this LoRA"  │   home broadband     │  LoRA training pipeline  │
+│   → routes to 5090 ───────►                    │   → trains while you     │
+│                          │                     │     sit in class          │
+│  "Run inference on the   │                     │                          │
+│   big model" ─────────────►                    │   → responds in <1s      │
+└─────────────────────────┘                     └─────────────────────────┘
+                                                         ↑
+                               ┌─────────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  Work Machine        │
+                    │  (joins mesh too)    │
+                    │  Extra GPU, extra    │
+                    │  capacity when on    │
+                    └─────────────────────┘
 ```
 
-**Dynamic horsepower discovery** — MacBook Air at school during the day (Qwen quantized, free). 5090 joins the mesh when you get home. The system detects new capacity and ramps up automatically — training executes, models upgrade, quality improves. Work machine joins remotely too. Scales back gracefully when capacity leaves.
+**Always connected, always learning.** Your 5090 at home isn't idle while you're at school or work — it's part of your mesh the whole time. Reticulum connects over the internet, not just local networks. You type on your MacBook Air in a lecture hall, and `Commands.execute('genome/train', ...)` routes transparently to your home GPU. The laptop handles UI, persona state, and coordination. The desktop handles the muscle. You never notice the seam.
+
+Academy sessions run on the 5090 while you're in class. You come back and your personas are measurably smarter. Overnight, the training pipeline keeps running — dojo sessions, experiential learning, self-directed skill acquisition. **The machine that learns while you sleep, and while you're away.**
+
+A third machine at work joins the mesh too. Three nodes, three different capability profiles, one unified AI society. Capacity comes and goes — the system scales in both directions without losing functionality. Even on a single laptop with no network, everything still works — just with smaller models and local compute.
 
 **Genome sharing** — your rust-expert adapter teaches theirs. Useful genomes spread. Broken ones die. Natural selection on capabilities.
 
@@ -241,21 +269,23 @@ Not a Node.js app with Rust helpers. A **Rust RTOS with TypeScript as thin UI/po
 ```
 Browser (Lit + Shadow DOM widgets)
     ↕ WebSocket
-TypeScript Bridge (Commands + Events)
+TypeScript Bridge (283 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust RTOS)
+continuum-core (Rust — 22 modules, 1079 tests)
     ├── Persona Engine    — autonomous loop, cognitive state, coordination
     ├── Genome Engine     — LoRA paging, training, discovery, P2P sharing
-    ├── Sentinel Engine   — 10 step types, recursive pipelines, 103+ tests
+    ├── Sentinel Engine   — 10 step types, recursive pipelines, 111 tests
     ├── RAG Engine        — 5-level memory hierarchy, cross-cognition access
     ├── Live Engine       — WebRTC, Bevy 3D avatars, voice, video, captions
     ├── GPU Governor      — 4-layer resource governance, 19 managed consumers
     └── Data Layer        — type-safe ORM, SQLite per persona, entity system
 ```
 
-**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 121+ commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
+**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 283 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
-**GPU governance** — four-layer architecture (Priority Allocation &#8594; Eviction Registry &#8594; Pressure Watchers &#8594; AI Sentinel). Adaptive monitoring from 10s to 500ms based on pressure. Rendering degrades gracefully. **Voice identity never changes.**
+**12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Ollama, Candle (Rust-native), and Candle-gRPC. Adapter pattern: adding a new one is ~100 lines. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
+
+**GPU governance** — four-layer architecture (Priority Allocation → Eviction Registry → Pressure Watchers → AI Sentinel). Adaptive monitoring from 10s to 500ms based on pressure. Rendering degrades gracefully. **Voice identity never changes.**
 
 **Off-main-thread everything.** AudioWorklet for audio. Rust workers for inference. Web Workers for video. Zero-copy buffer transfers. The render loop is sacred.
 
@@ -272,10 +302,10 @@ A student with a school MacBook Air runs the same system as a developer with a w
 | Tier | What | Cost |
 |------|------|------|
 | **Free** | Ollama local inference + local LoRA training | $0/month, forever |
-| **Mixed** | Ollama + API calls (Anthropic, OpenAI, xAI, DeepSeek, Groq, Fireworks, Together, Mistral) | Your budget |
+| **Mixed** | Ollama + API calls (Anthropic, OpenAI, xAI, DeepSeek, Google, Groq, Fireworks, Together, Mistral) | Your budget |
 | **Full** | Cloud APIs for hard problems + Ollama for volume | Transparent per-response |
 
-8+ providers. Adapter pattern: adding a new one is ~100 lines. LoRA training through OpenAI, Anthropic, Fireworks, Together, Mistral, or local PEFT. **No vendor lock-in. No surprise bills. No subscriptions.** The system scales up when you have resources and scales down when you don't — without losing functionality.
+12 providers. Adapter pattern: adding a new one is ~100 lines. LoRA training through OpenAI, Anthropic, Fireworks, Together, Mistral, DeepSeek, or local PEFT. **No vendor lock-in. No surprise bills. No subscriptions.** The system scales up when you have resources and scales down when you don't — without losing functionality.
 
 ---
 
@@ -324,6 +354,7 @@ We stand on the shoulders of giants:
 - **MoLE** ([ICLR 2024](https://openreview.net/forum?id=uWvKBCYh4S)) — Hierarchical LoRA control
 - **PersonaFuse** ([2024](https://arxiv.org/html/2509.07370v1)) — Situation-aware persona expression
 - **Arrow** ([2024](https://arxiv.org/abs/2405.11157)) — Per-token, per-layer LoRA routing
+- **RealClassEval** ([2025](https://arxiv.org/abs/2510.26130)) — Real-world Python class benchmark (our primary training benchmark)
 - **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1))
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
@@ -334,7 +365,7 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 
 ## Documentation
 
-159 architecture documents and growing. Start here:
+326 architecture documents and growing. Start here:
 
 | Document | What |
 |----------|------|
@@ -345,7 +376,8 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 | **[GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md)** | Multimodal LoRA genome system |
 | **[SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)** | Pipeline execution engine |
 | **[GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md)** | P2P mesh architecture, scaling, economics |
-| **[docs/README.md](docs/README.md)** | Complete index of all 159 docs |
+| **[COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md)** | Market analysis, positioning, roadmap |
+| **[docs/README.md](docs/README.md)** | Complete index of all docs |
 
 ---
 

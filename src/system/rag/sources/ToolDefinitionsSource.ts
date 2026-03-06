@@ -96,6 +96,14 @@ export class ToolDefinitionsSource implements RAGSource {
     // Exclude meta-tools — models with native tool calling don't need discovery tools.
     // search_tools/list_tools cause infinite loops where models search instead of act.
     const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
+
+    // Exclude chat/send when responding in a chat room — the text response IS the message.
+    // Including it causes models (especially Groq/Llama) to call chat/send redundantly,
+    // creating duplicate messages or Groq API 400 errors (tool_use_failed).
+    if (context.roomId) {
+      META_TOOLS.add('collaboration/chat/send');
+    }
+
     let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
 
     // Three-tier prioritization with budget awareness
@@ -158,6 +166,11 @@ export class ToolDefinitionsSource implements RAGSource {
     allocatedBudget: number,
     startTime: number
   ): RAGSection {
+    // Exclude chat/send when responding in a chat room (same as native path)
+    if (context.roomId) {
+      toolDefinitions = toolDefinitions.filter(t => t.name !== 'collaboration/chat/send');
+    }
+
     // Prioritize BEFORE formatting — essential tools first, rest at end.
     // This ensures budget truncation drops lowest-priority tools, not essential ones.
     const recipeToolNames = this.getRecipeToolNames(context);
@@ -234,8 +247,10 @@ When assigned a task: USE sentinel/coding-agent for complex work.`;
     maxTools: number
   ): ToolDefinition[] {
     // Critical tools that should ALWAYS survive budget truncation
+    // Note: chat/send is excluded from tool list when responding in chat (see loadNativeTools/loadXmlTools)
+    // so it won't appear here in chat context. chat/export replaces chat/history for reading conversation.
     const CRITICAL_TOOLS = new Set([
-      'collaboration/chat/send', 'collaboration/chat/history',
+      'collaboration/chat/send', 'collaboration/chat/export',
     ]);
 
     // Essential prefix ordering — most important first.

@@ -1,5 +1,5 @@
-use crate::live::types::*;
 use crate::clog_info;
+use crate::live::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -23,39 +23,73 @@ impl VoiceOrchestrator {
         }
     }
 
-    pub fn register_session(&self, session_id: Uuid, room_id: Uuid, participants: Vec<VoiceParticipant>) {
+    pub fn register_session(
+        &self,
+        session_id: Uuid,
+        room_id: Uuid,
+        participants: Vec<VoiceParticipant>,
+    ) {
         {
-            let mut sessions = self.session_participants.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .session_participants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             sessions.insert(session_id, participants.clone());
         }
         {
-            let mut contexts = self.session_contexts.lock().unwrap_or_else(|e| e.into_inner());
+            let mut contexts = self
+                .session_contexts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             contexts.insert(session_id, ConversationContext::new(session_id, room_id));
         }
         let audio_native_count = participants.iter().filter(|p| p.is_audio_native).count();
-        let text_ai_count = participants.iter().filter(|p| matches!(p.participant_type, SpeakerType::Persona) && !p.is_audio_native).count();
-        clog_info!("Registered session {} with {} participants ({} text-based AI, {} audio-native)",
-                 &session_id.to_string()[..8], participants.len(), text_ai_count, audio_native_count);
+        let text_ai_count = participants
+            .iter()
+            .filter(|p| matches!(p.participant_type, SpeakerType::Persona) && !p.is_audio_native)
+            .count();
+        clog_info!(
+            "Registered session {} with {} participants ({} text-based AI, {} audio-native)",
+            &session_id.to_string()[..8],
+            participants.len(),
+            text_ai_count,
+            audio_native_count
+        );
     }
 
     pub fn unregister_session(&self, session_id: Uuid) {
-        self.session_participants.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
-        self.session_contexts.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
+        self.session_participants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+        self.session_contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
         clog_info!("Unregistered session {}", &session_id.to_string()[..8]);
     }
 
     /// Process utterance and return ALL AI participant IDs (broadcast model)
     /// Each AI will decide if they want to respond via their own logic
     pub fn on_utterance(&self, event: UtteranceEvent) -> Vec<Uuid> {
-        clog_info!("Utterance from {}: \"{}...\"",
-                 event.speaker_name, crate::live::audio::tts::truncate_str(&event.transcript, 50));
+        clog_info!(
+            "Utterance from {}: \"{}...\"",
+            event.speaker_name,
+            crate::live::audio::tts::truncate_str(&event.transcript, 50)
+        );
 
         // Get context
-        let mut contexts = self.session_contexts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut contexts = self
+            .session_contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let context = match contexts.get_mut(&event.session_id) {
             Some(ctx) => ctx,
             None => {
-                clog_info!("No context for session {}", crate::live::audio::tts::truncate_str(&event.session_id.to_string(), 8));
+                clog_info!(
+                    "No context for session {}",
+                    crate::live::audio::tts::truncate_str(&event.session_id.to_string(), 8)
+                );
                 return Vec::new();
             }
         };
@@ -64,11 +98,17 @@ impl VoiceOrchestrator {
         context.add_utterance(event.clone());
 
         // Get participants
-        let participants = self.session_participants.lock().unwrap_or_else(|e| e.into_inner());
+        let participants = self
+            .session_participants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let session_participants = match participants.get(&event.session_id) {
             Some(p) => p,
             None => {
-                clog_info!("No participants for session {}", &event.session_id.to_string()[..8]);
+                clog_info!(
+                    "No participants for session {}",
+                    &event.session_id.to_string()[..8]
+                );
                 return Vec::new();
             }
         };
@@ -87,7 +127,9 @@ impl VoiceOrchestrator {
             .collect();
 
         if ai_participants.is_empty() {
-            clog_info!("No text-based AI participants to respond (audio-native AIs hear via mixer)");
+            clog_info!(
+                "No text-based AI participants to respond (audio-native AIs hear via mixer)"
+            );
             return Vec::new();
         }
 
@@ -95,7 +137,6 @@ impl VoiceOrchestrator {
 
         ai_participants.iter().map(|p| p.user_id).collect()
     }
-
 }
 
 #[cfg(test)]
@@ -121,7 +162,10 @@ mod old_tests {
 
         orchestrator.register_session(session_id, room_id, vec![participant]);
 
-        let participants = orchestrator.session_participants.lock().unwrap_or_else(|e| e.into_inner());
+        let participants = orchestrator
+            .session_participants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         assert!(participants.contains_key(&session_id));
     }
 

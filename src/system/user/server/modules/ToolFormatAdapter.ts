@@ -906,6 +906,7 @@ export function coerceParamsToSchema(
   toolSpecs: NativeToolSpec[],
   sanitizedToolName: string,
 ): Record<string, unknown> {
+  if (!params) return {};
   const spec = toolSpecs.find(s => s.name === sanitizedToolName);
   if (!spec?.input_schema?.properties) return params;
 

@@ -18,7 +18,9 @@ use tokenizers::Tokenizer;
 
 use std::sync::Arc;
 
-use super::{GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat};
+use super::{
+    GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat,
+};
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
@@ -93,8 +95,8 @@ impl LlamaGgufBackend {
     fn reload_weights(&mut self) -> Result<(), String> {
         let mut file = std::fs::File::open(&self.model_path)
             .map_err(|e| format!("Failed to open GGUF: {e}"))?;
-        let content = gguf_file::Content::read(&mut file)
-            .map_err(|e| format!("Failed to read GGUF: {e}"))?;
+        let content =
+            gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
         let mut reader = BufReader::new(
             std::fs::File::open(&self.model_path)
@@ -196,7 +198,8 @@ impl ModelBackend for LlamaGgufBackend {
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, String> {
-        let encoding = self.tokenizer
+        let encoding = self
+            .tokenizer
             .encode(text, false)
             .map_err(|e| format!("Tokenization failed: {e}"))?;
         Ok(encoding.get_ids().to_vec())
@@ -237,18 +240,27 @@ impl ModelBackend for LlamaGgufBackend {
         let total_lora_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
         let spike_bytes = (total_lora_layers as u64) * 4 * 1024 * 1024; // ~4MB avg layer × count
         let _spike_guard = gpu_manager.and_then(|mgr| {
-            mgr.allocate(GpuSubsystem::Inference, spike_bytes, GpuPriority::Background).ok()
+            mgr.allocate(
+                GpuSubsystem::Inference,
+                spike_bytes,
+                GpuPriority::Background,
+            )
+            .ok()
         });
         // _spike_guard drops at method end, releasing the transient allocation
 
         // Flatten all adapter weights into a single map: layer_name → (lora_a, lora_b, effective_scale)
-        let mut all_lora: std::collections::HashMap<String, (candle_core::Tensor, candle_core::Tensor, f64)> =
-            std::collections::HashMap::new();
+        let mut all_lora: std::collections::HashMap<
+            String,
+            (candle_core::Tensor, candle_core::Tensor, f64),
+        > = std::collections::HashMap::new();
 
         for adapter in adapters {
             log.info(&format!(
                 "  Applying GGUF LoRA adapter '{}' (scale={}, {} layers)",
-                adapter.adapter_id, adapter.scale, adapter.weights.len()
+                adapter.adapter_id,
+                adapter.scale,
+                adapter.weights.len()
             ));
             for (lora_name, lora_weights) in &adapter.weights {
                 let effective_scale = lora_weights.scale * adapter.scale;
@@ -256,13 +268,19 @@ impl ModelBackend for LlamaGgufBackend {
                 // because parse_lora_layer_name handles PEFT naming directly
                 all_lora.insert(
                     lora_name.clone(),
-                    (lora_weights.lora_a.clone(), lora_weights.lora_b.clone(), effective_scale),
+                    (
+                        lora_weights.lora_a.clone(),
+                        lora_weights.lora_b.clone(),
+                        effective_scale,
+                    ),
                 );
             }
         }
 
         // Apply to quantized model weights
-        let (merged, failed) = self.model.apply_lora_adapters(&all_lora)
+        let (merged, failed) = self
+            .model
+            .apply_lora_adapters(&all_lora)
             .map_err(|e| format!("GGUF LoRA merge failed: {e}"))?;
 
         self.clear_cache()?;

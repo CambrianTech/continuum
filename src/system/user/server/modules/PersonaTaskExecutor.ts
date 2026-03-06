@@ -28,6 +28,9 @@ import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { Workspace } from '../../../code/server/Workspace';
+import type { PipelineSentinelParams, SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
+import type { SentinelLoadParams, SentinelLoadResult } from '../../../../commands/sentinel/load/shared/SentinelLoadTypes';
+import type { PipelineSentinelDefinition } from '../../../sentinel/SentinelDefinition';
 
 /**
  * Interface for PersonaUser dependency injection into task executor.
@@ -109,6 +112,10 @@ export class PersonaTaskExecutor {
 
         case 'enroll-academy':
           outcome = await this.executeEnrollAcademy(task);
+          break;
+
+        case 'launch-sentinel':
+          outcome = await this.launchSentinel(task);
           break;
 
         case 'sentinel-complete':
@@ -1006,6 +1013,53 @@ export class PersonaTaskExecutor {
     } catch (error) {
       return `Academy enrollment failed for ${domain}: ${error}`;
     }
+  }
+
+  /**
+   * Launch a sentinel pipeline autonomously.
+   *
+   * Reads definition from task metadata (inline definition or saved entity ID),
+   * dispatches via sentinel/run, returns the async handle.
+   * Completion arrives back as sentinel-complete/failed inbox tasks (already wired).
+   */
+  private async launchSentinel(task: InboxTask): Promise<string> {
+    const metadata = task.metadata ?? {};
+    const sentinelName = (metadata.sentinelName as string) ?? task.description ?? 'persona-sentinel';
+
+    // Resolve definition: inline or by entity ID
+    let definition = metadata.definition as PipelineSentinelDefinition | undefined;
+    const entityId = metadata.sentinelEntityId;
+
+    if (!definition && entityId) {
+      // Load saved sentinel definition
+      const loaded = await Commands.execute<SentinelLoadParams, SentinelLoadResult>('sentinel/load', {
+        id: entityId,
+      });
+      if (!loaded?.success || !loaded?.entity?.definition) {
+        return `Failed to load sentinel entity ${entityId}: ${loaded?.error ?? 'not found'}`;
+      }
+      definition = loaded.entity.definition as PipelineSentinelDefinition;
+    }
+
+    if (!definition) {
+      return `Cannot launch sentinel "${sentinelName}": no definition or entityId in task metadata`;
+    }
+
+    this.log(`🚀 ${this.displayName}: Launching sentinel "${sentinelName}" autonomously`);
+
+    const result = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
+      type: 'pipeline',
+      definition,
+      async: true,
+      parentPersonaId: this.personaId,
+      sentinelName,
+    });
+
+    if (!result?.success) {
+      return `Sentinel "${sentinelName}" launch failed: ${result?.data?.error ?? 'unknown error'}`;
+    }
+
+    return `Sentinel "${sentinelName}" launched (handle: ${result.handle ?? 'async'}). Awaiting completion notification.`;
   }
 
   /**

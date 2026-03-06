@@ -4,10 +4,10 @@
 //! Static AVATAR_CATALOG provides the compile-time baseline.
 //! AvatarCatalog adds runtime filesystem discovery with optional .toml manifests.
 
-use std::path::{Path, PathBuf};
-use crate::{clog_info, clog_warn};
 use super::backend::ModelFormat;
 use super::types::*;
+use crate::{clog_info, clog_warn};
+use std::path::{Path, PathBuf};
 
 /// The 8 VRM 0.x avatar models in the static (compile-time) catalog.
 /// All models are VRoid Studio quality (35-50k triangles, 52 morph targets, 83 joints).
@@ -25,56 +25,88 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
         name: "Base Female",
         filename: "vroid-female-base.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::High, gender: AvatarGender::Female, energy: EnergyLevel::Moderate },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::High,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Moderate,
+        },
     },
     AvatarModel {
         id: "vroid-male-base",
         name: "Base Male",
         filename: "vroid-male-base.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::Low, gender: AvatarGender::Male, energy: EnergyLevel::Moderate },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::Low,
+            gender: AvatarGender::Male,
+            energy: EnergyLevel::Moderate,
+        },
     },
     AvatarModel {
         id: "vroid-sakurada",
         name: "Sakurada Fumiriya",
         filename: "vroid-sakurada.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::Mid, gender: AvatarGender::Male, energy: EnergyLevel::Energetic },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::Mid,
+            gender: AvatarGender::Male,
+            energy: EnergyLevel::Energetic,
+        },
     },
     AvatarModel {
         id: "vroid-shino",
         name: "Sendagaya Shino",
         filename: "vroid-shino.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::High, gender: AvatarGender::Female, energy: EnergyLevel::Calm },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::High,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Calm,
+        },
     },
     AvatarModel {
         id: "vroid-darkness",
         name: "Darkness",
         filename: "vroid-darkness.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::Mid, gender: AvatarGender::Female, energy: EnergyLevel::Calm },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::Mid,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Calm,
+        },
     },
     AvatarModel {
         id: "vroid-sample-d",
         name: "Sample D",
         filename: "vroid-sample-d.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::High, gender: AvatarGender::Female, energy: EnergyLevel::Moderate },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::High,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Moderate,
+        },
     },
     AvatarModel {
         id: "vroid-sample-e",
         name: "Sample E",
         filename: "vroid-sample-e.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::Mid, gender: AvatarGender::Female, energy: EnergyLevel::Energetic },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::Mid,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Energetic,
+        },
     },
     AvatarModel {
         id: "vroid-sample-f",
         name: "Sample F",
         filename: "vroid-sample-f.vrm",
         style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile { pitch: PitchRange::Mid, gender: AvatarGender::Female, energy: EnergyLevel::Moderate },
+        voice_profile: VoiceProfile {
+            pitch: PitchRange::Mid,
+            gender: AvatarGender::Female,
+            energy: EnergyLevel::Moderate,
+        },
     },
 ];
 
@@ -126,7 +158,11 @@ impl ModelManifest {
         match toml::from_str(&content) {
             Ok(manifest) => Some(manifest),
             Err(e) => {
-                clog_warn!("Failed to parse manifest {}: {}", manifest_path.display(), e);
+                clog_warn!(
+                    "Failed to parse manifest {}: {}",
+                    manifest_path.display(),
+                    e
+                );
                 None
             }
         }
@@ -134,7 +170,13 @@ impl ModelManifest {
 
     /// Convert gender string to AvatarGender.
     fn parse_gender(&self) -> AvatarGender {
-        match self.gender.as_deref().unwrap_or("female").to_lowercase().as_str() {
+        match self
+            .gender
+            .as_deref()
+            .unwrap_or("female")
+            .to_lowercase()
+            .as_str()
+        {
             "male" | "m" => AvatarGender::Male,
             _ => AvatarGender::Female,
         }
@@ -142,7 +184,13 @@ impl ModelManifest {
 
     /// Convert pitch string to PitchRange.
     fn parse_pitch(&self) -> PitchRange {
-        match self.pitch.as_deref().unwrap_or("mid").to_lowercase().as_str() {
+        match self
+            .pitch
+            .as_deref()
+            .unwrap_or("mid")
+            .to_lowercase()
+            .as_str()
+        {
             "low" | "l" => PitchRange::Low,
             "high" | "h" => PitchRange::High,
             _ => PitchRange::Mid,
@@ -151,7 +199,13 @@ impl ModelManifest {
 
     /// Convert energy string to EnergyLevel.
     fn parse_energy(&self) -> EnergyLevel {
-        match self.energy.as_deref().unwrap_or("moderate").to_lowercase().as_str() {
+        match self
+            .energy
+            .as_deref()
+            .unwrap_or("moderate")
+            .to_lowercase()
+            .as_str()
+        {
             "calm" | "low" => EnergyLevel::Calm,
             "energetic" | "high" => EnergyLevel::Energetic,
             _ => EnergyLevel::Moderate,
@@ -173,17 +227,37 @@ fn is_vrm1_file(path: &Path) -> bool {
     };
     // GLB header: magic(4) + version(4) + length(4)
     let mut header = [0u8; 12];
-    if file.read_exact(&mut header).is_err() { return false; }
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    if magic != 0x46546C67 { return false; } // Not GLB
-    // JSON chunk header: length(4) + type(4)
+    if magic != 0x46546C67 {
+        return false;
+    } // Not GLB
+      // JSON chunk header: length(4) + type(4)
     let mut chunk_header = [0u8; 8];
-    if file.read_exact(&mut chunk_header).is_err() { return false; }
-    let chunk_length = u32::from_le_bytes([chunk_header[0], chunk_header[1], chunk_header[2], chunk_header[3]]) as usize;
-    let chunk_type = u32::from_le_bytes([chunk_header[4], chunk_header[5], chunk_header[6], chunk_header[7]]);
-    if chunk_type != 0x4E4F534A { return false; } // Not JSON chunk
+    if file.read_exact(&mut chunk_header).is_err() {
+        return false;
+    }
+    let chunk_length = u32::from_le_bytes([
+        chunk_header[0],
+        chunk_header[1],
+        chunk_header[2],
+        chunk_header[3],
+    ]) as usize;
+    let chunk_type = u32::from_le_bytes([
+        chunk_header[4],
+        chunk_header[5],
+        chunk_header[6],
+        chunk_header[7],
+    ]);
+    if chunk_type != 0x4E4F534A {
+        return false;
+    } // Not JSON chunk
     let mut json_data = vec![0u8; chunk_length];
-    if file.read_exact(&mut json_data).is_err() { return false; }
+    if file.read_exact(&mut json_data).is_err() {
+        return false;
+    }
     let json_str = match std::str::from_utf8(&json_data) {
         Ok(s) => s,
         Err(_) => return false,
@@ -226,21 +300,20 @@ fn infer_gender_from_stem(stem: &str) -> AvatarGender {
         "vroid-sakurada" => AvatarGender::Male,
         // External CC0/permissive models (webaverse/avatar-models)
         "gsan" => AvatarGender::Male,
-        "wv-male16" => AvatarGender::Male,      // M00_ VRoid male template
-        "wv-sakurada2" => AvatarGender::Male,   // Sakurada Fumiriya variant, M00_ materials, 107 joints
-        "wv-shilo" => AvatarGender::Male,       // Hand-rigged male, sideburn bones, 85 joints
-        "wv-ruike" => AvatarGender::Female,     // quappa-el, armor girl
-        "wv-yagato" => AvatarGender::Female,    // F00_ VRoid female template
-        "wv-miku" => AvatarGender::Female,      // Hatsune Miku, F00_ female
-        "wv-kanji" => AvatarGender::Male,       // KasamotoKanji, male character
+        "wv-male16" => AvatarGender::Male, // M00_ VRoid male template
+        "wv-sakurada2" => AvatarGender::Male, // Sakurada Fumiriya variant, M00_ materials, 107 joints
+        "wv-shilo" => AvatarGender::Male,     // Hand-rigged male, sideburn bones, 85 joints
+        "wv-ruike" => AvatarGender::Female,   // quappa-el, armor girl
+        "wv-yagato" => AvatarGender::Female,  // F00_ VRoid female template
+        "wv-miku" => AvatarGender::Female,    // Hatsune Miku, F00_ female
+        "wv-kanji" => AvatarGender::Male,     // KasamotoKanji, male character
         _ => super::gender::gender_from_identity(stem),
     }
 }
 
 /// Convert a stem like "vroid-sample-r" to a human-readable "Sample R".
 fn humanize_stem(stem: &str) -> String {
-    let name = stem.strip_prefix("vroid-")
-        .unwrap_or(stem);
+    let name = stem.strip_prefix("vroid-").unwrap_or(stem);
     name.split('-')
         .map(|word| {
             let mut chars = word.chars();
@@ -275,14 +348,21 @@ impl AvatarCatalog {
         let models_dir = Path::new(MODELS_DIR);
 
         if !models_dir.exists() {
-            clog_info!("🎭 Avatar catalog: {} not found, using static catalog only", MODELS_DIR);
+            clog_info!(
+                "🎭 Avatar catalog: {} not found, using static catalog only",
+                MODELS_DIR
+            );
             return Self::from_static();
         }
 
         let entries = match std::fs::read_dir(models_dir) {
             Ok(entries) => entries,
             Err(e) => {
-                clog_warn!("🎭 Failed to read {}: {}, using static catalog", MODELS_DIR, e);
+                clog_warn!(
+                    "🎭 Failed to read {}: {}, using static catalog",
+                    MODELS_DIR,
+                    e
+                );
                 return Self::from_static();
             }
         };
@@ -295,19 +375,27 @@ impl AvatarCatalog {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() { continue; }
+            if !path.is_file() {
+                continue;
+            }
 
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
                 .unwrap_or_default();
 
-            if !MODEL_EXTENSIONS.contains(&ext.as_str()) { continue; }
+            if !MODEL_EXTENSIONS.contains(&ext.as_str()) {
+                continue;
+            }
 
             // Skip non-model formats (images, SVG) for now — those need different backends
-            if !matches!(ext.as_str(), "vrm" | "glb" | "gltf") { continue; }
+            if !matches!(ext.as_str(), "vrm" | "glb" | "gltf") {
+                continue;
+            }
 
-            let stem = path.file_stem()
+            let stem = path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
@@ -324,9 +412,11 @@ impl AvatarCatalog {
         }
 
         // Build static catalog lookup for metadata inheritance
-        let static_by_stem: HashMap<&str, &AvatarModel> = AVATAR_CATALOG.iter()
+        let static_by_stem: HashMap<&str, &AvatarModel> = AVATAR_CATALOG
+            .iter()
             .filter_map(|m| {
-                Path::new(m.filename).file_stem()
+                Path::new(m.filename)
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .map(|s| (s, m))
             })
@@ -334,7 +424,8 @@ impl AvatarCatalog {
 
         let mut models = Vec::new();
         for (stem, (path, _ext)) in &candidates {
-            let filename = path.file_name()
+            let filename = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
@@ -349,7 +440,10 @@ impl AvatarCatalog {
             if matches!(format, ModelFormat::Vrm0x | ModelFormat::Gltf) {
                 let vrm_path = path.with_extension("vrm");
                 if vrm_path.exists() && is_vrm1_file(&vrm_path) {
-                    clog_info!("🎭 Skipping VRM 1.0 model '{}' (Bevy can't render >128 joints)", stem);
+                    clog_info!(
+                        "🎭 Skipping VRM 1.0 model '{}' (Bevy can't render >128 joints)",
+                        stem
+                    );
                     continue;
                 }
             }
@@ -365,7 +459,10 @@ impl AvatarCatalog {
                     name: m.name.clone().unwrap_or_else(|| stem.clone()),
                     filename: filename.clone(),
                     format,
-                    style: m.style.as_deref().map(AvatarStyle::from_str_loose)
+                    style: m
+                        .style
+                        .as_deref()
+                        .map(AvatarStyle::from_str_loose)
                         .unwrap_or(AvatarStyle::Stylized),
                     voice_profile: VoiceProfile {
                         pitch: m.parse_pitch(),
@@ -410,21 +507,27 @@ impl AvatarCatalog {
         // Sort by id for deterministic ordering
         models.sort_by(|a, b| a.id.cmp(&b.id));
 
-        clog_info!("🎭 Avatar catalog: discovered {} models from filesystem", models.len());
+        clog_info!(
+            "🎭 Avatar catalog: discovered {} models from filesystem",
+            models.len()
+        );
         Self { models }
     }
 
     /// Build from the static AVATAR_CATALOG (fallback when no models/ directory).
     pub fn from_static() -> Self {
-        let models = AVATAR_CATALOG.iter().map(|m| DynamicAvatarModel {
-            id: m.id.to_string(),
-            name: m.name.to_string(),
-            filename: m.filename.to_string(),
-            format: ModelFormat::from_filename(m.filename).unwrap_or(ModelFormat::Vrm0x),
-            style: m.style,
-            voice_profile: m.voice_profile,
-            tags: Vec::new(),
-        }).collect();
+        let models = AVATAR_CATALOG
+            .iter()
+            .map(|m| DynamicAvatarModel {
+                id: m.id.to_string(),
+                name: m.name.to_string(),
+                filename: m.filename.to_string(),
+                format: ModelFormat::from_filename(m.filename).unwrap_or(ModelFormat::Vrm0x),
+                style: m.style,
+                voice_profile: m.voice_profile,
+                tags: Vec::new(),
+            })
+            .collect();
         Self { models }
     }
 
@@ -440,12 +543,27 @@ impl AvatarCatalog {
         style: Option<AvatarStyle>,
         gender: Option<AvatarGender>,
     ) -> Vec<&DynamicAvatarModel> {
-        self.models.iter().filter(|m| {
-            if let Some(f) = format { if m.format != f { return false; } }
-            if let Some(s) = style { if m.style != s { return false; } }
-            if let Some(g) = gender { if m.voice_profile.gender != g { return false; } }
-            true
-        }).collect()
+        self.models
+            .iter()
+            .filter(|m| {
+                if let Some(f) = format {
+                    if m.format != f {
+                        return false;
+                    }
+                }
+                if let Some(s) = style {
+                    if m.style != s {
+                        return false;
+                    }
+                }
+                if let Some(g) = gender {
+                    if m.voice_profile.gender != g {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
     }
 
     /// Find a model by ID.
@@ -476,13 +594,20 @@ mod tests {
     #[test]
     fn test_avatar_model_path() {
         let path = avatar_model_path("vroid-female-base.vrm");
-        assert_eq!(path.to_str().unwrap(), "models/avatars/vroid-female-base.vrm");
+        assert_eq!(
+            path.to_str().unwrap(),
+            "models/avatars/vroid-female-base.vrm"
+        );
     }
 
     #[test]
     fn test_all_models_have_filenames() {
         for model in AVATAR_CATALOG {
-            assert!(model.filename.ends_with(".vrm"), "Model {} missing .vrm extension", model.id);
+            assert!(
+                model.filename.ends_with(".vrm"),
+                "Model {} missing .vrm extension",
+                model.id
+            );
             assert!(!model.id.is_empty());
             assert!(!model.name.is_empty());
         }
@@ -576,15 +701,27 @@ id = "minimal"
     #[test]
     fn test_infer_gender_from_stem_known_models() {
         // VRoid males (static catalog)
-        assert_eq!(infer_gender_from_stem("vroid-male-base"), AvatarGender::Male);
+        assert_eq!(
+            infer_gender_from_stem("vroid-male-base"),
+            AvatarGender::Male
+        );
         assert_eq!(infer_gender_from_stem("vroid-sakurada"), AvatarGender::Male); // Sakurada Fumiriya = male per VRoid docs
-        assert_eq!(infer_gender_from_stem("vroid-hairsample-male"), AvatarGender::Male);
+        assert_eq!(
+            infer_gender_from_stem("vroid-hairsample-male"),
+            AvatarGender::Male
+        );
         // VRM 1.0 samples (skipped at load time, but gender should still be correct)
         assert_eq!(infer_gender_from_stem("vroid-sample-t"), AvatarGender::Male);
         assert_eq!(infer_gender_from_stem("vroid-sample-x"), AvatarGender::Male);
         assert_eq!(infer_gender_from_stem("vroid-sample-z"), AvatarGender::Male);
-        assert_eq!(infer_gender_from_stem("vroid-sample-r"), AvatarGender::Female);
-        assert_eq!(infer_gender_from_stem("vroid-sample-v"), AvatarGender::Female);
+        assert_eq!(
+            infer_gender_from_stem("vroid-sample-r"),
+            AvatarGender::Female
+        );
+        assert_eq!(
+            infer_gender_from_stem("vroid-sample-v"),
+            AvatarGender::Female
+        );
     }
 
     /// Verify dynamic catalog discovers models from disk with correct gender.
@@ -596,30 +733,52 @@ id = "minimal"
         let models = catalog.all();
 
         // At minimum: 8 static models (test runner may not be in src/ directory)
-        assert!(models.len() >= 8,
-            "Expected at least 8 models, got {}", models.len());
+        assert!(
+            models.len() >= 8,
+            "Expected at least 8 models, got {}",
+            models.len()
+        );
 
         // Models explicitly named "male" (not "female") should be Male
         for m in models {
             if m.id.contains("-male") && !m.id.contains("female") {
-                assert_eq!(m.voice_profile.gender, AvatarGender::Male,
-                    "Model '{}' has '-male' in name but gender={:?}", m.id, m.voice_profile.gender);
+                assert_eq!(
+                    m.voice_profile.gender,
+                    AvatarGender::Male,
+                    "Model '{}' has '-male' in name but gender={:?}",
+                    m.id,
+                    m.voice_profile.gender
+                );
             }
         }
 
         // At least 2 male models (vroid-male-base + vroid-sakurada always in static catalog)
-        let male_count = models.iter().filter(|m| m.voice_profile.gender == AvatarGender::Male).count();
-        assert!(male_count >= 2,
+        let male_count = models
+            .iter()
+            .filter(|m| m.voice_profile.gender == AvatarGender::Male)
+            .count();
+        assert!(
+            male_count >= 2,
             "Expected at least 2 male models, got {}. Models: {:?}",
             male_count,
-            models.iter().map(|m| format!("{}={:?}", m.id, m.voice_profile.gender)).collect::<Vec<_>>());
+            models
+                .iter()
+                .map(|m| format!("{}={:?}", m.id, m.voice_profile.gender))
+                .collect::<Vec<_>>()
+        );
 
         // If running from src/ (deploy), should have 3+ male models (male-base + hairsample-male + sakurada)
         if models.len() > 8 {
-            assert!(male_count >= 2,
+            assert!(
+                male_count >= 2,
                 "Dynamic catalog has {} models but only {} male. Models: {:?}",
-                models.len(), male_count,
-                models.iter().map(|m| format!("{}={:?}", m.id, m.voice_profile.gender)).collect::<Vec<_>>());
+                models.len(),
+                male_count,
+                models
+                    .iter()
+                    .map(|m| format!("{}={:?}", m.id, m.voice_profile.gender))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
@@ -629,10 +788,22 @@ id = "minimal"
         assert_eq!(AvatarStyle::from_str_loose("ANIME"), AvatarStyle::Anime);
         assert_eq!(AvatarStyle::from_str_loose("cartoon"), AvatarStyle::Cartoon);
         assert_eq!(AvatarStyle::from_str_loose("pixel"), AvatarStyle::Pixel);
-        assert_eq!(AvatarStyle::from_str_loose("realistic"), AvatarStyle::Realistic);
-        assert_eq!(AvatarStyle::from_str_loose("minimal"), AvatarStyle::Minimalist);
-        assert_eq!(AvatarStyle::from_str_loose("minimalist"), AvatarStyle::Minimalist);
+        assert_eq!(
+            AvatarStyle::from_str_loose("realistic"),
+            AvatarStyle::Realistic
+        );
+        assert_eq!(
+            AvatarStyle::from_str_loose("minimal"),
+            AvatarStyle::Minimalist
+        );
+        assert_eq!(
+            AvatarStyle::from_str_loose("minimalist"),
+            AvatarStyle::Minimalist
+        );
         // Unknown → Stylized (safe default)
-        assert_eq!(AvatarStyle::from_str_loose("unknown"), AvatarStyle::Stylized);
+        assert_eq!(
+            AvatarStyle::from_str_loose("unknown"),
+            AvatarStyle::Stylized
+        );
     }
 }

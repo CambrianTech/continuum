@@ -52,6 +52,14 @@ export interface SentinelRunParams {
 	timeout?: number;
 	/** Sentinel type for categorization (default: "build") */
 	type?: string;
+	/** Parent persona ID for escalation routing on completion */
+	parentPersonaId?: string;
+	/** Entity ID for execution record persistence */
+	entityId?: string;
+	/** Human-readable sentinel name */
+	sentinelName?: string;
+	/** Escalation rules (e.g., retry, notify, block) */
+	escalationRules?: Record<string, unknown>;
 }
 
 /**
@@ -115,7 +123,7 @@ export interface SentinelLogsTailResult {
  * Pipeline step types for multi-step execution
  */
 export type PipelineStep =
-	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string; allowFailure?: boolean }
+	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string; allowFailure?: boolean; env?: Record<string, string> }
 	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number }
 	| { type: 'command'; command: string; params?: Record<string, unknown> }
 	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
@@ -199,6 +207,11 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 				workingDir: params.workingDir,
 				env: params.env,
 				timeout: params.timeout,
+				// Escalation metadata — Rust stores alongside handle, pushes on completion
+				...(params.parentPersonaId && { parentPersonaId: params.parentPersonaId }),
+				...(params.entityId && { entityId: params.entityId }),
+				...(params.sentinelName && { sentinelName: params.sentinelName }),
+				...(params.escalationRules && { escalationRules: params.escalationRules }),
 			});
 
 			if (!response.success) {
@@ -211,10 +224,8 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 		/**
 		 * Execute a command synchronously (waits for completion).
 		 *
-		 * This is a convenience wrapper that:
-		 * 1. Starts the sentinel
-		 * 2. Polls until completion
-		 * 3. Returns the final output
+		 * Uses Rust sentinel/await (tokio::sync::watch channel) — zero polling.
+		 * Single IPC call that blocks until the sentinel finishes.
 		 */
 		async sentinelExecute(params: SentinelRunParams): Promise<{
 			success: boolean;
@@ -224,55 +235,54 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 		}> {
 			const runResult = await this.sentinelRun(params);
 			const handle = runResult.handle;
+			const timeout = params.timeout || 600;
 
-			// Poll until completion
-			const pollInterval = 250; // ms
-			const maxPolls = (params.timeout || 600) * 1000 / pollInterval;
-			let polls = 0;
+			// Single IPC call — Rust awaits watch channel, no polling.
+			// Use requestFull with explicit timeout (default IPC timeout is 60s, sentinels can run for minutes).
+			const ipcTimeoutMs = timeout * 1000 + 5000; // sentinel timeout + 5s grace
+			const { response: awaitResponse } = await this.requestFull({
+				command: 'sentinel/await',
+				handle,
+				timeout,
+			}, ipcTimeoutMs);
 
-			while (polls < maxPolls) {
-				await new Promise(resolve => setTimeout(resolve, pollInterval));
-				polls++;
+			if (!awaitResponse.success) {
+				return {
+					success: false,
+					exitCode: -1,
+					output: awaitResponse.error || `Await failed for ${handle}`,
+					handle,
+				};
+			}
 
-				const status = await this.sentinelStatus(handle);
-				if (status.handle.status !== 'running') {
-					// Get output: try combined log first, fall back to last step output for pipelines
-					let output = '';
-					try {
-						const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
-						output = logs.content;
-					} catch {
-						// Pipeline-type sentinels don't produce combined log streams
+			const finalHandle = (awaitResponse.result as SentinelStatusResult).handle;
+
+			// Read output from logs
+			let output = '';
+			try {
+				const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
+				output = logs.content;
+			} catch {
+				// Pipeline-type sentinels don't produce combined log streams
+			}
+
+			if (!output) {
+				try {
+					const stepsLog = await this.sentinelLogsRead(handle, 'steps', undefined, undefined);
+					if (stepsLog.content) {
+						const lines = stepsLog.content.trim().split('\n');
+						const lastStep = JSON.parse(lines[lines.length - 1]);
+						output = lastStep.output || finalHandle.error || '';
 					}
-
-					// If combined log was empty, read last step output from steps log
-					if (!output) {
-						try {
-							const stepsLog = await this.sentinelLogsRead(handle, 'steps', undefined, undefined);
-							if (stepsLog.content) {
-								const lines = stepsLog.content.trim().split('\n');
-								const lastStep = JSON.parse(lines[lines.length - 1]);
-								output = lastStep.output || status.handle.error || '';
-							}
-						} catch {
-							output = status.handle.error || '';
-						}
-					}
-					return {
-						success: status.handle.status === 'completed' && (status.handle.exitCode === 0 || status.handle.exitCode === undefined),
-						exitCode: status.handle.exitCode ?? (status.handle.status === 'completed' ? 0 : -1),
-						output,
-						handle,
-					};
+				} catch {
+					output = finalHandle.error || '';
 				}
 			}
 
-			// Timeout - cancel and return failure
-			await this.sentinelCancel(handle);
 			return {
-				success: false,
-				exitCode: -1,
-				output: `Timeout after ${params.timeout || 600}s`,
+				success: finalHandle.status === 'completed' && (finalHandle.exitCode === 0 || finalHandle.exitCode === undefined),
+				exitCode: finalHandle.exitCode ?? (finalHandle.status === 'completed' ? 0 : -1),
+				output,
 				handle,
 			};
 		}

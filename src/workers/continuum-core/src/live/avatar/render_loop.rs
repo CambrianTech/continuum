@@ -9,15 +9,15 @@
 //! Slot recycling: when an agent leaves the call, their render thread exits and
 //! the Bevy slot is returned to the pool for reuse. No slots are ever permanently leaked.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
-use std::collections::VecDeque;
-use crate::{clog_info, clog_warn, clog_error};
-use super::frame::{RgbaFrame, AvatarConfig};
-use super::renderer::AvatarRenderer;
 use super::backends::BevyChannelRenderer;
+use super::frame::{AvatarConfig, RgbaFrame};
+use super::renderer::AvatarRenderer;
+use crate::{clog_error, clog_info, clog_warn};
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 // =============================================================================
 // Slot pool — thread-safe pool of reusable Bevy render slot indices
@@ -29,7 +29,8 @@ static SLOT_POOL: OnceLock<std::sync::Mutex<VecDeque<u8>>> = OnceLock::new();
 
 fn slot_pool() -> &'static std::sync::Mutex<VecDeque<u8>> {
     SLOT_POOL.get_or_init(|| {
-        let slots: VecDeque<u8> = (0..crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS).collect();
+        let slots: VecDeque<u8> =
+            (0..crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS).collect();
         std::sync::Mutex::new(slots)
     })
 }
@@ -52,7 +53,11 @@ fn release_slot(slot: u8) {
     }
     let mut pool = slot_pool().lock().unwrap();
     pool.push_back(slot);
-    clog_info!("🎨 Released render slot {} ({} available)", slot, pool.len());
+    clog_info!(
+        "🎨 Released render slot {} ({} available)",
+        slot,
+        pool.len()
+    );
 }
 
 // =============================================================================
@@ -73,7 +78,11 @@ pub struct SlotGuard {
 
 impl SlotGuard {
     fn new(slot: u8, identity: String) -> Self {
-        Self { slot, identity, released: false }
+        Self {
+            slot,
+            identity,
+            released: false,
+        }
     }
 }
 
@@ -87,7 +96,8 @@ impl Drop for SlotGuard {
             release_slot(self.slot);
             clog_info!(
                 "🎨 SlotGuard: released slot {} for '{}'",
-                self.slot, &self.identity[..8.min(self.identity.len())]
+                self.slot,
+                &self.identity[..8.min(self.identity.len())]
             );
         }
     }
@@ -126,7 +136,9 @@ pub struct BevySlotAllocation {
 /// waiting for slot availability. Call from `tokio::task::spawn_blocking`.
 pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, String> {
     let identity = config.identity.clone();
-    let vrm_path = config.vrm_model_path.as_ref()
+    let vrm_path = config
+        .vrm_model_path
+        .as_ref()
         .ok_or_else(|| format!("No VRM model for '{}'", identity))?;
 
     if !std::path::Path::new(vrm_path).exists() {
@@ -143,18 +155,24 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
         let identity_map = bevy_system.identity_to_slot_map();
         if let Some(&existing_slot) = identity_map.get(&identity) {
             if let Some(frame_rx) = bevy_system.frame_receiver(existing_slot) {
-                let frame_notify = bevy_system.frame_notifier(existing_slot)
+                let frame_notify = bevy_system
+                    .frame_notifier(existing_slot)
                     .ok_or_else(|| format!("frame_notifier failed for slot {}", existing_slot))?;
                 clog_info!(
                     "🎨 allocate_bevy_slot: reusing slot {} for '{}' (identity dedup)",
-                    existing_slot, &identity[..8.min(identity.len())]
+                    existing_slot,
+                    &identity[..8.min(identity.len())]
                 );
                 return Ok(BevySlotAllocation {
                     frame_rx: frame_rx.clone(),
                     frame_notify,
                     slot: existing_slot,
                     // No-op guard for reused slots — original owner manages lifecycle
-                    guard: SlotGuard { slot: existing_slot, identity: identity.clone(), released: true },
+                    guard: SlotGuard {
+                        slot: existing_slot,
+                        identity: identity.clone(),
+                        released: true,
+                    },
                 });
             }
         }
@@ -170,13 +188,14 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
         for _ in 0..50 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             slot_opt = allocate_slot();
-            if slot_opt.is_some() { break; }
+            if slot_opt.is_some() {
+                break;
+            }
         }
     }
 
-    let slot = slot_opt.ok_or_else(|| {
-        format!("No Bevy slots available for '{}' after 5s wait", identity)
-    })?;
+    let slot = slot_opt
+        .ok_or_else(|| format!("No Bevy slots available for '{}' after 5s wait", identity))?;
 
     bevy_system.load_model(slot, vrm_path, &config.display_name, &identity);
     bevy_system.register_identity(&identity, slot);
@@ -192,7 +211,9 @@ pub fn allocate_bevy_slot(config: AvatarConfig) -> Result<BevySlotAllocation, St
 
     clog_info!(
         "🎨 allocate_bevy_slot: slot {} for '{}' (model: {})",
-        slot, &identity[..8.min(identity.len())], vrm_path
+        slot,
+        &identity[..8.min(identity.len())],
+        vrm_path
     );
 
     Ok(BevySlotAllocation {
@@ -214,7 +235,8 @@ struct ActiveRenderer {
     interval_nanos: Arc<AtomicU64>,
 }
 
-static ACTIVE_RENDERERS: OnceLock<std::sync::Mutex<HashMap<String, ActiveRenderer>>> = OnceLock::new();
+static ACTIVE_RENDERERS: OnceLock<std::sync::Mutex<HashMap<String, ActiveRenderer>>> =
+    OnceLock::new();
 
 fn active_renderers() -> &'static std::sync::Mutex<HashMap<String, ActiveRenderer>> {
     ACTIVE_RENDERERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -235,7 +257,9 @@ fn active_renderers() -> &'static std::sync::Mutex<HashMap<String, ActiveRendere
 ///
 /// This is the single factory function. All renderer selection logic lives here.
 pub fn create_renderer(config: AvatarConfig) -> Result<(Box<dyn AvatarRenderer>, u8), String> {
-    let vrm_path = config.vrm_model_path.as_ref()
+    let vrm_path = config
+        .vrm_model_path
+        .as_ref()
         .ok_or_else(|| format!("No VRM model for '{}'", config.identity))?;
 
     if !std::path::Path::new(vrm_path).exists() {
@@ -254,10 +278,15 @@ pub fn create_renderer(config: AvatarConfig) -> Result<(Box<dyn AvatarRenderer>,
             if let Some(frame_rx) = bevy_system.frame_receiver(existing_slot) {
                 clog_info!(
                     "🎨 Reusing existing slot {} for '{}' (identity dedup)",
-                    existing_slot, &config.identity[..8.min(config.identity.len())]
+                    existing_slot,
+                    &config.identity[..8.min(config.identity.len())]
                 );
                 return Ok((
-                    Box::new(BevyChannelRenderer::new(config, frame_rx.clone(), existing_slot)),
+                    Box::new(BevyChannelRenderer::new(
+                        config,
+                        frame_rx.clone(),
+                        existing_slot,
+                    )),
                     existing_slot,
                 ));
             }
@@ -274,12 +303,17 @@ pub fn create_renderer(config: AvatarConfig) -> Result<(Box<dyn AvatarRenderer>,
         for _ in 0..50 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             slot_opt = allocate_slot();
-            if slot_opt.is_some() { break; }
+            if slot_opt.is_some() {
+                break;
+            }
         }
     }
 
     let slot = slot_opt.ok_or_else(|| {
-        format!("No Bevy slots available for '{}' after 5s wait", config.identity)
+        format!(
+            "No Bevy slots available for '{}' after 5s wait",
+            config.identity
+        )
     })?;
 
     bevy_system.load_model(slot, vrm_path, &config.display_name, &config.identity);
@@ -292,10 +326,15 @@ pub fn create_renderer(config: AvatarConfig) -> Result<(Box<dyn AvatarRenderer>,
 
     clog_info!(
         "🎨 Using BevyChannelRenderer for '{}' (slot {}, model: {})",
-        &config.identity[..8.min(config.identity.len())], slot, vrm_path
+        &config.identity[..8.min(config.identity.len())],
+        slot,
+        vrm_path
     );
 
-    Ok((Box::new(BevyChannelRenderer::new(config, frame_rx.clone(), slot)), slot))
+    Ok((
+        Box::new(BevyChannelRenderer::new(config, frame_rx.clone(), slot)),
+        slot,
+    ))
 }
 
 /// Spawns a background thread that renders avatar frames and sends them via channel.
@@ -334,16 +373,15 @@ pub fn spawn_renderer_loop(
         Err(e) => {
             clog_error!(
                 "🎨 Failed to create renderer for '{}': {}",
-                &identity[..8.min(identity.len())], e
+                &identity[..8.min(identity.len())],
+                e
             );
             return None;
         }
     };
 
     let fps = config.fps;
-    let interval_nanos = Arc::new(AtomicU64::new(
-        (1_000_000_000.0 / fps) as u64
-    ));
+    let interval_nanos = Arc::new(AtomicU64::new((1_000_000_000.0 / fps) as u64));
     let interval_nanos_clone = interval_nanos.clone();
 
     let (tx, rx) = crossbeam_channel::bounded(2);
@@ -351,17 +389,23 @@ pub fn spawn_renderer_loop(
     // Register in active renderers BEFORE spawning the thread
     {
         let mut active = active_renderers().lock().unwrap();
-        active.insert(identity.clone(), ActiveRenderer {
-            rx: rx.clone(),
-            interval_nanos: interval_nanos.clone(),
-        });
+        active.insert(
+            identity.clone(),
+            ActiveRenderer {
+                rx: rx.clone(),
+                interval_nanos: interval_nanos.clone(),
+            },
+        );
     }
 
     let renderer = Arc::new(std::sync::Mutex::new(renderer));
     let identity_for_thread = identity.clone();
 
     std::thread::Builder::new()
-        .name(format!("avatar-renderer-{}", &identity[..8.min(identity.len())]))
+        .name(format!(
+            "avatar-renderer-{}",
+            &identity[..8.min(identity.len())]
+        ))
         .spawn(move || {
             let mut renderer = renderer.lock().unwrap();
             loop {
@@ -386,7 +430,10 @@ pub fn spawn_renderer_loop(
                 let mut active = active_renderers().lock().unwrap();
                 active.remove(&identity_for_thread);
             }
-            clog_info!("🎨 Render loop exited for '{}'", &identity_for_thread[..8.min(identity_for_thread.len())]);
+            clog_info!(
+                "🎨 Render loop exited for '{}'",
+                &identity_for_thread[..8.min(identity_for_thread.len())]
+            );
         })
         .expect("Failed to spawn avatar renderer thread");
 

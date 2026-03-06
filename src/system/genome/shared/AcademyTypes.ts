@@ -42,6 +42,7 @@ export type AcademyEventAction =
   | 'challenge:attempted'
   | 'topic:passed'
   | 'topic:remediate'
+  | 'verdict:ready'
   | 'inference:demo'
   | 'quality:gate:failed'
   | 'project:setup:complete'
@@ -49,6 +50,11 @@ export type AcademyEventAction =
   | 'milestone:attempted'
   | 'milestone:retry'
   | 'milestone:passed'
+  | 'reexam:ready'
+  | 'reexam:challenge:ready'
+  | 'reexam:challenge:attempted'
+  | 'reexam:verdict:ready'
+  | 'reexam:complete'
   | 'session:complete'
   | 'session:failed';
 
@@ -89,6 +95,14 @@ export interface AcademyConfig {
 
   /** LLM provider for teacher */
   teacherProvider?: string;
+
+  /** LLM model for student inference (attempting challenges).
+   *  Defaults to baseModel if not set. Use a cloud model when baseModel
+   *  has limited context (e.g. BF16 Candle with 2048 cap). */
+  studentModel?: string;
+
+  /** LLM provider for student inference */
+  studentProvider?: string;
 }
 
 /**
@@ -492,5 +506,42 @@ export interface ProjectStudentPipelineConfig {
   baseModel: string;
   projectDir: string;
   milestones: MilestoneSpec[];
+  config: AcademyConfig;
+}
+
+// ============================================================================
+// RealClassEval Academy Pipeline Types
+// ============================================================================
+
+/**
+ * Configuration for the RealClassEval teacher sentinel pipeline.
+ *
+ * The teacher selects challenging Python class problems from the RealClassEval
+ * benchmark, presents them to the student, and grades implementations using
+ * PYNGUIN-generated tests for deterministic scoring.
+ */
+export interface RealClassEvalTeacherPipelineConfig {
+  sessionId: UUID;
+  skill: string;
+  personaName: string;
+  baseModel: string;
+  /** Path to the imported RealClassEval dataset directory */
+  datasetDir: string;
+  config: AcademyConfig;
+}
+
+/**
+ * Configuration for the RealClassEval student sentinel pipeline.
+ *
+ * The student attempts to implement Python classes from skeletons,
+ * trains on targeted remediation data when failing, and retries.
+ */
+export interface RealClassEvalStudentPipelineConfig {
+  sessionId: UUID;
+  personaId: UUID;
+  personaName: string;
+  baseModel: string;
+  /** Path to the imported RealClassEval dataset directory */
+  datasetDir: string;
   config: AcademyConfig;
 }

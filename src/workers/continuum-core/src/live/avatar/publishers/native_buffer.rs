@@ -25,12 +25,12 @@
 #![cfg(target_os = "macos")]
 
 use crossbeam_channel::{Receiver, TryRecvError};
-use livekit::webrtc::video_frame::{VideoFrame, VideoRotation, native::NativeBuffer};
+use livekit::webrtc::video_frame::{native::NativeBuffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 
-use crate::{clog_info, clog_warn};
-use crate::live::avatar::frame::RgbaFrame;
 use super::super::frame_publisher::{FramePublisher, PublishError};
+use crate::live::avatar::frame::RgbaFrame;
+use crate::{clog_info, clog_warn};
 
 // =============================================================================
 // CoreVideo FFI — minimal bindings for CVPixelBuffer (NV12 bi-planar)
@@ -58,15 +58,9 @@ extern "C" {
         pixel_buffer_out: *mut CVPixelBufferRef,
     ) -> CVReturn;
 
-    fn CVPixelBufferLockBaseAddress(
-        pixel_buffer: CVPixelBufferRef,
-        lock_flags: u64,
-    ) -> CVReturn;
+    fn CVPixelBufferLockBaseAddress(pixel_buffer: CVPixelBufferRef, lock_flags: u64) -> CVReturn;
 
-    fn CVPixelBufferUnlockBaseAddress(
-        pixel_buffer: CVPixelBufferRef,
-        lock_flags: u64,
-    ) -> CVReturn;
+    fn CVPixelBufferUnlockBaseAddress(pixel_buffer: CVPixelBufferRef, lock_flags: u64) -> CVReturn;
 
     fn CVPixelBufferGetBaseAddressOfPlane(
         pixel_buffer: CVPixelBufferRef,
@@ -107,11 +101,7 @@ pub struct NativeBufferPublisher {
 impl NativeBufferPublisher {
     /// Try to create a NativeBufferPublisher. Returns Err if NV12 CVPixelBuffer creation
     /// fails (e.g. CoreVideo unavailable, out of memory).
-    pub fn try_new(
-        frame_rx: Receiver<RgbaFrame>,
-        width: u32,
-        height: u32,
-    ) -> Result<Self, String> {
+    pub fn try_new(frame_rx: Receiver<RgbaFrame>, width: u32, height: u32) -> Result<Self, String> {
         // Smoke test: create and immediately release an NV12 CVPixelBuffer
         // to verify CoreVideo supports this format.
         let mut test_pb: CVPixelBufferRef = std::ptr::null_mut();
@@ -128,7 +118,8 @@ impl NativeBufferPublisher {
         if result != K_CV_RETURN_SUCCESS || test_pb.is_null() {
             return Err(format!(
                 "CVPixelBufferCreate NV12 smoke test failed (CVReturn={}, null={})",
-                result, test_pb.is_null()
+                result,
+                test_pb.is_null()
             ));
         }
 
@@ -137,7 +128,10 @@ impl NativeBufferPublisher {
             let lock = CVPixelBufferLockBaseAddress(test_pb, 0);
             if lock != K_CV_RETURN_SUCCESS {
                 CVPixelBufferRelease(test_pb);
-                return Err(format!("CVPixelBufferLockBaseAddress failed (CVReturn={})", lock));
+                return Err(format!(
+                    "CVPixelBufferLockBaseAddress failed (CVReturn={})",
+                    lock
+                ));
             }
             let y_base = CVPixelBufferGetBaseAddressOfPlane(test_pb, 0);
             let uv_base = CVPixelBufferGetBaseAddressOfPlane(test_pb, 1);
@@ -156,21 +150,37 @@ impl NativeBufferPublisher {
             );
         }
 
-        unsafe { CVPixelBufferRelease(test_pb); }
+        unsafe {
+            CVPixelBufferRelease(test_pb);
+        }
 
-        Ok(Self { frame_rx, width, height, frame_count: 0, started_at: std::time::Instant::now(), alloc_failures: 0 })
+        Ok(Self {
+            frame_rx,
+            width,
+            height,
+            frame_count: 0,
+            started_at: std::time::Instant::now(),
+            alloc_failures: 0,
+        })
     }
 }
 
 impl FramePublisher for NativeBufferPublisher {
-    fn name(&self) -> &'static str { "native-nv12" }
+    fn name(&self) -> &'static str {
+        "native-nv12"
+    }
 
     fn resize(&mut self, width: u32, height: u32) {
         if width == self.width && height == self.height {
             return;
         }
-        crate::clog_info!("📹 NativeBufferPublisher: resize {}×{} → {}×{}",
-            self.width, self.height, width, height);
+        crate::clog_info!(
+            "📹 NativeBufferPublisher: resize {}×{} → {}×{}",
+            self.width,
+            self.height,
+            width,
+            height
+        );
         self.width = width;
         self.height = height;
         // NativeBufferPublisher allocates per-frame, so no pre-allocated buffers to recreate.
@@ -223,7 +233,10 @@ impl FramePublisher for NativeBufferPublisher {
         unsafe {
             let lock_result = CVPixelBufferLockBaseAddress(cv_pb, 0);
             if lock_result != K_CV_RETURN_SUCCESS {
-                clog_warn!("📹 NativeBufferPublisher: CVPixelBufferLockBaseAddress failed (CVReturn={})", lock_result);
+                clog_warn!(
+                    "📹 NativeBufferPublisher: CVPixelBufferLockBaseAddress failed (CVReturn={})",
+                    lock_result
+                );
                 CVPixelBufferRelease(cv_pb);
                 return Ok(false);
             }
@@ -247,7 +260,10 @@ impl FramePublisher for NativeBufferPublisher {
             if self.frame_count == 0 {
                 clog_info!(
                     "📹 NativeBufferPublisher NV12: first frame — {}×{}, Y stride={}, UV stride={}",
-                    self.width, self.height, y_stride, uv_stride
+                    self.width,
+                    self.height,
+                    y_stride,
+                    uv_stride
                 );
             }
 
@@ -287,7 +303,11 @@ impl FramePublisher for NativeBufferPublisher {
         // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
         if self.frame_count == 1 || self.frame_count % 450 == 0 {
             let elapsed = self.started_at.elapsed().as_secs_f64();
-            let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
+            let fps = if elapsed > 0.0 {
+                self.frame_count as f64 / elapsed
+            } else {
+                0.0
+            };
             clog_info!(
                 "📹 NativeBufferPublisher NV12: {} frames published ({:.1} fps avg, alloc_failures={})",
                 self.frame_count, fps, self.alloc_failures
@@ -353,9 +373,11 @@ pub(crate) unsafe fn rgba_to_nv12(
             let g = *rgba.get_unchecked(i + 1) as i32;
             let b = *rgba.get_unchecked(i + 2) as i32;
             // BT.601: U = (-38R - 74G + 112B + 128) >> 8 + 128
-            *uv_row.add(cx * 2) = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            *uv_row.add(cx * 2) =
+                (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
             // BT.601: V = (112R - 94G - 18B + 128) >> 8 + 128
-            *uv_row.add(cx * 2 + 1) = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            *uv_row.add(cx * 2 + 1) =
+                (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
         }
     }
 }

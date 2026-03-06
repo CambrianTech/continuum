@@ -13,8 +13,8 @@
 //! 3. `[HH:MM] ` — timestamp only
 //! 4. `**Name:** ` or `*Name:* ` — markdown role markers
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Result of response cleaning with optional extracted thinking content.
 pub struct CleanResult {
@@ -30,21 +30,17 @@ static PATTERN_THINKING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?si)<think(?:ing)?>.*?</think(?:ing)?>").expect("thinking regex")
 });
 
-static PATTERN_TIMESTAMP_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*").expect("timestamp+name regex")
-});
+static PATTERN_TIMESTAMP_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*").expect("timestamp+name regex"));
 
-static PATTERN_NAME_ONLY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Z][A-Za-z\s]+:\s*").expect("name-only regex")
-});
+static PATTERN_NAME_ONLY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Z][A-Za-z\s]+:\s*").expect("name-only regex"));
 
-static PATTERN_TIMESTAMP_ONLY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\[\d{1,2}:\d{2}\]\s*").expect("timestamp-only regex")
-});
+static PATTERN_TIMESTAMP_ONLY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s*").expect("timestamp-only regex"));
 
-static PATTERN_MARKDOWN_ROLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*").expect("markdown role regex")
-});
+static PATTERN_MARKDOWN_ROLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*").expect("markdown role regex"));
 
 /// Regex to extract the content INSIDE thinking tags (for downstream use).
 static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
@@ -116,12 +112,18 @@ mod tests {
 
     #[test]
     fn test_strip_timestamp_and_name() {
-        assert_eq!(clean_response("[11:59] GPT Assistant: Yes, Joel...").text, "Yes, Joel...");
+        assert_eq!(
+            clean_response("[11:59] GPT Assistant: Yes, Joel...").text,
+            "Yes, Joel..."
+        );
     }
 
     #[test]
     fn test_strip_name_only() {
-        assert_eq!(clean_response("GPT Assistant: Yes, Joel...").text, "Yes, Joel...");
+        assert_eq!(
+            clean_response("GPT Assistant: Yes, Joel...").text,
+            "Yes, Joel..."
+        );
     }
 
     #[test]
@@ -131,7 +133,10 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_double_star() {
-        assert_eq!(clean_response("**Assistant:** answer here").text, "answer here");
+        assert_eq!(
+            clean_response("**Assistant:** answer here").text,
+            "answer here"
+        );
     }
 
     #[test]
@@ -154,7 +159,10 @@ mod tests {
 
     #[test]
     fn test_nested_prefixes() {
-        assert_eq!(clean_response("[11:59] GPT: Assistant: hello").text, "hello");
+        assert_eq!(
+            clean_response("[11:59] GPT: Assistant: hello").text,
+            "hello"
+        );
     }
 
     #[test]
@@ -198,7 +206,10 @@ mod tests {
         let input = "<think>I need to consider the options carefully.</think>\nThe answer is 42.";
         let result = clean_response(input);
         assert_eq!(result.text, "The answer is 42.");
-        assert_eq!(result.thinking.as_deref(), Some("I need to consider the options carefully."));
+        assert_eq!(
+            result.thinking.as_deref(),
+            Some("I need to consider the options carefully.")
+        );
     }
 
     #[test]
@@ -221,7 +232,8 @@ mod tests {
 
     #[test]
     fn test_multiple_thinking_blocks() {
-        let input = "<thinking>First thought</thinking>Part one. <think>Second thought</think>Part two.";
+        let input =
+            "<thinking>First thought</thinking>Part one. <think>Second thought</think>Part two.";
         let result = clean_response(input);
         assert_eq!(result.text, "Part one. Part two.");
         let thinking = result.thinking.unwrap();

@@ -48,7 +48,8 @@ fn word_similarity(expected: &str, actual: &str) -> f32 {
     // Normalize: lowercase, replace hyphens/punctuation with spaces, split on whitespace.
     // Also split pure-digit tokens into individual digits (STT concatenates "1 2 3" → "123").
     let normalize = |s: &str| -> Vec<String> {
-        let tokens: Vec<String> = s.to_lowercase()
+        let tokens: Vec<String> = s
+            .to_lowercase()
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { ' ' })
             .collect::<String>()
@@ -122,7 +123,10 @@ fn test_tts_stt_roundtrip_via_ipc() {
         // Fresh connection per phrase
         let mut stream = match ipc_connect() {
             Some(s) => s,
-            None => { failed += 1; continue; }
+            None => {
+                failed += 1;
+                continue;
+            }
         };
 
         // Step 1: Synthesize via IPC
@@ -178,7 +182,10 @@ fn test_tts_stt_roundtrip_via_ipc() {
 
         let mut stream = match ipc_connect() {
             Some(s) => s,
-            None => { failed += 1; continue; }
+            None => {
+                failed += 1;
+                continue;
+            }
         };
 
         let audio_base64 = base64::engine::general_purpose::STANDARD.encode(&pcm_bytes);
@@ -271,7 +278,10 @@ fn test_tts_sample_rate_via_ipc() {
     println!("PCM bytes: {}", pcm_bytes.len());
 
     // Verify sample rate is 16kHz
-    assert_eq!(sample_rate, 16000, "TTS must output 16kHz for CallServer compatibility");
+    assert_eq!(
+        sample_rate, 16000,
+        "TTS must output 16kHz for CallServer compatibility"
+    );
 
     // Verify duration matches sample count (within 100ms tolerance)
     let expected_duration = (num_samples * 1000) / 16000;
@@ -286,7 +296,10 @@ fn test_tts_sample_rate_via_ipc() {
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let max_amp = samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-    assert!(max_amp > 100, "Audio should not be silence, max amplitude: {max_amp}");
+    assert!(
+        max_amp > 100,
+        "Audio should not be silence, max amplitude: {max_amp}"
+    );
 
     println!("Max amplitude: {max_amp}");
     println!("Sample rate test PASSED");
@@ -331,9 +344,15 @@ fn test_stt_whisper_via_ipc() {
 
     match (response.success, response.result) {
         (true, Some(result)) => {
-            println!("Transcription: \"{}\"", result["text"].as_str().unwrap_or(""));
+            println!(
+                "Transcription: \"{}\"",
+                result["text"].as_str().unwrap_or("")
+            );
             println!("Language: {}", result["language"].as_str().unwrap_or(""));
-            println!("Confidence: {:.2}", result["confidence"].as_f64().unwrap_or(0.0));
+            println!(
+                "Confidence: {:.2}",
+                result["confidence"].as_f64().unwrap_or(0.0)
+            );
             println!("STT infrastructure test PASSED");
         }
         (false, _) => {

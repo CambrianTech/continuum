@@ -177,8 +177,7 @@ impl RecallLayer for TemporalRecallLayer {
             .enumerate()
             .map(|(i, m)| {
                 // Recency score: most recent = highest score
-                let recency_score =
-                    1.0 - (i as f64 / (query.max_results_per_layer * 2) as f64);
+                let recency_score = 1.0 - (i as f64 / (query.max_results_per_layer * 2) as f64);
 
                 // Room bonus: memories from the same room get a 20% boost
                 let room_bonus = if m
@@ -219,24 +218,20 @@ impl AssociativeRecallLayer {
     /// Simple keyword extraction: split by whitespace, filter stopwords + short words.
     pub fn extract_keywords(text: &str) -> Vec<String> {
         const STOPWORDS: &[&str] = &[
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "can", "shall", "to", "of", "in", "for", "on",
-            "with", "at", "by", "from", "as", "into", "about", "like", "through",
-            "after", "over", "between", "out", "up", "down", "this", "that", "these",
-            "those", "it", "its", "i", "me", "my", "we", "our", "you", "your", "he",
-            "she", "they", "them", "what", "which", "who", "when", "where", "how",
-            "not", "no", "nor", "but", "and", "or", "if", "then", "so", "too",
-            "very", "just", "don", "now", "here", "there",
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+            "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "can",
+            "shall", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
+            "about", "like", "through", "after", "over", "between", "out", "up", "down", "this",
+            "that", "these", "those", "it", "its", "i", "me", "my", "we", "our", "you", "your",
+            "he", "she", "they", "them", "what", "which", "who", "when", "where", "how", "not",
+            "no", "nor", "but", "and", "or", "if", "then", "so", "too", "very", "just", "don",
+            "now", "here", "there",
         ];
 
         text.to_lowercase()
             .split_whitespace()
             .filter(|w| w.len() >= 3 && !STOPWORDS.contains(w))
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_string()
-            })
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
             .filter(|w| !w.is_empty())
             .collect()
     }
@@ -283,8 +278,7 @@ impl RecallLayer for AssociativeRecallLayer {
                     return None;
                 }
 
-                let score =
-                    (tag_matches as f64 / keywords.len() as f64) * 0.7 + m.importance * 0.3;
+                let score = (tag_matches as f64 / keywords.len() as f64) * 0.7 + m.importance * 0.3;
 
                 let mut record = m.clone();
                 record.layer = Some("associative".into());
@@ -405,11 +399,8 @@ impl RecallLayer for CrossContextLayer {
         // If we have query text, do semantic cross-context search
         if let Some(ref query_text) = query.query_text {
             if let Ok(query_emb) = embedding_provider.embed(query_text) {
-                let events_with_emb = corpus.cross_context_events_with_embeddings(
-                    &query.room_id,
-                    &since,
-                    50,
-                );
+                let events_with_emb =
+                    corpus.cross_context_events_with_embeddings(&query.room_id, &since, 50);
 
                 let mut scored: Vec<ScoredMemory> = events_with_emb
                     .into_iter()

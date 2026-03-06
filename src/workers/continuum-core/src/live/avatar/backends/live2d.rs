@@ -15,8 +15,8 @@
 //! later by implementing the same RenderBackend trait.
 
 use crate::clog_info;
-use crate::live::avatar::backend::{RenderBackend, AvatarError, ModelFormat};
-use crate::live::avatar::frame::{RgbaFrame, AvatarConfig};
+use crate::live::avatar::backend::{AvatarError, ModelFormat, RenderBackend};
+use crate::live::avatar::frame::{AvatarConfig, RgbaFrame};
 use crate::live::avatar::renderer::AvatarRenderer;
 use crate::live::avatar::types::AvatarModel;
 
@@ -47,13 +47,13 @@ fn emotion_to_col(emotion: &str) -> usize {
 /// Groups the 15 OCULUS visemes into our 7 rows.
 fn viseme_to_row(viseme: u8) -> usize {
     match viseme {
-        0 => 0,         // sil → idle
-        1..=3 => 1,     // PP, FF, TH → A-like
-        4..=5 => 2,     // DD, kk → E-like
-        6..=8 => 3,     // iH, aa, ou → I-like
-        9..=11 => 4,    // oh, oo, schwa → O-like
-        12..=14 => 5,   // er, w, r → U-like
-        _ => 6,         // fallback → neutral-talk
+        0 => 0,       // sil → idle
+        1..=3 => 1,   // PP, FF, TH → A-like
+        4..=5 => 2,   // DD, kk → E-like
+        6..=8 => 3,   // iH, aa, ou → I-like
+        9..=11 => 4,  // oh, oo, schwa → O-like
+        12..=14 => 5, // er, w, r → U-like
+        _ => 6,       // fallback → neutral-talk
     }
 }
 
@@ -98,24 +98,30 @@ impl Live2DRenderer {
         let cell_height = atlas_height / VISEME_ROWS as u32;
 
         if cell_width == 0 || cell_height == 0 {
-            return Err(AvatarError::RenderFailed(
-                format!("Atlas too small: {}x{} for {}x{} grid",
-                    atlas_width, atlas_height, EXPRESSION_COLS, VISEME_ROWS)
-            ));
+            return Err(AvatarError::RenderFailed(format!(
+                "Atlas too small: {}x{} for {}x{} grid",
+                atlas_width, atlas_height, EXPRESSION_COLS, VISEME_ROWS
+            )));
         }
 
         let expected_bytes = (atlas_width * atlas_height * 4) as usize;
         if atlas_data.len() < expected_bytes {
-            return Err(AvatarError::RenderFailed(
-                format!("Atlas data too short: {} bytes, expected {}",
-                    atlas_data.len(), expected_bytes)
-            ));
+            return Err(AvatarError::RenderFailed(format!(
+                "Atlas data too short: {} bytes, expected {}",
+                atlas_data.len(),
+                expected_bytes
+            )));
         }
 
         clog_info!(
             "Live2DRenderer: initialized for '{}' (atlas {}x{}, cell {}x{}, target {}x{})",
-            config.identity, atlas_width, atlas_height,
-            cell_width, cell_height, config.width, config.height
+            config.identity,
+            atlas_width,
+            atlas_height,
+            cell_width,
+            cell_height,
+            config.width,
+            config.height
         );
 
         Ok(Self {
@@ -148,7 +154,7 @@ impl Live2DRenderer {
                 let dst_off = ((dy * tw + dx) * 4) as usize;
 
                 if src_off + 3 < self.atlas_data.len() {
-                    output[dst_off]     = self.atlas_data[src_off];
+                    output[dst_off] = self.atlas_data[src_off];
                     output[dst_off + 1] = self.atlas_data[src_off + 1];
                     output[dst_off + 2] = self.atlas_data[src_off + 2];
                     output[dst_off + 3] = self.atlas_data[src_off + 3];
@@ -210,7 +216,9 @@ impl Live2DBackend {
 }
 
 impl RenderBackend for Live2DBackend {
-    fn name(&self) -> &'static str { "live2d" }
+    fn name(&self) -> &'static str {
+        "live2d"
+    }
 
     fn description(&self) -> &'static str {
         "2D sprite-sheet compositing for Live2D-style avatars"
@@ -220,7 +228,9 @@ impl RenderBackend for Live2DBackend {
         &[ModelFormat::Live2D, ModelFormat::SpriteSheet]
     }
 
-    fn is_initialized(&self) -> bool { self.initialized }
+    fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 
     fn initialize(&mut self) -> Result<(), AvatarError> {
         // No external dependencies needed for sprite-sheet mode
@@ -235,16 +245,16 @@ impl RenderBackend for Live2DBackend {
     ) -> Result<Box<dyn AvatarRenderer>, AvatarError> {
         let atlas_path = super::super::catalog::avatar_model_path(model.filename);
         if !atlas_path.exists() {
-            return Err(AvatarError::ModelNotFound(
-                format!("Sprite atlas not found: {}", atlas_path.display())
-            ));
+            return Err(AvatarError::ModelNotFound(format!(
+                "Sprite atlas not found: {}",
+                atlas_path.display()
+            )));
         }
 
         // Load the atlas image
         // For now, we support raw RGBA files (width/height encoded in filename or manifest).
         // A real implementation would use image crate to decode PNG/WebP.
-        let atlas_data = std::fs::read(&atlas_path)
-            .map_err(|e| AvatarError::IoError(e))?;
+        let atlas_data = std::fs::read(&atlas_path).map_err(|e| AvatarError::IoError(e))?;
 
         // Infer atlas dimensions from file size assuming square-ish atlas
         // with EXPRESSION_COLS × VISEME_ROWS cells.
@@ -256,22 +266,22 @@ impl RenderBackend for Live2DBackend {
         let expected = (atlas_width * atlas_height * 4) as usize;
 
         if atlas_data.len() < expected {
-            return Err(AvatarError::RenderFailed(
-                format!("Atlas file too small: {} bytes, expected {} for {}x{} atlas",
-                    atlas_data.len(), expected, atlas_width, atlas_height)
-            ));
+            return Err(AvatarError::RenderFailed(format!(
+                "Atlas file too small: {} bytes, expected {} for {}x{} atlas",
+                atlas_data.len(),
+                expected,
+                atlas_width,
+                atlas_height
+            )));
         }
 
-        let renderer = Live2DRenderer::from_atlas(
-            config.clone(),
-            atlas_data,
-            atlas_width,
-            atlas_height,
-        )?;
+        let renderer =
+            Live2DRenderer::from_atlas(config.clone(), atlas_data, atlas_width, atlas_height)?;
 
         clog_info!(
             "🎭 Live2DBackend: created renderer for '{}' (atlas: {})",
-            config.identity, atlas_path.display()
+            config.identity,
+            atlas_path.display()
         );
         Ok(Box::new(renderer))
     }
@@ -355,9 +365,21 @@ mod tests {
         // Not speaking → idle (row 0, col 0 = neutral)
         let frame = renderer.render_frame();
         let (er, eg, eb) = cell_color(0, 0);
-        assert_eq!(frame.data[0], er, "Expected R={}, got {}", er, frame.data[0]);
-        assert_eq!(frame.data[1], eg, "Expected G={}, got {}", eg, frame.data[1]);
-        assert_eq!(frame.data[2], eb, "Expected B={}, got {}", eb, frame.data[2]);
+        assert_eq!(
+            frame.data[0], er,
+            "Expected R={}, got {}",
+            er, frame.data[0]
+        );
+        assert_eq!(
+            frame.data[1], eg,
+            "Expected G={}, got {}",
+            eg, frame.data[1]
+        );
+        assert_eq!(
+            frame.data[2], eb,
+            "Expected B={}, got {}",
+            eb, frame.data[2]
+        );
     }
 
     #[test]
@@ -418,7 +440,7 @@ mod tests {
         let mut renderer = Live2DRenderer::from_atlas(config, atlas, aw, ah).unwrap();
 
         renderer.set_speaking(true);
-        renderer.set_viseme(9, 1.0);      // oh → row 4 (O-like)
+        renderer.set_viseme(9, 1.0); // oh → row 4 (O-like)
         renderer.set_emotion("surprised"); // col 4
 
         let frame = renderer.render_frame();
@@ -500,7 +522,12 @@ mod tests {
         // All 15 OCULUS visemes should map to valid rows
         for v in 0..=14 {
             let row = viseme_to_row(v);
-            assert!(row < VISEME_ROWS, "Viseme {} mapped to invalid row {}", v, row);
+            assert!(
+                row < VISEME_ROWS,
+                "Viseme {} mapped to invalid row {}",
+                v,
+                row
+            );
         }
         // Out of range → neutral-talk row
         assert_eq!(viseme_to_row(255), 6);

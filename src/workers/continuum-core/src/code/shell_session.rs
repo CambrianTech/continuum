@@ -26,9 +26,9 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use super::shell_types::{
-    ClassifiedLine, OutputClassification, SentinelAction, SentinelRule,
-    ShellExecuteResponse, ShellExecutionStatus, ShellHistoryEntry, ShellPollResponse,
-    ShellSessionInfo, ShellWatchResponse,
+    ClassifiedLine, OutputClassification, SentinelAction, SentinelRule, ShellExecuteResponse,
+    ShellExecutionStatus, ShellHistoryEntry, ShellPollResponse, ShellSessionInfo,
+    ShellWatchResponse,
 };
 use crate::log_info;
 
@@ -301,8 +301,7 @@ impl ShellSession {
             sentinel: CompiledSentinel::empty(),
         }));
 
-        self.executions
-            .insert(execution_id.clone(), state.clone());
+        self.executions.insert(execution_id.clone(), state.clone());
         self.total_executions += 1;
 
         // Spawn the process in a tokio task
@@ -636,7 +635,11 @@ fn collect_and_classify(state: &mut ExecutionState) -> Vec<ClassifiedLine> {
 
     // Collect stdout since cursor
     for i in state.stdout_cursor..state.stdout_lines.len() {
-        if let Some(classified) = state.sentinel.classify(&state.stdout_lines[i], "stdout", i as u64) {
+        if let Some(classified) =
+            state
+                .sentinel
+                .classify(&state.stdout_lines[i], "stdout", i as u64)
+        {
             lines.push(classified);
         }
     }
@@ -644,7 +647,11 @@ fn collect_and_classify(state: &mut ExecutionState) -> Vec<ClassifiedLine> {
 
     // Collect stderr since cursor
     for i in state.stderr_cursor..state.stderr_lines.len() {
-        if let Some(classified) = state.sentinel.classify(&state.stderr_lines[i], "stderr", i as u64) {
+        if let Some(classified) =
+            state
+                .sentinel
+                .classify(&state.stderr_lines[i], "stderr", i as u64)
+        {
             lines.push(classified);
         }
     }
@@ -692,8 +699,7 @@ async fn run_shell_command(
         Err(e) => {
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
-                s.stderr_lines
-                    .push(format!("Failed to spawn bash: {e}"));
+                s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
                 s.finished_at = Some(now());
                 s.output_notify.notify_one();
             }
@@ -943,8 +949,7 @@ mod tests {
         let (dir, rt) = setup_workspace();
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
-        let result =
-            session.execute_and_wait("exit 42", Some(5000), rt.handle());
+        let result = session.execute_and_wait("exit 42", Some(5000), rt.handle());
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -964,7 +969,11 @@ mod tests {
 
         let response = result.unwrap();
         let stdout = response.stdout.unwrap();
-        assert!(stdout.contains("src"), "pwd should show src dir: {}", stdout);
+        assert!(
+            stdout.contains("src"),
+            "pwd should show src dir: {}",
+            stdout
+        );
     }
 
     #[test]
@@ -987,7 +996,11 @@ mod tests {
 
         // Execute asynchronously
         let exec_id = session
-            .execute("echo line1; echo line2; echo line3", Some(5000), rt.handle())
+            .execute(
+                "echo line1; echo line2; echo line3",
+                Some(5000),
+                rt.handle(),
+            )
             .unwrap();
 
         // Poll until finished
@@ -1011,8 +1024,7 @@ mod tests {
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         // Command that sleeps longer than timeout
-        let result =
-            session.execute_and_wait("sleep 30", Some(500), rt.handle());
+        let result = session.execute_and_wait("sleep 30", Some(500), rt.handle());
         assert!(result.is_ok());
 
         let response = result.unwrap();
@@ -1025,9 +1037,7 @@ mod tests {
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         // Start a long-running command
-        let exec_id = session
-            .execute("sleep 60", None, rt.handle())
-            .unwrap();
+        let exec_id = session.execute("sleep 60", None, rt.handle()).unwrap();
 
         // Give it a moment to start
         std::thread::sleep(Duration::from_millis(200));
@@ -1078,9 +1088,7 @@ mod tests {
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         // Start long-running command
-        let _exec_id = session
-            .execute("sleep 60", None, rt.handle())
-            .unwrap();
+        let _exec_id = session.execute("sleep 60", None, rt.handle()).unwrap();
 
         std::thread::sleep(Duration::from_millis(200));
 

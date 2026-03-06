@@ -245,9 +245,9 @@ fn domain_name(domain: ActivityDomain) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::channel_items::*;
     use super::super::types::SenderType;
+    use super::*;
     use uuid::Uuid;
 
     fn now_ms() -> u64 {

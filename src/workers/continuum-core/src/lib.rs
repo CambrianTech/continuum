@@ -12,37 +12,36 @@
 
 pub mod ai;
 pub mod audio_constants;
-pub mod concurrent;
-pub mod live;
-pub mod persona;
-pub mod logging;
-pub mod ipc;
-pub mod ffi;
-pub mod utils;
-pub mod rag;
-pub mod memory;
 pub mod code;
+pub mod concurrent;
+pub mod ffi;
+pub mod gpu;
+pub mod inference;
+pub mod ipc;
+pub mod live;
+pub mod logging;
+pub mod memory;
 pub mod models;
-pub mod runtime;
 pub mod modules;
 pub mod orm;
+pub mod persona;
+pub mod rag;
+pub mod runtime;
 pub mod secrets;
-pub mod gpu;
 pub mod system_resources;
-pub mod inference;
 pub mod tool_parsing;
+pub mod utils;
 
 pub use audio_constants::*;
 
+pub use concurrent::*;
 pub use live::VoiceOrchestrator;
 pub use persona::{
-    PersonaInbox, PersonaCognitionEngine, PersonaState,
-    CognitionDecision, PriorityScore, InboxMessage, InboxTask,
-    QueueItem, SenderType, Modality, Mood,
+    CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,
+    PersonaInbox, PersonaState, PriorityScore, QueueItem, SenderType,
 };
-pub use concurrent::*;
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
-pub use logging::{init_logger, logger, LogLevel, module_path_to_category, extract_component};
 pub use ipc::start_server;
-pub use rag::{RagEngine, RagContext, RagOptions, LlmMessage, MessageRole};
+pub use logging::{extract_component, init_logger, logger, module_path_to_category, LogLevel};
+pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};

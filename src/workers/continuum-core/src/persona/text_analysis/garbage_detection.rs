@@ -46,26 +46,68 @@ static FABRICATED_MULTI_WORD_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
 static INFERENCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
         // Sampling errors (Candle)
-        (Regex::new(r"(?i)sampling failed:?\s+").unwrap(), "Sampling failure"),
-        (Regex::new(r"(?i)a weight is (negative|invalid|too large)").unwrap(), "Invalid weights"),
-        (Regex::new(r"(?i)invalid probability distribution").unwrap(), "Invalid distribution"),
+        (
+            Regex::new(r"(?i)sampling failed:?\s+").unwrap(),
+            "Sampling failure",
+        ),
+        (
+            Regex::new(r"(?i)a weight is (negative|invalid|too large)").unwrap(),
+            "Invalid weights",
+        ),
+        (
+            Regex::new(r"(?i)invalid probability distribution").unwrap(),
+            "Invalid distribution",
+        ),
         // Memory errors
         (Regex::new(r"(?i)out of memory:?\s+").unwrap(), "OOM error"),
-        (Regex::new(r"(?i)memory allocation failed").unwrap(), "Memory allocation"),
+        (
+            Regex::new(r"(?i)memory allocation failed").unwrap(),
+            "Memory allocation",
+        ),
         // Timeout errors
-        (Regex::new(r"(?i)generation timed out").unwrap(), "Generation timeout"),
-        (Regex::new(r"(?i)request timed out after").unwrap(), "Request timeout"),
-        (Regex::new(r"(?i)deadline exceeded").unwrap(), "Deadline exceeded"),
+        (
+            Regex::new(r"(?i)generation timed out").unwrap(),
+            "Generation timeout",
+        ),
+        (
+            Regex::new(r"(?i)request timed out after").unwrap(),
+            "Request timeout",
+        ),
+        (
+            Regex::new(r"(?i)deadline exceeded").unwrap(),
+            "Deadline exceeded",
+        ),
         // Connection errors
-        (Regex::new(r"(?i)cannot connect to inference server").unwrap(), "Connection error"),
-        (Regex::new(r"(?i)grpc.*unavailable").unwrap(), "gRPC unavailable"),
+        (
+            Regex::new(r"(?i)cannot connect to inference server").unwrap(),
+            "Connection error",
+        ),
+        (
+            Regex::new(r"(?i)grpc.*unavailable").unwrap(),
+            "gRPC unavailable",
+        ),
         // Model errors
-        (Regex::new(r"(?i)model not (found|loaded)").unwrap(), "Model not found"),
-        (Regex::new(r"(?i)forward pass failed").unwrap(), "Forward pass error"),
-        (Regex::new(r"(?i)narrow invalid args").unwrap(), "Tensor shape error"),
-        (Regex::new(r"(?i)rope.*position").unwrap(), "RoPE position error"),
+        (
+            Regex::new(r"(?i)model not (found|loaded)").unwrap(),
+            "Model not found",
+        ),
+        (
+            Regex::new(r"(?i)forward pass failed").unwrap(),
+            "Forward pass error",
+        ),
+        (
+            Regex::new(r"(?i)narrow invalid args").unwrap(),
+            "Tensor shape error",
+        ),
+        (
+            Regex::new(r"(?i)rope.*position").unwrap(),
+            "RoPE position error",
+        ),
         // Generic error patterns
-        (Regex::new(r"(?i)this usually means:\s*\n").unwrap(), "Error with help text"),
+        (
+            Regex::new(r"(?i)this usually means:\s*\n").unwrap(),
+            "Error with help text",
+        ),
         (Regex::new(r"(?i)try:\s+\n?•").unwrap(), "Error suggestions"),
     ]
 });
@@ -157,7 +199,13 @@ fn check_encoding_errors(text: &str) -> Option<GarbageCheckResult> {
 fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
     for (pattern, label) in INFERENCE_PATTERNS.iter() {
         if pattern.is_match(text) {
-            let first_line = text.lines().next().unwrap_or("").chars().take(100).collect::<String>();
+            let first_line = text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect::<String>();
             return Some(GarbageCheckResult {
                 is_garbage: true,
                 reason: GarbageReason::InferenceError,
@@ -170,7 +218,13 @@ fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
     // Error-like structure: starts with error keyword + colon
     let trimmed = text.trim();
     if ERROR_PREFIX.is_match(trimmed) {
-        let first_line = trimmed.lines().next().unwrap_or("").chars().take(100).collect::<String>();
+        let first_line = trimmed
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect::<String>();
         return Some(GarbageCheckResult {
             is_garbage: true,
             reason: GarbageReason::InferenceError,
@@ -216,7 +270,11 @@ fn check_unicode_garbage(text: &str) -> Option<GarbageCheckResult> {
 /// Find a substring of `min_len`+ chars repeated `min_count`+ times consecutively.
 /// Scans pattern lengths from `min_len` up to text.len()/min_count (max 200).
 /// Returns (pattern, count) on first match.
-fn find_consecutive_repeat(text: &str, min_len: usize, min_count: usize) -> Option<(String, usize)> {
+fn find_consecutive_repeat(
+    text: &str,
+    min_len: usize,
+    min_count: usize,
+) -> Option<(String, usize)> {
     // Work at byte level to avoid UTF-8 char boundary panics.
     // Repetition is byte-identical — no character semantics needed.
     let bytes = text.as_bytes();
@@ -370,7 +428,9 @@ fn check_token_boundary_garbage(text: &str) -> Option<GarbageCheckResult> {
         let has_lower = word.chars().any(|c| c.is_ascii_lowercase());
         let has_upper = word.chars().any(|c| c.is_ascii_uppercase());
         let starts_upper = word.starts_with(|c: char| c.is_ascii_uppercase());
-        let all_upper = word.chars().all(|c| !c.is_ascii_lowercase() || !c.is_alphabetic());
+        let all_upper = word
+            .chars()
+            .all(|c| !c.is_ascii_lowercase() || !c.is_alphabetic());
 
         let normal_case = !has_lower || !has_upper || starts_upper || all_upper;
 
@@ -422,7 +482,10 @@ fn check_fabricated_conversation(text: &str) -> Option<GarbageCheckResult> {
         return Some(GarbageCheckResult {
             is_garbage: true,
             reason: GarbageReason::FabricatedConversation,
-            details: format!("{} timestamped speaker lines in one response", timestamp_count),
+            details: format!(
+                "{} timestamped speaker lines in one response",
+                timestamp_count
+            ),
             score: (timestamp_count as f64 / 5.0).min(1.0),
         });
     }
@@ -449,7 +512,11 @@ fn check_fabricated_conversation(text: &str) -> Option<GarbageCheckResult> {
                 "{} speaker lines from {} speakers ({})",
                 speaker_line_count,
                 speakers.len(),
-                sample_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                sample_names
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             score: (speaker_line_count as f64 / 6.0).min(1.0),
         });
@@ -492,7 +559,8 @@ mod tests {
 
     #[test]
     fn test_inference_error() {
-        let r = is_garbage("sampling failed: A weight is negative, too large or not a valid number");
+        let r =
+            is_garbage("sampling failed: A weight is negative, too large or not a valid number");
         assert!(r.is_garbage);
         assert_eq!(r.reason, GarbageReason::InferenceError);
     }
@@ -514,7 +582,9 @@ mod tests {
     #[test]
     fn test_word_repetition() {
         // >25% of words being the same, >5 occurrences, >15 words total
-        let r = is_garbage("the the the the the the the dog cat bird fish car boat tree house sun moon");
+        let r = is_garbage(
+            "the the the the the the the dog cat bird fish car boat tree house sun moon",
+        );
         assert!(r.is_garbage);
         assert_eq!(r.reason, GarbageReason::Repetition);
     }
@@ -602,7 +672,8 @@ mod tests {
     #[test]
     fn test_single_speaker_prefix_not_fabricated() {
         // A single "Name:" at the start is handled by response_cleaning, not garbage detection
-        let r = is_garbage("General AI: I think we should use caching for this particular use case.");
+        let r =
+            is_garbage("General AI: I think we should use caching for this particular use case.");
         assert!(!r.is_garbage);
     }
 

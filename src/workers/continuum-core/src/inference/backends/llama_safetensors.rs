@@ -9,14 +9,14 @@
 use std::path::PathBuf;
 
 use candle_core::{DType, Device, Tensor};
-use candle_transformers::models::llama::{
-    Cache, Config as LlamaModelConfig, Llama, LlamaEosToks,
-};
+use candle_transformers::models::llama::{Cache, Config as LlamaModelConfig, Llama, LlamaEosToks};
 use tokenizers::Tokenizer;
 
 use std::sync::Arc;
 
-use super::{GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat};
+use super::{
+    GenomeAdapter, GpuMemoryManager, GpuPriority, GpuSubsystem, ModelBackend, ModelFormat,
+};
 use crate::inference::model::rebuild_with_stacked_lora;
 use crate::runtime;
 
@@ -160,7 +160,8 @@ impl ModelBackend for LlamaSafetensorsBackend {
             .unsqueeze(0)
             .map_err(|e| format!("Unsqueeze: {e}"))?;
 
-        let logits = self.model
+        let logits = self
+            .model
             .forward(&input, 0, &mut self.cache)
             .map_err(|e| format!("Forward pass: {e}"))?;
 
@@ -178,7 +179,8 @@ impl ModelBackend for LlamaSafetensorsBackend {
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, String> {
-        let encoding = self.tokenizer
+        let encoding = self
+            .tokenizer
             .encode(text, false)
             .map_err(|e| format!("Tokenization failed: {e}"))?;
         Ok(encoding.get_ids().to_vec())
@@ -213,7 +215,8 @@ impl ModelBackend for LlamaSafetensorsBackend {
         // Allocate for the doubled memory, release after swap.
         let vram_bytes = self.estimated_vram_bytes();
         let _spike_guard = gpu_manager.and_then(|mgr| {
-            mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Background).ok()
+            mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Background)
+                .ok()
         });
 
         let new_model = rebuild_with_stacked_lora(
@@ -248,8 +251,8 @@ impl ModelBackend for LlamaSafetensorsBackend {
                 .map_err(|e| format!("Failed to load weights: {e}"))?
         };
 
-        self.model = Llama::load(vb, &self.config)
-            .map_err(|e| format!("Failed to rebuild model: {e}"))?;
+        self.model =
+            Llama::load(vb, &self.config).map_err(|e| format!("Failed to rebuild model: {e}"))?;
 
         self.clear_cache()
     }

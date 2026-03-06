@@ -104,6 +104,9 @@ mod tests {
         let section = source.load(&options, 1000);
 
         assert!(section.system_prompt_section.is_some());
-        assert!(section.system_prompt_section.unwrap().contains("Persona Identity"));
+        assert!(section
+            .system_prompt_section
+            .unwrap()
+            .contains("Persona Identity"));
     }
 }

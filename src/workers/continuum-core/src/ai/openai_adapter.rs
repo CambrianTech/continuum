@@ -22,11 +22,11 @@ use std::time::Instant;
 
 use crate::secrets::get_secret;
 
-use super::adapter::{AdapterCapabilities, AIProviderAdapter, ApiStyle};
+use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
-    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent,
-    ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse, ToolCall,
-    ToolChoice, UsageMetrics, CostPer1kTokens,
+    ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
+    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
+    ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// OpenAI-compatible adapter configuration
@@ -292,26 +292,24 @@ impl OpenAICompatibleAdapter {
             supports_vision: false,
             requires_auth: true,
             base_url_from_env: false,
-            models: vec![
-                ModelInfo {
-                    id: "grok-3".to_string(),
-                    name: "Grok 3".to_string(),
-                    provider: "xai".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 131072,
-                    max_output_tokens: Some(8192),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
-                        input: 0.003,
-                        output: 0.015,
-                    }),
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-            ],
+            models: vec![ModelInfo {
+                id: "grok-3".to_string(),
+                name: "Grok 3".to_string(),
+                provider: "xai".to_string(),
+                capabilities: vec![
+                    ModelCapability::TextGeneration,
+                    ModelCapability::Chat,
+                    ModelCapability::ToolUse,
+                ],
+                context_window: 131072,
+                max_output_tokens: Some(8192),
+                cost_per_1k_tokens: Some(CostPer1kTokens {
+                    input: 0.003,
+                    output: 0.015,
+                }),
+                supports_streaming: true,
+                supports_tools: true,
+            }],
         })
     }
 
@@ -371,8 +369,12 @@ impl OpenAICompatibleAdapter {
                 }
                 MessageContent::Parts(parts) => {
                     // Check for tool protocol blocks
-                    let has_tool_use = parts.iter().any(|p| matches!(p, ContentPart::ToolUse { .. }));
-                    let has_tool_result = parts.iter().any(|p| matches!(p, ContentPart::ToolResult { .. }));
+                    let has_tool_use = parts
+                        .iter()
+                        .any(|p| matches!(p, ContentPart::ToolUse { .. }));
+                    let has_tool_result = parts
+                        .iter()
+                        .any(|p| matches!(p, ContentPart::ToolResult { .. }));
 
                     if has_tool_use {
                         // Assistant message with tool_calls
@@ -408,7 +410,12 @@ impl OpenAICompatibleAdapter {
                     } else if has_tool_result {
                         // Tool results as separate messages
                         for part in parts {
-                            if let ContentPart::ToolResult { tool_use_id, content, .. } = part {
+                            if let ContentPart::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } = part
+                            {
                                 result.push(json!({
                                     "role": "tool",
                                     "tool_call_id": tool_use_id,
@@ -534,7 +541,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             supports_audio: false,
             supports_image_generation: self.config.provider_id == "openai",
             is_local: false,
-            max_context_window: self.config.models.first()
+            max_context_window: self
+                .config
+                .models
+                .first()
                 .map(|m| m.context_window)
                 .unwrap_or(128000),
         }
@@ -593,9 +603,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         let start = Instant::now();
-        let request_id = request.request_id.clone()
+        let request_id = request
+            .request_id
+            .clone()
             .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
-        let model = request.model.as_deref().unwrap_or(self.config.default_model);
+        let model = request
+            .model
+            .as_deref()
+            .unwrap_or(self.config.default_model);
 
         // Build request body
         let messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
@@ -644,17 +659,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         // Make request - use runtime base URL if set, otherwise config base URL
-        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let base_url = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url);
         let url = format!("{}/v1/chat/completions", base_url);
 
-        let mut request_builder = self.client
+        let mut request_builder = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json");
 
         // Only add Authorization header if provider requires auth
         if self.config.requires_auth {
             if let Some(api_key) = &self.api_key {
-                request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+                request_builder =
+                    request_builder.header("Authorization", format!("Bearer {}", api_key));
             }
         }
 
@@ -667,7 +687,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("{} returned {}: {}", self.config.name, status, body));
+            return Err(format!(
+                "{} returned {}: {}",
+                self.config.name, status, body
+            ));
         }
 
         let response_json: OpenAIResponse = response
@@ -678,11 +701,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Parse response
-        let choice = response_json.choices.first()
+        let choice = response_json
+            .choices
+            .first()
             .ok_or_else(|| "No completion in response".to_string())?;
 
         let text = choice.message.content.clone().unwrap_or_default();
-        let finish_reason = choice.finish_reason.as_deref()
+        let finish_reason = choice
+            .finish_reason
+            .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
 
@@ -716,12 +743,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        let usage = response_json.usage.map(|u| UsageMetrics {
-            input_tokens: u.prompt_tokens,
-            output_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens.unwrap_or(u.prompt_tokens + u.completion_tokens),
-            estimated_cost: None, // TODO: Calculate from model pricing
-        }).unwrap_or_default();
+        let usage = response_json
+            .usage
+            .map(|u| UsageMetrics {
+                input_tokens: u.prompt_tokens,
+                output_tokens: u.completion_tokens,
+                total_tokens: u
+                    .total_tokens
+                    .unwrap_or(u.prompt_tokens + u.completion_tokens),
+                estimated_cost: None, // TODO: Calculate from model pricing
+            })
+            .unwrap_or_default();
 
         Ok(TextGenerationResponse {
             text,
@@ -731,7 +763,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             usage,
             response_time_ms,
             request_id,
-            content: if content_blocks.is_empty() { None } else { Some(content_blocks) },
+            content: if content_blocks.is_empty() {
+                None
+            } else {
+                Some(content_blocks)
+            },
             tool_calls,
             routing: None,
             error: None,
@@ -754,17 +790,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let start = Instant::now();
 
         // Try to list models as health check
-        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let base_url = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url);
         let url = format!("{}/v1/models", base_url);
 
-        let mut request_builder = self.client
+        let mut request_builder = self
+            .client
             .get(&url)
             .timeout(std::time::Duration::from_secs(5));
 
         // Only add Authorization header if provider requires auth
         if self.config.requires_auth {
             if let Some(api_key) = &self.api_key {
-                request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+                request_builder =
+                    request_builder.header("Authorization", format!("Bearer {}", api_key));
             }
         }
 
@@ -810,8 +851,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "openai" => vec!["gpt", "o1", "o3"],
             "deepseek" => vec!["deepseek"],
             "groq" => vec!["llama-3", "mixtral", "gemma2"], // Groq's hosted models
-            "together" => vec!["togethercomputer/"], // Together's namespace
-            "fireworks" => vec!["accounts/fireworks/"], // Fireworks namespace
+            "together" => vec!["togethercomputer/"],        // Together's namespace
+            "fireworks" => vec!["accounts/fireworks/"],     // Fireworks namespace
             "xai" => vec!["grok"],
             "google" => vec!["gemini"],
             _ => vec![], // No auto-routing for unknown providers

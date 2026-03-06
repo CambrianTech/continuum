@@ -1,3 +1,4 @@
+use super::LogLevel;
 /// Performance timing utilities for continuum-core
 ///
 /// User requirement: "we are gonna time the shit out of it"
@@ -14,7 +15,6 @@
 /// - time_section!(): Macro for timing code blocks
 /// - time_async!(): Macro for timing async functions
 use std::time::Instant;
-use super::LogLevel;
 
 /// RAII timing guard - automatically logs duration when dropped
 pub struct TimingGuard {
@@ -68,9 +68,17 @@ impl Drop for TimingGuard {
         let message = if elapsed_us < 1000 {
             format!("{} completed in {}μs", self.operation, elapsed_us)
         } else if elapsed_ms < 1000 {
-            format!("{} completed in {:.2}ms", self.operation, elapsed_us as f64 / 1000.0)
+            format!(
+                "{} completed in {:.2}ms",
+                self.operation,
+                elapsed_us as f64 / 1000.0
+            )
         } else {
-            format!("{} completed in {:.2}s", self.operation, elapsed_ms as f64 / 1000.0)
+            format!(
+                "{} completed in {:.2}s",
+                self.operation,
+                elapsed_ms as f64 / 1000.0
+            )
         };
 
         // Log via logger worker
@@ -89,13 +97,7 @@ impl Drop for TimingGuard {
                 "operation": self.operation
             });
 
-            logger.log(
-                &self.category,
-                level,
-                "performance",
-                &message,
-                Some(args)
-            );
+            logger.log(&self.category, level, "performance", &message, Some(args));
         }
     }
 }
@@ -165,7 +167,8 @@ impl PerformanceStats {
         use std::sync::atomic::Ordering;
 
         self.total_calls.fetch_add(1, Ordering::Relaxed);
-        self.total_duration_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.total_duration_us
+            .fetch_add(duration_us, Ordering::Relaxed);
 
         // Update min
         let mut min = self.min_duration_us.load(Ordering::Relaxed);

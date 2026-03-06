@@ -44,24 +44,46 @@ pub struct VoiceQueueItem {
 }
 
 impl QueueItemBehavior for VoiceQueueItem {
-    fn item_type(&self) -> &'static str { "voice" }
-    fn domain(&self) -> ActivityDomain { ActivityDomain::Audio }
-    fn id(&self) -> Uuid { self.id }
-    fn timestamp(&self) -> u64 { self.timestamp }
-    fn base_priority(&self) -> f32 { 1.0 }
+    fn item_type(&self) -> &'static str {
+        "voice"
+    }
+    fn domain(&self) -> ActivityDomain {
+        ActivityDomain::Audio
+    }
+    fn id(&self) -> Uuid {
+        self.id
+    }
+    fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+    fn base_priority(&self) -> f32 {
+        1.0
+    }
 
     // No aging needed — already max priority
-    fn aging_boost_ms(&self) -> f32 { 30_000.0 }
-    fn max_aging_boost(&self) -> f32 { 0.0 }
+    fn aging_boost_ms(&self) -> f32 {
+        30_000.0
+    }
+    fn max_aging_boost(&self) -> f32 {
+        0.0
+    }
 
     // Always urgent — bypasses cognitive scheduler
-    fn is_urgent(&self) -> bool { true }
+    fn is_urgent(&self) -> bool {
+        true
+    }
 
     // Never kicked — dropping voice mid-conversation is unacceptable
-    fn can_be_kicked(&self) -> bool { false }
-    fn kick_resistance(&self, _now_ms: u64, _enqueued_at_ms: u64) -> f32 { f32::INFINITY }
+    fn can_be_kicked(&self) -> bool {
+        false
+    }
+    fn kick_resistance(&self, _now_ms: u64, _enqueued_at_ms: u64) -> f32 {
+        f32::INFINITY
+    }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -85,7 +107,10 @@ impl QueueItemBehavior for VoiceQueueItem {
 
 /// Context from a prior message consolidated into this chat item.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ConsolidatedContext.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ConsolidatedContext.ts"
+)]
 pub struct ConsolidatedContext {
     #[ts(type = "string")]
     pub sender_id: Uuid,
@@ -116,16 +141,28 @@ pub struct ChatQueueItem {
 }
 
 impl QueueItemBehavior for ChatQueueItem {
-    fn item_type(&self) -> &'static str { "chat" }
-    fn domain(&self) -> ActivityDomain { ActivityDomain::Chat }
-    fn id(&self) -> Uuid { self.id }
-    fn timestamp(&self) -> u64 { self.timestamp }
-    fn base_priority(&self) -> f32 { self.priority }
+    fn item_type(&self) -> &'static str {
+        "chat"
+    }
+    fn domain(&self) -> ActivityDomain {
+        ActivityDomain::Chat
+    }
+    fn id(&self) -> Uuid {
+        self.id
+    }
+    fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+    fn base_priority(&self) -> f32 {
+        self.priority
+    }
 
     // Standard RTOS aging from defaults (30s to reach +0.5 boost)
 
     // Urgent only if persona is directly mentioned by name
-    fn is_urgent(&self) -> bool { self.mentions }
+    fn is_urgent(&self) -> bool {
+        self.mentions
+    }
 
     // Consolidate with other chat items from the SAME ROOM
     fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
@@ -140,7 +177,9 @@ impl QueueItemBehavior for ChatQueueItem {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -189,7 +228,8 @@ impl ChatQueueItem {
         context.sort_by_key(|c| c.timestamp);
 
         // Highest priority, carry forward mentions
-        let max_priority = all_messages.iter()
+        let max_priority = all_messages
+            .iter()
             .map(|m| m.priority)
             .fold(f32::NEG_INFINITY, f32::max);
         let has_mentions = self.mentions || others.iter().any(|m| m.mentions);
@@ -238,11 +278,21 @@ pub struct TaskQueueItem {
 }
 
 impl QueueItemBehavior for TaskQueueItem {
-    fn item_type(&self) -> &'static str { "task" }
-    fn domain(&self) -> ActivityDomain { ActivityDomain::Background }
-    fn id(&self) -> Uuid { self.id }
-    fn timestamp(&self) -> u64 { self.timestamp }
-    fn base_priority(&self) -> f32 { self.priority }
+    fn item_type(&self) -> &'static str {
+        "task"
+    }
+    fn domain(&self) -> ActivityDomain {
+        ActivityDomain::Background
+    }
+    fn id(&self) -> Uuid {
+        self.id
+    }
+    fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+    fn base_priority(&self) -> f32 {
+        self.priority
+    }
 
     // Urgent if past due date
     fn is_urgent(&self) -> bool {
@@ -268,14 +318,15 @@ impl QueueItemBehavior for TaskQueueItem {
             return false;
         }
         if let Some(other_task) = other.as_any().downcast_ref::<TaskQueueItem>() {
-            other_task.task_domain == self.task_domain
-                && other_task.context_id == self.context_id
+            other_task.task_domain == self.task_domain && other_task.context_id == self.context_id
         } else {
             false
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -306,11 +357,16 @@ impl TaskQueueItem {
     pub fn consolidate_with_items(&self, others: &[&TaskQueueItem]) -> TaskQueueItem {
         let mut all_tasks: Vec<&TaskQueueItem> = others.to_vec();
         all_tasks.push(self);
-        all_tasks.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap_or(std::cmp::Ordering::Equal));
+        all_tasks.sort_by(|a, b| {
+            b.priority
+                .partial_cmp(&a.priority)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let primary = all_tasks[0];
 
-        let related: Vec<Uuid> = all_tasks.iter()
+        let related: Vec<Uuid> = all_tasks
+            .iter()
             .filter(|t| t.id != primary.id)
             .map(|t| t.task_id)
             .collect();
@@ -358,21 +414,39 @@ pub struct CodeQueueItem {
 }
 
 impl QueueItemBehavior for CodeQueueItem {
-    fn item_type(&self) -> &'static str { "code" }
-    fn domain(&self) -> ActivityDomain { ActivityDomain::Code }
-    fn id(&self) -> Uuid { self.id }
-    fn timestamp(&self) -> u64 { self.timestamp }
-    fn base_priority(&self) -> f32 { self.priority }
+    fn item_type(&self) -> &'static str {
+        "code"
+    }
+    fn domain(&self) -> ActivityDomain {
+        ActivityDomain::Code
+    }
+    fn id(&self) -> Uuid {
+        self.id
+    }
+    fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+    fn base_priority(&self) -> f32 {
+        self.priority
+    }
 
     // Slow aging — coding tasks are long-lived, 60s to reach max boost
-    fn aging_boost_ms(&self) -> f32 { 60_000.0 }
+    fn aging_boost_ms(&self) -> f32 {
+        60_000.0
+    }
 
     // Not urgent — coding is not real-time
-    fn is_urgent(&self) -> bool { false }
+    fn is_urgent(&self) -> bool {
+        false
+    }
 
     // Never kicked — don't drop active coding work
-    fn can_be_kicked(&self) -> bool { false }
-    fn kick_resistance(&self, _now_ms: u64, _enqueued_at_ms: u64) -> f32 { f32::INFINITY }
+    fn can_be_kicked(&self) -> bool {
+        false
+    }
+    fn kick_resistance(&self, _now_ms: u64, _enqueued_at_ms: u64) -> f32 {
+        f32::INFINITY
+    }
 
     // Consolidate multiple requests for the same workspace
     fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
@@ -386,7 +460,9 @@ impl QueueItemBehavior for CodeQueueItem {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -410,7 +486,10 @@ impl QueueItemBehavior for CodeQueueItem {
 /// IPC request to enqueue any item type. Discriminated by `item_type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "item_type")]
-#[ts(export, export_to = "../../../shared/generated/persona/ChannelEnqueueRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ChannelEnqueueRequest.ts"
+)]
 pub enum ChannelEnqueueRequest {
     #[serde(rename = "voice")]
     Voice {
@@ -478,65 +557,93 @@ impl ChannelEnqueueRequest {
         let now = now_ms();
         match self {
             ChannelEnqueueRequest::Voice {
-                id, room_id, content, sender_id, sender_name,
-                sender_type, voice_session_id, timestamp, priority,
-            } => {
-                Ok(Box::new(VoiceQueueItem {
-                    id: parse_uuid(id, "id")?,
-                    room_id: parse_uuid(room_id, "room_id")?,
-                    content: content.clone(),
-                    sender_id: parse_uuid(sender_id, "sender_id")?,
-                    sender_name: sender_name.clone(),
-                    sender_type: parse_sender_type(sender_type)?,
-                    voice_session_id: parse_uuid(voice_session_id, "voice_session_id")?,
-                    timestamp: *timestamp,
-                    enqueued_at: now,
-                    priority: *priority,
-                }))
-            }
+                id,
+                room_id,
+                content,
+                sender_id,
+                sender_name,
+                sender_type,
+                voice_session_id,
+                timestamp,
+                priority,
+            } => Ok(Box::new(VoiceQueueItem {
+                id: parse_uuid(id, "id")?,
+                room_id: parse_uuid(room_id, "room_id")?,
+                content: content.clone(),
+                sender_id: parse_uuid(sender_id, "sender_id")?,
+                sender_name: sender_name.clone(),
+                sender_type: parse_sender_type(sender_type)?,
+                voice_session_id: parse_uuid(voice_session_id, "voice_session_id")?,
+                timestamp: *timestamp,
+                enqueued_at: now,
+                priority: *priority,
+            })),
             ChannelEnqueueRequest::Chat {
-                id, room_id, content, sender_id, sender_name,
-                sender_type, mentions, timestamp, priority,
-            } => {
-                Ok(Box::new(ChatQueueItem {
-                    id: parse_uuid(id, "id")?,
-                    room_id: parse_uuid(room_id, "room_id")?,
-                    content: content.clone(),
-                    sender_id: parse_uuid(sender_id, "sender_id")?,
-                    sender_name: sender_name.clone(),
-                    sender_type: parse_sender_type(sender_type)?,
-                    mentions: *mentions,
-                    timestamp: *timestamp,
-                    enqueued_at: now,
-                    priority: *priority,
-                    consolidated_context: Vec::new(),
-                }))
-            }
+                id,
+                room_id,
+                content,
+                sender_id,
+                sender_name,
+                sender_type,
+                mentions,
+                timestamp,
+                priority,
+            } => Ok(Box::new(ChatQueueItem {
+                id: parse_uuid(id, "id")?,
+                room_id: parse_uuid(room_id, "room_id")?,
+                content: content.clone(),
+                sender_id: parse_uuid(sender_id, "sender_id")?,
+                sender_name: sender_name.clone(),
+                sender_type: parse_sender_type(sender_type)?,
+                mentions: *mentions,
+                timestamp: *timestamp,
+                enqueued_at: now,
+                priority: *priority,
+                consolidated_context: Vec::new(),
+            })),
             ChannelEnqueueRequest::Code {
-                id, room_id, persona_id, task_description,
-                workspace_handle, priority, is_review, timestamp,
-            } => {
-                Ok(Box::new(CodeQueueItem {
-                    id: parse_uuid(id, "id")?,
-                    room_id: parse_uuid(room_id, "room_id")?,
-                    persona_id: parse_uuid(persona_id, "persona_id")?,
-                    task_description: task_description.clone(),
-                    workspace_handle: workspace_handle.clone(),
-                    priority: *priority,
-                    is_review: *is_review,
-                    timestamp: *timestamp,
-                    enqueued_at: now,
-                }))
-            }
+                id,
+                room_id,
+                persona_id,
+                task_description,
+                workspace_handle,
+                priority,
+                is_review,
+                timestamp,
+            } => Ok(Box::new(CodeQueueItem {
+                id: parse_uuid(id, "id")?,
+                room_id: parse_uuid(room_id, "room_id")?,
+                persona_id: parse_uuid(persona_id, "persona_id")?,
+                task_description: task_description.clone(),
+                workspace_handle: workspace_handle.clone(),
+                priority: *priority,
+                is_review: *is_review,
+                timestamp: *timestamp,
+                enqueued_at: now,
+            })),
             ChannelEnqueueRequest::Task {
-                id, task_id, assignee_id, created_by, task_domain,
-                task_type, context_id, description, priority, status,
-                timestamp, due_date, estimated_duration, depends_on, blocked_by,
+                id,
+                task_id,
+                assignee_id,
+                created_by,
+                task_domain,
+                task_type,
+                context_id,
+                description,
+                priority,
+                status,
+                timestamp,
+                due_date,
+                estimated_duration,
+                depends_on,
+                blocked_by,
             } => {
-                let depends_on_uuids: Result<Vec<Uuid>, String> = depends_on.iter()
+                let depends_on_uuids: Result<Vec<Uuid>, String> = depends_on
+                    .iter()
                     .map(|s| parse_uuid(s, "depends_on"))
                     .collect();
-                let blocked_by_uuids: Result<Vec<Uuid>, String> = blocked_by.iter()
+                let blocked_by_uuids: Result<Vec<Uuid>, String> = blocked_by
+                    .iter()
                     .map(|s| parse_uuid(s, "blocked_by"))
                     .collect();
 
@@ -698,7 +805,10 @@ mod tests {
         assert!(consolidated.mentions);
         // Prior message is in context
         assert_eq!(consolidated.consolidated_context.len(), 1);
-        assert_eq!(consolidated.consolidated_context[0].content, "First message");
+        assert_eq!(
+            consolidated.consolidated_context[0].content,
+            "First message"
+        );
     }
 
     #[test]
@@ -760,7 +870,10 @@ mod tests {
 
         // After 60s → still capped at 0.8 (max boost is 0.5)
         let p60 = chat.effective_priority(now + 60_000, enqueued);
-        assert!((p60 - 0.8).abs() < 0.05, "Expected ~0.8 (capped), got {p60}");
+        assert!(
+            (p60 - 0.8).abs() < 0.05,
+            "Expected ~0.8 (capped), got {p60}"
+        );
     }
 
     #[test]

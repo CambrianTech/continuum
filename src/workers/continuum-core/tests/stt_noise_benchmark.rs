@@ -66,14 +66,16 @@ fn word_overlap(expected: &str, actual: &str) -> f32 {
     };
 
     let expected_words = normalize(expected);
-    let actual_words: std::collections::HashSet<String> =
-        normalize(actual).into_iter().collect();
+    let actual_words: std::collections::HashSet<String> = normalize(actual).into_iter().collect();
 
     if expected_words.is_empty() {
         return if actual_words.is_empty() { 1.0 } else { 0.0 };
     }
 
-    let matches = expected_words.iter().filter(|w| actual_words.contains(*w)).count();
+    let matches = expected_words
+        .iter()
+        .filter(|w| actual_words.contains(*w))
+        .count();
     matches as f32 / expected_words.len() as f32
 }
 
@@ -122,7 +124,9 @@ fn benchmark_stt_under_noise() {
         None => return,
     };
 
-    let list_req = SttListRequest { command: "voice/stt-list" };
+    let list_req = SttListRequest {
+        command: "voice/stt-list",
+    };
     let list_result = match ipc_request(&mut stream, &list_req) {
         Ok(r) => r,
         Err(e) => {
@@ -308,7 +312,10 @@ fn benchmark_stt_under_noise() {
                         }
                     }
                     Err(e) => {
-                        println!("  IPC error for {}/{}/{}dB: {}", adapter, noise_label, snr_db, e);
+                        println!(
+                            "  IPC error for {}/{}/{}dB: {}",
+                            adapter, noise_label, snr_db, e
+                        );
                     }
                 }
             }
@@ -332,7 +339,9 @@ fn benchmark_stt_under_noise() {
     // Clean row
     print!("{:<12} {:>6}", "clean", "∞");
     for adapter in &adapters {
-        let r = results.iter().find(|r| r.noise_label == "clean" && r.adapter == *adapter);
+        let r = results
+            .iter()
+            .find(|r| r.noise_label == "clean" && r.adapter == *adapter);
         match r {
             Some(r) => print!(" | {:>11.0}%", r.word_accuracy * 100.0),
             None => print!(" |         N/A"),

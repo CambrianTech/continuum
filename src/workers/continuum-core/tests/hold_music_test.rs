@@ -4,7 +4,7 @@
 //! This is the SIMPLEST test - no TTS, no AI, just verify audio mixing works.
 
 use continuum_core::live::transport::call_server::CallManager;
-use continuum_core::utils::audio::{is_silence, calculate_rms};
+use continuum_core::utils::audio::{calculate_rms, is_silence};
 use std::time::Duration;
 
 #[tokio::test]
@@ -13,7 +13,9 @@ async fn test_hold_music_plays_when_alone() {
     let manager = CallManager::new();
 
     // STEP 2: Join a call as single participant (false = not AI)
-    let join = manager.join_call("test-hold-music", "user-1", "Alice", false).await;
+    let join = manager
+        .join_call("test-hold-music", "user-1", "Alice", false)
+        .await;
     let handle = join.handle;
     let mut audio_rx = join.audio_rx;
 
@@ -56,7 +58,10 @@ async fn test_hold_music_plays_when_alone() {
     println!("\n=== RESULTS ===");
     println!("Total frames: {frame_count}");
     println!("Non-silence frames: {non_silence_count}");
-    println!("Hold music ratio: {:.1}%", (non_silence_count as f64 / frame_count as f64) * 100.0);
+    println!(
+        "Hold music ratio: {:.1}%",
+        (non_silence_count as f64 / frame_count as f64) * 100.0
+    );
 
     // Assert that hold music was playing (at least 50% of frames should be non-silence)
     assert!(

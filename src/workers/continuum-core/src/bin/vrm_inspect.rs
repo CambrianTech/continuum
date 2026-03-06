@@ -57,7 +57,11 @@ fn inspect_model(path: &str) {
     // BIN chunk
     let bin_chunk_start = 20 + json_len;
     let bin_len = if bin_chunk_start + 8 <= data.len() {
-        u32::from_le_bytes(data[bin_chunk_start..bin_chunk_start + 4].try_into().unwrap()) as usize
+        u32::from_le_bytes(
+            data[bin_chunk_start..bin_chunk_start + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize
     } else {
         0
     };
@@ -68,7 +72,11 @@ fn inspect_model(path: &str) {
     };
 
     // VRM version
-    let vrm_version = if root.get("extensions").and_then(|e| e.get("VRMC_vrm")).is_some() {
+    let vrm_version = if root
+        .get("extensions")
+        .and_then(|e| e.get("VRMC_vrm"))
+        .is_some()
+    {
         "1.0"
     } else if root.get("extensions").and_then(|e| e.get("VRM")).is_some() {
         "0.x"
@@ -76,8 +84,12 @@ fn inspect_model(path: &str) {
         "unknown"
     };
     eprintln!("  VRM version: {}", vrm_version);
-    eprintln!("  File size: {:.1} MB (JSON: {} bytes, BIN: {} bytes)",
-        data.len() as f64 / 1_048_576.0, json_len, bin_len);
+    eprintln!(
+        "  File size: {:.1} MB (JSON: {} bytes, BIN: {} bytes)",
+        data.len() as f64 / 1_048_576.0,
+        json_len,
+        bin_len
+    );
 
     // Extensions
     if let Some(req) = root.get("extensionsRequired").and_then(|v| v.as_array()) {
@@ -110,15 +122,21 @@ fn inspect_model(path: &str) {
     // Collect node data for hierarchy printing
     if let Some(nodes) = nodes {
         // Find root nodes (scene root children)
-        let root_node_indices: Vec<usize> = if let Some(scenes) = root.get("scenes").and_then(|v| v.as_array()) {
-            scenes.get(scene_idx)
-                .and_then(|s| s.get("nodes"))
-                .and_then(|n| n.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|i| i as usize)).collect())
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
+        let root_node_indices: Vec<usize> =
+            if let Some(scenes) = root.get("scenes").and_then(|v| v.as_array()) {
+                scenes
+                    .get(scene_idx)
+                    .and_then(|s| s.get("nodes"))
+                    .and_then(|n| n.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(|i| i as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
 
         // Print root node transforms
         eprintln!("\n  🦴 Root node transforms:");
@@ -142,16 +160,23 @@ fn inspect_model(path: &str) {
 
         // Check specific bones the renderer uses
         let target_bones = [
-            "J_Bip_C_Head", "Head",
-            "J_Bip_C_Neck", "Neck",
-            "J_Bip_L_UpperArm", "LeftUpperArm",
-            "J_Bip_R_UpperArm", "RightUpperArm",
-            "J_Bip_C_Hips", "Hips",
-            "J_Bip_C_Spine", "Spine",
+            "J_Bip_C_Head",
+            "Head",
+            "J_Bip_C_Neck",
+            "Neck",
+            "J_Bip_L_UpperArm",
+            "LeftUpperArm",
+            "J_Bip_R_UpperArm",
+            "RightUpperArm",
+            "J_Bip_C_Hips",
+            "Hips",
+            "J_Bip_C_Spine",
+            "Spine",
         ];
         eprintln!("\n  🎯 Key bone lookup:");
         for target in &target_bones {
-            let found: Vec<_> = bone_names.iter()
+            let found: Vec<_> = bone_names
+                .iter()
                 .filter(|(_, name)| name.contains(target))
                 .collect();
             if !found.is_empty() {
@@ -177,9 +202,12 @@ fn inspect_model(path: &str) {
                 non_identity_count += 1;
             }
         }
-        eprintln!("\n  Rotation stats: {} identity, {} non-identity ({:.0}% have real rotations)",
-            identity_count, non_identity_count,
-            non_identity_count as f64 / (identity_count + non_identity_count) as f64 * 100.0);
+        eprintln!(
+            "\n  Rotation stats: {} identity, {} non-identity ({:.0}% have real rotations)",
+            identity_count,
+            non_identity_count,
+            non_identity_count as f64 / (identity_count + non_identity_count) as f64 * 100.0
+        );
     }
 
     // Meshes
@@ -190,7 +218,11 @@ fn inspect_model(path: &str) {
                 total_primitives += prims.len();
             }
         }
-        eprintln!("\n  Meshes: {} ({} primitives)", meshes.len(), total_primitives);
+        eprintln!(
+            "\n  Meshes: {} ({} primitives)",
+            meshes.len(),
+            total_primitives
+        );
 
         // Check mesh morph targets
         let mut morph_count = 0;
@@ -210,11 +242,17 @@ fn inspect_model(path: &str) {
     if let Some(skins) = root.get("skins").and_then(|v| v.as_array()) {
         eprintln!("\n  Skins: {}", skins.len());
         for (i, skin) in skins.iter().enumerate() {
-            let joint_count = skin.get("joints").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let joint_count = skin
+                .get("joints")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
             let ibm_accessor = skin.get("inverseBindMatrices").and_then(|v| v.as_u64());
             let skeleton = skin.get("skeleton").and_then(|v| v.as_u64());
-            eprintln!("    Skin {}: {} joints, IBM accessor={:?}, skeleton root={:?}",
-                i, joint_count, ibm_accessor, skeleton);
+            eprintln!(
+                "    Skin {}: {} joints, IBM accessor={:?}, skeleton root={:?}",
+                i, joint_count, ibm_accessor, skeleton
+            );
 
             // Check IBM data: are rotations present?
             if let Some(ibm_idx) = ibm_accessor {
@@ -233,7 +271,8 @@ fn inspect_model(path: &str) {
             for (mi, mesh) in meshes.iter().enumerate() {
                 if let Some(prims) = mesh.get("primitives").and_then(|v| v.as_array()) {
                     for (pi, prim) in prims.iter().enumerate() {
-                        if let Some(pos_idx) = prim.get("attributes")
+                        if let Some(pos_idx) = prim
+                            .get("attributes")
                             .and_then(|a| a.get("POSITION"))
                             .and_then(|v| v.as_u64())
                         {
@@ -241,8 +280,12 @@ fn inspect_model(path: &str) {
                             let min_val = accessor.get("min");
                             let max_val = accessor.get("max");
                             let count = accessor.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let comp_type = accessor.get("componentType").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let acc_type = accessor.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                            let comp_type = accessor
+                                .get("componentType")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let acc_type =
+                                accessor.get("type").and_then(|v| v.as_str()).unwrap_or("?");
 
                             if mi < 3 || pi == 0 {
                                 eprintln!("    Mesh[{}].prim[{}] POSITION: {} verts, type={}/{}, min={}, max={}",
@@ -262,23 +305,39 @@ fn inspect_model(path: &str) {
         let mut unlit_count = 0;
         let mut pbr_count = 0;
         for mat in materials {
-            if mat.get("extensions").and_then(|e| e.get("VRMC_materials_mtoon")).is_some() {
+            if mat
+                .get("extensions")
+                .and_then(|e| e.get("VRMC_materials_mtoon"))
+                .is_some()
+            {
                 mtoon_count += 1;
-            } else if mat.get("extensions").and_then(|e| e.get("KHR_materials_unlit")).is_some() {
+            } else if mat
+                .get("extensions")
+                .and_then(|e| e.get("KHR_materials_unlit"))
+                .is_some()
+            {
                 unlit_count += 1;
             } else {
                 pbr_count += 1;
             }
         }
-        eprintln!("\n  Materials: {} total (MToon: {}, Unlit: {}, PBR: {})",
-            materials.len(), mtoon_count, unlit_count, pbr_count);
+        eprintln!(
+            "\n  Materials: {} total (MToon: {}, Unlit: {}, PBR: {})",
+            materials.len(),
+            mtoon_count,
+            unlit_count,
+            pbr_count
+        );
     }
 
     // Images
     if let Some(images) = root.get("images").and_then(|v| v.as_array()) {
         let mut type_counts: HashMap<String, usize> = HashMap::new();
         for img in images {
-            let mime = img.get("mimeType").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let mime = img
+                .get("mimeType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             *type_counts.entry(mime.to_string()).or_insert(0) += 1;
         }
         eprintln!("  Images: {} total ({:?})", images.len(), type_counts);
@@ -286,7 +345,8 @@ fn inspect_model(path: &str) {
 
     // VRM-specific: humanoid bone mapping
     if vrm_version == "1.0" {
-        if let Some(humanoid) = root.get("extensions")
+        if let Some(humanoid) = root
+            .get("extensions")
             .and_then(|e| e.get("VRMC_vrm"))
             .and_then(|v| v.get("humanoid"))
         {
@@ -301,8 +361,11 @@ fn inspect_model(path: &str) {
                             .and_then(|n| n.get("name"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("?");
-                        if bone_name == "head" || bone_name == "neck" || bone_name == "hips"
-                            || bone_name == "spine" || bone_name.contains("UpperArm")
+                        if bone_name == "head"
+                            || bone_name == "neck"
+                            || bone_name == "hips"
+                            || bone_name == "spine"
+                            || bone_name.contains("UpperArm")
                             || bone_name.contains("Shoulder")
                         {
                             eprintln!("    {} → node {} '{}'", bone_name, idx, node_name);
@@ -312,7 +375,8 @@ fn inspect_model(path: &str) {
             }
         }
     } else if vrm_version == "0.x" {
-        if let Some(humanoid) = root.get("extensions")
+        if let Some(humanoid) = root
+            .get("extensions")
             .and_then(|e| e.get("VRM"))
             .and_then(|v| v.get("humanoid"))
         {
@@ -328,8 +392,11 @@ fn inspect_model(path: &str) {
                             .and_then(|n| n.get("name"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("?");
-                        if bone_name == "head" || bone_name == "neck" || bone_name == "hips"
-                            || bone_name == "spine" || bone_name.contains("UpperArm")
+                        if bone_name == "head"
+                            || bone_name == "neck"
+                            || bone_name == "hips"
+                            || bone_name == "spine"
+                            || bone_name.contains("UpperArm")
                             || bone_name.contains("Shoulder")
                         {
                             eprintln!("    {} → node {} '{}'", bone_name, idx, node_name);
@@ -384,7 +451,10 @@ fn is_identity_rotation(r: &[f64; 4]) -> bool {
 
 fn print_node_info(nodes: &[serde_json::Value], idx: usize, indent: usize) {
     if let Some(node) = nodes.get(idx) {
-        let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("(unnamed)");
+        let name = node
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unnamed)");
         let t = get_translation(node);
         let r = get_rotation(node);
         let s = get_scale(node);
@@ -393,8 +463,20 @@ fn print_node_info(nodes: &[serde_json::Value], idx: usize, indent: usize) {
         let mesh_tag = if has_mesh { " [MESH]" } else { "" };
         let skin_tag = if has_skin { " [SKINNED]" } else { "" };
 
-        eprintln!("{:indent$}[{}] '{}'{}{}", "", idx, name, mesh_tag, skin_tag, indent = indent);
-        if !is_identity_rotation(&r) || t[0].abs() > 0.001 || t[1].abs() > 0.001 || t[2].abs() > 0.001 {
+        eprintln!(
+            "{:indent$}[{}] '{}'{}{}",
+            "",
+            idx,
+            name,
+            mesh_tag,
+            skin_tag,
+            indent = indent
+        );
+        if !is_identity_rotation(&r)
+            || t[0].abs() > 0.001
+            || t[1].abs() > 0.001
+            || t[2].abs() > 0.001
+        {
             eprintln!("{:indent$}  pos=({:.4},{:.4},{:.4}) rot=({:.4},{:.4},{:.4},{:.4}) scale=({:.2},{:.2},{:.2})",
                 "", t[0], t[1], t[2], r[0], r[1], r[2], r[3], s[0], s[1], s[2], indent = indent);
         }
@@ -402,11 +484,14 @@ fn print_node_info(nodes: &[serde_json::Value], idx: usize, indent: usize) {
 }
 
 fn print_hierarchy(nodes: &[serde_json::Value], idx: usize, depth: usize, max_depth: usize) {
-    if depth >= max_depth { return; }
+    if depth >= max_depth {
+        return;
+    }
     let indent = 4 + depth * 2;
     print_node_info(nodes, idx, indent);
 
-    if let Some(children) = nodes.get(idx)
+    if let Some(children) = nodes
+        .get(idx)
         .and_then(|n| n.get("children"))
         .and_then(|c| c.as_array())
     {
@@ -422,7 +507,8 @@ fn format_vec(val: Option<&serde_json::Value>) -> String {
     match val {
         Some(v) => {
             if let Some(arr) = v.as_array() {
-                let nums: Vec<String> = arr.iter()
+                let nums: Vec<String> = arr
+                    .iter()
                     .map(|n| format!("{:.3}", n.as_f64().unwrap_or(0.0)))
                     .collect();
                 format!("[{}]", nums.join(","))
@@ -444,8 +530,14 @@ fn check_inverse_bind_matrices(root: &serde_json::Value, accessor_idx: usize, bi
         None => return,
     };
 
-    let buffer_view_idx = accessor.get("bufferView").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let acc_offset = accessor.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let buffer_view_idx = accessor
+        .get("bufferView")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let acc_offset = accessor
+        .get("byteOffset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
     let count = accessor.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
     let buffer_views = match root.get("bufferViews").and_then(|v| v.as_array()) {
@@ -466,33 +558,42 @@ fn check_inverse_bind_matrices(root: &serde_json::Value, accessor_idx: usize, bi
     // Print first few IBMs for inspection
     for i in 0..count.min(3) {
         let offset = start + i * mat_size;
-        if offset + mat_size > bin_data.len() { break; }
+        if offset + mat_size > bin_data.len() {
+            break;
+        }
 
         let mut mat = [[0.0f32; 4]; 4];
         for col in 0..4 {
             for row in 0..4 {
                 let byte_off = offset + (col * 4 + row) * 4;
-                mat[col][row] = f32::from_le_bytes(
-                    bin_data[byte_off..byte_off + 4].try_into().unwrap()
-                );
+                mat[col][row] =
+                    f32::from_le_bytes(bin_data[byte_off..byte_off + 4].try_into().unwrap());
             }
         }
 
-        let is_identity_rot =
-            (mat[0][0] - 1.0).abs() < 0.01 && mat[0][1].abs() < 0.01 && mat[0][2].abs() < 0.01 &&
-            mat[1][0].abs() < 0.01 && (mat[1][1] - 1.0).abs() < 0.01 && mat[1][2].abs() < 0.01 &&
-            mat[2][0].abs() < 0.01 && mat[2][1].abs() < 0.01 && (mat[2][2] - 1.0).abs() < 0.01;
+        let is_identity_rot = (mat[0][0] - 1.0).abs() < 0.01
+            && mat[0][1].abs() < 0.01
+            && mat[0][2].abs() < 0.01
+            && mat[1][0].abs() < 0.01
+            && (mat[1][1] - 1.0).abs() < 0.01
+            && mat[1][2].abs() < 0.01
+            && mat[2][0].abs() < 0.01
+            && mat[2][1].abs() < 0.01
+            && (mat[2][2] - 1.0).abs() < 0.01;
 
-        eprintln!("      IBM[{}]: trans=({:.3},{:.3},{:.3}) rot_identity={} diag=({:.3},{:.3},{:.3})",
-            i, mat[3][0], mat[3][1], mat[3][2], is_identity_rot,
-            mat[0][0], mat[1][1], mat[2][2]);
+        eprintln!(
+            "      IBM[{}]: trans=({:.3},{:.3},{:.3}) rot_identity={} diag=({:.3},{:.3},{:.3})",
+            i, mat[3][0], mat[3][1], mat[3][2], is_identity_rot, mat[0][0], mat[1][1], mat[2][2]
+        );
     }
 
     // Count all IBMs for rotation stats
     let mut total_rot = 0;
     for i in 0..count {
         let offset = start + i * mat_size;
-        if offset + mat_size > bin_data.len() { break; }
+        if offset + mat_size > bin_data.len() {
+            break;
+        }
         let mut has_rot = false;
         for col in 0..3 {
             for row in 0..3 {
@@ -504,8 +605,14 @@ fn check_inverse_bind_matrices(root: &serde_json::Value, accessor_idx: usize, bi
                 }
             }
         }
-        if has_rot { total_rot += 1; }
+        if has_rot {
+            total_rot += 1;
+        }
     }
-    eprintln!("      IBM rotation stats: {}/{} have non-identity rotation ({:.0}%)",
-        total_rot, count, total_rot as f64 / count.max(1) as f64 * 100.0);
+    eprintln!(
+        "      IBM rotation stats: {}/{} have non-identity rotation ({:.0}%)",
+        total_rot,
+        count,
+        total_rot as f64 / count.max(1) as f64 * 100.0
+    );
 }

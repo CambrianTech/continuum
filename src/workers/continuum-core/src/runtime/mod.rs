@@ -20,31 +20,36 @@
 //! - Logs go to `.continuum/jtag/logs/system/modules/{component}.log`
 //! - No need to pass loggers through function parameters
 
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
-pub mod service_module;
-pub mod registry;
+pub mod command_executor;
+pub mod control;
 pub mod message_bus;
-pub mod shared_compute;
 pub mod module_context;
 pub mod module_logger;
 pub mod module_metrics;
-pub mod control;
+pub mod registry;
 pub mod runtime;
-pub mod command_executor;
+pub mod service_module;
+pub mod shared_compute;
 
-pub use service_module::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, CommandSchema, ParamSchema};
-pub use registry::ModuleRegistry;
+pub use command_executor::{
+    execute as execute_command, execute_json as execute_command_json, executor, init_executor,
+    CommandExecutor,
+};
+pub use control::{ModuleInfo, RuntimeControl};
 pub use message_bus::MessageBus;
-pub use shared_compute::SharedCompute;
 pub use module_context::ModuleContext;
 pub use module_logger::ModuleLogger;
-pub use module_metrics::{ModuleMetrics, ModuleStats, CommandTiming};
-pub use control::{RuntimeControl, ModuleInfo};
+pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
+pub use registry::ModuleRegistry;
 pub use runtime::Runtime;
-pub use command_executor::{CommandExecutor, execute as execute_command, execute_json as execute_command_json, executor, init_executor};
+pub use service_module::{
+    CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
+};
+pub use shared_compute::SharedCompute;
 
 // ============================================================================
 // Global Logger Access

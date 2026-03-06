@@ -30,11 +30,7 @@ pub fn duration_ms(num_samples: usize, sample_rate: u32) -> u64 {
 /// Uses `FftFixedInOut` for spectral-domain resampling — significantly
 /// better quality than linear interpolation, especially for speech.
 /// Handles tail samples via zero-padding with proportional output trimming.
-pub fn resample_f32(
-    samples: &[f32],
-    from_rate: u32,
-    to_rate: u32,
-) -> Result<Vec<f32>, TTSError> {
+pub fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, TTSError> {
     if from_rate == to_rate || samples.is_empty() {
         return Ok(samples.to_vec());
     }
@@ -90,10 +86,7 @@ pub fn resample_f32(
 /// # Arguments
 /// * `samples` - f32 PCM at the adapter's native sample rate
 /// * `native_rate` - the adapter's native sample rate (e.g., 24000 for SNAC/Mimi codecs)
-pub fn normalize_audio(
-    samples: &[f32],
-    native_rate: u32,
-) -> Result<SynthesisResult, TTSError> {
+pub fn normalize_audio(samples: &[f32], native_rate: u32) -> Result<SynthesisResult, TTSError> {
     if samples.is_empty() {
         return Err(TTSError::SynthesisFailed(
             "Cannot normalize empty audio".into(),
@@ -139,8 +132,8 @@ mod tests {
     #[test]
     fn test_duration_ms() {
         assert_eq!(duration_ms(16000, 16000), 1000); // 1 second
-        assert_eq!(duration_ms(8000, 16000), 500);   // 0.5 seconds
-        assert_eq!(duration_ms(24000, 24000), 1000);  // 1 second at 24kHz
+        assert_eq!(duration_ms(8000, 16000), 500); // 0.5 seconds
+        assert_eq!(duration_ms(24000, 24000), 1000); // 1 second at 24kHz
         assert_eq!(duration_ms(0, 16000), 0);
     }
 
@@ -178,7 +171,10 @@ mod tests {
 
         // Output should still have signal (not all zeros)
         let max_amp: f32 = output.iter().map(|s| s.abs()).fold(0.0, f32::max);
-        assert!(max_amp > 0.5, "Resampled signal should retain amplitude, got {max_amp}");
+        assert!(
+            max_amp > 0.5,
+            "Resampled signal should retain amplitude, got {max_amp}"
+        );
     }
 
     #[test]
@@ -192,12 +188,18 @@ mod tests {
 
         assert_eq!(result.sample_rate, AUDIO_SAMPLE_RATE);
         assert!(result.samples.len() > 0);
-        assert!(result.duration_ms > 400 && result.duration_ms < 600,
-            "Expected ~500ms, got {}ms", result.duration_ms);
+        assert!(
+            result.duration_ms > 400 && result.duration_ms < 600,
+            "Expected ~500ms, got {}ms",
+            result.duration_ms
+        );
 
         // Should have real audio, not silence
         let max_amp = result.samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-        assert!(max_amp > 1000, "Should have audible signal, max amp: {max_amp}");
+        assert!(
+            max_amp > 1000,
+            "Should have audible signal, max amp: {max_amp}"
+        );
     }
 
     #[test]
@@ -211,6 +213,9 @@ mod tests {
         let silence = vec![0.0f32; 24000]; // 1 second at 24kHz
         let output = resample_f32(&silence, 24000, 16000).unwrap();
         let max_amp: f32 = output.iter().map(|s| s.abs()).fold(0.0, f32::max);
-        assert!(max_amp < 0.001, "Silence should remain silent after resample, max: {max_amp}");
+        assert!(
+            max_amp < 0.001,
+            "Silence should remain silent after resample, max: {max_amp}"
+        );
     }
 }

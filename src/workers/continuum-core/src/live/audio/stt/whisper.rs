@@ -5,12 +5,12 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::{clog_info, clog_warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 /// Whisper model context (loaded once)
@@ -77,7 +77,11 @@ impl WhisperSTT {
                 for dir in &search_dirs {
                     let path = dir.join(file);
                     if path.exists() {
-                        clog_info!("Whisper: Using model from WHISPER_MODEL env: {} ({:?})", model_name, path);
+                        clog_info!(
+                            "Whisper: Using model from WHISPER_MODEL env: {} ({:?})",
+                            model_name,
+                            path
+                        );
                         return path;
                     }
                 }
@@ -98,7 +102,11 @@ impl WhisperSTT {
             for dir in &search_dirs {
                 let path = dir.join(file);
                 if path.exists() {
-                    clog_info!("Whisper: Auto-selected best available model: {} ({:?})", name, path);
+                    clog_info!(
+                        "Whisper: Auto-selected best available model: {} ({:?})",
+                        name,
+                        path
+                    );
                     return path;
                 }
             }

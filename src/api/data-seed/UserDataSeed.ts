@@ -266,9 +266,9 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
-      intelligenceLevel: 60,  // Capable instruction-tuned model - basic reasoning
+      intelligenceLevel: 75,  // 70B model - strong reasoning and tool use
       modelConfig: {
-        model: 'llama-3.1-8b-instant',
+        model: 'llama-3.3-70b-versatile',
         provider: 'groq',
         maxTokens: 2000,
         temperature: 0.8,

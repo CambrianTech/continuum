@@ -41,10 +41,9 @@ impl TestAudioGenerator {
             }
 
             // Apply formant resonances (amplitude modulation)
-            let formant_envelope =
-                self.formant_filter(signal, t, f1, 90.0) +
-                self.formant_filter(signal, t, f2, 110.0) +
-                self.formant_filter(signal, t, f3, 170.0);
+            let formant_envelope = self.formant_filter(signal, t, f1, 90.0)
+                + self.formant_filter(signal, t, f2, 110.0)
+                + self.formant_filter(signal, t, f3, 170.0);
 
             // Add natural variation (shimmer/jitter)
             let variation = 1.0 + rng.gen_range(-0.05..0.05);
@@ -52,7 +51,8 @@ impl TestAudioGenerator {
             // Amplitude envelope (slight fade in/out)
             let envelope = self.envelope(i, duration_samples);
 
-            let sample = (formant_envelope * variation * envelope * 10000.0).clamp(-32767.0, 32767.0);
+            let sample =
+                (formant_envelope * variation * envelope * 10000.0).clamp(-32767.0, 32767.0);
             *sample_out = sample as i16;
         }
 
@@ -231,7 +231,10 @@ impl TestAudioGenerator {
             }
         }
 
-        samples.iter().map(|&s| s.clamp(-32767, 32767) as i16).collect()
+        samples
+            .iter()
+            .map(|&s| s.clamp(-32767, 32767) as i16)
+            .collect()
     }
 
     /// Generate gunfire noise — sharp transient bursts with exponential decay
@@ -253,8 +256,8 @@ impl TestAudioGenerator {
                 let idx = pos + i;
                 if idx < duration_samples {
                     let noise = rng.gen_range(-1.0f32..1.0);
-                    samples[idx] = (samples[idx] as f32 + noise * 28000.0)
-                        .clamp(-32767.0, 32767.0) as i16;
+                    samples[idx] =
+                        (samples[idx] as f32 + noise * 28000.0).clamp(-32767.0, 32767.0) as i16;
                 }
             }
             // Exponential decay tail
@@ -334,7 +337,9 @@ impl TestAudioGenerator {
             // Sweep frequency between 600Hz and 1200Hz
             let freq = 600.0 + 600.0 * lfo;
             phase += 2.0 * PI * freq / self.sample_rate as f32;
-            if phase > 2.0 * PI { phase -= 2.0 * PI; }
+            if phase > 2.0 * PI {
+                phase -= 2.0 * PI;
+            }
 
             let signal = phase.sin() * 0.7;
             *sample_out = (signal * 20000.0).clamp(-32767.0, 32767.0) as i16;
@@ -352,10 +357,10 @@ impl TestAudioGenerator {
 
         // C-Am-F-G progression (frequencies in Hz)
         let chords: &[&[f32]] = &[
-            &[261.6, 329.6, 392.0],  // C major
-            &[220.0, 261.6, 329.6],  // A minor
-            &[349.2, 440.0, 523.3],  // F major
-            &[392.0, 493.9, 587.3],  // G major
+            &[261.6, 329.6, 392.0], // C major
+            &[220.0, 261.6, 329.6], // A minor
+            &[349.2, 440.0, 523.3], // F major
+            &[392.0, 493.9, 587.3], // G major
         ];
 
         for (i, sample_out) in samples.iter_mut().enumerate() {
@@ -473,9 +478,7 @@ impl TestAudioGenerator {
             let t = i as f32 / self.sample_rate as f32;
 
             // Base hum (60Hz electrical + 120Hz harmonic)
-            let hum =
-                (2.0 * PI * 60.0 * t).sin() * 0.3 +
-                (2.0 * PI * 120.0 * t).sin() * 0.2;
+            let hum = (2.0 * PI * 60.0 * t).sin() * 0.3 + (2.0 * PI * 120.0 * t).sin() * 0.2;
 
             // Machinery rumble (low frequency)
             let rumble = (2.0 * PI * 30.0 * t).sin() * 0.4;
@@ -509,7 +512,11 @@ impl TestAudioGenerator {
     /// # Returns
     /// Mixed audio with specified SNR
     pub fn mix_audio_with_snr(signal: &[i16], noise: &[i16], snr_db: f32) -> Vec<i16> {
-        assert_eq!(signal.len(), noise.len(), "Signal and noise must be same length");
+        assert_eq!(
+            signal.len(),
+            noise.len(),
+            "Signal and noise must be same length"
+        );
 
         // Convert SNR from dB to linear ratio
         // SNR_linear = 10^(SNR_dB / 20)
@@ -545,10 +552,7 @@ impl TestAudioGenerator {
             return 0.0;
         }
 
-        let sum_squares: f64 = samples
-            .iter()
-            .map(|&s| (s as f64) * (s as f64))
-            .sum();
+        let sum_squares: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
 
         ((sum_squares / samples.len() as f64).sqrt()) as f32
     }
@@ -558,7 +562,9 @@ impl TestAudioGenerator {
         match noise_type {
             NoiseType::Crowd(count) => self.generate_crowd(duration_samples, *count),
             NoiseType::FactoryFloor => self.generate_factory_floor(duration_samples),
-            NoiseType::Gunfire(shots_per_sec) => self.generate_gunfire(duration_samples, *shots_per_sec),
+            NoiseType::Gunfire(shots_per_sec) => {
+                self.generate_gunfire(duration_samples, *shots_per_sec)
+            }
             NoiseType::Explosion => self.generate_explosion(duration_samples),
             NoiseType::Siren => self.generate_siren(duration_samples),
             NoiseType::Music => self.generate_music(duration_samples),
@@ -654,11 +660,11 @@ impl Vowel {
     /// Get formant frequencies (F1, F2, F3)
     fn formants(&self) -> (f32, f32, f32) {
         match self {
-            Vowel::A => (730.0, 1090.0, 2440.0),  // "ah"
-            Vowel::E => (530.0, 1840.0, 2480.0),  // "eh"
-            Vowel::I => (270.0, 2290.0, 3010.0),  // "ee"
-            Vowel::O => (570.0, 840.0, 2410.0),   // "oh"
-            Vowel::U => (300.0, 870.0, 2240.0),   // "oo"
+            Vowel::A => (730.0, 1090.0, 2440.0), // "ah"
+            Vowel::E => (530.0, 1840.0, 2480.0), // "eh"
+            Vowel::I => (270.0, 2290.0, 3010.0), // "ee"
+            Vowel::O => (570.0, 840.0, 2410.0),  // "oh"
+            Vowel::U => (300.0, 870.0, 2240.0),  // "oo"
         }
     }
 }
@@ -673,7 +679,7 @@ impl Default for TestAudioGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
+    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
 
     #[test]
     fn test_formant_speech_generation() {
@@ -683,10 +689,12 @@ mod tests {
         assert_eq!(speech.len(), AUDIO_FRAME_SIZE);
 
         // Check that audio has non-zero content
-        let rms: f32 = speech.iter()
+        let rms: f32 = speech
+            .iter()
             .map(|&s| (s as f32).powi(2))
             .sum::<f32>()
-            .sqrt() / speech.len() as f32;
+            .sqrt()
+            / speech.len() as f32;
 
         assert!(rms > 100.0, "Speech should have significant energy");
     }
@@ -722,11 +730,18 @@ mod tests {
 
         assert_eq!(gunfire.len(), duration);
         let rms = TestAudioGenerator::calculate_rms(&gunfire);
-        assert!(rms > 100.0, "Gunfire should have significant energy, got {}", rms);
+        assert!(
+            rms > 100.0,
+            "Gunfire should have significant energy, got {}",
+            rms
+        );
 
         // Gunfire should be transient — lots of silence between shots
         let silent = gunfire.iter().filter(|&&s| s.abs() < 100).count();
-        assert!(silent > duration / 4, "Gunfire should have quiet gaps between shots");
+        assert!(
+            silent > duration / 4,
+            "Gunfire should have quiet gaps between shots"
+        );
     }
 
     #[test]
@@ -737,15 +752,23 @@ mod tests {
 
         assert_eq!(explosion.len(), duration);
         let rms = TestAudioGenerator::calculate_rms(&explosion);
-        assert!(rms > 100.0, "Explosion should have significant energy, got {}", rms);
+        assert!(
+            rms > 100.0,
+            "Explosion should have significant energy, got {}",
+            rms
+        );
 
         // Explosion should decay — first quarter should be louder than last quarter
         let first_q = &explosion[..duration / 4];
         let last_q = &explosion[3 * duration / 4..];
         let first_rms = TestAudioGenerator::calculate_rms(first_q);
         let last_rms = TestAudioGenerator::calculate_rms(last_q);
-        assert!(first_rms > last_rms * 2.0,
-            "Explosion should decay: first_rms={}, last_rms={}", first_rms, last_rms);
+        assert!(
+            first_rms > last_rms * 2.0,
+            "Explosion should decay: first_rms={}, last_rms={}",
+            first_rms,
+            last_rms
+        );
     }
 
     #[test]
@@ -763,7 +786,11 @@ mod tests {
         let second_half = &siren[duration / 2..];
         let ratio = TestAudioGenerator::calculate_rms(first_half)
             / TestAudioGenerator::calculate_rms(second_half);
-        assert!((ratio - 1.0).abs() < 0.3, "Siren should be steady, ratio={}", ratio);
+        assert!(
+            (ratio - 1.0).abs() < 0.3,
+            "Siren should be steady, ratio={}",
+            ratio
+        );
     }
 
     #[test]
@@ -820,7 +847,12 @@ mod tests {
             let audio = gen.generate_noise(nt, duration);
             assert_eq!(audio.len(), duration, "NoiseType::{:?} wrong length", nt);
             let rms = TestAudioGenerator::calculate_rms(&audio);
-            assert!(rms > 10.0, "NoiseType::{:?} should produce non-zero audio, rms={}", nt, rms);
+            assert!(
+                rms > 10.0,
+                "NoiseType::{:?} should produce non-zero audio, rms={}",
+                nt,
+                rms
+            );
         }
     }
 
@@ -848,7 +880,7 @@ mod tests {
 
         // Mix at different SNR levels
         let mixed_high_snr = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, 20.0); // Signal 20dB louder
-        let mixed_equal = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, 0.0);     // Equal volume
+        let mixed_equal = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, 0.0); // Equal volume
         let mixed_low_snr = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, -10.0); // Noise 10dB louder
 
         assert_eq!(mixed_high_snr.len(), 240);

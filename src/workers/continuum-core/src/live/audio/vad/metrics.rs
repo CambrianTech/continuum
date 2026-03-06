@@ -284,9 +284,7 @@ impl VADEvaluator {
         let matrix_display = self.matrix.display();
         let (optimal_threshold, optimal_f1) = self.optimal_threshold();
 
-        format!(
-            "{matrix_display}\nOptimal Threshold: {optimal_threshold:.3} (F1: {optimal_f1:.3})"
-        )
+        format!("{matrix_display}\nOptimal Threshold: {optimal_threshold:.3} (F1: {optimal_f1:.3})")
     }
 }
 
@@ -363,8 +361,8 @@ mod tests {
         assert_eq!(matrix.false_positives, 1);
 
         assert_eq!(matrix.accuracy(), 17.0 / 20.0); // (8+9)/20 = 0.85
-        assert_eq!(matrix.precision(), 8.0 / 9.0);  // 8/(8+1) ≈ 0.889
-        assert_eq!(matrix.recall(), 8.0 / 10.0);    // 8/(8+2) = 0.8
+        assert_eq!(matrix.precision(), 8.0 / 9.0); // 8/(8+1) ≈ 0.889
+        assert_eq!(matrix.recall(), 8.0 / 10.0); // 8/(8+2) = 0.8
     }
 
     #[test]

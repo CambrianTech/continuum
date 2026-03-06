@@ -30,7 +30,10 @@ pub mod types;
 pub use cache::MemoryCache;
 pub use consciousness::build_consciousness_context;
 pub use corpus::MemoryCorpus;
-pub use embedding::{cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider, ModuleBackedEmbeddingProvider};
+pub use embedding::{
+    cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider,
+    ModuleBackedEmbeddingProvider,
+};
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
 
@@ -92,13 +95,20 @@ impl PersonaMemoryManager {
     ) -> LoadCorpusResponse {
         let start = Instant::now();
 
-        let embedded_memory_count = corpus_memories.iter().filter(|cm| cm.embedding.is_some()).count();
-        let embedded_event_count = corpus_events.iter().filter(|ce| ce.embedding.is_some()).count();
+        let embedded_memory_count = corpus_memories
+            .iter()
+            .filter(|cm| cm.embedding.is_some())
+            .count();
+        let embedded_event_count = corpus_events
+            .iter()
+            .filter(|ce| ce.embedding.is_some())
+            .count();
         let memory_count = corpus_memories.len();
         let timeline_event_count = corpus_events.len();
 
         let corpus = MemoryCorpus::from_corpus_data(corpus_memories, corpus_events);
-        self.corpora.insert(persona_id.to_string(), Arc::new(corpus));
+        self.corpora
+            .insert(persona_id.to_string(), Arc::new(corpus));
 
         // Invalidate consciousness cache (new data affects context)
         self.consciousness_cache.invalidate(persona_id);
@@ -138,9 +148,10 @@ impl PersonaMemoryManager {
         let corpus = self.get_corpus(persona_id)?;
 
         // Pre-compute query embedding if text provided
-        let query_embedding = req.query_text.as_ref().and_then(|text| {
-            self.embedding.embed(text).ok()
-        });
+        let query_embedding = req
+            .query_text
+            .as_ref()
+            .and_then(|text| self.embedding.embed(text).ok());
 
         let query = RecallQuery {
             query_text: req.query_text.clone(),
@@ -187,14 +198,11 @@ impl PersonaMemoryManager {
     /// Copy-on-write: clones corpus, appends memory, swaps Arc in DashMap.
     /// Readers holding old Arc are unaffected (snapshot isolation).
     /// O(n) per append, but appends are rare (~1/min/persona).
-    pub fn append_memory(
-        &self,
-        persona_id: &str,
-        memory: CorpusMemory,
-    ) -> Result<(), MemoryError> {
+    pub fn append_memory(&self, persona_id: &str, memory: CorpusMemory) -> Result<(), MemoryError> {
         let old_corpus = self.get_corpus(persona_id)?;
         let new_corpus = old_corpus.with_appended_memory(memory);
-        self.corpora.insert(persona_id.to_string(), Arc::new(new_corpus));
+        self.corpora
+            .insert(persona_id.to_string(), Arc::new(new_corpus));
         self.consciousness_cache.invalidate(persona_id);
         Ok(())
     }
@@ -208,7 +216,8 @@ impl PersonaMemoryManager {
     ) -> Result<(), MemoryError> {
         let old_corpus = self.get_corpus(persona_id)?;
         let new_corpus = old_corpus.with_appended_event(event);
-        self.corpora.insert(persona_id.to_string(), Arc::new(new_corpus));
+        self.corpora
+            .insert(persona_id.to_string(), Arc::new(new_corpus));
         self.consciousness_cache.invalidate(persona_id);
         Ok(())
     }
@@ -302,9 +311,7 @@ mod tests {
             make_corpus_memory("m1", "Purple elephants dance", 0.9),
             make_corpus_memory("m2", "Blue sky observation", 0.5),
         ];
-        let events = vec![
-            make_corpus_event("e1", "room-1", "General"),
-        ];
+        let events = vec![make_corpus_event("e1", "room-1", "General")];
 
         let resp = manager.load_corpus("p1", memories, events);
         assert_eq!(resp.memory_count, 2);
@@ -361,7 +368,10 @@ mod tests {
 
         // Second call: cache hit
         let resp2 = manager.consciousness_context("p1", &req).unwrap();
-        assert_eq!(resp2.cross_context_event_count, resp1.cross_context_event_count);
+        assert_eq!(
+            resp2.cross_context_event_count,
+            resp1.cross_context_event_count
+        );
     }
 
     #[test]
@@ -385,11 +395,15 @@ mod tests {
         manager.load_corpus("p1", vec![make_corpus_memory("m1", "first", 0.9)], vec![]);
 
         // Load new corpus with 3 memories
-        let resp = manager.load_corpus("p1", vec![
-            make_corpus_memory("m2", "second", 0.8),
-            make_corpus_memory("m3", "third", 0.7),
-            make_corpus_memory("m4", "fourth", 0.6),
-        ], vec![]);
+        let resp = manager.load_corpus(
+            "p1",
+            vec![
+                make_corpus_memory("m2", "second", 0.8),
+                make_corpus_memory("m3", "third", 0.7),
+                make_corpus_memory("m4", "fourth", 0.6),
+            ],
+            vec![],
+        );
 
         assert_eq!(resp.memory_count, 3);
 
@@ -409,9 +423,11 @@ mod tests {
         let manager = test_manager();
 
         // Load initial corpus
-        manager.load_corpus("p1", vec![
-            make_corpus_memory("m1", "Initial memory", 0.9),
-        ], vec![]);
+        manager.load_corpus(
+            "p1",
+            vec![make_corpus_memory("m1", "Initial memory", 0.9)],
+            vec![],
+        );
 
         // Append a new memory
         let new_memory = make_corpus_memory("m2", "Appended memory", 0.7);
@@ -435,9 +451,11 @@ mod tests {
         let manager = test_manager();
 
         // Load initial corpus with one event
-        manager.load_corpus("p1", vec![], vec![
-            make_corpus_event("e1", "room-1", "General"),
-        ]);
+        manager.load_corpus(
+            "p1",
+            vec![],
+            vec![make_corpus_event("e1", "room-1", "General")],
+        );
 
         // Append a new event
         let new_event = make_corpus_event("e2", "room-2", "Academy");
@@ -468,12 +486,18 @@ mod tests {
         let manager = test_manager();
 
         // Load initial corpus with embedded memory
-        manager.load_corpus("p1", vec![
-            make_corpus_memory("m1", "with embedding", 0.9), // has Some(vec![0.1; 384])
-        ], vec![]);
+        manager.load_corpus(
+            "p1",
+            vec![
+                make_corpus_memory("m1", "with embedding", 0.9), // has Some(vec![0.1; 384])
+            ],
+            vec![],
+        );
 
         // Append another embedded memory
-        manager.append_memory("p1", make_corpus_memory("m2", "also embedded", 0.8)).unwrap();
+        manager
+            .append_memory("p1", make_corpus_memory("m2", "also embedded", 0.8))
+            .unwrap();
 
         // Both should be findable via semantic recall (which needs embeddings)
         let req = MultiLayerRecallRequest {
@@ -483,6 +507,9 @@ mod tests {
             layers: None,
         };
         let resp = manager.multi_layer_recall("p1", &req).unwrap();
-        assert!(resp.memories.len() >= 2, "Both embedded memories should be recalled");
+        assert!(
+            resp.memories.len() >= 2,
+            "Both embedded memories should be recalled"
+        );
     }
 }

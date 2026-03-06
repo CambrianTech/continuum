@@ -126,30 +126,8 @@ export class DataDaemonServer extends DataDaemonBase {
     await SystemDaemon.initialize(this.context);
     this.log.debug('System daemon initialized');
 
-    // Initialize governance notifications (vote events → chat messages)
-    const { initializeGovernanceNotifications } = await import('../../../system/governance/GovernanceNotifications');
-    initializeGovernanceNotifications();
-    this.log.debug('Governance notifications initialized');
-
-    // Initialize sentinel escalation (sentinel lifecycle → persona inbox)
-    const { initializeSentinelEscalation } = await import('../../../system/sentinel/SentinelEscalationService');
-    initializeSentinelEscalation();
-    this.log.debug('Sentinel escalation service initialized');
-
-    // Initialize sentinel trigger service (auto-execute sentinels on event/cron/immediate)
-    const { initializeSentinelTriggers } = await import('../../../system/sentinel/SentinelTriggerService');
-    await initializeSentinelTriggers();
-    this.log.debug('Sentinel trigger service initialized');
-
-    // Initialize sentinel event bridge (Rust sentinel events → TypeScript Events)
-    const { initializeSentinelEventBridge } = await import('../../../system/sentinel/SentinelEventBridge');
-    initializeSentinelEventBridge();
-    this.log.debug('Sentinel event bridge initialized');
-
-    // Initialize training completion handler (async genome/train → post-training workflow)
-    const { initializeTrainingCompletionHandler } = await import('../../../system/genome/server/TrainingCompletionHandler');
-    initializeTrainingCompletionHandler();
-    this.log.debug('Training completion handler initialized');
+    // Cross-cutting services (sentinel, governance, training) now initialize
+    // in ServiceInitializer, called by JTAGSystem after all daemons are ready.
 
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);

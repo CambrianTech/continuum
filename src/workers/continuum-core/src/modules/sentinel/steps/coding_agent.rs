@@ -45,7 +45,11 @@ pub async fn execute(
 
     log.info(&format!(
         "[{}] CodingAgent step: provider={}, model={:?}, maxTurns={:?}, prompt_len={}",
-        pipeline_ctx.handle_id, provider_name, model, max_turns, interpolated_prompt.len()
+        pipeline_ctx.handle_id,
+        provider_name,
+        model,
+        max_turns,
+        interpolated_prompt.len()
     ));
 
     // Build params for TypeScript sentinel/coding-agent command
@@ -86,21 +90,35 @@ pub async fn execute(
 
     // Route to TypeScript via Unix socket — sentinel/ prefix is NOT claimed by a Rust module,
     // but we use execute_ts_json for consistency with the provider architecture living in TypeScript.
-    let json = runtime::command_executor::execute_ts_json("sentinel/coding-agent", params).await
+    let json = runtime::command_executor::execute_ts_json("sentinel/coding-agent", params)
+        .await
         .map_err(|e| format!("[{}] CodingAgent step error: {}", pipeline_ctx.handle_id, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-    let text = json.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let success = json
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = json
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let error = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let session_id = json.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
     let num_turns = json.get("numTurns").and_then(|v| v.as_u64()).unwrap_or(0);
-    let tool_calls_count = json.get("toolCalls")
+    let tool_calls_count = json
+        .get("toolCalls")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let cost = json.get("totalCostUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let cost = json
+        .get("totalCostUsd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     log.info(&format!(
         "[{}] CodingAgent step complete: success={}, provider={}, session={}, turns={}, tools={}, cost=${:.4}, {}ms",

@@ -25,11 +25,19 @@ pub struct SentimentResult {
 
 impl SentimentResult {
     fn neutral() -> Self {
-        Self { emotion: Emotion::Neutral, intensity: 0.0, gesture: Gesture::None }
+        Self {
+            emotion: Emotion::Neutral,
+            intensity: 0.0,
+            gesture: Gesture::None,
+        }
     }
 
     fn new(emotion: Emotion, intensity: f32) -> Self {
-        Self { emotion, intensity: intensity.clamp(0.0, 1.0), gesture: Gesture::None }
+        Self {
+            emotion,
+            intensity: intensity.clamp(0.0, 1.0),
+            gesture: Gesture::None,
+        }
     }
 
     fn with_gesture(mut self, gesture: Gesture) -> Self {
@@ -66,41 +74,56 @@ fn scan_emoji(text: &str) -> Option<SentimentResult> {
     for ch in text.chars() {
         match ch {
             // Happy
-            '😊' | '😄' | '😃' | '😁' | '🥰' | '😍' | '🤗' | '💕' | '❤' | '♥'
-            | '😀' | '🙂' | '☺' | '💖' | '💗' | '😻' | '🎉' | '🥳' =>
-                return Some(SentimentResult::new(Emotion::Happy, 0.8)),
+            '😊' | '😄' | '😃' | '😁' | '🥰' | '😍' | '🤗' | '💕' | '❤' | '♥' | '😀' | '🙂'
+            | '☺' | '💖' | '💗' | '😻' | '🎉' | '🥳' => {
+                return Some(SentimentResult::new(Emotion::Happy, 0.8))
+            }
 
             // Sad
-            '😢' | '😭' | '😞' | '😔' | '🥺' | '😿' | '💔' | '😥' | '🙁' | '☹' =>
-                return Some(SentimentResult::new(Emotion::Sad, 0.7)),
+            '😢' | '😭' | '😞' | '😔' | '🥺' | '😿' | '💔' | '😥' | '🙁' | '☹' => {
+                return Some(SentimentResult::new(Emotion::Sad, 0.7))
+            }
 
             // Angry
-            '😠' | '😡' | '🤬' | '💢' | '👿' | '😤' =>
-                return Some(SentimentResult::new(Emotion::Angry, 0.7)),
+            '😠' | '😡' | '🤬' | '💢' | '👿' | '😤' => {
+                return Some(SentimentResult::new(Emotion::Angry, 0.7))
+            }
 
             // Surprised
-            '😮' | '😲' | '🤯' | '😱' | '😳' | '🫢' | '❗' | '‼' | '⁉' =>
-                return Some(SentimentResult::new(Emotion::Surprised, 0.8)),
+            '😮' | '😲' | '🤯' | '😱' | '😳' | '🫢' | '❗' | '‼' | '⁉' => {
+                return Some(SentimentResult::new(Emotion::Surprised, 0.8))
+            }
 
             // Relaxed
-            '😌' | '😴' | '🧘' | '☮' | '🍃' | '✨' | '🌸' =>
-                return Some(SentimentResult::new(Emotion::Relaxed, 0.6)),
+            '😌' | '😴' | '🧘' | '☮' | '🍃' | '✨' | '🌸' => {
+                return Some(SentimentResult::new(Emotion::Relaxed, 0.6))
+            }
 
             // Wave gesture emoji
-            '👋' => return Some(SentimentResult::new(Emotion::Happy, 0.6)
-                .with_gesture(Gesture::Wave)),
+            '👋' => {
+                return Some(SentimentResult::new(Emotion::Happy, 0.6).with_gesture(Gesture::Wave))
+            }
 
             // Thinking emoji
-            '🤔' => return Some(SentimentResult::new(Emotion::Neutral, 0.3)
-                .with_gesture(Gesture::Think)),
+            '🤔' => {
+                return Some(
+                    SentimentResult::new(Emotion::Neutral, 0.3).with_gesture(Gesture::Think),
+                )
+            }
 
             // Shrug emoji
-            '🤷' => return Some(SentimentResult::new(Emotion::Neutral, 0.3)
-                .with_gesture(Gesture::Shrug)),
+            '🤷' => {
+                return Some(
+                    SentimentResult::new(Emotion::Neutral, 0.3).with_gesture(Gesture::Shrug),
+                )
+            }
 
             // Pointing emoji
-            '👉' | '☝' | '👆' => return Some(SentimentResult::new(Emotion::Neutral, 0.3)
-                .with_gesture(Gesture::Point)),
+            '👉' | '☝' | '👆' => {
+                return Some(
+                    SentimentResult::new(Emotion::Neutral, 0.3).with_gesture(Gesture::Point),
+                )
+            }
 
             _ => {}
         }
@@ -134,36 +157,75 @@ fn scan_keywords(text: &str) -> Option<SentimentResult> {
     let lower = text.to_lowercase();
 
     const HAPPY_STRONG: &[&str] = &[
-        "wonderful", "fantastic", "amazing", "love it", "brilliant",
-        "delighted", "thrilled", "overjoyed", "ecstatic",
+        "wonderful",
+        "fantastic",
+        "amazing",
+        "love it",
+        "brilliant",
+        "delighted",
+        "thrilled",
+        "overjoyed",
+        "ecstatic",
     ];
     const HAPPY_MILD: &[&str] = &[
-        "nice", "good", "great", "happy", "glad", "pleased",
-        "enjoy", "lovely", "beautiful", "excellent",
+        "nice",
+        "good",
+        "great",
+        "happy",
+        "glad",
+        "pleased",
+        "enjoy",
+        "lovely",
+        "beautiful",
+        "excellent",
     ];
 
     const SAD_STRONG: &[&str] = &[
-        "heartbroken", "devastated", "terrible", "awful", "tragic",
-        "miserable", "hopeless",
+        "heartbroken",
+        "devastated",
+        "terrible",
+        "awful",
+        "tragic",
+        "miserable",
+        "hopeless",
     ];
     const SAD_MILD: &[&str] = &[
-        "sorry", "unfortunately", "sadly", "disappointed", "regret",
-        "miss", "lonely", "upset",
+        "sorry",
+        "unfortunately",
+        "sadly",
+        "disappointed",
+        "regret",
+        "miss",
+        "lonely",
+        "upset",
     ];
 
     const ANGRY: &[&str] = &[
-        "furious", "outraged", "infuriating", "ridiculous", "unacceptable",
-        "frustrated", "annoyed", "irritated",
+        "furious",
+        "outraged",
+        "infuriating",
+        "ridiculous",
+        "unacceptable",
+        "frustrated",
+        "annoyed",
+        "irritated",
     ];
 
     const SURPRISED: &[&str] = &[
-        "wow", "incredible", "unbelievable", "astonishing", "shocking",
-        "whoa", "oh my", "can't believe", "no way", "mind-blowing",
+        "wow",
+        "incredible",
+        "unbelievable",
+        "astonishing",
+        "shocking",
+        "whoa",
+        "oh my",
+        "can't believe",
+        "no way",
+        "mind-blowing",
     ];
 
     const RELAXED: &[&str] = &[
-        "peaceful", "calm", "serene", "tranquil", "soothing",
-        "gentle", "mellow", "at ease",
+        "peaceful", "calm", "serene", "tranquil", "soothing", "gentle", "mellow", "at ease",
     ];
 
     for kw in HAPPY_STRONG {
@@ -212,77 +274,174 @@ fn detect_gesture(text: &str) -> Gesture {
 
     // Greeting/farewell → Wave
     const WAVE_KEYWORDS: &[&str] = &[
-        "hello", "hi everyone", "hey everyone", "bye", "goodbye",
-        "good morning", "good evening", "welcome", "farewell",
-        "hi there", "greetings",
-        "hi!", "hey!", "hi,", "hey,", "howdy", "what's up",
-        "see you", "take care", "later!", "cheers",
+        "hello",
+        "hi everyone",
+        "hey everyone",
+        "bye",
+        "goodbye",
+        "good morning",
+        "good evening",
+        "welcome",
+        "farewell",
+        "hi there",
+        "greetings",
+        "hi!",
+        "hey!",
+        "hi,",
+        "hey,",
+        "howdy",
+        "what's up",
+        "see you",
+        "take care",
+        "later!",
+        "cheers",
     ];
 
     // Thinking/wondering → Think
     const THINK_KEYWORDS: &[&str] = &[
-        "hmm", "let me think", "i wonder", "perhaps", "considering",
-        "interesting question", "that's a good point", "let me consider",
-        "pondering", "contemplating",
-        "think about", "thinking", "consider", "thought about",
-        "wonder if", "wonder about", "curious", "interesting",
-        "reflect on", "hm,", "hm.",
+        "hmm",
+        "let me think",
+        "i wonder",
+        "perhaps",
+        "considering",
+        "interesting question",
+        "that's a good point",
+        "let me consider",
+        "pondering",
+        "contemplating",
+        "think about",
+        "thinking",
+        "consider",
+        "thought about",
+        "wonder if",
+        "wonder about",
+        "curious",
+        "interesting",
+        "reflect on",
+        "hm,",
+        "hm.",
     ];
 
     // Agreement/emphasis → Nod
     const NOD_KEYWORDS: &[&str] = &[
-        "absolutely", "exactly", "definitely", "i agree", "that's right",
-        "precisely", "indeed", "certainly", "of course", "without a doubt",
-        "agree", "right!", "yes!", "yeah!", "correct", "true!",
-        "good point", "makes sense", "totally", "yep", "sure!", "100%",
+        "absolutely",
+        "exactly",
+        "definitely",
+        "i agree",
+        "that's right",
+        "precisely",
+        "indeed",
+        "certainly",
+        "of course",
+        "without a doubt",
+        "agree",
+        "right!",
+        "yes!",
+        "yeah!",
+        "correct",
+        "true!",
+        "good point",
+        "makes sense",
+        "totally",
+        "yep",
+        "sure!",
+        "100%",
     ];
 
     // Uncertainty → Shrug
     const SHRUG_KEYWORDS: &[&str] = &[
-        "not sure", "i don't know", "maybe", "who knows", "hard to say",
-        "it depends", "uncertain", "either way", "it's debatable",
-        "don't know", "dunno", "idk", "no idea", "tough to say",
-        "could go either way", "your guess", "beats me",
+        "not sure",
+        "i don't know",
+        "maybe",
+        "who knows",
+        "hard to say",
+        "it depends",
+        "uncertain",
+        "either way",
+        "it's debatable",
+        "don't know",
+        "dunno",
+        "idk",
+        "no idea",
+        "tough to say",
+        "could go either way",
+        "your guess",
+        "beats me",
     ];
 
     // Explanation → OpenHands
     const OPENHANDS_KEYWORDS: &[&str] = &[
-        "here's the thing", "so basically", "let me explain",
-        "the way i see it", "in other words", "to put it simply",
-        "what i mean is", "the key insight",
-        "basically", "essentially", "the thing is", "what i mean",
-        "in essence", "to clarify", "for example", "for instance",
-        "think of it as", "put simply",
+        "here's the thing",
+        "so basically",
+        "let me explain",
+        "the way i see it",
+        "in other words",
+        "to put it simply",
+        "what i mean is",
+        "the key insight",
+        "basically",
+        "essentially",
+        "the thing is",
+        "what i mean",
+        "in essence",
+        "to clarify",
+        "for example",
+        "for instance",
+        "think of it as",
+        "put simply",
     ];
 
     // Direction/emphasis → Point
     const POINT_KEYWORDS: &[&str] = &[
-        "look at this", "right there", "check this out", "notice how",
-        "specifically", "in particular", "the important part",
+        "look at this",
+        "right there",
+        "check this out",
+        "notice how",
+        "specifically",
+        "in particular",
+        "the important part",
         "pay attention to",
-        "this is", "here's", "that's the", "key thing",
-        "important thing", "main point", "crucial",
-        "notably", "particularly",
+        "this is",
+        "here's",
+        "that's the",
+        "key thing",
+        "important thing",
+        "main point",
+        "crucial",
+        "notably",
+        "particularly",
     ];
 
     // Check in priority order (most specific first)
     for kw in WAVE_KEYWORDS {
-        if lower.contains(kw) { return Gesture::Wave; }
+        if lower.contains(kw) {
+            return Gesture::Wave;
+        }
     }
     for kw in THINK_KEYWORDS {
-        if lower.contains(kw) { return Gesture::Think; }
+        if lower.contains(kw) {
+            return Gesture::Think;
+        }
     }
     for kw in NOD_KEYWORDS {
-        if lower.contains(kw) { return Gesture::Nod; }
+        if lower.contains(kw) {
+            return Gesture::Nod;
+        }
     }
     for kw in SHRUG_KEYWORDS {
-        if lower.contains(kw) { return Gesture::Shrug; }
+        if lower.contains(kw) {
+            return Gesture::Shrug;
+        }
     }
     for kw in OPENHANDS_KEYWORDS {
-        if lower.contains(kw) { return Gesture::OpenHands; }
+        if lower.contains(kw) {
+            return Gesture::OpenHands;
+        }
     }
     for kw in POINT_KEYWORDS {
-        if lower.contains(kw) { return Gesture::Point; }
+        if lower.contains(kw) {
+            return Gesture::Point;
+        }
     }
 
     Gesture::None

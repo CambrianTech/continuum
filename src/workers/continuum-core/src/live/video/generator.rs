@@ -64,7 +64,7 @@ impl TestPatternGenerator {
         if row_end <= data.len() {
             for x in 0..w {
                 let px = row_start + x * 4;
-                data[px] = 255;     // R
+                data[px] = 255; // R
                 data[px + 1] = 255; // G
                 data[px + 2] = 255; // B
                 data[px + 3] = 255; // A

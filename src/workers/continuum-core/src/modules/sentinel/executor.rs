@@ -5,16 +5,19 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
-use std::process::Stdio;
+use sysinfo::System;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::runtime::{self, message_bus::MessageBus, ModuleRegistry};
 use super::steps;
-use super::types::{ExecutionContext, Pipeline, PipelineContext, PipelineResult, StepResult, step_type_name};
+use super::types::{
+    step_type_name, ExecutionContext, Pipeline, PipelineContext, PipelineResult, StepResult,
+};
+use crate::runtime::{self, message_bus::MessageBus, ModuleRegistry};
 
 /// Execute a multi-step pipeline with LLM, conditions, loops
 pub async fn execute_pipeline(
@@ -38,14 +41,22 @@ pub async fn execute_pipeline(
     }
     let steps_log_path = logs_dir.join("steps.jsonl");
 
-    log.info(&format!("[{}] Pipeline '{}' starting with {} steps",
-        handle_id, pipeline_name, pipeline.steps.len()));
+    log.info(&format!(
+        "[{}] Pipeline '{}' starting with {} steps",
+        handle_id,
+        pipeline_name,
+        pipeline.steps.len()
+    ));
 
     // Create execution context
     let mut ctx = ExecutionContext {
         step_results: Vec::new(),
         inputs: pipeline.inputs.clone(),
-        working_dir: pipeline.working_dir.clone().map(PathBuf::from).unwrap_or(working_dir),
+        working_dir: pipeline
+            .working_dir
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or(working_dir),
         named_outputs: HashMap::new(),
     };
 
@@ -56,17 +67,26 @@ pub async fn execute_pipeline(
 
     for (i, step) in pipeline.steps.iter().enumerate() {
         let step_type = step_type_name(step);
-        log.info(&format!("[{}] Step {}/{}: {}", handle_id, i + 1, pipeline.steps.len(), step_type));
+        log.info(&format!(
+            "[{}] Step {}/{}: {}",
+            handle_id,
+            i + 1,
+            pipeline.steps.len(),
+            step_type
+        ));
 
         // Emit step progress
         if let Some(ref bus) = bus {
-            bus.publish_async_only(&format!("sentinel:{handle_id}:progress"), json!({
-                "handle": handle_id,
-                "step": i,
-                "totalSteps": pipeline.steps.len(),
-                "stepType": step_type,
-                "phase": "executing",
-            }));
+            bus.publish_async_only(
+                &format!("sentinel:{handle_id}:progress"),
+                json!({
+                    "handle": handle_id,
+                    "step": i,
+                    "totalSteps": pipeline.steps.len(),
+                    "stepType": step_type,
+                    "phase": "executing",
+                }),
+            );
         }
 
         let pipeline_ctx = PipelineContext {
@@ -82,7 +102,10 @@ pub async fn execute_pipeline(
                     last_output = result.output.clone().unwrap_or_default();
                     log.info(&format!("[{handle_id}] Step {i} succeeded"));
                 } else {
-                    log.error(&format!("[{handle_id}] Step {i} failed: {:?}", result.error));
+                    log.error(&format!(
+                        "[{handle_id}] Step {i} failed: {:?}",
+                        result.error
+                    ));
                     failed = true;
                     error_msg = result.error.clone();
                 }
@@ -140,18 +163,23 @@ pub async fn execute_pipeline(
 
     // Emit pipeline completion
     if let Some(ref bus) = bus {
-        bus.publish_async_only("sentinel:pipeline:complete", json!({
-            "handle": handle_id,
-            "name": pipeline_name,
-            "success": !failed,
-            "stepsCompleted": ctx.step_results.len(),
-            "stepsTotal": pipeline.steps.len(),
-            "durationMs": total_duration_ms,
-        }));
+        bus.publish_async_only(
+            "sentinel:pipeline:complete",
+            json!({
+                "handle": handle_id,
+                "name": pipeline_name,
+                "success": !failed,
+                "stepsCompleted": ctx.step_results.len(),
+                "stepsTotal": pipeline.steps.len(),
+                "durationMs": total_duration_ms,
+            }),
+        );
     }
 
-    log.info(&format!("[{}] Pipeline '{}' completed: success={}, duration={}ms",
-        handle_id, pipeline_name, !failed, total_duration_ms));
+    log.info(&format!(
+        "[{}] Pipeline '{}' completed: success={}, duration={}ms",
+        handle_id, pipeline_name, !failed, total_duration_ms
+    ));
 
     if failed {
         Err(error_msg.unwrap_or_else(|| "Pipeline failed".to_string()))
@@ -170,13 +198,25 @@ pub struct IsolatedProcessConfig {
     pub env: HashMap<String, String>,
 }
 
-/// Execute an isolated child process with stdout/stderr streaming to logs
+/// Execute an isolated child process with stdout/stderr streaming to logs.
+///
+/// Architecture: three concurrent tasks (pipe readers + memory watchdog) oversee the child.
+/// Pipe readers run as independent tokio tasks so they NEVER block on each other or on
+/// the memory watchdog. This prevents pipe buffer deadlocks where a child process stalls
+/// because its stdout/stderr pipe is full while the reader is busy with something else.
 pub async fn execute_isolated(
     config: IsolatedProcessConfig,
     cancel_rx: mpsc::Receiver<()>,
     bus: Option<Arc<MessageBus>>,
 ) -> Result<(i32, String), String> {
-    let IsolatedProcessConfig { logs_base_dir, handle_id, command, args, working_dir, env } = config;
+    let IsolatedProcessConfig {
+        logs_base_dir,
+        handle_id,
+        command,
+        args,
+        working_dir,
+        env,
+    } = config;
     let log = runtime::logger("sentinel");
 
     // Create logs directory
@@ -193,130 +233,329 @@ pub async fn execute_isolated(
         "Executing sentinel {handle_id}: {command} {args:?} in {working_dir:?}"
     ));
 
-    // Spawn child process
-    let mut child = Command::new(&command)
-        .args(&args)
-        .current_dir(&working_dir)
-        .envs(&env)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn process: {e}"))?;
+    // Spawn child process in its own process group.
+    // This is CRITICAL: `kill(-pgid)` kills the entire tree (wrapper → micromamba → python).
+    // Without this, `kill_on_drop` only kills the direct child, leaving grandchildren orphaned.
+    let mut child = {
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
+            .current_dir(&working_dir)
+            .envs(&env)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        // SAFETY: pre_exec runs in the forked child before exec.
+        // setsid() creates a new session + process group. Simple, async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to spawn process: {e}"))?
+    };
 
-    // Open log files
-    let stdout_file = tokio::fs::File::create(&stdout_path)
-        .await
-        .map_err(|e| format!("Failed to create stdout log: {e}"))?;
-    let stderr_file = tokio::fs::File::create(&stderr_path)
-        .await
-        .map_err(|e| format!("Failed to create stderr log: {e}"))?;
-    let combined_file = tokio::fs::File::create(&combined_path)
-        .await
-        .map_err(|e| format!("Failed to create combined log: {e}"))?;
+    let child_pid = child.id();
 
-    let mut stdout_writer = tokio::io::BufWriter::new(stdout_file);
-    let mut stderr_writer = tokio::io::BufWriter::new(stderr_file);
-    let mut combined_writer = tokio::io::BufWriter::new(combined_file);
+    // Write PID to sentinel logs dir so npm stop / shutdown can find orphans
+    let pid_path = logs_dir.join("pid");
+    if let Some(pid) = child_pid {
+        tokio::fs::write(&pid_path, pid.to_string()).await.ok();
+    }
 
-    let stdout = child.stdout.take()
+    let stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| "Failed to capture stdout — not piped".to_string())?;
-    let stderr = child.stderr.take()
+    let stderr = child
+        .stderr
+        .take()
         .ok_or_else(|| "Failed to capture stderr — not piped".to_string())?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    // Channel for log lines from pipe readers → log writer (bounded to apply backpressure
+    // to file I/O, not to pipe reads — pipe readers use unbounded sends so they never block)
+    let (log_tx, mut log_rx) = mpsc::unbounded_channel::<LogLine>();
 
-    let mut cancel_rx = cancel_rx;
-    let mut last_output = String::new();
-    let mut stdout_closed = false;
-    let mut stderr_closed = false;
-
-    loop {
-        tokio::select! {
-            biased;
-
-            _ = cancel_rx.recv() => {
-                log.warn(&format!("Sentinel {handle_id} cancelled"));
-                child.kill().await.ok();
-                return Err("Cancelled".to_string());
+    // ── Stdout reader task: drains pipe as fast as possible, never blocks ──
+    let stdout_tx = log_tx.clone();
+    let stdout_handle_id = handle_id.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        let mut last_line = String::new();
+        while let Ok(Some(line)) = reader.next_line().await {
+            last_line = line.clone();
+            if stdout_tx.send(LogLine::Stdout(line)).is_err() {
+                break; // Receiver dropped
             }
+        }
+        let _ = stdout_handle_id; // used for identification if logging is needed
+        last_line
+    });
 
-            line = stdout_reader.next_line(), if !stdout_closed => {
-                match line {
-                    Ok(Some(line)) => {
-                        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                        let timestamped = format!("[{timestamp}] [STDOUT] {line}\n");
-                        stdout_writer.write_all(line.as_bytes()).await.ok();
-                        stdout_writer.write_all(b"\n").await.ok();
-                        combined_writer.write_all(timestamped.as_bytes()).await.ok();
-                        last_output = line.clone();
+    // ── Stderr reader task: drains pipe as fast as possible, never blocks ──
+    let stderr_tx = log_tx.clone();
+    let stderr_handle_id = handle_id.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if stderr_tx.send(LogLine::Stderr(line)).is_err() {
+                break;
+            }
+        }
+        let _ = stderr_handle_id;
+    });
 
-                        if let Some(ref bus) = bus {
-                            bus.publish_async_only(&format!("sentinel:{handle_id}:log"), json!({
-                                "handle": handle_id,
+    // Drop our copy — when both reader tasks finish, the channel closes
+    drop(log_tx);
+
+    // ── Memory watchdog task: separate overseer, kills child if memory critical ──
+    const MEMORY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    const CRITICAL_AVAILABLE_BYTES: u64 = 1_024 * 1_024 * 1_024; // 1 GB
+    let (kill_tx, mut kill_rx) = mpsc::channel::<u64>(1); // sends available_mb on kill
+    let watchdog_handle_id = handle_id.clone();
+    let watchdog_bus = bus.clone();
+    let watchdog_pid = child_pid;
+    let watchdog_task = tokio::spawn(async move {
+        let wlog = runtime::logger("sentinel");
+        let mut interval = tokio::time::interval(MEMORY_CHECK_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await; // skip immediate tick
+
+        loop {
+            interval.tick().await;
+            let mut sys = System::new();
+            sys.refresh_memory();
+            let available = sys.total_memory().saturating_sub(sys.used_memory());
+            if available < CRITICAL_AVAILABLE_BYTES {
+                let available_mb = available / (1024 * 1024);
+                wlog.error(&format!(
+                    "MEMORY WATCHDOG: Only {}MB available. Killing sentinel {watchdog_handle_id}.",
+                    available_mb,
+                ));
+
+                // Kill entire process group (wrapper + micromamba + python + children)
+                if let Some(pid) = watchdog_pid {
+                    let pgid = -(pid as i32); // negative = kill process group
+                    std::process::Command::new("kill")
+                        .args(["-TERM", "--", &pgid.to_string()])
+                        .output()
+                        .ok();
+                }
+
+                if let Some(ref bus) = watchdog_bus {
+                    bus.publish_async_only(
+                        &format!("sentinel:{watchdog_handle_id}:memory-kill"),
+                        json!({
+                            "handle": watchdog_handle_id,
+                            "availableMb": available_mb,
+                            "reason": "System memory critically low",
+                        }),
+                    );
+                }
+
+                kill_tx.send(available_mb).await.ok();
+                return;
+            }
+        }
+    });
+
+    // ── Log writer + event emitter: processes lines from both pipes concurrently ──
+    let writer_handle_id = handle_id.clone();
+    let writer_bus = bus.clone();
+    let writer_task = tokio::spawn(async move {
+        let stdout_file = match tokio::fs::File::create(&stdout_path).await {
+            Ok(f) => f,
+            Err(_e) => {
+                return String::new();
+            }
+        };
+        let stderr_file = match tokio::fs::File::create(&stderr_path).await {
+            Ok(f) => f,
+            Err(_e) => {
+                return String::new();
+            }
+        };
+        let combined_file = match tokio::fs::File::create(&combined_path).await {
+            Ok(f) => f,
+            Err(_e) => {
+                return String::new();
+            }
+        };
+
+        let mut stdout_writer = tokio::io::BufWriter::new(stdout_file);
+        let mut stderr_writer = tokio::io::BufWriter::new(stderr_file);
+        let mut combined_writer = tokio::io::BufWriter::new(combined_file);
+        let mut last_output = String::new();
+        let wlog = runtime::logger("sentinel");
+
+        while let Some(log_line) = log_rx.recv().await {
+            let timestamp = chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string();
+            match log_line {
+                LogLine::Stdout(line) => {
+                    let timestamped = format!("[{timestamp}] [STDOUT] {line}\n");
+                    stdout_writer.write_all(line.as_bytes()).await.ok();
+                    stdout_writer.write_all(b"\n").await.ok();
+                    combined_writer.write_all(timestamped.as_bytes()).await.ok();
+                    combined_writer.flush().await.ok();
+                    last_output = line.clone();
+
+                    if let Some(ref bus) = writer_bus {
+                        // Parse structured memory reports from training processes
+                        if line.starts_with("MEMORY_REPORT: ") {
+                            if let Some(json_str) = line.strip_prefix("MEMORY_REPORT: ") {
+                                if let Ok(report) = serde_json::from_str::<Value>(json_str) {
+                                    bus.publish_async_only(&format!("sentinel:{writer_handle_id}:memory-report"), json!({
+                                        "handle": writer_handle_id,
+                                        "phase": report.get("phase").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                                        "device": report.get("device").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                                        "allocatedBytes": report.get("allocated_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                        "peakBytes": report.get("peak_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                        "processRssBytes": report.get("process_rss_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    }));
+                                }
+                            }
+                        }
+
+                        bus.publish_async_only(
+                            &format!("sentinel:{writer_handle_id}:log"),
+                            json!({
+                                "handle": writer_handle_id,
                                 "stream": "stdout",
                                 "chunk": line,
                                 "timestamp": timestamp,
                                 "sourceType": "stdout",
-                            }));
-                        }
-                    }
-                    Ok(None) => { stdout_closed = true; }
-                    Err(e) => {
-                        log.warn(&format!("stdout read error: {e}"));
-                        stdout_closed = true;
+                            }),
+                        );
                     }
                 }
-            }
+                LogLine::Stderr(line) => {
+                    let timestamped = format!("[{timestamp}] [STDERR] {line}\n");
+                    stderr_writer.write_all(line.as_bytes()).await.ok();
+                    stderr_writer.write_all(b"\n").await.ok();
+                    combined_writer.write_all(timestamped.as_bytes()).await.ok();
+                    combined_writer.flush().await.ok();
 
-            line = stderr_reader.next_line(), if !stderr_closed => {
-                match line {
-                    Ok(Some(line)) => {
-                        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                        let timestamped = format!("[{timestamp}] [STDERR] {line}\n");
-                        stderr_writer.write_all(line.as_bytes()).await.ok();
-                        stderr_writer.write_all(b"\n").await.ok();
-                        combined_writer.write_all(timestamped.as_bytes()).await.ok();
+                    if line.contains("error") || line.contains("Error") || line.contains("ERROR") {
+                        wlog.warn(&format!("[{writer_handle_id}] {line}"));
+                    }
 
-                        if line.contains("error") || line.contains("Error") || line.contains("ERROR") {
-                            log.warn(&format!("[{handle_id}] {line}"));
-                        }
-
-                        if let Some(ref bus) = bus {
-                            bus.publish_async_only(&format!("sentinel:{handle_id}:log"), json!({
-                                "handle": handle_id,
+                    if let Some(ref bus) = writer_bus {
+                        bus.publish_async_only(
+                            &format!("sentinel:{writer_handle_id}:log"),
+                            json!({
+                                "handle": writer_handle_id,
                                 "stream": "stderr",
                                 "chunk": line,
                                 "timestamp": timestamp,
                                 "sourceType": "stderr",
-                            }));
-                        }
+                            }),
+                        );
                     }
-                    Ok(None) => { stderr_closed = true; }
-                    Err(e) => {
-                        log.warn(&format!("stderr read error: {e}"));
-                        stderr_closed = true;
-                    }
-                }
-            }
-
-            status = child.wait() => {
-                stdout_writer.flush().await.ok();
-                stderr_writer.flush().await.ok();
-                combined_writer.flush().await.ok();
-
-                match status {
-                    Ok(exit_status) => {
-                        let code = exit_status.code().unwrap_or(-1);
-                        log.info(&format!("Sentinel {handle_id} exited with code {code}"));
-                        return Ok((code, last_output));
-                    }
-                    Err(e) => return Err(format!("Process wait failed: {e}")),
                 }
             }
         }
+
+        // Channel closed — both pipe readers finished
+        stdout_writer.flush().await.ok();
+        stderr_writer.flush().await.ok();
+        combined_writer.flush().await.ok();
+        last_output
+    });
+
+    // ── Main: wait for process exit, cancel, or memory kill ──
+    let mut cancel_rx = cancel_rx;
+    let result = tokio::select! {
+        _ = cancel_rx.recv() => {
+            log.warn(&format!("Sentinel {handle_id} cancelled — killing process group"));
+            kill_process_group(child_pid);
+            // Give 3s for graceful exit, then force
+            match tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await {
+                Ok(_) => {}
+                _ => { child.kill().await.ok(); }
+            }
+            Err("Cancelled".to_string())
+        }
+
+        available_mb = kill_rx.recv() => {
+            // Memory watchdog already sent SIGTERM to process group
+            match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+                Ok(Ok(status)) => log.info(&format!("Process exited gracefully after SIGTERM: {status}")),
+                _ => {
+                    kill_process_group_force(child_pid);
+                    child.kill().await.ok();
+                }
+            }
+            let mb = available_mb.unwrap_or(0);
+            Err(format!(
+                "Killed by memory watchdog: only {}MB available (threshold: {}MB)",
+                mb, CRITICAL_AVAILABLE_BYTES / (1024 * 1024)
+            ))
+        }
+
+        status = child.wait() => {
+            match status {
+                Ok(exit_status) => {
+                    let code = exit_status.code().unwrap_or(-1);
+                    log.info(&format!("Sentinel {handle_id} exited with code {code}"));
+                    Ok(code)
+                }
+                Err(e) => Err(format!("Process wait failed: {e}")),
+            }
+        }
+    };
+
+    // Stop watchdog (it may still be running if process exited normally)
+    watchdog_task.abort();
+
+    // Wait for pipe readers to finish draining
+    let last_stdout = stdout_task.await.unwrap_or_default();
+    stderr_task.await.ok();
+
+    // Wait for log writer to flush all buffered lines
+    let last_written = writer_task.await.unwrap_or_default();
+
+    // Clean up PID file
+    tokio::fs::remove_file(&pid_path).await.ok();
+
+    match result {
+        Ok(code) => {
+            let last = if last_written.is_empty() {
+                last_stdout
+            } else {
+                last_written
+            };
+            Ok((code, last))
+        }
+        Err(e) => Err(e),
     }
+}
+
+/// Kill an entire process group via SIGTERM (graceful)
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        // setsid() made the child its own session leader, so pid == pgid
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+    }
+}
+
+/// Kill an entire process group via SIGKILL (forced)
+fn kill_process_group_force(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+}
+
+/// A log line from a pipe reader task
+enum LogLine {
+    Stdout(String),
+    Stderr(String),
 }
 
 /// Execute a pipeline directly (synchronous path, not spawned).
@@ -347,10 +586,16 @@ pub async fn execute_pipeline_direct(
     };
 
     let pipeline_name = pipeline.name.as_deref().unwrap_or("unnamed");
-    log.info(&format!("Starting pipeline '{}' (handle={}), {} steps",
-        pipeline_name, handle_id, pipeline.steps.len()));
+    log.info(&format!(
+        "Starting pipeline '{}' (handle={}), {} steps",
+        pipeline_name,
+        handle_id,
+        pipeline.steps.len()
+    ));
 
-    let working_dir = pipeline.working_dir.clone()
+    let working_dir = pipeline
+        .working_dir
+        .clone()
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
@@ -370,7 +615,12 @@ pub async fn execute_pipeline_direct(
     let mut error_msg: Option<String> = None;
 
     for (i, step) in pipeline.steps.iter().enumerate() {
-        log.info(&format!("[{}] Executing step {}: {:?}", handle_id, i, step_type_name(step)));
+        log.info(&format!(
+            "[{}] Executing step {}: {:?}",
+            handle_id,
+            i,
+            step_type_name(step)
+        ));
 
         let pipeline_ctx = PipelineContext {
             handle_id,
@@ -382,7 +632,10 @@ pub async fn execute_pipeline_direct(
         match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {
             Ok(result) => {
                 if !result.success {
-                    log.warn(&format!("[{handle_id}] Step {i} failed: {:?}", result.error));
+                    log.warn(&format!(
+                        "[{handle_id}] Step {i} failed: {:?}",
+                        result.error
+                    ));
                     success = false;
                     error_msg = result.error.clone();
                     ctx.step_results.push(result);
@@ -413,15 +666,20 @@ pub async fn execute_pipeline_direct(
 
     // Emit completion event
     if let Some(bus) = bus {
-        bus.publish_async_only("sentinel:pipeline:complete", json!({
-            "handle": handle_id,
-            "name": pipeline_name,
-            "success": success,
-            "durationMs": total_duration_ms,
-        }));
+        bus.publish_async_only(
+            "sentinel:pipeline:complete",
+            json!({
+                "handle": handle_id,
+                "name": pipeline_name,
+                "success": success,
+                "durationMs": total_duration_ms,
+            }),
+        );
     }
 
-    log.info(&format!("Pipeline '{pipeline_name}' completed: success={success}, duration={total_duration_ms}ms"));
+    log.info(&format!(
+        "Pipeline '{pipeline_name}' completed: success={success}, duration={total_duration_ms}ms"
+    ));
 
     PipelineResult {
         handle: handle_id.to_string(),
@@ -438,7 +696,7 @@ pub async fn execute_pipeline_direct(
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::{Pipeline, PipelineStep};
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -460,16 +718,44 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("linear-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["step-c".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["step-a".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["step-b".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["step-c".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-linear", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-linear",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_completed, 3);
@@ -490,16 +776,44 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("fail-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["ok".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                PipelineStep::Shell { cmd: "/bin/sh".into(), args: vec!["-c".into(), "exit 42".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["never-reached".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["ok".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
+                PipelineStep::Shell {
+                    cmd: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 42".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["never-reached".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-fail", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-fail",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(!result.success);
         assert_eq!(result.steps_completed, 2); // echo ok + failing step
@@ -520,24 +834,55 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("cond-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["start".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["start".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
                 PipelineStep::Condition {
                     condition: "{{input.should_build}}".to_string(),
-                    then_steps: vec![
-                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["building".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                    ],
-                    else_steps: vec![
-                        PipelineStep::Shell { cmd: "echo".into(), args: vec!["skipping".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                    ],
+                    then_steps: vec![PipelineStep::Shell {
+                        cmd: "echo".into(),
+                        args: vec!["building".into()],
+                        timeout_secs: Some(10),
+                        working_dir: None,
+                        allow_failure: None,
+                        env: None,
+                    }],
+                    else_steps: vec![PipelineStep::Shell {
+                        cmd: "echo".into(),
+                        args: vec!["skipping".into()],
+                        timeout_secs: Some(10),
+                        working_dir: None,
+                        allow_failure: None,
+                        env: None,
+                    }],
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["done".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["done".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs,
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-cond", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-cond",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(result.success);
         // step 0: echo start, step 1: condition (which runs echo building as substep), step 2: echo done
@@ -555,29 +900,33 @@ mod tests {
 
         let pipeline = Pipeline {
             name: Some("loop-test".to_string()),
-            steps: vec![
-                PipelineStep::Loop {
-                    count: Some(3),
-                    steps: vec![
-                        PipelineStep::Shell {
-                            cmd: "echo".into(),
-                            args: vec!["iteration-{{input.iteration}}".into()],
-                            timeout_secs: Some(10),
-                            working_dir: None,
-                            allow_failure: None,
-                        },
-                    ],
-                    while_condition: None,
-                    until: None,
-                    max_iterations: None,
-                },
-            ],
+            steps: vec![PipelineStep::Loop {
+                count: Some(3),
+                steps: vec![PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["iteration-{{input.iteration}}".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                }],
+                while_condition: None,
+                until: None,
+                max_iterations: None,
+            }],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-loop", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-loop",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(result.success);
     }
@@ -592,22 +941,52 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("parallel-test".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["before-fork".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["before-fork".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
                 PipelineStep::Parallel {
                     branches: vec![
-                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
-                        vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["branch-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
+                        vec![PipelineStep::Shell {
+                            cmd: "echo".into(),
+                            args: vec!["branch-a".into()],
+                            timeout_secs: Some(10),
+                            working_dir: None,
+                            allow_failure: None,
+                            env: None,
+                        }],
+                        vec![PipelineStep::Shell {
+                            cmd: "echo".into(),
+                            args: vec!["branch-b".into()],
+                            timeout_secs: Some(10),
+                            working_dir: None,
+                            allow_failure: None,
+                            env: None,
+                        }],
                     ],
                     fail_fast: false,
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["after-join".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["after-join".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry)).await;
+        let result =
+            execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry))
+                .await;
 
         assert!(result.success);
         assert_eq!(result.steps_total, 3);
@@ -623,40 +1002,39 @@ mod tests {
         // Use parallel to run emit and watch concurrently — emit fires, watch catches
         let pipeline = Pipeline {
             name: Some("emit-watch-test".to_string()),
-            steps: vec![
-                PipelineStep::Parallel {
-                    branches: vec![
-                        // Branch 0: small delay then emit
-                        vec![
-                            PipelineStep::Shell {
-                                cmd: "sleep".into(),
-                                args: vec!["0.1".into()],
-                                timeout_secs: Some(5),
-                                working_dir: None,
-                                allow_failure: None,
-                            },
-                            PipelineStep::Emit {
-                                event: "test:signal".to_string(),
-                                payload: json!({"msg": "hello"}),
-                            },
-                        ],
-                        // Branch 1: watch for the event
-                        vec![
-                            PipelineStep::Watch {
-                                event: "test:signal".to_string(),
-                                timeout_secs: Some(5),
-                            },
-                        ],
+            steps: vec![PipelineStep::Parallel {
+                branches: vec![
+                    // Branch 0: small delay then emit
+                    vec![
+                        PipelineStep::Shell {
+                            cmd: "sleep".into(),
+                            args: vec!["0.1".into()],
+                            timeout_secs: Some(5),
+                            working_dir: None,
+                            allow_failure: None,
+                            env: None,
+                        },
+                        PipelineStep::Emit {
+                            event: "test:signal".to_string(),
+                            payload: json!({"msg": "hello"}),
+                        },
                     ],
-                    fail_fast: false,
-                },
-            ],
+                    // Branch 1: watch for the event
+                    vec![PipelineStep::Watch {
+                        event: "test:signal".to_string(),
+                        timeout_secs: Some(5),
+                    }],
+                ],
+                fail_fast: false,
+            }],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry)).await;
+        let result =
+            execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry))
+                .await;
 
         assert!(result.success);
     }
@@ -671,27 +1049,62 @@ mod tests {
         let pipeline = Pipeline {
             name: Some("parent".to_string()),
             steps: vec![
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-start".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["parent-start".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
                 PipelineStep::Sentinel {
                     pipeline: Box::new(Pipeline {
                         name: Some("child".to_string()),
                         steps: vec![
-                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-a".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
-                            PipelineStep::Shell { cmd: "echo".into(), args: vec!["child-b".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                            PipelineStep::Shell {
+                                cmd: "echo".into(),
+                                args: vec!["child-a".into()],
+                                timeout_secs: Some(10),
+                                working_dir: None,
+                                allow_failure: None,
+                                env: None,
+                            },
+                            PipelineStep::Shell {
+                                cmd: "echo".into(),
+                                args: vec!["child-b".into()],
+                                timeout_secs: Some(10),
+                                working_dir: None,
+                                allow_failure: None,
+                                env: None,
+                            },
                         ],
                         working_dir: None,
                         timeout_secs: None,
                         inputs: HashMap::new(),
                     }),
                 },
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["parent-end".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["parent-end".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
             ],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-nested", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-nested",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_total, 3);
@@ -708,7 +1121,14 @@ mod tests {
             name: Some("forward-test".to_string()),
             steps: vec![
                 // Step 0: produce output
-                PipelineStep::Shell { cmd: "echo".into(), args: vec!["hello-from-step-0".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None },
+                PipelineStep::Shell {
+                    cmd: "echo".into(),
+                    args: vec!["hello-from-step-0".into()],
+                    timeout_secs: Some(10),
+                    working_dir: None,
+                    allow_failure: None,
+                    env: None,
+                },
                 // Step 1: reference step 0's output via interpolation
                 PipelineStep::Shell {
                     cmd: "echo".into(),
@@ -716,6 +1136,7 @@ mod tests {
                     timeout_secs: Some(10),
                     working_dir: None,
                     allow_failure: None,
+                    env: None,
                 },
             ],
             working_dir: Some("/tmp".to_string()),
@@ -723,13 +1144,18 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry)).await;
+        let result =
+            execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry))
+                .await;
 
         assert!(result.success);
         assert_eq!(result.steps_completed, 2);
         // Step 1 should have interpolated step 0's stdout
         let step1_output = result.step_results[1].output.as_deref().unwrap_or("");
-        assert!(step1_output.contains("hello-from-step-0"), "Expected forwarded output, got: {step1_output}");
+        assert!(
+            step1_output.contains("hello-from-step-0"),
+            "Expected forwarded output, got: {step1_output}"
+        );
     }
 
     /// Test empty pipeline succeeds
@@ -747,7 +1173,14 @@ mod tests {
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-empty", pipeline, Some(&bus), Some(&registry)).await;
+        let result = execute_pipeline_direct(
+            &logs_dir,
+            "test-empty",
+            pipeline,
+            Some(&bus),
+            Some(&registry),
+        )
+        .await;
 
         assert!(result.success);
         assert_eq!(result.steps_completed, 0);
@@ -762,13 +1195,21 @@ mod tests {
 
         let pipeline = Pipeline {
             name: Some("no-reg".to_string()),
-            steps: vec![PipelineStep::Shell { cmd: "echo".into(), args: vec!["test".into()], timeout_secs: Some(10), working_dir: None, allow_failure: None }],
+            steps: vec![PipelineStep::Shell {
+                cmd: "echo".into(),
+                args: vec!["test".into()],
+                timeout_secs: Some(10),
+                working_dir: None,
+                allow_failure: None,
+                env: None,
+            }],
             working_dir: Some("/tmp".to_string()),
             timeout_secs: None,
             inputs: HashMap::new(),
         };
 
-        let result = execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None).await;
+        let result =
+            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None).await;
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("registry"));

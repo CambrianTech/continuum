@@ -7,8 +7,8 @@
 //!
 //! Follows the GpuModule pattern: stateless handler wrapping shared state.
 
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -42,11 +42,7 @@ impl ServiceModule for SystemResourceModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "system/cpu" => {
                 // Refresh CPU readings and return
@@ -66,12 +62,11 @@ impl ServiceModule for SystemResourceModule {
 
             "system/resources" => {
                 // Full snapshot with optional process listing
-                let include_processes = params.get("includeProcesses")
+                let include_processes = params
+                    .get("includeProcesses")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let top_n = params.get("topN")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10) as usize;
+                let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
                 let snapshot = if include_processes {
                     self.monitor.refresh_with_processes(top_n)
@@ -88,7 +83,9 @@ impl ServiceModule for SystemResourceModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -112,7 +109,10 @@ mod tests {
             assert!(json["logical_cores"].as_u64().unwrap() >= 1);
             assert!(json["brand"].is_string());
             let usage = json["global_usage"].as_f64().unwrap();
-            assert!(usage >= 0.0 && usage <= 1.0, "CPU usage should be 0.0-1.0, got {usage}");
+            assert!(
+                usage >= 0.0 && usage <= 1.0,
+                "CPU usage should be 0.0-1.0, got {usage}"
+            );
         }
     }
 
@@ -124,7 +124,10 @@ mod tests {
         if let Ok(CommandResult::Json(json)) = result {
             assert!(json["total_bytes"].as_u64().unwrap() > 0);
             let pressure = json["pressure"].as_f64().unwrap();
-            assert!(pressure >= 0.0 && pressure <= 1.0, "Memory pressure should be 0.0-1.0, got {pressure}");
+            assert!(
+                pressure >= 0.0 && pressure <= 1.0,
+                "Memory pressure should be 0.0-1.0, got {pressure}"
+            );
         }
     }
 
@@ -139,7 +142,10 @@ mod tests {
             assert!(json["memory"]["total_bytes"].as_u64().unwrap() > 0);
             assert!(json["timestamp_ms"].as_u64().unwrap() > 0);
             assert!(json["uptime_seconds"].as_u64().unwrap() > 0);
-            assert!(json["processes"].is_null(), "Processes should be null by default");
+            assert!(
+                json["processes"].is_null(),
+                "Processes should be null by default"
+            );
         }
     }
 
@@ -154,7 +160,10 @@ mod tests {
         let result = module.handle_command("system/resources", params).await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
-            assert!(json["processes"].is_object(), "Processes should be present when requested");
+            assert!(
+                json["processes"].is_object(),
+                "Processes should be present when requested"
+            );
             assert!(json["processes"]["top_by_cpu"].is_array());
             assert!(json["processes"]["top_by_memory"].is_array());
         }

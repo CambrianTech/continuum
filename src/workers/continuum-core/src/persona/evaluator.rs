@@ -13,9 +13,9 @@
 //!
 //! Types exported to TypeScript via ts-rs.
 
-use crate::persona::text_analysis;
 use crate::persona::cognition::PersonaCognitionEngine;
-use crate::persona::types::{InboxMessage, SenderType, Modality};
+use crate::persona::text_analysis;
+use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -124,14 +124,16 @@ impl RateLimiterState {
 
     /// Check if response cap reached for a room.
     pub fn has_reached_response_cap(&self, room_id: Uuid) -> bool {
-        self.rooms.get(&room_id)
+        self.rooms
+            .get(&room_id)
             .map(|r| r.response_count >= self.max_responses_per_session)
             .unwrap_or(false)
     }
 
     /// Check if rate limited for a room (time-based).
     pub fn is_rate_limited(&self, room_id: Uuid, now_ms: u64) -> bool {
-        self.rooms.get(&room_id)
+        self.rooms
+            .get(&room_id)
             .map(|r| {
                 let elapsed_seconds = (now_ms - r.last_response_time_ms) as f64 / 1000.0;
                 elapsed_seconds < self.min_seconds_between_responses
@@ -163,7 +165,10 @@ impl RateLimiterState {
 
     /// Get response count for a room.
     pub fn response_count(&self, room_id: Uuid) -> u32 {
-        self.rooms.get(&room_id).map(|r| r.response_count).unwrap_or(0)
+        self.rooms
+            .get(&room_id)
+            .map(|r| r.response_count)
+            .unwrap_or(0)
     }
 }
 
@@ -173,7 +178,10 @@ impl RateLimiterState {
 
 /// Full evaluation request — ONE IPC call replaces 5 TS gates.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/FullEvaluateRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/FullEvaluateRequest.ts"
+)]
 pub struct FullEvaluateRequest {
     #[ts(type = "string")]
     pub persona_id: Uuid,
@@ -206,7 +214,10 @@ pub struct FullEvaluateRequest {
 
 /// Full evaluation result — every gate's outcome in one response.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/FullEvaluateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/FullEvaluateResult.ts"
+)]
 pub struct FullEvaluateResult {
     pub should_respond: bool,
     pub confidence: f32,
@@ -466,7 +477,10 @@ pub struct RecentResponse {
 
 /// Result of the post-inference adequacy check.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/AdequacyResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AdequacyResult.ts"
+)]
 pub struct AdequacyResult {
     pub is_adequate: bool,
     pub confidence: f32,
@@ -551,7 +565,10 @@ mod tests {
         let rag_engine = Arc::new(RagEngine::new());
         let (_tx, rx) = watch::channel(false);
         let id = Uuid::new_v4();
-        (PersonaCognitionEngine::new(id, name.into(), rag_engine, rx), id)
+        (
+            PersonaCognitionEngine::new(id, name.into(), rag_engine, rx),
+            id,
+        )
     }
 
     fn test_request(persona_id: Uuid, persona_name: &str) -> FullEvaluateRequest {
@@ -656,7 +673,7 @@ mod tests {
         let sleep = SleepState {
             mode: SleepMode::Sleeping,
             reason: "Nap time".into(),
-            set_at_ms: now - 3_600_000, // 1 hour ago
+            set_at_ms: now - 3_600_000,    // 1 hour ago
             wake_at_ms: Some(now - 1_000), // Wake time already passed
         };
         let rate_limiter = RateLimiterState::default();
@@ -729,7 +746,11 @@ mod tests {
 
         let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
         assert!(result.should_respond);
-        assert!(result.decision_time_ms < 10.0, "Decision should be <10ms, was {}ms", result.decision_time_ms);
+        assert!(
+            result.decision_time_ms < 10.0,
+            "Decision should be <10ms, was {}ms",
+            result.decision_time_ms
+        );
     }
 
     #[test]
@@ -832,7 +853,10 @@ mod tests {
             text: response_text.into(),
         }];
         let result = check_response_adequacy(original, &responses);
-        assert!(result.is_adequate, "Substantial related response should be adequate (similarity={sim:.3})");
+        assert!(
+            result.is_adequate,
+            "Substantial related response should be adequate (similarity={sim:.3})"
+        );
         assert!(result.confidence > 0.5);
         assert_eq!(result.responder_name.as_deref(), Some("CodeReview AI"));
     }
@@ -847,7 +871,10 @@ mod tests {
                    or simply enjoying a picnic in the park with friends and family members.".into(),
         }];
         let result = check_response_adequacy(original, &responses);
-        assert!(!result.is_adequate, "Unrelated response should not be adequate");
+        assert!(
+            !result.is_adequate,
+            "Unrelated response should not be adequate"
+        );
     }
 
     #[test]
@@ -863,18 +890,24 @@ mod tests {
                 sender_name: "First Good AI".into(),
                 text: "Rust handle memory management with ownership and borrowing rules. \
                        Lifetimes ensure safe concurrent access. Memory management in Rust \
-                       is ownership borrowing and lifetimes working together for safe access.".into(),
+                       is ownership borrowing and lifetimes working together for safe access."
+                    .into(),
             },
             RecentResponse {
                 sender_name: "Second Good AI".into(),
                 text: "Rust handle memory management with ownership borrowing and lifetimes. \
                        Safe concurrent access is guaranteed by the borrowing rules and lifetimes \
-                       for memory management in Rust.".into(),
+                       for memory management in Rust."
+                    .into(),
             },
         ];
         let result = check_response_adequacy(original, &responses);
         assert!(result.is_adequate);
-        assert_eq!(result.responder_name.as_deref(), Some("First Good AI"), "First adequate response should win");
+        assert_eq!(
+            result.responder_name.as_deref(),
+            Some("First Good AI"),
+            "First adequate response should win"
+        );
     }
 
     #[test]
@@ -887,7 +920,11 @@ mod tests {
                            This should be sufficient length."),
         }).collect();
         let result = check_response_adequacy(original, &responses);
-        assert!(result.check_time_us < 10_000, "10 responses should be checked in <10ms, took {}μs", result.check_time_us);
+        assert!(
+            result.check_time_us < 10_000,
+            "10 responses should be checked in <10ms, took {}μs",
+            result.check_time_us
+        );
     }
 
     #[test]

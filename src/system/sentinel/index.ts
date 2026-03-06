@@ -48,10 +48,10 @@ export {
 } from './entities/SentinelEntity';
 
 // Escalation service (sentinel lifecycle → persona inbox)
+// Rust pushes via sentinel/escalate command — no TS-side polling needed.
 export {
-  initializeSentinelEscalation,
-  registerSentinelHandle,
-  unregisterSentinelHandle,
+  handleSentinelEscalation,
+  type SentinelEscalationPayload,
 } from './SentinelEscalationService';
 
 // Trigger service (automatic sentinel execution: event, cron, immediate)

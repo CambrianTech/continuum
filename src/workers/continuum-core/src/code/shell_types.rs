@@ -9,7 +9,10 @@ use ts_rs::TS;
 /// Status of a shell command execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../shared/generated/code/ShellExecutionStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellExecutionStatus.ts"
+)]
 pub enum ShellExecutionStatus {
     Running,
     Completed,
@@ -23,7 +26,10 @@ pub enum ShellExecutionStatus {
 /// Always returns immediately with the execution handle.
 /// If `wait: true` was specified, also includes the completed result.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/ShellExecuteResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellExecuteResponse.ts"
+)]
 pub struct ShellExecuteResponse {
     pub execution_id: String,
     pub status: ShellExecutionStatus,
@@ -43,7 +49,10 @@ pub struct ShellExecuteResponse {
 /// Returns new output since the last poll (cursor-based).
 /// Call repeatedly until `finished` is true.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/ShellPollResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellPollResponse.ts"
+)]
 pub struct ShellPollResponse {
     pub execution_id: String,
     pub status: ShellExecutionStatus,
@@ -60,7 +69,10 @@ pub struct ShellPollResponse {
 
 /// Response from `code/shell-status` — session metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/ShellSessionInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellSessionInfo.ts"
+)]
 pub struct ShellSessionInfo {
     pub session_id: String,
     pub persona_id: String,
@@ -72,7 +84,10 @@ pub struct ShellSessionInfo {
 
 /// A history entry for a completed execution.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/ShellHistoryEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellHistoryEntry.ts"
+)]
 pub struct ShellHistoryEntry {
     pub execution_id: String,
     pub command: String,
@@ -90,7 +105,10 @@ pub struct ShellHistoryEntry {
 
 /// Classification level for a line of shell output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/OutputClassification.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/OutputClassification.ts"
+)]
 pub enum OutputClassification {
     Error,
     Warning,
@@ -148,7 +166,10 @@ pub struct ClassifiedLine {
 /// Blocks until output is available (no timeout, no polling).
 /// Call in a loop until `finished` is true.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/code/ShellWatchResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/code/ShellWatchResponse.ts"
+)]
 pub struct ShellWatchResponse {
     pub execution_id: String,
     /// Classified output lines (filtered through sentinel rules).

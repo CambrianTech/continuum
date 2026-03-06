@@ -9,7 +9,7 @@
  * - Created by training/prepare command
  * - Updated by training/start, training/status commands
  * - Queried by PersonaUser for autonomous training triggers
- * - Used by GenomeManager for adapter deployment
+ * - Used by TrainingCompletionHandler for adapter deployment
  *
  * Lifecycle:
  * 1. 'pending' - Session prepared, not started

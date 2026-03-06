@@ -38,11 +38,7 @@ impl LoopDetector {
     /// Check if a response is a loop (repeating similar content).
     /// Also records the response in the history.
     /// Returns (is_loop, duplicate_count)
-    pub fn check_response_loop(
-        &self,
-        persona_id: Uuid,
-        response_text: &str,
-    ) -> (bool, usize) {
+    pub fn check_response_loop(&self, persona_id: Uuid, response_text: &str) -> (bool, usize) {
         let hash = hash_response(response_text);
         let now = Instant::now();
 
@@ -167,15 +163,15 @@ mod tests {
 
     #[test]
     fn test_truncated_tool_call_detected() {
-        assert!(has_truncated_tool_call("Here's my answer <tool_use> some content"));
+        assert!(has_truncated_tool_call(
+            "Here's my answer <tool_use> some content"
+        ));
         assert!(has_truncated_tool_call("Using <tool name=\"search\">query"));
     }
 
     #[test]
     fn test_complete_tool_call_passes() {
-        assert!(!has_truncated_tool_call(
-            "<tool_use>search</tool_use> done"
-        ));
+        assert!(!has_truncated_tool_call("<tool_use>search</tool_use> done"));
         assert!(!has_truncated_tool_call("No tool calls at all"));
     }
 

@@ -7,8 +7,8 @@
 //! Thread-safe: uses DashMap and RwLock for interior mutability.
 //! Can be shared via Arc across threads.
 
-use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
 use super::module_metrics::ModuleMetrics;
+use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::any::TypeId;
@@ -58,7 +58,8 @@ impl ModuleRegistry {
         self.configs.insert(name.to_string(), config.clone());
 
         // Create metrics tracker for this module
-        self.metrics.insert(name.to_string(), Arc::new(ModuleMetrics::new(name)));
+        self.metrics
+            .insert(name.to_string(), Arc::new(ModuleMetrics::new(name)));
 
         // Build command routing table from declared prefixes
         {
@@ -82,9 +83,10 @@ impl ModuleRegistry {
         let routes = self.command_routes.read();
         for &(prefix, module_name) in routes.iter() {
             if command.starts_with(prefix) {
-                return self.modules.get(module_name).map(|module| {
-                    (module.clone(), command.to_string())
-                });
+                return self
+                    .modules
+                    .get(module_name)
+                    .map(|module| (module.clone(), command.to_string()));
             }
         }
         None
@@ -105,9 +107,9 @@ impl ModuleRegistry {
     /// ```
     pub fn module_of_type<T: ServiceModule + 'static>(&self) -> Option<Arc<dyn ServiceModule>> {
         let type_id = TypeId::of::<T>();
-        self.type_routes.get(&type_id).and_then(|name| {
-            self.modules.get(*name).map(|m| m.clone())
-        })
+        self.type_routes
+            .get(&type_id)
+            .and_then(|name| self.modules.get(*name).map(|m| m.clone()))
     }
 
     /// List all registered module names.
@@ -150,9 +152,9 @@ impl ModuleRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::service_module::*;
     use super::super::ModuleContext;
+    use super::*;
     use serde_json::Value;
     use std::any::Any;
 
@@ -179,14 +181,20 @@ mod tests {
             Ok(())
         }
 
-        async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        async fn handle_command(
+            &self,
+            command: &str,
+            _params: Value,
+        ) -> Result<CommandResult, String> {
             Ok(CommandResult::Json(serde_json::json!({
                 "module": self.name,
                 "command": command,
             })))
         }
 
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[test]

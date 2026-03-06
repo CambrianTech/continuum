@@ -6,6 +6,9 @@
 
 use super::audio_utils;
 use super::{Phonemizer, SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
+use crate::gpu::tracker::GpuModelTracker;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray;
 use once_cell::sync::OnceCell;
@@ -14,9 +17,6 @@ use ort::session::Session;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::{clog_info, clog_warn};
-use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
-use crate::gpu::tracker::GpuModelTracker;
 
 /// Global Piper session
 static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
@@ -56,9 +56,9 @@ impl PiperTTS {
         }
 
         let candidates = [
-            PathBuf::from("models/piper/en_US-libritts_r-medium.onnx"),  // Primary
-            PathBuf::from("models/piper/en_US-amy-medium.onnx"),          // Alternative
-            PathBuf::from("models/piper/piper.onnx"),                     // Generic
+            PathBuf::from("models/piper/en_US-libritts_r-medium.onnx"), // Primary
+            PathBuf::from("models/piper/en_US-amy-medium.onnx"),        // Alternative
+            PathBuf::from("models/piper/piper.onnx"),                   // Generic
             PathBuf::from("models/tts/piper.onnx"),
             dirs::data_dir()
                 .unwrap_or_default()
@@ -73,8 +73,8 @@ impl PiperTTS {
     fn synthesize_sync(
         session: &Arc<Mutex<PiperModel>>,
         text: &str,
-        voice: &str,  // Speaker ID for multi-speaker models (0-246 for LibriTTS)
-        _speed: f32,   // TODO: Implement speed control via length_scale parameter
+        voice: &str, // Speaker ID for multi-speaker models (0-246 for LibriTTS)
+        _speed: f32, // TODO: Implement speed control via length_scale parameter
     ) -> Result<SynthesisResult, TTSError> {
         if text.is_empty() {
             return Err(TTSError::InvalidText("Text cannot be empty".into()));
@@ -138,7 +138,6 @@ impl PiperTTS {
 
         Ok(result)
     }
-
 }
 
 impl Default for PiperTTS {
@@ -190,8 +189,11 @@ impl TextToSpeech for PiperTTS {
         // Load phonemizer from model config
         let config_path = model_path.with_extension("onnx.json");
         let phonemizer = Phonemizer::load_from_config(
-            config_path.to_str().unwrap_or("models/piper/en_US-libritts_r-medium.onnx.json")
-        ).map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {e}")))?;
+            config_path
+                .to_str()
+                .unwrap_or("models/piper/en_US-libritts_r-medium.onnx.json"),
+        )
+        .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {e}")))?;
 
         let model = PiperModel {
             session,
@@ -200,10 +202,14 @@ impl TextToSpeech for PiperTTS {
         };
 
         // Track GPU/memory allocation for ONNX model (non-critical: proceed on failure)
-        let _ = PIPER_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager(), GpuPriority::Interactive);
+        let _ = PIPER_GPU.track_file(
+            GpuSubsystem::Tts,
+            &model_path,
+            super::gpu_manager(),
+            GpuPriority::Interactive,
+        );
 
-        let _ = PIPER_SESSION
-            .set(Arc::new(Mutex::new(model)));
+        let _ = PIPER_SESSION.set(Arc::new(Mutex::new(model)));
         // OnceLock::set Err = another thread already initialized — that's fine
 
         clog_info!("Piper model loaded successfully");

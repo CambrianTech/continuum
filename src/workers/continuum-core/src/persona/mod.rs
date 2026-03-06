@@ -30,16 +30,16 @@ pub use channel_items::ChannelEnqueueRequest;
 pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
+pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
 pub use evaluator::{
-    FullEvaluateRequest, FullEvaluateResult, GateDetails, SleepMode, SleepState, RateLimiterState,
-    AdequacyResult, RecentResponse,
+    AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
+    RecentResponse, SleepMode, SleepState,
+};
+pub use genome_paging::{
+    ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,
+    GenomePagingState,
 };
 pub use inbox::PersonaInbox;
-pub use domain_classifier::{DomainClassifier, DomainClassification, QualityScore, QualityFactors};
-pub use genome_paging::{
-    GenomeAdapterInfo, GenomePagingEngine, GenomePagingState, ActivateSkillResult,
-    DomainActivity, CoverageReport,
-};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
 };

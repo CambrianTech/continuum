@@ -109,8 +109,7 @@ impl SentenceBuffer {
     /// Add a frame to the buffer
     fn add_frame(&mut self, audio: &[i16], is_speech: bool) {
         // Pre-speech buffering: always keep recent audio
-        let pre_buffer_frames =
-            (self.config.pre_speech_buffer_ms as usize * 16) / self.frame_size; // ~10 frames
+        let pre_buffer_frames = (self.config.pre_speech_buffer_ms as usize * 16) / self.frame_size; // ~10 frames
 
         if self.chunks.len() >= pre_buffer_frames && self.speech_frames == 0 {
             // Remove oldest frame if we're not recording speech
@@ -261,8 +260,11 @@ impl ProductionVAD {
         // Check if we have a complete sentence
         if self.buffer.should_transcribe() {
             let complete_audio = self.buffer.get_audio();
-            clog_info!("VAD: Sentence complete! speech_frames={}, total_samples={}",
-                self.buffer.speech_frames, complete_audio.len());
+            clog_info!(
+                "VAD: Sentence complete! speech_frames={}, total_samples={}",
+                self.buffer.speech_frames,
+                complete_audio.len()
+            );
             self.buffer.clear();
             Ok(Some(complete_audio))
         } else {

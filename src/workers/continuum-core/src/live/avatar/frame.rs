@@ -30,11 +30,11 @@ impl ResolutionTier {
     /// Render target dimensions for this tier.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
-            Self::Tiny   => (160, 120),
-            Self::Small  => (320, 240),
+            Self::Tiny => (160, 120),
+            Self::Small => (320, 240),
             Self::Medium => (480, 360),
-            Self::Large  => (640, 480),
-            Self::HD     => (1280, 720),
+            Self::Large => (640, 480),
+            Self::HD => (1280, 720),
             Self::FullHD => (1920, 1080),
         }
     }
@@ -42,11 +42,11 @@ impl ResolutionTier {
     /// Target publish FPS for this tier.
     pub fn fps(&self) -> f64 {
         match self {
-            Self::Tiny   => 15.0,
-            Self::Small  => 20.0,
+            Self::Tiny => 15.0,
+            Self::Small => 20.0,
             Self::Medium => 24.0,
-            Self::Large  => 30.0,
-            Self::HD     => 30.0,
+            Self::Large => 30.0,
+            Self::HD => 30.0,
             Self::FullHD => 30.0,
         }
     }
@@ -150,8 +150,14 @@ mod tests {
         assert_eq!(ResolutionTier::from_tile_width(799), ResolutionTier::Large);
         assert_eq!(ResolutionTier::from_tile_width(800), ResolutionTier::HD);
         assert_eq!(ResolutionTier::from_tile_width(1199), ResolutionTier::HD);
-        assert_eq!(ResolutionTier::from_tile_width(1200), ResolutionTier::FullHD);
-        assert_eq!(ResolutionTier::from_tile_width(1920), ResolutionTier::FullHD);
+        assert_eq!(
+            ResolutionTier::from_tile_width(1200),
+            ResolutionTier::FullHD
+        );
+        assert_eq!(
+            ResolutionTier::from_tile_width(1920),
+            ResolutionTier::FullHD
+        );
     }
 
     #[test]

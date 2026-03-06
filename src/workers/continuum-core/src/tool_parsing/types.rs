@@ -2,13 +2,16 @@
 //!
 //! Single source of truth for Rust↔TypeScript tool parsing boundary.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
 
 /// Request to parse tool calls from AI response text.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ToolParseRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ToolParseRequest.ts"
+)]
 pub struct ToolParseRequest {
     pub response_text: String,
     #[ts(optional)]
@@ -17,7 +20,10 @@ pub struct ToolParseRequest {
 
 /// A single parsed tool call with format and correction metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ParsedToolCall.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ParsedToolCall.ts"
+)]
 pub struct ParsedToolCall {
     pub tool_name: String,
     pub parameters: HashMap<String, String>,
@@ -32,7 +38,10 @@ pub struct ParsedToolCall {
 
 /// Result of parsing tool calls from response text.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ToolParseResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ToolParseResult.ts"
+)]
 pub struct ToolParseResult {
     pub tool_calls: Vec<ParsedToolCall>,
     /// Response text with tool call blocks removed
@@ -44,7 +53,10 @@ pub struct ToolParseResult {
 
 /// Result of correcting a single tool call (name + params + content cleaning).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/CorrectedToolCall.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/CorrectedToolCall.ts"
+)]
 pub struct CorrectedToolCall {
     pub tool_name: String,
     pub parameters: HashMap<String, String>,

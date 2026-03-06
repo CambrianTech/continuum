@@ -23,7 +23,7 @@ export interface GenomeAcademySessionParams extends CommandParams {
   /** Skill to teach (e.g., "typescript-generics", "ethical-reasoning") */
   skill: string;
   /** Session mode: 'knowledge' for exam-based, 'coding' for test-suite-based, 'project' for multi-milestone (default: 'knowledge') */
-  mode?: 'knowledge' | 'coding' | 'project';
+  mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
   /** Base model for training (default: LOCAL_MODELS.DEFAULT) */
   baseModel?: string;
   /** Maximum attempts per topic before failure (default: 3) */
@@ -34,10 +34,18 @@ export interface GenomeAcademySessionParams extends CommandParams {
   epochs?: number;
   /** LoRA rank (default: 32) */
   rank?: number;
+  /** Number of challenges/questions per session (default: 10) */
+  questionsPerExam?: number;
+  /** Number of training examples to synthesize per failed challenge (default: 10) */
+  examplesPerTopic?: number;
   /** Teacher LLM model */
   model?: string;
   /** Teacher LLM provider */
   provider?: string;
+  /** Student inference LLM model (use cloud model when baseModel has limited context) */
+  studentModel?: string;
+  /** Student inference LLM provider */
+  studentProvider?: string;
   /** [coding mode] Path to challenge directory */
   challengeDir?: string;
   /** [coding mode] Source file with intentional bugs (relative to challengeDir) */
@@ -48,6 +56,8 @@ export interface GenomeAcademySessionParams extends CommandParams {
   testCommand?: string;
   /** [project mode] Path to project directory containing project.json */
   projectDir?: string;
+  /** [realclasseval mode] Path to imported RealClassEval dataset directory */
+  datasetDir?: string;
 }
 
 /**
@@ -60,19 +70,24 @@ export const createGenomeAcademySessionParams = (
     personaId: UUID;
     personaName: string;
     skill: string;
-    mode?: 'knowledge' | 'coding' | 'project';
+    mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
     baseModel?: string;
     maxTopicAttempts?: number;
     passingScore?: number;
     epochs?: number;
     rank?: number;
+    questionsPerExam?: number;
+    examplesPerTopic?: number;
     model?: string;
     provider?: string;
+    studentModel?: string;
+    studentProvider?: string;
     challengeDir?: string;
     sourceFile?: string;
     testFile?: string;
     testCommand?: string;
     projectDir?: string;
+    datasetDir?: string;
   }
 ): GenomeAcademySessionParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,

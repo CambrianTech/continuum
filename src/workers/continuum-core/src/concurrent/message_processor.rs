@@ -1,6 +1,6 @@
 use crate::clog_error;
-use tokio::sync::mpsc;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Trait for processing messages concurrently
 ///
@@ -63,7 +63,7 @@ impl<P: MessageProcessor + 'static> ConcurrentProcessor<P> {
                                 clog_error!("Worker {}: process error: {}", worker_id, e);
                             }
                         }
-                        None => break,  // Channel closed
+                        None => break, // Channel closed
                     }
                 }
 
@@ -110,7 +110,9 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_processor() {
         let counter = Arc::new(AtomicUsize::new(0));
-        let processor = TestProcessor { counter: counter.clone() };
+        let processor = TestProcessor {
+            counter: counter.clone(),
+        };
         let concurrent = ConcurrentProcessor::new(processor, 4);
 
         // Submit 100 messages

@@ -27,6 +27,7 @@ uuid.workspace = true
 reqwest = { version = "0.12", features = ["json"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
+libc = "0.2"     # Process group management (setsid, kill -pgid)
 toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 async-trait.workspace = true
@@ -111,6 +112,9 @@ image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 # GPU detection — Metal API for VRAM detection on macOS
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.31"
+
+# Dataset module — CSV parsing for training data import
+csv = "1"
 
 # Code module — file operations, change tracking, code intelligence
 similar = "2.6"                  # Unified diff computation

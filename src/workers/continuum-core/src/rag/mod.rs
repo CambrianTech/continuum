@@ -6,10 +6,10 @@
 //! Design: All sources load in PARALLEL via rayon, not serial.
 //! Target: <500ms total composition time (currently 20+ seconds in TypeScript)
 
-pub mod engine;
-pub mod types;
-pub mod sources;
 pub mod budget;
+pub mod engine;
+pub mod sources;
+pub mod types;
 
 pub use engine::RagEngine;
 pub use types::*;

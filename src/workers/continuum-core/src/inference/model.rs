@@ -17,14 +17,12 @@ use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::llama::{
-    Cache, Llama, LlamaConfig,
-};
+use candle_transformers::models::llama::{Cache, Llama, LlamaConfig};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
-use super::backends::{GenomeAdapter, ModelBackend};
 use super::backends::llama_safetensors::LlamaSafetensorsBackend;
+use super::backends::{GenomeAdapter, ModelBackend};
 use super::lora::{map_lora_name_to_model_name, merge_lora_weight, LoRAWeights};
 use crate::runtime;
 
@@ -79,7 +77,10 @@ fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<PathBuf>, S
         shard_files.sort();
         shard_files.dedup();
 
-        runtime::logger("candle").info(&format!("  Downloading {} weight shards...", shard_files.len()));
+        runtime::logger("candle").info(&format!(
+            "  Downloading {} weight shards...",
+            shard_files.len()
+        ));
 
         let mut paths = Vec::new();
         for shard in &shard_files {
@@ -177,7 +178,8 @@ pub fn load_model_by_id(
 }
 
 /// Load default model from environment variable.
-pub fn load_default_model() -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
+pub fn load_default_model(
+) -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
     let model_id = std::env::var("INFERENCE_MODEL_ID")
         .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
     load_model_by_id(&model_id)
@@ -263,7 +265,9 @@ pub fn rebuild_with_stacked_lora(
     for adapter in adapters {
         runtime::logger("candle").info(&format!(
             "  Applying adapter '{}' (scale={}, {} layers)",
-            adapter.adapter_id, adapter.scale, adapter.weights.len()
+            adapter.adapter_id,
+            adapter.scale,
+            adapter.weights.len()
         ));
 
         for (lora_name, lora) in &adapter.weights {
@@ -283,7 +287,8 @@ pub fn rebuild_with_stacked_lora(
                         merged_count += 1;
                     }
                     Err(e) => {
-                        runtime::logger("candle").debug(&format!("  Failed to merge {}: {}", lora_name, e));
+                        runtime::logger("candle")
+                            .debug(&format!("  Failed to merge {}: {}", lora_name, e));
                         failed_count += 1;
                     }
                 }

@@ -6,7 +6,9 @@
 use serde_json::json;
 use std::time::Instant;
 
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, PipelineStep, StepResult};
+use crate::modules::sentinel::types::{
+    ExecutionContext, PipelineContext, PipelineStep, StepResult,
+};
 
 /// Execute branches concurrently, collecting results from each.
 ///
@@ -36,18 +38,22 @@ pub async fn execute(
         });
     }
 
-    log.info(&format!("[{}] Parallel step: {} branches, failFast={}",
-        pipeline_ctx.handle_id, branches.len(), fail_fast));
+    log.info(&format!(
+        "[{}] Parallel step: {} branches, failFast={}",
+        pipeline_ctx.handle_id,
+        branches.len(),
+        fail_fast
+    ));
 
     // Snapshot the context for each branch (clone at fork point)
-    let branch_contexts: Vec<ExecutionContext> = (0..branches.len())
-        .map(|_| ctx.clone())
-        .collect();
+    let branch_contexts: Vec<ExecutionContext> = (0..branches.len()).map(|_| ctx.clone()).collect();
 
     // Build futures for each branch
     let mut handles = Vec::with_capacity(branches.len());
 
-    for (branch_idx, (branch_steps, mut branch_ctx)) in branches.iter().zip(branch_contexts).enumerate() {
+    for (branch_idx, (branch_steps, mut branch_ctx)) in
+        branches.iter().zip(branch_contexts).enumerate()
+    {
         // Each branch needs its own copy of the steps reference and pipeline context fields.
         // Since we can't move pipeline_ctx into multiple futures, we extract what we need.
         let handle_id = pipeline_ctx.handle_id.to_string();
@@ -69,7 +75,14 @@ pub async fn execute(
             let mut branch_error: Option<String> = None;
 
             for (step_idx, step) in branch_steps.iter().enumerate() {
-                match super::execute_step(step, branch_ctx.step_results.len(), &mut branch_ctx, &pipeline_ctx).await {
+                match super::execute_step(
+                    step,
+                    branch_ctx.step_results.len(),
+                    &mut branch_ctx,
+                    &pipeline_ctx,
+                )
+                .await
+                {
                     Ok(result) => {
                         if !result.success {
                             branch_success = false;
@@ -141,8 +154,10 @@ pub async fn execute(
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    log.info(&format!("[{}] Parallel step completed: success={}, duration={}ms",
-        pipeline_ctx.handle_id, all_success, duration_ms));
+    log.info(&format!(
+        "[{}] Parallel step completed: success={}, duration={}ms",
+        pipeline_ctx.handle_id, all_success, duration_ms
+    ));
 
     Ok(StepResult {
         step_index: index,
@@ -163,10 +178,10 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::PipelineStep;
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -177,7 +192,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-par",
             registry,
@@ -193,6 +211,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -203,6 +222,7 @@ mod tests {
             timeout_secs: Some(10),
             working_dir: None,
             allow_failure: None,
+            env: None,
         }
     }
 
@@ -213,7 +233,9 @@ mod tests {
         let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
         let mut ctx = test_ctx();
 
-        let result = execute(&[], false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute(&[], false, 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.data["branchCount"], 0);
     }
@@ -227,8 +249,13 @@ mod tests {
 
         let result = execute(
             &[vec![echo_step("branch-0")]],
-            false, 0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            false,
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["branchCount"], 1);
@@ -244,12 +271,14 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            &[
-                vec![echo_step("alpha")],
-                vec![echo_step("beta")],
-            ],
-            false, 0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            &[vec![echo_step("alpha")], vec![echo_step("beta")]],
+            false,
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["branchCount"], 2);
@@ -265,12 +294,14 @@ mod tests {
         let mut ctx = test_ctx();
 
         let result = execute(
-            &[
-                vec![echo_step("good")],
-                vec![failing_step()],
-            ],
-            false, 0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            &[vec![echo_step("good")], vec![failing_step()]],
+            false,
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(!result.success);
         assert!(result.error.is_some());
@@ -290,8 +321,13 @@ mod tests {
                 vec![echo_step("a1"), echo_step("a2")],
                 vec![echo_step("b1"), echo_step("b2"), echo_step("b3")],
             ],
-            false, 0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            false,
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["branchResults"][0]["stepsCompleted"], 2);
@@ -312,15 +348,25 @@ mod tests {
             timeout_secs: Some(5),
             working_dir: None,
             allow_failure: None,
+            env: None,
         };
 
         let result = execute(
             &[vec![sleep_step.clone()], vec![sleep_step]],
-            false, 0, &mut ctx, &pipeline_ctx,
-        ).await.unwrap();
+            false,
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
 
         assert!(result.success);
         // Concurrent: should complete in ~100ms, not ~200ms
-        assert!(result.duration_ms < 180, "Expected concurrent execution, took {}ms", result.duration_ms);
+        assert!(
+            result.duration_ms < 180,
+            "Expected concurrent execution, took {}ms",
+            result.duration_ms
+        );
     }
 }

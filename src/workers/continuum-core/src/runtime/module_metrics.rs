@@ -16,7 +16,10 @@ const SLOW_THRESHOLD_MS: u64 = 50;
 
 /// Individual command timing record
 #[derive(Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/runtime/CommandTiming.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/runtime/CommandTiming.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandTiming {
     pub command: String,
@@ -95,14 +98,16 @@ impl ModuleMetrics {
     /// Record completed command timing
     pub fn record(&self, timing: CommandTiming) {
         self.total_commands.fetch_add(1, Ordering::Relaxed);
-        self.total_time_ms.fetch_add(timing.total_time_ms, Ordering::Relaxed);
+        self.total_time_ms
+            .fetch_add(timing.total_time_ms, Ordering::Relaxed);
 
         if timing.total_time_ms > SLOW_THRESHOLD_MS {
             self.slow_commands.fetch_add(1, Ordering::Relaxed);
         }
 
         // Add to rolling window
-        let mut timings = self.command_timings
+        let mut timings = self
+            .command_timings
             .entry(timing.command.clone())
             .or_insert_with(VecDeque::new);
 
@@ -143,7 +148,8 @@ impl ModuleMetrics {
         self.command_timings
             .iter()
             .flat_map(|entry| {
-                entry.value()
+                entry
+                    .value()
                     .iter()
                     .filter(|t| t.total_time_ms > SLOW_THRESHOLD_MS)
                     .cloned()

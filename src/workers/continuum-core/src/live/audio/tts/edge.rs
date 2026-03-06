@@ -11,10 +11,10 @@
 use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use crate::{clog_info, clog_warn};
 
 /// Cached voice list (fetched once on init)
 struct EdgeState {
@@ -74,9 +74,10 @@ impl TextToSpeech for EdgeTTS {
         // which does NOT go through the conflicting OpenSSL path, so synthesis still works.
         clog_info!("Edge-TTS: Initializing with known voice catalog (skipping HTTP voice list)");
 
-        let mut state = self.state.write().map_err(|e| {
-            TTSError::SynthesisFailed(format!("Failed to acquire state lock: {e}"))
-        })?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to acquire state lock: {e}")))?;
         // Use empty list — available_voices() returns hardcoded English voices as fallback
         *state = Some(EdgeState { voices: vec![] });
 
@@ -101,9 +102,10 @@ impl TextToSpeech for EdgeTTS {
             voice.to_string()
         } else {
             // Try to match by short name from our voice list
-            let state = self.state.read().map_err(|e| {
-                TTSError::SynthesisFailed(format!("Failed to read state: {e}"))
-            })?;
+            let state = self
+                .state
+                .read()
+                .map_err(|e| TTSError::SynthesisFailed(format!("Failed to read state: {e}")))?;
             let edge_state = state
                 .as_ref()
                 .ok_or_else(|| TTSError::ModelNotLoaded("Edge state not initialized".into()))?;

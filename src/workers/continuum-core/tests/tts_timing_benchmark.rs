@@ -39,7 +39,8 @@ struct TimingResult {
 
 impl TimingResult {
     fn to_csv_row(&self) -> String {
-        format!("{},{},{},{},{},{},{:.3}",
+        format!(
+            "{},{},{},{},{},{},{:.3}",
             self.adapter,
             self.phrase_name,
             self.text_chars,
@@ -138,7 +139,8 @@ fn benchmark_tts_timing() {
         }
 
         // Calculate statistics
-        let avg_ms: u128 = timings.iter().map(|d| d.as_millis()).sum::<u128>() / timings.len() as u128;
+        let avg_ms: u128 =
+            timings.iter().map(|d| d.as_millis()).sum::<u128>() / timings.len() as u128;
         let min_ms = timings.iter().map(|d| d.as_millis()).min().unwrap_or(0);
         let max_ms = timings.iter().map(|d| d.as_millis()).max().unwrap_or(0);
 
@@ -168,8 +170,10 @@ fn benchmark_tts_timing() {
     println!("SUMMARY");
     println!("{}", "=".repeat(80));
     println!();
-    println!("{:<12} {:<8} {:<12} {:<12} {:<10} {:<12}",
-        "Phrase", "Chars", "Synth(ms)", "Audio(ms)", "RTF", "Status");
+    println!(
+        "{:<12} {:<8} {:<12} {:<12} {:<10} {:<12}",
+        "Phrase", "Chars", "Synth(ms)", "Audio(ms)", "RTF", "Status"
+    );
     println!("{}", "-".repeat(70));
 
     for r in &results {
@@ -183,8 +187,15 @@ fn benchmark_tts_timing() {
             "VERY SLOW"
         };
 
-        println!("{:<12} {:<8} {:<12} {:<12} {:<10.2} {:<12}",
-            r.phrase_name, r.text_chars, r.synthesis_ms, r.audio_duration_ms, r.real_time_factor, status);
+        println!(
+            "{:<12} {:<8} {:<12} {:<12} {:<10.2} {:<12}",
+            r.phrase_name,
+            r.text_chars,
+            r.synthesis_ms,
+            r.audio_duration_ms,
+            r.real_time_factor,
+            status
+        );
     }
 
     // Print CSV for easy export
@@ -206,11 +217,17 @@ fn benchmark_tts_timing() {
     println!();
 
     // Check if we met targets
-    let slow_results: Vec<_> = results.iter().filter(|r| r.real_time_factor > 2.0).collect();
+    let slow_results: Vec<_> = results
+        .iter()
+        .filter(|r| r.real_time_factor > 2.0)
+        .collect();
     if !slow_results.is_empty() {
         println!("SLOW ITEMS REQUIRING OPTIMIZATION:");
         for r in &slow_results {
-            println!("  - {} ({} chars): {:.1}x slower than real-time", r.phrase_name, r.text_chars, r.real_time_factor);
+            println!(
+                "  - {} ({} chars): {:.1}x slower than real-time",
+                r.phrase_name, r.text_chars, r.real_time_factor
+            );
         }
     } else {
         println!("All items within acceptable performance range!");
@@ -234,8 +251,10 @@ fn benchmark_tts_scaling() {
     let base_sentence = "Hello world. ";
     let lengths = [1, 2, 4, 8, 16];
 
-    println!("{:<10} {:<8} {:<12} {:<12} {:<10}",
-        "Reps", "Chars", "Synth(ms)", "Audio(ms)", "ms/char");
+    println!(
+        "{:<10} {:<8} {:<12} {:<12} {:<10}",
+        "Reps", "Chars", "Synth(ms)", "Audio(ms)", "ms/char"
+    );
     println!("{}", "-".repeat(56));
 
     for reps in lengths {

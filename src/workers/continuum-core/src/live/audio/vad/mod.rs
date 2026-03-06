@@ -9,15 +9,15 @@
 //! - Trait-based abstraction
 //! - Factory creation by name
 
+pub mod adaptive;
+pub mod metrics;
+pub mod production;
 pub mod rms_threshold;
 pub mod silero;
 pub mod silero_raw;
 pub mod test_audio;
-pub mod webrtc;
-pub mod metrics;
 pub mod wav_loader;
-pub mod production;
-pub mod adaptive;
+pub mod webrtc;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;

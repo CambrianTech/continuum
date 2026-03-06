@@ -1,5 +1,4 @@
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
-import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
 
 /**
  * Groq Adapter
@@ -13,18 +12,8 @@ import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
  * Base URL: https://api.groq.com/openai/v1
  * Docs: https://console.groq.com/docs
  *
- * Key Features:
- * - Fastest inference speed in industry (LPU hardware)
- * - Llama 3.1, Mixtral, Gemma models
- * - Streaming support
- * - Free tier: 14,400 requests/day
- * - Perfect for real-time applications
- *
- * Use Cases:
- * - Real-time chat (instant responses)
- * - High-throughput applications
- * - Evaluation/testing (fast iteration)
- * - Interactive AI experiences
+ * Model catalog is fetched dynamically from the Groq API at runtime.
+ * No hardcoded model list — always up to date.
  */
 export class GroqAdapter extends BaseOpenAICompatibleAdapter {
   constructor(apiKey: string) {
@@ -33,54 +22,10 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
       providerName: 'Groq',
       apiKey: apiKey,
       baseUrl: 'https://api.groq.com/openai',
-      defaultModel: 'llama-3.1-8b-instant',
+      defaultModel: 'llama-3.3-70b-versatile',
       timeout: 60000,
       supportedCapabilities: ['text-generation', 'chat'],
-      models: [
-        // Llama 3.1 family (Meta) — Groq supports 128K context for these
-        {
-          id: 'llama-3.1-405b-reasoning',
-          name: 'Llama 3.1 405B',
-          provider: 'groq',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 131072,
-          supportsStreaming: true,
-          supportsTools: true
-        },
-        {
-          id: 'llama-3.1-8b-instant',
-          name: 'Llama 3.1 8B (Default)',
-          provider: 'groq',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 131072,
-          supportsStreaming: true,
-          supportsTools: true
-        },
-        // Mixtral family (Mistral AI)
-        {
-          id: 'mixtral-8x7b-32768',
-          name: 'Mixtral 8x7B MoE',
-          provider: 'groq',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 32768,
-          supportsStreaming: true,
-          supportsTools: true
-        },
-        // Gemma family (Google)
-        {
-          id: 'gemma2-9b-it',
-          name: 'Gemma 2 9B',
-          provider: 'groq',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 8192,
-          supportsStreaming: true,
-          supportsTools: true
-        }
-      ]
+      // No hardcoded models — fetched dynamically via GET /v1/models
     });
-  }
-
-  async getAvailableModels(): Promise<ModelInfo[]> {
-    return this.config.models ?? [];
   }
 }

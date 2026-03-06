@@ -9,7 +9,7 @@
  * - Created automatically during training at configurable intervals
  * - Used by training/status to report progress
  * - Used by adapter/deploy to select best checkpoint
- * - Queried by GenomeManager for adapter loading
+ * - Queried by PersonaGenome for adapter loading
  *
  * Purpose:
  * - Resume training from failure

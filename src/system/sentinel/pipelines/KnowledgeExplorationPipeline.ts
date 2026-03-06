@@ -31,6 +31,7 @@ import type {
   WebResearchSourceConfig,
   ConversationLogSourceConfig,
   DocumentSetSourceConfig,
+  RealClassEvalSourceConfig,
 } from '../../genome/shared/KnowledgeTypes';
 
 // ============================================================================
@@ -95,6 +96,11 @@ export function buildKnowledgeExplorationPipeline(config: KnowledgeExplorationCo
       case 'document-set':
         stepIndex = appendDocumentSetSteps(steps, source, stepIndex);
         sourceDescriptions.push(`Documents: ${source.paths.length} paths (steps ${startIndex}-${stepIndex - 1})`);
+        break;
+
+      case 'realclasseval':
+        stepIndex = appendRealClassEvalSteps(steps, source, stepIndex);
+        sourceDescriptions.push(`RealClassEval dataset at ${source.datasetDir} (steps ${startIndex}-${stepIndex - 1})`);
         break;
 
       case 'pure-generation':
@@ -255,6 +261,47 @@ function appendDocumentSetSteps(
   });
 
   return startIndex + 1;
+}
+
+/**
+ * RealClassEval dataset exploration: read manifest + sample examples.
+ * Returns the next available step index.
+ */
+function appendRealClassEvalSteps(
+  steps: PipelineStep[],
+  source: RealClassEvalSourceConfig,
+  startIndex: number,
+): number {
+  const maxExamples = source.maxExamples ?? 20;
+  const split = source.split ?? 'both';
+
+  // Step N: Read manifest for dataset overview
+  steps.push({
+    type: 'shell',
+    cmd: 'cat',
+    args: [`${source.datasetDir}/manifest.json`],
+    timeoutSecs: 10,
+  });
+
+  // Step N+1: Sample examples from JSONL file(s)
+  const files: string[] = [];
+  if (split === 'train' || split === 'both') {
+    files.push(`${source.datasetDir}/train.jsonl`);
+  }
+  if (split === 'eval' || split === 'both') {
+    files.push(`${source.datasetDir}/eval.jsonl`);
+  }
+
+  const headCmd = files.map(f => `head -${maxExamples} "${f}"`).join('; echo "---"; ');
+
+  steps.push({
+    type: 'shell',
+    cmd: 'sh',
+    args: ['-c', headCmd],
+    timeoutSecs: 30,
+  });
+
+  return startIndex + 2;
 }
 
 // ============================================================================

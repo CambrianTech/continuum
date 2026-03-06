@@ -216,7 +216,9 @@ pub fn init_registry() {
 pub fn get_registry() -> Arc<RwLock<STTRegistry>> {
     STT_REGISTRY.get().cloned().unwrap_or_else(|| {
         init_registry();
-        STT_REGISTRY.get().cloned()
+        STT_REGISTRY
+            .get()
+            .cloned()
             .expect("STT_REGISTRY must be set after init_registry()")
     })
 }

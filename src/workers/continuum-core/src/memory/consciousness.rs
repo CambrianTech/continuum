@@ -79,9 +79,7 @@ fn format_consciousness_prompt(
     // Temporal continuity
     if let Some(ref context_name) = temporal.last_active_context_name {
         let away_desc = format_time_away(temporal.time_away_ms);
-        sections.push(format!(
-            "Last active in: #{context_name} ({away_desc})"
-        ));
+        sections.push(format!("Last active in: #{context_name} ({away_desc})"));
 
         if temporal.was_interrupted {
             if let Some(ref task) = temporal.interrupted_task {

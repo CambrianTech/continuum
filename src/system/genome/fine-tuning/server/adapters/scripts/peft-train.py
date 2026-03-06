@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Any
 
@@ -36,6 +37,50 @@ except ImportError as e:
     print(f"❌ ERROR: Missing dependency: {e}")
     print("   Install with: pip install torch transformers datasets trl peft accelerate")
     sys.exit(1)
+
+
+def report_memory(phase: str, device: str):
+    """Emit a structured memory report line that the Rust sentinel parses.
+
+    The sentinel watches stdout for lines starting with 'MEMORY_REPORT:' and
+    emits a sentinel:{handle}:memory-report event so TrainingMemoryGuard can
+    update the registered consumer with real memory data instead of estimates.
+    """
+    report = {
+        "phase": phase,
+        "device": device,
+        "timestamp": time.time(),
+        "allocated_bytes": 0,
+        "peak_bytes": 0,
+        "process_rss_bytes": 0,
+    }
+
+    # Device-specific memory
+    if device == "mps" and hasattr(torch.mps, "current_allocated_memory"):
+        report["allocated_bytes"] = torch.mps.current_allocated_memory()
+        # MPS doesn't expose peak — use driver_allocated as upper bound
+        if hasattr(torch.mps, "driver_allocated_memory"):
+            report["peak_bytes"] = torch.mps.driver_allocated_memory()
+        else:
+            report["peak_bytes"] = report["allocated_bytes"]
+    elif device == "cuda":
+        report["allocated_bytes"] = torch.cuda.memory_allocated()
+        report["peak_bytes"] = torch.cuda.max_memory_allocated()
+
+    # Process-level RSS (works on all platforms)
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS reports bytes, Linux reports KB
+        if sys.platform == "darwin":
+            report["process_rss_bytes"] = rss
+        else:
+            report["process_rss_bytes"] = rss * 1024
+    except Exception:
+        pass
+
+    # Structured line — sentinel parses this prefix
+    print(f"MEMORY_REPORT: {json.dumps(report)}", flush=True)
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -232,7 +277,7 @@ def format_chat_template(example, tokenizer):
     return {"text": text}
 
 
-def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
+def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume_from: str = None):
     """Execute LoRA training."""
     num_examples = len(dataset)
     batch_size = config['batchSize']
@@ -310,8 +355,9 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         lr_scheduler_type="linear",
         seed=42,
         report_to="none",
-        save_strategy="epoch",
-        save_total_limit=1,
+        save_strategy="steps",
+        save_steps=max(1, total_optimizer_steps // 6),  # ~6 checkpoints across training
+        save_total_limit=3,
     )
 
     # SFT Trainer (TRL 0.24+ simplified API)
@@ -323,9 +369,15 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
         args=training_args,
     )
 
-    # Train!
-    print(f"🚀 Training started...")
-    trainer_stats = trainer.train()
+    # Train! Resume from checkpoint if available.
+    if resume_from and os.path.isdir(resume_from):
+        print(f"🔄 Resuming from checkpoint: {resume_from}")
+        trainer_stats = trainer.train(resume_from_checkpoint=resume_from)
+    else:
+        if resume_from:
+            print(f"⚠️  Checkpoint not found: {resume_from}, starting fresh")
+        print(f"🚀 Training started...")
+        trainer_stats = trainer.train()
 
     print(f"✅ Training complete!")
     print(f"   Final loss: {trainer_stats.training_loss:.4f}")
@@ -352,6 +404,7 @@ def main():
     parser = argparse.ArgumentParser(description="Standard PyTorch LoRA Training")
     parser.add_argument("--config", required=True, help="Path to config JSON")
     parser.add_argument("--output", required=True, help="Output directory for adapter")
+    parser.add_argument("--resume-from", default=None, help="Resume from checkpoint directory")
 
     args = parser.parse_args()
 
@@ -375,11 +428,27 @@ def main():
     # Step 4: Configure LoRA
     model = configure_lora(model, config['rank'], config['alpha'])
 
+    # Report memory after model + LoRA are loaded (the big allocation)
+    report_memory("model_loaded", device)
+
     # Step 5: Load training dataset
     dataset = load_dataset_from_jsonl(config['datasetPath'])
 
     # Step 6: Train LoRA adapter
-    trainer = train(config, model, tokenizer, dataset, device)
+    # Determine checkpoint resume path: CLI arg > config > auto-detect in output dir
+    resume_from = args.resume_from or config.get('resumeFromCheckpoint')
+    if not resume_from:
+        # Auto-detect: look for checkpoint-* dirs in output directory
+        output_dir = Path(args.output)
+        if output_dir.exists():
+            checkpoints = sorted(output_dir.glob("checkpoint-*"), key=os.path.getmtime)
+            if checkpoints:
+                resume_from = str(checkpoints[-1])
+                print(f"🔄 Auto-detected checkpoint: {resume_from}")
+
+    report_memory("pre_training", device)
+    trainer = train(config, model, tokenizer, dataset, device, resume_from=resume_from)
+    report_memory("post_training", device)
 
     # Step 7: Save adapter weights
     save_adapter(model, tokenizer, args.output)

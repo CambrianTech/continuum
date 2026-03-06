@@ -7,14 +7,14 @@
 //! - `tool-parsing/decode-name`: Decode a model-produced tool name
 //! - `tool-parsing/encode-name`: Encode a tool name for API transmission
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::tool_parsing::{self, ToolNameCodec};
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct ToolParsingModule {
     codec: Arc<ToolNameCodec>,
@@ -46,11 +46,7 @@ impl ServiceModule for ToolParsingModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
 
         match command {
@@ -63,14 +59,18 @@ impl ServiceModule for ToolParsingModule {
             "tool-parsing/correct" => {
                 let tool_name = p.str("tool_name")?;
                 let parameters: HashMap<String, String> = match params.get("parameters") {
-                    Some(Value::Object(map)) => {
-                        map.iter().map(|(k, v)| {
-                            (k.clone(), match v {
-                                Value::String(s) => s.clone(),
-                                _ => v.to_string(),
-                            })
-                        }).collect()
-                    }
+                    Some(Value::Object(map)) => map
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                match v {
+                                    Value::String(s) => s.clone(),
+                                    _ => v.to_string(),
+                                },
+                            )
+                        })
+                        .collect(),
                     _ => HashMap::new(),
                 };
                 let corrected = tool_parsing::correction::correct_tool_call(tool_name, &parameters);
@@ -79,9 +79,10 @@ impl ServiceModule for ToolParsingModule {
 
             "tool-parsing/register-tools" => {
                 let tools: Vec<String> = match params.get("tools") {
-                    Some(Value::Array(arr)) => {
-                        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                    }
+                    Some(Value::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
                     _ => return Err("Missing 'tools' array".to_string()),
                 };
                 let count = tools.len();
@@ -113,7 +114,9 @@ impl ServiceModule for ToolParsingModule {
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -161,7 +164,9 @@ mod tests {
         let reg_params = serde_json::json!({
             "tools": ["code/write", "code/read", "collaboration/chat/send"]
         });
-        let reg_result = module.handle_command("tool-parsing/register-tools", reg_params).await;
+        let reg_result = module
+            .handle_command("tool-parsing/register-tools", reg_params)
+            .await;
         assert!(reg_result.is_ok());
         if let Ok(CommandResult::Json(json)) = reg_result {
             assert_eq!(json["registered"], 3);
@@ -170,7 +175,9 @@ mod tests {
 
         // Decode encoded name
         let dec_params = serde_json::json!({ "name": "code_write" });
-        let dec_result = module.handle_command("tool-parsing/decode-name", dec_params).await;
+        let dec_result = module
+            .handle_command("tool-parsing/decode-name", dec_params)
+            .await;
         assert!(dec_result.is_ok());
         if let Ok(CommandResult::Json(json)) = dec_result {
             assert_eq!(json["decoded"], "code/write");
@@ -179,7 +186,9 @@ mod tests {
 
         // Decode with prefix
         let prefix_params = serde_json::json!({ "name": "$FUNCTIONS.code_write" });
-        let prefix_result = module.handle_command("tool-parsing/decode-name", prefix_params).await;
+        let prefix_result = module
+            .handle_command("tool-parsing/decode-name", prefix_params)
+            .await;
         assert!(prefix_result.is_ok());
         if let Ok(CommandResult::Json(json)) = prefix_result {
             assert_eq!(json["decoded"], "code/write");
@@ -190,7 +199,9 @@ mod tests {
     async fn test_encode_command() {
         let module = ToolParsingModule::new();
         let params = serde_json::json!({ "name": "collaboration/chat/send" });
-        let result = module.handle_command("tool-parsing/encode-name", params).await;
+        let result = module
+            .handle_command("tool-parsing/encode-name", params)
+            .await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             assert_eq!(json["encoded"], "collaboration_chat_send");
@@ -200,7 +211,9 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_command() {
         let module = ToolParsingModule::new();
-        let result = module.handle_command("tool-parsing/nope", Value::Null).await;
+        let result = module
+            .handle_command("tool-parsing/nope", Value::Null)
+            .await;
         assert!(result.is_err());
     }
 }

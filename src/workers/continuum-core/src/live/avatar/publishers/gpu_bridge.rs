@@ -23,16 +23,16 @@
 
 #![cfg(target_os = "macos")]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam_channel::{Receiver, TryRecvError};
-use livekit::webrtc::video_frame::{VideoFrame, VideoRotation, native::NativeBuffer};
+use livekit::webrtc::video_frame::{native::NativeBuffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use crate::{clog_info, clog_warn};
-use crate::live::avatar::frame::RgbaFrame;
 use super::super::frame_publisher::{FramePublisher, PublishError};
 use super::native_buffer::rgba_to_nv12;
+use crate::live::avatar::frame::RgbaFrame;
+use crate::{clog_info, clog_warn};
 
 // =============================================================================
 // CoreVideo FFI — extensions for IOSurface-backed CVPixelBuffers
@@ -65,8 +65,14 @@ extern "C" {
     ) -> CVReturn;
     fn CVPixelBufferLockBaseAddress(pixel_buffer: CVPixelBufferRef, lock_flags: u64) -> CVReturn;
     fn CVPixelBufferUnlockBaseAddress(pixel_buffer: CVPixelBufferRef, lock_flags: u64) -> CVReturn;
-    fn CVPixelBufferGetBaseAddressOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> *mut u8;
-    fn CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> usize;
+    fn CVPixelBufferGetBaseAddressOfPlane(
+        pixel_buffer: CVPixelBufferRef,
+        plane_index: usize,
+    ) -> *mut u8;
+    fn CVPixelBufferGetBytesPerRowOfPlane(
+        pixel_buffer: CVPixelBufferRef,
+        plane_index: usize,
+    ) -> usize;
     fn CVPixelBufferRelease(pixel_buffer: CVPixelBufferRef);
     fn CVPixelBufferRetain(pixel_buffer: CVPixelBufferRef) -> CVPixelBufferRef;
 
@@ -148,14 +154,15 @@ impl IoSurfacePair {
         let mut uv_stride = 0usize;
 
         for i in 0..2 {
-            let (pb, ios) = create_iosurface_backed_nv12(width, height)
-                .map_err(|e| {
-                    // Clean up already-allocated buffers on failure
-                    for master in masters.iter().take(i) {
-                        unsafe { CVPixelBufferRelease(*master); }
+            let (pb, ios) = create_iosurface_backed_nv12(width, height).map_err(|e| {
+                // Clean up already-allocated buffers on failure
+                for master in masters.iter().take(i) {
+                    unsafe {
+                        CVPixelBufferRelease(*master);
                     }
-                    e
-                })?;
+                }
+                e
+            })?;
 
             masters[i] = pb;
             surfaces[i] = ios;
@@ -263,7 +270,10 @@ impl Drop for IoSurfacePair {
 /// and cross-process access without copying).
 ///
 /// Returns (CVPixelBufferRef, IOSurfaceRef) where the IOSurface is owned by the CVPixelBuffer.
-fn create_iosurface_backed_nv12(width: u32, height: u32) -> Result<(CVPixelBufferRef, IOSurfaceRef), String> {
+fn create_iosurface_backed_nv12(
+    width: u32,
+    height: u32,
+) -> Result<(CVPixelBufferRef, IOSurfaceRef), String> {
     unsafe {
         // Empty dict for IOSurface properties (default = system chooses backing store)
         let empty_dict = CFDictionaryCreate(
@@ -457,14 +467,22 @@ impl Drop for GpuBridgePublisher {
 }
 
 impl FramePublisher for GpuBridgePublisher {
-    fn name(&self) -> &'static str { "gpu-bridge" }
+    fn name(&self) -> &'static str {
+        "gpu-bridge"
+    }
 
     fn resize(&mut self, width: u32, height: u32) {
         if width == self.width && height == self.height {
             return;
         }
-        clog_info!("📹 GpuBridgePublisher: resize {}×{} → {}×{} (slot {})",
-            self.width, self.height, width, height, self.slot);
+        clog_info!(
+            "📹 GpuBridgePublisher: resize {}×{} → {}×{} (slot {})",
+            self.width,
+            self.height,
+            width,
+            height,
+            self.slot
+        );
 
         // Create new IoSurfacePair at the new dimensions
         match IoSurfacePair::new(width, height) {
@@ -479,8 +497,12 @@ impl FramePublisher for GpuBridgePublisher {
                 self.last_published = 0; // Reset counter for new pair
             }
             Err(e) => {
-                clog_warn!("📹 GpuBridgePublisher: resize failed: {} — keeping {}×{}",
-                    e, self.width, self.height);
+                clog_warn!(
+                    "📹 GpuBridgePublisher: resize failed: {} — keeping {}×{}",
+                    e,
+                    self.width,
+                    self.height
+                );
             }
         }
     }
@@ -543,10 +565,18 @@ impl FramePublisher for GpuBridgePublisher {
         // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
         if self.frame_count == 1 || self.frame_count % 450 == 0 {
             let elapsed = self.started_at.elapsed().as_secs_f64();
-            let fps = if elapsed > 0.0 { self.frame_count as f64 / elapsed } else { 0.0 };
+            let fps = if elapsed > 0.0 {
+                self.frame_count as f64 / elapsed
+            } else {
+                0.0
+            };
             clog_info!(
                 "📹 GpuBridgePublisher: {} frames published (slot={}, {}×{}, {:.1} fps avg)",
-                self.frame_count, self.slot, self.width, self.height, fps
+                self.frame_count,
+                self.slot,
+                self.width,
+                self.height,
+                fps
             );
         }
 

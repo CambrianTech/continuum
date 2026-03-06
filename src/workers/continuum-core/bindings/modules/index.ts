@@ -43,6 +43,9 @@ export type { EmbeddingMixin as EmbeddingMixinInterface, EmbeddingResult, Simila
 export { RuntimeMixin } from './runtime';
 export type { RuntimeMixin as RuntimeMixinInterface, ModuleInfo, ModuleMetrics, SlowCommand } from './runtime';
 
+export { DatasetMixin } from './dataset';
+export type { DatasetMixin as DatasetMixinInterface, DatasetManifest, DatasetMetrics, DatasetListResult } from './dataset';
+
 /**
  * Compose all mixins into a single client class.
  * Usage: const Client = composeClient(RustCoreIPCClientBase);

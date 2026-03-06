@@ -41,9 +41,7 @@ pub fn synthesize_speech_sync(
 ) -> Result<SynthesisResult, TTSError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {e}")))?;
-    rt.block_on(async {
-        synthesize_speech_impl(text, voice, adapter, gender_hint).await
-    })
+    rt.block_on(async { synthesize_speech_impl(text, voice, adapter, gender_hint).await })
 }
 
 async fn synthesize_speech_impl(
@@ -95,10 +93,15 @@ mod tests {
         let result = synthesize_speech_sync("Hello test", None, Some("silence"), None);
         let synthesis = result.expect("Silence adapter should always succeed");
         assert!(synthesis.samples.len() > 0, "Should produce samples");
-        assert!(synthesis.samples.iter().all(|&s| s == 0), "Silence adapter produces zeros");
+        assert!(
+            synthesis.samples.iter().all(|&s| s == 0),
+            "Silence adapter produces zeros"
+        );
         println!(
             "Silence adapter: {} samples, {}Hz, {}ms",
-            synthesis.samples.len(), synthesis.sample_rate, synthesis.duration_ms
+            synthesis.samples.len(),
+            synthesis.sample_rate,
+            synthesis.duration_ms
         );
     }
 
@@ -108,8 +111,11 @@ mod tests {
         assert!(result.is_err(), "Nonexistent adapter should fail");
         let err = result.unwrap_err();
         let msg = format!("{}", err);
-        assert!(msg.contains("not found") || msg.contains("Adapter"),
-            "Error should mention adapter not found: {}", msg);
+        assert!(
+            msg.contains("not found") || msg.contains("Adapter"),
+            "Error should mention adapter not found: {}",
+            msg
+        );
     }
 
     /// Full Kokoro integration test — requires model files and espeak-ng
@@ -139,17 +145,30 @@ mod tests {
         std::env::set_current_dir(original_cwd).unwrap();
 
         let synthesis = result.expect("Kokoro synthesis should succeed");
-        assert!(synthesis.samples.len() > 1000, "Should produce >1000 samples");
-        assert_eq!(synthesis.sample_rate, crate::audio_constants::AUDIO_SAMPLE_RATE);
+        assert!(
+            synthesis.samples.len() > 1000,
+            "Should produce >1000 samples"
+        );
+        assert_eq!(
+            synthesis.sample_rate,
+            crate::audio_constants::AUDIO_SAMPLE_RATE
+        );
         assert!(synthesis.duration_ms > 500, "Sentence should be >500ms");
 
         // Audio should not be silence
         let max_amplitude = synthesis.samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-        assert!(max_amplitude > 100, "Audio should not be silence, max: {}", max_amplitude);
+        assert!(
+            max_amplitude > 100,
+            "Audio should not be silence, max: {}",
+            max_amplitude
+        );
 
         println!(
             "Kokoro TTS service: {} samples, {}Hz, {}ms, max amp: {}",
-            synthesis.samples.len(), synthesis.sample_rate, synthesis.duration_ms, max_amplitude
+            synthesis.samples.len(),
+            synthesis.sample_rate,
+            synthesis.duration_ms,
+            max_amplitude
         );
     }
 
@@ -177,7 +196,12 @@ mod tests {
 
         for (i, handle) in handles.into_iter().enumerate() {
             let result = handle.join().expect("Thread should not panic");
-            assert!(result.is_ok(), "Thread {} should succeed: {:?}", i, result.err());
+            assert!(
+                result.is_ok(),
+                "Thread {} should succeed: {:?}",
+                i,
+                result.err()
+            );
         }
     }
 }

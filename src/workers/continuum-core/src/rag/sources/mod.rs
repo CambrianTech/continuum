@@ -2,11 +2,11 @@
 //!
 //! Each source implements the RagSource trait for parallel loading
 
-mod identity;
 mod conversation;
+mod identity;
 
-pub use identity::PersonaIdentitySource;
 pub use conversation::ConversationHistorySource;
+pub use identity::PersonaIdentitySource;
 
 use super::budget::SourceConfig;
 use super::types::{RagOptions, RagSection};

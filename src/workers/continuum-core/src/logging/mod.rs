@@ -1,3 +1,4 @@
+pub mod client;
 /// Logging module for continuum-core
 ///
 /// Integrates with the existing logger worker via Unix socket.
@@ -24,13 +25,12 @@
 /// log_info!("personas/helper/cognition", "DecisionEngine", "Made decision: {}", decision);
 /// ```
 pub mod timing;
-pub mod client;
 
-pub use timing::TimingGuard;
 pub use client::LoggerClient;
+pub use timing::TimingGuard;
 
 // Re-export macros (they're already at crate root via #[macro_export])
-pub use crate::{time_section, time_async};
+pub use crate::{time_async, time_section};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,7 @@ pub struct WriteLogPayload {
     pub level: LogLevel,
     pub component: String,
     pub message: String,
-        pub args: Option<serde_json::Value>,
+    pub args: Option<serde_json::Value>,
 }
 
 /// Global logger instance (lazy static)
@@ -67,12 +67,16 @@ pub fn init_logger(socket_path: &str) -> Result<(), String> {
     }
 
     let client = LoggerClient::new(socket_path)?;
-    LOGGER.set(client).map_err(|_| "Logger already initialized".to_string())
+    LOGGER
+        .set(client)
+        .map_err(|_| "Logger already initialized".to_string())
 }
 
 /// Get the global logger instance
 pub fn logger() -> &'static LoggerClient {
-    LOGGER.get().expect("Logger not initialized - call init_logger() first")
+    LOGGER
+        .get()
+        .expect("Logger not initialized - call init_logger() first")
 }
 
 /// Log macros for convenience
@@ -343,7 +347,10 @@ mod tests {
 
     #[test]
     fn test_extract_component() {
-        assert_eq!(extract_component("continuum_core::live::session::orchestrator"), "orchestrator");
+        assert_eq!(
+            extract_component("continuum_core::live::session::orchestrator"),
+            "orchestrator"
+        );
         assert_eq!(extract_component("my_module"), "my_module");
     }
 }

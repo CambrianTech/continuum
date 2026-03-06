@@ -17,10 +17,10 @@
 //! - BgfxSource: bgfx-rs rendered scenes
 //! - NanobananSource: AI-generated video frames
 
+use crate::clog_info;
 use crate::live::handle::Handle;
 use crate::live::video::generator::TestPatternGenerator;
 use tokio::sync::{broadcast, mpsc};
-use crate::clog_info;
 
 /// Pluggable video source — anything that produces frames for a participant.
 ///
@@ -54,7 +54,12 @@ pub struct TestPatternSource {
 impl TestPatternSource {
     /// Create a new test pattern source.
     pub fn new(user_id: String, width: u16, height: u16, fps: u8) -> Self {
-        Self { user_id, width, height, fps }
+        Self {
+            user_id,
+            width,
+            height,
+            fps,
+        }
     }
 
     /// Create with default settings (160x120 @10fps, "test-pattern" user_id)
@@ -83,14 +88,17 @@ impl VideoSource for TestPatternSource {
 
         tokio::spawn(async move {
             let mut generator = TestPatternGenerator::new(self.width, self.height);
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_millis(interval_ms),
-            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
             let start = std::time::Instant::now();
 
             clog_info!(
                 "{} video source started ({}x{} @{}fps, user_id={})",
-                self.name(), self.width, self.height, self.fps, user_id
+                self.name(),
+                self.width,
+                self.height,
+                self.fps,
+                user_id
             );
 
             loop {
@@ -142,9 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_test_pattern_source_produces_frames() {
-        let source = Box::new(TestPatternSource::new(
-            "test-user".to_string(), 80, 60, 10,
-        ));
+        let source = Box::new(TestPatternSource::new("test-user".to_string(), 80, 60, 10));
         let (video_tx, mut video_rx) = broadcast::channel::<(Handle, String, Vec<u8>)>(16);
         let handle = Handle::new();
 

@@ -13,11 +13,10 @@ pub mod memory_manager;
 pub mod tracker;
 
 pub use eviction_registry::{
-    EvictionRegistry, EvictableEntry, EvictionRegistrySnapshot, make_entry,
+    make_entry, EvictableEntry, EvictionRegistry, EvictionRegistrySnapshot,
 };
 pub use memory_manager::{
-    GpuMemoryManager, GpuSubsystem, GpuAllocationGuard, GpuStats, SubsystemStats,
-    GpuPriority, GpuError, AllocationsByPriority,
-    PRESSURE_WARNING, PRESSURE_HIGH, PRESSURE_CRITICAL,
+    AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
+    GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
 pub use tracker::GpuModelTracker;

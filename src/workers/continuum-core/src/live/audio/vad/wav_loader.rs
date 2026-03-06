@@ -21,18 +21,27 @@ pub fn load_wav_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<i16>> {
 
     // Parse WAV header
     if &buffer[0..4] != b"RIFF" {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a RIFF file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a RIFF file",
+        ));
     }
 
     if &buffer[8..12] != b"WAVE" {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a WAVE file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a WAVE file",
+        ));
     }
 
     // Find data chunk
     let mut offset = 12;
     let data_offset = loop {
         if offset + 8 > buffer.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Data chunk not found"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Data chunk not found",
+            ));
         }
 
         let chunk_id = &buffer[offset..offset + 4];
@@ -114,8 +123,12 @@ mod tests {
                     println!("✓ Loaded {}: {} samples", noise, samples.len());
                     assert!(samples.len() > 0, "{} has no samples", noise);
                     // 5 seconds @ 16kHz = 80,000 samples
-                    assert!(samples.len() >= 79000 && samples.len() <= 81000,
-                        "{} has unexpected length: {}", noise, samples.len());
+                    assert!(
+                        samples.len() >= 79000 && samples.len() <= 81000,
+                        "{} has unexpected length: {}",
+                        noise,
+                        samples.len()
+                    );
                 }
                 Err(e) => {
                     println!("✗ Failed to load {}: {}", noise, e);

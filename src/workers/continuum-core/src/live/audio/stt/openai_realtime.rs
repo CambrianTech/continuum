@@ -9,12 +9,12 @@
 //! This is the recommended adapter for production voice agents.
 
 use super::{STTError, SpeechToText, TranscriptResult};
+use crate::{clog_debug, clog_info, clog_warn};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use crate::{clog_debug, clog_info, clog_warn};
 
 /// OpenAI Realtime API endpoint
 const REALTIME_API_URL: &str = "wss://api.openai.com/v1/realtime";
@@ -97,7 +97,7 @@ enum ClientEvent {
 /// Server events (received from server)
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)]  // Fields used for deserialization
+#[allow(dead_code)] // Fields used for deserialization
 enum ServerEvent {
     #[serde(rename = "session.created")]
     SessionCreated { session: serde_json::Value },
@@ -115,16 +115,10 @@ enum ServerEvent {
     AudioCommitted { item_id: String },
 
     #[serde(rename = "conversation.item.input_audio_transcription.completed")]
-    TranscriptionCompleted {
-        item_id: String,
-        transcript: String,
-    },
+    TranscriptionCompleted { item_id: String, transcript: String },
 
     #[serde(rename = "conversation.item.input_audio_transcription.delta")]
-    TranscriptionDelta {
-        item_id: String,
-        delta: String,
-    },
+    TranscriptionDelta { item_id: String, delta: String },
 
     #[serde(rename = "error")]
     Error { error: serde_json::Value },
@@ -165,10 +159,7 @@ impl OpenAIRealtimeSTT {
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
 
-        let bytes: Vec<u8> = pcm16
-            .iter()
-            .flat_map(|&s| s.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = pcm16.iter().flat_map(|&s| s.to_le_bytes()).collect();
 
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
     }
@@ -179,7 +170,9 @@ impl OpenAIRealtimeSTT {
         samples: Vec<f32>,
         _language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| STTError::ModelNotLoaded("OPENAI_API_KEY not set".into()))?;
 
         // Connect to Realtime API
@@ -221,11 +214,14 @@ impl OpenAIRealtimeSTT {
             turn_detection: self.config.clone(),
         };
 
-        let update_event = ClientEvent::SessionUpdate { session: session_config };
+        let update_event = ClientEvent::SessionUpdate {
+            session: session_config,
+        };
         let json = serde_json::to_string(&update_event)
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-        write.send(Message::Text(json.into()))
+        write
+            .send(Message::Text(json.into()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 
@@ -238,7 +234,8 @@ impl OpenAIRealtimeSTT {
             let json = serde_json::to_string(&append_event)
                 .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-            write.send(Message::Text(json.into()))
+            write
+                .send(Message::Text(json.into()))
                 .await
                 .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
         }
@@ -248,7 +245,8 @@ impl OpenAIRealtimeSTT {
         let json = serde_json::to_string(&commit_event)
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
-        write.send(Message::Text(json.into()))
+        write
+            .send(Message::Text(json.into()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 
@@ -336,7 +334,7 @@ impl SpeechToText for OpenAIRealtimeSTT {
     async fn initialize(&self) -> Result<(), STTError> {
         if self.api_key.is_none() {
             return Err(STTError::ModelNotLoaded(
-                "OPENAI_API_KEY environment variable not set".into()
+                "OPENAI_API_KEY environment variable not set".into(),
             ));
         }
 
@@ -360,8 +358,8 @@ impl SpeechToText for OpenAIRealtimeSTT {
     fn supported_languages(&self) -> Vec<&'static str> {
         // OpenAI Whisper supports many languages
         vec![
-            "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "ja", "ko", "zh",
-            "ar", "hi", "tr", "vi", "th", "id", "ms", "fil", "sv", "da", "no", "fi",
+            "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "ja", "ko", "zh", "ar", "hi",
+            "tr", "vi", "th", "id", "ms", "fil", "sv", "da", "no", "fi",
         ]
     }
 }

@@ -27,11 +27,41 @@ pub async fn execute(
     let interpolated_pattern = interpolation::interpolate(event_pattern, ctx);
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_WATCH_TIMEOUT_SECS));
 
-    log.info(&format!("[{}] Watch step: waiting for event '{}' (timeout={}s)",
-        pipeline_ctx.handle_id, interpolated_pattern, timeout.as_secs()));
+    log.info(&format!(
+        "[{}] Watch step: waiting for event '{}' (timeout={}s)",
+        pipeline_ctx.handle_id,
+        interpolated_pattern,
+        timeout.as_secs()
+    ));
 
-    let bus = pipeline_ctx.bus
-        .ok_or_else(|| format!("[{}] Watch step requires MessageBus", pipeline_ctx.handle_id))?;
+    let bus = pipeline_ctx.bus.ok_or_else(|| {
+        format!(
+            "[{}] Watch step requires MessageBus",
+            pipeline_ctx.handle_id
+        )
+    })?;
+
+    // Check recent event buffer BEFORE subscribing to avoid race conditions.
+    // If the emit happened just before we subscribed, we'd miss it without this.
+    if let Some(recent) = bus.find_recent_event(&interpolated_pattern) {
+        log.info(&format!(
+            "[{}] Watch step: found recent event '{}' in buffer",
+            pipeline_ctx.handle_id, recent.name
+        ));
+        return Ok(StepResult {
+            step_index: index,
+            step_type: "watch".to_string(),
+            success: true,
+            duration_ms: start.elapsed().as_millis() as u64,
+            output: Some(recent.name.clone()),
+            error: None,
+            exit_code: None,
+            data: json!({
+                "event": recent.name,
+                "payload": recent.payload,
+            }),
+        });
+    }
 
     let mut receiver = bus.receiver();
 
@@ -44,22 +74,27 @@ pub async fn execute(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    log.warn(&format!("[{}] Watch: receiver lagged by {} events",
-                        pipeline_ctx.handle_id, n));
+                    log.warn(&format!(
+                        "[{}] Watch: receiver lagged by {} events",
+                        pipeline_ctx.handle_id, n
+                    ));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     return Err("MessageBus channel closed".to_string());
                 }
             }
         }
-    }).await;
+    })
+    .await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match result {
         Ok(Ok((event_name, payload))) => {
-            log.info(&format!("[{}] Watch step: received event '{}' after {}ms",
-                pipeline_ctx.handle_id, event_name, duration_ms));
+            log.info(&format!(
+                "[{}] Watch step: received event '{}' after {}ms",
+                pipeline_ctx.handle_id, event_name, duration_ms
+            ));
 
             Ok(StepResult {
                 step_index: index,
@@ -75,12 +110,17 @@ pub async fn execute(
                 }),
             })
         }
-        Ok(Err(e)) => {
-            Err(format!("[{}] Watch step error: {}", pipeline_ctx.handle_id, e))
-        }
+        Ok(Err(e)) => Err(format!(
+            "[{}] Watch step error: {}",
+            pipeline_ctx.handle_id, e
+        )),
         Err(_) => {
-            log.warn(&format!("[{}] Watch step timed out after {}s waiting for '{}'",
-                pipeline_ctx.handle_id, timeout.as_secs(), interpolated_pattern));
+            log.warn(&format!(
+                "[{}] Watch step timed out after {}s waiting for '{}'",
+                pipeline_ctx.handle_id,
+                timeout.as_secs(),
+                interpolated_pattern
+            ));
 
             Ok(StepResult {
                 step_index: index,
@@ -88,8 +128,11 @@ pub async fn execute(
                 success: false,
                 duration_ms,
                 output: None,
-                error: Some(format!("Timed out after {}s waiting for event '{}'",
-                    timeout.as_secs(), interpolated_pattern)),
+                error: Some(format!(
+                    "Timed out after {}s waiting for event '{}'",
+                    timeout.as_secs(),
+                    interpolated_pattern
+                )),
                 exit_code: None,
                 data: json!({
                     "pattern": interpolated_pattern,
@@ -128,19 +171,20 @@ fn event_matches(event_name: &str, pattern: &str) -> bool {
         return false;
     }
 
-    pattern_parts.iter().zip(event_parts.iter()).all(|(p, e)| {
-        *p == "*" || *p == *e
-    })
+    pattern_parts
+        .iter()
+        .zip(event_parts.iter())
+        .all(|(p, e)| *p == "*" || *p == *e)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::modules::sentinel::types::ExecutionContext;
-    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
-    use std::sync::Arc;
+    use crate::runtime::{message_bus::MessageBus, ModuleRegistry};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn test_ctx() -> ExecutionContext {
         ExecutionContext {
@@ -151,7 +195,10 @@ mod tests {
         }
     }
 
-    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
         PipelineContext {
             handle_id: "test-watch",
             registry,
@@ -214,7 +261,9 @@ mod tests {
             bus_clone.publish_async_only("build:done", json!({"result": "ok"}));
         });
 
-        let result = execute("build:done", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("build:done", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.output.as_deref(), Some("build:done"));
@@ -230,7 +279,9 @@ mod tests {
         let mut ctx = test_ctx();
 
         // Watch for an event that never arrives, with 1s timeout
-        let result = execute("never:arrives", Some(1), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("never:arrives", Some(1), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("Timed out"));
@@ -254,7 +305,9 @@ mod tests {
             bus_clone.publish_async_only("target:event", json!({"found": true}));
         });
 
-        let result = execute("target:event", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("target:event", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["event"], "target:event");
@@ -274,7 +327,9 @@ mod tests {
             bus_clone.publish_async_only("build:complete", json!({"branch": "main"}));
         });
 
-        let result = execute("build:*", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        let result = execute("build:*", Some(5), 0, &mut ctx, &pipeline_ctx)
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.data["event"], "build:complete");

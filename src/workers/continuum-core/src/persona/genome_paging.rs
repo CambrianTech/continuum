@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use ts_rs::TS;
 
-use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::gpu::make_entry;
+use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 
 // =============================================================================
 // TYPES (ts-rs generated)
@@ -22,7 +22,10 @@ use crate::gpu::make_entry;
 /// Per-adapter state for genome paging decisions.
 /// Extended from AdapterInfo with size_mb and last_used_ms for LRU.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/GenomeAdapterInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/GenomeAdapterInfo.ts"
+)]
 pub struct GenomeAdapterInfo {
     /// Adapter name (e.g. "typescript-expertise")
     pub name: String,
@@ -45,7 +48,10 @@ pub struct GenomeAdapterInfo {
 
 /// Full genome paging state for a single persona.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/GenomePagingState.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/GenomePagingState.ts"
+)]
 pub struct GenomePagingState {
     /// Soft memory budget in MB
     #[ts(type = "number")]
@@ -64,7 +70,10 @@ pub struct GenomePagingState {
 /// Result of a skill activation decision.
 /// Tells TypeScript what to load/unload — Rust decides, TS executes.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ActivateSkillResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ActivateSkillResult.ts"
+)]
 pub struct ActivateSkillResult {
     /// Whether activation is proceeding
     pub activated: bool,
@@ -86,7 +95,10 @@ pub struct ActivateSkillResult {
 
 /// Activity tracking for a single domain.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/DomainActivity.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/DomainActivity.ts"
+)]
 pub struct DomainActivity {
     /// Domain name
     pub domain: String,
@@ -111,7 +123,10 @@ pub struct DomainActivity {
 
 /// Coverage report: what's covered, what's missing.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/CoverageReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/CoverageReport.ts"
+)]
 pub struct CoverageReport {
     /// Domains with trained adapters
     pub covered: Vec<DomainActivity>,
@@ -188,7 +203,9 @@ impl GenomePagingEngine {
                 // Re-allocate GPU guard for already-loaded adapters
                 if let Some(mgr) = &self.gpu_manager {
                     let bytes = (adapter.size_mb * 1024.0 * 1024.0) as u64;
-                    if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive) {
+                    if let Ok(guard) =
+                        mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive)
+                    {
                         mgr.eviction_registry.register(make_entry(
                             &format!("genome:adapter:{}", adapter.name),
                             &format!("Genome {}", adapter.name),
@@ -255,7 +272,8 @@ impl GenomePagingEngine {
                         self.allocation_guards.remove(&victim_name);
                         // Unregister from eviction registry
                         if let Some(mgr) = &self.gpu_manager {
-                            mgr.eviction_registry.unregister(&format!("genome:adapter:{}", victim_name));
+                            mgr.eviction_registry
+                                .unregister(&format!("genome:adapter:{}", victim_name));
                         }
                         // Move to available
                         let mut unloaded = victim;
@@ -277,7 +295,9 @@ impl GenomePagingEngine {
         // Allocate GPU guard for newly loaded adapter
         if let Some(mgr) = &self.gpu_manager {
             let bytes = (loaded.size_mb * 1024.0 * 1024.0) as u64;
-            if let Ok(guard) = mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive) {
+            if let Ok(guard) =
+                mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Interactive)
+            {
                 mgr.eviction_registry.register(make_entry(
                     &format!("genome:adapter:{}", loaded.name),
                     &format!("Genome {}", loaded.name),
@@ -323,12 +343,15 @@ impl GenomePagingEngine {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let entry = self.domain_activity.entry(domain.to_string()).or_insert(DomainActivityInternal {
-            interaction_count: 0,
-            success_count: 0,
-            failure_count: 0,
-            last_activity_ms: now_ms,
-        });
+        let entry =
+            self.domain_activity
+                .entry(domain.to_string())
+                .or_insert(DomainActivityInternal {
+                    interaction_count: 0,
+                    success_count: 0,
+                    failure_count: 0,
+                    last_activity_ms: now_ms,
+                });
 
         entry.interaction_count += 1;
         if success {
@@ -446,7 +469,14 @@ pub fn calculate_eviction_score_at(adapter: &GenomeAdapterInfo, now_ms: u64) -> 
 mod tests {
     use super::*;
 
-    fn make_adapter(name: &str, domain: &str, size_mb: f32, priority: f32, loaded: bool, last_used_ms: u64) -> GenomeAdapterInfo {
+    fn make_adapter(
+        name: &str,
+        domain: &str,
+        size_mb: f32,
+        priority: f32,
+        loaded: bool,
+        last_used_ms: u64,
+    ) -> GenomeAdapterInfo {
         GenomeAdapterInfo {
             name: name.to_string(),
             domain: domain.to_string(),
@@ -464,7 +494,10 @@ mod tests {
     fn test_critical_adapter_never_evicted() {
         let adapter = make_adapter("critical", "code", 50.0, 0.95, true, 0);
         let score = calculate_eviction_score_at(&adapter, 100_000);
-        assert!(score.is_infinite(), "Critical adapter should return INFINITY");
+        assert!(
+            score.is_infinite(),
+            "Critical adapter should return INFINITY"
+        );
     }
 
     #[test]
@@ -472,7 +505,10 @@ mod tests {
         // age = 60s, priority = 0.5 → score = 60 / (0.5 * 10) = 12.0
         let adapter = make_adapter("test", "code", 50.0, 0.5, true, 0);
         let score = calculate_eviction_score_at(&adapter, 60_000);
-        assert!((score - 12.0).abs() < 0.001, "Score should be 12.0, got {score}");
+        assert!(
+            (score - 12.0).abs() < 0.001,
+            "Score should be 12.0, got {score}"
+        );
     }
 
     #[test]
@@ -509,7 +545,10 @@ mod tests {
     fn test_eviction_score_just_used_is_zero() {
         let just_used = make_adapter("fresh", "code", 50.0, 0.5, true, 60_000);
         let score = calculate_eviction_score_at(&just_used, 60_000);
-        assert!((score - 0.0).abs() < 0.001, "Just-used adapter should have score ≈ 0, got {score}");
+        assert!(
+            (score - 0.0).abs() < 0.001,
+            "Just-used adapter should have score ≈ 0, got {score}"
+        );
     }
 
     // ── Engine: Cache Hit ─────────────────────────────────────────────
@@ -517,14 +556,20 @@ mod tests {
     #[test]
     fn test_activate_skill_cache_hit() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.active.insert("ts-expert".into(), make_adapter("ts-expert", "code", 50.0, 0.5, true, 1000));
+        engine.active.insert(
+            "ts-expert".into(),
+            make_adapter("ts-expert", "code", 50.0, 0.5, true, 1000),
+        );
 
         let result = engine.activate_skill("ts-expert", 2000);
 
         assert!(result.activated);
         assert_eq!(result.adapter_name, "ts-expert");
         assert!(result.evicted.is_empty());
-        assert!(result.to_load.is_none(), "Cache hit should not need to load");
+        assert!(
+            result.to_load.is_none(),
+            "Cache hit should not need to load"
+        );
         // Verify last_used was updated
         assert_eq!(engine.active.get("ts-expert").unwrap().last_used_ms, 2000);
     }
@@ -545,7 +590,10 @@ mod tests {
     #[test]
     fn test_activate_skill_loads_from_available() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.available.insert("ts-expert".into(), make_adapter("ts-expert", "code", 50.0, 0.5, false, 0));
+        engine.available.insert(
+            "ts-expert".into(),
+            make_adapter("ts-expert", "code", 50.0, 0.5, false, 0),
+        );
 
         let result = engine.activate_skill("ts-expert", 5000);
 
@@ -564,60 +612,109 @@ mod tests {
     fn test_activate_skill_evicts_lru_when_full() {
         let mut engine = GenomePagingEngine::new(100.0);
         // Load two 50MB adapters (fills 100MB budget)
-        engine.active.insert("old-adapter".into(), make_adapter("old-adapter", "chat", 50.0, 0.5, true, 1000));
-        engine.active.insert("newer-adapter".into(), make_adapter("newer-adapter", "code", 50.0, 0.5, true, 5000));
+        engine.active.insert(
+            "old-adapter".into(),
+            make_adapter("old-adapter", "chat", 50.0, 0.5, true, 1000),
+        );
+        engine.active.insert(
+            "newer-adapter".into(),
+            make_adapter("newer-adapter", "code", 50.0, 0.5, true, 5000),
+        );
         engine.memory_used_mb = 100.0;
         // Want to load a third
-        engine.available.insert("incoming".into(), make_adapter("incoming", "creative", 50.0, 0.5, false, 0));
+        engine.available.insert(
+            "incoming".into(),
+            make_adapter("incoming", "creative", 50.0, 0.5, false, 0),
+        );
 
         let result = engine.activate_skill("incoming", 10_000);
 
         assert!(result.activated);
         assert_eq!(result.to_load, Some("incoming".to_string()));
         assert_eq!(result.evicted.len(), 1);
-        assert_eq!(result.evicted[0], "old-adapter", "Should evict oldest (last_used=1000)");
+        assert_eq!(
+            result.evicted[0], "old-adapter",
+            "Should evict oldest (last_used=1000)"
+        );
         // old-adapter moved to available
         assert!(engine.available.contains_key("old-adapter"));
         assert!(!engine.active.contains_key("old-adapter"));
         // incoming now active
         assert!(engine.active.contains_key("incoming"));
-        assert!((engine.memory_used_mb - 100.0).abs() < 0.001, "Should still be at 100MB");
+        assert!(
+            (engine.memory_used_mb - 100.0).abs() < 0.001,
+            "Should still be at 100MB"
+        );
     }
 
     #[test]
     fn test_activate_skill_evicts_multiple_if_needed() {
         let mut engine = GenomePagingEngine::new(200.0);
         // 4 × 50MB = 200MB (full)
-        engine.active.insert("a1".into(), make_adapter("a1", "code", 50.0, 0.3, true, 1000));
-        engine.active.insert("a2".into(), make_adapter("a2", "chat", 50.0, 0.4, true, 2000));
-        engine.active.insert("a3".into(), make_adapter("a3", "creative", 50.0, 0.5, true, 3000));
-        engine.active.insert("a4".into(), make_adapter("a4", "social", 50.0, 0.6, true, 4000));
+        engine.active.insert(
+            "a1".into(),
+            make_adapter("a1", "code", 50.0, 0.3, true, 1000),
+        );
+        engine.active.insert(
+            "a2".into(),
+            make_adapter("a2", "chat", 50.0, 0.4, true, 2000),
+        );
+        engine.active.insert(
+            "a3".into(),
+            make_adapter("a3", "creative", 50.0, 0.5, true, 3000),
+        );
+        engine.active.insert(
+            "a4".into(),
+            make_adapter("a4", "social", 50.0, 0.6, true, 4000),
+        );
         engine.memory_used_mb = 200.0;
         // Big adapter needs 120MB → need used + 120 <= 200 → need to free 120MB → 3 × 50MB
-        engine.available.insert("big".into(), make_adapter("big", "analysis", 120.0, 0.5, false, 0));
+        engine.available.insert(
+            "big".into(),
+            make_adapter("big", "analysis", 120.0, 0.5, false, 0),
+        );
 
         let result = engine.activate_skill("big", 10_000);
 
         assert!(result.activated);
-        assert_eq!(result.evicted.len(), 3, "Should evict 3 adapters to free 150MB for 120MB incoming");
+        assert_eq!(
+            result.evicted.len(),
+            3,
+            "Should evict 3 adapters to free 150MB for 120MB incoming"
+        );
         // a1 (priority=0.3, oldest) should be first evicted
-        assert!(result.evicted.contains(&"a1".to_string()), "a1 (priority=0.3, oldest) should be evicted");
+        assert!(
+            result.evicted.contains(&"a1".to_string()),
+            "a1 (priority=0.3, oldest) should be evicted"
+        );
     }
 
     #[test]
     fn test_critical_adapters_survive_eviction() {
         let mut engine = GenomePagingEngine::new(100.0);
         // Critical adapter + normal adapter fill budget
-        engine.active.insert("critical".into(), make_adapter("critical", "code", 50.0, 0.95, true, 1000));
-        engine.active.insert("normal".into(), make_adapter("normal", "chat", 50.0, 0.5, true, 2000));
+        engine.active.insert(
+            "critical".into(),
+            make_adapter("critical", "code", 50.0, 0.95, true, 1000),
+        );
+        engine.active.insert(
+            "normal".into(),
+            make_adapter("normal", "chat", 50.0, 0.5, true, 2000),
+        );
         engine.memory_used_mb = 100.0;
-        engine.available.insert("incoming".into(), make_adapter("incoming", "creative", 50.0, 0.5, false, 0));
+        engine.available.insert(
+            "incoming".into(),
+            make_adapter("incoming", "creative", 50.0, 0.5, false, 0),
+        );
 
         let result = engine.activate_skill("incoming", 10_000);
 
         assert!(result.activated);
         assert_eq!(result.evicted, vec!["normal".to_string()]);
-        assert!(engine.active.contains_key("critical"), "Critical adapter should survive");
+        assert!(
+            engine.active.contains_key("critical"),
+            "Critical adapter should survive"
+        );
     }
 
     // ── Engine: Sync State ────────────────────────────────────────────
@@ -625,7 +722,10 @@ mod tests {
     #[test]
     fn test_sync_state_replaces_all() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.active.insert("old".into(), make_adapter("old", "code", 50.0, 0.5, true, 1000));
+        engine.active.insert(
+            "old".into(),
+            make_adapter("old", "code", 50.0, 0.5, true, 1000),
+        );
         engine.memory_used_mb = 50.0;
 
         engine.sync_state(vec![
@@ -668,8 +768,14 @@ mod tests {
     #[test]
     fn test_state_snapshot() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.active.insert("loaded".into(), make_adapter("loaded", "code", 50.0, 0.5, true, 1000));
-        engine.available.insert("disk".into(), make_adapter("disk", "chat", 40.0, 0.5, false, 0));
+        engine.active.insert(
+            "loaded".into(),
+            make_adapter("loaded", "code", 50.0, 0.5, true, 1000),
+        );
+        engine.available.insert(
+            "disk".into(),
+            make_adapter("disk", "chat", 40.0, 0.5, false, 0),
+        );
         engine.memory_used_mb = 50.0;
 
         let state = engine.state();
@@ -686,7 +792,10 @@ mod tests {
     #[test]
     fn test_decision_time_is_fast() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.available.insert("test".into(), make_adapter("test", "code", 50.0, 0.5, false, 0));
+        engine.available.insert(
+            "test".into(),
+            make_adapter("test", "code", 50.0, 0.5, false, 0),
+        );
 
         let result = engine.activate_skill("test", 1000);
 
@@ -718,7 +827,10 @@ mod tests {
     #[test]
     fn test_coverage_report_with_adapter() {
         let mut engine = GenomePagingEngine::new(200.0);
-        engine.available.insert("ts-expert".into(), make_adapter("ts-expert", "code", 50.0, 0.5, false, 0));
+        engine.available.insert(
+            "ts-expert".into(),
+            make_adapter("ts-expert", "code", 50.0, 0.5, false, 0),
+        );
 
         engine.record_activity("code", true);
         engine.record_activity("code", true);
@@ -728,7 +840,7 @@ mod tests {
         assert_eq!(report.covered.len(), 1, "Code domain has adapter → covered");
         assert_eq!(report.gaps.len(), 1, "Chat domain has no adapter → gap");
         assert_eq!(report.total_interactions, 3);
-        assert!((report.coverage_ratio - 2.0/3.0).abs() < 0.01);
+        assert!((report.coverage_ratio - 2.0 / 3.0).abs() < 0.01);
     }
 
     #[test]
@@ -738,15 +850,24 @@ mod tests {
         assert!(report.covered.is_empty());
         assert!(report.gaps.is_empty());
         assert_eq!(report.total_interactions, 0);
-        assert!((report.coverage_ratio - 1.0).abs() < 0.01, "No activity = fully covered");
+        assert!(
+            (report.coverage_ratio - 1.0).abs() < 0.01,
+            "No activity = fully covered"
+        );
     }
 
     #[test]
     fn test_gaps_sorted_by_interaction_count() {
         let mut engine = GenomePagingEngine::new(200.0);
-        for _ in 0..5 { engine.record_activity("chat", true); }
-        for _ in 0..15 { engine.record_activity("creative", true); }
-        for _ in 0..2 { engine.record_activity("analysis", true); }
+        for _ in 0..5 {
+            engine.record_activity("chat", true);
+        }
+        for _ in 0..15 {
+            engine.record_activity("creative", true);
+        }
+        for _ in 0..2 {
+            engine.record_activity("analysis", true);
+        }
 
         let report = engine.coverage_report();
         assert_eq!(report.gaps.len(), 3);

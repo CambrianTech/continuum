@@ -9,6 +9,9 @@
 
 use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
+use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
+use crate::gpu::tracker::GpuModelTracker;
+use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray;
 use once_cell::sync::OnceCell;
@@ -19,9 +22,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use crate::{clog_info, clog_warn};
-use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
-use crate::gpu::tracker::GpuModelTracker;
 
 /// Global Kokoro session + tokenizer
 static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
@@ -119,21 +119,25 @@ impl KokoroTTS {
         // Try tokenizer.json first (HuggingFace format, downloaded from ONNX community repo)
         let tokenizer_path = PathBuf::from("models/kokoro/tokenizer.json");
         if tokenizer_path.exists() {
-            let content = std::fs::read_to_string(&tokenizer_path)
-                .map_err(TTSError::IoError)?;
+            let content = std::fs::read_to_string(&tokenizer_path).map_err(TTSError::IoError)?;
 
-            let parsed: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json: {e}")))?;
+            let parsed: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json: {e}"))
+            })?;
 
             let vocab_obj = parsed
                 .get("model")
                 .and_then(|m| m.get("vocab"))
-                .ok_or_else(|| TTSError::ModelNotLoaded(
-                    "tokenizer.json missing model.vocab section".into(),
-                ))?;
+                .ok_or_else(|| {
+                    TTSError::ModelNotLoaded("tokenizer.json missing model.vocab section".into())
+                })?;
 
-            let raw: HashMap<String, i64> = serde_json::from_value(vocab_obj.clone())
-                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab from tokenizer.json: {e}")))?;
+            let raw: HashMap<String, i64> =
+                serde_json::from_value(vocab_obj.clone()).map_err(|e| {
+                    TTSError::ModelNotLoaded(format!(
+                        "Failed to parse vocab from tokenizer.json: {e}"
+                    ))
+                })?;
 
             let mut vocab = HashMap::new();
             for (key, value) in raw {
@@ -142,7 +146,10 @@ impl KokoroTTS {
                 }
             }
 
-            clog_info!("Kokoro vocab loaded from tokenizer.json: {} entries", vocab.len());
+            clog_info!(
+                "Kokoro vocab loaded from tokenizer.json: {} entries",
+                vocab.len()
+            );
             return Ok(vocab);
         }
 
@@ -154,8 +161,7 @@ impl KokoroTTS {
             ));
         }
 
-        let content = std::fs::read_to_string(&vocab_path)
-            .map_err(TTSError::IoError)?;
+        let content = std::fs::read_to_string(&vocab_path).map_err(TTSError::IoError)?;
 
         let raw: HashMap<String, i64> = serde_json::from_str(&content)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
@@ -167,12 +173,18 @@ impl KokoroTTS {
             }
         }
 
-        clog_info!("Kokoro vocab loaded from vocab.json: {} entries", vocab.len());
+        clog_info!(
+            "Kokoro vocab loaded from vocab.json: {} entries",
+            vocab.len()
+        );
         Ok(vocab)
     }
 
     /// Load voice embedding from .bin file
-    fn load_voice_embedding(voices_dir: &PathBuf, voice_id: &str) -> Result<Vec<Vec<f32>>, TTSError> {
+    fn load_voice_embedding(
+        voices_dir: &PathBuf,
+        voice_id: &str,
+    ) -> Result<Vec<Vec<f32>>, TTSError> {
         let voice_path = voices_dir.join(format!("{voice_id}.bin"));
         if !voice_path.exists() {
             // Try default voice
@@ -187,8 +199,7 @@ impl KokoroTTS {
             return Self::load_voice_embedding(voices_dir, "af");
         }
 
-        let bytes = std::fs::read(&voice_path)
-            .map_err(TTSError::IoError)?;
+        let bytes = std::fs::read(&voice_path).map_err(TTSError::IoError)?;
 
         // Parse as float32 array
         let num_floats = bytes.len() / 4;
@@ -209,7 +220,10 @@ impl KokoroTTS {
 
         clog_info!(
             "Loaded voice '{}': {} style vectors ({}x{})",
-            voice_id, num_rows, num_rows, embedding_dim
+            voice_id,
+            num_rows,
+            num_rows,
+            embedding_dim
         );
 
         Ok(embeddings)
@@ -294,7 +308,11 @@ impl KokoroTTS {
 
         // Step 1: Phonemize text via espeak-ng
         let phonemes = Self::phonemize(text)?;
-        clog_info!("Kokoro phonemized: '{}' -> '{}'", super::truncate_str(text, 40), super::truncate_str(&phonemes, 60));
+        clog_info!(
+            "Kokoro phonemized: '{}' -> '{}'",
+            super::truncate_str(text, 40),
+            super::truncate_str(&phonemes, 60)
+        );
 
         // Step 2: Tokenize using Kokoro vocab
         let tokens = Self::tokenize(&phonemes, &model.vocab);
@@ -302,7 +320,9 @@ impl KokoroTTS {
         clog_info!("Kokoro tokenized: {} tokens", token_count);
 
         if token_count < 3 {
-            return Err(TTSError::InvalidText("Text produced no valid tokens".into()));
+            return Err(TTSError::InvalidText(
+                "Text produced no valid tokens".into(),
+            ));
         }
 
         // Step 3: Get voice embedding for this token count
@@ -312,8 +332,9 @@ impl KokoroTTS {
             model.voice_cache.insert(voice_id.to_string(), embeddings);
         }
 
-        let voice_embeddings = model.voice_cache.get(voice_id)
-            .ok_or_else(|| TTSError::VoiceNotFound(format!("Voice '{voice_id}' missing from cache after load")))?;
+        let voice_embeddings = model.voice_cache.get(voice_id).ok_or_else(|| {
+            TTSError::VoiceNotFound(format!("Voice '{voice_id}' missing from cache after load"))
+        })?;
 
         // Select style vector based on token count (clamped to available range)
         let style_idx = token_count.min(voice_embeddings.len().saturating_sub(1));
@@ -321,27 +342,29 @@ impl KokoroTTS {
 
         // Step 4: Build ONNX input tensors
         // input_ids: shape (1, token_count)
-        let input_ids = ndarray::Array2::from_shape_vec(
-            (1, token_count),
-            tokens,
-        ).map_err(|e| TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}")))?;
+        let input_ids = ndarray::Array2::from_shape_vec((1, token_count), tokens).map_err(|e| {
+            TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}"))
+        })?;
 
         // style: shape (1, 256)
-        let style = ndarray::Array2::from_shape_vec(
-            (1, 256),
-            style_vector.clone(),
-        ).map_err(|e| TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}")))?;
+        let style =
+            ndarray::Array2::from_shape_vec((1, 256), style_vector.clone()).map_err(|e| {
+                TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}"))
+            })?;
 
         // speed: shape (1,)
         let speed_tensor = ndarray::Array1::from_vec(vec![speed]);
 
         // Step 5: Run ONNX inference
-        let input_ids_tensor = ort::value::Tensor::from_array(input_ids)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}")))?;
-        let style_tensor = ort::value::Tensor::from_array(style)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}")))?;
-        let speed_ort_tensor = ort::value::Tensor::from_array(speed_tensor)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create speed tensor: {e}")))?;
+        let input_ids_tensor = ort::value::Tensor::from_array(input_ids).map_err(|e| {
+            TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}"))
+        })?;
+        let style_tensor = ort::value::Tensor::from_array(style).map_err(|e| {
+            TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}"))
+        })?;
+        let speed_ort_tensor = ort::value::Tensor::from_array(speed_tensor).map_err(|e| {
+            TTSError::SynthesisFailed(format!("Failed to create speed tensor: {e}"))
+        })?;
         let outputs = model
             .session
             .run(ort::inputs![
@@ -369,7 +392,6 @@ impl KokoroTTS {
 
         Ok(result)
     }
-
 }
 
 impl Default for KokoroTTS {
@@ -436,7 +458,9 @@ impl TextToSpeech for KokoroTTS {
 
         clog_info!(
             "Loading Kokoro model from: {:?} (intra_threads={}, inter_threads={})",
-            model_path, intra_threads, inter_threads
+            model_path,
+            intra_threads,
+            inter_threads
         );
 
         let session = Session::builder()?
@@ -454,7 +478,12 @@ impl TextToSpeech for KokoroTTS {
         };
 
         // Track GPU allocation for TTS model (non-critical: proceed on failure)
-        let _ = KOKORO_GPU.track_file(GpuSubsystem::Tts, &model_path, super::gpu_manager(), GpuPriority::Interactive);
+        let _ = KOKORO_GPU.track_file(
+            GpuSubsystem::Tts,
+            &model_path,
+            super::gpu_manager(),
+            GpuPriority::Interactive,
+        );
 
         // OnceLock::set returns Err if already set by another thread — that's fine,
         // it means a concurrent request already initialized the model.
@@ -518,7 +547,10 @@ mod tests {
         assert_eq!(adapter.name(), "kokoro");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "af");
-        assert_eq!(adapter.description(), "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)");
+        assert_eq!(
+            adapter.description(),
+            "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)"
+        );
     }
 
     #[test]
@@ -526,8 +558,14 @@ mod tests {
         let adapter = KokoroTTS::new();
         let voices = adapter.available_voices();
         assert!(!voices.is_empty(), "Should have at least one voice");
-        assert!(voices.iter().any(|v| v.id == "af"), "Should have default 'af' voice");
-        assert!(voices.iter().any(|v| v.id == "am_adam"), "Should have 'am_adam' voice");
+        assert!(
+            voices.iter().any(|v| v.id == "af"),
+            "Should have default 'af' voice"
+        );
+        assert!(
+            voices.iter().any(|v| v.id == "am_adam"),
+            "Should have 'am_adam' voice"
+        );
         // Verify gender tagging
         let adam = voices.iter().find(|v| v.id == "am_adam").unwrap();
         assert_eq!(adam.gender.as_deref(), Some("male"));
@@ -588,9 +626,16 @@ mod tests {
         // Create a string longer than MAX_TOKEN_LENGTH
         let long_input: String = "a".repeat(600);
         let tokens = KokoroTTS::tokenize(&long_input, &vocab);
-        assert!(tokens.len() <= MAX_TOKEN_LENGTH + 2, "Should not exceed max length + padding");
+        assert!(
+            tokens.len() <= MAX_TOKEN_LENGTH + 2,
+            "Should not exceed max length + padding"
+        );
         assert_eq!(tokens[0], 0, "Start padding");
-        assert_eq!(*tokens.last().unwrap(), 0, "End padding preserved after truncation");
+        assert_eq!(
+            *tokens.last().unwrap(),
+            0,
+            "End padding preserved after truncation"
+        );
     }
 
     #[test]
@@ -615,9 +660,9 @@ mod tests {
     /// Helper: resolve model directory (tests may run from different CWDs)
     fn find_models_dir() -> Option<PathBuf> {
         let candidates = [
-            PathBuf::from("models/kokoro"),                    // from jtag/ CWD
-            PathBuf::from("../../models/kokoro"),              // from workers/continuum-core/
-            PathBuf::from("../../../models/kokoro"),           // from workers/continuum-core/src/
+            PathBuf::from("models/kokoro"),          // from jtag/ CWD
+            PathBuf::from("../../models/kokoro"),    // from workers/continuum-core/
+            PathBuf::from("../../../models/kokoro"), // from workers/continuum-core/src/
         ];
         candidates.into_iter().find(|p| p.is_dir())
     }
@@ -629,7 +674,8 @@ mod tests {
         let original = std::env::current_dir().unwrap();
         let models_dir = find_models_dir().expect("Kokoro models directory not found");
         // Canonicalize to absolute path, then go up to jtag root
-        let abs_models = std::fs::canonicalize(&models_dir).expect("Failed to canonicalize models dir");
+        let abs_models =
+            std::fs::canonicalize(&models_dir).expect("Failed to canonicalize models dir");
         // abs_models = /Volumes/.../jtag/models/kokoro → parent().parent() = jtag root
         let jtag_root = abs_models.parent().unwrap().parent().unwrap();
         std::env::set_current_dir(jtag_root).expect("Failed to set CWD to jtag root");
@@ -645,7 +691,11 @@ mod tests {
 
         std::env::set_current_dir(original_cwd).unwrap();
 
-        assert!(vocab.len() > 50, "Vocab should have >50 entries, got {}", vocab.len());
+        assert!(
+            vocab.len() > 50,
+            "Vocab should have >50 entries, got {}",
+            vocab.len()
+        );
         // Kokoro vocab should contain common IPA symbols
         assert!(vocab.contains_key(&'ə'), "Vocab should contain schwa (ə)");
         assert!(vocab.contains_key(&' '), "Vocab should contain space");
@@ -657,8 +707,11 @@ mod tests {
         let phonemes = KokoroTTS::phonemize("Hello world").expect("Phonemization failed");
         assert!(!phonemes.is_empty(), "Phonemes should not be empty");
         // Should contain IPA characters, not ASCII text
-        assert!(phonemes.contains('ə') || phonemes.contains('ɛ') || phonemes.contains('ˈ'),
-            "Expected IPA characters in output, got: '{}'", phonemes);
+        assert!(
+            phonemes.contains('ə') || phonemes.contains('ɛ') || phonemes.contains('ˈ'),
+            "Expected IPA characters in output, got: '{}'",
+            phonemes
+        );
         println!("Phonemized 'Hello world' -> '{}'", phonemes);
     }
 
@@ -684,14 +737,29 @@ mod tests {
         let embeddings = KokoroTTS::load_voice_embedding(&voices_dir, "af")
             .expect("Failed to load af voice embedding");
 
-        assert!(!embeddings.is_empty(), "Should have at least one style vector");
-        assert_eq!(embeddings[0].len(), 256, "Each style vector should be 256-dim");
-        println!("Loaded af voice: {} style vectors ({}x256)", embeddings.len(), embeddings.len());
+        assert!(
+            !embeddings.is_empty(),
+            "Should have at least one style vector"
+        );
+        assert_eq!(
+            embeddings[0].len(),
+            256,
+            "Each style vector should be 256-dim"
+        );
+        println!(
+            "Loaded af voice: {} style vectors ({}x256)",
+            embeddings.len(),
+            embeddings.len()
+        );
 
         // Values should be finite floating point
         for (i, vec) in embeddings.iter().enumerate().take(3) {
             for &val in vec {
-                assert!(val.is_finite(), "Style vector {} contains non-finite value", i);
+                assert!(
+                    val.is_finite(),
+                    "Style vector {} contains non-finite value",
+                    i
+                );
             }
         }
     }
@@ -718,31 +786,56 @@ mod tests {
 
         // Initialize: loads ONNX model, vocab, sets global session
         rt.block_on(async {
-            adapter.initialize().await.expect("Kokoro initialization failed");
+            adapter
+                .initialize()
+                .await
+                .expect("Kokoro initialization failed");
         });
 
         assert!(adapter.is_initialized(), "Should be initialized after init");
 
         // Synthesize a short phrase
-        let result = rt.block_on(async {
-            adapter.synthesize("Hello, this is a test.", "af").await
-        });
+        let result =
+            rt.block_on(async { adapter.synthesize("Hello, this is a test.", "af").await });
 
         std::env::set_current_dir(original_cwd).unwrap();
 
         let synthesis = result.expect("Synthesis failed");
-        assert!(synthesis.samples.len() > 1000, "Should produce >1000 samples, got {}", synthesis.samples.len());
-        assert_eq!(synthesis.sample_rate, AUDIO_SAMPLE_RATE, "Should be resampled to {}Hz", AUDIO_SAMPLE_RATE);
-        assert!(synthesis.duration_ms > 100, "Should be >100ms for a sentence, got {}ms", synthesis.duration_ms);
-        assert!(synthesis.duration_ms < 30_000, "Should be <30s, got {}ms", synthesis.duration_ms);
+        assert!(
+            synthesis.samples.len() > 1000,
+            "Should produce >1000 samples, got {}",
+            synthesis.samples.len()
+        );
+        assert_eq!(
+            synthesis.sample_rate, AUDIO_SAMPLE_RATE,
+            "Should be resampled to {}Hz",
+            AUDIO_SAMPLE_RATE
+        );
+        assert!(
+            synthesis.duration_ms > 100,
+            "Should be >100ms for a sentence, got {}ms",
+            synthesis.duration_ms
+        );
+        assert!(
+            synthesis.duration_ms < 30_000,
+            "Should be <30s, got {}ms",
+            synthesis.duration_ms
+        );
 
         // Audio should not be silence
         let max_amplitude = synthesis.samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-        assert!(max_amplitude > 100, "Audio should not be near-silent, max amplitude: {}", max_amplitude);
+        assert!(
+            max_amplitude > 100,
+            "Audio should not be near-silent, max amplitude: {}",
+            max_amplitude
+        );
 
         println!(
             "Kokoro synthesized: {} samples, {}Hz, {}ms, max amplitude: {}",
-            synthesis.samples.len(), synthesis.sample_rate, synthesis.duration_ms, max_amplitude
+            synthesis.samples.len(),
+            synthesis.sample_rate,
+            synthesis.duration_ms,
+            max_amplitude
         );
     }
 }

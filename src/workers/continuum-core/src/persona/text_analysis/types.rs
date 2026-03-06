@@ -8,7 +8,10 @@ use ts_rs::TS;
 
 /// Result of a text similarity comparison
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/TextSimilarityResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/TextSimilarityResult.ts"
+)]
 pub struct TextSimilarityResult {
     /// Word + bigram Jaccard similarity (semantic-level)
     pub ngram_similarity: f64,
@@ -21,7 +24,10 @@ pub struct TextSimilarityResult {
 
 /// Result of a semantic loop check against conversation history
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/SemanticLoopResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/SemanticLoopResult.ts"
+)]
 pub struct SemanticLoopResult {
     /// Whether the response should be blocked
     pub should_block: bool,
@@ -33,7 +39,10 @@ pub struct SemanticLoopResult {
 
 /// Lightweight message representation for cross-boundary transfer
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ConversationMessage.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ConversationMessage.ts"
+)]
 pub struct ConversationMessage {
     pub role: String,
     pub content: String,
@@ -45,7 +54,10 @@ pub struct ConversationMessage {
 
 /// Garbage check reason codes (matches TypeScript GarbageReason exactly)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/GarbageReason.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/GarbageReason.ts"
+)]
 pub enum GarbageReason {
     #[serde(rename = "")]
     None,
@@ -71,7 +83,10 @@ pub enum GarbageReason {
 
 /// Result of garbage detection
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/GarbageCheckResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/GarbageCheckResult.ts"
+)]
 pub struct GarbageCheckResult {
     pub is_garbage: bool,
     pub reason: GarbageReason,
@@ -81,7 +96,10 @@ pub struct GarbageCheckResult {
 
 /// Combined result of ALL validation gates (1 IPC call replaces 4 gates)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ValidationResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ValidationResult.ts"
+)]
 pub struct ValidationResult {
     /// Whether all gates passed
     pub passed: bool,
@@ -108,7 +126,10 @@ pub struct ValidationResult {
 
 /// Combined result of mention detection (1 IPC call for both checks)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/MentionCheckResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/MentionCheckResult.ts"
+)]
 pub struct MentionCheckResult {
     /// Whether THIS persona is mentioned (@name, @uniqueid, or direct address at start)
     pub is_persona_mentioned: bool,
@@ -121,7 +142,10 @@ pub struct MentionCheckResult {
 
 /// Result of response prefix cleaning
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/CleanedResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/CleanedResponse.ts"
+)]
 pub struct CleanedResponse {
     /// Cleaned text with prefixes stripped
     pub text: String,

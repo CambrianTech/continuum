@@ -65,6 +65,8 @@ export interface GpuMixin {
 	gpuSetBudget(subsystem: string, budgetMb: number): Promise<GpuStatsResponse>;
 	gpuEvictionRegistry(): Promise<EvictionRegistrySnapshotInfo>;
 	gpuEvictionCandidates(): Promise<EvictableEntryInfo[]>;
+	gpuRegisterConsumer(id: string, label: string, bytes: number, priority?: string): Promise<{ registered: boolean; pressure: number }>;
+	gpuUnregisterConsumer(id: string, bytes: number): Promise<{ unregistered: boolean; pressure: number }>;
 }
 
 function mapSubsystem(s: RustSubsystemStats): SubsystemInfo {
@@ -177,6 +179,25 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 			const response = await this.request({ command: 'gpu/eviction-candidates' });
 			if (!response.success) throw new Error(response.error || 'Failed to get eviction candidates');
 			return (response.result as RustEvictableEntry[]).map(mapEvictableEntry);
+		}
+
+		/**
+		 * Register an external GPU consumer (e.g., training subprocess).
+		 * Makes it visible in eviction registry and accounts for memory in pressure calculation.
+		 */
+		async gpuRegisterConsumer(id: string, label: string, bytes: number, priority = 'batch'): Promise<{ registered: boolean; pressure: number }> {
+			const response = await this.request({ command: 'gpu/register-consumer', id, label, bytes, priority });
+			if (!response.success) throw new Error(response.error || 'Failed to register GPU consumer');
+			return { registered: true, pressure: Number((response.result as any).pressure) };
+		}
+
+		/**
+		 * Unregister an external GPU consumer and release its accounted memory.
+		 */
+		async gpuUnregisterConsumer(id: string, bytes: number): Promise<{ unregistered: boolean; pressure: number }> {
+			const response = await this.request({ command: 'gpu/unregister-consumer', id, bytes });
+			if (!response.success) throw new Error(response.error || 'Failed to unregister GPU consumer');
+			return { unregistered: true, pressure: Number((response.result as any).pressure) };
 		}
 	};
 }

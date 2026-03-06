@@ -27,12 +27,15 @@ pub struct EmbeddingModel {
     pub name: String,
     pub dimensions: usize,
     pub provider: EmbeddingProvider,
-        pub max_tokens: Option<usize>,
+    pub max_tokens: Option<usize>,
 }
 
 /// Embedding provider
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export, export_to = "../../../shared/generated/orm/EmbeddingProvider.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/EmbeddingProvider.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingProvider {
     Fastembed,
@@ -52,7 +55,10 @@ impl Default for EmbeddingModel {
 
 /// Similarity metric for vector search
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export, export_to = "../../../shared/generated/orm/SimilarityMetric.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/SimilarityMetric.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SimilarityMetric {
     Cosine,
@@ -68,7 +74,10 @@ impl Default for SimilarityMetric {
 
 /// Hybrid search mode
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
-#[ts(export, export_to = "../../../shared/generated/orm/HybridSearchMode.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/HybridSearchMode.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum HybridSearchMode {
     Semantic,
@@ -84,14 +93,17 @@ impl Default for HybridSearchMode {
 
 /// Vector search query options
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorSearchOptions.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorSearchOptions.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchOptions {
     pub collection: String,
 
     /// Query can be text (will generate embedding) OR pre-computed vector
-        pub query_text: Option<String>,
-        #[ts(type = "Array<number> | undefined")]
+    pub query_text: Option<String>,
+    #[ts(type = "Array<number> | undefined")]
     pub query_vector: Option<VectorEmbedding>,
 
     /// Number of results (default: 10)
@@ -111,15 +123,15 @@ pub struct VectorSearchOptions {
     pub hybrid_ratio: f32,
 
     /// Metadata filters
-        #[ts(type = "Record<string, unknown> | undefined")]
+    #[ts(type = "Record<string, unknown> | undefined")]
     pub filter: Option<Value>,
 
     /// Model selection
-        pub embedding_model: Option<EmbeddingModel>,
+    pub embedding_model: Option<EmbeddingModel>,
 
     /// Pagination
-        pub offset: Option<usize>,
-        pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
 
     /// Similarity metric
     #[serde(default)]
@@ -155,7 +167,10 @@ impl Default for VectorSearchOptions {
 
 /// Vector search result with similarity score
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorSearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorSearchResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchResult {
     pub id: UUID,
@@ -165,100 +180,124 @@ pub struct VectorSearchResult {
     pub score: f32,
     /// Vector distance (lower = more similar)
     pub distance: f32,
-        pub metadata: Option<VectorResultMetadata>,
+    pub metadata: Option<VectorResultMetadata>,
 }
 
 /// Metadata for vector search result
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorResultMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorResultMetadata.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorResultMetadata {
     pub collection: String,
-        pub embedding_model: Option<String>,
-        pub query_time: Option<u64>,
+    pub embedding_model: Option<String>,
+    pub query_time: Option<u64>,
 }
 
 /// Full vector search response
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorSearchResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorSearchResponse.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchResponse {
     pub results: Vec<VectorSearchResult>,
     pub total_results: usize,
-        #[ts(type = "Array<number> | undefined")]
+    #[ts(type = "Array<number> | undefined")]
     pub query_vector: Option<VectorEmbedding>,
     pub metadata: VectorResponseMetadata,
 }
 
 /// Metadata for vector search response
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorResponseMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorResponseMetadata.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorResponseMetadata {
     pub collection: String,
     pub search_mode: HybridSearchMode,
     pub embedding_model: String,
     pub query_time: u64,
-        pub cache_hit: Option<bool>,
+    pub cache_hit: Option<bool>,
 }
 
 /// Embedding generation request
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/GenerateEmbeddingRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/GenerateEmbeddingRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateEmbeddingRequest {
     pub text: String,
-        pub model: Option<EmbeddingModel>,
+    pub model: Option<EmbeddingModel>,
 }
 
 /// Embedding generation response
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/GenerateEmbeddingResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/GenerateEmbeddingResponse.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateEmbeddingResponse {
     #[ts(type = "Array<number>")]
     pub embedding: VectorEmbedding,
     pub model: EmbeddingModel,
-        pub token_count: Option<usize>,
-        pub generation_time: Option<u64>,
+    pub token_count: Option<usize>,
+    pub generation_time: Option<u64>,
 }
 
 /// Index vector request - store embedding for a record
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/IndexVectorRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/IndexVectorRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexVectorRequest {
     pub collection: String,
     pub id: UUID,
     #[ts(type = "Array<number>")]
     pub embedding: VectorEmbedding,
-        pub metadata: Option<IndexVectorMetadata>,
+    pub metadata: Option<IndexVectorMetadata>,
 }
 
 /// Metadata for index vector request
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/IndexVectorMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/IndexVectorMetadata.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexVectorMetadata {
-        pub embedding_model: Option<String>,
-        pub generated_at: Option<String>,
+    pub embedding_model: Option<String>,
+    pub generated_at: Option<String>,
 }
 
 /// Backfill vectors request - generate embeddings for existing records
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/BackfillVectorsRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/BackfillVectorsRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BackfillVectorsRequest {
     pub collection: String,
     /// Field to generate embeddings from (e.g., 'content')
     pub text_field: String,
     /// Only backfill matching records
-        #[ts(type = "Record<string, unknown> | undefined")]
+    #[ts(type = "Record<string, unknown> | undefined")]
     pub filter: Option<Value>,
     /// Process N records at a time (default: 100)
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-        pub model: Option<EmbeddingModel>,
+    pub model: Option<EmbeddingModel>,
 }
 
 fn default_batch_size() -> usize {
@@ -267,33 +306,42 @@ fn default_batch_size() -> usize {
 
 /// Backfill vectors progress
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/BackfillVectorsProgress.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/BackfillVectorsProgress.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BackfillVectorsProgress {
     pub total: usize,
     pub processed: usize,
     pub failed: usize,
     pub elapsed_time: u64,
-        pub estimated_remaining: Option<u64>,
+    pub estimated_remaining: Option<u64>,
 }
 
 /// Vector index statistics
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorIndexStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorIndexStats.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorIndexStats {
     pub collection: String,
     pub total_records: usize,
     pub records_with_vectors: usize,
     pub vector_dimensions: usize,
-        pub embedding_model: Option<String>,
-        pub index_size: Option<usize>,
-        pub last_updated: Option<String>,
+    pub embedding_model: Option<String>,
+    pub index_size: Option<usize>,
+    pub last_updated: Option<String>,
 }
 
 /// Vector search capabilities
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/orm/VectorSearchCapabilities.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/orm/VectorSearchCapabilities.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchCapabilities {
     pub supports_vector_search: bool,

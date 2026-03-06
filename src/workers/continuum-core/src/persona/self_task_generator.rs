@@ -30,7 +30,7 @@ pub struct SelfTaskGeneratorConfig {
 impl Default for SelfTaskGeneratorConfig {
     fn default() -> Self {
         Self {
-            memory_review_interval_ms: 3_600_000,   // 1 hour
+            memory_review_interval_ms: 3_600_000,    // 1 hour
             skill_audit_interval_ms: 21_600_000,     // 6 hours
             unfinished_work_threshold_ms: 1_800_000, // 30 minutes
         }
@@ -137,12 +137,7 @@ impl SelfTaskGenerator {
     }
 
     /// Create a task JSON value (not yet persisted).
-    fn create_task(
-        &self,
-        task_type: &str,
-        description: &str,
-        priority: f64,
-    ) -> Option<Value> {
+    fn create_task(&self, task_type: &str, description: &str, priority: f64) -> Option<Value> {
         Some(serde_json::json!({
             "id": Uuid::new_v4().to_string(),
             "assigneeId": self.persona_id.to_string(),
@@ -166,12 +161,17 @@ impl SelfTaskGenerator {
         executor: &crate::runtime::command_executor::CommandExecutor,
     ) -> Result<Value, String> {
         let id = task.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        executor.execute_json("data/create", serde_json::json!({
-            "dbPath": db_path,
-            "collection": "tasks",
-            "id": id,
-            "data": task,
-        })).await
+        executor
+            .execute_json(
+                "data/create",
+                serde_json::json!({
+                    "dbPath": db_path,
+                    "collection": "tasks",
+                    "id": id,
+                    "data": task,
+                }),
+            )
+            .await
     }
 
     /// Detect in_progress tasks that haven't been updated recently.
@@ -180,15 +180,20 @@ impl SelfTaskGenerator {
         db_path: &str,
         executor: &crate::runtime::command_executor::CommandExecutor,
     ) -> Result<Vec<Value>, String> {
-        let result = executor.execute_json("data/query", serde_json::json!({
-            "dbPath": db_path,
-            "collection": "tasks",
-            "filter": {
-                "assigneeId": { "$eq": self.persona_id.to_string() },
-                "status": { "$eq": "in_progress" }
-            },
-            "limit": 10
-        })).await?;
+        let result = executor
+            .execute_json(
+                "data/query",
+                serde_json::json!({
+                    "dbPath": db_path,
+                    "collection": "tasks",
+                    "filter": {
+                        "assigneeId": { "$eq": self.persona_id.to_string() },
+                        "status": { "$eq": "in_progress" }
+                    },
+                    "limit": 10
+                }),
+            )
+            .await?;
 
         let records = match result.get("data").and_then(|d| d.as_array()) {
             Some(arr) => arr,
@@ -206,16 +211,20 @@ impl SelfTaskGenerator {
             };
 
             // Check if task is stale (updatedAt < threshold)
-            let updated_at = data.get("updatedAt")
+            let updated_at = data
+                .get("updatedAt")
                 .and_then(|v| v.as_str())
                 .and_then(|s| parse_iso_to_epoch_ms(s))
-                .or_else(|| data.get("createdAt")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| parse_iso_to_epoch_ms(s)))
+                .or_else(|| {
+                    data.get("createdAt")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| parse_iso_to_epoch_ms(s))
+                })
                 .unwrap_or(now_ms);
 
             if updated_at < threshold {
-                let original_desc = data.get("description")
+                let original_desc = data
+                    .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let truncated = if original_desc.len() > 200 {
@@ -240,10 +249,7 @@ impl SelfTaskGenerator {
     /// Detect domains with activity but no adapter → create enrollment tasks.
     /// Policy: minimum 10 interactions before suggesting enrollment.
     /// Returns task JSON values ready for persistence.
-    pub fn detect_enrollment_opportunities(
-        &self,
-        genome: &GenomePagingEngine,
-    ) -> Vec<Value> {
+    pub fn detect_enrollment_opportunities(&self, genome: &GenomePagingEngine) -> Vec<Value> {
         let report = genome.coverage_report();
         let mut tasks = Vec::new();
 
@@ -260,13 +266,17 @@ impl SelfTaskGenerator {
             };
 
             // Determine academy mode based on domain characteristics
-            let suggested_mode = if gap.domain == "code" || gap.domain.contains("code")
-                || gap.domain.contains("typescript") || gap.domain.contains("python")
+            let suggested_mode = if gap.domain == "code"
+                || gap.domain.contains("code")
+                || gap.domain.contains("typescript")
+                || gap.domain.contains("python")
                 || gap.domain.contains("rust")
             {
                 "coding"
-            } else if gap.domain == "creative" || gap.domain.contains("writ")
-                || gap.domain.contains("art") || gap.domain.contains("design")
+            } else if gap.domain == "creative"
+                || gap.domain.contains("writ")
+                || gap.domain.contains("art")
+                || gap.domain.contains("design")
             {
                 "project"
             } else {
@@ -304,15 +314,20 @@ impl SelfTaskGenerator {
         db_path: &str,
         executor: &crate::runtime::command_executor::CommandExecutor,
     ) -> Result<Vec<Value>, String> {
-        let result = executor.execute_json("data/query", serde_json::json!({
-            "dbPath": db_path,
-            "collection": "tasks",
-            "filter": {
-                "assigneeId": { "$eq": self.persona_id.to_string() },
-                "status": { "$eq": "failed" }
-            },
-            "limit": 5
-        })).await?;
+        let result = executor
+            .execute_json(
+                "data/query",
+                serde_json::json!({
+                    "dbPath": db_path,
+                    "collection": "tasks",
+                    "filter": {
+                        "assigneeId": { "$eq": self.persona_id.to_string() },
+                        "status": { "$eq": "failed" }
+                    },
+                    "limit": 5
+                }),
+            )
+            .await?;
 
         let records = match result.get("data").and_then(|d| d.as_array()) {
             Some(arr) => arr,
@@ -322,7 +337,8 @@ impl SelfTaskGenerator {
         // Group failures by domain
         let mut failures_by_domain: HashMap<String, usize> = HashMap::new();
         for record in records {
-            let domain = record.get("data")
+            let domain = record
+                .get("data")
                 .and_then(|d| d.get("domain"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
@@ -339,9 +355,12 @@ impl SelfTaskGenerator {
             ) {
                 // Add metadata for LoRA layer targeting
                 if let Some(obj) = task.as_object_mut() {
-                    obj.insert("metadata".to_string(), serde_json::json!({
-                        "loraLayer": format!("{domain}-expertise")
-                    }));
+                    obj.insert(
+                        "metadata".to_string(),
+                        serde_json::json!({
+                            "loraLayer": format!("{domain}-expertise")
+                        }),
+                    );
                 }
                 learning_tasks.push(task);
             }
@@ -486,7 +505,10 @@ mod tests {
         // 1970-01-01T00:00:00.000Z = 0
         assert_eq!(parse_iso_to_epoch_ms("1970-01-01T00:00:00.000Z"), Some(0));
         // 1970-01-01T00:01:00.000Z = 60000
-        assert_eq!(parse_iso_to_epoch_ms("1970-01-01T00:01:00.000Z"), Some(60000));
+        assert_eq!(
+            parse_iso_to_epoch_ms("1970-01-01T00:01:00.000Z"),
+            Some(60000)
+        );
         // Invalid
         assert_eq!(parse_iso_to_epoch_ms("not-a-date"), None);
     }
@@ -525,7 +547,10 @@ mod tests {
         }
 
         let tasks = gen.detect_enrollment_opportunities(&genome);
-        assert!(tasks.is_empty(), "Should not suggest enrollment with <10 interactions");
+        assert!(
+            tasks.is_empty(),
+            "Should not suggest enrollment with <10 interactions"
+        );
     }
 
     #[test]
@@ -539,7 +564,11 @@ mod tests {
         }
 
         let tasks = gen.detect_enrollment_opportunities(&genome);
-        assert_eq!(tasks.len(), 1, "Should suggest enrollment for gap with 15 interactions");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "Should suggest enrollment for gap with 15 interactions"
+        );
         assert_eq!(tasks[0]["taskType"], "enroll-academy");
         assert_eq!(tasks[0]["metadata"]["domain"], "web-api");
         assert_eq!(tasks[0]["metadata"]["interaction_count"], 15);
@@ -553,17 +582,15 @@ mod tests {
         let mut genome = GenomePagingEngine::new(200.0);
 
         // Register an adapter for the "code" domain
-        genome.sync_state(vec![
-            GenomeAdapterInfo {
-                name: "ts-expert".to_string(),
-                domain: "code".to_string(),
-                size_mb: 50.0,
-                priority: 0.5,
-                is_loaded: false,
-                last_used_ms: 0,
-                ollama_model_name: None,
-            }
-        ]);
+        genome.sync_state(vec![GenomeAdapterInfo {
+            name: "ts-expert".to_string(),
+            domain: "code".to_string(),
+            size_mb: 50.0,
+            priority: 0.5,
+            is_loaded: false,
+            last_used_ms: 0,
+            ollama_model_name: None,
+        }]);
 
         // Record lots of activity in the covered domain
         for _ in 0..20 {
@@ -571,7 +598,10 @@ mod tests {
         }
 
         let tasks = gen.detect_enrollment_opportunities(&genome);
-        assert!(tasks.is_empty(), "Covered domain should not trigger enrollment");
+        assert!(
+            tasks.is_empty(),
+            "Covered domain should not trigger enrollment"
+        );
     }
 
     #[test]

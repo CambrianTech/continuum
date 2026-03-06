@@ -1,7 +1,6 @@
 /// IPC Layer Unit Tests for Voice Operations
 /// Tests constants, concurrency, and correct IPC protocol
-
-use continuum_core::live::{VoiceOrchestrator, VoiceParticipant, SpeakerType, UtteranceEvent};
+use continuum_core::live::{SpeakerType, UtteranceEvent, VoiceOrchestrator, VoiceParticipant};
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;
@@ -33,11 +32,7 @@ fn test_ipc_response_uses_constant_field_name() {
     let session_id = Uuid::parse_str(TEST_SESSION).unwrap();
     let room_id = Uuid::new_v4();
 
-    orchestrator.register_session(
-        session_id,
-        room_id,
-        vec![create_test_ai(TEST_AI_1, "AI 1")],
-    );
+    orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
     // Create utterance event
     let event = UtteranceEvent {
@@ -59,10 +54,14 @@ fn test_ipc_response_uses_constant_field_name() {
     });
 
     // Verify field name matches constant
-    assert!(response.get(VOICE_RESPONSE_FIELD_RESPONDER_IDS).is_some(),
-        "Response must use constant field name");
+    assert!(
+        response.get(VOICE_RESPONSE_FIELD_RESPONDER_IDS).is_some(),
+        "Response must use constant field name"
+    );
 
-    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS].as_array().unwrap();
+    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS]
+        .as_array()
+        .unwrap();
     assert_eq!(ids.len(), 1, "Should have 1 responder");
 }
 
@@ -92,7 +91,9 @@ fn test_ipc_response_empty_array_when_no_ais() {
         VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.into_iter().map(|id| id.to_string()).collect::<Vec<String>>()
     });
 
-    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS].as_array().unwrap();
+    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS]
+        .as_array()
+        .unwrap();
     assert_eq!(ids.len(), 0, "Should return empty array");
 }
 
@@ -131,10 +132,15 @@ fn test_ipc_response_multiple_responders() {
         VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.iter().map(|id| id.to_string()).collect::<Vec<String>>()
     });
 
-    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS].as_array().unwrap();
+    let ids = response[VOICE_RESPONSE_FIELD_RESPONDER_IDS]
+        .as_array()
+        .unwrap();
     assert_eq!(ids.len(), 2, "Should have 2 responders");
 
-    let ids_as_strings: Vec<String> = ids.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let ids_as_strings: Vec<String> = ids
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
     assert!(ids_as_strings.contains(&ai1_id.to_string()));
     assert!(ids_as_strings.contains(&ai2_id.to_string()));
 }
@@ -147,11 +153,7 @@ fn test_ipc_concurrent_requests() {
     for _ in 0..5 {
         let session_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
-        orchestrator.register_session(
-            session_id,
-            room_id,
-            vec![create_test_ai(TEST_AI_1, "AI 1")],
-        );
+        orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
     }
 
     let mut handles = vec![];
@@ -185,7 +187,11 @@ fn test_ipc_concurrent_requests() {
     // All should succeed
     for handle in handles {
         let responders = handle.join().unwrap();
-        assert_eq!(responders.len(), 1, "Each concurrent request should succeed");
+        assert_eq!(
+            responders.len(),
+            1,
+            "Each concurrent request should succeed"
+        );
     }
 }
 
@@ -194,8 +200,7 @@ fn test_ipc_field_constant_value_is_correct() {
     // This test verifies the constant value matches what TypeScript expects
     // If this changes, TypeScript bindings MUST be updated
     assert_eq!(
-        VOICE_RESPONSE_FIELD_RESPONDER_IDS,
-        "responder_ids",
+        VOICE_RESPONSE_FIELD_RESPONDER_IDS, "responder_ids",
         "Field name constant must match TypeScript expectations"
     );
 }
@@ -206,11 +211,7 @@ fn test_ipc_response_serialization() {
     let session_id = Uuid::parse_str(TEST_SESSION).unwrap();
     let room_id = Uuid::new_v4();
 
-    orchestrator.register_session(
-        session_id,
-        room_id,
-        vec![create_test_ai(TEST_AI_1, "AI 1")],
-    );
+    orchestrator.register_session(session_id, room_id, vec![create_test_ai(TEST_AI_1, "AI 1")]);
 
     let event = UtteranceEvent {
         session_id,
@@ -231,6 +232,12 @@ fn test_ipc_response_serialization() {
 
     // Verify it can be serialized to string (what goes over IPC)
     let serialized = serde_json::to_string(&response).unwrap();
-    assert!(serialized.contains("responder_ids"), "Serialized response must contain field");
-    assert!(serialized.contains(TEST_AI_1), "Serialized response must contain AI ID");
+    assert!(
+        serialized.contains("responder_ids"),
+        "Serialized response must contain field"
+    );
+    assert!(
+        serialized.contains(TEST_AI_1),
+        "Serialized response must contain AI ID"
+    );
 }

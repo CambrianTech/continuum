@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use sysinfo::{System, ProcessesToUpdate};
+use sysinfo::{ProcessesToUpdate, System};
 use ts_rs::TS;
 
 // =============================================================================
@@ -87,7 +87,10 @@ pub struct ProcessStats {
 
 /// Full system resource snapshot — returned by `system/resources` IPC command.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/SystemResourceSnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/SystemResourceSnapshot.ts"
+)]
 pub struct SystemResourceSnapshot {
     /// CPU statistics
     pub cpu: CpuStats,
@@ -142,7 +145,10 @@ impl SystemResourceMonitor {
         let physical_cores = system.physical_core_count().unwrap_or(1) as u32;
         let cpus = system.cpus();
         let logical_cores = cpus.len() as u32;
-        let brand = cpus.first().map(|c| c.brand().to_string()).unwrap_or_default();
+        let brand = cpus
+            .first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_default();
 
         let cpu = CpuStats {
             physical_cores,
@@ -173,7 +179,12 @@ impl SystemResourceMonitor {
             inner.system.refresh_memory();
 
             inner.cpu.global_usage = inner.system.global_cpu_usage() / 100.0;
-            inner.cpu.per_core_usage = inner.system.cpus().iter().map(|c| c.cpu_usage() / 100.0).collect();
+            inner.cpu.per_core_usage = inner
+                .system
+                .cpus()
+                .iter()
+                .map(|c| c.cpu_usage() / 100.0)
+                .collect();
             inner.memory = Self::read_memory(&inner.system);
             inner.last_refresh_ms = now_ms();
 
@@ -213,7 +224,12 @@ impl SystemResourceMonitor {
             inner.system.refresh_processes(ProcessesToUpdate::All, true);
 
             inner.cpu.global_usage = inner.system.global_cpu_usage() / 100.0;
-            inner.cpu.per_core_usage = inner.system.cpus().iter().map(|c| c.cpu_usage() / 100.0).collect();
+            inner.cpu.per_core_usage = inner
+                .system
+                .cpus()
+                .iter()
+                .map(|c| c.cpu_usage() / 100.0)
+                .collect();
             inner.memory = Self::read_memory(&inner.system);
             inner.last_refresh_ms = now_ms();
 
@@ -233,7 +249,8 @@ impl SystemResourceMonitor {
 
     /// Get cached CPU stats (no refresh).
     pub fn cpu(&self) -> CpuStats {
-        self.inner.lock()
+        self.inner
+            .lock()
             .map(|inner| inner.cpu.clone())
             .unwrap_or_else(|_| CpuStats {
                 physical_cores: 1,
@@ -246,7 +263,8 @@ impl SystemResourceMonitor {
 
     /// Get cached memory stats (no refresh).
     pub fn memory(&self) -> MemoryStats {
-        self.inner.lock()
+        self.inner
+            .lock()
             .map(|inner| inner.memory.clone())
             .unwrap_or_else(|_| MemoryStats {
                 total_bytes: 0,
@@ -308,7 +326,11 @@ impl SystemResourceMonitor {
         let total = system.total_memory();
         let used = system.used_memory();
         let available = total.saturating_sub(used);
-        let pressure = if total > 0 { used as f32 / total as f32 } else { 0.0 };
+        let pressure = if total > 0 {
+            used as f32 / total as f32
+        } else {
+            0.0
+        };
 
         MemoryStats {
             total_bytes: total,
@@ -321,7 +343,9 @@ impl SystemResourceMonitor {
     }
 
     fn read_processes(system: &System, top_n: usize) -> ProcessStats {
-        let mut by_cpu: Vec<TopProcess> = system.processes().values()
+        let mut by_cpu: Vec<TopProcess> = system
+            .processes()
+            .values()
             .map(|p| TopProcess {
                 pid: p.pid().as_u32(),
                 name: p.name().to_string_lossy().to_string(),
@@ -331,7 +355,11 @@ impl SystemResourceMonitor {
             .collect();
 
         // Sort by CPU descending
-        by_cpu.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal));
+        by_cpu.sort_by(|a, b| {
+            b.cpu_percent
+                .partial_cmp(&a.cpu_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let top_by_cpu: Vec<TopProcess> = by_cpu.iter().take(top_n).cloned().collect();
 
         // Sort by memory descending
@@ -391,8 +419,11 @@ mod tests {
         let monitor = SystemResourceMonitor::new();
         let mem = monitor.memory();
         assert!(mem.total_bytes > 0, "Total memory should be > 0");
-        assert!(mem.pressure >= 0.0 && mem.pressure <= 1.0,
-            "Memory pressure should be 0.0-1.0, got {}", mem.pressure);
+        assert!(
+            mem.pressure >= 0.0 && mem.pressure <= 1.0,
+            "Memory pressure should be 0.0-1.0, got {}",
+            mem.pressure
+        );
     }
 
     #[test]
@@ -415,24 +446,32 @@ mod tests {
         assert!(snapshot.processes.is_some());
         let procs = snapshot.processes.unwrap();
         // Should find at least 1 process (our own test process)
-        assert!(!procs.top_by_cpu.is_empty() || !procs.top_by_memory.is_empty(),
-            "Should find at least one process");
+        assert!(
+            !procs.top_by_cpu.is_empty() || !procs.top_by_memory.is_empty(),
+            "Should find at least one process"
+        );
     }
 
     #[test]
     fn test_cpu_pressure_range() {
         let monitor = SystemResourceMonitor::new();
         let pressure = monitor.cpu_pressure();
-        assert!(pressure >= 0.0 && pressure <= 1.0,
-            "CPU pressure should be 0.0-1.0, got {}", pressure);
+        assert!(
+            pressure >= 0.0 && pressure <= 1.0,
+            "CPU pressure should be 0.0-1.0, got {}",
+            pressure
+        );
     }
 
     #[test]
     fn test_memory_pressure_range() {
         let monitor = SystemResourceMonitor::new();
         let pressure = monitor.memory_pressure();
-        assert!(pressure >= 0.0 && pressure <= 1.0,
-            "Memory pressure should be 0.0-1.0, got {}", pressure);
+        assert!(
+            pressure >= 0.0 && pressure <= 1.0,
+            "Memory pressure should be 0.0-1.0, got {}",
+            pressure
+        );
     }
 
     #[test]
@@ -440,7 +479,10 @@ mod tests {
         let monitor = SystemResourceMonitor::new();
         let snap = monitor.snapshot();
         assert!(snap.cpu.physical_cores >= 1);
-        assert!(snap.processes.is_none(), "snapshot() should not include processes");
+        assert!(
+            snap.processes.is_none(),
+            "snapshot() should not include processes"
+        );
     }
 
     // ── ts-rs binding tests ─────────────────────────────────────────

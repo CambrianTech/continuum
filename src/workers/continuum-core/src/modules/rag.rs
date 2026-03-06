@@ -14,10 +14,10 @@
 //! This allows video games to pass scene/move context, VR apps to pass spatial
 //! data, chat to pass conversation history - all in the same batched call.
 
-use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
-use crate::memory::PersonaMemoryManager;
-use crate::logging::TimingGuard;
 use crate::log_info;
+use crate::logging::TimingGuard;
+use crate::memory::PersonaMemoryManager;
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +34,10 @@ use ts_rs::TS;
 
 /// Memory source params — for semantic memory recall
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/MemorySourceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/MemorySourceParams.ts"
+)]
 pub struct MemorySourceParams {
     /// Query text for semantic search
     #[ts(optional)]
@@ -46,7 +49,10 @@ pub struct MemorySourceParams {
 
 /// Consciousness source params — temporal + cross-context awareness
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/ConsciousnessSourceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/ConsciousnessSourceParams.ts"
+)]
 pub struct ConsciousnessSourceParams {
     /// Current message for context
     #[ts(optional)]
@@ -58,7 +64,10 @@ pub struct ConsciousnessSourceParams {
 
 /// Scene source params — for video games, VR, 3D apps
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/SceneSourceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/SceneSourceParams.ts"
+)]
 pub struct SceneSourceParams {
     /// Scene/level identifier
     pub scene_id: String,
@@ -74,7 +83,10 @@ pub struct SceneSourceParams {
 
 /// Project source params — for code/workspace context
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/ProjectSourceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/ProjectSourceParams.ts"
+)]
 pub struct ProjectSourceParams {
     /// Project root path
     pub project_path: String,
@@ -104,7 +116,10 @@ pub struct CustomSection {
 
 /// Custom source params — passthrough for extensions (only place with flexibility)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/CustomSourceParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/CustomSourceParams.ts"
+)]
 pub struct CustomSourceParams {
     /// Pre-computed sections to pass through
     pub sections: Vec<CustomSection>,
@@ -115,7 +130,10 @@ pub struct CustomSourceParams {
 /// RAG source request — discriminated union by source_type
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "source_type")]
-#[ts(export, export_to = "../../../shared/generated/rag/RagSourceRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/RagSourceRequest.ts"
+)]
 pub enum RagSourceRequest {
     /// Memory recall source
     #[serde(rename = "memory")]
@@ -175,7 +193,10 @@ impl RagSourceRequest {
 
 /// Memory source metadata
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/MemorySourceMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/MemorySourceMetadata.ts"
+)]
 pub struct MemorySourceMetadata {
     pub memory_count: usize,
     pub total_candidates: usize,
@@ -185,7 +206,10 @@ pub struct MemorySourceMetadata {
 
 /// Temporal info for consciousness
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/ConsciousnessTemporalInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/ConsciousnessTemporalInfo.ts"
+)]
 pub struct ConsciousnessTemporalInfo {
     #[ts(optional)]
     pub last_active_context: Option<String>,
@@ -195,7 +219,10 @@ pub struct ConsciousnessTemporalInfo {
 
 /// Consciousness source metadata
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/ConsciousnessSourceMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/ConsciousnessSourceMetadata.ts"
+)]
 pub struct ConsciousnessSourceMetadata {
     pub cross_context_count: usize,
     pub intention_count: usize,
@@ -214,7 +241,10 @@ pub struct EmptyMetadata {}
 /// RAG source metadata — discriminated union by source_type
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "source_type")]
-#[ts(export, export_to = "../../../shared/generated/rag/RagSourceMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/RagSourceMetadata.ts"
+)]
 pub enum RagSourceMetadata {
     #[serde(rename = "memory")]
     Memory(MemorySourceMetadata),
@@ -298,7 +328,10 @@ pub struct RagComposeRequest {
 
 /// Full RAG compose result.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/RagComposeResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/RagComposeResult.ts"
+)]
 pub struct RagComposeResult {
     /// Results from each source (parallel-loaded)
     pub source_results: Vec<RagSourceResult>,
@@ -352,7 +385,10 @@ impl RagState {
         let max_results = (budget_tokens / 80).max(3);
 
         let req = crate::memory::MultiLayerRecallRequest {
-            query_text: params.query_text.clone().or_else(|| query_text.map(|s| s.to_string())),
+            query_text: params
+                .query_text
+                .clone()
+                .or_else(|| query_text.map(|s| s.to_string())),
             room_id: room_id.to_string(),
             max_results,
             layers: params.layers.clone(),
@@ -360,20 +396,22 @@ impl RagState {
 
         match self.memory_manager.multi_layer_recall(persona_id, &req) {
             Ok(resp) => {
-                let sections: Vec<RagSection> = resp.memories.iter().map(|mem| {
-                    RagSection {
+                let sections: Vec<RagSection> = resp
+                    .memories
+                    .iter()
+                    .map(|mem| RagSection {
                         section_type: "memory".to_string(),
                         content: mem.content.clone(),
                         relevance: mem.relevance_score,
                         source_ref: Some(format!("memory:{}", mem.id)),
-                    }
-                }).collect();
+                    })
+                    .collect();
 
-                let tokens_used = sections.iter()
-                    .map(|s| s.content.len() / 4)
-                    .sum();
+                let tokens_used = sections.iter().map(|s| s.content.len() / 4).sum();
 
-                let layers_str = resp.layer_timings.iter()
+                let layers_str = resp
+                    .layer_timings
+                    .iter()
                     .map(|l| format!("{}({})", l.layer, l.results_found))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -422,7 +460,10 @@ impl RagState {
 
         let req = crate::memory::ConsciousnessContextRequest {
             room_id: room_id.to_string(),
-            current_message: params.current_message.clone().or_else(|| query_text.map(|s| s.to_string())),
+            current_message: params
+                .current_message
+                .clone()
+                .or_else(|| query_text.map(|s| s.to_string())),
             skip_semantic_search: params.skip_semantic_search,
         };
 
@@ -439,9 +480,7 @@ impl RagState {
                     vec![]
                 };
 
-                let tokens_used = sections.iter()
-                    .map(|s| s.content.len() / 4)
-                    .sum();
+                let tokens_used = sections.iter().map(|s| s.content.len() / 4).sum();
 
                 RagSourceResult {
                     source_type: "consciousness".to_string(),
@@ -517,7 +556,8 @@ impl RagState {
             source_ref: Some(format!("scene:{}", params.scene_id)),
         }];
 
-        let tokens_used = sections.iter()
+        let tokens_used = sections
+            .iter()
             .map(|s| s.content.len() / 4)
             .sum::<usize>()
             .min(budget_tokens);
@@ -566,7 +606,8 @@ impl RagState {
             source_ref: Some(format!("project:{}", params.project_path)),
         }];
 
-        let tokens_used = sections.iter()
+        let tokens_used = sections
+            .iter()
             .map(|s| s.content.len() / 4)
             .sum::<usize>()
             .min(budget_tokens);
@@ -591,16 +632,19 @@ impl RagState {
         let start = Instant::now();
 
         // Convert CustomSection to RagSection
-        let sections: Vec<RagSection> = params.sections.iter().map(|s| {
-            RagSection {
+        let sections: Vec<RagSection> = params
+            .sections
+            .iter()
+            .map(|s| RagSection {
                 section_type: s.section_type.clone(),
                 content: s.content.clone(),
                 relevance: s.relevance,
                 source_ref: s.source_ref.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
-        let tokens_used = sections.iter()
+        let tokens_used = sections
+            .iter()
             .map(|s| s.content.len() / 4)
             .sum::<usize>()
             .min(budget_tokens);
@@ -625,21 +669,26 @@ impl RagState {
         query_text: Option<&str>,
     ) -> RagSourceResult {
         match source {
-            RagSourceRequest::Memory { budget_tokens, params } => {
-                self.load_memory_source(persona_id, room_id, query_text, params, *budget_tokens)
-            }
-            RagSourceRequest::Consciousness { budget_tokens: _, params } => {
-                self.load_consciousness_source(persona_id, room_id, query_text, params)
-            }
-            RagSourceRequest::Scene { budget_tokens, params } => {
-                self.load_scene_source(params, *budget_tokens)
-            }
-            RagSourceRequest::Project { budget_tokens, params } => {
-                self.load_project_source(params, *budget_tokens)
-            }
-            RagSourceRequest::Custom { budget_tokens, params } => {
-                self.load_custom_source(params, *budget_tokens)
-            }
+            RagSourceRequest::Memory {
+                budget_tokens,
+                params,
+            } => self.load_memory_source(persona_id, room_id, query_text, params, *budget_tokens),
+            RagSourceRequest::Consciousness {
+                budget_tokens: _,
+                params,
+            } => self.load_consciousness_source(persona_id, room_id, query_text, params),
+            RagSourceRequest::Scene {
+                budget_tokens,
+                params,
+            } => self.load_scene_source(params, *budget_tokens),
+            RagSourceRequest::Project {
+                budget_tokens,
+                params,
+            } => self.load_project_source(params, *budget_tokens),
+            RagSourceRequest::Custom {
+                budget_tokens,
+                params,
+            } => self.load_custom_source(params, *budget_tokens),
         }
     }
 }
@@ -676,11 +725,7 @@ impl ServiceModule for RagModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "rag/compose" => {
                 let _timer = TimingGuard::new("module", "rag_compose");
@@ -715,12 +760,7 @@ impl ServiceModule for RagModule {
                 let source_results: Vec<RagSourceResult> = sources
                     .iter()
                     .map(|source| {
-                        state.load_source(
-                            source,
-                            &persona_id,
-                            &room_id,
-                            query_text.as_deref(),
-                        )
+                        state.load_source(source, &persona_id, &room_id, query_text.as_deref())
                     })
                     .collect();
 
@@ -731,10 +771,15 @@ impl ServiceModule for RagModule {
                 let compose_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
                 log_info!(
-                    "module", "rag_compose",
+                    "module",
+                    "rag_compose",
                     "RAG compose for {}: {} sources ({} ok, {} failed), {} tokens in {:.1}ms",
-                    persona_id, sources.len(), sources_succeeded, sources_failed,
-                    total_tokens, compose_time_ms
+                    persona_id,
+                    sources.len(),
+                    sources_succeeded,
+                    sources_failed,
+                    total_tokens,
+                    compose_time_ms
                 );
 
                 let result = RagComposeResult {
@@ -745,14 +790,18 @@ impl ServiceModule for RagModule {
                     sources_failed,
                 };
 
-                Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
             }
 
             _ => Err(format!("Unknown rag command: {command}")),
         }
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]
