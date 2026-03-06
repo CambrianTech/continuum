@@ -161,10 +161,10 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
     // Academy sessions run multiple topics (curriculum → synthesize → train → exam per topic).
     // Each topic takes ~30-60s for deterministic grading, longer if training is needed.
-    // Scale timeout with challenge count: base 600s + 60s per challenge + training buffer.
+    // Scale timeout: base 600s + 120s per challenge (initial + re-exam) + training buffer.
     // Post-benchmark training on N examples × E epochs × ~15s each can take significant time.
     const trainingBuffer = config.questionsPerExam * (config.epochs ?? 3) * 15;
-    const pipelineTimeout = Math.max(1800, 600 + config.questionsPerExam * 60 + trainingBuffer);
+    const pipelineTimeout = Math.max(1800, 600 + config.questionsPerExam * 120 + trainingBuffer);
     const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-', realclasseval: 'realclasseval-' } as const;
     const modePrefix = modePrefixMap[mode];
     const modeLabel = mode === 'realclasseval' ? 'RealClassEval' : mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';

@@ -4,13 +4,20 @@
  *
  * The teacher:
  * 1. Prepares challenges from pre-computed challenges.json (no LLM needed)
- * 2. Loops through ALL challenges:
+ * 2. Loops through ALL challenges (initial exam):
  *    a. Presents skeleton + tests to the student
  *    b. Receives the student's implementation
  *    c. Runs PYNGUIN tests deterministically
  *    d. Parses pytest output to determine pass/fail
- *    e. On fail: synthesizes targeted training data, waits for student to train
- * 3. Reports aggregate Pass@1 score
+ *    e. Writes per-challenge result to tracking file
+ * 3. Generates remediation JSONL from reference implementations
+ * 4. Emits session:complete with initial scores
+ * 5. If training data was generated (failures existed):
+ *    a. Waits for student to finish training (reexam:ready)
+ *    b. Re-runs the SAME challenges (re-exam)
+ *    c. Writes comparison to file
+ * 6. Reads comparison file (top-level step for stable interpolation)
+ * 7. Emits reexam:complete if comparison data exists
  */
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
@@ -21,18 +28,19 @@ import { academyEvent } from '../../genome/shared/AcademyTypes';
  * Build the RealClassEval teacher sentinel pipeline.
  *
  * Step flow:
- *   0: Shell — Prepare challenges.json (deterministic extraction, no LLM)
+ *   0: Shell — Prepare challenges.json
  *   1: Shell — Read challenges.json
- *   2: Emit — curriculum:ready (with challenge count)
- *   3: Loop (one iteration per challenge):
- *     loop.0: Emit — challenge:ready
- *     loop.1: Watch — challenge:attempted
- *     loop.2: Shell — Run tests
- *     loop.3: Shell — Parse pytest output (deterministic grading, no LLM)
- *     loop.4: Condition — passed?
- *       Then: [Emit verdict:ready (passed)]
- *       Else: [synthesize, Emit verdict:ready (with datasetPath), Watch training:complete]
- *   4: Emit — session:complete with aggregate score
+ *   2: Emit — curriculum:ready
+ *   3: Loop (initial exam with results tracking)
+ *   4: Shell — Generate remediation JSONL
+ *   5: Emit — session:complete
+ *   6: Condition — failures exist? (datasetPath truthy)
+ *     Then: [Watch reexam:ready, Re-exam loop, Shell write comparison]
+ *     Else: []
+ *   7: Shell — Read comparison.json (allowFailure — no-op if no re-exam)
+ *   8: Condition — comparison data exists?
+ *     Then: [Emit reexam:complete]
+ *     Else: []
  */
 export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPipelineConfig): Pipeline {
   const {
@@ -44,10 +52,10 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
   } = config;
 
   const evt = (action: string) => academyEvent(sessionId, action as any);
-  // Per-iteration event name — includes {{input.iteration}} so each challenge loop iteration
-  // has unique event names. Without this, the ring buffer's find_recent_event matches by name
-  // and consumes events from the wrong iteration when teacher/student run at different speeds.
   const iterEvt = (action: string) => `${academyEvent(sessionId, action as any)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as any)}:{{input.iteration}}`;
+
+  const resultsDir = `${datasetDir}/session-${sessionId.slice(0, 8)}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Prepare challenges.json from eval.jsonl (deterministic, no LLM)
@@ -81,17 +89,14 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
       },
     },
 
-    // Step 3: Challenge loop — one iteration per challenge
+    // Step 3: Initial exam — challenge loop (writes initial-results.jsonl)
     {
       type: 'loop',
       count: academyConfig.questionsPerExam,
-      steps: buildChallengeSteps(sessionId, skill, personaName, datasetDir, academyConfig, evt, iterEvt),
+      steps: buildChallengeSteps(sessionId, datasetDir, academyConfig, iterEvt, resultsDir, 'initial-results.jsonl'),
     },
 
-    // Step 4: Generate training JSONL from all challenges.
-    // For each challenge with a reference implementation, create a training example:
-    //   user: skeleton + tests → assistant: correct solution
-    // This is deterministic — no LLM needed.
+    // Step 4: Generate training JSONL from reference implementations
     {
       type: 'shell',
       cmd: 'python3',
@@ -115,6 +120,85 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
         datasetPath: '{{steps.4.output.datasetPath}}',
         trainingExamples: '{{steps.4.output.exampleCount}}',
       },
+    },
+
+    // Step 6: Condition — any failures? (remediation data exists → re-exam after training)
+    {
+      type: 'condition',
+      if: '{{steps.4.output.datasetPath}}',
+      then: [
+        // Then.0: Wait for student to finish training
+        {
+          type: 'watch',
+          event: evt('reexam:ready'),
+          timeoutSecs: 1800,
+        },
+
+        // Then.1: Re-exam loop — same challenges, writes reexam-results.jsonl
+        {
+          type: 'loop',
+          count: academyConfig.questionsPerExam,
+          steps: buildChallengeSteps(sessionId, datasetDir, academyConfig, reexamIterEvt, resultsDir, 'reexam-results.jsonl'),
+        },
+
+        // Then.2: Compute comparison and write to file (for stable interpolation)
+        {
+          type: 'shell',
+          cmd: [
+            'INITIAL_PASSED=$(grep -c \'"passed":true\' "$RESULTS_DIR/initial-results.jsonl" 2>/dev/null || echo 0)',
+            'REEXAM_PASSED=$(grep -c \'"passed":true\' "$RESULTS_DIR/reexam-results.jsonl" 2>/dev/null || echo 0)',
+            'INITIAL_TOTAL=$(wc -l < "$RESULTS_DIR/initial-results.jsonl" 2>/dev/null | tr -d " " || echo 0)',
+            'REEXAM_TOTAL=$(wc -l < "$RESULTS_DIR/reexam-results.jsonl" 2>/dev/null | tr -d " " || echo 0)',
+            '[ "$INITIAL_TOTAL" -eq 0 ] && INITIAL_TOTAL=1',
+            '[ "$REEXAM_TOTAL" -eq 0 ] && REEXAM_TOTAL=1',
+            'INITIAL_PCT=$((INITIAL_PASSED * 100 / INITIAL_TOTAL))',
+            'REEXAM_PCT=$((REEXAM_PASSED * 100 / REEXAM_TOTAL))',
+            'IMPROVEMENT=$((REEXAM_PASSED - INITIAL_PASSED))',
+            'RESULT=$(printf \'{"initialPassed":%d,"reexamPassed":%d,"total":%d,"initialPct":%d,"reexamPct":%d,"improvement":%d}\' "$INITIAL_PASSED" "$REEXAM_PASSED" "$INITIAL_TOTAL" "$INITIAL_PCT" "$REEXAM_PCT" "$IMPROVEMENT")',
+            'echo "$RESULT" > "$RESULTS_DIR/comparison.json"',
+            'echo "$RESULT"',
+          ].join('\n'),
+          env: {
+            RESULTS_DIR: resultsDir,
+          },
+          timeoutSecs: 10,
+        },
+      ],
+      else: [],
+    },
+
+    // Step 7: Read comparison.json (top-level step = predictable step_index 7)
+    // allowFailure: true — file won't exist if no re-exam was run
+    {
+      type: 'shell',
+      cmd: 'cat',
+      args: [`${resultsDir}/comparison.json`],
+      timeoutSecs: 5,
+      allowFailure: true,
+    },
+
+    // Step 8: Emit reexam:complete if comparison data exists
+    {
+      type: 'condition',
+      if: '{{steps.7.output.initialPassed}}',
+      then: [
+        {
+          type: 'emit',
+          event: evt('reexam:complete'),
+          payload: {
+            sessionId,
+            skill,
+            personaName,
+            initialPassed: '{{steps.7.output.initialPassed}}',
+            reexamPassed: '{{steps.7.output.reexamPassed}}',
+            total: '{{steps.7.output.total}}',
+            initialPct: '{{steps.7.output.initialPct}}',
+            reexamPct: '{{steps.7.output.reexamPct}}',
+            improvement: '{{steps.7.output.improvement}}',
+          },
+        },
+      ],
+      else: [],
     },
   ];
 
@@ -140,16 +224,16 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
  *   3: Shell — Parse pytest output into structured result (no LLM needed)
  *   4: Condition — passed?
  *      Then: [Emit verdict:ready (passed)]
- *      Else: [synthesize, Emit verdict:ready (with datasetPath), Watch training:complete]
+ *      Else: [Emit verdict:ready (failed, with pytest output)]
+ *   5: Shell — Write result to tracking file (for score comparison)
  */
 function buildChallengeSteps(
   sessionId: string,
-  skill: string,
-  personaName: string,
   datasetDir: string,
   academyConfig: RealClassEvalTeacherPipelineConfig['config'],
-  evt: (action: string) => string,
   iterEvt: (action: string) => string,
+  resultsDir: string,
+  resultsFile: string,
 ): PipelineStep[] {
   return [
     // loop.0: Emit challenge:ready (iteration-scoped event name)
@@ -174,8 +258,6 @@ function buildChallengeSteps(
     },
 
     // loop.2: Write student code to module file + run tests.
-    // Code is passed via env vars (STUDENT_CODE, TEST_CODE) to avoid shell
-    // quoting issues — env vars bypass shell interpretation entirely.
     {
       type: 'shell',
       cmd: [
@@ -196,23 +278,19 @@ function buildChallengeSteps(
     },
 
     // loop.3: Parse pytest output deterministically (no LLM needed)
-    // Pytest output passed via PYTEST_OUTPUT env var to avoid shell quoting issues.
     {
       type: 'shell',
       cmd: [
-        // Count passed, failed, errors from pytest verbose output
         'PASSED=$(echo "$PYTEST_OUTPUT" | grep -c "PASSED" || true)',
         'FAILED=$(echo "$PYTEST_OUTPUT" | grep -c "FAILED" || true)',
         'XFAILED=$(echo "$PYTEST_OUTPUT" | grep -c "XFAIL" || true)',
         'ERRORS=$(echo "$PYTEST_OUTPUT" | grep -c "ERROR" || true)',
-        // Total = passed + xfailed (both count as success) - xpass counts as fail
         'TOTAL=$((PASSED + FAILED + XFAILED + ERRORS))',
-        '[ "$TOTAL" -eq 0 ] && TOTAL=1',  // avoid div by zero
+        '[ "$TOTAL" -eq 0 ] && TOTAL=1',
         'SUCCEEDED=$((PASSED + XFAILED))',
         'SCORE=$(( (SUCCEEDED * 100) / TOTAL ))',
         `PASS_THRESHOLD=${academyConfig.passingScore}`,
         '[ "$SCORE" -ge "$PASS_THRESHOLD" ] && VERDICT="true" || VERDICT="false"',
-        // Output structured JSON
         'cat << EOF',
         '{"totalTests":$TOTAL,"testsPassed":$SUCCEEDED,"testsFailed":$((FAILED + ERRORS)),"score":$SCORE,"passed":$VERDICT}',
         'EOF',
@@ -228,7 +306,6 @@ function buildChallengeSteps(
       type: 'condition',
       if: '{{loop.3.output.passed}}',
       then: [
-        // Student passed (iteration-scoped verdict)
         {
           type: 'emit',
           event: iterEvt('verdict:ready'),
@@ -243,8 +320,6 @@ function buildChallengeSteps(
         },
       ],
       else: [
-        // Student failed — include pytest output + grading details for diagnostics.
-        // The student can use this feedback in retry attempts or training data synthesis.
         {
           type: 'emit',
           event: iterEvt('verdict:ready'),
@@ -260,6 +335,21 @@ function buildChallengeSteps(
           },
         },
       ],
+    },
+
+    // loop.5: Write result to tracking file (for initial vs re-exam comparison)
+    {
+      type: 'shell',
+      cmd: [
+        'mkdir -p "$RESULTS_DIR"',
+        'echo "$RESULT_JSON" >> "$RESULTS_DIR/$RESULTS_FILE"',
+      ].join('\n'),
+      env: {
+        RESULTS_DIR: resultsDir,
+        RESULTS_FILE: resultsFile,
+        RESULT_JSON: '{"challenge":{{input.iteration}},"score":{{loop.3.output.score}},"passed":{{loop.3.output.passed}},"totalTests":{{loop.3.output.totalTests}},"testsPassed":{{loop.3.output.testsPassed}}}',
+      },
+      timeoutSecs: 5,
     },
   ];
 }

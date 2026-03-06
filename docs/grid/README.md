@@ -28,6 +28,7 @@ If it doesn't run on a school laptop with 8GB RAM, it doesn't ship.
 | Document | Summary |
 |----------|---------|
 | [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md) | **Start here.** Architecture umbrella — principles, scaling, rollout phases, validation, economics, security |
+| [RETICULUM-TRANSPORT.md](RETICULUM-TRANSPORT.md) | Wire protocol — how `Commands.execute()` physically routes between nodes over Reticulum encrypted mesh |
 | [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md) | Discovery protocols — gossip catalog sync, bounded flood search, Kademlia DHT, semantic vector search |
 
 ### Related (other chapters)

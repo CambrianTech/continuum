@@ -19,6 +19,7 @@ The Grid is a decentralized mesh of Continuum instances sharing compute, intelli
 | Document | Scope |
 |----------|-------|
 | **This document** | Grid architecture umbrella — principles, scaling, rollout, validation, economics |
+| [RETICULUM-TRANSPORT.md](RETICULUM-TRANSPORT.md) | Wire protocol — how Commands.execute() routes between nodes over Reticulum |
 | [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md) | Discovery protocols — gossip, flood, DHT, semantic search |
 | [LORA-MESH-DISTRIBUTION.md](../genome/LORA-MESH-DISTRIBUTION.md) | Genome marketplace — Personafile format, LoRA registry, distribution |
 | [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) | Economic theory research paper |
@@ -559,6 +560,10 @@ How all Grid documents relate:
 ```
 GRID-ARCHITECTURE.md (this document)
 │   Architecture umbrella: principles, scaling, rollout, validation, economics
+│
+├── RETICULUM-TRANSPORT.md
+│   Wire protocol: pure Rust GridTransportModule, GridRouter, frame format
+│   How Commands.execute() physically routes over Reticulum links
 │
 ├── P2P-MESH-ARCHITECTURE.md
 │   Discovery protocols: gossip, bounded flood, DHT, semantic search

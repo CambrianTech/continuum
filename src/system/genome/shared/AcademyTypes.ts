@@ -50,6 +50,11 @@ export type AcademyEventAction =
   | 'milestone:attempted'
   | 'milestone:retry'
   | 'milestone:passed'
+  | 'reexam:ready'
+  | 'reexam:challenge:ready'
+  | 'reexam:challenge:attempted'
+  | 'reexam:verdict:ready'
+  | 'reexam:complete'
   | 'session:complete'
   | 'session:failed';
 
