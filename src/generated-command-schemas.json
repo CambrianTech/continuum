@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-05T21:50:00.487Z",
+  "generated": "2026-03-06T00:30:44.889Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4467,6 +4467,16 @@
           "type": "string",
           "required": false,
           "description": "provider parameter"
+        },
+        "studentModel": {
+          "type": "string",
+          "required": false,
+          "description": "studentModel parameter"
+        },
+        "studentProvider": {
+          "type": "string",
+          "required": false,
+          "description": "studentProvider parameter"
         },
         "challengeDir": {
           "type": "string",

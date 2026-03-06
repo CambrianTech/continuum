@@ -89,6 +89,14 @@ export interface AcademyConfig {
 
   /** LLM provider for teacher */
   teacherProvider?: string;
+
+  /** LLM model for student inference (attempting challenges).
+   *  Defaults to baseModel if not set. Use a cloud model when baseModel
+   *  has limited context (e.g. BF16 Candle with 2048 cap). */
+  studentModel?: string;
+
+  /** LLM provider for student inference */
+  studentProvider?: string;
 }
 
 /**

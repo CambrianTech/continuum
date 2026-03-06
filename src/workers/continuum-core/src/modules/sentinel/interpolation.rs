@@ -213,6 +213,8 @@ fn strip_markdown_fences(s: &str) -> Option<String> {
 /// Supports:
 /// - Object key access: `data.field.nested`
 /// - Array indexing: `topics.0.name` (numeric path parts index into arrays)
+/// - Wildcard collection: `iterations.*.4.data.layerId` collects the field
+///   from each array element, returning a JSON array of the collected values.
 /// - JSON string auto-parsing: if a value is a string containing JSON,
 ///   it's automatically parsed for deeper traversal (enables accessing
 ///   structured LLM output like `steps.0.output.topics.0.name`)
@@ -221,7 +223,7 @@ fn strip_markdown_fences(s: &str) -> Option<String> {
 fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
     let mut current = root.clone();
 
-    for part in parts {
+    for (i, part) in parts.iter().enumerate() {
         // Auto-parse JSON strings during traversal
         if let Value::String(ref s) = current {
             if let Ok(parsed) = serde_json::from_str::<Value>(s) {
@@ -231,6 +233,23 @@ fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
                     current = parsed;
                 }
             }
+        }
+
+        // Wildcard: collect remaining path from each array element
+        if *part == "*" {
+            if let Value::Array(arr) = &current {
+                let remaining = &parts[i + 1..];
+                let collected: Vec<Value> = arr.iter()
+                    .map(|elem| {
+                        let s = traverse_json_path(elem, remaining);
+                        // Try to preserve the original type (number, bool, etc.)
+                        serde_json::from_str::<Value>(&s).unwrap_or(Value::String(s))
+                    })
+                    .filter(|v| !v.is_null() && *v != Value::String(String::new()))
+                    .collect();
+                return serde_json::to_string(&collected).unwrap_or_else(|_| "[]".to_string());
+            }
+            return "[]".to_string();
         }
 
         // Try numeric index for arrays, string key for objects
@@ -863,5 +882,70 @@ mod tests {
 
         assert_eq!(interpolate("{{steps.0.data.text.items.0}}", &ctx), "alpha");
         assert_eq!(interpolate("{{steps.0.data.text.items.1}}", &ctx), "beta");
+    }
+
+    #[test]
+    fn test_wildcard_collection() {
+        // Simulates loop iteration results: iterations[i][j] = sub-step result
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "loop".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: None,
+                    error: None,
+                    exit_code: None,
+                    data: json!({
+                        "iterations": [
+                            [
+                                {"stepType": "watch", "data": {}},
+                                {"stepType": "command", "data": {"layerId": "aaa-111"}},
+                            ],
+                            [
+                                {"stepType": "watch", "data": {}},
+                                {"stepType": "command", "data": {"layerId": "bbb-222"}},
+                            ],
+                            [
+                                {"stepType": "watch", "data": {}},
+                                {"stepType": "command", "data": {"layerId": "ccc-333"}},
+                            ],
+                        ],
+                        "iterationsCompleted": 3,
+                    }),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // Collect layerId from sub-step 1 of each iteration
+        let result = interpolate("{{steps.0.data.iterations.*.1.data.layerId}}", &ctx);
+        assert_eq!(result, r#"["aaa-111","bbb-222","ccc-333"]"#);
+    }
+
+    #[test]
+    fn test_wildcard_empty_array() {
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "loop".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: None,
+                    error: None,
+                    exit_code: None,
+                    data: json!({"iterations": []}),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        assert_eq!(interpolate("{{steps.0.data.iterations.*.1.data.layerId}}", &ctx), "[]");
     }
 }

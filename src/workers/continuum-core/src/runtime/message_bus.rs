@@ -7,6 +7,8 @@
 //! Modules subscribe via their config().event_subscriptions.
 
 use dashmap::DashMap;
+use std::sync::Mutex;
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -27,12 +29,29 @@ pub struct BusEvent {
     pub payload: serde_json::Value,
 }
 
+/// Timestamped event for the recent event buffer.
+#[derive(Clone)]
+struct TimestampedEvent {
+    event: BusEvent,
+    at: Instant,
+}
+
+/// Maximum number of recent events to buffer.
+const RECENT_EVENT_BUFFER_SIZE: usize = 256;
+/// How long recent events remain available for replay (30 seconds).
+const RECENT_EVENT_TTL_SECS: u64 = 30;
+
 pub struct MessageBus {
     /// Subscriptions grouped by module name
     subscriptions: DashMap<&'static str, Vec<Subscription>>,
 
     /// Broadcast channel for async (deferred) event delivery
     sender: broadcast::Sender<BusEvent>,
+
+    /// Ring buffer of recent events for race-condition-safe watch steps.
+    /// Watch steps check this before subscribing to the broadcast channel
+    /// so they don't miss events emitted just before their subscription.
+    recent_events: Mutex<Vec<TimestampedEvent>>,
 }
 
 impl MessageBus {
@@ -41,7 +60,41 @@ impl MessageBus {
         Self {
             subscriptions: DashMap::new(),
             sender,
+            recent_events: Mutex::new(Vec::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
         }
+    }
+
+    /// Find and consume a recent event matching the given pattern.
+    /// Returns the event if found within the TTL window.
+    /// Removes the matched event from the buffer to prevent double-matching
+    /// across loop iterations that watch for the same event name.
+    /// Uses the same glob matching as event subscriptions.
+    pub fn find_recent_event(&self, pattern: &str) -> Option<BusEvent> {
+        let now = Instant::now();
+        let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
+        let mut buf = self.recent_events.lock().unwrap();
+        // Search from newest to oldest, find position + clone event
+        let found_idx = buf.iter().enumerate().rev()
+            .find(|(_, te)| now.duration_since(te.at) < ttl && glob_matches(pattern, &te.event.name))
+            .map(|(i, te)| (i, te.event.clone()));
+        if let Some((idx, event)) = found_idx {
+            buf.remove(idx);
+            Some(event)
+        } else {
+            None
+        }
+    }
+
+    /// Record an event in the recent buffer (ring buffer with eviction).
+    fn record_recent(&self, event: &BusEvent) {
+        let mut buf = self.recent_events.lock().unwrap();
+        if buf.len() >= RECENT_EVENT_BUFFER_SIZE {
+            buf.remove(0); // evict oldest
+        }
+        buf.push(TimestampedEvent {
+            event: event.clone(),
+            at: Instant::now(),
+        });
     }
 
     /// Subscribe to events matching a glob pattern.
@@ -97,6 +150,7 @@ impl MessageBus {
             name: event_name.to_string(),
             payload,
         };
+        self.record_recent(&event);
         // Ignore send error (no receivers is fine)
         let _ = self.sender.send(event);
     }
@@ -108,6 +162,7 @@ impl MessageBus {
             name: event_name.to_string(),
             payload,
         };
+        self.record_recent(&event);
         let _ = self.sender.send(event);
     }
 }

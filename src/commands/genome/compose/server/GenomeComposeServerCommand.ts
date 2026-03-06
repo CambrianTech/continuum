@@ -18,6 +18,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type {
   GenomeComposeParams,
   GenomeComposeResult,
+  ComposeLayerRef,
 } from '../shared/GenomeComposeTypes';
 import { createGenomeComposeResultFromParams } from '../shared/GenomeComposeTypes';
 import { Commands } from '@system/core/shared/Commands';
@@ -37,9 +38,20 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
 
   async execute(params: GenomeComposeParams): Promise<GenomeComposeResult> {
     const startTime = Date.now();
-    const { personaId, layers, baseModel } = params;
+    const { personaId, baseModel } = params;
     const strategy: CompositionStrategy = params.strategy ?? 'weighted-merge';
     const shouldActivate = params.activate !== false; // default true
+
+    // Normalize layers: accept both ComposeLayerRef[] and string[] (bare layer IDs)
+    const rawLayers = params.layers as unknown;
+    const layers: ComposeLayerRef[] = Array.isArray(rawLayers)
+      ? (rawLayers as unknown[]).map((entry, i) => {
+          if (typeof entry === 'string') {
+            return { layerId: entry as UUID, weight: 1.0, ordering: i };
+          }
+          return entry as ComposeLayerRef;
+        })
+      : [];
 
     console.log(`🧬 GENOME COMPOSE: ${layers.length} layers, strategy=${strategy}, activate=${shouldActivate}`);
 

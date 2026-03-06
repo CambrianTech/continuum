@@ -6,7 +6,7 @@
 //! - **until**: condition checked after each iteration, stops when truthy
 //! - **continuous**: no condition, runs until maxIterations (safety limit)
 
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
@@ -51,6 +51,9 @@ pub async fn execute(
         pipeline_ctx.handle_id, mode.name(), limit));
 
     let mut iteration: usize = 0;
+    // Collect per-iteration sub-step results for post-loop access.
+    // Each entry is an array of {stepType, data, output, success} for that iteration's sub-steps.
+    let mut iteration_results: Vec<Value> = Vec::new();
 
     loop {
         if iteration >= limit {
@@ -129,6 +132,22 @@ pub async fn execute(
             ctx.step_results.push(sub_result);
         }
 
+        // Snapshot this iteration's sub-step results for post-loop access.
+        // Enables {{steps.N.data.iterations[i][j].data.field}} references.
+        let loop_base = ctx.inputs.get("_loop_base")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let iter_snapshot: Vec<Value> = (loop_base..ctx.step_results.len())
+            .filter_map(|idx| ctx.step_results.get(idx))
+            .map(|r| json!({
+                "stepType": r.step_type,
+                "success": r.success,
+                "data": r.data,
+                "output": r.output,
+            }))
+            .collect();
+        iteration_results.push(Value::Array(iter_snapshot));
+
         iteration += 1;
 
         // Until mode: check condition AFTER executing
@@ -153,6 +172,7 @@ pub async fn execute(
         data: json!({
             "mode": mode.name(),
             "iterationsCompleted": iteration,
+            "iterations": iteration_results,
         }),
     })
 }

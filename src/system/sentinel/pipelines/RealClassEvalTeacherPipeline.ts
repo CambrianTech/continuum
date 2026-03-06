@@ -55,11 +55,12 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
       timeoutSecs: 10,
     },
 
-    // Step 1: Read eval split examples (these are the challenge problems)
+    // Step 1: Read a candidate pool from the eval split (limit to 2x questionsPerExam
+    // to stay within LLM context limits — full file can be 500KB+)
     {
       type: 'shell',
-      cmd: 'cat',
-      args: [`${datasetDir}/eval.jsonl`],
+      cmd: 'head',
+      args: [`-${Math.min(academyConfig.questionsPerExam * 2, 30)}`, `${datasetDir}/eval.jsonl`],
       timeoutSecs: 30,
     },
 
@@ -296,9 +297,9 @@ function buildChallengeSteps(
           event: evt('dataset:ready'),
           payload: {
             sessionId,
-            datasetPath: '{{loop.4.else.0.data.datasetPath}}',
+            datasetPath: '{{loop.4.data.datasetPath}}',
             challengeIndex: '{{input.iteration}}',
-            exampleCount: '{{loop.4.else.0.data.exampleCount}}',
+            exampleCount: '{{loop.4.data.exampleCount}}',
             isRemediation: true,
           },
         },

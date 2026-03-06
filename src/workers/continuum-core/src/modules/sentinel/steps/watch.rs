@@ -33,6 +33,26 @@ pub async fn execute(
     let bus = pipeline_ctx.bus
         .ok_or_else(|| format!("[{}] Watch step requires MessageBus", pipeline_ctx.handle_id))?;
 
+    // Check recent event buffer BEFORE subscribing to avoid race conditions.
+    // If the emit happened just before we subscribed, we'd miss it without this.
+    if let Some(recent) = bus.find_recent_event(&interpolated_pattern) {
+        log.info(&format!("[{}] Watch step: found recent event '{}' in buffer",
+            pipeline_ctx.handle_id, recent.name));
+        return Ok(StepResult {
+            step_index: index,
+            step_type: "watch".to_string(),
+            success: true,
+            duration_ms: start.elapsed().as_millis() as u64,
+            output: Some(recent.name.clone()),
+            error: None,
+            exit_code: None,
+            data: json!({
+                "event": recent.name,
+                "payload": recent.payload,
+            }),
+        });
+    }
+
     let mut receiver = bus.receiver();
 
     let result = tokio::time::timeout(timeout, async {

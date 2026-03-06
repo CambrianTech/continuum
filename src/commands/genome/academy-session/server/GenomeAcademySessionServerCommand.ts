@@ -93,6 +93,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.rank !== undefined && { rank: params.rank }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
+      ...(params.studentModel && { studentModel: params.studentModel }),
+      ...(params.studentProvider && { studentProvider: params.studentProvider }),
     };
 
     // 1. Create AcademySessionEntity (instantiate for auto-generated id)

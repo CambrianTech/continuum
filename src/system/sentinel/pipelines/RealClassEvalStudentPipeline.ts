@@ -47,10 +47,11 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for teacher to publish curriculum
+    // Teacher LLM may take several minutes (DeepSeek can be slow under load)
     {
       type: 'watch',
       event: evt('curriculum:ready'),
-      timeoutSecs: 300,
+      timeoutSecs: 600,
     },
 
     // Step 1: Challenge attempt loop
@@ -66,7 +67,9 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         },
 
         // loop.1: LLM — Implement the Python class
-        // Uses baseModel (local model) so LoRA training improves this step
+        // Uses studentModel for inference (cloud model with adequate context),
+        // while baseModel is the LoRA training target.
+        // If no studentModel configured, falls back to baseModel.
         {
           type: 'llm',
           prompt: [
@@ -86,7 +89,8 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
             '- Implement ALL methods from the skeleton',
             '- Keep the same class name and method signatures',
           ].join('\n'),
-          model: baseModel,
+          model: academyConfig.studentModel ?? baseModel,
+          ...(academyConfig.studentProvider && { provider: academyConfig.studentProvider }),
           temperature: 0.2,
           maxTokens: 4096,
         },
@@ -158,7 +162,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         personaId,
         baseModel,
         name: `${personaName}-realclasseval-${sessionId.slice(0, 8)}`,
-        layers: '{{steps.1.iterations.*.4.data.layerId}}',
+        layers: '{{steps.1.data.iterations.*.4.data.layerId}}',
         strategy: 'weighted-merge',
         activate: true,
       },

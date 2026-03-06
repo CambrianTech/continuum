@@ -38,6 +38,10 @@ export interface GenomeAcademySessionParams extends CommandParams {
   model?: string;
   /** Teacher LLM provider */
   provider?: string;
+  /** Student inference LLM model (use cloud model when baseModel has limited context) */
+  studentModel?: string;
+  /** Student inference LLM provider */
+  studentProvider?: string;
   /** [coding mode] Path to challenge directory */
   challengeDir?: string;
   /** [coding mode] Source file with intentional bugs (relative to challengeDir) */
@@ -70,6 +74,8 @@ export const createGenomeAcademySessionParams = (
     rank?: number;
     model?: string;
     provider?: string;
+    studentModel?: string;
+    studentProvider?: string;
     challengeDir?: string;
     sourceFile?: string;
     testFile?: string;
