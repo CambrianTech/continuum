@@ -166,18 +166,37 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
       ],
     },
 
-    // Step 2: Post-loop — compose all trained adapters into stacked genome
+    // Step 2: Watch for session:complete (teacher finished grading all challenges)
+    // Contains datasetPath to training JSONL generated from reference implementations.
     {
-      type: 'command',
-      command: 'genome/compose',
-      params: {
-        personaId,
-        baseModel,
-        name: `${personaName}-realclasseval-${sessionId.slice(0, 8)}`,
-        layers: '{{steps.1.data.iterations.*.4.data.layerId}}',
-        strategy: 'weighted-merge',
-        activate: true,
-      },
+      type: 'watch',
+      event: evt('session:complete'),
+      timeoutSecs: 60,
+    },
+
+    // Step 3: Train LoRA on the remediation dataset (all reference implementations).
+    // This teaches the student the correct solutions for the entire eval set.
+    {
+      type: 'condition',
+      if: '{{steps.2.data.payload.datasetPath}}',
+      then: [
+        {
+          type: 'command',
+          command: 'genome/train',
+          params: {
+            personaId,
+            personaName,
+            traitType: `realclasseval-${sessionId.slice(0, 8)}`,
+            baseModel,
+            datasetPath: '{{steps.2.data.payload.datasetPath}}',
+            rank: academyConfig.rank,
+            epochs: academyConfig.epochs,
+            learningRate: academyConfig.learningRate,
+            batchSize: academyConfig.batchSize,
+          },
+        },
+      ],
+      else: [],
     },
   ];
 

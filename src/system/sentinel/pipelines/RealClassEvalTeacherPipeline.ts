@@ -88,7 +88,22 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
       steps: buildChallengeSteps(sessionId, skill, personaName, datasetDir, academyConfig, evt, iterEvt),
     },
 
-    // Step 4: Emit session:complete
+    // Step 4: Generate training JSONL from all challenges.
+    // For each challenge with a reference implementation, create a training example:
+    //   user: skeleton + tests → assistant: correct solution
+    // This is deterministic — no LLM needed.
+    {
+      type: 'shell',
+      cmd: 'python3',
+      args: [
+        'scripts/generate-remediation-jsonl.py',
+        datasetDir,
+        sessionId,
+      ],
+      timeoutSecs: 30,
+    },
+
+    // Step 5: Emit session:complete with training data path
     {
       type: 'emit',
       event: evt('session:complete'),
@@ -97,6 +112,8 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
         skill,
         personaName,
         iterationsCompleted: '{{steps.3.data.iterationsCompleted}}',
+        datasetPath: '{{steps.4.output.datasetPath}}',
+        trainingExamples: '{{steps.4.output.exampleCount}}',
       },
     },
   ];
@@ -220,14 +237,14 @@ function buildChallengeSteps(
             passed: true,
             challengeIndex: '{{input.iteration}}',
             score: '{{loop.3.output.score}}',
+            totalTests: '{{loop.3.output.totalTests}}',
+            testsPassed: '{{loop.3.output.testsPassed}}',
           },
         },
       ],
       else: [
-        // Student failed — emit verdict without training (baseline benchmark mode).
-        // Training/remediation adds ~90s per failure and synthesis can itself fail,
-        // killing the pipeline. For the full 98-challenge benchmark, we measure
-        // raw Pass@1 first, then add remediation in a second pass.
+        // Student failed — include pytest output + grading details for diagnostics.
+        // The student can use this feedback in retry attempts or training data synthesis.
         {
           type: 'emit',
           event: iterEvt('verdict:ready'),
@@ -236,6 +253,10 @@ function buildChallengeSteps(
             passed: false,
             challengeIndex: '{{input.iteration}}',
             score: '{{loop.3.output.score}}',
+            totalTests: '{{loop.3.output.totalTests}}',
+            testsPassed: '{{loop.3.output.testsPassed}}',
+            testsFailed: '{{loop.3.output.testsFailed}}',
+            pytestOutput: '{{loop.2.output}}',
           },
         },
       ],
