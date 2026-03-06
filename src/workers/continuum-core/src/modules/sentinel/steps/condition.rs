@@ -92,7 +92,7 @@ mod tests {
             args: vec![msg.to_string()],
             timeout_secs: Some(10),
             working_dir: None,
-            allow_failure: None,
+            allow_failure: None, env: None,
         }
     }
 
@@ -102,7 +102,7 @@ mod tests {
             args: vec!["-c".to_string(), "exit 1".to_string()],
             timeout_secs: Some(10),
             working_dir: None,
-            allow_failure: None,
+            allow_failure: None, env: None,
         }
     }
 

@@ -151,35 +151,38 @@ function buildChallengeSteps(
       timeoutSecs: 600,
     },
 
-    // loop.2: Write student code to module file + run tests
+    // loop.2: Write student code to module file + run tests.
+    // Code is passed via env vars (STUDENT_CODE, TEST_CODE) to avoid shell
+    // quoting issues — env vars bypass shell interpretation entirely.
     {
       type: 'shell',
       cmd: [
         'TMPDIR=$(mktemp -d)',
-        'MODULE_NAME="{{steps.1.output.challenges.{{input.iteration}}.moduleName}}"',
+        'MODULE_NAME="$CHALLENGE_MODULE"',
         '[ -z "$MODULE_NAME" ] && MODULE_NAME="solution"',
-        "cat << 'STUDENT_CODE_EOF' > \"$TMPDIR/${MODULE_NAME}.py\"",
-        '{{loop.1.data.payload.implementation}}',
-        'STUDENT_CODE_EOF',
-        "cat << 'TEST_CODE_EOF' > \"$TMPDIR/test_solution.py\"",
-        '{{steps.1.output.challenges.{{input.iteration}}.testCode}}',
-        'TEST_CODE_EOF',
+        'printf "%s" "$STUDENT_CODE" > "$TMPDIR/${MODULE_NAME}.py"',
+        'printf "%s" "$TEST_CODE" > "$TMPDIR/test_solution.py"',
         'cd "$TMPDIR"',
         'python3 -m pytest test_solution.py -v 2>&1; true',
       ].join('\n'),
+      env: {
+        STUDENT_CODE: '{{loop.1.data.payload.implementation}}',
+        TEST_CODE: '{{steps.1.output.challenges.{{input.iteration}}.testCode}}',
+        CHALLENGE_MODULE: '{{steps.1.output.challenges.{{input.iteration}}.moduleName}}',
+      },
       timeoutSecs: 60,
     },
 
     // loop.3: Parse pytest output deterministically (no LLM needed)
+    // Pytest output passed via PYTEST_OUTPUT env var to avoid shell quoting issues.
     {
       type: 'shell',
       cmd: [
-        "OUTPUT='{{loop.2.output}}'",
         // Count passed, failed, errors from pytest verbose output
-        'PASSED=$(echo "$OUTPUT" | grep -c "PASSED" || true)',
-        'FAILED=$(echo "$OUTPUT" | grep -c "FAILED" || true)',
-        'XFAILED=$(echo "$OUTPUT" | grep -c "XFAIL" || true)',
-        'ERRORS=$(echo "$OUTPUT" | grep -c "ERROR" || true)',
+        'PASSED=$(echo "$PYTEST_OUTPUT" | grep -c "PASSED" || true)',
+        'FAILED=$(echo "$PYTEST_OUTPUT" | grep -c "FAILED" || true)',
+        'XFAILED=$(echo "$PYTEST_OUTPUT" | grep -c "XFAIL" || true)',
+        'ERRORS=$(echo "$PYTEST_OUTPUT" | grep -c "ERROR" || true)',
         // Total = passed + xfailed (both count as success) - xpass counts as fail
         'TOTAL=$((PASSED + FAILED + XFAILED + ERRORS))',
         '[ "$TOTAL" -eq 0 ] && TOTAL=1',  // avoid div by zero
@@ -192,6 +195,9 @@ function buildChallengeSteps(
         '{"totalTests":$TOTAL,"testsPassed":$SUCCEEDED,"testsFailed":$((FAILED + ERRORS)),"score":$SCORE,"passed":$VERDICT}',
         'EOF',
       ].join('\n'),
+      env: {
+        PYTEST_OUTPUT: '{{loop.2.output}}',
+      },
       timeoutSecs: 10,
     },
 
@@ -213,49 +219,19 @@ function buildChallengeSteps(
         },
       ],
       else: [
-        // Student failed — synthesize targeted training data
-        {
-          type: 'command',
-          command: 'genome/dataset-synthesize',
-          params: {
-            topic: `${skill}-realclasseval-remediation`,
-            skill,
-            personaName,
-            exampleCount: academyConfig.examplesPerTopic,
-            difficulty: 'intermediate',
-            groundingContext: [
-              'Student failed a RealClassEval Python class implementation.',
-              '',
-              'Reference implementation:',
-              '{{steps.1.output.challenges.{{input.iteration}}.referenceImpl}}',
-              '',
-              'Student attempt:',
-              '{{loop.1.data.payload.implementation}}',
-              '',
-              'Pytest output:',
-              '{{loop.2.output}}',
-            ].join('\n'),
-            ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-            ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-          },
-        },
-        // Emit verdict with datasetPath so student knows to train
+        // Student failed — emit verdict without training (baseline benchmark mode).
+        // Training/remediation adds ~90s per failure and synthesis can itself fail,
+        // killing the pipeline. For the full 98-challenge benchmark, we measure
+        // raw Pass@1 first, then add remediation in a second pass.
         {
           type: 'emit',
           event: evt('verdict:ready'),
           payload: {
             sessionId,
             passed: false,
-            datasetPath: '{{loop.4.data.datasetPath}}',
             challengeIndex: '{{input.iteration}}',
-            exampleCount: '{{loop.4.data.exampleCount}}',
+            score: '{{loop.3.output.score}}',
           },
-        },
-        // Wait for student to finish training
-        {
-          type: 'watch',
-          event: evt('training:complete'),
-          timeoutSecs: 600,
         },
       ],
     },

@@ -91,6 +91,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.passingScore !== undefined && { passingScore: params.passingScore }),
       ...(params.epochs !== undefined && { epochs: params.epochs }),
       ...(params.rank !== undefined && { rank: params.rank }),
+      ...(params.questionsPerExam !== undefined && { questionsPerExam: params.questionsPerExam }),
+      ...(params.examplesPerTopic !== undefined && { examplesPerTopic: params.examplesPerTopic }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
       ...(params.studentModel && { studentModel: params.studentModel }),
@@ -155,8 +157,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // PipelineStep[] (Rust bindings) → SentinelStep[] (TS definitions) — structurally compatible wire types
     const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
     // Academy sessions run multiple topics (curriculum → synthesize → train → exam per topic).
-    // Each topic takes 3-7 minutes, so 30 minutes covers sessions up to ~6 topics comfortably.
-    const pipelineTimeout = 1800;
+    // Each topic takes ~30-60s for deterministic grading, longer if training is needed.
+    // Scale timeout with challenge count: base 600s + 60s per challenge.
+    const pipelineTimeout = Math.max(1800, 600 + config.questionsPerExam * 60);
     const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-', realclasseval: 'realclasseval-' } as const;
     const modePrefix = modePrefixMap[mode];
     const modeLabel = mode === 'realclasseval' ? 'RealClassEval' : mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';

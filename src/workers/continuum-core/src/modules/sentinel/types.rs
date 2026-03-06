@@ -72,6 +72,11 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "allowFailure")]
         allow_failure: Option<bool>,
+        /// Environment variables set on the child process. Values are interpolated.
+        /// Use this to pass arbitrary data (code, JSON) safely — env vars bypass
+        /// shell quoting issues that break heredocs and embedded strings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<std::collections::HashMap<String, String>>,
     },
 
     /// LLM inference via AIProviderModule (default) or agentic loop via ai/agent command

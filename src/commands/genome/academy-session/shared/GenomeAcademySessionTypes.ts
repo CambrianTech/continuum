@@ -34,6 +34,10 @@ export interface GenomeAcademySessionParams extends CommandParams {
   epochs?: number;
   /** LoRA rank (default: 32) */
   rank?: number;
+  /** Number of challenges/questions per session (default: 10) */
+  questionsPerExam?: number;
+  /** Number of training examples to synthesize per failed challenge (default: 10) */
+  examplesPerTopic?: number;
   /** Teacher LLM model */
   model?: string;
   /** Teacher LLM provider */
@@ -72,6 +76,8 @@ export const createGenomeAcademySessionParams = (
     passingScore?: number;
     epochs?: number;
     rank?: number;
+    questionsPerExam?: number;
+    examplesPerTopic?: number;
     model?: string;
     provider?: string;
     studentModel?: string;

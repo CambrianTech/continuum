@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-06T00:30:44.889Z",
+  "generated": "2026-03-06T03:06:20.740Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4457,6 +4457,16 @@
           "type": "number",
           "required": false,
           "description": "rank parameter"
+        },
+        "questionsPerExam": {
+          "type": "number",
+          "required": false,
+          "description": "questionsPerExam parameter"
+        },
+        "examplesPerTopic": {
+          "type": "number",
+          "required": false,
+          "description": "examplesPerTopic parameter"
         },
         "model": {
           "type": "string",
