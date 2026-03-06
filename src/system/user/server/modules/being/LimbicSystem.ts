@@ -30,6 +30,7 @@ import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
 import type { DbHandle } from '../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
+import { Events } from '../../../../core/shared/Events';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -173,31 +174,19 @@ export class LimbicSystem {
 
     // Wire post-training activation: when training completes, re-discover adapters from filesystem
     // This closes the loop: train → write adapter to disk → discover → register + activate → inference uses new weights
-    this.trainingManager.onTrainingComplete = async (layerId: string, domain: string) => {
-      this.logger.info(`Post-training: re-discovering adapters for ${domain} (layerId=${layerId})`);
-      const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel);
-      let newCount = 0;
-      for (const [adapterDomain, adapter] of discovered) {
-        if (!this.memory.genome.hasAdapter(adapter.manifest.name)) {
-          this.memory.genome.registerAdapter({
-            name: adapter.manifest.name,
-            domain: adapter.manifest.traitType,
-            path: adapter.dirPath,
-            sizeMB: adapter.manifest.sizeMB,
-            priority: 0.7,
-          });
-          await this.memory.genome.activateSkill(adapter.manifest.name);
-          this.logger.info(`Hot-loaded adapter: ${adapter.manifest.name} (${adapterDomain})`);
-          newCount++;
-        }
-      }
-      if (newCount > 0) {
-        this.logger.info(`Hot-loaded ${newCount} new adapter(s) from training`);
-
-        // Recalculate composite embedding for this persona's genome
-        await this.recalculateCompositeEmbedding();
-      }
+    this.trainingManager.onTrainingComplete = async (_layerId: string, domain: string) => {
+      await this.hotLoadNewAdapters(domain);
     };
+
+    // Subscribe to training completion events from ANY source (sentinel pipelines, academy, etc.)
+    // This closes the loop for external training: sentinel calls genome/train → adapter saved →
+    // TrainingCompletionHandler emits event → LimbicSystem re-discovers and hot-loads the adapter.
+    // The onTrainingComplete callback above only fires for self-initiated training via PersonaTrainingManager.
+    Events.subscribe('genome:training:complete', async (payload: any) => {
+      if (payload.personaId !== this.personaId) return;
+      this.logger.info(`External training complete: ${payload.traitType ?? 'unknown'} (handle=${payload.handle})`);
+      await this.hotLoadNewAdapters(payload.traitType ?? 'unknown');
+    });
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
     // This is safe because LimbicSystem is only instantiated by PersonaUser
@@ -390,6 +379,37 @@ export class LimbicSystem {
     // Training accumulator is just data structure - no shutdown needed
     this.logger.info('Limbic system shutdown complete');
     this.logger.close();
+  }
+
+  /**
+   * Hot-load newly trained adapters from filesystem.
+   *
+   * Re-discovers all compatible adapters for this persona, registers any new ones
+   * with PersonaGenome, and activates them for immediate inference use.
+   * Called after training completes (both self-initiated and sentinel-initiated).
+   */
+  private async hotLoadNewAdapters(domain: string): Promise<void> {
+    this.logger.info(`Hot-loading adapters for domain: ${domain}`);
+    const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel);
+    let newCount = 0;
+    for (const [adapterDomain, adapter] of discovered) {
+      if (!this.memory.genome.hasAdapter(adapter.manifest.name)) {
+        this.memory.genome.registerAdapter({
+          name: adapter.manifest.name,
+          domain: adapter.manifest.traitType,
+          path: adapter.dirPath,
+          sizeMB: adapter.manifest.sizeMB,
+          priority: 0.7,
+        });
+        await this.memory.genome.activateSkill(adapter.manifest.name);
+        this.logger.info(`Hot-loaded adapter: ${adapter.manifest.name} (${adapterDomain})`);
+        newCount++;
+      }
+    }
+    if (newCount > 0) {
+      this.logger.info(`Hot-loaded ${newCount} new adapter(s) from training`);
+      await this.recalculateCompositeEmbedding();
+    }
   }
 
   /**
