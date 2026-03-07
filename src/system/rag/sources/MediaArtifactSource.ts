@@ -6,11 +6,11 @@
  * ChatRAGBuilder with a proper, recipe-controllable RAG source.
  *
  * Architecture:
- * - Queries DB directly (parallel with ConversationHistorySource — can't share cache)
- * - Fixed 50-message scan window (media is sparse, cap prevents DB congestion)
+ * - Cache-first: uses ConversationHistorySource cache, falls back to DB with 5s timeout
+ * - 50-message scan window (media is sparse, cap prevents DB congestion)
  * - Vision preprocessing is LAZY — only describe images when a non-vision model requests
- * - Vision has 10s timeout to avoid blocking the RAG build (LLaVA can take 30s+)
- * - Descriptions are CACHED via VisionDescriptionService (content-addressed, in-flight dedup)
+ * - Adaptive timeout: 90s when LLaVA pre-warm is in-flight, 10s otherwise
+ * - Descriptions CACHED via VisionDescriptionService (content-addressed, in-flight dedup)
  * - Budget controls how many artifacts to include (not all 50 images in history)
  *
  * "So the blind can see" — text-only models get descriptions of images.
@@ -22,6 +22,7 @@ import { type RAGArtifact, type MediaArtifactMetadata, hasMediaMetadata } from '
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
+import { ConversationHistorySource } from './ConversationHistorySource';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('MediaArtifactSource', 'rag');
@@ -43,9 +44,9 @@ export class MediaArtifactSource implements RAGSource {
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
     const startTime = performance.now();
 
-    // Scan a fixed window for media. We don't need hundreds of messages — media is sparse
-    // and we only want the few most recent attachments. Cap at 50 to avoid DB congestion
-    // when many personas query simultaneously.
+    // Scan window for media. Balance between finding images in chatty rooms and
+    // IPC load (base64 images are ~1MB each, 10+ personas query simultaneously).
+    // Cache-first path (from ConversationHistorySource) avoids the heavy DB query.
     const mediaScanLimit = 50;
     const extraction = await this.extractArtifacts(context.roomId, mediaScanLimit);
 
@@ -91,24 +92,54 @@ export class MediaArtifactSource implements RAGSource {
   /**
    * Extract media artifacts from conversation history.
    *
-   * Always queries DB directly — ConversationHistorySource cache uses a narrow
-   * window (recent messages only), but media scanning needs a wider window
-   * since images are sparse. Both sources run in parallel during compose,
-   * so the cache may not be populated yet anyway.
+   * Cache-first: reads from ConversationHistorySource's event-maintained cache
+   * to avoid duplicate IPC queries (base64 payloads are massive). Falls back to
+   * a DB query with 5s timeout when cache is empty or expired.
    */
   private async extractArtifacts(roomId: string, maxMessages: number): Promise<{ artifacts: RAGArtifact[]; messageCount: number; source: string }> {
-    const result = await ORM.query<ChatMessageEntity>({
-      collection: ChatMessageEntity.collection,
-      filter: { roomId },
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: maxMessages
-    }, 'default');
+    // Try ConversationHistorySource cache first — it's already loaded by RAG compose
+    // and avoids a duplicate DB query (which is expensive with base64 image payloads).
+    let messages: ChatMessageEntity[];
+    let source: string;
 
-    if (!result.success || !result.data) return { artifacts: [], messageCount: 0, source: 'db' };
-    const messages = result.data.map(record => record.data);
-    const source = 'db';
+    const cached = ConversationHistorySource.getCachedRawMessages(roomId);
+    if (cached && cached.length > 0) {
+      messages = cached.slice(0, maxMessages);
+      source = 'cache';
+    } else {
+      // Cache miss — fall back to DB query with timeout.
+      // Large base64 payloads can cause IPC congestion when 10+ personas query simultaneously.
+      const QUERY_TIMEOUT_MS = 5_000;
+      const queryPromise = ORM.query<ChatMessageEntity>({
+        collection: ChatMessageEntity.collection,
+        filter: { roomId },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: maxMessages
+      }, 'default');
+
+      const result = await Promise.race([
+        queryPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), QUERY_TIMEOUT_MS)),
+      ]);
+
+      if (!result || !result.success || !result.data) {
+        if (!result) {
+          log.warn(`Media scan query timed out after ${QUERY_TIMEOUT_MS}ms for room ${roomId}`);
+        } else {
+          log.warn(`Media scan query failed for room ${roomId}: ${result.error ?? 'no data'}`);
+        }
+        return { artifacts: [], messageCount: 0, source: 'db-fail' };
+      }
+      messages = result.data.map(record => record.data);
+      source = 'db';
+    }
 
     const artifacts: RAGArtifact[] = [];
+
+    const withMedia = messages.filter(m => m.content?.media && m.content.media.length > 0);
+    if (withMedia.length === 0) {
+      log.debug(`No media in ${messages.length} messages (source=${source})`);
+    }
 
     for (const msg of messages) {
       if (!msg.content?.media || msg.content.media.length === 0) continue;
@@ -183,21 +214,75 @@ export class MediaArtifactSource implements RAGSource {
 
     log.info(`Preprocessing ${imageArtifacts.length} image(s) for non-vision model`);
 
+    // Parallelize ALL vision requests with adaptive timeout.
+    // Sequential 10s timeouts per image caused 60s compose times (6 images × 10s).
+    // VisionDescriptionService deduplicates + caches, so parallel requests are cheap.
+    //
+    // Timeout strategy:
+    // - If ANY image has an in-flight request (pre-warm already started LLaVA),
+    //   use 90s — LLaVA on CPU takes 60-70s, worth waiting for the result
+    // - Otherwise, use 10s as a safety valve for new/unknown images
+    const hasInflight = imageArtifacts.some(a => a.base64 && visionService.descriptionStatus(a.base64) === 'inflight');
+    const VISION_TIMEOUT_MS = hasInflight ? 90_000 : 10_000;
+    if (hasInflight) {
+      log.info(`In-flight vision request detected, using extended ${VISION_TIMEOUT_MS / 1000}s timeout`);
+    }
+
+    const descriptionPromises = new Map<number, Promise<{ description: string; responseTimeMs: number; provider: string; modelId: string } | null>>();
+
+    for (let i = 0; i < artifacts.length; i++) {
+      const artifact = artifacts[i];
+      if (artifact.type !== 'image' || !artifact.base64) continue;
+      if (artifact.preprocessed?.result) continue;
+      if (artifact.content && artifact.content.length > 10) continue;
+
+      const mimeType = (hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined) ?? 'image/png';
+      descriptionPromises.set(i, visionService.describeBase64(artifact.base64, mimeType, {
+        maxLength: 500,
+        detectText: true,
+        preferredProvider: 'candle',
+      }).catch((error) => {
+        log.error('Failed to describe image:', error);
+        return null;
+      }));
+    }
+
+    // Wait for ALL descriptions in parallel with a single timeout
+    let descriptions: Map<number, { description: string; responseTimeMs: number; provider: string; modelId: string } | null>;
+    if (descriptionPromises.size > 0) {
+      const entries = Array.from(descriptionPromises.entries());
+      const keys = entries.map(([k]) => k);
+      const promises = entries.map(([, v]) => v);
+
+      const timeoutPromise = new Promise<null[]>((resolve) =>
+        setTimeout(() => resolve(promises.map(() => null)), VISION_TIMEOUT_MS)
+      );
+      const results = await Promise.race([
+        Promise.all(promises),
+        timeoutPromise,
+      ]);
+
+      descriptions = new Map(keys.map((k, i) => [k, results[i]]));
+    } else {
+      descriptions = new Map();
+    }
+
+    // Build processed artifacts with descriptions
     const processed: RAGArtifact[] = [];
 
-    for (const artifact of artifacts) {
+    for (let i = 0; i < artifacts.length; i++) {
+      const artifact = artifacts[i];
+
       if (artifact.type !== 'image' || !artifact.base64) {
         processed.push(artifact);
         continue;
       }
 
-      // Already preprocessed (cached from previous call)
       if (artifact.preprocessed?.result) {
         processed.push(artifact);
         continue;
       }
 
-      // Already has a human-provided description
       if (artifact.content && artifact.content.length > 10) {
         processed.push({
           ...artifact,
@@ -212,42 +297,22 @@ export class MediaArtifactSource implements RAGSource {
         continue;
       }
 
-      // Generate description via vision model (cached + deduped by VisionDescriptionService)
-      // Use a 10s timeout — vision inference can take 30s+ and would kill the whole RAG build.
-      // If description isn't ready, return artifact without it. Text-only models get the
-      // metadata (filename, type) which is still useful context.
-      try {
-        const mimeType = (hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined) ?? 'image/png';
-        const VISION_TIMEOUT_MS = 10_000;
-        const descriptionPromise = visionService.describeBase64(artifact.base64, mimeType, {
-          maxLength: 500,
-          detectText: true,
-          preferredProvider: 'candle',
+      const description = descriptions.get(i);
+      if (description) {
+        processed.push({
+          ...artifact,
+          content: description.description,
+          preprocessed: {
+            type: 'image_description',
+            result: description.description,
+            confidence: 0.85,
+            processingTime: description.responseTimeMs,
+            model: `${description.provider}/${description.modelId}`,
+          },
         });
-        const timeoutPromise = new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), VISION_TIMEOUT_MS)
-        );
-        const description = await Promise.race([descriptionPromise, timeoutPromise]);
-
-        if (description) {
-          processed.push({
-            ...artifact,
-            content: description.description,
-            preprocessed: {
-              type: 'image_description',
-              result: description.description,
-              confidence: 0.85,
-              processingTime: description.responseTimeMs,
-              model: `${description.provider}/${description.modelId}`,
-            },
-          });
-          log.info(`Described image (${description.responseTimeMs}ms) via ${description.modelId}`);
-        } else {
-          log.info('Vision description timed out, returning artifact without description');
-          processed.push(artifact);
-        }
-      } catch (error) {
-        log.error('Failed to describe image:', error);
+        log.info(`Described image (${description.responseTimeMs}ms) via ${description.modelId}`);
+      } else {
+        log.info('Vision description timed out or failed, returning artifact without description');
         processed.push(artifact);
       }
     }

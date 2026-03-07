@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-06T19:32:40.515Z",
+  "generated": "2026-03-07T05:43:38.966Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2902,6 +2902,17 @@
           "type": "boolean",
           "required": false,
           "description": "emitProgress parameter"
+        }
+      }
+    },
+    {
+      "name": "media/prewarm",
+      "description": "Pre-warm vision description cache for image media. Fires VisionDescriptionService.describeBase64() so that by the time personas build RAG context, descriptions are cached. Called fire-and-forget by chat/send when images are attached.",
+      "params": {
+        "images": {
+          "type": "array",
+          "required": true,
+          "description": "images parameter"
         }
       }
     },

@@ -205,6 +205,7 @@ export const COMMANDS = {
   LOGS_READ: 'logs/read',
   LOGS_SEARCH: 'logs/search',
   LOGS_STATS: 'logs/stats',
+  MEDIA_PREWARM: 'media/prewarm',
   MEDIA_PROCESS: 'media/process',
   MEDIA_RESIZE: 'media/resize',
   MIGRATION_CUTOVER: 'migration/cutover',

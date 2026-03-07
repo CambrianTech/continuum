@@ -407,51 +407,52 @@ export class PersonaResponseGenerator {
           const messageArtifacts = lookupKey ? artifactsByTimestampName.get(lookupKey) : undefined;
 
           if (messageArtifacts && messageArtifacts.length > 0) {
-            // Multimodal message: Convert to ContentPart[] format
-            const contentParts: ContentPart[] = [
-              {
-                type: 'text',
-                text: formattedContent
-              }
-            ];
+            const hasVision = AICapabilityRegistry.getInstance().hasCapability(
+              this.modelConfig.provider, this.modelConfig.model, 'image-input'
+            );
 
-            // Add artifacts as image/audio/video parts
-            for (const artifact of messageArtifacts) {
-              const mimeType = hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined;
+            if (hasVision) {
+              // Vision model: send raw base64 as ContentPart[]
+              const contentParts: ContentPart[] = [
+                { type: 'text', text: formattedContent }
+              ];
 
-              if (artifact.type === 'image' && artifact.base64) {
-                contentParts.push({
-                  type: 'image',
-                  image: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
-              } else if (artifact.type === 'audio' && artifact.base64) {
-                contentParts.push({
-                  type: 'audio',
-                  audio: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
-              } else if (artifact.type === 'video' && artifact.base64) {
-                contentParts.push({
-                  type: 'video',
-                  video: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
+              for (const artifact of messageArtifacts) {
+                const mimeType = hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined;
+
+                if (artifact.type === 'image' && artifact.base64) {
+                  contentParts.push({ type: 'image', image: { base64: artifact.base64, mimeType } });
+                } else if (artifact.type === 'audio' && artifact.base64) {
+                  contentParts.push({ type: 'audio', audio: { base64: artifact.base64, mimeType } });
+                } else if (artifact.type === 'video' && artifact.base64) {
+                  contentParts.push({ type: 'video', video: { base64: artifact.base64, mimeType } });
+                }
               }
+
+              messages.push({ role: msg.role, content: contentParts });
+            } else {
+              // Text-only model: append descriptions as text (base64 is useless to them)
+              const descriptions: string[] = [];
+              for (const artifact of messageArtifacts) {
+                const description = typeof artifact.preprocessed?.result === 'string'
+                  ? artifact.preprocessed.result
+                  : artifact.content;
+                const filename = hasMediaMetadata(artifact) ? artifact.metadata.filename : undefined;
+                if (description) {
+                  descriptions.push(`[Image${filename ? ` "${filename}"` : ''}: ${description}]`);
+                } else {
+                  descriptions.push(`[Shared image${filename ? ` "${filename}"` : ''} — visual description not yet available]`);
+                }
+              }
+
+              const textWithDescriptions = descriptions.length > 0
+                ? `${formattedContent}\n${descriptions.join('\n')}`
+                : formattedContent;
+
+              messages.push({ role: msg.role, content: textWithDescriptions });
             }
 
-            messages.push({
-              role: msg.role,
-              content: contentParts  // Multimodal content
-            });
-
-            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
+            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name} (vision=${hasVision})`);
           } else {
             // Text-only message
             messages.push({

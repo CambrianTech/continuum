@@ -21,6 +21,7 @@ import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { FileMimeType } from '../../../../file/mime-type/shared/FileMimeTypeTypes';
 import { FileLoad } from '../../../../file/load/shared/FileLoadTypes';
+import { MediaPrewarm } from '../../../../media/prewarm/shared/MediaPrewarmTypes';
 export class ChatSendServerCommand extends ChatSendCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -108,7 +109,13 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     const storedEntity = createResult.data;
 
-    // 5. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
+    // 5. Pre-warm vision description cache for image media (fire-and-forget).
+    // LLaVA takes 60-70s. Starting inference NOW means the description is cached
+    // by the time personas build RAG context (~5-10s later for the NEXT message).
+    // Without pre-warming, every persona's 10s timeout fires before LLaVA finishes.
+    this.prewarmVisionDescriptions(mediaItems);
+
+    // 6. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);
 
     console.log(`✅ Message sent: #${shortId} to ${resolved.displayName}`);
@@ -212,5 +219,25 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     console.log(`🔧 processMediaPaths END: Processed ${mediaItems.length}/${mediaPaths.length} files successfully`);
     return mediaItems;
+  }
+
+  /**
+   * Fire-and-forget vision description generation for image media.
+   * Calls media/prewarm command which populates VisionDescriptionService cache
+   * so that when personas build RAG context seconds later, descriptions are cached.
+   */
+  private prewarmVisionDescriptions(mediaItems: MediaItem[]): void {
+    const images = mediaItems.filter(m => m.type === 'image' && m.base64);
+    if (images.length === 0) return;
+
+    // Fire-and-forget — don't await, don't block chat/send response
+    MediaPrewarm.execute({
+      images: images.map(img => ({
+        base64: img.base64!,
+        mimeType: img.mimeType ?? 'image/png',
+      })),
+    }).catch(() => {
+      // Best-effort pre-warming — swallow errors
+    });
   }
 }

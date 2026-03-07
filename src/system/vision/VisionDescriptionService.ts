@@ -119,6 +119,23 @@ export class VisionDescriptionService {
   }
 
   /**
+   * Check the status of a description for given base64 data.
+   * Returns 'cached' if ready, 'inflight' if being processed, 'none' if unknown.
+   * Used by MediaArtifactSource to decide timeout: cached=0s, inflight=90s, none=10s.
+   */
+  descriptionStatus(base64Data: string): 'cached' | 'inflight' | 'none' {
+    const key = this.contentKey(base64Data);
+    const cached = this._cache.get(key);
+    if (cached && (Date.now() - cached.cachedAt) < DESCRIPTION_CACHE_TTL_MS) {
+      return 'cached';
+    }
+    if (this._inflight.has(key)) {
+      return 'inflight';
+    }
+    return 'none';
+  }
+
+  /**
    * Content-address key: SHA-256 of first 4KB + total length.
    * Hashing the full base64 of a 5MB image would be wasteful — first 4KB + length
    * is sufficient to distinguish images while keeping key generation <1ms.
