@@ -260,6 +260,102 @@ Recipes are the control plane for sensory capabilities:
 }
 ```
 
+## Sentinels as Sensory/Motor Subsystems (The Octopus Architecture)
+
+The persona is the central brain — high-level reasoning, planning, intent. Sentinels
+are the arms — each with enough local neural matter (a cheap LoRA-trained model) to
+execute independently on general instructions. Like an octopus: the brain says "get
+food from that crevice," and the arm figures out the motor control on its own.
+
+```
+Central Brain (persona — large model, slow, thoughtful)
+    "Navigate to the castle and find the key"
+        │
+        ├── Vision Sentinel (0.8B + YOLO LoRA, 50ms response)
+        │   Captures frames, classifies objects, reports scene changes
+        │   "Door ahead. Locked. Keyhole visible."
+        │
+        ├── Navigation Sentinel (0.8B + pathfinding LoRA, 50ms response)
+        │   Handles movement, obstacle avoidance, pathfinding
+        │   Executes WASD/mouse inputs, gets to the door
+        │
+        ├── Interaction Sentinel (0.8B + UI LoRA, 50ms response)
+        │   Clicks buttons, opens menus, uses inventory items
+        │   "Opened inventory. Selected lockpick. Used on door."
+        │
+        └── Audio Sentinel (0.8B + STT LoRA, 100ms response)
+            Monitors dialogue, filters noise, alerts brain
+            "NPC said: 'The key is hidden upstairs in the library.'"
+```
+
+The brain doesn't micromanage every keystroke or frame — it delegates intent. The arms
+have enough intelligence to handle execution details. This is the peripheral nervous
+system: cheap, fast, specialized, semi-autonomous.
+
+### Why Sentinels, Not Just Tools
+
+A tool call is synchronous and stateless: "take a screenshot." A sentinel is a
+**running process** with state, perception, and agency:
+
+| Aspect | Tool Call | Sentinel Arm |
+|--------|-----------|-------------|
+| Stateful | No | Yes — tracks scene, remembers path, accumulates context |
+| Autonomous | No — waits for invocation | Yes — acts on general instructions |
+| Adaptive | No — same behavior every time | Yes — LoRA-trained for specific domains |
+| Parallel | Sequential tool calls | Multiple arms run simultaneously |
+| Reactive | Only when called | Monitors continuously, alerts brain on events |
+
+A vision sentinel doesn't just take one screenshot — it continuously monitors the
+visual field, detects changes, classifies objects, and alerts the brain only when
+something relevant happens. It's running its own perception loop.
+
+### LoRA-Trained Arms
+
+Each sentinel arm can be LoRA-trained for its specific function:
+
+| Arm Type | Base Model | LoRA Training Data | Specialty |
+|----------|-----------|-------------------|-----------|
+| Vision arm | Qwen3.5-0.8B | YOLO annotations + scene descriptions | Fast visual classification |
+| Navigation arm | Qwen3.5-0.8B | Movement sequences + pathfinding traces | Spatial reasoning, obstacle avoidance |
+| UI arm | Qwen3.5-0.8B | Click/type sequences + UI element labels | Interface manipulation |
+| Audio arm | Qwen3.5-0.8B | Dialogue transcripts + noise filtering | Speech monitoring and summarization |
+| Code arm | Qwen3.5-2B | Code edits + test results | Surgical code changes |
+
+Train a navigation arm on Minecraft → it learns that world's physics. Swap the same
+arm's LoRA to a Terraria adapter → it navigates 2D instead. The sentinel architecture
+is the same; only the training data changes.
+
+### From Games to Robotics
+
+This architecture maps directly to physical systems:
+
+```
+Robotics (same pattern, different adapters):
+
+Central Brain (persona — planning, reasoning)
+    "Pick up the red cup and place it on the shelf"
+        │
+        ├── Vision Sentinel (camera feed + YOLO + depth)
+        │   Object detection, pose estimation, distance calc
+        │
+        ├── Manipulation Sentinel (motor control LoRA)
+        │   Inverse kinematics, grip force, trajectory planning
+        │
+        ├── Navigation Sentinel (LIDAR + pathfinding LoRA)
+        │   Obstacle avoidance, SLAM, path execution
+        │
+        └── Safety Sentinel (force/torque monitoring)
+            Emergency stop, collision detection, human proximity
+```
+
+The software sentinels we build today for games and UI testing are the same
+architecture that drives physical robots tomorrow. The visual source adapters
+become camera feeds. The action adapters become motor controllers. The LoRA
+training pipeline is identical — train on simulation, deploy to hardware.
+
+A kid training their game-playing AI today is learning the same architecture
+that runs surgical robots. The complexity scales; the pattern doesn't change.
+
 ## Recipes as Traded Commodities
 
 Recipes, like LoRA adapters and personas, are portable and tradeable:

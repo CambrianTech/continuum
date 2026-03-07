@@ -203,8 +203,11 @@ A **Recipe IS a Sentinel with a UI layout.** The same engine powers:
 - CI/CD (watch, build, test, deploy)
 - Training pipelines (synthesize data, train, examine, re-exam, repeat)
 - Autonomous background tasks
+- **Sensory/motor subsystems** — eyes, ears, and legs for AI personas
 
-**Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)
+**The Octopus Architecture.** LoRA-trained sentinels act as semi-autonomous sensory and motor arms. A 0.8B vision sentinel continuously monitors the screen with YOLO, a navigation sentinel handles pathfinding and movement, an interaction sentinel clicks and types. The persona brain delegates intent; the arms handle execution — like an octopus whose arms have enough local neural matter to act independently. The same pattern powers game-playing AI today and robotic systems tomorrow.
+
+**Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md) | [UNIVERSAL-SENSORY-ARCHITECTURE.md](docs/UNIVERSAL-SENSORY-ARCHITECTURE.md)
 
 ---
 
