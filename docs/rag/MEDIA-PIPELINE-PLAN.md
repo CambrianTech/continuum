@@ -432,3 +432,337 @@ With a "voice call" recipe it talks.
 With a "live observer" recipe it watches and describes.
 
 The infrastructure is the same. Only the recipe changes.
+
+---
+
+## P7: Optimization, Modularity & Rust Migration
+
+Analysis of the current media/vision pipeline after P1-P3 completion.
+Identifies what works, what's fragile, and what should move to Rust.
+
+### Current Architecture (Post P1-P3)
+
+```
+chat/send (upload)
+    │
+    ├─ Store message with media[] in SQLite
+    └─ Fire-and-forget: media/prewarm → VisionDescriptionService.describeBase64()
+                                              │
+                                              ▼
+                                    LLaVA via AIProviderDaemon (60-70s CPU)
+                                    Content-addressed cache (in-memory, 5min TTL)
+                                    In-flight dedup (concurrent callers coalesce)
+
+persona RAG build (5-10s later, per message)
+    │
+    ├─ RAGComposer.compose() → 17 sources in parallel
+    │   ├─ ConversationHistorySource → DB query + event-driven cache (30s TTL)
+    │   │   └─ Single-flight coalescing (16 personas = 1 DB query)
+    │   └─ MediaArtifactSource → reads ConversationHistorySource cache
+    │       ├─ Extract media[] from messages
+    │       ├─ Budget: maxArtifacts = allocatedBudget / tokensPerArtifact
+    │       └─ Preprocess for model capabilities:
+    │           ├─ Vision models: raw base64 → ContentPart[]
+    │           └─ Text-only: VisionDescriptionService → cached description
+    │               ├─ Adaptive timeout: 90s (in-flight) / 10s (new)
+    │               └─ Parallel: all images fire at once, single timeout
+    │
+    └─ PersonaResponseGenerator → vision-aware rendering
+        ├─ AICapabilityRegistry.hasCapability(provider, model, 'image-input')
+        ├─ Vision: base64 ContentPart[]
+        └─ Text-only: [Image "file": description] text annotation
+```
+
+### Known Weaknesses
+
+| Issue | Impact | Root Cause |
+|-------|--------|------------|
+| **In-memory cache dies on restart** | All LLaVA descriptions lost, 60-70s re-inference | VisionDescriptionService uses JS Map, no persistence |
+| **No `has_media` index** | Full message scan to find images | SQLite schema has no media boolean column |
+| **Base64 over IPC** | ~1MB per image × 10+ personas = IPC saturation | Messages carry inline base64, no external storage |
+| **50-message scan window** | Images pushed past window in chatty rooms | Linear scan, no indexed media lookup |
+| **LLaVA on CPU = 60-70s** | First image description blocks all text-only models | No GPU acceleration, no model quantization |
+| **Cache TTL = 5 min** | Descriptions evicted while conversation still active | Fixed TTL, not conversation-scoped |
+| **ConversationHistorySource cache timing** | MediaArtifactSource may check before cache populated | Race between source load order in compose phase |
+
+---
+
+### Optimization Strategy
+
+#### O1: Persistent Vision Description Cache (Rust SQLite)
+
+**Problem**: VisionDescriptionService's in-memory Map dies on restart. 60-70s of LLaVA inference wasted.
+
+**Solution**: New `vision_descriptions` table in the default SQLite database, managed by a Rust `VisionModule`.
+
+```sql
+CREATE TABLE vision_descriptions (
+    content_key TEXT PRIMARY KEY,     -- SHA-256(first 4KB + length)
+    description TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    confidence REAL DEFAULT 0.85,
+    processing_time_ms INTEGER,
+    created_at INTEGER NOT NULL,      -- Unix timestamp ms
+    last_accessed_at INTEGER NOT NULL  -- For LRU eviction
+);
+
+CREATE INDEX idx_vision_last_accessed ON vision_descriptions(last_accessed_at);
+```
+
+**Rust module**: `modules/vision.rs`
+
+Commands:
+- `vision/description-get` — lookup by content_key (< 1ms SQLite read)
+- `vision/description-put` — store description after inference
+- `vision/description-stats` — cache hit rate, total entries
+- `vision/description-evict` — LRU eviction (keep last 2000)
+
+**TS change**: VisionDescriptionService checks Rust cache BEFORE triggering inference.
+In-memory Map becomes L1 (process lifetime), SQLite becomes L2 (persistent).
+
+```
+L1: JS Map (500 entries, 5min TTL, instant)     ← current
+L2: SQLite via Rust IPC (2000 entries, no TTL)   ← NEW
+L3: LLaVA inference (60-70s)                     ← current
+```
+
+**Impact**: Restart = warm cache. Descriptions survive across deploys.
+
+#### O2: Media Index Column
+
+**Problem**: Finding messages with media requires scanning all messages and checking `content.media.length > 0`.
+
+**Solution**: Add `has_media BOOLEAN DEFAULT 0` column to chat_messages schema.
+
+```sql
+ALTER TABLE chat_messages ADD COLUMN has_media BOOLEAN DEFAULT 0;
+CREATE INDEX idx_chat_messages_has_media ON chat_messages(room_id, has_media, timestamp);
+```
+
+Set on insert in the data module when `content.media` array is non-empty.
+Query becomes: `WHERE room_id = ? AND has_media = 1 ORDER BY timestamp DESC LIMIT 10`.
+
+**Impact**: O(1) indexed lookup instead of O(N) scan. MediaArtifactSource drops from 50-message scan to direct indexed query for media messages only.
+
+#### O3: Externalize Base64 Storage
+
+**Problem**: Base64 images stored inline in chat_messages JSON. Every message query loads every image. 10 personas × 1MB image = 10MB IPC traffic.
+
+**Solution**: Store base64 in separate blobs table, reference by content-addressed key.
+
+```sql
+CREATE TABLE media_blobs (
+    content_key TEXT PRIMARY KEY,    -- Same SHA-256 as vision cache
+    base64_data TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+```
+
+Chat messages store `{ "blobKey": "abc123", "mimeType": "image/png" }` instead of inline base64.
+MediaArtifactSource fetches blobs only when needed (vision models) or skips entirely (text-only models that have cached descriptions).
+
+**Impact**: Message queries go from ~1MB to ~1KB per media message. IPC congestion eliminated.
+
+#### O4: Extend Cache TTL to Conversation-Scoped
+
+**Problem**: 5-minute TTL evicts descriptions while conversation is still active.
+
+**Solution**: Replace fixed TTL with `last_accessed_at` tracking. Descriptions stay cached as long as they're being accessed. LRU eviction only when cache exceeds max size.
+
+In-memory L1 cache: bump `cachedAt` on every access (effectively infinite TTL while active).
+SQLite L2 cache: `UPDATE vision_descriptions SET last_accessed_at = ? WHERE content_key = ?` on read.
+
+**Impact**: No re-inference during active conversations. Cold descriptions evicted naturally.
+
+---
+
+### Modularity Refinement
+
+#### M1: Split VisionDescriptionService into Cache + Inference
+
+Current VisionDescriptionService does too much: cache management, in-flight dedup, model selection, prompt building, response parsing.
+
+**Refactor into**:
+
+```
+VisionDescriptionService (facade, unchanged API)
+    ├─ VisionDescriptionCache (L1 in-memory + L2 Rust SQLite)
+    │   ├─ get(contentKey): cached | inflight | miss
+    │   ├─ put(contentKey, description)
+    │   └─ status(contentKey): 'cached' | 'inflight' | 'none'
+    │
+    └─ VisionInferenceProvider (model selection + inference)
+        ├─ selectModel(options): { provider, modelId }
+        ├─ describe(base64, mimeType, options): VisionDescription
+        └─ buildPrompt(options): string
+```
+
+**Why**: Cache layer is reusable (screenshots, canvas, video frames all need it).
+Inference provider is swappable (LLaVA today, Candle native tomorrow, cloud fallback).
+
+#### M2: MediaArtifactSource Batching Support
+
+MediaArtifactSource currently runs as a TypeScript-only source (no batching).
+The media extraction (scan messages for `content.media`) could move to Rust.
+
+Add `supportsBatching = true` and implement `getBatchRequest()`:
+
+```typescript
+// New RagSourceRequest variant
+#[serde(rename = "media")]
+Media {
+    budget_tokens: usize,
+    params: MediaSourceParams,
+}
+
+pub struct MediaSourceParams {
+    pub room_id: String,
+    pub max_messages: usize,
+    pub include_base64: bool,  // false for text-only models
+}
+```
+
+Rust does the DB query (with `has_media` index), returns media metadata + optional base64.
+TypeScript handles vision preprocessing (still needs VisionDescriptionService).
+
+**Impact**: Media extraction joins the batched Rust IPC call. One less TypeScript-side DB query.
+
+#### M3: Decouple Vision Preprocessing from RAG Load
+
+Currently, vision preprocessing (describing images for text-only models) happens inside `MediaArtifactSource.load()`. This blocks the RAG compose phase.
+
+**Better**: MediaArtifactSource returns raw artifacts. Vision preprocessing happens in PersonaResponseGenerator (render time), which already knows model capabilities.
+
+```
+Current:  MediaArtifactSource.load() → preprocess → return described artifacts
+Better:   MediaArtifactSource.load() → return raw artifacts
+          PersonaResponseGenerator   → preprocess on demand (lazy, cached)
+```
+
+**Why**: RAG compose completes faster. Preprocessing only happens if artifacts actually make it into the prompt (budget may exclude them). Vision descriptions still cached — just triggered later.
+
+**Risk**: Adds latency to render phase. Mitigated by pre-warm (descriptions already cached from upload).
+
+---
+
+### Rust Migration Plan
+
+#### R1: VisionModule (New Rust Module)
+
+**File**: `workers/continuum-core/src/modules/vision.rs`
+**Command prefix**: `vision/`
+
+```rust
+pub struct VisionModule {
+    description_cache: Arc<RwLock<HashMap<String, CachedVisionDescription>>>,
+    db_adapter: Arc<dyn StorageAdapter>,
+}
+
+// Commands:
+// vision/description-get    → L1 HashMap, fallback L2 SQLite
+// vision/description-put    → Write to both L1 + L2
+// vision/description-stats  → Hit rates, entry count
+// vision/description-evict  → LRU cleanup
+// vision/describe           → Future: native Candle LLaVA inference
+```
+
+**IPC mixin**: `bindings/modules/vision.ts`
+
+```typescript
+export function VisionMixin<T extends ...>(Base: T) {
+  return class extends Base {
+    async visionDescriptionGet(contentKey: string): Promise<VisionDescription | null> { ... }
+    async visionDescriptionPut(contentKey: string, desc: VisionDescription): Promise<void> { ... }
+    async visionDescriptionStats(): Promise<VisionCacheStats> { ... }
+  };
+}
+```
+
+#### R2: Media Source in RagModule
+
+Add `Media` variant to `RagSourceRequest` enum in `rag.rs`:
+
+```rust
+#[serde(rename = "media")]
+Media {
+    budget_tokens: usize,
+    params: MediaSourceParams,
+},
+```
+
+Rust handles the indexed query (`has_media = 1`), returns metadata.
+Base64 data only fetched when `include_base64 = true` (vision models).
+
+#### R3: Native LLaVA in CandleAdapter (Future)
+
+Currently `supports_vision: false` in CandleAdapter. Candle supports LLaVA models.
+
+**Steps**:
+1. Add LLaVA model loading to `inference/model.rs` (GGUF format, same as text models)
+2. Implement image preprocessing in Rust (resize, normalize, base64 decode)
+3. Set `supports_vision: true` in CandleAdapter capabilities
+4. Route `vision/describe` through CandleAdapter instead of TypeScript AIProviderDaemon
+
+**Impact**: LLaVA runs on Rust tokio thread pool. No IPC for inference. GPU-acceleratable when 5090 available.
+
+#### R4: Content-Addressed Blob Storage
+
+Add `media_blobs` table management to DataModule:
+
+```rust
+// New commands in data module:
+// data/blob-store   → Store base64 by content key
+// data/blob-get     → Retrieve base64 by content key
+// data/blob-exists  → Check existence without loading
+// data/blob-delete  → Remove blob (LRU eviction)
+```
+
+Chat messages reference blobs by key. MessageEntity schema change:
+`content.media[].base64` → `content.media[].blobKey` (base64 field deprecated but still accepted for backward compat).
+
+---
+
+### Implementation Priority
+
+```
+Phase A (Quick Wins — days)
+├── O4: Extend cache TTL to access-based          (TS only, ~30 min)
+├── M1: Split VisionDescriptionService             (TS refactor, ~2 hours)
+└── O2: has_media column + index                   (Rust migration, ~1 day)
+    └── data.rs schema change + DataModule insert hook
+
+Phase B (Persistent Cache — days)
+├── R1: VisionModule in Rust                       (~1 day)
+│   ├── vision_descriptions SQLite table
+│   ├── vision/description-get, -put, -stats, -evict
+│   └── VisionMixin for IPC
+└── O1: Wire VisionDescriptionService → Rust L2    (~half day)
+    └── L1 Map → L2 SQLite fallback chain
+
+Phase C (IPC Optimization — week)
+├── R4: Blob storage (media_blobs table)           (~2 days)
+│   ├── data/blob-store, -get, -exists
+│   └── ChatSendServerCommand stores blobs on upload
+├── O3: Messages reference blobKey, not inline b64 (~1 day)
+└── R2: Media source batching in rag.rs            (~1 day)
+
+Phase D (Native Vision — future)
+├── R3: CandleAdapter LLaVA support                (~3-5 days)
+│   ├── Image preprocessing in Rust
+│   ├── LLaVA GGUF model loading
+│   └── supports_vision: true
+├── M3: Lazy preprocessing in render phase         (~1 day)
+└── P4-P6: CBarFrame, recipe config, live perception (per original plan)
+```
+
+### Verification Criteria
+
+| Phase | Test |
+|-------|------|
+| A | `npm run build:ts` clean. VisionDescriptionService tests pass. `has_media` index created on deploy. |
+| B | Restart server → vision descriptions survive. `vision/description-stats` shows persistent entries. |
+| C | Chat with image: message query returns ~1KB not ~1MB. IPC timing logs show <50ms for media source. |
+| D | `./jtag ai/report` shows Candle with `supports_vision: true`. LLaVA inference in Rust process logs. |
