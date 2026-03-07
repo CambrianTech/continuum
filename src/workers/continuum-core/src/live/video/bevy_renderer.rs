@@ -35,15 +35,14 @@ use std::time::Duration;
 
 use crate::live::avatar::RgbaFrame;
 
-/// Wrapper plugin for GPU→GPU compute. On macOS, registers the Metal compute
-/// pipeline. On other platforms, this is a no-op.
-struct GpuConvertPluginWrapper;
-impl Plugin for GpuConvertPluginWrapper {
-    fn build(&self, _app: &mut App) {
-        #[cfg(target_os = "macos")]
-        super::metal_gpu_convert::GpuConvertPlugin.build(_app);
-    }
-}
+// GpuConvertPlugin DISABLED: Metal compute shader runs on a separate command queue
+// from Bevy/wgpu, with no GPU synchronization guarantee that the render pass has
+// completed before the compute shader reads the texture. This causes alternating
+// correct/stale frames (the strobe). The ReadbackComplete → try_write_bridge path
+// is correct and should be used until proper GPU sync is implemented.
+//
+// To re-enable: use wgpu's command encoder (same queue) instead of a separate
+// Metal command queue, or add MTLFence/MTLEvent synchronization.
 
 /// Debug logging — no-op in production. Enable via BEVY_AVATAR_DEBUG=1 env var.
 fn bevy_debug(_msg: &str) {
@@ -1026,9 +1025,8 @@ fn run_bevy_app(
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / AVATAR_FPS,
         )))
-        // GPU→GPU RGBA→NV12 compute (macOS only): bypasses CPU readback entirely.
-        // Slots with GPU bridge get Metal compute dispatch instead of Readback.
-        .add_plugins(GpuConvertPluginWrapper)
+        // GPU→GPU RGBA→NV12 compute DISABLED — see GpuConvertPlugin comment above.
+        // Slots use CPU readback → try_write_bridge → IOSurface → GpuBridgePublisher.
         // Bevy 0.18: TransformTreeChanged is a new marker component required by Transform
         // (via #[require(TransformTreeChanged)]). Scene spawner panics if it's not registered
         // in the type registry. reflect_auto_register should handle this but doesn't.
@@ -1131,9 +1129,9 @@ fn spawn_readback_entity_opt(
                     clog_info!("🎨 Slot {}: first ReadbackComplete ({} bytes, {}×{})", slot_id, pixel_bytes.len(), slot_w, slot_h);
                 }
 
-                // Health check at frame 150 and 300 — LOG ONLY, no fallback.
-                // If a model is broken, we want to SEE it and fix the root cause.
                 let frame_n = FRAME_COUNTER[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // Health check at frame 150 and 300 — LOG ONLY, no fallback.
                 if frame_n == 150 || frame_n == 300 {
                     let test_frame = crate::live::avatar::RgbaFrame {
                         width: slot_w,
@@ -1602,12 +1600,10 @@ fn ensure_continuous_readback(
             if !state.active || !state.model_loaded {
                 continue;
             }
-            // GPU bridge slots use Metal compute (GPU→GPU) — no CPU readback needed.
-            // The render-world GpuConvertPlugin handles these slots entirely on GPU.
-            #[cfg(target_os = "macos")]
-            if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
-                continue;
-            }
+            // GPU bridge slots still use CPU readback — the ReadbackComplete observer
+            // writes RGBA→NV12 to the IOSurface via try_write_bridge(). The Metal
+            // GPU compute path (GpuConvertPlugin) is disabled until proper GPU
+            // synchronization is implemented (separate command queue = race condition).
             // Only readback if the camera rendered this frame (per render cadence).
             // Reading back a stale render target wastes GPU bandwidth for no new data.
             if let Ok(camera) = cameras.get(state.camera_entity) {

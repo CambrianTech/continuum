@@ -46,8 +46,9 @@ use tokio::sync::{mpsc, Mutex};
 const AVATAR_VIDEO_BITRATE: u64 = 1_500_000;
 
 /// Max WebRTC video framerate advertised to the encoder.
-/// Matches the Bevy render tick rate (bevy_renderer::AVATAR_FPS).
-const AVATAR_VIDEO_MAX_FPS: f64 = 30.0;
+/// Matches the Bevy render tick rate (bevy_renderer::AVATAR_FPS = 15fps).
+/// Effective readback rate is ~half this (~7.5fps) due to one-shot Readback.
+const AVATAR_VIDEO_MAX_FPS: f64 = 15.0;
 
 /// Lip sync RMS window duration in milliseconds.
 /// 66ms = ~15Hz update rate, matching effective readback cadence
