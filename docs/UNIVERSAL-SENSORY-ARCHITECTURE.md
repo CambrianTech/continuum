@@ -406,6 +406,89 @@ smart when it matters. The sentinel engine handles the lifecycle — spawn, moni
 escalate, release — identically whether the sentinel is an NPC, a camera, a
 chat widget, or a robotic arm.
 
+### Cognitive LOD — Level of Detail for Intelligence
+
+Games have used level-of-detail for geometry since the 90s — render nearby objects
+in high polygon detail, distant objects as flat billboards. The same principle
+applies to intelligence. It's LOD, but for cognition instead of polygons.
+
+```
+Player's POV / Attention Cone:
+
+┌─────────────────────────────────────────────────────────┐
+│  FOCUS (T3): Full conversation, deep reasoning          │
+│  The NPC you're talking to — 4B+ model, full context,   │
+│  memory of prior encounters, emotional state             │
+│                                                          │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  NEAR (T2): Reactive, aware, listening            │  │
+│  │  NPCs within earshot — 2B model, can react to     │  │
+│  │  overheard dialogue, notice events, interject      │  │
+│  │                                                    │  │
+│  │  ┌─────────────────────────────────────────────┐  │  │
+│  │  │  STREET (T1): Simple autonomous behavior    │  │  │
+│  │  │  NPCs on the block — 0.8B model, walking    │  │  │
+│  │  │  routes, shopping, reacting to weather       │  │  │
+│  │  │                                              │  │  │
+│  │  │  ┌───────────────────────────────────────┐  │  │  │
+│  │  │  │  CITY (T0): Crowd simulation          │  │  │  │
+│  │  │  │  10,000 people — scripted/rule-based, │  │  │  │
+│  │  │  │  Boids flocking, patrol routes,       │  │  │  │
+│  │  │  │  statistical behavior, zero LLM cost  │  │  │  │
+│  │  │  └───────────────────────────────────────┘  │  │  │
+│  │  └─────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+The player sees a living city of 10,000 individuals with diverse backgrounds,
+personalities, and daily routines. In reality:
+
+- **9,990** are running pure crowd simulation (T0) — zero LLM cost
+- **8** nearby are on 0.8B sentinels doing simple autonomous behavior (T1)
+- **1** within earshot is on a 2B model, reactively aware (T2)
+- **1** is running on a 4B+ model having a real conversation (T3)
+
+**Total LLM cost: ~10 cheap inferences.** Not 10,000.
+
+When the player turns around, the NPC behind them de-escalates from T3 to T1.
+The NPC they're now facing escalates from T1 to T3. The transition is seamless —
+the NPC "was always going about their business" from the player's perspective.
+
+### Escalation and De-escalation Triggers
+
+The sentinel lifecycle manager handles transitions between tiers. Detection is
+everything — the right triggers make the illusion seamless:
+
+**Escalation triggers** (ramp UP intelligence):
+- Player proximity (distance threshold)
+- Direct address ("Hey you!" or player clicks NPC)
+- Unusual event (explosion, combat, crime witnessed)
+- Referenced by another NPC ("Go ask the blacksmith")
+- Player gaze/attention direction (if tracked)
+
+**De-escalation triggers** (ramp DOWN intelligence):
+- Player walks away (distance threshold)
+- Conversation ends (farewell, timeout)
+- Attention shifts to another NPC
+- Scene transition (player enters building)
+- Idle timeout (no interaction for N seconds)
+
+**Hysteresis** prevents thrashing — don't de-escalate immediately when the player
+glances away for 2 seconds. Use the same adaptive cadence pattern as PersonaUser's
+energy system: escalation is instant, de-escalation is gradual.
+
+This is the same pattern everywhere:
+- **Game NPCs**: proximity + interaction → escalate
+- **Security cameras**: anomaly detection → escalate
+- **Customer service**: complexity detection → escalate
+- **IoT sensors**: threshold breach → escalate
+- **Robotic swarm**: obstacle/human proximity → escalate
+
+The sentinel engine already has the primitives: Watch (monitor triggers), Condition
+(evaluate thresholds), Emit (signal tier change), Loop (continuous monitoring).
+Cognitive LOD is a recipe on top of existing infrastructure.
+
 ## Recipes as Traded Commodities
 
 Recipes, like LoRA adapters and personas, are portable and tradeable:
