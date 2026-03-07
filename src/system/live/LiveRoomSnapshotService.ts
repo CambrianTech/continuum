@@ -2,30 +2,28 @@
  * LiveRoomSnapshotService — Visual awareness of the live room
  *
  * Provides AI personas with a visual description of the live room by
- * composing data from multiple sources:
+ * capturing video frames directly from LiveKit via Rust IPC:
  *
- * 1. Participant metadata from CallEntity (free, always available)
- * 2. Avatar snapshots from Bevy via `avatar/snapshot` Rust IPC (cached PNGs)
- * 3. Composite room screenshot via browser `interface/screenshot` (human camera + layout)
- *
- * The composite screenshot is the key visual — it shows the actual room as
- * rendered in the browser: human camera feeds, avatar tiles, grid layout.
- * This gets described via VisionDescriptionService and cached.
+ * 1. Rust VideoFrameCapture subscribes to LiveKit video tracks (humans + avatars)
+ * 2. Captures latest frame per participant as JPEG (1 fps, content-addressed dedup)
+ * 3. Composes a grid snapshot of all participants on demand
+ * 4. VisionDescriptionService generates text description for text-only models
  *
  * Architecture:
  * - Lazy: first getDescription() call starts capture
- * - Content-addressed: skips re-description if screenshot bytes unchanged
+ * - Content-addressed: skips re-description if video frames unchanged
  * - Single in-flight: prevents pileup when multiple personas request simultaneously
  * - Auto-stop: stops when no readers for 5 minutes
- * - Interval: 30s default, 60s when scene is static
+ * - Interval: 30s default
+ *
+ * The Rust capture replaces browser screenshots — it captures directly from
+ * LiveKit video tracks, showing actual camera feeds instead of dark tiles.
  */
 
 import { Commands } from '../core/shared/Commands';
 import { VisionDescriptionService } from '../vision/VisionDescriptionService';
 import { Logger } from '../core/logging/Logger';
-import type { ScreenshotParams, ScreenshotResult } from '../../commands/interface/screenshot/shared/ScreenshotTypes';
 import { createHash } from 'crypto';
-import * as fs from 'fs';
 
 const log = Logger.create('LiveRoomSnapshotService', 'rag');
 
@@ -145,15 +143,14 @@ export class LiveRoomSnapshotService {
     this._captureInFlight.add(roomId);
 
     try {
-      // Capture the live-widget composite from browser.
-      // This shows the actual rendered room: human camera, avatar tiles, grid layout.
-      // The browser already has all the LiveKit video tracks attached to DOM elements.
-      const base64 = await this.captureLiveWidget();
+      // Capture from Rust VideoFrameCapture via IPC.
+      // This reads directly from LiveKit video tracks — no browser screenshots.
+      const base64 = await this.captureFromRust();
       if (!base64) {
-        log.warn('No screenshot data received from live-widget capture');
+        log.debug('No video frames captured from LiveKit participants');
         return;
       }
-      log.info(`Captured live-widget: ${Math.ceil(base64.length / 1024)}KB base64`);
+      log.info(`Captured room snapshot: ${Math.ceil(base64.length / 1024)}KB base64`);
 
       // Content hash — skip vision if scene unchanged
       const hash = createHash('sha256').update(base64.slice(0, 8192)).digest('hex').slice(0, 16);
@@ -179,7 +176,7 @@ export class LiveRoomSnapshotService {
           maxLength: 400,
           detectText: true,
           prompt: [
-            'Describe this live video room screenshot concisely.',
+            'Describe this live video room snapshot concisely.',
             'Note: who has their camera on (real video vs avatar),',
             'the room layout, number of participants visible,',
             'any screen shares or visual content.',
@@ -217,50 +214,28 @@ export class LiveRoomSnapshotService {
   }
 
   /**
-   * Capture the live-widget from the browser. This is the composite view showing
-   * all LiveKit video tracks (human cameras + avatar renders) in the grid layout.
-   * The browser already subscribes to all tracks via AudioStreamClient — we just
-   * screenshot what's rendered.
+   * Capture room snapshot from Rust VideoFrameCapture via IPC.
+   * The Rust service subscribes to LiveKit video tracks directly —
+   * no browser needed, actual camera feeds captured.
    *
-   * Returns base64 JPEG or null on failure.
+   * Returns base64 JPEG or null if no participants have video.
    */
-  private async captureLiveWidget(): Promise<string | null> {
+  private async captureFromRust(): Promise<string | null> {
     try {
-      // Full page capture — live-widget is inside Shadow DOM so querySelector fails.
-      // Full page includes sidebar + grid + controls, but vision model can parse it.
-      const result = await Commands.execute<ScreenshotParams, ScreenshotResult>('interface/screenshot', {
-        resultType: 'both',
-        format: 'jpeg',
-        quality: 50,
-        scale: 0.35,
-        filename: `live-snapshot-${Date.now()}.jpg`,
-      } as Partial<ScreenshotParams>);
+      const result = await Commands.execute('voice/snapshot-room', {}) as unknown as {
+        success: boolean;
+        base64?: string;
+        error?: string;
+      };
 
-      if (!result.success) {
-        log.debug(`Screenshot capture failed: ${result.error?.message ?? 'unknown'}`);
+      if (!result.success || !result.base64) {
+        log.debug(`Rust snapshot: ${result.error ?? 'no base64 data'}`);
         return null;
       }
 
-      // dataUrl may be populated (browser returns it) or null (server strips for non-persona callers).
-      // Fall back to reading the saved file from disk.
-      if (result.dataUrl) {
-        return result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-      }
-
-      if (result.filepath) {
-        try {
-          const fileData = fs.readFileSync(result.filepath);
-          return fileData.toString('base64');
-        } catch {
-          log.debug(`Could not read saved screenshot from ${result.filepath}`);
-          return null;
-        }
-      }
-
-      log.debug('Screenshot succeeded but no dataUrl or filepath');
-      return null;
+      return result.base64;
     } catch (error) {
-      log.debug('Screenshot command error:', error);
+      log.debug('Rust snapshot IPC error:', error);
       return null;
     }
   }

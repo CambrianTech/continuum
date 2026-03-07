@@ -1157,47 +1157,75 @@ async fn spawn_stt_listener(
                     let speaker_name = participant.name().to_string();
                     let meta = ParticipantMetadata::from_json(&participant.metadata());
 
-                    // Only transcribe audio from human participants.
-                    // AI persona TTS, STT listeners, and ambient audio are skipped.
-                    // Without this, AI TTS gets transcribed → infinite echo loop.
+                    // Determine role for routing decisions
                     let is_human = meta
                         .as_ref()
                         .map(|m| m.role == ParticipantRole::Human)
                         .unwrap_or(true); // Unknown metadata = probably human
-                    if !is_human {
-                        clog_info!(
-                            "🎤 STT: Skipping non-human track from '{}' (role={:?})",
-                            speaker_id,
-                            meta.as_ref().map(|m| &m.role)
-                        );
-                        continue;
-                    }
+                    let is_visible = meta
+                        .as_ref()
+                        .map(|m| {
+                            m.role == ParticipantRole::Human
+                                || m.role == ParticipantRole::AiPersona
+                        })
+                        .unwrap_or(true);
 
-                    if let RemoteTrack::Audio(audio_track) = track {
-                        // Capture the remote track SID for native transcription sync
-                        let track_sid: String = publication.sid().into();
-                        clog_info!(
-                            "🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
-                            speaker_name,
-                            speaker_id,
-                            &track_sid[..8.min(track_sid.len())]
-                        );
+                    match track {
+                        RemoteTrack::Audio(audio_track) => {
+                            // Only transcribe audio from human participants.
+                            // AI persona TTS, STT listeners, and ambient audio are skipped.
+                            // Without this, AI TTS gets transcribed -> infinite echo loop.
+                            if !is_human {
+                                clog_info!(
+                                    "🎤 STT: Skipping non-human audio from '{}' (role={:?})",
+                                    speaker_id,
+                                    meta.as_ref().map(|m| &m.role)
+                                );
+                                continue;
+                            }
 
-                        let room_ref = room_for_events.clone();
-                        let cid = call_id_owned.clone();
-                        let tbuf = transcription_buffer.clone();
-                        tokio::spawn(async move {
-                            listen_and_transcribe(
-                                audio_track,
-                                speaker_id,
+                            let track_sid: String = publication.sid().into();
+                            clog_info!(
+                                "🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
                                 speaker_name,
-                                track_sid,
-                                room_ref,
-                                cid,
-                                tbuf,
-                            )
-                            .await;
-                        });
+                                speaker_id,
+                                &track_sid[..8.min(track_sid.len())]
+                            );
+
+                            let room_ref = room_for_events.clone();
+                            let cid = call_id_owned.clone();
+                            let tbuf = transcription_buffer.clone();
+                            tokio::spawn(async move {
+                                listen_and_transcribe(
+                                    audio_track,
+                                    speaker_id,
+                                    speaker_name,
+                                    track_sid,
+                                    room_ref,
+                                    cid,
+                                    tbuf,
+                                )
+                                .await;
+                            });
+                        }
+                        RemoteTrack::Video(video_track) => {
+                            // Capture video from all visible participants (humans + AI personas).
+                            // STT listeners and ambient audio don't publish video.
+                            if !is_visible {
+                                continue;
+                            }
+
+                            clog_info!(
+                                "👁 STT listener: subscribed to video from '{}' ({})",
+                                speaker_name,
+                                &speaker_id[..8.min(speaker_id.len())]
+                            );
+
+                            let capture = crate::live::video::capture::VideoFrameCapture::instance().clone();
+                            capture
+                                .start_capture(video_track, speaker_id, speaker_name)
+                                .await;
+                        }
                     }
                 }
                 RoomEvent::Disconnected { reason } => {

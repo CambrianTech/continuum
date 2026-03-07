@@ -287,6 +287,8 @@ export const COMMANDS = {
   UTILITIES_HELLO: 'utilities/hello',
   UTILITIES_LEASE_REQUEST: 'utilities/lease/request',
   UTILITIES_PIPE_CHAIN: 'utilities/pipe/chain',
+  VOICE_SNAPSHOT_PARTICIPANT: 'voice/snapshot-participant',
+  VOICE_SNAPSHOT_ROOM: 'voice/snapshot-room',
   VOICE_START: 'voice/start',
   VOICE_STOP: 'voice/stop',
   VOICE_SYNTHESIZE: 'voice/synthesize',

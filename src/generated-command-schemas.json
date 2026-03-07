@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-07T06:23:23.399Z",
+  "generated": "2026-03-07T14:33:23.785Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -389,6 +389,22 @@
           "type": "string",
           "required": false,
           "description": "voice parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/snapshot-room",
+      "description": "voice/snapshot-room command",
+      "params": {}
+    },
+    {
+      "name": "voice/snapshot-participant",
+      "description": "voice/snapshot-participant command",
+      "params": {
+        "identity": {
+          "type": "string",
+          "required": true,
+          "description": "identity parameter"
         }
       }
     },
