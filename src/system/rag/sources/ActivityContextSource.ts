@@ -23,6 +23,7 @@ import { isSlowLocalModel } from '../../shared/ModelContextWindows';
  */
 export class ActivityContextSource implements RAGSource {
   readonly name = 'activity';
+  readonly isShared = true;
 
   // Medium priority - important for guided interactions
   readonly priority = 40;

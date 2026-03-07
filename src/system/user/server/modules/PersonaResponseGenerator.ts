@@ -1304,39 +1304,37 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       );
 
       // 🧬 CONTINUOUS LEARNING: Capture interaction for training data accumulation
-      // Every successful response becomes a training example. When the buffer fills,
-      // PersonaTrainingManager triggers fine-tuning automatically.
-      // Uses Rust domain classification + quality scoring for better training data selection.
+      // Fire-and-forget — domain classification + quality scoring are Rust IPC calls
+      // that DON'T affect the user-visible response. Previously these 2 awaited IPC
+      // calls blocked the post-response path by 10-50ms each under load.
       if (this.trainingAccumulator) {
         const inputText = originalMessage.content.text;
         const outputText = aiResponse.text.trim();
+        const accumulator = this.trainingAccumulator;
+        const bridge = this.rustCognitionBridge;
+        const fallbackDomain = this.inferTrainingDomain(originalMessage);
 
-        // Use Rust classifier for consistent domain bucketing (falls back to TS if unavailable)
-        let domain: string;
-        let qualityRating: number | undefined;
-        if (this.rustCognitionBridge) {
-          try {
-            const classification = await this.rustCognitionBridge.classifyDomain(inputText);
-            domain = classification.domain;
-            // Record activity for gap detection
-            this.rustCognitionBridge.recordActivity(domain, true).catch(() => {});
-            // Score interaction quality for training data selection
-            qualityRating = (await this.rustCognitionBridge.scoreInteraction(inputText, outputText)).score;
-          } catch {
-            domain = this.inferTrainingDomain(originalMessage);
+        // Entire classify → score → capture pipeline runs off the critical path
+        (async () => {
+          let domain = fallbackDomain;
+          let qualityRating: number | undefined;
+          if (bridge) {
+            try {
+              const classification = await bridge.classifyDomain(inputText);
+              domain = classification.domain;
+              bridge.recordActivity(domain, true).catch(() => {});
+              qualityRating = (await bridge.scoreInteraction(inputText, outputText)).score;
+            } catch { /* fallback domain already set */ }
           }
-        } else {
-          domain = this.inferTrainingDomain(originalMessage);
-        }
-
-        this.trainingAccumulator.captureInteraction({
-          roleId: this.personaId,
-          personaId: this.personaId,
-          domain,
-          input: inputText,
-          output: outputText,
-          qualityRating,
-        }).catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
+          await accumulator.captureInteraction({
+            roleId: this.personaId,
+            personaId: this.personaId,
+            domain,
+            input: inputText,
+            output: outputText,
+            qualityRating,
+          });
+        })().catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
       }
 
       // 🧬 FITNESS TRACKING: Record inference result for genome natural selection

@@ -20,6 +20,7 @@ export class WidgetContextSource implements RAGSource {
   readonly name = 'widget-context';
   readonly priority = 75;  // High - UI context is very relevant
   readonly defaultBudgetPercent = 5;
+  readonly isShared = true;
 
   isApplicable(context: RAGSourceContext): boolean {
     // Need either pre-formatted context or session ID

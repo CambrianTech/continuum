@@ -134,8 +134,10 @@ impl ModelBackend for LlamaSafetensorsBackend {
 
     fn forward(&mut self, input: &Tensor, index_pos: usize) -> Result<Tensor, candle_core::Error> {
         let logits = self.model.forward(input, index_pos, &mut self.cache)?;
-        // GPU sync after each forward to prevent Metal command buffer accumulation
-        self.device.synchronize()?;
+        // GPU sync removed — the generate() loop syncs every GPU_SYNC_INTERVAL (16) tokens.
+        // Per-forward sync was forcing a CPU-GPU round-trip stall on EVERY token, making
+        // the interval sync (mod.rs:257) completely redundant. With 200 tokens generated,
+        // that's 200 stalls reduced to ~12. Metal command buffers are batched fine at 16.
         Ok(logits)
     }
 

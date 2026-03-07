@@ -63,6 +63,7 @@ export class GlobalAwarenessSource implements RAGSource {
   readonly name = 'global-awareness';
   readonly priority = 85;  // After identity (95), before conversation (80)
   readonly defaultBudgetPercent = 5;
+  readonly isShared = true;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
   // Negative cache with exponential backoff: skip IPC when corpus unavailable.

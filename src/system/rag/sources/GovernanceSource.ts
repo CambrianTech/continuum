@@ -58,6 +58,7 @@ You can propose collective decisions with collaboration/decision/propose and vot
  */
 export class GovernanceSource implements RAGSource {
   readonly name = 'governance';
+  readonly isShared = true;
 
   // Low priority - governance examples are nice-to-have, not critical
   readonly priority = 20;

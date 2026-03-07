@@ -123,6 +123,19 @@ export interface RAGSource {
   load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection>;
 
   /**
+   * Whether this source produces identical results for all personas in the same room.
+   *
+   * Shared sources are single-flight coalesced: when 14 personas compose RAG for the
+   * same room simultaneously, only ONE load executes and all 14 reuse the result.
+   *
+   * Set to true for room-scoped data (conversation history role mapping aside):
+   * project context, documentation, governance, codebase search, etc.
+   *
+   * Default: false (persona-specific sources like identity, memories, tools).
+   */
+  readonly isShared?: boolean;
+
+  /**
    * Whether this source supports batched loading via Rust IPC.
    * If true, the source can be loaded in a single Rust call with other batching sources.
    * Default: false (TypeScript-only sources).

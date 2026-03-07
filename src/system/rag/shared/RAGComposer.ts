@@ -29,6 +29,32 @@ import { TimingHarness } from '../../core/shared/TimingHarness';
 const log = Logger.create('RAGComposer', 'rag');
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SINGLE-FLIGHT COALESCING for shared RAG sources
+//
+// When 14 personas respond to the same room message simultaneously, 10 of 13
+// sources return IDENTICAL data (same conversation history, same docs, same
+// project context). Without coalescing: 140 loads. With: 24.
+//
+// Cache key: `${sourceName}:${roomId}`. TTL: 5 seconds (just long enough for
+// all 14 personas to fire). First caller creates the promise, rest piggyback.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type SourceResult =
+  | { success: true; section: RAGSection; sourceName: string; loadTime: number }
+  | { success: false; source: string; error: string; loadTime: number };
+
+interface CachedFlight {
+  promise: Promise<SourceResult>;
+  createdAt: number;
+}
+
+/** Single-flight cache for shared (non-persona-specific) RAG sources */
+const sharedSourceFlights = new Map<string, CachedFlight>();
+
+/** How long a cached result is reusable (ms) */
+const SHARED_SOURCE_TTL_MS = 5_000;
+
+// ═══════════════════════════════════════════════════════════════════════════
 // SHARED IPC CLIENT — Uses the canonical singleton from RustCoreIPCClient
 // All consumers (RAG, cognition, ORM) share ONE connection.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -161,27 +187,43 @@ export class RAGComposer {
     const sections: RAGSection[] = [];
     const failedSources: { source: string; error: string }[] = [];
 
-    // Build the batch promises
-    const batchPromise = this.loadBatchedSources(context, batchingSources);
+    // Split batching sources into shared (can coalesce) and persona-specific.
+    // Shared batching sources piggyback on the first persona's batch result.
+    const coalescedBatchPromises: Promise<SourceResult>[] = [];
+    const personalBatchingSources: typeof batchingSources = [];
+
+    for (const bs of batchingSources) {
+      if (bs.source.isShared && context.roomId) {
+        const cacheKey = `batch:${bs.source.name}:${context.roomId}`;
+        const existing = sharedSourceFlights.get(cacheKey);
+
+        if (existing && (Date.now() - existing.createdAt) < SHARED_SOURCE_TTL_MS) {
+          // Reuse cached batch result for this shared source
+          log.debug(`RAG batch coalesce HIT: ${bs.source.name} for room ${context.roomId.slice(0, 8)}`);
+          coalescedBatchPromises.push(existing.promise);
+          continue;
+        }
+      }
+      personalBatchingSources.push(bs);
+    }
+
+    // Build the batch promises (only for sources that weren't coalesced)
+    const batchPromise = this.loadBatchedSources(context, personalBatchingSources);
     const typescriptPromises = typescriptSources.map(({ source, budget }) =>
       this.loadTypeScriptSource(source, context, budget)
     );
 
-    // Execute all in parallel
-    const [batchResults, ...tsResults] = await Promise.all([batchPromise, ...typescriptPromises]);
+    // Execute all in parallel: batch array + individual coalesced + individual TS sources
+    const [batchResults, ...individualResults] = await Promise.all([
+      batchPromise,
+      ...coalescedBatchPromises,
+      ...typescriptPromises,
+    ]);
     timer.mark('load_sources');
 
-    // Collect batch results
-    for (const result of batchResults) {
-      if (result.success) {
-        sections.push(result.section);
-      } else {
-        failedSources.push({ source: result.source, error: result.error });
-      }
-    }
-
-    // Collect TypeScript results
-    for (const result of tsResults) {
+    // Collect all results into sections/failures
+    const allLoadResults: SourceResult[] = [...batchResults, ...individualResults];
+    for (const result of allLoadResults) {
       if (result.success) {
         sections.push(result.section);
       } else {
@@ -191,7 +233,7 @@ export class RAGComposer {
     timer.mark('collect_results');
 
     // Log ALL source timings for performance diagnosis
-    const allResults = [...batchResults, ...tsResults];
+    const allResults = allLoadResults;
     const sortedByTime = allResults.slice().sort((a, b) => b.loadTime - a.loadTime);
     const sourceTimingSummary = sortedByTime
       .map(s => `${s.success ? (s as any).sourceName : s.source}:${s.loadTime.toFixed(0)}ms`)
@@ -303,6 +345,19 @@ export class RAGComposer {
 
       log.debug(`Batched ${batchingSources.length} sources in ${record.totalMs.toFixed(1)}ms (Rust: ${result.compose_time_ms.toFixed(1)}ms)`);
 
+      // Cache shared batch results for subsequent personas in the same room
+      for (const r of results) {
+        if (!r.success) continue;
+        const matchingSource = batchingSources.find(bs => bs.source.name === r.sourceName);
+        if (matchingSource?.source.isShared && context.roomId) {
+          const cacheKey = `batch:${r.sourceName}:${context.roomId}`;
+          sharedSourceFlights.set(cacheKey, {
+            promise: Promise.resolve(r),
+            createdAt: Date.now(),
+          });
+        }
+      }
+
       return results;
 
     } catch (error: any) {
@@ -322,13 +377,56 @@ export class RAGComposer {
 
   /**
    * Load a single TypeScript source (non-batching).
+   *
+   * For shared sources (isShared=true), uses single-flight coalescing:
+   * when 14 personas compose RAG for the same room, only the first
+   * actually loads the source — the other 13 reuse the same promise.
    */
   private async loadTypeScriptSource(
     source: RAGSource,
     context: RAGSourceContext,
     budget: number
-  ): Promise<{ success: true; section: RAGSection; sourceName: string; loadTime: number } |
-              { success: false; source: string; error: string; loadTime: number }> {
+  ): Promise<SourceResult> {
+    // Shared source coalescing: reuse in-flight or recently-completed result
+    if (source.isShared && context.roomId) {
+      const cacheKey = `${source.name}:${context.roomId}`;
+      const existing = sharedSourceFlights.get(cacheKey);
+
+      if (existing && (Date.now() - existing.createdAt) < SHARED_SOURCE_TTL_MS) {
+        // Piggyback on existing flight — no new load
+        log.debug(`RAG coalesce HIT: ${source.name} for room ${context.roomId.slice(0, 8)} (persona ${context.personaId.slice(0, 8)})`);
+        return existing.promise;
+      }
+
+      // First caller — create the flight
+      const flight = this.doLoadTypeScriptSource(source, context, budget);
+      sharedSourceFlights.set(cacheKey, { promise: flight, createdAt: Date.now() });
+
+      // Cleanup stale entries periodically (every 50 calls)
+      if (sharedSourceFlights.size > 50) {
+        const now = Date.now();
+        for (const [key, entry] of sharedSourceFlights) {
+          if (now - entry.createdAt > SHARED_SOURCE_TTL_MS) {
+            sharedSourceFlights.delete(key);
+          }
+        }
+      }
+
+      return flight;
+    }
+
+    // Persona-specific source: always load fresh
+    return this.doLoadTypeScriptSource(source, context, budget);
+  }
+
+  /**
+   * Actually load a TypeScript source (called by loadTypeScriptSource).
+   */
+  private async doLoadTypeScriptSource(
+    source: RAGSource,
+    context: RAGSourceContext,
+    budget: number
+  ): Promise<SourceResult> {
     const sourceTimer = TimingHarness.start(`rag/source/${source.name}`, 'rag');
     sourceTimer.setMeta('budget', budget);
 

@@ -31,6 +31,7 @@ export class CodebaseSearchSource implements RAGSource {
   readonly name = 'codebase-search';
   readonly priority = 55;
   readonly defaultBudgetPercent = 8;
+  readonly isShared = true;
 
   isApplicable(context: RAGSourceContext): boolean {
     // Always applicable if there's a substantive message.
