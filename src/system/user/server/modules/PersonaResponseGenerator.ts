@@ -341,6 +341,28 @@ export class PersonaResponseGenerator {
         content: systemPrompt
       });
 
+      // Inject system-level image artifacts (e.g. live room screenshot) for vision models.
+      // These aren't tied to a chat message — they come from RAG sources like LiveRoomAwarenessSource.
+      const hasVisionCapability = AICapabilityRegistry.getInstance().hasCapability(
+        this.modelConfig.provider, this.modelConfig.model, 'image-input'
+      );
+      if (hasVisionCapability) {
+        const systemArtifacts = fullRAGContext.artifacts.filter(
+          a => a.type === 'screenshot' && a.base64 && !hasMediaMetadata(a)
+        );
+        if (systemArtifacts.length > 0) {
+          const parts: ContentPart[] = [
+            { type: 'text', text: 'Current visual context:' }
+          ];
+          for (const artifact of systemArtifacts) {
+            const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/jpeg';
+            parts.push({ type: 'image', image: { base64: artifact.base64!, mimeType } });
+          }
+          messages.push({ role: 'user', content: parts });
+          this.log(`🖼️  ${this.personaName}: Injected ${systemArtifacts.length} system-level screenshot(s) for vision model`);
+        }
+      }
+
       // Build artifact lookup maps for multimodal support
       // This enables vision models to see images from messages with media
       type RAGArtifact = typeof fullRAGContext.artifacts[number];

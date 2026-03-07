@@ -129,6 +129,9 @@ class LoggerClass implements ParentLogger {
       'RAGComposer': LogLevel.WARN,
       // MediaArtifactSource needs INFO for artifact count diagnostics
       'MediaArtifactSource': LogLevel.INFO,
+      // LiveRoom sources need INFO for call/visual awareness diagnostics
+      'LiveRoomAwarenessSource': LogLevel.INFO,
+      'LiveRoomSnapshotService': LogLevel.INFO,
     });
 
     this.fileStreams = new Map();

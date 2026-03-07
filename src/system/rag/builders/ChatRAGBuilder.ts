@@ -52,7 +52,8 @@ import {
   ToolMethodologySource,
   OpenProposalsSource,
   CodebaseSearchSource,
-  MediaArtifactSource
+  MediaArtifactSource,
+  LiveRoomAwarenessSource
 } from '../sources';
 
 /**
@@ -139,9 +140,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         new DocumentationSource(),       // Priority 35: System documentation awareness
         new OpenProposalsSource(),        // Priority 25: Open voting proposals (actionable)
         new GovernanceSource(),          // Priority 20: Democratic participation guidance
-        new MediaArtifactSource()        // Priority 65: Media artifacts (images, files) with vision preprocessing
+        new MediaArtifactSource(),       // Priority 65: Media artifacts (images, files) with vision preprocessing
+        new LiveRoomAwarenessSource()    // Priority 30: Live call participant awareness
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 15 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 16 sources');
     }
     return this.composer;
   }
