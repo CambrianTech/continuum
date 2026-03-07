@@ -146,6 +146,9 @@ export interface StorageQuery {
     start?: string;
     end?: string;
   };
+  /** Column projection — select only these fields (undefined = all fields).
+   *  Metadata columns (id, createdAt, updatedAt, version) are always included. */
+  readonly select?: readonly string[];
 }
 
 /**

@@ -1016,13 +1016,12 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    // Ensure schema for main collection and all joined collections
-    await DataDaemon.sharedInstance.ensureSchema(query.collection);
-    if (query.joins) {
-      for (const join of query.joins) {
-        await DataDaemon.sharedInstance.ensureSchema(join.collection);
-      }
-    }
+    // Ensure schema for main collection and all joined collections (parallel)
+    const instance = DataDaemon.sharedInstance;
+    await Promise.all([
+      instance.ensureSchema(query.collection),
+      ...(query.joins?.map(j => instance.ensureSchema(j.collection)) ?? []),
+    ]);
 
     return await DataDaemon.sharedInstance.adapter.queryWithJoin<T>(query);
   }

@@ -346,6 +346,8 @@ struct QueryParams {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+    #[serde(default)]
+    select: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,6 +365,8 @@ struct QueryWithJoinParams {
     offset: Option<usize>,
     #[serde(default)]
     joins: Option<Vec<crate::orm::query::JoinSpec>>,
+    #[serde(default)]
+    select: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -673,8 +677,20 @@ impl DataModule {
             sort: params.sort,
             limit: params.limit,
             offset: params.offset,
+            select: params.select,
             ..Default::default()
         };
+
+        // Log when column projection is active (visibility into optimization)
+        if query.select.is_some() {
+            log_info!(
+                "data",
+                "query",
+                "Column projection active for {}: SELECT {} (instead of *)",
+                params.collection,
+                query.select.as_ref().unwrap().join(", ")
+            );
+        }
 
         let adapter = self.get_adapter(&params.db_path).await?;
         let result = adapter.query(query).await;
@@ -697,6 +713,7 @@ impl DataModule {
             limit: params.limit,
             offset: params.offset,
             joins: params.joins,
+            select: params.select,
             ..Default::default()
         };
 
@@ -918,14 +935,7 @@ impl DataModule {
             // Query all records with embeddings
             let query = StorageQuery {
                 collection: params.collection.clone(),
-                filter: None,
-                sort: None,
-                limit: None,
-                offset: None,
-                cursor: None,
-                tags: None,
-                time_range: None,
-                joins: None,
+                ..Default::default()
             };
 
             let result = adapter.query(query).await;

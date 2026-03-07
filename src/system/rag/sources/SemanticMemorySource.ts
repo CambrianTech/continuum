@@ -34,15 +34,15 @@ export class SemanticMemorySource implements RAGSource {
   readonly defaultBudgetPercent = 12;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
-  // Negative cache: when Rust returns "No memory corpus", skip IPC for 10s.
-  // Without this, each failing persona makes a 1-3s IPC call every RAG build.
-  private static _corpusUnavailable: Map<string, number> = new Map();
-  private static readonly NEGATIVE_CACHE_TTL_MS = 10_000;
+  // Negative cache with exponential backoff: skip IPC when corpus unavailable.
+  // Backoff: 2s → 4s → 8s → 16s (cap). Resets on success.
+  private static _corpusBackoff: Map<string, { failedAt: number; ttlMs: number }> = new Map();
+  private static readonly BACKOFF_MIN_MS = 2_000;
+  private static readonly BACKOFF_MAX_MS = 16_000;
 
   isApplicable(context: RAGSourceContext): boolean {
-    // Skip if we recently learned this persona's corpus is unavailable
-    const failedAt = SemanticMemorySource._corpusUnavailable.get(context.personaId);
-    if (failedAt && (Date.now() - failedAt) < SemanticMemorySource.NEGATIVE_CACHE_TTL_MS) {
+    const backoff = SemanticMemorySource._corpusBackoff.get(context.personaId);
+    if (backoff && (Date.now() - backoff.failedAt) < backoff.ttlMs) {
       return false;
     }
     return true;
@@ -144,6 +144,9 @@ export class SemanticMemorySource implements RAGSource {
         return this.emptySection(startTime);
       }
 
+      // Clear backoff on success — corpus is available
+      SemanticMemorySource._corpusBackoff.delete(context.personaId);
+
       const personaMemories = result.memories.slice(0, maxMemories);
       const loadTimeMs = performance.now() - startTime;
       const tokenCount = personaMemories.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
@@ -164,10 +167,15 @@ export class SemanticMemorySource implements RAGSource {
         }
       };
     } catch (error: any) {
-      // Negative-cache "No memory corpus" errors — skip IPC for 10s
+      // Negative-cache "No memory corpus" errors with exponential backoff
       if (error.message?.includes('No memory corpus')) {
-        SemanticMemorySource._corpusUnavailable.set(context.personaId, Date.now());
-        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 10s`);
+        const prev = SemanticMemorySource._corpusBackoff.get(context.personaId);
+        const nextTtl = Math.min(
+          (prev?.ttlMs ?? SemanticMemorySource.BACKOFF_MIN_MS) * 2,
+          SemanticMemorySource.BACKOFF_MAX_MS
+        );
+        SemanticMemorySource._corpusBackoff.set(context.personaId, { failedAt: Date.now(), ttlMs: nextTtl });
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, backoff ${nextTtl}ms`);
       } else {
         log.error(`Failed to load memories: ${error.message}`);
       }

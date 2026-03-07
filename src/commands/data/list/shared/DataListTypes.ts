@@ -36,8 +36,10 @@ export interface DataListParams extends CommandParams {
     readonly value: any;
     readonly direction: 'before' | 'after';
   };
-  /** Field projection - only return these fields */
+  /** Field projection - only return these fields (applied in TypeScript after fetch) */
   readonly fields?: readonly string[];
+  /** Column projection - pushed to database layer (Rust builds SELECT col1, col2 instead of SELECT *) */
+  readonly select?: readonly string[];
   /** Verbose mode - if false, returns lean data */
   readonly verbose?: boolean;
   /** Database handle. Use 'default' for main DB, or UUID from data/open. */

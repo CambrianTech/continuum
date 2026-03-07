@@ -400,7 +400,8 @@ fn do_query(conn: &Connection, query: StorageQuery) -> StorageResult<Vec<DataRec
     let (where_clause, where_params) = build_where_clause(&query.filter);
     let order_clause = build_order_clause(&query.sort);
 
-    let mut sql = format!("SELECT * FROM {}", table);
+    let select_clause = build_select_clause(&query.select);
+    let mut sql = format!("SELECT {} FROM {}", select_clause, table);
     if !where_clause.is_empty() {
         sql.push(' ');
         sql.push_str(&where_clause);
@@ -834,6 +835,30 @@ fn build_where_clause(filter: &Option<HashMap<String, FieldFilter>>) -> (String,
         (String::new(), params)
     } else {
         (format!("WHERE {}", conditions.join(" AND ")), params)
+    }
+}
+
+/// Build SELECT clause from optional column projection.
+/// Converts camelCase field names to snake_case for SQL.
+/// Always includes id, created_at, updated_at, version (metadata columns).
+fn build_select_clause(select: &Option<Vec<String>>) -> String {
+    match select {
+        Some(cols) if !cols.is_empty() => {
+            let mut selected: Vec<String> = vec![
+                "id".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+                "version".to_string(),
+            ];
+            for col in cols {
+                let snake = naming::to_snake_case(col);
+                if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                    selected.push(snake);
+                }
+            }
+            selected.join(", ")
+        }
+        _ => "*".to_string(),
     }
 }
 

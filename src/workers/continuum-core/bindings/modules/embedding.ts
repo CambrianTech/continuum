@@ -87,10 +87,15 @@ export function EmbeddingMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			const resultModel = response.result?.model ?? modelName;
 
 			// Reconstruct float32 arrays from binary data
-			// Copy to aligned buffer to avoid Float32Array alignment issues
-			const aligned = new Uint8Array(binaryData.byteLength);
-			aligned.set(new Uint8Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength));
-			const floats = new Float32Array(aligned.buffer);
+			// Only copy if buffer is misaligned (Float32Array requires 4-byte alignment)
+			let floats: Float32Array;
+			if (binaryData.byteOffset % 4 === 0) {
+				floats = new Float32Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength / 4);
+			} else {
+				const aligned = new Uint8Array(binaryData.byteLength);
+				aligned.set(new Uint8Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength));
+				floats = new Float32Array(aligned.buffer);
+			}
 			const results: EmbeddingResult[] = [];
 
 			for (let i = 0; i < batchSize; i++) {

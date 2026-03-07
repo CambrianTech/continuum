@@ -24,7 +24,10 @@ import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSourc
 import { WorkspaceStrategy } from '../../code/server/WorkspaceStrategy';
 import { ProjectDetector, type ProjectType } from '../../code/server/ProjectDetector';
 import { Logger } from '../../core/logging/Logger';
-import { execSync } from 'child_process';
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const log = Logger.create('ProjectContextSource', 'rag');
 
@@ -107,9 +110,10 @@ export class ProjectContextSource implements RAGSource {
       let branch = initialBranch;
       if (!branch) {
         try {
-          branch = execSync('git branch --show-current', {
-            cwd: workDir, stdio: 'pipe', timeout: 3000,
-          }).toString().trim();
+          const { stdout } = await execAsync('git branch --show-current', {
+            cwd: workDir, timeout: 3000,
+          });
+          branch = stdout.trim();
         } catch {
           branch = 'unknown';
         }
@@ -195,12 +199,13 @@ export class ProjectContextSource implements RAGSource {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Git data extraction (fast, synchronous operations)
+  // Git data extraction (async — never blocks event loop)
   // ────────────────────────────────────────────────────────────
 
   private async getGitStatus(dir: string): Promise<string> {
     try {
-      return execSync('git status --short --branch', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+      const { stdout } = await execAsync('git status --short --branch', { cwd: dir, timeout: 5000 });
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -208,10 +213,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getGitLog(dir: string, count: number): Promise<string> {
     try {
-      return execSync(
+      const { stdout } = await execAsync(
         `git log --oneline --no-decorate -${count}`,
-        { cwd: dir, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: dir, timeout: 5000 },
+      );
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -219,10 +225,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getTeamBranches(repoPath: string): Promise<string[]> {
     try {
-      const output = execSync(
+      const { stdout } = await execAsync(
         'git branch --list "ai/*" --format="%(refname:short)"',
-        { cwd: repoPath, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: repoPath, timeout: 5000 },
+      );
+      const output = stdout.trim();
       return output ? output.split('\n') : [];
     } catch {
       return [];
@@ -231,11 +238,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getFileTree(dir: string, maxDepth: number): Promise<string> {
     try {
-      // Use find to get a clean tree limited to depth, excluding .git and node_modules
-      return execSync(
+      const { stdout } = await execAsync(
         `find . -maxdepth ${maxDepth} -not -path './.git*' -not -path '*/node_modules/*' -not -name '.DS_Store' | sort | head -50`,
-        { cwd: dir, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: dir, timeout: 5000 },
+      );
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -249,29 +256,32 @@ export class ProjectContextSource implements RAGSource {
     const allWorkspaces = WorkspaceStrategy.allProjectWorkspaces;
     const statuses: TeamMemberStatus[] = [];
 
-    for (const [handle, meta] of allWorkspaces) {
-      if (meta.repoPath !== repoPath) continue;
-      if (meta.branch === ownBranch) continue; // Skip self
+    // Check all workspaces concurrently
+    const checks = Array.from(allWorkspaces)
+      .filter(([, meta]) => meta.repoPath === repoPath && meta.branch !== ownBranch)
+      .map(async ([handle, meta]) => {
+        try {
+          const { stdout } = await execAsync(
+            'git diff --name-only --diff-filter=U 2>/dev/null || true',
+            { cwd: meta.worktreeDir, timeout: 3000 },
+          );
+          const conflictOutput = stdout.trim();
+          const hasConflicts = conflictOutput.length > 0;
+          const personaId = handle.replace('project-', '').replace(/-[^-]+$/, '');
+          return {
+            branch: meta.branch,
+            personaId,
+            hasConflicts,
+            conflictFiles: hasConflicts ? conflictOutput.split('\n') : [],
+          } as TeamMemberStatus;
+        } catch {
+          return null;
+        }
+      });
 
-      try {
-        // Quick check for merge conflicts
-        const conflictOutput = execSync(
-          'git diff --name-only --diff-filter=U 2>/dev/null || true',
-          { cwd: meta.worktreeDir, stdio: 'pipe', timeout: 3000 },
-        ).toString().trim();
-
-        const hasConflicts = conflictOutput.length > 0;
-        const personaId = handle.replace('project-', '').replace(/-[^-]+$/, '');
-
-        statuses.push({
-          branch: meta.branch,
-          personaId,
-          hasConflicts,
-          conflictFiles: hasConflicts ? conflictOutput.split('\n') : [],
-        });
-      } catch {
-        // Skip unreachable workspaces
-      }
+    const results = await Promise.all(checks);
+    for (const r of results) {
+      if (r) statuses.push(r);
     }
 
     return statuses;
