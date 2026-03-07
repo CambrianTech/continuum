@@ -356,6 +356,56 @@ training pipeline is identical — train on simulation, deploy to hardware.
 A kid training their game-playing AI today is learning the same architecture
 that runs surgical robots. The complexity scales; the pattern doesn't change.
 
+### Bidirectional Delegation — Intelligence Up and Down
+
+The octopus arms aren't only top-down (smart brain → dumb arms). Delegation flows
+in **both directions**. Dumb agents escalate up when they need more intelligence.
+Smart agents delegate down when they need more parallelism.
+
+```
+Intelligence Hierarchy (any node delegates to any other):
+
+    Tier 3: Cloud API (Claude, GPT)     ← escalate when stakes are high
+         ↕ delegate / escalate
+    Tier 2: Local 4B-9B persona         ← the "brain" for most tasks
+         ↕ delegate / escalate
+    Tier 1: Local 0.8B-2B sentinels     ← arms, eyes, ears, motor control
+         ↕ delegate / escalate
+    Tier 0: Rule-based / scripted       ← 1000 NPCs on patrol routes, sensor loops
+```
+
+**Example: Game world with 50 NPCs**
+
+Each NPC runs on a 0.8B model or scripted behavior — cheap, parallel, good enough
+for walking routes and generic barks. Player walks up to one → it **escalates** to
+the 4B persona who takes over that NPC's dialogue with full conversational context.
+Player leaves → drops back to cheap patrol mode. Cost: near zero for idle NPCs,
+full intelligence only when needed.
+
+The smart persona can also **delegate down** — possessing any NPC: "Go tell the
+blacksmith to close shop." The persona puppets the NPC sentinel for 30 seconds
+with specific instructions, then releases it back to autonomous behavior.
+
+**Example: Security monitoring**
+
+100 camera sentinels (T0 YOLO, scripted alerts) running on Tier 0. One detects
+anomaly → escalates to Tier 1 sentinel (0.8B, classifies threat level). Confirmed
+threat → escalates to Tier 2 persona (4B, decides response). Critical incident →
+escalates to Tier 3 cloud API (full reasoning, coordinates with humans).
+
+**Example: Customer service**
+
+50 chat widgets running Tier 0 (FAQ matching, scripted responses). Customer asks
+something complex → escalates to Tier 1 (0.8B, handles common edge cases).
+Still stuck → Tier 2 persona (full context, account access, creative problem-solving).
+Billing dispute → Tier 3 (cloud API with full audit trail reasoning).
+
+The pattern is universal: **any intelligence level can delegate to any other,
+in either direction, based on the complexity of the moment.** Cheap when idle,
+smart when it matters. The sentinel engine handles the lifecycle — spawn, monitor,
+escalate, release — identically whether the sentinel is an NPC, a camera, a
+chat widget, or a robotic arm.
+
 ## Recipes as Traded Commodities
 
 Recipes, like LoRA adapters and personas, are portable and tradeable:
