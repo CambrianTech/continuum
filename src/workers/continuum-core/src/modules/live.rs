@@ -248,6 +248,10 @@ impl ServiceModule for VoiceModule {
                 let voice = p.str_opt("voice");
                 let adapter = p.str_opt("adapter");
                 let display_name = p.str_opt("display_name");
+                // Timeline sequence number for output ordering.
+                // Tells us WHERE in the conversation this response belongs.
+                // TODO: Use for Rust-side TTS output scheduling (ordering + stale detection).
+                let _timeline_seq = p.u64_opt("timeline_seq");
 
                 let (num_samples, duration_ms, sample_rate) = self
                     .state

@@ -22,6 +22,7 @@ import { getAIAudioBridge } from './AIAudioBridge';
 import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { VoiceSessionTimeline } from './VoiceSessionTimeline';
 /**
  * Utterance event from voice transcription
  */
@@ -50,13 +51,12 @@ interface VoiceParticipant {
 }
 
 /**
- * Session context - tracks recent conversation for RAG
+ * Session state — timeline + room mapping.
+ * VoiceSessionTimeline handles all utterance tracking, cursors, and consolidation.
  */
-interface SessionContext {
-  sessionId: UUID;
+interface SessionState {
   roomId: UUID;
-  recentUtterances: UtteranceEvent[];
-  turnCount: number;
+  timeline: VoiceSessionTimeline;
 }
 
 /**
@@ -67,7 +67,7 @@ export class VoiceOrchestrator {
 
   // Session state
   private sessionParticipants: Map<UUID, VoiceParticipant[]> = new Map();
-  private sessionContexts: Map<UUID, SessionContext> = new Map();
+  private sessions: Map<UUID, SessionState> = new Map();
 
   private constructor() {
     this.setupEventListeners();
@@ -123,11 +123,9 @@ export class VoiceOrchestrator {
     }
 
     this.sessionParticipants.set(sessionId, participants);
-    this.sessionContexts.set(sessionId, {
-      sessionId,
+    this.sessions.set(sessionId, {
       roomId,
-      recentUtterances: [],
-      turnCount: 0
+      timeline: new VoiceSessionTimeline(sessionId),
     });
 
     // Connect AI participants to the appropriate audio bridge
@@ -157,7 +155,15 @@ export class VoiceOrchestrator {
    * Get the roomId for a voice session (for message persistence)
    */
   getRoomIdForSession(sessionId: UUID): UUID | null {
-    return this.sessionContexts.get(sessionId)?.roomId ?? null;
+    return this.sessions.get(sessionId)?.roomId ?? null;
+  }
+
+  /**
+   * Get the timeline for a session (for cursor-aware RAG access).
+   * VoiceConversationSource uses this for per-persona temporal tracking.
+   */
+  getTimeline(sessionId: string): VoiceSessionTimeline | null {
+    return this.sessions.get(sessionId as UUID)?.timeline ?? null;
   }
 
   /**
@@ -181,7 +187,11 @@ export class VoiceOrchestrator {
     }
 
     this.sessionParticipants.delete(sessionId);
-    this.sessionContexts.delete(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.timeline.clear();
+      this.sessions.delete(sessionId);
+    }
   }
 
   /**
@@ -193,8 +203,8 @@ export class VoiceOrchestrator {
   async onUtterance(event: UtteranceEvent): Promise<void> {
     const { sessionId, speakerId, transcript, speakerName } = event;
 
-    const context = this.sessionContexts.get(sessionId);
-    if (!context) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
       return;
     }
 
@@ -203,12 +213,8 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Update context
-    context.recentUtterances.push(event);
-    if (context.recentUtterances.length > 20) {
-      context.recentUtterances.shift();
-    }
-    context.turnCount++;
+    // Ingest into timeline (handles consolidation + sequencing)
+    session.timeline.append(event);
 
     // Get TEXT-BASED AI participants (excluding speaker AND audio-native AIs)
     // Audio-native AIs hear raw audio through mixer — text would cause double response
@@ -237,8 +243,11 @@ export class VoiceOrchestrator {
   }
 
   /**
-   * Handle persona response — route to TTS.
-   * No fallbacks. If the AI isn't in the call, that's an error.
+   * Handle persona response — fire to Rust TTS with timeline seq for ordering.
+   *
+   * The seq number tells Rust WHERE in the conversation this response belongs.
+   * Rust handles ordering, stale dropping, and TTS output scheduling internally —
+   * no TS-side queuing overhead on the main thread.
    */
   async onPersonaResponse(
     personaId: UUID,
@@ -256,7 +265,14 @@ export class VoiceOrchestrator {
       return;
     }
 
-    await bridge.speak(sessionId, personaId, response);
+    // Attach the timeline seq this response is answering.
+    // Rust uses this for output ordering and stale response detection.
+    const timeline = this.getTimeline(sessionId);
+    const respondingToSeq = timeline?.headSeq ?? 0;
+
+    // Fire to Rust — TTS synthesis + ordering + LiveKit publish all in-process.
+    // No TS scheduling overhead. Seq travels through IPC for Rust-side ordering.
+    await bridge.speak(sessionId, personaId, response, undefined, respondingToSeq);
   }
 
   /**
@@ -294,23 +310,18 @@ export class VoiceOrchestrator {
       language: string;
       timestamp: number;
     }) => {
-      // Update session context for RAG (getRecentUtterances)
-      const context = this.sessionContexts.get(event.sessionId as UUID);
-      if (context) {
-        const utteranceEvent: UtteranceEvent = {
-          sessionId: event.sessionId as UUID,
-          speakerId: event.speakerId as UUID,
+      // Ingest into timeline (consolidation + sequencing handled automatically)
+      const session = this.sessions.get(event.sessionId as UUID);
+      if (session) {
+        session.timeline.append({
+          sessionId: event.sessionId,
+          speakerId: event.speakerId,
           speakerName: event.speakerName,
           speakerType: 'human',
           transcript: event.transcript,
           confidence: event.confidence,
-          timestamp: event.timestamp
-        };
-        context.recentUtterances.push(utteranceEvent);
-        if (context.recentUtterances.length > 20) {
-          context.recentUtterances.shift();
-        }
-        context.turnCount++;
+          timestamp: event.timestamp,
+        });
       }
     });
 
@@ -387,27 +398,22 @@ export class VoiceOrchestrator {
     }) => {
       if (event.failed) return;
 
-      const context = this.sessionContexts.get(event.sessionId as UUID);
-      if (context) {
+      const session = this.sessions.get(event.sessionId as UUID);
+      if (session) {
         // Determine speaker type from participants
         const participants = this.sessionParticipants.get(event.sessionId as UUID);
         const participant = participants?.find(p => p.userId === event.speakerId);
         const speakerType = participant?.type ?? 'persona';
 
-        const utteranceEvent: UtteranceEvent = {
-          sessionId: event.sessionId as UUID,
-          speakerId: event.speakerId as UUID,
+        session.timeline.append({
+          sessionId: event.sessionId,
+          speakerId: event.speakerId,
           speakerName: event.speakerName,
           speakerType,
           transcript: event.text,
           confidence: 1.0,
           timestamp: event.timestamp,
-        };
-        context.recentUtterances.push(utteranceEvent);
-        if (context.recentUtterances.length > 20) {
-          context.recentUtterances.shift();
-        }
-        context.turnCount++;
+        });
       }
     });
   }
@@ -417,33 +423,30 @@ export class VoiceOrchestrator {
    */
   getSessionStats(sessionId: UUID): { participants: number; turnCount: number } | null {
     const participants = this.sessionParticipants.get(sessionId);
-    const context = this.sessionContexts.get(sessionId);
+    const session = this.sessions.get(sessionId);
 
-    if (!participants || !context) return null;
+    if (!participants || !session) return null;
 
     return {
       participants: participants.length,
-      turnCount: context.turnCount,
+      turnCount: session.timeline.totalTurns,
     };
   }
 
   /**
-   * Get recent utterances for a voice session
-   * Used by VoiceConversationSource for RAG context building
+   * Get recent utterances for a voice session (backwards-compatible).
+   * Utterances are already consolidated with "..." continuity markers by the timeline.
    *
-   * @param sessionId - Voice session ID
-   * @param limit - Maximum number of utterances to return (default: 20)
-   * @returns Array of recent utterances with speaker type information
+   * For cursor-aware access, use getTimeline() instead.
    */
   getRecentUtterances(sessionId: string, limit: number = 20): UtteranceEvent[] {
-    const context = this.sessionContexts.get(sessionId as UUID);
-    if (!context) {
+    const session = this.sessions.get(sessionId as UUID);
+    if (!session) {
       return [];
     }
 
-    // Return most recent utterances up to limit
-    const utterances = context.recentUtterances.slice(-limit);
-    return utterances;
+    // Timeline returns consolidated turns with "..." markers already applied
+    return session.timeline.getRecentUtterances(limit) as UtteranceEvent[];
   }
 
   /**
@@ -451,7 +454,7 @@ export class VoiceOrchestrator {
    * Returns null if no live session is active.
    */
   get activeSessionId(): UUID | null {
-    const keys = [...this.sessionContexts.keys()];
+    const keys = [...this.sessions.keys()];
     return keys.length > 0 ? keys[0] : null;
   }
 

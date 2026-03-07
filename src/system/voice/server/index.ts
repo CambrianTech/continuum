@@ -19,6 +19,14 @@ export {
 } from './VoiceOrchestrator';
 
 export {
+  VoiceSessionTimeline,
+  type TimelineEntry,
+  type TimelineSlice,
+  type RawUtterance,
+} from './VoiceSessionTimeline';
+
+
+export {
   VoiceOrchestratorRustBridge,
   getRustVoiceOrchestrator,
 } from './VoiceOrchestratorRustBridge';

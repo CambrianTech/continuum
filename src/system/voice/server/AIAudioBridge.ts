@@ -73,8 +73,9 @@ export class AIAudioBridge {
    * Audio stays in Rust. LiveKitAgentManager creates agents on-demand.
    *
    * @param voice - Voice identifier for TTS. Named voice ("alba") or any string (hashed to pick voice).
+   * @param seq - Timeline sequence number this response is answering (for Rust-side output ordering).
    */
-  async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
+  async speak(callId: string, userId: UUID, text: string, voice?: string, seq?: number): Promise<void> {
     // Guard: never send empty text to TTS or captions
     if (!text || !text.trim()) {
       return;
@@ -93,9 +94,9 @@ export class AIAudioBridge {
       const voiceId = voice ?? userId;
 
       // ONE Rust IPC call: synthesize + publish via LiveKit agent.
-      // LiveKitAgentManager.speak_in_call() creates agent on-demand if needed.
-      // Kokoro: local ONNX, 54 voices, fast reliable — until Orpheus (3B, LoRA-trainable) is installed.
-      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro', displayName);
+      // Seq travels through IPC — Rust uses it for output ordering and stale detection.
+      // All scheduling happens in Rust off the main thread. TS just fires and forgets.
+      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'kokoro', displayName, seq);
 
       const audioDurationMs = result.durationMs;
       await this.emitSpeechEvent(callId, userId, displayName, text, audioDurationMs, false);
