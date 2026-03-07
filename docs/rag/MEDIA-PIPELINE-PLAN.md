@@ -53,7 +53,7 @@ All use the same pipeline: source → MediaFrame → lazy representation → RAG
 | Priority | Description | Status |
 |----------|------------|--------|
 | P1 | Fix artifact extraction race condition | DONE (artifacts=0.0ms cache hit) |
-| P2 | MediaArtifactSource as proper RAGSource | Planned |
+| P2 | MediaArtifactSource as proper RAGSource | DONE (DB query, 50-msg scan, 10s vision timeout) |
 | P3 | Vision description cache + in-flight dedup | DONE (1 call, not 11) |
 | P4 | MediaFrame interface (CBarFrame) | Designed below |
 | P5 | Recipe-driven media config | Designed below |

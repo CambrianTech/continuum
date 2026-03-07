@@ -127,6 +127,8 @@ class LoggerClass implements ParentLogger {
       'ChatCoordinationStream': LogLevel.WARN,
       // RAG pipeline (timed internally — timing data is more useful than log spam)
       'RAGComposer': LogLevel.WARN,
+      // MediaArtifactSource needs INFO for artifact count diagnostics
+      'MediaArtifactSource': LogLevel.INFO,
     });
 
     this.fileStreams = new Map();

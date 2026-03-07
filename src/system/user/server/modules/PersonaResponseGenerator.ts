@@ -47,6 +47,7 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { supportsNativeTools, unsanitizeToolName, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
+import { hasMediaMetadata } from '../../../rag/shared/RAGTypes';
 import { ContentDeduplicator } from './ContentDeduplicator';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
 // import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -340,34 +341,28 @@ export class PersonaResponseGenerator {
         content: systemPrompt
       });
 
-      // Build artifact lookup map (messageId → artifacts) for multimodal support
+      // Build artifact lookup maps for multimodal support
       // This enables vision models to see images from messages with media
       type RAGArtifact = typeof fullRAGContext.artifacts[number];
       const artifactsByMessageId = new Map<string, RAGArtifact[]>();
-      for (const artifact of fullRAGContext.artifacts) {
-        const messageId = artifact.metadata?.messageId as string | undefined;
-        if (messageId) {
-          if (!artifactsByMessageId.has(messageId)) {
-            artifactsByMessageId.set(messageId, []);
-          }
-          artifactsByMessageId.get(messageId)!.push(artifact);
-        }
-      }
-
-      // Also create a timestamp+name lookup for matching LLMMessages to artifacts
-      // LLMMessages don't have IDs, so we match by timestamp+sender combination
       const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
+
       for (const artifact of fullRAGContext.artifacts) {
-        const timestamp = artifact.metadata?.timestamp as Date | number | undefined;
-        const senderName = artifact.metadata?.senderName as string | undefined;
-        if (timestamp && senderName) {
-          const timestampMs = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : 0;
-          const key = `${timestampMs}_${senderName}`;
-          if (!artifactsByTimestampName.has(key)) {
-            artifactsByTimestampName.set(key, []);
-          }
-          artifactsByTimestampName.get(key)!.push(artifact);
+        if (!hasMediaMetadata(artifact)) continue;
+        const { messageId, senderName, timestamp } = artifact.metadata;
+
+        // By messageId
+        if (!artifactsByMessageId.has(messageId)) {
+          artifactsByMessageId.set(messageId, []);
         }
+        artifactsByMessageId.get(messageId)!.push(artifact);
+
+        // By timestamp+name (LLMMessages don't have IDs)
+        const key = `${timestamp}_${senderName}`;
+        if (!artifactsByTimestampName.has(key)) {
+          artifactsByTimestampName.set(key, []);
+        }
+        artifactsByTimestampName.get(key)!.push(artifact);
       }
 
       this.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
@@ -422,7 +417,7 @@ export class PersonaResponseGenerator {
 
             // Add artifacts as image/audio/video parts
             for (const artifact of messageArtifacts) {
-              const mimeType = artifact.metadata?.mimeType as string | undefined;
+              const mimeType = hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined;
 
               if (artifact.type === 'image' && artifact.base64) {
                 contentParts.push({

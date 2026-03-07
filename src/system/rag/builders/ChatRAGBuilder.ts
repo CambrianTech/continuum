@@ -19,8 +19,10 @@ import type {
   RAGArtifact,
   PersonaIdentity,
   PersonaMemory,
-  RecipeStrategy
+  RecipeStrategy,
+  MediaArtifactMetadata
 } from '../shared/RAGTypes';
+import { hasMediaMetadata } from '../shared/RAGTypes';
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
@@ -55,7 +57,8 @@ import {
   DocumentationSource,
   ToolMethodologySource,
   OpenProposalsSource,
-  CodebaseSearchSource
+  CodebaseSearchSource,
+  MediaArtifactSource
 } from '../sources';
 
 /**
@@ -71,7 +74,6 @@ export class ChatRAGBuilder extends RAGBuilder {
   private useModularSources = true;  // Feature flag for gradual migration
 
   // Per-operation timing for legacy phase diagnostics
-  private _lastArtifactMs?: number;
   private _lastRecipeMs?: number;
   private _lastLearningMs?: number;
 
@@ -150,9 +152,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ActivityContextSource(),     // Priority 40: Recipe/activity context
         new DocumentationSource(),       // Priority 35: System documentation awareness
         new OpenProposalsSource(),        // Priority 25: Open voting proposals (actionable)
-        new GovernanceSource()           // Priority 20: Democratic participation guidance
+        new GovernanceSource(),          // Priority 20: Democratic participation guidance
+        new MediaArtifactSource()        // Priority 65: Media artifacts (images, files) with vision preprocessing
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 14 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 15 sources');
     }
     return this.composer;
   }
@@ -171,12 +174,14 @@ export class ChatRAGBuilder extends RAGBuilder {
     identity: PersonaIdentity | null;
     conversationHistory: LLMMessage[];
     memories: PersonaMemory[];
+    artifacts: RAGArtifact[];
     systemPromptSections: Map<string, string>;
     toolDefinitionsMetadata: Record<string, unknown> | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
     let memories: PersonaMemory[] = [];
+    let artifacts: RAGArtifact[] = [];
     const systemPromptSections = new Map<string, string>();
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
 
@@ -185,6 +190,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       if (section.identity) identity = section.identity;
       if (section.messages && section.messages.length > 0) conversationHistory = section.messages;
       if (section.memories && section.memories.length > 0) memories = section.memories;
+      if (section.artifacts && section.artifacts.length > 0) artifacts = section.artifacts;
 
       // Generic: every source's systemPromptSection collected by name
       if (section.systemPromptSection) {
@@ -197,7 +203,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       }
     }
 
-    return { identity, conversationHistory, memories, systemPromptSections, toolDefinitionsMetadata };
+    return { identity, conversationHistory, memories, artifacts, systemPromptSections, toolDefinitionsMetadata };
   }
 
   /**
@@ -279,13 +285,12 @@ export class ChatRAGBuilder extends RAGBuilder {
       const composition = await composer.compose(sourceContext);
       composeMs = performance.now() - composeStart;
       const extracted = this.extractFromComposition(composition);
-
-      // Extract artifacts AFTER compose — ConversationHistorySource cache is now warm.
-      // Cache hit = ~0ms vs the previous race condition that caused a redundant DB query.
-      const artifactStart = performance.now();
-      artifacts = includeArtifacts ? await this.extractArtifacts(contextId, maxMessages) : [];
-      this._lastArtifactMs = performance.now() - artifactStart;
       legacyMs = performance.now() - legacyStart;
+
+      // Artifacts now come from MediaArtifactSource via composition (parallel with other sources).
+      // No separate extraction step needed — ConversationHistorySource cache is read by
+      // MediaArtifactSource during the same compose phase. Vision preprocessing happens inside the source.
+      artifacts = extracted.artifacts;
 
       // Use composed data, with fallbacks for missing pieces
       identity = extracted.identity ?? {
@@ -297,7 +302,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       systemPromptSections = extracted.systemPromptSections;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
 
-      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [artifacts=${this._lastArtifactMs?.toFixed(1)}ms, recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms])`);
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms], artifacts=${artifacts.length})`);
 
     } else {
       // LEGACY PATH: Direct parallel loading (fallback)
@@ -355,10 +360,18 @@ export class ChatRAGBuilder extends RAGBuilder {
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
-    // If target model can't see images, generate text descriptions
-    const preprocessStart = performance.now();
-    const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
-    const preprocessMs = performance.now() - preprocessStart;
+    // Modular path: MediaArtifactSource already preprocesses during compose.
+    // Legacy path: needs explicit preprocessing here.
+    let processedArtifacts: RAGArtifact[];
+    let preprocessMs: number;
+    if (this.useModularSources) {
+      processedArtifacts = artifacts; // Already preprocessed by MediaArtifactSource
+      preprocessMs = 0;
+    } else {
+      const preprocessStart = performance.now();
+      processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
+      preprocessMs = performance.now() - preprocessStart;
+    }
 
     // SMALL-CONTEXT GUARD: For models with tight context windows (Candle 2048 tokens),
     // skip all non-essential injections. The system prompt + conversation must fit.
@@ -834,19 +847,24 @@ LIMITS:
         if (msg.content?.media && msg.content.media.length > 0) {
           for (const mediaItem of msg.content.media) {
             // Handle different media formats
+            const metadata: MediaArtifactMetadata = {
+              messageId: msg.id,
+              senderName: msg.senderName,
+              timestamp: msg.timestamp instanceof Date
+                ? msg.timestamp.getTime()
+                : typeof msg.timestamp === 'string'
+                  ? new Date(msg.timestamp).getTime()
+                  : msg.timestamp as number,
+              filename: mediaItem.filename,
+              mimeType: mediaItem.mimeType ?? mediaItem.type,
+              size: mediaItem.size,
+            };
             const artifact: RAGArtifact = {
               type: this.detectArtifactType(mediaItem),
               url: mediaItem.url,
               base64: mediaItem.base64,
               content: mediaItem.description ?? mediaItem.alt,
-              metadata: {
-                messageId: msg.id,
-                senderName: msg.senderName,
-                timestamp: msg.timestamp,
-                filename: mediaItem.filename,
-                mimeType: mediaItem.mimeType ?? mediaItem.type,
-                size: mediaItem.size
-              }
+              metadata,
             };
 
             artifacts.push(artifact);
@@ -953,7 +971,7 @@ LIMITS:
 
       // Generate description using vision model
       try {
-        const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/png';
+        const mimeType = (hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined) ?? 'image/png';
         const description = await visionService.describeBase64(artifact.base64, mimeType, {
           maxLength: 500,
           detectText: true,  // OCR any text in images

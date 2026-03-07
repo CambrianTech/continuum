@@ -66,7 +66,7 @@ export interface RAGArtifact {
   content?: string;
   metadata: Record<string, unknown>;
 
-  // NEW: Preprocessing results for text-only models
+  // Preprocessing results for text-only models
   preprocessed?: {
     type: 'yolo_detection' | 'image_description' | 'ocr' | 'video_summary' | 'audio_transcript';
     result: string | Record<string, unknown>;
@@ -74,6 +74,26 @@ export interface RAGArtifact {
     processingTime?: number;
     model?: string;
   };
+}
+
+/**
+ * Typed metadata for media artifacts (images, audio, video, files).
+ * Used by MediaArtifactSource and ChatRAGBuilder when constructing artifacts
+ * from ChatMessageEntity media items.
+ */
+export interface MediaArtifactMetadata extends Record<string, unknown> {
+  messageId: UUID;
+  senderName: string;
+  timestamp: number;  // Unix ms — always normalized from Date/string/number at creation
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+}
+
+/** Type guard: narrows RAGArtifact.metadata to MediaArtifactMetadata */
+export function hasMediaMetadata(artifact: RAGArtifact): artifact is RAGArtifact & { metadata: MediaArtifactMetadata } {
+  const m = artifact.metadata;
+  return typeof m.messageId === 'string' && typeof m.senderName === 'string' && typeof m.timestamp === 'number';
 }
 
 /**

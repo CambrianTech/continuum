@@ -37,6 +37,7 @@ export { DocumentationSource } from './DocumentationSource';
 export { ToolMethodologySource } from './ToolMethodologySource';
 export { OpenProposalsSource } from './OpenProposalsSource';
 export { CodebaseSearchSource } from './CodebaseSearchSource';
+export { MediaArtifactSource } from './MediaArtifactSource';
 
 // Re-export types for convenience
 export type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
