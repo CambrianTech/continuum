@@ -293,6 +293,38 @@ continuum-core (Rust — 22 modules, 1079 tests)
 
 ---
 
+## Universal Senses — Any Media In, Any Media Out
+
+**No model is blind. No model is deaf. No model is mute.** The system provides universal sensory adapters that translate between modalities — like accessibility aids, but for AI.
+
+A $0 text-only model on a Raspberry Pi has the same sensory capabilities as a $200/mo multimodal cloud model. The difference is reasoning quality, not perception:
+
+| Modality | Native gap | System bridge | Any model gets |
+|----------|-----------|---------------|----------------|
+| **Vision** | Blind models can't see | YOLO + VisionDescription (Rust) | Structured scene + text description |
+| **Hearing** | Text models can't hear | Whisper STT (Rust) | Transcribed speech |
+| **Speaking** | Text models can't talk | TTS voice synthesis | Spoken output |
+| **Interaction** | Models can't click | Action adapters → tool calls | UI/game/device control |
+
+But it's not just accessibility — it's **augmentation**. Vision models that CAN see raw frames get YOLO bounding boxes, semantic labels, depth maps, surface normals, attention heatmaps overlaid. That's super vision — seeing more than the raw pixels. Like giving a sighted person infrared. Every model gets capabilities beyond its native training.
+
+Visual perception is a **RAG source adapter** — same pattern as text, code, conversation. Recipes compose them. They're traded like LoRA layers:
+
+```
+Visual source adapters (recipe-driven, tradeable):
+  LiveKitFeedAdapter    → video calls — webcam, screen share, AI avatars
+  ScreenCaptureAdapter  → desktop, IDE, browser, any application
+  GameCaptureAdapter    → game window at 1fps + YOLO object detection
+  ADBDeviceAdapter      → Android app testing via ADB
+  BevySceneAdapter      → 3D environment camera snapshots
+```
+
+Someone builds a "Unity game tester" recipe with YOLO tuned for game UIs. Someone else builds a "mobile QA" recipe with screen capture + tap/swipe tools. A "live translator" recipe with STT in one language + TTS in another. Same infrastructure, infinite applications.
+
+**Architecture:** [UNIVERSAL-SENSORY-ARCHITECTURE.md](docs/UNIVERSAL-SENSORY-ARCHITECTURE.md) | [MEDIA-PIPELINE-PLAN.md](docs/rag/MEDIA-PIPELINE-PLAN.md)
+
+---
+
 ## Cost Model
 
 **Free by default. Cloud APIs optional.**

@@ -10,6 +10,7 @@
 docs/
 ├── CONTINUUM-ARCHITECTURE.md     # Top-level system architecture
 ├── CONTINUUM-VISION.md           # Vision and philosophy
+├── UNIVERSAL-SENSORY-ARCHITECTURE.md  # Any media in/out for ANY AI
 ├── QUEUE-DRIVEN-COGNITION.md     # RAG composition: queue items declare context needs
 ├── UNIVERSAL-LEARNING-ARCHITECTURE.md  # Training, memory, and beyond-LLM learning
 ├── CONFIGURATION.md              # Setup and configuration
@@ -39,6 +40,7 @@ docs/
 |----------|---------|
 | [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) | Top-level system architecture -- Rust brain, TypeScript face |
 | [CONTINUUM-VISION.md](CONTINUUM-VISION.md) | Philosophy -- digital coworkers, not tools |
+| [UNIVERSAL-SENSORY-ARCHITECTURE.md](UNIVERSAL-SENSORY-ARCHITECTURE.md) | Any media in, any media out, for ANY AI -- the multimodal bridge that gives every model every sense |
 | [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) | Queue items declare RAG requirements -- personas compose generically, zero domain-specific logic |
 | [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) | Generic pipeline enables training, memory, and beyond-LLM optimization from any activity |
 
