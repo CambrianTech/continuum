@@ -598,7 +598,7 @@ export class PersonaUser extends AIUser {
       // Wire training outcome recording — closes the meta-learning loop.
       // When training completes, record pre/post fitness so GapDetector learns
       // which training strategies actually improve performance.
-      Events.subscribe('genome:training:complete', (payload: any) => {
+      const unsubTraining = Events.subscribe('genome:training:complete', (payload: any) => {
         if (payload.personaId !== this.id) return;
         const domain = payload.traitType ?? 'unknown';
         const preFitness = payload.metrics?.preFitness ?? 0;
@@ -607,7 +607,8 @@ export class PersonaUser extends AIUser {
           : 0;
         gapDetector.recordTrainingOutcome(domain, preFitness, postFitness, 'fine-tune-lora');
         cognitionLogger(`[GapDetector] Recorded training outcome: ${domain} pre=${preFitness.toFixed(2)} post=${postFitness.toFixed(2)}`);
-      });
+      }, undefined, this.id);
+      this._eventUnsubscribes.push(unsubTraining);
     }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);

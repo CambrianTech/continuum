@@ -24,7 +24,6 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import type { CodeIndexEntry } from '../shared/CodebaseTypes';
-import { COLLECTIONS } from '../../shared/Constants';
 import { getCodebaseIndexer } from '../services/CodebaseIndexer';
 
 /**

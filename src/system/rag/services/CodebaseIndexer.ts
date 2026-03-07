@@ -337,21 +337,23 @@ export class CodebaseIndexer {
 
     for (let i = 0; i < lines.length; i++) {
       const headingMatch = lines[i].match(/^(#{1,3})\s+(.+)/);
-      if (headingMatch && i > sectionStart) {
-        // Save previous section
-        const sectionContent = lines.slice(sectionStart, i).join('\n').trim();
-        if (sectionContent.length > 20) {
-          chunks.push({
-            filePath,
-            fileType: 'markdown',
-            content: sectionContent.slice(0, MAX_CHUNK_CHARS),
-            startLine: sectionStart + 1,
-            endLine: i,
-            exportType: 'markdown-section',
-            exportName: sectionName,
-          });
+      if (headingMatch) {
+        if (i > sectionStart) {
+          // Save previous section
+          const sectionContent = lines.slice(sectionStart, i).join('\n').trim();
+          if (sectionContent.length > 20) {
+            chunks.push({
+              filePath,
+              fileType: 'markdown',
+              content: sectionContent.slice(0, MAX_CHUNK_CHARS),
+              startLine: sectionStart + 1,
+              endLine: i,
+              exportType: 'markdown-section',
+              exportName: sectionName,
+            });
+          }
+          sectionStart = i;
         }
-        sectionStart = i;
         sectionName = headingMatch[2].trim();
       }
     }

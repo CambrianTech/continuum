@@ -109,6 +109,9 @@ export class WebhookProcessor {
 
     log.info('Starting webhook processor');
 
+    // Recover stale 'processing' events from previous crash — reset to 'pending'
+    await this.recoverStaleProcessingEvents();
+
     // Process immediately on start (recover unprocessed events)
     await this.processPendingEvents();
 
@@ -128,6 +131,33 @@ export class WebhookProcessor {
       this.pollTimer = null;
     }
     log.info('Stopped webhook processor');
+  }
+
+  // ── Crash recovery ──────────────────────────────────────────────────
+
+  /**
+   * Reset stale 'processing' events back to 'pending'.
+   * If the process crashed while processing, these events would be stuck forever.
+   */
+  private async recoverStaleProcessingEvents(): Promise<void> {
+    try {
+      const staleResult = await ORM.query<WebhookEventEntity>({
+        collection: WebhookEventEntity.collection,
+        filter: { status: 'processing' },
+        limit: 100,
+      }, 'default');
+
+      const stale = staleResult.data ?? [];
+      if (stale.length === 0) return;
+
+      for (const record of stale) {
+        record.data.status = 'pending';
+        await ORM.store(WebhookEventEntity.collection, record.data, false, 'default');
+      }
+      log.info(`Recovered ${stale.length} stale 'processing' webhook events → 'pending'`);
+    } catch (err) {
+      log.warn(`Failed to recover stale webhook events: ${err}`);
+    }
   }
 
   // ── Processing loop ───────────────────────────────────────────────────
