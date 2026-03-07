@@ -242,20 +242,15 @@ export class ChatRAGBuilder extends RAGBuilder {
         this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
       }
 
-      // Load recipe FIRST — its ragTemplate.sources drives which RAG sources activate
+      // Load recipe + learning config in parallel (both needed before compose)
       const legacyStart = performance.now();
-      const artifactStart = performance.now();
-      const extractedArtifactsPromise = includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]);
       const recipePromise = this.loadRecipeContext(contextId, options.recipeId);
       const learningPromise = this.loadLearningConfig(contextId, personaId);
 
-      const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
-        extractedArtifactsPromise.then(r => { this._lastArtifactMs = performance.now() - artifactStart; return r; }),
-        recipePromise.then(r => { this._lastRecipeMs = performance.now() - artifactStart; return r; }),
-        learningPromise.then(r => { this._lastLearningMs = performance.now() - artifactStart; return r; })
+      const [extractedRecipeContext, extractedLearningConfig] = await Promise.all([
+        recipePromise.then(r => { this._lastRecipeMs = performance.now() - legacyStart; return r; }),
+        learningPromise.then(r => { this._lastLearningMs = performance.now() - legacyStart; return r; })
       ]);
-      legacyMs = performance.now() - legacyStart;
-      artifacts = extractedArtifacts;
       recipeStrategy = extractedRecipeContext?.strategy;
       recipeTools = extractedRecipeContext?.tools;
       learningConfig = extractedLearningConfig;
@@ -279,10 +274,18 @@ export class ChatRAGBuilder extends RAGBuilder {
       };
 
       // Load core sources via composer (parallel, filtered by recipe's activeSources)
+      // This populates ConversationHistorySource cache — artifact extraction depends on it
       const composeStart = performance.now();
       const composition = await composer.compose(sourceContext);
       composeMs = performance.now() - composeStart;
       const extracted = this.extractFromComposition(composition);
+
+      // Extract artifacts AFTER compose — ConversationHistorySource cache is now warm.
+      // Cache hit = ~0ms vs the previous race condition that caused a redundant DB query.
+      const artifactStart = performance.now();
+      artifacts = includeArtifacts ? await this.extractArtifacts(contextId, maxMessages) : [];
+      this._lastArtifactMs = performance.now() - artifactStart;
+      legacyMs = performance.now() - legacyStart;
 
       // Use composed data, with fallbacks for missing pieces
       identity = extracted.identity ?? {
