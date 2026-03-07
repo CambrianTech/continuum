@@ -21,7 +21,7 @@ use crate::{clog_info, clog_warn};
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::LoadState;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
+use bevy::camera::visibility::{RenderLayers, SetViewVisibility};
 use bevy::camera::RenderTarget;
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
@@ -602,6 +602,10 @@ struct AvatarSlotId(#[allow(dead_code)] u8);
 #[derive(Component)]
 struct ReadbackMarker;
 
+/// Marker for the shared directional light so force_light_visibility can find it.
+#[derive(Component)]
+struct AvatarSceneLight;
+
 /// Component marking an avatar that is currently speaking.
 #[derive(Component)]
 struct Speaking;
@@ -1058,6 +1062,14 @@ fn run_bevy_app(
             )
                 .run_if(has_active_slots),
         )
+        // Force light visibility AFTER Bevy's CheckVisibility (runs in PostUpdate).
+        // Without this, the directional light's ViewVisibility may be false in headless
+        // mode, causing extract_lights to skip it on some frames → lighting strobe.
+        .add_systems(
+            PostUpdate,
+            force_light_visibility
+                .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+        )
         .run();
 }
 
@@ -1229,6 +1241,8 @@ fn setup_render_slots(
                 0.0,
             )),
             RenderLayers::from_layers(&all_layers),
+            // Marker for force_light_visibility system
+            AvatarSceneLight,
         ));
     }
 
@@ -1517,8 +1531,24 @@ fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
 /// causing intermittent lighting loss on offscreen render targets.
 /// This no-op mutation keeps the change flag set so extraction never skips it.
 fn touch_ambient_light(mut ambient: ResMut<GlobalAmbientLight>) {
-    // DerefMut triggers Bevy's change detection — no actual value change needed
-    let _ = &mut *ambient;
+    // Force Bevy's change detection by writing the same value back.
+    // ResMut::set_changed() is the explicit way to mark as changed.
+    ambient.set_changed();
+}
+
+/// Force the directional light to be visible every frame.
+///
+/// Bevy's `extract_lights` skips directional lights where `ViewVisibility::get()` is false.
+/// In headless rendering (no window/viewport), Bevy's `CheckVisibility` system may not
+/// reliably mark our light as visible, causing intermittent lighting loss on offscreen
+/// render targets. This system runs in PostUpdate (after visibility propagation) and
+/// forces the light's ViewVisibility to visible, ensuring it's always extracted.
+fn force_light_visibility(
+    mut lights: Query<&mut ViewVisibility, With<AvatarSceneLight>>,
+) {
+    for mut vis in &mut lights {
+        vis.set_visible();
+    }
 }
 
 fn manage_render_cadence(
