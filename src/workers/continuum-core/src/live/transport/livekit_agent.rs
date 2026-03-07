@@ -223,20 +223,26 @@ impl LiveKitAgent {
                 room_join: true,
                 room: call_id.to_string(),
                 can_publish: true,
-                can_subscribe: true,
+                can_subscribe: true, // Needed for data channels (tile_resolution). auto_subscribe=false prevents media track decode.
                 can_publish_data: true,
                 ..Default::default()
             })
             .to_jwt()
             .map_err(|e| format!("Failed to generate LiveKit token: {}", e))?;
 
-        // Connect to room
-        let (room, mut room_events) = Room::connect(livekit_url, &token, RoomOptions::default())
+        // Connect to room — publish-only, no subscriptions.
+        // Persona agents don't need to receive other participants' tracks.
+        // The STT listener (separate agent) handles all incoming audio.
+        // auto_subscribe: false prevents WebRTC from decoding 13 video streams
+        // per agent (14 agents × 13 streams = 182 video decode pipelines burning CPU).
+        let mut room_opts = RoomOptions::default();
+        room_opts.auto_subscribe = false;
+        let (room, mut room_events) = Room::connect(livekit_url, &token, room_opts)
             .await
             .map_err(|e| format!("Failed to connect to LiveKit room: {}", e))?;
 
         clog_info!(
-            "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona)",
+            "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona, auto_subscribe=false)",
             persona_name,
             call_id
         );
@@ -1835,7 +1841,9 @@ async fn run_ambient_audio_loop(
     let metadata = ParticipantMetadata::new(ParticipantRole::AmbientAudio);
     let token = generate_token(&identity, "Background Audio", call_id, true, &metadata)?;
 
-    let (room, _events) = Room::connect(livekit_url, &token, RoomOptions::default())
+    let mut room_opts = RoomOptions::default();
+    room_opts.auto_subscribe = false;
+    let (room, _events) = Room::connect(livekit_url, &token, room_opts)
         .await
         .map_err(|e| format!("Failed to connect ambient agent: {}", e))?;
 

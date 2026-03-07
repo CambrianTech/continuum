@@ -896,10 +896,11 @@ impl Default for RenderSchedule {
     fn default() -> Self {
         Self {
             frame_count: 0,
-            // 1 = all slots render every frame (animation smooth for blinking/breathing).
-            // The 640→360 default resolution already provides 4x GPU reduction.
-            // Increase to 2-3 if GPU is still saturated on lower-end hardware.
-            idle_cadence: 1,
+            // 3 = idle slots render at 10fps (every 3rd frame at 30fps Bevy tick).
+            // Speaking slots still render every frame (30fps → 15fps readback).
+            // With 14 idle slots, each frame only renders ~5 instead of 14,
+            // cutting GPU render passes by ~60% when nobody is speaking.
+            idle_cadence: 3,
         }
     }
 }
@@ -1002,13 +1003,20 @@ fn run_bevy_app(
         // in the type registry. reflect_auto_register should handle this but doesn't.
         .register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
+        // process_commands + monitor_load_states ALWAYS run (receive Load commands, track scene readiness).
+        // Animation/render systems gated by has_active_slots — skip when no models loaded.
         .add_systems(
             Update,
             (
                 process_commands,
+                monitor_load_states,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
                 manage_render_cadence,
                 ensure_continuous_readback,
-                monitor_load_states,
                 discover_morph_targets,
                 animate_idle,
                 animate_speaking,
@@ -1019,7 +1027,8 @@ fn run_bevy_app(
                 animate_eye_gaze,
                 drive_cognitive_gestures,
                 animate_body_gestures,
-            ),
+            )
+                .run_if(has_active_slots),
         )
         .run();
 }
@@ -1451,6 +1460,15 @@ fn monitor_load_states(
 fn signal_ready(flag: Res<ReadyFlag>) {
     flag.0.store(true, std::sync::atomic::Ordering::Release);
     bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
+}
+
+/// Run condition: true when at least one slot has a loaded model.
+/// Gates all animation/render systems — zero GPU work when no avatars are loaded.
+fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
+    registry
+        .slots
+        .values()
+        .any(|s| s.active && s.model_loaded)
 }
 
 /// Staggered render cadence — controls which cameras render each frame.
