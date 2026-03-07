@@ -24,6 +24,7 @@
  */
 
 import { VisionCapabilityService, type VisionModelEntry } from './VisionCapabilityService';
+import { MODEL_IDS } from '@system/shared/Constants';
 
 /**
  * All supported capability types
@@ -327,29 +328,22 @@ export class AICapabilityRegistry {
         'streaming', 'multimodal', 'context-window-huge', 'reasoning', 'coding'
       ],
       models: [
+        // Haiku first — cheapest vision-capable model, preferred for automated tasks like vision descriptions
         {
-          modelId: 'claude-3-5-sonnet',
-          displayName: 'Claude 3.5 Sonnet',
-          capabilities: ['reasoning', 'coding', 'math'],
-          contextWindow: 200000,
-          costTier: 'medium',
-          latencyTier: 'medium',
-        },
-        {
-          modelId: 'claude-3-opus',
-          displayName: 'Claude 3 Opus',
-          capabilities: ['reasoning', 'coding', 'math'],
-          contextWindow: 200000,
-          costTier: 'premium',
-          latencyTier: 'slow',
-        },
-        {
-          modelId: 'claude-3-haiku',
-          displayName: 'Claude 3 Haiku',
+          modelId: MODEL_IDS.ANTHROPIC.HAIKU_4_5,
+          displayName: 'Claude Haiku 4.5',
           capabilities: ['coding'],
           contextWindow: 200000,
           costTier: 'low',
           latencyTier: 'fast',
+        },
+        {
+          modelId: MODEL_IDS.ANTHROPIC.SONNET_4_5,
+          displayName: 'Claude Sonnet 4.5',
+          capabilities: ['reasoning', 'coding', 'math'],
+          contextWindow: 200000,
+          costTier: 'medium',
+          latencyTier: 'medium',
         },
       ],
     });
@@ -373,20 +367,12 @@ export class AICapabilityRegistry {
           latencyTier: 'fast',
         },
         {
-          modelId: 'gpt-4-turbo',
-          displayName: 'GPT-4 Turbo',
-          capabilities: ['image-input', 'multimodal', 'reasoning', 'coding', 'context-window-large'],
+          modelId: 'gpt-4o-mini',
+          displayName: 'GPT-4o Mini',
+          capabilities: ['image-input', 'multimodal', 'coding'],
           contextWindow: 128000,
-          costTier: 'medium',
-          latencyTier: 'medium',
-        },
-        {
-          modelId: 'gpt-4-vision',
-          displayName: 'GPT-4 Vision',
-          capabilities: ['image-input', 'multimodal', 'reasoning'],
-          contextWindow: 128000,
-          costTier: 'high',
-          latencyTier: 'slow',
+          costTier: 'low',
+          latencyTier: 'fast',
         },
         {
           modelId: 'gpt-3.5-turbo',
@@ -471,14 +457,11 @@ export class AICapabilityRegistry {
           costTier: 'free',
           latencyTier: 'fast',
         },
-        {
-          modelId: 'llava:7b',
-          displayName: 'LLaVA 7B',
-          capabilities: ['image-input', 'multimodal'],
-          contextWindow: 2048, // Vision models may have different limits
-          costTier: 'free',
-          latencyTier: 'medium',
-        },
+        // LLaVA removed from static defaults — Candle currently runs Llama (text-only).
+        // When LLaVA is loaded dynamically, register it via registerModel() at runtime.
+        // Static registration caused phantom 'image-input' capability: VisionInferenceProvider
+        // selected candle/llava:7b, but Llama responded "I can't see images", and that
+        // response was cached as the "vision description" for all text-only models.
         {
           modelId: 'phi3:mini',
           displayName: 'Phi-3 Mini',

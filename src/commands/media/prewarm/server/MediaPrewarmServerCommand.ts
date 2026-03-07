@@ -40,7 +40,6 @@ export class MediaPrewarmServerCommand extends CommandBase<MediaPrewarmParams, M
       service.describeBase64(img.base64, img.mimeType ?? 'image/png', {
         maxLength: 500,
         detectText: true,
-        preferredProvider: 'candle',
       }).catch(() => {
         // Best-effort — swallow errors
       });

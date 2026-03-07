@@ -118,13 +118,18 @@ export class VisionInferenceProvider {
       return null;
     }
 
-    // Filter to configured providers
+    // Filter to configured providers (only providers with API keys or running services)
     const configuredProviders = new Set<string>();
     if (process.env.ANTHROPIC_API_KEY) configuredProviders.add('anthropic');
     if (process.env.OPENAI_API_KEY) configuredProviders.add('openai');
     if (process.env.GROQ_API_KEY) configuredProviders.add('groq');
     if (process.env.TOGETHER_API_KEY) configuredProviders.add('together');
-    configuredProviders.add('candle'); // Always available
+    if (process.env.FIREWORKS_API_KEY) configuredProviders.add('fireworks');
+    if (process.env.XAI_API_KEY) configuredProviders.add('xai');
+    if (process.env.GOOGLE_API_KEY) configuredProviders.add('google');
+    // Candle only if actually running (has vision models registered)
+    const hasCandle = visionModels.some(m => m.providerId === 'candle');
+    if (hasCandle) configuredProviders.add('candle');
 
     const available = visionModels.filter(m => configuredProviders.has(m.providerId));
     if (available.length === 0) {
@@ -144,10 +149,10 @@ export class VisionInferenceProvider {
       if (preferred) selected = preferred;
     }
 
-    // Prefer local Candle (free, private) unless provider explicitly specified
-    const localModel = available.find(m => m.providerId === 'candle');
-    if (localModel && !options.preferredProvider) {
-      selected = localModel;
+    // Prefer local Candle when available (free, private) unless provider explicitly specified
+    if (!options.preferredProvider && hasCandle) {
+      const localModel = available.find(m => m.providerId === 'candle');
+      if (localModel) selected = localModel;
     }
 
     return selected;

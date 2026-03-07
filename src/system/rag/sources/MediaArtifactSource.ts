@@ -240,7 +240,6 @@ export class MediaArtifactSource implements RAGSource {
       descriptionPromises.set(i, visionService.describeBase64(artifact.base64, mimeType, {
         maxLength: 500,
         detectText: true,
-        preferredProvider: 'candle',
       }).catch((error) => {
         log.error('Failed to describe image:', error);
         return null;
