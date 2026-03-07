@@ -1,20 +1,22 @@
 /**
- * VisionDescriptionCache — Content-addressed L1 cache for vision descriptions.
+ * VisionDescriptionCache — Two-tier content-addressed cache for vision descriptions.
  *
- * Responsibilities:
- * - In-memory Map with access-based TTL (not fixed expiry)
+ * Cache hierarchy:
+ * - L1: In-memory TS Map (instant, process-scoped, 500 entries)
+ * - L1.5: Rust in-process HashMap via IPC (sub-ms, survives TS restarts, 2000 entries)
  * - In-flight deduplication (concurrent callers await the same promise)
- * - LRU eviction when at capacity
  * - Content-addressing via SHA-256(first 4KB + length)
+ *
+ * Read path: L1 (TS Map) → L1.5 (Rust HashMap) → miss
+ * Write path: L1 (TS Map) + L1.5 (Rust HashMap) simultaneously
  *
  * Separated from VisionDescriptionService so the cache layer is reusable
  * across screenshots, canvas, video frames — anything that needs
  * content-addressed caching of expensive inference results.
- *
- * Future: L2 persistent cache in Rust SQLite (Phase B).
  */
 
 import { createHash } from 'crypto';
+import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
 import type { VisionDescription } from './VisionDescriptionService';
 
 interface CachedEntry {
@@ -84,7 +86,33 @@ export class VisionDescriptionCache {
   }
 
   /**
-   * Store a description in L1 cache.
+   * Check Rust L1.5 cache. Returns null on miss or IPC failure.
+   * Called by VisionDescriptionService when L1 misses.
+   */
+  async getFromRust(key: string): Promise<VisionDescription | null> {
+    try {
+      const rust = RustCoreIPCClient.getInstance();
+      const result = await rust.visionCacheGet(key);
+      if (result.found && result.description) {
+        // Promote to L1 for future sync access
+        const desc: VisionDescription = {
+          description: result.description,
+          modelId: result.model || 'unknown',
+          provider: result.provider || 'unknown',
+          timestamp: new Date().toISOString(),
+          responseTimeMs: result.processingTimeMs || 0,
+        };
+        this.put(key, desc);
+        return desc;
+      }
+    } catch {
+      // Rust not available — degrade gracefully to L1-only
+    }
+    return null;
+  }
+
+  /**
+   * Store a description in L1 cache + Rust L1.5.
    */
   put(key: string, description: VisionDescription): void {
     // LRU eviction: drop least recently accessed if at capacity
@@ -100,6 +128,20 @@ export class VisionDescriptionCache {
       if (oldestKey) this._l1.delete(oldestKey);
     }
     this._l1.set(key, { description, lastAccessedAt: Date.now() });
+
+    // Write-through to Rust L1.5 (fire-and-forget, non-blocking)
+    try {
+      const rust = RustCoreIPCClient.getInstance();
+      rust.visionCachePut(key, {
+        description: description.description,
+        model: description.modelId,
+        provider: description.provider,
+        processingTimeMs: description.responseTimeMs,
+        confidence: 0.85,
+      }).catch(() => { /* Rust not available */ });
+    } catch {
+      // Rust not connected yet
+    }
   }
 
   /**

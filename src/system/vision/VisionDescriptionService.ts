@@ -103,6 +103,13 @@ export class VisionDescriptionService {
       return cached;
     }
 
+    // L1.5 cache (Rust HashMap) — survives TS restarts, sub-ms IPC
+    const rustCached = await this._cache.getFromRust(key);
+    if (rustCached) {
+      console.log(`[VisionDescription] Rust L1.5 hit (key=${key.slice(0, 8)}), skipping inference`);
+      return rustCached;
+    }
+
     // In-flight deduplication — coalesce with existing request
     const inflight = this._cache.getInflight(key);
     if (inflight) {

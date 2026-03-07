@@ -27,6 +27,7 @@ export type { ModuleInfo, ModuleMetrics, SlowCommand } from './modules/runtime';
 export type { GpuStatsResponse, SubsystemInfo } from './modules/gpu';
 export type { AvatarSnapshotResult } from './modules/avatar';
 export type { DatasetManifest, DatasetMetrics, DatasetListResult } from './modules/dataset';
+export type { VisionCacheEntry, VisionCacheGetResult, VisionCacheStats, VisionCacheWarmEntry } from './modules/vision_cache';
 export type {
 	SentinelHandle,
 	SentinelRunParams,
@@ -58,6 +59,7 @@ import { ToolParsingMixin } from './modules/tool_parsing';
 import { SystemResourceMixin } from './modules/system_resources';
 import { AvatarMixin } from './modules/avatar';
 import { DatasetMixin } from './modules/dataset';
+import { VisionCacheMixin } from './modules/vision_cache';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -110,7 +112,7 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  * Compose all mixins into the full client class.
  * Order matters for TypeScript type inference.
  */
-const ComposedClient = DatasetMixin(
+const ComposedClient = VisionCacheMixin(DatasetMixin(
 	AvatarMixin(
 		ToolParsingMixin(
 			SentinelMixin(
@@ -142,7 +144,7 @@ const ComposedClient = DatasetMixin(
 			)
 		)
 	)
-);
+));
 
 /**
  * Full RustCoreIPCClient with all domain methods.
