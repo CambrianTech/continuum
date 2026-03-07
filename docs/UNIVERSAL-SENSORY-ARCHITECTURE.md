@@ -500,6 +500,96 @@ Recipes, like LoRA adapters and personas, are portable and tradeable:
 
 Same infrastructure, infinite applications. The recipe is the skill manifest.
 
+## Implementation Plans
+
+### Plan A: Universal Visual Source Adapter Interface
+
+**Goal**: Any visual source plugs in identically. First two: LiveKit (done) + Screen Capture.
+
+1. Define `VisualSourceAdapter` trait in Rust (`modules/perception.rs`)
+   - `fn name(&self) -> &str`
+   - `fn capture(&self) -> Option<JpegFrame>`
+   - `fn start(&self)`, `fn stop(&self)`
+   - `fn supports_continuous(&self) -> bool`
+2. Refactor `VideoFrameCapture` to implement `VisualSourceAdapter`
+3. Add `store_external_frame(identity, display_name, jpeg_bytes)` to accept frames from any source
+4. Add IPC command `perception/publish-frame` — TS activities push frames into the capture store
+5. Build `ScreenCaptureAdapter` (macOS: CGWindowListCreateImage, Linux: X11/PipeWire)
+6. Wire into recipe: `visualSources: ["livekit", "screen-capture"]`
+7. Test: persona sees both LiveKit participants AND desktop content in snapshot grid
+
+### Plan B: T0 Perception Layer (YOLO in Rust)
+
+**Goal**: Cheap ML classification on every frame, structured metadata for all models.
+
+1. Add ONNX Runtime YOLO model to Rust (`live/perception/yolo.rs`)
+   - Already have `ort` crate in deps (used by fastembed)
+   - YOLOv8-nano (~6MB, runs in <20ms on CPU)
+2. `SceneChangeDetector` runs after each frame capture
+   - Perceptual hash diff (skip unchanged frames)
+   - YOLO inference on changed frames
+   - Emit `SceneMetadata` events via MessageBus
+3. Add semantic classifier head (scene type: "game", "ide", "browser", "video_call")
+   - Small MLP on top of YOLO backbone, or separate tiny model
+4. `LivePerceptionSource` (RAGSource) subscribes to SceneMetadata events
+   - Injects structured scene data into persona system prompt
+   - Budget-aware: only latest N frames
+5. Test: text-only model receives "3 people detected, scene_type: video_call" without any vision API call
+
+### Plan C: Sentinel Sensory Arms (Octopus)
+
+**Goal**: Cheap LoRA-trained sentinels as continuous perception/action subsystems.
+
+1. Define `SensoryArmConfig` in sentinel pipeline schema
+   - `model`: base model (0.8B default)
+   - `adapter`: LoRA adapter name (e.g., "yolo-game-ui")
+   - `perceptionSource`: which visual/audio adapter to monitor
+   - `reportingInterval`: how often to report to brain (ms)
+   - `escalationThreshold`: when to alert the brain
+2. New sentinel step type: `Arm` (or extend `Sentinel` step with `mode: "sensory"`)
+   - Runs continuously, not one-shot
+   - Has its own perception loop (captures, classifies, decides)
+   - Reports to parent via Emit/Watch
+3. Brain persona spawns arms as child sentinels
+   - `sentinel/spawn-arm --type=vision --adapter=game-ui-yolo --source=screen-capture`
+4. Arms escalate via events: `arm:vision:alert {objects: [...], urgency: 0.8}`
+5. Train first arm: vision classifier for a specific game (training data from gameplay capture)
+
+### Plan D: Cognitive LOD / Bidirectional Delegation
+
+**Goal**: 10,000 NPCs for the cost of 10 inferences. Video game target.
+
+1. `CognitiveLODManager` service (TS or Rust)
+   - Tracks all entities and their current tier (T0-T3)
+   - Player position/attention → recalculates tiers each tick
+   - Escalation/de-escalation triggers with hysteresis
+2. T0 layer: pure scripted behavior (Boids, patrol routes, state machines)
+   - No LLM, no sentinel — just a behavior tree or FSM
+   - Managed by game engine (Bevy ECS or TS game loop)
+3. T1→T3: sentinel spawn on escalation, despawn on de-escalation
+   - T1: 0.8B sentinel, simple autonomous behavior
+   - T2: 2B sentinel, reactive awareness, can interject
+   - T3: 4B+ persona takeover, full conversation + memory
+4. Context handoff on escalation: T0 state → injected into T1 sentinel context
+   - "You are a blacksmith named Gunther. You were hammering a sword. A customer just walked in."
+5. Memory persistence: T3 conversation memories survive de-escalation
+   - Next time player talks to same NPC, T3 loads prior context
+6. First test: Bevy scene with 20 NPCs, player-controlled camera, proximity-based escalation
+
+### Plan E: Video Game Integration (Confirmed Target)
+
+**Goal**: AI personas play and inhabit a game world using the full sensory stack.
+
+1. Screen capture adapter → captures game window at 1fps
+2. T0 YOLO → classifies game objects (enemies, items, UI elements)
+3. Vision sentinel arm → continuous scene monitoring, alerts brain
+4. Navigation sentinel arm → pathfinding, movement execution
+5. Interaction sentinel arm → clicks, key presses, menu navigation
+6. Brain persona → high-level strategy, dialogue, decision-making
+7. Recipe: "game-player" with all visual + action adapters wired
+8. Training pipeline: capture gameplay → LoRA train navigation/vision arms
+9. Benchmark: measure task completion rate, compare untrained vs trained arms
+
 ## Implementation Status
 
 | Component | Status | Location |
