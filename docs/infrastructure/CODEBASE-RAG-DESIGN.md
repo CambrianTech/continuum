@@ -1,8 +1,8 @@
 # Codebase RAG System Design
 
-**Status**: Implementation Phase (Week 1)
+**Status**: Implemented (E2E proven: 180 files, 855 entries, 20s)
 **Goal**: Enable PersonaUser to answer architecture questions by indexing and querying the codebase
-**Related**: ARCHITECTURE-GAPS-PHASE1.md, PRACTICAL-ROADMAP.md
+**Related**: [Queue-Driven Cognition](../QUEUE-DRIVEN-COGNITION.md), [Universal Learning Architecture](../UNIVERSAL-LEARNING-ARCHITECTURE.md)
 
 ---
 

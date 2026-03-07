@@ -594,6 +594,21 @@ export class PersonaUser extends AIUser {
       const gapDetector = new GapDetector(this.id, this._rustCognition, trainingBuffer, cognitionLogger);
       const selfTaskGenerator = new SelfTaskGenerator(this.id, cognitionLogger);
       this.autonomousLoop.setGapDetection(gapDetector, selfTaskGenerator);
+
+      // Wire training outcome recording — closes the meta-learning loop.
+      // When training completes, record pre/post fitness so GapDetector learns
+      // which training strategies actually improve performance.
+      const unsubTraining = Events.subscribe('genome:training:complete', (payload: any) => {
+        if (payload.personaId !== this.id) return;
+        const domain = payload.traitType ?? 'unknown';
+        const preFitness = payload.metrics?.preFitness ?? 0;
+        const postFitness = payload.metrics?.finalLoss != null
+          ? Math.max(0, 1 - payload.metrics.finalLoss)  // Convert loss → fitness (0=worst, 1=best)
+          : 0;
+        gapDetector.recordTrainingOutcome(domain, preFitness, postFitness, 'fine-tune-lora');
+        cognitionLogger(`[GapDetector] Recorded training outcome: ${domain} pre=${preFitness.toFixed(2)} post=${postFitness.toFixed(2)}`);
+      }, undefined, this.id);
+      this._eventUnsubscribes.push(unsubTraining);
     }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
@@ -750,6 +765,15 @@ export class PersonaUser extends AIUser {
             } else {
               const corpusResult = await this._rustCognition!.memoryLoadCorpus(memories, events);
               this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+
+              // Pre-warm L1 memory cache so first RAG build is instant (~0ms recall)
+              // Corpus is loaded — L2 recall will work now
+              const { TieredMemoryCache } = await import('../../rag/cache/TieredMemoryCache');
+              const generalRoom = [...this.myRoomIds][0]; // Pre-warm with first room
+              if (generalRoom) {
+                await TieredMemoryCache.instance.preWarm(this.id, generalRoom);
+                this.log.info(`${this.displayName}: L1 memory cache pre-warmed`);
+              }
             }
           } catch (error) {
             this.log.error(`${this.displayName}: Corpus load failed:`, error);

@@ -12,7 +12,7 @@
 //!           ├── ...
 //!           └── Avatar slot 13: Camera → RenderTarget → Readback → channel
 //!
-//! Performance: 14 avatars × 1280×720 @ ~15fps effective readback.
+//! Performance: 14 avatars × 640×360 @ ~7fps effective readback (15fps Bevy tick).
 //! On Apple Silicon (shared memory + GPU bridge), readback is zero-copy IOSurface.
 
 use crate::gpu::make_entry;
@@ -21,7 +21,7 @@ use crate::{clog_info, clog_warn};
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::LoadState;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
+use bevy::camera::visibility::{RenderLayers, SetViewVisibility};
 use bevy::camera::RenderTarget;
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
@@ -35,6 +35,15 @@ use std::time::Duration;
 
 use crate::live::avatar::RgbaFrame;
 
+// GpuConvertPlugin DISABLED: Metal compute shader runs on a separate command queue
+// from Bevy/wgpu, with no GPU synchronization guarantee that the render pass has
+// completed before the compute shader reads the texture. This causes alternating
+// correct/stale frames (the strobe). The ReadbackComplete → try_write_bridge path
+// is correct and should be used until proper GPU sync is implemented.
+//
+// To re-enable: use wgpu's command encoder (same queue) instead of a separate
+// Metal command queue, or add MTLFence/MTLEvent synchronization.
+
 /// Debug logging — no-op in production. Enable via BEVY_AVATAR_DEBUG=1 env var.
 fn bevy_debug(_msg: &str) {
     // Intentionally empty — file I/O per call was killing performance
@@ -42,7 +51,7 @@ fn bevy_debug(_msg: &str) {
 
 /// Maximum number of concurrent avatar render slots.
 /// 16 supports up to 16 AI personas with 3D avatars simultaneously.
-/// At 30fps Bevy / ~15fps effective readback × 1280×720 × 4 bytes = ~55 MB/s per slot.
+/// At 15fps Bevy / ~7fps effective readback × 640×360 × 4 bytes = ~6.5 MB/s per slot.
 /// On Apple Silicon shared memory this is essentially a memcpy (GPU bridge zero-copy).
 /// Bevy supports 32 render layers; we use layers 1-16, leaving headroom.
 pub const MAX_AVATAR_SLOTS: u8 = 16;
@@ -56,10 +65,13 @@ pub const AVATAR_WIDTH: u32 = 640;
 pub const AVATAR_HEIGHT: u32 = 360;
 
 /// Target framerate for avatar rendering.
-/// 30fps Bevy tick → ~15fps effective readback (Readback is one-shot, re-inserted
-/// next frame). 15fps readback aligns with 66ms lip sync RMS windows, giving
-/// smooth mouth animation. ResolutionTier Large/HD/FullHD all specify 30fps.
-const AVATAR_FPS: f64 = 30.0;
+/// 15fps Bevy tick → ~7-8fps effective readback (Readback is one-shot, re-inserted
+/// next frame). Avatar animations (blinking, breathing, idle gestures) look smooth
+/// at 15fps — they're slow, continuous motions. Lip sync uses pre-computed weight
+/// sequences sampled by Bevy's internal clock, so mouth animation interpolates
+/// smoothly regardless of frame rate. 15fps cuts ALL Bevy overhead in half vs 30fps:
+/// half the ECS schedule runs, half the render graph traversals, half the GPU passes.
+const AVATAR_FPS: f64 = 15.0;
 
 // ============================================================================
 // Public API — BevyAvatarSystem singleton
@@ -538,7 +550,7 @@ struct FrameChannels(Vec<Sender<RgbaFrame>>);
 /// a frame (channel or GPU bridge path). Video loops await these — frame arrival
 /// is the clock, not sleep-polling.
 #[derive(Resource)]
-struct FrameNotifiers(Vec<std::sync::Arc<tokio::sync::Notify>>);
+pub(crate) struct FrameNotifiers(pub Vec<std::sync::Arc<tokio::sync::Notify>>);
 
 /// Shared ready flag — set after Bevy Startup systems complete.
 #[derive(Resource)]
@@ -546,28 +558,35 @@ struct ReadyFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 /// Tracks the state of each avatar render slot.
 #[derive(Resource)]
-struct SlotRegistry {
-    slots: HashMap<u8, SlotState>,
+pub(crate) struct SlotRegistry {
+    pub slots: HashMap<u8, SlotState>,
 }
 
-struct SlotState {
-    camera_entity: Entity,
-    _readback_entity: Entity,
-    scene_entity: Option<Entity>,
+pub(crate) struct SlotState {
+    pub camera_entity: Entity,
+    pub _readback_entity: Entity,
+    pub scene_entity: Option<Entity>,
     /// Currently active render target (either default low-res or borrowed HD from pool).
     _render_target: Handle<Image>,
     /// The slot's own low-res render target (640×360). Always retained for fallback
     /// when an HD target is returned to the pool.
     default_render_target: Handle<Image>,
-    active: bool,
+    pub active: bool,
     /// True once SceneInstanceReady fires — model meshes are spawned and the camera
     /// has rendered at least one valid frame. Readback only starts after this flag is set,
     /// preventing the bright-green uninitialized-texture flash on slot activation.
-    model_loaded: bool,
+    pub model_loaded: bool,
     /// Handle to the loaded Gltf asset — used for morph target name discovery.
     gltf_handle: Option<Handle<bevy::gltf::Gltf>>,
     /// Path to the model file — used for VRM extension parsing.
     model_path: Option<String>,
+}
+
+impl SlotState {
+    /// Get the render target's AssetId for render-world lookups.
+    pub fn render_target_id(&self) -> bevy::asset::AssetId<Image> {
+        self._render_target.id()
+    }
 }
 
 /// Component marking which avatar slot an entity belongs to.
@@ -581,6 +600,10 @@ struct AvatarSlotId(#[allow(dead_code)] u8);
 /// entities that need their `Readback` component re-inserted.
 #[derive(Component)]
 struct ReadbackMarker;
+
+/// Marker for the shared directional light so force_light_visibility can find it.
+#[derive(Component)]
+struct AvatarSceneLight;
 
 /// Component marking an avatar that is currently speaking.
 #[derive(Component)]
@@ -742,8 +765,8 @@ struct SlotGestureState {
 /// The ReadbackComplete observer reads from this instead of using constants,
 /// allowing each slot to have a different resolution after adaptive resize.
 #[derive(Resource)]
-struct SlotDimensions {
-    dims: HashMap<u8, (u32, u32)>,
+pub(crate) struct SlotDimensions {
+    pub dims: HashMap<u8, (u32, u32)>,
 }
 
 impl Default for SlotDimensions {
@@ -874,7 +897,7 @@ struct SlotCognitiveState {
 /// Render cadence — staggered camera activation for GPU load distribution.
 ///
 /// Game engine LOD principle: not every object renders every frame.
-/// - Speaking slots: camera active every frame (30fps → 15fps effective readback)
+/// - Speaking slots: camera active every frame (15fps → ~7fps effective readback)
 /// - Idle slots: camera active every Nth frame, staggered by slot index
 ///
 /// This distributes GPU render passes across frames. With 14 idle slots and
@@ -888,7 +911,9 @@ struct SlotCognitiveState {
 struct RenderSchedule {
     frame_count: u32,
     /// How many frames between renders for idle slots. Lower = smoother but more GPU work.
-    /// 3 = 10fps idle rendering at 30fps Bevy tick. Enough for blinking/breathing.
+    /// 1 = every frame renders (15fps Bevy tick). No cadence stagger needed because
+    /// 15fps already halved GPU work vs 30fps. Cadence>1 at 15fps causes visible
+    /// strobe artifacts (camera on/off toggling creates readback timing mismatches).
     idle_cadence: u32,
 }
 
@@ -896,9 +921,10 @@ impl Default for RenderSchedule {
     fn default() -> Self {
         Self {
             frame_count: 0,
-            // 1 = all slots render every frame (animation smooth for blinking/breathing).
-            // The 640→360 default resolution already provides 4x GPU reduction.
-            // Increase to 2-3 if GPU is still saturated on lower-end hardware.
+            // 1 = all slots render every frame at 15fps Bevy tick.
+            // 15fps already halved GPU work vs 30fps — no cadence stagger needed.
+            // Cadence>1 at 15fps caused visible strobe (camera on/off toggling
+            // creates readback timing mismatches between render and readback passes).
             idle_cadence: 1,
         }
     }
@@ -992,23 +1018,35 @@ fn run_bevy_app(
                     file_path: asset_base,
                     ..default()
                 }),
+                // Note: PipelinedRenderingPlugin is NOT in DefaultPlugins when bevy_winit
+                // is absent (our headless config). No need to disable it.
         )
         // ScheduleRunnerPlugin drives the frame loop at our target FPS
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / AVATAR_FPS,
         )))
+        // GPU→GPU RGBA→NV12 compute DISABLED — see GpuConvertPlugin comment above.
+        // Slots use CPU readback → try_write_bridge → IOSurface → GpuBridgePublisher.
         // Bevy 0.18: TransformTreeChanged is a new marker component required by Transform
         // (via #[require(TransformTreeChanged)]). Scene spawner panics if it's not registered
         // in the type registry. reflect_auto_register should handle this but doesn't.
         .register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
+        // process_commands + monitor_load_states ALWAYS run (receive Load commands, track scene readiness).
+        // Animation/render systems gated by has_active_slots — skip when no models loaded.
         .add_systems(
             Update,
             (
                 process_commands,
+                monitor_load_states,
+                touch_ambient_light,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
                 manage_render_cadence,
                 ensure_continuous_readback,
-                monitor_load_states,
                 discover_morph_targets,
                 animate_idle,
                 animate_speaking,
@@ -1019,7 +1057,16 @@ fn run_bevy_app(
                 animate_eye_gaze,
                 drive_cognitive_gestures,
                 animate_body_gestures,
-            ),
+            )
+                .run_if(has_active_slots),
+        )
+        // Force light visibility AFTER Bevy's CheckVisibility (runs in PostUpdate).
+        // Without this, the directional light's ViewVisibility may be false in headless
+        // mode, causing extract_lights to skip it on some frames → lighting strobe.
+        .add_systems(
+            PostUpdate,
+            force_light_visibility
+                .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
         )
         .run();
 }
@@ -1029,7 +1076,7 @@ fn run_bevy_app(
 /// CRITICAL: Bevy's `Readback` component is one-shot — it fires `ReadbackComplete`
 /// once and is consumed. For continuous video frames, we must re-insert the
 /// `Readback` component after each completion. This gives us readback every
-/// other frame (~15fps at 30fps Bevy) due to Commands' deferred execution.
+/// other frame (~7fps at 15fps Bevy) due to Commands' deferred execution.
 ///
 /// If `start_active` is true, the `Readback` component is inserted immediately
 /// (for resize/reload scenarios where the slot is already active).
@@ -1082,9 +1129,9 @@ fn spawn_readback_entity_opt(
                     clog_info!("🎨 Slot {}: first ReadbackComplete ({} bytes, {}×{})", slot_id, pixel_bytes.len(), slot_w, slot_h);
                 }
 
-                // Health check at frame 150 and 300 — LOG ONLY, no fallback.
-                // If a model is broken, we want to SEE it and fix the root cause.
                 let frame_n = FRAME_COUNTER[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // Health check at frame 150 and 300 — LOG ONLY, no fallback.
                 if frame_n == 150 || frame_n == 300 {
                     let test_frame = crate::live::avatar::RgbaFrame {
                         width: slot_w,
@@ -1163,8 +1210,10 @@ fn setup_render_slots(
     mut registry: ResMut<SlotRegistry>,
     _frame_channels: Res<FrameChannels>,
 ) {
-    // Global ambient light (all layers)
-    // Bevy 0.18: AmbientLight is now per-camera; GlobalAmbientLight is the resource version
+    // Global ambient light — brightness forced-touched every frame by
+    // `touch_ambient_light` system to ensure render-world extraction never skips it.
+    // (Bevy's extraction uses `is_changed()` which can drop the resource on frames
+    // where it hasn't been mutated, causing lighting flicker on offscreen targets.)
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 300.0,
@@ -1172,7 +1221,8 @@ fn setup_render_slots(
     });
 
     // Single shared directional light visible on ALL render layers.
-    // Bevy limits directional lights to 10 — one per slot would exceed this.
+    // Shadows disabled = no 10-light limit. One light for all slots is efficient.
+    // (Pipelined rendering is disabled, so extraction is deterministic — no flicker.)
     {
         let all_layers: Vec<usize> = (1..=(MAX_AVATAR_SLOTS as usize)).collect();
         commands.spawn((
@@ -1189,6 +1239,8 @@ fn setup_render_slots(
                 0.0,
             )),
             RenderLayers::from_layers(&all_layers),
+            // Marker for force_light_visibility system
+            AvatarSceneLight,
         ));
     }
 
@@ -1238,8 +1290,7 @@ fn setup_render_slots(
             ))
             .id();
 
-        // No per-slot directional light — shared light above handles all layers.
-        // This avoids Bevy's 10 directional light limit.
+        // Shared directional light above handles all layers — no per-slot light needed.
 
         // GPU readback entity — spawned WITHOUT Readback component initially.
         // Inactive slots (no model loaded) should not trigger GPU readback.
@@ -1453,6 +1504,15 @@ fn signal_ready(flag: Res<ReadyFlag>) {
     bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
 }
 
+/// Run condition: true when at least one slot has a loaded model.
+/// Gates all animation/render systems — zero GPU work when no avatars are loaded.
+fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
+    registry
+        .slots
+        .values()
+        .any(|s| s.active && s.model_loaded)
+}
+
 /// Staggered render cadence — controls which cameras render each frame.
 ///
 /// Game engine LOD: active speakers render every frame (smooth lip sync),
@@ -1460,9 +1520,35 @@ fn signal_ready(flag: Res<ReadyFlag>) {
 /// Animation systems still run every frame for all slots (bone/morph updates are cheap).
 /// Only the GPU render pass (rasterization) is staggered.
 ///
-/// With 14 slots and cadence=3: ~5 idle + speaking = 6-7 render passes per frame
-/// (vs 14 previously). Combined with lower default resolution (640×360), total
-/// GPU work drops ~5-8x.
+/// With idle_cadence=1 at 15fps, all 14 slots render every frame.
+/// 15fps already halved GPU work vs 30fps (half the ECS runs, render passes, readbacks).
+/// Combined with lower default resolution (640×360), total GPU work drops ~2x vs 30fps.
+/// Touch GlobalAmbientLight every frame to keep it marked as changed.
+/// Bevy's render-world extraction of GlobalAmbientLight uses `is_changed()` —
+/// if the resource hasn't been mutated since last frame, the render world drops it,
+/// causing intermittent lighting loss on offscreen render targets.
+/// This no-op mutation keeps the change flag set so extraction never skips it.
+fn touch_ambient_light(mut ambient: ResMut<GlobalAmbientLight>) {
+    // Force Bevy's change detection by writing the same value back.
+    // ResMut::set_changed() is the explicit way to mark as changed.
+    ambient.set_changed();
+}
+
+/// Force the directional light to be visible every frame.
+///
+/// Bevy's `extract_lights` skips directional lights where `ViewVisibility::get()` is false.
+/// In headless rendering (no window/viewport), Bevy's `CheckVisibility` system may not
+/// reliably mark our light as visible, causing intermittent lighting loss on offscreen
+/// render targets. This system runs in PostUpdate (after visibility propagation) and
+/// forces the light's ViewVisibility to visible, ensuring it's always extracted.
+fn force_light_visibility(
+    mut lights: Query<&mut ViewVisibility, With<AvatarSceneLight>>,
+) {
+    for mut vis in &mut lights {
+        vis.set_visible();
+    }
+}
+
 fn manage_render_cadence(
     mut schedule: ResMut<RenderSchedule>,
     registry: Res<SlotRegistry>,
@@ -1514,6 +1600,10 @@ fn ensure_continuous_readback(
             if !state.active || !state.model_loaded {
                 continue;
             }
+            // GPU bridge slots still use CPU readback — the ReadbackComplete observer
+            // writes RGBA→NV12 to the IOSurface via try_write_bridge(). The Metal
+            // GPU compute path (GpuConvertPlugin) is disabled until proper GPU
+            // synchronization is implemented (separate command queue = race condition).
             // Only readback if the camera rendered this frame (per render cadence).
             // Reading back a stale render target wastes GPU bandwidth for no new data.
             if let Ok(camera) = cameras.get(state.camera_entity) {
@@ -2383,7 +2473,7 @@ fn animate_speaking(
         }
     }
 
-    // Periodic stats flush — accumulate in memory, log every ~10s (300 frames at 30fps).
+    // Periodic stats flush — accumulate in memory, log every ~20s (300 frames at 15fps).
     // Never log from the hot path per frame.
     {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -2580,7 +2670,7 @@ fn animate_blinking(
 
         // Check if it's time to start a new blink
         if state.blink_frames_remaining == 0 && elapsed >= state.next_blink_time {
-            state.blink_frames_remaining = 6; // 6 frames at 30fps = 200ms blink (guarantees ≥3 captured at 15fps readback)
+            state.blink_frames_remaining = 3; // 3 frames at 15fps = 200ms blink
                                               // Next blink in 2-6 seconds (pseudo-random using elapsed time)
             let pseudo_rand = ((elapsed * 1000.0 + *slot as f32 * 137.0) % 4000.0) / 1000.0;
             state.next_blink_time = elapsed + 2.0 + pseudo_rand;
@@ -4088,8 +4178,8 @@ mod tests {
         assert_eq!(AVATAR_WIDTH, 640);
         assert_eq!(AVATAR_HEIGHT, 360);
         assert!(
-            AVATAR_FPS >= 20.0 && AVATAR_FPS <= 60.0,
-            "FPS must be 20-60 — below 20 looks bad, above 60 wastes GPU"
+            AVATAR_FPS >= 10.0 && AVATAR_FPS <= 60.0,
+            "FPS must be 10-60 — below 10 looks choppy, above 60 wastes GPU"
         );
     }
 }

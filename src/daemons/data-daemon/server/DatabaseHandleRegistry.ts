@@ -11,21 +11,20 @@
  *
  * **Design Principles**:
  * 1. Backward Compatible: No dbHandle parameter = uses 'default' handle
- * 2. Single Source of Truth: DATABASE_PATHS.SQLITE remains the default
+ * 2. Single Source of Truth: DATABASE_PATHS.POSTGRES is the main database
  * 3. Explicit Handles: Must call data/open to get non-default handles
  * 4. Path Resolution: getDbPath() converts handle → database path for ORM
  *
  * See docs/MULTI-DATABASE-HANDLES.md for full architecture
  */
 
-import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
 
 /**
  * Database handle - opaque identifier for ANY storage adapter
  * Can be:
- * - 'default': Main database (DATABASE_PATHS.SQLITE)
+ * - 'default': Main database (Postgres via getDatabasePath())
  * - UUID: Explicitly opened handle to any storage backend
  */
 export type DbHandle = 'default' | UUID;
@@ -52,7 +51,7 @@ export const DB_HANDLES = {
 export type DbHandleAlias = typeof DB_HANDLES[keyof typeof DB_HANDLES];
 
 /**
- * Default handle constant - uses DATABASE_PATHS.SQLITE
+ * Default handle constant - uses Postgres (getDatabasePath())
  * @deprecated Use DB_HANDLES.DEFAULT instead
  */
 export const DEFAULT_HANDLE: DbHandle = DB_HANDLES.DEFAULT;
@@ -144,7 +143,7 @@ export interface HandleMetadata {
  * - Handles map to database file paths (NOT to TypeScript adapters)
  * - All database I/O goes through ORM → ORMRustClient → Rust DataModule
  * - This class provides handle → path resolution via getDbPath()
- * - Default handle always points to main database (DATABASE_PATHS.SQLITE)
+ * - Default handle always points to main database (Postgres via getDatabasePath())
  */
 export class DatabaseHandleRegistry {
   private static instance: DatabaseHandleRegistry;

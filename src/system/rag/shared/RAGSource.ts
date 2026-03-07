@@ -38,6 +38,20 @@ export interface RAGSourceContext {
   readonly provider?: string;
   /** Tool calling capability of the provider */
   readonly toolCapability?: 'native' | 'xml' | 'none';
+
+  /**
+   * Source activation list from recipe ragTemplate.
+   *
+   * If present, ONLY sources whose name appears in this list are activated.
+   * If absent, ALL applicable sources fire (backwards-compatible default).
+   *
+   * This is how queue items control their own RAG context:
+   * Queue item → recipe → ragTemplate.sources → activeSources
+   *
+   * The persona doesn't decide what context to load — the recipe does.
+   * The persona decides WHETHER to engage and HOW MUCH effort to invest.
+   */
+  readonly activeSources?: readonly string[];
 }
 
 /**
@@ -107,6 +121,19 @@ export interface RAGSource {
    * @returns Section of RAG context
    */
   load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection>;
+
+  /**
+   * Whether this source produces identical results for all personas in the same room.
+   *
+   * Shared sources are single-flight coalesced: when 14 personas compose RAG for the
+   * same room simultaneously, only ONE load executes and all 14 reuse the result.
+   *
+   * Set to true for room-scoped data (conversation history role mapping aside):
+   * project context, documentation, governance, codebase search, etc.
+   *
+   * Default: false (persona-specific sources like identity, memories, tools).
+   */
+  readonly isShared?: boolean;
 
   /**
    * Whether this source supports batched loading via Rust IPC.

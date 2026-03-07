@@ -30,3 +30,4 @@ pub mod search;
 pub mod sentinel;
 pub mod system_resources;
 pub mod tool_parsing;
+pub mod vision;

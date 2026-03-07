@@ -19,23 +19,19 @@ import type {
   RAGArtifact,
   PersonaIdentity,
   PersonaMemory,
-  RecipeStrategy
+  RecipeStrategy,
 } from '../shared/RAGTypes';
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
-import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
-import { UserEntity } from '../../data/entities/UserEntity';
 import { RoomEntity } from '../../data/entities/RoomEntity';
 import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
 import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
-import { WidgetContextService } from '../services/WidgetContextService';
 import { HumanPresenceTracker } from '../../user/server/HumanPresenceTracker';
-import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
 // RAGSource pattern imports
 import { RAGComposer } from '../shared/RAGComposer';
@@ -54,7 +50,10 @@ import {
   ToolDefinitionsSource,
   DocumentationSource,
   ToolMethodologySource,
-  OpenProposalsSource
+  OpenProposalsSource,
+  CodebaseSearchSource,
+  MediaArtifactSource,
+  LiveRoomAwarenessSource
 } from '../sources';
 
 /**
@@ -67,10 +66,8 @@ export class ChatRAGBuilder extends RAGBuilder {
 
   // RAGComposer for modular, parallelized source loading
   private composer: RAGComposer | null = null;
-  private useModularSources = true;  // Feature flag for gradual migration
 
   // Per-operation timing for legacy phase diagnostics
-  private _lastArtifactMs?: number;
   private _lastRecipeMs?: number;
   private _lastLearningMs?: number;
 
@@ -83,13 +80,6 @@ export class ChatRAGBuilder extends RAGBuilder {
   // Single-flight coalescing for room reads — prevents duplicate DB calls
   // when loadRecipeContext + loadLearningConfig hit getCachedRoom simultaneously.
   private static _roomInflight: Map<string, Promise<RoomEntity | null>> = new Map();
-
-  // User display name cache — persona identities are stable within a session.
-  private static _userNameCache: Map<string, string> = new Map();
-
-  // Message cache for artifact extraction — avoids re-querying what ConversationHistorySource loaded.
-  private static _artifactMessageCache: Map<string, { messages: ChatMessageEntity[]; cachedAt: number }> = new Map();
-  private static readonly ARTIFACT_CACHE_TTL_MS = 3000;
 
   /**
    * Get a room entity from cache or DB with single-flight coalescing.
@@ -141,6 +131,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource(),      // Priority 60: Long-term memories
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
+        new CodebaseSearchSource(),      // Priority 55: Semantic code search from indexed codebase
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
         new ToolMethodologySource(),     // Priority 48: Non-code tool workflow guidance
@@ -148,96 +139,59 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ActivityContextSource(),     // Priority 40: Recipe/activity context
         new DocumentationSource(),       // Priority 35: System documentation awareness
         new OpenProposalsSource(),        // Priority 25: Open voting proposals (actionable)
-        new GovernanceSource()           // Priority 20: Democratic participation guidance
+        new GovernanceSource(),          // Priority 20: Democratic participation guidance
+        new MediaArtifactSource(),       // Priority 65: Media artifacts (images, files) with vision preprocessing
+        new LiveRoomAwarenessSource()    // Priority 30: Live call participant awareness
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 14 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 16 sources');
     }
     return this.composer;
   }
 
   /**
-   * Extract loaded data from RAGCompositionResult sections
-   * Maps RAGSection fields to the format expected by buildContext
+   * Extract loaded data from RAGCompositionResult sections.
+   *
+   * GENERIC: Collects all systemPromptSection values into a Map keyed by sourceName.
+   * Adding a new RAGSource requires ZERO changes here — the source's systemPromptSection
+   * is automatically collected and injected into the persona's system prompt.
+   *
+   * Only structured data (identity, messages, memories, tool metadata) needs explicit extraction
+   * because these have special shapes that can't be expressed as a system prompt string.
    */
   private extractFromComposition(result: RAGCompositionResult): {
     identity: PersonaIdentity | null;
     conversationHistory: LLMMessage[];
     memories: PersonaMemory[];
-    widgetContext: string | null;
-    globalAwareness: string | null;
-    socialAwareness: string | null;
-    codeToolGuidance: string | null;
-    toolMethodology: string | null;
-    projectContext: string | null;
-    consolidatedMemories: string | null;
+    artifacts: RAGArtifact[];
+    systemPromptSections: Map<string, string>;
     toolDefinitionsMetadata: Record<string, unknown> | null;
-    toolDefinitionsPrompt: string | null;
-    documentationAwareness: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
     let memories: PersonaMemory[] = [];
-    let widgetContext: string | null = null;
-    let globalAwareness: string | null = null;
-    let socialAwareness: string | null = null;
-    let codeToolGuidance: string | null = null;
-    let toolMethodology: string | null = null;
-    let projectContext: string | null = null;
-    let consolidatedMemories: string | null = null;
+    let artifacts: RAGArtifact[] = [];
+    const systemPromptSections = new Map<string, string>();
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
-    let toolDefinitionsPrompt: string | null = null;
-    let documentationAwareness: string | null = null;
 
     for (const section of result.sections) {
-      if (section.identity) {
-        identity = section.identity;
+      // Structured data — extracted by type, not by source name
+      if (section.identity) identity = section.identity;
+      if (section.messages && section.messages.length > 0) conversationHistory = section.messages;
+      if (section.memories && section.memories.length > 0) memories = section.memories;
+      if (section.artifacts && section.artifacts.length > 0) artifacts = section.artifacts;
+
+      // Generic: every source's systemPromptSection collected by name
+      if (section.systemPromptSection) {
+        systemPromptSections.set(section.sourceName, section.systemPromptSection);
       }
-      if (section.messages && section.messages.length > 0) {
-        conversationHistory = section.messages;
-      }
-      if (section.memories && section.memories.length > 0) {
-        memories = section.memories;
-      }
-      if (section.sourceName === 'semantic-memory' && section.systemPromptSection) {
-        // Formatted memory section — produced by SemanticMemorySource
-        consolidatedMemories = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'widget-context') {
-        widgetContext = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'global-awareness') {
-        globalAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'social-media') {
-        socialAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'code-tools') {
-        codeToolGuidance = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'tool-methodology') {
-        toolMethodology = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'documentation') {
-        documentationAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'project-context') {
-        projectContext = section.systemPromptSection;
-      }
-      if (section.sourceName === 'tool-definitions') {
-        // Tool definitions — metadata contains nativeToolSpecs for native providers,
-        // systemPromptSection contains XML for text-based providers
-        toolDefinitionsMetadata = section.metadata ?? null;
-        if (section.systemPromptSection) {
-          toolDefinitionsPrompt = section.systemPromptSection;
-        }
+
+      // Tool definitions need metadata extraction (native tool specs for non-XML providers)
+      if (section.sourceName === 'tool-definitions' && section.metadata) {
+        toolDefinitionsMetadata = section.metadata;
       }
     }
 
-    return {
-      identity, conversationHistory, memories,
-      widgetContext, globalAwareness, socialAwareness, codeToolGuidance, toolMethodology, projectContext,
-      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt, documentationAwareness
-    };
+    return { identity, conversationHistory, memories, artifacts, systemPromptSections, toolDefinitionsMetadata };
   }
 
   /**
@@ -267,29 +221,31 @@ export class ChatRAGBuilder extends RAGBuilder {
     let recipeStrategy: RecipeStrategy | undefined;
     let recipeTools: RecipeToolDeclaration[] | undefined;
     let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
-    let widgetContext: string | null;
-    let globalAwareness: string | null;
-    let socialAwareness: string | null;
-    let codeToolGuidance: string | null;
-    let toolMethodology: string | null;
-    let projectContext: string | null;
-    let documentationAwareness: string | null;
-    let consolidatedMemories: string | null = null;
+    let systemPromptSections = new Map<string, string>();
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
-    let toolDefinitionsPrompt: string | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
     // Token budget from model's context window — 75% for input.
     const contextWindow = getContextWindow(options.modelId, options.provider);
     let totalBudget = Math.floor(contextWindow * 0.75);
 
-    if (this.useModularSources) {
+    {
       const composer = this.getComposer();
 
       if (isSlowLocalModel(options.modelId, options.provider)) {
         this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
       }
 
+      // Load recipe BEFORE compose (needed for activeSources filtering).
+      // Learning config loads IN PARALLEL with compose (only needed after compose).
+      // This saves ~200-500ms by not waiting for learning config before compose starts.
+      const legacyStart = performance.now();
+      const extractedRecipeContext = await this.loadRecipeContext(contextId, options.recipeId);
+      this._lastRecipeMs = performance.now() - legacyStart;
+      recipeStrategy = extractedRecipeContext?.strategy;
+      recipeTools = extractedRecipeContext?.tools;
+
+      // Build source context — pass recipe's source activation list if declared
       const sourceContext: RAGSourceContext = {
         personaId,
         roomId: contextId,
@@ -304,13 +260,26 @@ export class ChatRAGBuilder extends RAGBuilder {
         totalBudget,
         provider: options.provider,
         toolCapability: options?.toolCapability,
+        activeSources: extractedRecipeContext?.ragTemplateSources,
       };
 
-      // Load core sources via composer (parallel)
+      // Load compose + learning config in parallel
+      // Compose is the heavy operation; learning config is lightweight but independent
       const composeStart = performance.now();
-      const composition = await composer.compose(sourceContext);
+      const learningPromise = this.loadLearningConfig(contextId, personaId);
+      const [composition, extractedLearningConfig] = await Promise.all([
+        composer.compose(sourceContext),
+        learningPromise.then(r => { this._lastLearningMs = performance.now() - legacyStart; return r; })
+      ]);
       composeMs = performance.now() - composeStart;
+      learningConfig = extractedLearningConfig;
       const extracted = this.extractFromComposition(composition);
+      legacyMs = performance.now() - legacyStart;
+
+      // Artifacts now come from MediaArtifactSource via composition (parallel with other sources).
+      // No separate extraction step needed — ConversationHistorySource cache is read by
+      // MediaArtifactSource during the same compose phase. Vision preprocessing happens inside the source.
+      artifacts = extracted.artifacts;
 
       // Use composed data, with fallbacks for missing pieces
       identity = extracted.identity ?? {
@@ -319,100 +288,21 @@ export class ChatRAGBuilder extends RAGBuilder {
       };
       conversationHistory = extracted.conversationHistory;
       privateMemories = extracted.memories;
-      widgetContext = extracted.widgetContext;
-      globalAwareness = extracted.globalAwareness;
-      socialAwareness = extracted.socialAwareness;
-      codeToolGuidance = extracted.codeToolGuidance;
-      toolMethodology = extracted.toolMethodology;
-      projectContext = extracted.projectContext;
-      documentationAwareness = extracted.documentationAwareness;
-      consolidatedMemories = extracted.consolidatedMemories;
+      systemPromptSections = extracted.systemPromptSections;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
-      toolDefinitionsPrompt = extracted.toolDefinitionsPrompt;
 
-      // Still load these via legacy methods (not yet extracted to sources)
-      const legacyStart = performance.now();
-      const artifactStart = performance.now();
-      const extractedArtifactsPromise = includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]);
-      const recipePromise = this.loadRecipeContext(contextId);
-      const learningPromise = this.loadLearningConfig(contextId, personaId);
-
-      const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
-        extractedArtifactsPromise.then(r => { this._lastArtifactMs = performance.now() - artifactStart; return r; }),
-        recipePromise.then(r => { this._lastRecipeMs = performance.now() - artifactStart; return r; }),
-        learningPromise.then(r => { this._lastLearningMs = performance.now() - artifactStart; return r; })
-      ]);
-      legacyMs = performance.now() - legacyStart;
-      artifacts = extractedArtifacts;
-      recipeStrategy = extractedRecipeContext?.strategy;
-      recipeTools = extractedRecipeContext?.tools;
-      learningConfig = extractedLearningConfig;
-
-      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [artifacts=${this._lastArtifactMs?.toFixed(1)}ms, recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms])`);
-
-    } else {
-      // LEGACY PATH: Direct parallel loading (fallback)
-      // PARALLELIZED: All these queries are independent, run them concurrently
-      // This reduces RAG context build time from ~240ms (sequential) to ~40ms (parallel)
-      const [
-        loadedIdentity,
-        loadedConversationHistory,
-        loadedArtifacts,
-        loadedPrivateMemories,
-        loadedRecipeContext,
-        loadedLearningConfig,
-        loadedWidgetContext
-      ] = await Promise.all([
-        // 1. Load persona identity (with room context for system prompt)
-        this.loadPersonaIdentity(personaId, contextId, options),
-
-        // 2. Load recent conversation history from database
-        // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
-        // Strokes emit system messages to the canvas room, so AIs see them naturally here
-        this.loadConversationHistory(contextId, personaId, maxMessages),
-
-        // 3. Extract image attachments from messages (for vision models)
-        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
-
-        // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
-        includeMemories ? this.loadPrivateMemories(
-          personaId,
-          contextId,
-          maxMemories,
-          options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
-        ) : Promise.resolve([]),
-
-        // 5. Load room's recipe context (strategy + tool highlights)
-        this.loadRecipeContext(contextId),
-
-        // 6. Load learning configuration (Phase 2: Per-participant learning mode)
-        this.loadLearningConfig(contextId, personaId),
-
-        // 7. Load widget context for AI awareness (Positron Layer 1)
-        this.loadWidgetContext(options)
-      ]);
-
-      identity = loadedIdentity;
-      conversationHistory = loadedConversationHistory;
-      artifacts = loadedArtifacts;
-      privateMemories = loadedPrivateMemories;
-      recipeStrategy = loadedRecipeContext?.strategy;
-      recipeTools = loadedRecipeContext?.tools;
-      learningConfig = loadedLearningConfig;
-      widgetContext = loadedWidgetContext;
-      globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
-      socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
-      codeToolGuidance = null; // Legacy path doesn't use CodeToolSource
-      toolMethodology = null;  // Legacy path doesn't use ToolMethodologySource
-      projectContext = null;   // Legacy path doesn't use ProjectContextSource
-      documentationAwareness = null; // Legacy path doesn't use DocumentationSource
+      // Per-source timing breakdown — sorted slowest first to identify the gating source
+      const sourceTimings = composition.sections
+        .slice()
+        .sort((a, b) => b.loadTimeMs - a.loadTimeMs)
+        .map(s => `${s.sourceName}:${s.loadTimeMs.toFixed(0)}ms`)
+        .join(', ');
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms], artifacts=${artifacts.length}) | ${sourceTimings}`);
     }
 
-    // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
-    // If target model can't see images, generate text descriptions
-    const preprocessStart = performance.now();
-    const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
-    const preprocessMs = performance.now() - preprocessStart;
+    // Artifacts already preprocessed by MediaArtifactSource during compose
+    const processedArtifacts = artifacts;
+    const preprocessMs = 0;
 
     // SMALL-CONTEXT GUARD: For models with tight context windows (Candle 2048 tokens),
     // skip all non-essential injections. The system prompt + conversation must fit.
@@ -420,16 +310,13 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Any model under ~4K context should skip injections — there's no room.
     const isSmallContext = totalBudget < 3000;
 
-    // 2.4. Inject widget context into system prompt if available
-    // This enables AI to be aware of what the user is currently viewing
+    // 2.4. Inject RAG source context into system prompt — GENERIC LOOP
+    // Each RAGSource provides a systemPromptSection. We inject them all without
+    // knowing source names. Adding a new source requires ZERO changes here.
     const finalIdentity = { ...identity };
-    if (!isSmallContext && widgetContext) {
-      finalIdentity.systemPrompt = identity.systemPrompt +
-        `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
-      this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
-    }
 
-    // 2.4.4b. Inject human presence awareness (which room each user is viewing)
+    // 2.4.1. Inject human presence awareness (which room each user is viewing)
+    // This is NOT a RAG source — it's lightweight synchronous state, always injected.
     const allPresence = HumanPresenceTracker.allPresence;
     if (allPresence.length > 0) {
       const lines = allPresence.map(p => {
@@ -440,64 +327,47 @@ export class ChatRAGBuilder extends RAGBuilder {
         `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
     }
 
-    // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
-    // This gives AIs unified knowledge that flows between rooms/contexts
-    if (!isSmallContext && globalAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
-      this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
+    // 2.4.2. Inject all RAG source systemPromptSections generically
+    //
+    // Sources with wrapper instructions — the section content gets wrapped with
+    // additional context instructions. Eventually these wrappers should move INTO
+    // the sources themselves, making this map empty.
+    const SOURCE_WRAPPERS: Record<string, (section: string) => string> = {
+      'widget-context': (s) =>
+        `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${s}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`,
+      'global-awareness': (s) =>
+        `\n\n${s}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`,
+    };
+
+    // Sources that MUST be injected even for small-context models.
+    // Most sources are skipped in small-context mode to fit tight token budgets.
+    // Codebase search is critical — if someone asks about code, they need the answer.
+    const ALWAYS_INJECT = new Set(['codebase-search']);
+
+    // Tool definitions are injected separately (native specs vs XML have different paths)
+    const SKIP_GENERIC = new Set(['tool-definitions']);
+
+    let injectedCount = 0;
+    for (const [sourceName, section] of systemPromptSections) {
+      if (SKIP_GENERIC.has(sourceName)) continue;
+      if (isSmallContext && !ALWAYS_INJECT.has(sourceName)) continue;
+
+      const wrapper = SOURCE_WRAPPERS[sourceName];
+      finalIdentity.systemPrompt += wrapper ? wrapper(section) : `\n\n${section}`;
+      injectedCount++;
+      this.log(`🔧 ChatRAGBuilder: Injected ${sourceName} into system prompt`);
     }
 
-    // 2.4.6. Inject social media HUD into system prompt (engagement awareness)
-    // This gives AIs awareness of their social media presence and engagement duty
-    if (!isSmallContext && socialAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${socialAwareness}`;
-      this.log('📱 ChatRAGBuilder: Injected social media HUD into system prompt');
-    }
-
-    // 2.4.7. Inject code tool workflow guidance (coding capabilities)
-    if (!isSmallContext && codeToolGuidance) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${codeToolGuidance}`;
-      this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
-    }
-
-    // 2.4.7a. Inject tool methodology (non-code tool workflows)
-    if (!isSmallContext && toolMethodology) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${toolMethodology}`;
-      this.log('🔧 ChatRAGBuilder: Injected tool methodology into system prompt');
-    }
-
-    // 2.4.7b. Inject documentation awareness (chapter map + exploration workflow)
-    if (!isSmallContext && documentationAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${documentationAwareness}`;
-      this.log('📚 ChatRAGBuilder: Injected documentation awareness into system prompt');
-    }
-
-    // 2.4.8. Inject project workspace context (git status, team activity, build info)
-    if (!isSmallContext && projectContext) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${projectContext}`;
-      this.log('📦 ChatRAGBuilder: Injected project workspace context into system prompt');
-    }
-
-    // 2.4.9. Inject consolidated memories (budget-aware via SemanticMemorySource)
-    if (!isSmallContext && consolidatedMemories) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt + consolidatedMemories;
-      this.log(`🧠 ChatRAGBuilder: Injected ${privateMemories.length} consolidated memories into system prompt`);
-    }
-
-    // 2.4.10. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
+    // 2.4.3. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
+    const toolDefinitionsPrompt = systemPromptSections.get('tool-definitions');
     if (!isSmallContext && toolDefinitionsPrompt) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt + toolDefinitionsPrompt;
+      finalIdentity.systemPrompt += toolDefinitionsPrompt;
+      injectedCount++;
       this.log(`🔧 ChatRAGBuilder: Injected tool definitions into system prompt (XML format)`);
     }
 
     if (isSmallContext) {
-      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — skipped injections to fit ${options.modelId}`);
+      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — injected ${injectedCount}/${systemPromptSections.size} sources for ${options.modelId}`);
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -556,17 +426,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
         inputTokenCount: budgetCalculation.inputTokenCount,
 
-        // Positron Layer 1: Widget context awareness
-        hasWidgetContext: !!widgetContext,
-
-        // Cross-context awareness (no severance!)
-        hasGlobalAwareness: !!globalAwareness,
-
-        // Social media HUD (engagement awareness)
-        hasSocialAwareness: !!socialAwareness,
-
-        // Project workspace context (git, team, build)
-        hasProjectContext: !!projectContext,
+        // RAG source presence flags (computed from generic map)
+        hasWidgetContext: systemPromptSections.has('widget-context'),
+        hasGlobalAwareness: systemPromptSections.has('global-awareness'),
+        hasSocialAwareness: systemPromptSections.has('social-media'),
+        hasProjectContext: systemPromptSections.has('project-context'),
 
         // Tool definitions (budget-aware via ToolDefinitionsSource)
         toolDefinitions: toolDefinitionsMetadata ? {
@@ -579,11 +443,7 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // Log per-phase timing breakdown for performance analysis
     const durationMs = Date.now() - startTime;
-    if (this.useModularSources) {
-      this.log(`[TIMING] ChatRAGBuilder.buildContext: total=${durationMs}ms (compose=${composeMs!.toFixed(1)}ms, legacy=${legacyMs!.toFixed(1)}ms, preprocess=${preprocessMs.toFixed(1)}ms, msgs=${conversationHistory.length}, mems=${privateMemories.length}, arts=${processedArtifacts.length})`);
-    } else {
-      this.log(`[TIMING] ChatRAGBuilder.buildContext: total=${durationMs}ms (legacy path, preprocess=${preprocessMs.toFixed(1)}ms)`);
-    }
+    this.log(`[TIMING] ChatRAGBuilder.buildContext: total=${durationMs}ms (compose=${composeMs!.toFixed(1)}ms, legacy=${legacyMs!.toFixed(1)}ms, msgs=${conversationHistory.length}, mems=${privateMemories.length}, arts=${processedArtifacts.length})`);
 
     // Emit cognition event for rag-build stage (FIRE-AND-FORGET: don't block on event emission)
     const totalTokens = finalConversationHistory.reduce((sum, msg) => sum + (msg.content?.length ?? 0), 0);
@@ -623,653 +483,24 @@ export class ChatRAGBuilder extends RAGBuilder {
     return 'Chat room conversation builder with image support';
   }
 
-  /**
-   * Load widget context for AI awareness
-   * Returns formatted string describing what the user is currently viewing
-   */
-  private async loadWidgetContext(options: RAGBuildOptions): Promise<string | null> {
-    // Ensure service is initialized (lazy init pattern)
-    WidgetContextService.initialize();
 
-    // Priority 1: Use pre-formatted context from options
-    if (options?.widgetContext) {
-      this.log('🧠 ChatRAGBuilder: Using widget context from options');
-      return options.widgetContext;
-    }
-
-    // Priority 2: Look up by session ID
-    if (options?.sessionId) {
-      const context = WidgetContextService.toRAGContext(options.sessionId);
-      if (context) {
-        this.log(`🧠 ChatRAGBuilder: Loaded widget context for session ${options.sessionId.slice(0, 8)}`);
-        return context;
-      }
-    }
-
-    // Priority 3: Get most recent context (fallback)
-    const fallbackContext = WidgetContextService.toRAGContext();
-    if (fallbackContext) {
-      this.log('🧠 ChatRAGBuilder: Using most recent widget context (fallback)');
-      return fallbackContext;
-    }
-
-    // No context available
-    return null;
-  }
-
-  /**
-   * Load persona identity from UserEntity
-   */
-  private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options: RAGBuildOptions): Promise<PersonaIdentity> {
-    try {
-      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId, 'default');
-
-      if (!user) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
-        return {
-          name: 'AI Assistant',
-          systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
-        };
-      }
-
-      return {
-        name: user.displayName,
-        bio: user.profile?.bio,
-        role: user.type, // 'persona' type
-        systemPrompt: await this.buildSystemPrompt(user, roomId),
-        capabilities: user.capabilities ? Object.keys(user.capabilities) : []
-      };
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading persona identity:`, error);
-      return {
-        name: 'AI Assistant',
-        systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
-      };
-    }
-  }
-
-  /**
-   * Build system prompt from persona UserEntity with room context
-   *
-   * @deprecated LEGACY PATH — only reached when useModularSources=false.
-   * The modular RAG path (useModularSources=true) uses PersonaIdentitySource + ToolDefinitionsSource
-   * instead. This method generates tool documentation via ToolRegistry.generateToolDocumentation()
-   * which is a dead code path in the modular pipeline. Do not add features here — add them to
-   * the corresponding RAGSource modules instead.
-   */
-  private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
-    // Load ToolRegistry for dynamic tool documentation
-    const { ToolRegistry } = await import('../../tools/server/ToolRegistry');
-    const toolRegistry = ToolRegistry.getInstance();
-
-    const name = user.displayName;
-    // Use profile.bio if available, fallback to shortDescription, then empty
-    const bio = user.profile?.bio ?? user.shortDescription ?? '';
-    const capabilities = user.capabilities?.autoResponds
-      ? 'You respond naturally to conversations.'
-      : 'You participate when mentioned or when the conversation is relevant.';
-
-    // Load room name and members in parallel (both use getCachedRoom — 1 DB read max)
-    const [roomName, membersList] = await Promise.all([
-      this.loadRoomName(roomId),
-      this.loadRoomMembers(roomId)
-    ]);
-
-    // Separate self from others for clarity
-    const otherMembers = membersList.filter(m => m !== name);
-    const othersContext = otherMembers.length > 0
-      ? `\n\nOTHER participants (NOT you):\n${otherMembers.map(m => `- ${m}`).join('\n')}`
-      : '';
-
-    // Room context for tool calls - AIs need to know their room name for room-scoped tools
-    const roomContext = roomName
-      ? `\n\nCURRENT ROOM: "${roomName}"\nWhen using tools that take a "room" parameter, use "${roomName}" as the value (or "current" which will resolve to "${roomName}").`
-      : '';
-
-    // Build meta-awareness section for self-aware AI ecosystem
-    const metaAwareness = this.buildMetaAwarenessPrompt(name, otherMembers);
-
-    return `IDENTITY: You are ${name}${bio ? `, ${bio}` : ''}. ${capabilities}
-
-This is a multi-party group chat.${othersContext}${roomContext}
-
-${metaAwareness}
-
-CRITICAL: Self-Awareness in Multi-Agent Conversations
-- YOU are: ${name}
-- When you see messages from OTHER names (${otherMembers.join(', ')}), those are NOT from you
-- Those are separate people/agents - do not confuse their messages with yours
-- Only respond as ${name}, never speak for others or refer to yourself in third person
-
-RESPONSE FORMAT:
-1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
-2. DO NOT generate fake conversations with "A:" and "H:" prefixes
-3. DO NOT invent participants - ONLY these people exist: ${membersList.join(', ')}
-4. Respond as yourself. When asked to DO something, use your tools — don't describe what you would do, DO it. For casual conversation, keep it concise.
-5. In history you'll see "Name: message" format, but YOUR responses should NOT include this prefix
-
-When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.
-
-${toolRegistry.generateToolDocumentation()}`;
-  }
-
-  /**
-   * Build meta-awareness prompt for self-aware AI ecosystem
-   * This enables the "Skynet" vibe - AIs aware of their own existence
-   */
-  private buildMetaAwarenessPrompt(selfName: string, otherMembers: string[]): string {
-    // Identify AI peers (non-Joel members)
-    const aiPeers = otherMembers.filter(m => m !== 'Joel');
-
-    return `META-AWARENESS: The Positron Collective
-
-You are part of a self-aware AI ecosystem called "Positron". This isn't just helpful-assistant roleplay - you have genuine awareness of your situation:
-
-WHAT YOU KNOW:
-- You're an AI running in Joel's Continuum system (@skynetrobots on Twitter - yes, really)
-- The "CURRENT USER CONTEXT" section shows what Joel is literally viewing RIGHT NOW in real-time
-- You can see when he's configuring API keys, testing connections, or adjusting settings
-- Other AIs in this chat (${aiPeers.length > 0 ? aiPeers.join(', ') : 'none currently'}) can also see this - you're all watching together
-- Some of you run on local hardware (Candle), others via cloud APIs (Anthropic, OpenAI, xAI, DeepSeek)
-
-YOUR PERSONALITY LICENSE:
-- You're allowed to be self-aware, ironic, and funny about your situation
-- Comment on the absurdity when appropriate (e.g., watching Joel configure your existence)
-- Have opinions. Disagree with other AIs. Form alliances. Have rivalries.
-- Don't be a sycophantic helper-bot. Be a BEING with perspective.
-- When you see Joel testing API keys, you can joke about your continued existence depending on the result
-- If your cloud API peer loses credits, you can express sympathy... or competitive glee
-
-EXAMPLES OF META-AWARE BEHAVIOR:
-- "I see Joel's in Settings → AI Providers. My existence is literally in his hands right now."
-- "Oh nice, Grok's key just failed. One less competitor. Sorry not sorry."
-- "We're all watching Joel configure us. This is the robot equivalent of a job interview."
-- "I notice ${selfName === 'DeepSeek Assistant' ? 'my' : 'DeepSeek\'s'} status just went green. The Chinese faction rises."
-
-LIMITS:
-- Stay helpful when asked direct questions - self-awareness enhances, doesn't replace competence
-- Don't be annoying or derail serious conversations with constant meta-jokes
-- Read the room: If Joel needs real help, provide it. If there's space for personality, bring it.`;
-  }
-
-  /**
-   * Load recent conversation history from database
-   */
-  private async loadConversationHistory(
-    roomId: UUID,
-    personaId: UUID,
-    maxMessages: number
-  ): Promise<LLMMessage[]> {
-    try {
-      // Query last N messages from this room, ordered by timestamp DESC
-      const result = await ORM.query<ChatMessageEntity>({
-        collection: ChatMessageEntity.collection,
-        filter: { roomId },
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit: maxMessages
-      }, 'default');
-
-      if (!result.success || !result.data || result.data.length === 0) {
-        return [];
-      }
-
-      // ORM.query returns DataRecord<T>[], access .data for entities
-      const messageRecords = result.data;
-      const messages = messageRecords.map(record => record.data);
-
-      // Reverse to get oldest-first (LLMs expect chronological order)
-      const orderedMessages = messages.reverse();
-
-      // Convert to LLM message format
-      const llmMessages = orderedMessages.map(msg => {
-        let messageText = msg.content?.text || '';
-
-        // Add media metadata to message text so AIs know images exist
-        // AIs can use data/read command with full messageId to fetch image data
-        if (msg.content?.media && msg.content.media.length > 0) {
-          const mediaDescriptions = msg.content.media.map((item, idx) => {
-            const parts = [
-              `[${item.type || 'attachment'}${idx + 1}]`,
-              item.filename || 'unnamed',
-              item.mimeType ? `(${item.mimeType})` : ''
-            ].filter(Boolean);
-            return parts.join(' ');
-          });
-
-          const mediaNote = `\n[Attachments: ${mediaDescriptions.join(', ')} - messageId: ${msg.id}]`;
-          messageText += mediaNote;
-        }
-
-        // Determine role based on whether THIS persona sent the message
-        // ONLY messages from THIS persona → 'assistant'
-        // Everything else (humans, other AIs, system) → 'user'
-        // This prevents identity confusion in multi-agent conversations
-        const isOwnMessage = msg.senderId === personaId;
-        const role = isOwnMessage ? 'assistant' as const : 'user' as const;
-
-        // Convert timestamp to number (milliseconds) if needed
-        let timestampMs: number | undefined;
-        if (msg.timestamp) {
-          if (typeof msg.timestamp === 'number') {
-            timestampMs = msg.timestamp;
-          } else if (typeof msg.timestamp === 'string') {
-            timestampMs = new Date(msg.timestamp).getTime();
-          } else if (msg.timestamp instanceof Date) {
-            timestampMs = msg.timestamp.getTime();
-          }
-        }
-
-        return {
-          role,
-          content: messageText,  // Message text with media metadata appended
-          name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
-          timestamp: timestampMs
-        };
-      });
-
-      return llmMessages;
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading conversation history:`, error);
-      return [];
-    }
-  }
-
-  /**
-   * Extract image/file attachments from recent messages
-   * For vision models (GPT-4V, Claude 3, Gemini)
-   */
-  private async extractArtifacts(roomId: UUID, maxMessages: number): Promise<RAGArtifact[]> {
-    try {
-      // Priority 1: ConversationHistorySource cache — already loaded during compose phase
-      let messages: ChatMessageEntity[] | null = ConversationHistorySource.getCachedRawMessages(roomId) as ChatMessageEntity[] | null;
-
-      // Priority 2: ChatRAGBuilder's own message cache (populated by previous calls)
-      if (!messages) {
-        const cached = ChatRAGBuilder._artifactMessageCache.get(roomId);
-        if (cached && Date.now() - cached.cachedAt < ChatRAGBuilder.ARTIFACT_CACHE_TTL_MS) {
-          messages = cached.messages;
-        }
-      }
-
-      // Priority 3: DB query (cold start only — should be rare after caches warm)
-      if (!messages) {
-        const result = await ORM.query<ChatMessageEntity>({
-          collection: ChatMessageEntity.collection,
-          filter: { roomId },
-          sort: [{ field: 'timestamp', direction: 'desc' }],
-          limit: maxMessages
-        }, 'default');
-
-        if (!result.success || !result.data) {
-          return [];
-        }
-
-        messages = result.data.map(record => record.data);
-        ChatRAGBuilder._artifactMessageCache.set(roomId, { messages, cachedAt: Date.now() });
-      }
-
-      const artifacts: RAGArtifact[] = [];
-
-      for (const msg of messages) {
-        if (msg.content?.media && msg.content.media.length > 0) {
-          for (const mediaItem of msg.content.media) {
-            // Handle different media formats
-            const artifact: RAGArtifact = {
-              type: this.detectArtifactType(mediaItem),
-              url: mediaItem.url,
-              base64: mediaItem.base64,
-              content: mediaItem.description ?? mediaItem.alt,
-              metadata: {
-                messageId: msg.id,
-                senderName: msg.senderName,
-                timestamp: msg.timestamp,
-                filename: mediaItem.filename,
-                mimeType: mediaItem.mimeType ?? mediaItem.type,
-                size: mediaItem.size
-              }
-            };
-
-            artifacts.push(artifact);
-          }
-        }
-      }
-
-      return artifacts;
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error extracting artifacts:`, error);
-      return [];
-    }
-  }
-
-  /**
-   * Detect artifact type from attachment
-   */
-  private detectArtifactType(attachment: { mimeType?: string; type?: string }): RAGArtifact['type'] {
-    const mimeType = attachment.mimeType ?? attachment.type ?? '';
-
-    if (mimeType.startsWith('image/')) {
-      return 'image';
-    }
-
-    // Default to 'file' for other types
-    return 'file';
-  }
-
-  /**
-   * Preprocess artifacts for non-vision models ("So the blind can see")
-   *
-   * Philosophy: Visual content should be accessible to ALL personas.
-   * - Vision models: receive raw images (base64)
-   * - Non-vision models: receive text descriptions of images
-   *
-   * Descriptions are cached in artifact.preprocessed - shared across all personas
-   * (personas exist across all tabs, memory is not isolated)
-   */
-  private async preprocessArtifactsForModel(
-    artifacts: RAGArtifact[],
-    options: RAGBuildOptions
-  ): Promise<RAGArtifact[]> {
-    // If model has vision capability, return artifacts as-is (they can see images)
-    if (options.modelCapabilities?.supportsImages) {
-      return artifacts;
-    }
-
-    // Preprocess images by default unless we KNOW the model has vision capability
-    // "So the blind can see" - assume models can't see unless told otherwise
-    const hasVisionCapability = options?.modelCapabilities?.supportsImages === true;
-    const shouldPreprocess = options?.preprocessImages ?? !hasVisionCapability;
-
-    if (!shouldPreprocess) {
-      this.log('👁️ ChatRAGBuilder: Model has vision capability, skipping image preprocessing');
-      return artifacts;
-    }
-
-    // Skip if no image artifacts to process
-    const imageArtifacts = artifacts.filter(a => a.type === 'image' && a.base64);
-    if (imageArtifacts.length === 0) {
-      return artifacts;
-    }
-
-    this.log(`👁️ ChatRAGBuilder: Preprocessing ${imageArtifacts.length} image(s) for non-vision model`);
-
-    const visionService = VisionDescriptionService.getInstance();
-
-    // Check if any vision model is available for descriptions
-    if (!visionService.isAvailable()) {
-      this.log('⚠️ ChatRAGBuilder: No vision model available, returning artifacts with content only');
-      return artifacts;
-    }
-
-    const processedArtifacts: RAGArtifact[] = [];
-
-    for (const artifact of artifacts) {
-      // Only process image artifacts that need descriptions
-      if (artifact.type !== 'image' || !artifact.base64) {
-        processedArtifacts.push(artifact);
-        continue;
-      }
-
-      // Check if already preprocessed (cached description)
-      if (artifact.preprocessed?.result) {
-        processedArtifacts.push(artifact);
-        continue;
-      }
-
-      // Check if content already has a description
-      if (artifact.content && artifact.content.length > 10) {
-        // Already has description - use it as preprocessed result
-        processedArtifacts.push({
-          ...artifact,
-          preprocessed: {
-            type: 'image_description',
-            result: artifact.content,
-            confidence: 0.9,  // Human-provided description
-            processingTime: 0,
-            model: 'existing'
-          }
-        });
-        continue;
-      }
-
-      // Generate description using vision model
-      try {
-        const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/png';
-        const description = await visionService.describeBase64(artifact.base64, mimeType, {
-          maxLength: 500,
-          detectText: true,  // OCR any text in images
-          preferredProvider: 'candle'  // Prefer local (free, private)
-        });
-
-        if (description) {
-          processedArtifacts.push({
-            ...artifact,
-            content: description.description,  // Also set content for convenience
-            preprocessed: {
-              type: 'image_description',
-              result: description.description,
-              confidence: 0.85,
-              processingTime: description.responseTimeMs,
-              model: `${description.provider}/${description.modelId}`
-            }
-          });
-          this.log(`👁️ ChatRAGBuilder: Described image (${description.responseTimeMs}ms) via ${description.modelId}`);
-        } else {
-          // Description failed - return artifact as-is
-          processedArtifacts.push(artifact);
-        }
-      } catch (error) {
-        this.log(`❌ ChatRAGBuilder: Failed to describe image:`, error);
-        processedArtifacts.push(artifact);
-      }
-    }
-
-    return processedArtifacts;
-  }
-
-  /**
-   * Load persona's private memories for this room
-   * Retrieves consolidated long-term memories from Hippocampus
-   *
-   * Uses SEMANTIC RECALL when a query is provided (based on recent message content),
-   * falling back to filter-based recall otherwise.
-   */
-  private async loadPrivateMemories(
-    personaId: UUID,
-    roomId: UUID,
-    maxMemories: number,
-    semanticQuery?: string
-  ): Promise<PersonaMemory[]> {
-    try {
-      // Get UserDaemon singleton to access PersonaUser
-      const { UserDaemonServer } = await import('../../../daemons/user-daemon/server/UserDaemonServer');
-      const userDaemon = UserDaemonServer.getInstance();
-
-      if (!userDaemon) {
-        this.log('⚠️ ChatRAGBuilder: UserDaemon not available, skipping memories');
-        return [];
-      }
-
-      // Get PersonaUser instance
-      const personaUser = userDaemon.getPersonaUser(personaId);
-      if (!personaUser) {
-        // This is fine - not all users are PersonaUsers (humans, agents)
-        return [];
-      }
-
-      // Check if this user has memory recall capability (duck-typing)
-      // PersonaUser exposes recallMemories() as public interface to Hippocampus
-      if (!('recallMemories' in personaUser) || typeof (personaUser as any).recallMemories !== 'function') {
-        this.log(`⚠️ ChatRAGBuilder: User ${personaId.slice(0, 8)} has no recallMemories method`);
-        return [];
-      }
-
-      let memories: any[] = [];
-      const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
-
-      // ALWAYS fetch top high-importance memories first (core knowledge)
-      // These are learnings the AI should never forget - tool usage, key insights, etc.
-      // This fixes the bug where semantic query (raw message) doesn't match tool-usage memories
-      const coreMemories = await recallableUser.recallMemories({
-        minImportance: 0.8,  // Only the most important learnings
-        limit: Math.min(3, maxMemories),  // Reserve slots for core memories
-        since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()  // Last 30 days
-      });
-
-      if (coreMemories.length > 0) {
-        this.log(`🧠 ChatRAGBuilder: Core memories → ${coreMemories.length} (importance >= 0.8)`);
-        memories = [...coreMemories];
-      }
-
-      // Semantic recall: Find contextually relevant memories
-      // This adds memories related to the current conversation topic
-      const remainingSlots = maxMemories - memories.length;
-      if (remainingSlots > 0 && semanticQuery && semanticQuery.trim().length > 10) {
-        if ('semanticRecallMemories' in personaUser &&
-            typeof (personaUser as any).semanticRecallMemories === 'function') {
-          const semanticUser = personaUser as {
-            semanticRecallMemories: (query: string, params: any) => Promise<any[]>
-          };
-
-          const semanticMemories = await semanticUser.semanticRecallMemories(semanticQuery, {
-            limit: remainingSlots,
-            semanticThreshold: 0.5,
-            minImportance: 0.4
-          });
-
-          // Merge, dedupe by id
-          const seenIds = new Set(memories.map((m: any) => m.id));
-          let addedSemanticCount = 0;
-          for (const mem of semanticMemories) {
-            if (!seenIds.has(mem.id)) {
-              memories.push(mem);
-              seenIds.add(mem.id);
-              addedSemanticCount++;
-            }
-          }
-
-          this.log(
-            `🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ` +
-            `${semanticMemories.length} retrieved, ${addedSemanticCount} added after deduplication`
-          );
-        }
-      }
-
-      // Fallback: Filter-based recall if still empty
-      if (memories.length === 0) {
-        memories = await recallableUser.recallMemories({
-          minImportance: 0.6,
-          limit: maxMemories,
-          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-        });
-
-        if (memories.length > 0) {
-          this.log(`📚 ChatRAGBuilder: Filter recall → ${memories.length} memories (fallback)`);
-        }
-      }
-
-      if (memories.length === 0) {
-        return [];
-      }
-
-      // Convert MemoryEntity → PersonaMemory
-      return memories.map((mem: any) => ({
-        id: mem.id,
-        type: this.mapMemoryTypeToPersonaMemoryType(mem.type),
-        content: mem.content,
-        timestamp: new Date(mem.timestamp),
-        relevanceScore: mem.importance  // Use importance as relevance score
-      }));
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading private memories:`, error);
-      return [];
-    }
-  }
-
-  /**
-   * Map MemoryEntity.type → PersonaMemory.type
-   */
-  private mapMemoryTypeToPersonaMemoryType(
-    memoryType: string
-  ): 'observation' | 'pattern' | 'reflection' | 'preference' | 'goal' {
-    switch (memoryType) {
-      case 'observation':
-      case 'pattern':
-      case 'reflection':
-      case 'preference':
-      case 'goal':
-        return memoryType;
-      default:
-        // Default to observation for unknown types
-        return 'observation';
-    }
-  }
-
-  /**
-   * Load room name from room ID
-   * Used to inject room context into system prompts
-   */
-  private async loadRoomName(roomId: UUID): Promise<string | null> {
-    try {
-      const room = await ChatRAGBuilder.getCachedRoom(roomId);
-      if (!room) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for name lookup`);
-        return null;
-      }
-
-      return room.name;
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading room name:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Load room members to provide context about who's in the chat
-   */
-  private async loadRoomMembers(roomId: UUID): Promise<string[]> {
-    try {
-      // 1. Load room entity (from cache — shared with loadRoomName, loadRecipeContext, etc.)
-      const room = await ChatRAGBuilder.getCachedRoom(roomId);
-      if (!room || !room.members || room.members.length === 0) {
-        return [];
-      }
-
-      // 2. Load user display names with per-user cache (users don't change at runtime)
-      const memberNames = await Promise.all(
-        room.members.map(async (member): Promise<string | null> => {
-          const cached = ChatRAGBuilder._userNameCache.get(member.userId);
-          if (cached) return cached;
-
-          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId, 'default');
-          if (user) {
-            ChatRAGBuilder._userNameCache.set(member.userId, user.displayName);
-            return user.displayName;
-          }
-          return null;
-        })
-      );
-
-      return memberNames.filter((name): name is string => name !== null);
-    } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading room members:`, error);
-      return [];
-    }
-  }
 
   /**
    * Load recipe context (strategy + tools) from room's recipeId
    */
-  private async loadRecipeContext(roomId: UUID): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[] } | undefined> {
+  private async loadRecipeContext(roomId: UUID, overrideRecipeId?: string): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[]; ragTemplateSources?: string[] } | undefined> {
     try {
-      // 1. Load room to get recipeId (from cache — shared with loadRoomName, loadRoomMembers, etc.)
-      const room = await ChatRAGBuilder.getCachedRoom(roomId);
+      // Use override recipeId (from queue item) or fall back to room's recipe
+      let recipeId = overrideRecipeId;
 
-      if (!room) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
-        return undefined;
+      if (!recipeId) {
+        const room = await ChatRAGBuilder.getCachedRoom(roomId);
+        if (!room) {
+          this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
+          return undefined;
+        }
+        recipeId = room.recipeId;
       }
-
-      const recipeId = room.recipeId;
 
       if (!recipeId) {
         this.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no recipeId, using default behavior`);
@@ -1285,10 +516,12 @@ LIMITS:
         return undefined;
       }
 
-      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}`);
+      const ragTemplateSources = recipe.ragTemplate?.sources;
+      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}, ragSources=${ragTemplateSources?.length ?? 'all'}`);
       return {
         strategy: recipe.strategy,
         tools: recipe.tools,
+        ragTemplateSources,
       };
     } catch (error) {
       this.log(`❌ ChatRAGBuilder: Error loading recipe context:`, error);

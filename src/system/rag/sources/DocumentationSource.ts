@@ -47,6 +47,7 @@ export class DocumentationSource implements RAGSource {
   readonly name = 'documentation';
   readonly priority = 35;
   readonly defaultBudgetPercent = 5;
+  readonly isShared = true;
 
   // Shared cache + single-flight coalescing — all personas share one filesystem scan.
   // Without single-flight, 5+ personas hit buildChapterMap() simultaneously on cold start,

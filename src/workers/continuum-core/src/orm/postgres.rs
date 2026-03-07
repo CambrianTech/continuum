@@ -352,6 +352,32 @@ fn build_where_clause(
 }
 
 /// Build ORDER BY clause
+/// Build SELECT clause from optional column projection.
+/// Converts camelCase field names to snake_case for SQL.
+/// Always includes id, created_at, updated_at, version (metadata columns).
+fn build_select_clause(select: &Option<Vec<String>>) -> String {
+    match select {
+        Some(cols) if !cols.is_empty() => {
+            // Always include metadata columns — adapters need them for DataRecord
+            let mut selected: Vec<String> = vec![
+                "id".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+                "version".to_string(),
+            ];
+            for col in cols {
+                let snake = naming::to_snake_case(col);
+                // Don't duplicate metadata columns
+                if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                    selected.push(snake);
+                }
+            }
+            selected.join(", ")
+        }
+        _ => "*".to_string(),
+    }
+}
+
 fn build_order_clause(sort: &Option<Vec<super::query::SortSpec>>) -> String {
     if let Some(sorts) = sort {
         if !sorts.is_empty() {
@@ -443,18 +469,11 @@ fn row_to_record(
                 }
             }
             _ => {
-                // Default: try as text
+                // Default: read as text — no speculative JSON parsing.
+                // JSONB/JSON columns are already handled above with proper typed extraction.
+                // TEXT that happens to look like JSON stays as a string (the schema said TEXT).
                 match row.try_get::<_, Option<String>>(i) {
-                    Ok(Some(s)) => {
-                        // Auto-detect JSON strings
-                        if (s.starts_with('{') && s.ends_with('}'))
-                            || (s.starts_with('[') && s.ends_with(']'))
-                        {
-                            serde_json::from_str(&s).unwrap_or_else(|_| json!(s))
-                        } else {
-                            json!(s)
-                        }
-                    }
+                    Ok(Some(s)) => json!(s),
                     Ok(None) => Value::Null,
                     Err(_) => Value::Null,
                 }
@@ -744,7 +763,8 @@ impl StorageAdapter for PostgresAdapter {
         let (where_clause, where_params) = build_where_clause(&query.filter, 0);
         let order_clause = build_order_clause(&query.sort);
 
-        let mut sql = format!("SELECT * FROM {}", table);
+        let select_clause = build_select_clause(&query.select);
+        let mut sql = format!("SELECT {} FROM {}", select_clause, table);
         if !where_clause.is_empty() {
             sql.push(' ');
             sql.push_str(&where_clause);
@@ -805,8 +825,26 @@ impl StorageAdapter for PostgresAdapter {
             _ => return self.query(query).await,
         };
 
-        // Build JOIN SQL
-        let mut select_parts = vec![format!("{}.*", table)];
+        // Build JOIN SQL — apply column projection to main table if specified
+        let main_select = match &query.select {
+            Some(cols) if !cols.is_empty() => {
+                let mut parts = vec![
+                    format!("{}.id", table),
+                    format!("{}.created_at", table),
+                    format!("{}.updated_at", table),
+                    format!("{}.version", table),
+                ];
+                for col in cols {
+                    let snake = naming::to_snake_case(col);
+                    if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                        parts.push(format!("{}.{}", table, snake));
+                    }
+                }
+                parts.join(", ")
+            }
+            _ => format!("{}.*", table),
+        };
+        let mut select_parts = vec![main_select];
         let mut join_clauses = Vec::new();
 
         for join in joins {

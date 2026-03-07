@@ -47,6 +47,7 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { supportsNativeTools, unsanitizeToolName, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
+import { hasMediaMetadata } from '../../../rag/shared/RAGTypes';
 import { ContentDeduplicator } from './ContentDeduplicator';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
 // import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
@@ -340,34 +341,50 @@ export class PersonaResponseGenerator {
         content: systemPrompt
       });
 
-      // Build artifact lookup map (messageId → artifacts) for multimodal support
-      // This enables vision models to see images from messages with media
-      type RAGArtifact = typeof fullRAGContext.artifacts[number];
-      const artifactsByMessageId = new Map<string, RAGArtifact[]>();
-      for (const artifact of fullRAGContext.artifacts) {
-        const messageId = artifact.metadata?.messageId as string | undefined;
-        if (messageId) {
-          if (!artifactsByMessageId.has(messageId)) {
-            artifactsByMessageId.set(messageId, []);
+      // Inject system-level image artifacts (e.g. live room screenshot) for vision models.
+      // These aren't tied to a chat message — they come from RAG sources like LiveRoomAwarenessSource.
+      const hasVisionCapability = AICapabilityRegistry.getInstance().hasCapability(
+        this.modelConfig.provider, this.modelConfig.model, 'image-input'
+      );
+      if (hasVisionCapability) {
+        const systemArtifacts = fullRAGContext.artifacts.filter(
+          a => a.type === 'screenshot' && a.base64 && !hasMediaMetadata(a)
+        );
+        if (systemArtifacts.length > 0) {
+          const parts: ContentPart[] = [
+            { type: 'text', text: 'Current visual context:' }
+          ];
+          for (const artifact of systemArtifacts) {
+            const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/jpeg';
+            parts.push({ type: 'image', image: { base64: artifact.base64!, mimeType } });
           }
-          artifactsByMessageId.get(messageId)!.push(artifact);
+          messages.push({ role: 'user', content: parts });
+          this.log(`🖼️  ${this.personaName}: Injected ${systemArtifacts.length} system-level screenshot(s) for vision model`);
         }
       }
 
-      // Also create a timestamp+name lookup for matching LLMMessages to artifacts
-      // LLMMessages don't have IDs, so we match by timestamp+sender combination
+      // Build artifact lookup maps for multimodal support
+      // This enables vision models to see images from messages with media
+      type RAGArtifact = typeof fullRAGContext.artifacts[number];
+      const artifactsByMessageId = new Map<string, RAGArtifact[]>();
       const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
+
       for (const artifact of fullRAGContext.artifacts) {
-        const timestamp = artifact.metadata?.timestamp as Date | number | undefined;
-        const senderName = artifact.metadata?.senderName as string | undefined;
-        if (timestamp && senderName) {
-          const timestampMs = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : 0;
-          const key = `${timestampMs}_${senderName}`;
-          if (!artifactsByTimestampName.has(key)) {
-            artifactsByTimestampName.set(key, []);
-          }
-          artifactsByTimestampName.get(key)!.push(artifact);
+        if (!hasMediaMetadata(artifact)) continue;
+        const { messageId, senderName, timestamp } = artifact.metadata;
+
+        // By messageId
+        if (!artifactsByMessageId.has(messageId)) {
+          artifactsByMessageId.set(messageId, []);
         }
+        artifactsByMessageId.get(messageId)!.push(artifact);
+
+        // By timestamp+name (LLMMessages don't have IDs)
+        const key = `${timestamp}_${senderName}`;
+        if (!artifactsByTimestampName.has(key)) {
+          artifactsByTimestampName.set(key, []);
+        }
+        artifactsByTimestampName.get(key)!.push(artifact);
       }
 
       this.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
@@ -412,51 +429,52 @@ export class PersonaResponseGenerator {
           const messageArtifacts = lookupKey ? artifactsByTimestampName.get(lookupKey) : undefined;
 
           if (messageArtifacts && messageArtifacts.length > 0) {
-            // Multimodal message: Convert to ContentPart[] format
-            const contentParts: ContentPart[] = [
-              {
-                type: 'text',
-                text: formattedContent
-              }
-            ];
+            const hasVision = AICapabilityRegistry.getInstance().hasCapability(
+              this.modelConfig.provider, this.modelConfig.model, 'image-input'
+            );
 
-            // Add artifacts as image/audio/video parts
-            for (const artifact of messageArtifacts) {
-              const mimeType = artifact.metadata?.mimeType as string | undefined;
+            if (hasVision) {
+              // Vision model: send raw base64 as ContentPart[]
+              const contentParts: ContentPart[] = [
+                { type: 'text', text: formattedContent }
+              ];
 
-              if (artifact.type === 'image' && artifact.base64) {
-                contentParts.push({
-                  type: 'image',
-                  image: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
-              } else if (artifact.type === 'audio' && artifact.base64) {
-                contentParts.push({
-                  type: 'audio',
-                  audio: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
-              } else if (artifact.type === 'video' && artifact.base64) {
-                contentParts.push({
-                  type: 'video',
-                  video: {
-                    base64: artifact.base64,
-                    mimeType
-                  }
-                });
+              for (const artifact of messageArtifacts) {
+                const mimeType = hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined;
+
+                if (artifact.type === 'image' && artifact.base64) {
+                  contentParts.push({ type: 'image', image: { base64: artifact.base64, mimeType } });
+                } else if (artifact.type === 'audio' && artifact.base64) {
+                  contentParts.push({ type: 'audio', audio: { base64: artifact.base64, mimeType } });
+                } else if (artifact.type === 'video' && artifact.base64) {
+                  contentParts.push({ type: 'video', video: { base64: artifact.base64, mimeType } });
+                }
               }
+
+              messages.push({ role: msg.role, content: contentParts });
+            } else {
+              // Text-only model: append descriptions as text (base64 is useless to them)
+              const descriptions: string[] = [];
+              for (const artifact of messageArtifacts) {
+                const description = typeof artifact.preprocessed?.result === 'string'
+                  ? artifact.preprocessed.result
+                  : artifact.content;
+                const filename = hasMediaMetadata(artifact) ? artifact.metadata.filename : undefined;
+                if (description) {
+                  descriptions.push(`[Image${filename ? ` "${filename}"` : ''}: ${description}]`);
+                } else {
+                  descriptions.push(`[Shared image${filename ? ` "${filename}"` : ''} — visual description not yet available]`);
+                }
+              }
+
+              const textWithDescriptions = descriptions.length > 0
+                ? `${formattedContent}\n${descriptions.join('\n')}`
+                : formattedContent;
+
+              messages.push({ role: msg.role, content: textWithDescriptions });
             }
 
-            messages.push({
-              role: msg.role,
-              content: contentParts  // Multimodal content
-            });
-
-            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
+            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name} (vision=${hasVision})`);
           } else {
             // Text-only message
             messages.push({
@@ -1286,39 +1304,37 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       );
 
       // 🧬 CONTINUOUS LEARNING: Capture interaction for training data accumulation
-      // Every successful response becomes a training example. When the buffer fills,
-      // PersonaTrainingManager triggers fine-tuning automatically.
-      // Uses Rust domain classification + quality scoring for better training data selection.
+      // Fire-and-forget — domain classification + quality scoring are Rust IPC calls
+      // that DON'T affect the user-visible response. Previously these 2 awaited IPC
+      // calls blocked the post-response path by 10-50ms each under load.
       if (this.trainingAccumulator) {
         const inputText = originalMessage.content.text;
         const outputText = aiResponse.text.trim();
+        const accumulator = this.trainingAccumulator;
+        const bridge = this.rustCognitionBridge;
+        const fallbackDomain = this.inferTrainingDomain(originalMessage);
 
-        // Use Rust classifier for consistent domain bucketing (falls back to TS if unavailable)
-        let domain: string;
-        let qualityRating: number | undefined;
-        if (this.rustCognitionBridge) {
-          try {
-            const classification = await this.rustCognitionBridge.classifyDomain(inputText);
-            domain = classification.domain;
-            // Record activity for gap detection
-            this.rustCognitionBridge.recordActivity(domain, true).catch(() => {});
-            // Score interaction quality for training data selection
-            qualityRating = (await this.rustCognitionBridge.scoreInteraction(inputText, outputText)).score;
-          } catch {
-            domain = this.inferTrainingDomain(originalMessage);
+        // Entire classify → score → capture pipeline runs off the critical path
+        (async () => {
+          let domain = fallbackDomain;
+          let qualityRating: number | undefined;
+          if (bridge) {
+            try {
+              const classification = await bridge.classifyDomain(inputText);
+              domain = classification.domain;
+              bridge.recordActivity(domain, true).catch(() => {});
+              qualityRating = (await bridge.scoreInteraction(inputText, outputText)).score;
+            } catch { /* fallback domain already set */ }
           }
-        } else {
-          domain = this.inferTrainingDomain(originalMessage);
-        }
-
-        this.trainingAccumulator.captureInteraction({
-          roleId: this.personaId,
-          personaId: this.personaId,
-          domain,
-          input: inputText,
-          output: outputText,
-          qualityRating,
-        }).catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
+          await accumulator.captureInteraction({
+            roleId: this.personaId,
+            personaId: this.personaId,
+            domain,
+            input: inputText,
+            output: outputText,
+            qualityRating,
+          });
+        })().catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
       }
 
       // 🧬 FITNESS TRACKING: Record inference result for genome natural selection

@@ -85,7 +85,9 @@ export const MODEL_IDS = {
   ANTHROPIC: {
     SONNET_4_5: 'claude-sonnet-4-5-20250929',       // Current Claude Sonnet 4.5 (Sep 2025)
     OPUS_4: 'claude-opus-4-20250514',               // Claude Opus 4 (May 2025)
-    HAIKU_3_5: 'claude-3-5-haiku-20241022'          // Claude 3.5 Haiku (Oct 2024)
+    HAIKU_4_5: 'claude-haiku-4-5-20251001',         // Claude Haiku 4.5 (Oct 2025)
+    // Legacy alias — consumers should migrate to HAIKU_4_5
+    HAIKU_3_5: 'claude-haiku-4-5-20251001'          // Points to Haiku 4.5 now
   },
 
   /** OpenAI models */

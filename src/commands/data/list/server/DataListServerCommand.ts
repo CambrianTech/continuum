@@ -87,6 +87,12 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
 
+      // Push column projection down to Rust when fields are specified —
+      // avoids SELECT * → IPC → TS discard pattern (DMA principle: don't move data you don't need)
+      const selectColumns = params.fields?.length ? params.fields
+        : params.select?.length ? params.select
+        : undefined;
+
       const storageQuery = {
         collection,
         filter: params.filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
@@ -95,7 +101,8 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
           direction: order.direction
         })),
         cursor: params.cursor,
-        limit
+        limit,
+        select: selectColumns,
       };
 
       // Pass handle directly to ORM — ORM resolves handle → path internally

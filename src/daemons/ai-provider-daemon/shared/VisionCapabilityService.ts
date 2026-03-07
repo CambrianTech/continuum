@@ -334,6 +334,19 @@ export class VisionCapabilityService {
     ]);
 
     // ================================
+    // Google (Gemini) Vision Models
+    // ================================
+    this.registerVisionModels('google', [
+      {
+        modelId: 'gemini*',
+        isPattern: true,
+        capabilities: ['image-input', 'image-analysis'],
+        maxImagesPerRequest: 16,
+        supportedFormats: ['png', 'jpeg', 'gif', 'webp'],
+      },
+    ]);
+
+    // ================================
     // Fireworks Vision Models
     // ================================
     this.registerVisionModels('fireworks', [

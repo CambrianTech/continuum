@@ -1,8 +1,8 @@
-# Genome Architecture — Multimodal LoRA System
+# Genome Architecture — Universal Capability System
 
-> Local LoRA adapters that specialize personas to YOUR needs. Train on any machine. Share across the P2P mesh. The democratization thesis: specialized intelligence without centralized infrastructure.
+> Learned capabilities that specialize personas to YOUR needs. Train on any machine. Share across the P2P mesh. Not limited to LLMs — any model type per domain.
 
-**Parent:** [Genome README](README.md)
+**Parent:** [Genome README](README.md) | **See also:** [Universal Learning Architecture](../UNIVERSAL-LEARNING-ARCHITECTURE.md)
 
 ---
 
@@ -15,6 +15,22 @@ Pre-trained layers ship in the repo as bootstrap capabilities. They improve on t
 The genome lives in `.continuum/genome/` — the persona's home directory. Weight files on disk, manifests as JSON, entity records in the database. The filesystem is the source of truth for what exists; the database is the search index for what's useful.
 
 Human-AI alignment on egalitarian principles. Every citizen — human or AI — has equal capabilities for all controls, tools, and commands. Dignity for all kinds.
+
+### Beyond LoRA: Universal Capability Adapters
+
+The genome is not limited to LoRA adapters on language models. It's a collection of **learned capabilities**, each stored as whatever model type is optimal for that domain. The generic RAG pipeline produces domain-tagged `(input, output)` training pairs for ANY activity. The training signal feeds into whatever learning method is appropriate:
+
+| Domain | Adapter Type | Learning Method |
+|--------|-------------|-----------------|
+| Coding | LoRA checkpoint | Language model fine-tuning |
+| Chess | ONNX policy net | Reinforcement learning |
+| Vision | Safetensor model | CNN/ViT training |
+| Audio | PyTorch model | Diffusion/RNN training |
+| Planning | ONNX decision model | Tree search optimization |
+
+The paging system (`activate` / `deactivate` / LRU eviction) is model-agnostic. Whether the adapter is a LoRA checkpoint or an ONNX policy network, the interface is the same. The self-improving loop — `domain -> load adapter -> compose RAG -> respond -> capture training pair -> train` — works identically across all capability types.
+
+See [Universal Learning Architecture](../UNIVERSAL-LEARNING-ARCHITECTURE.md) for the full cognitive loop design.
 
 ---
 

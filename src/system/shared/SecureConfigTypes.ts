@@ -60,18 +60,18 @@ export interface StorageConfig {
   };
 }
 
-// Default Storage Configuration
+// Default Storage Configuration — Postgres is the primary database.
+// Per-persona data (memories, embeddings) goes to SQLite longterm.db files.
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   strategy: 'sql',
-  backend: 'sqlite',
-  connectionString: undefined,
+  backend: 'postgres',
+  connectionString: 'postgres://joel@localhost:5432/continuum',
   paths: {
-    data: '.continuum/jtag/data',
-    backups: '.continuum/jtag/backups'
+    data: '.continuum/data',
+    backups: '.continuum/data/backups'
   },
   options: {
-    basePath: '.continuum/jtag/data',
-    dbPath: '.continuum/jtag/data/database.sqlite'
+    basePath: '.continuum/data',
   },
   features: {
     enableTransactions: true,

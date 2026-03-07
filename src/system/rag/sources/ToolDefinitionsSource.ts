@@ -115,19 +115,18 @@ export class ToolDefinitionsSource implements RAGSource {
       prioritizedTools = this.prioritizeTools(prioritizedTools, recipeToolNames, hasRecipeTools, MAX_NATIVE_TOOLS);
     }
 
-    // Budget check: estimate token cost of native specs
-    const specs = convertToNativeToolSpecs(prioritizedTools);
-    let tokenEstimate = this.estimateNativeToolTokens(specs);
+    // Budget check: estimate token cost before converting (avoid repeated conversion)
+    let tokenEstimate = this.estimateNativeToolTokens(convertToNativeToolSpecs(prioritizedTools));
 
     // If over budget, progressively drop lowest-priority tools
     while (tokenEstimate > allocatedBudget && prioritizedTools.length > 2) {
       prioritizedTools = prioritizedTools.slice(0, prioritizedTools.length - 3);
-      const reducedSpecs = convertToNativeToolSpecs(prioritizedTools);
-      tokenEstimate = this.estimateNativeToolTokens(reducedSpecs);
+      tokenEstimate = this.estimateNativeToolTokens(convertToNativeToolSpecs(prioritizedTools));
     }
 
+    // Convert once — final set
     const finalSpecs = convertToNativeToolSpecs(prioritizedTools);
-    const finalTokens = this.estimateNativeToolTokens(finalSpecs);
+    const finalTokens = tokenEstimate;
 
     // Native providers still need behavioral instruction IN the system prompt.
     // JSON tool specs alone don't tell the model to prefer action over prose.
@@ -321,12 +320,29 @@ When assigned a task: USE sentinel/coding-agent for complex work.`;
   }
 
   /**
-   * Estimate token count for native tool specs.
-   * Native specs are sent as JSON in the request body, consuming context window.
+   * Estimate token count for native tool specs without serializing.
+   * Avoids JSON.stringify on 50+ tool specs on every RAG build.
+   * Approximation: name + description + parameter schema ≈ actual JSON overhead.
    */
   private estimateNativeToolTokens(specs: NativeToolSpec[]): number {
-    // JSON.stringify approximation: ~4 chars per token
-    return Math.ceil(JSON.stringify(specs).length / 4);
+    let chars = 2; // array brackets
+    for (const spec of specs) {
+      // ~30 chars JSON overhead per tool + name + description + rough schema size
+      chars += 30 + (spec.name?.length || 0) + (spec.description?.length || 0);
+      if ((spec as any).input_schema) {
+        const schema = (spec as any).input_schema;
+        // Properties contribute ~50 chars each (key + type + description)
+        const props = schema.properties;
+        if (props) {
+          const propKeys = Object.keys(props);
+          for (const key of propKeys) {
+            const prop = props[key];
+            chars += 50 + key.length + (prop?.description?.length || 0);
+          }
+        }
+      }
+    }
+    return Math.ceil(chars / 4);
   }
 
   private estimateTokens(text: string): number {

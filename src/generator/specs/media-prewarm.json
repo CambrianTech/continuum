@@ -1,0 +1,27 @@
+{
+  "name": "media/prewarm",
+  "description": "Pre-warm vision description cache for image media. Fires VisionDescriptionService.describeBase64() so that by the time personas build RAG context, descriptions are cached. Called fire-and-forget by chat/send when images are attached.",
+  "params": [
+    {
+      "name": "images",
+      "type": "object[]",
+      "optional": false,
+      "description": "Array of image objects with base64 and mimeType fields"
+    }
+  ],
+  "results": [
+    {
+      "name": "queued",
+      "type": "number",
+      "description": "Number of images queued for description generation"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Pre-warm descriptions for uploaded images",
+      "command": "./jtag media/prewarm --images='[{\"base64\":\"...\",\"mimeType\":\"image/jpeg\"}]'",
+      "expectedResult": "{ queued: 1 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

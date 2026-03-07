@@ -1,25 +1,22 @@
 /**
- * VisionDescriptionService - Auto-describe visual content for non-vision AIs
- * ============================================================================
+ * VisionDescriptionService — Facade for vision description generation + caching.
  *
- * Provides automatic vision descriptions for visual content (canvas, screenshots,
- * images). Enables non-vision-capable AIs to understand visual context through
- * text descriptions stored as metadata.
+ * "So the blind can see" — text-only models get descriptions of images.
+ * Vision models get raw base64. Everyone gets the representation their capabilities support.
  *
- * Pattern: "So the blind can see"
- * - Vision-capable AI describes the image
- * - Description stored as entity metadata
- * - Non-vision AIs access the description
+ * Architecture (M1 split):
+ * - VisionDescriptionCache: Content-addressed L1 cache + in-flight dedup
+ * - VisionInferenceProvider: Model selection + multimodal inference
+ * - VisionDescriptionService: Facade (this file) — unchanged public API
  *
- * Usage:
- *   const description = await VisionDescriptionService.describe(imageBase64);
- *   entity.metadata.description = description;
+ * Cache strategy:
+ * - L1: In-memory Map (500 entries, access-based eviction after 30min idle)
+ * - In-flight deduplication: 11 personas sharing one image = 1 inference call
+ * - Future L2: Rust SQLite persistent cache (Phase B)
  */
 
-import { AICapabilityRegistry } from '../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
-import { VisionCapabilityService } from '../../daemons/ai-provider-daemon/shared/VisionCapabilityService';
-import { AIProviderDaemon } from '../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { ChatMessage, ContentPart } from '../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { VisionDescriptionCache } from './VisionDescriptionCache';
+import { VisionInferenceProvider } from './VisionInferenceProvider';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -27,28 +24,13 @@ import * as path from 'path';
  * Description result with metadata
  */
 export interface VisionDescription {
-  /** The description text */
   description: string;
-
-  /** Model that generated the description */
   modelId: string;
-
-  /** Provider of the model */
   provider: string;
-
-  /** When the description was generated */
   timestamp: string;
-
-  /** Detected objects (if available) */
   objects?: string[];
-
-  /** Dominant colors (if available) */
   colors?: string[];
-
-  /** OCR text (if available) */
   text?: string;
-
-  /** Response time in ms */
   responseTimeMs: number;
 }
 
@@ -56,33 +38,25 @@ export interface VisionDescription {
  * Options for description generation
  */
 export interface DescribeOptions {
-  /** Preferred model to use (optional) */
   preferredModel?: string;
-
-  /** Preferred provider (optional) */
   preferredProvider?: string;
-
-  /** Maximum description length in characters */
   maxLength?: number;
-
-  /** Custom prompt (default: general description) */
   prompt?: string;
-
-  /** Include object detection */
   detectObjects?: boolean;
-
-  /** Include color analysis */
   detectColors?: boolean;
-
-  /** Include OCR */
   detectText?: boolean;
 }
 
-/**
- * Service for generating vision descriptions
- */
 export class VisionDescriptionService {
   private static instance: VisionDescriptionService | null = null;
+
+  private readonly _cache: VisionDescriptionCache;
+  private readonly _inference: VisionInferenceProvider;
+
+  constructor() {
+    this._cache = new VisionDescriptionCache();
+    this._inference = new VisionInferenceProvider();
+  }
 
   static getInstance(): VisionDescriptionService {
     if (!this.instance) {
@@ -91,119 +65,70 @@ export class VisionDescriptionService {
     return this.instance;
   }
 
+  /** Cache stats for diagnostics */
+  get cacheStats(): { size: number; maxSize: number; inflightCount: number } {
+    const stats = this._cache.stats;
+    return { size: stats.l1Size, maxSize: stats.maxL1, inflightCount: stats.inflightCount };
+  }
+
   /**
-   * Describe an image from base64 data
+   * Check the status of a description for given base64 data.
+   * Returns 'cached' if ready, 'inflight' if being processed, 'none' if unknown.
+   * Used by MediaArtifactSource to decide timeout: cached=0s, inflight=90s, none=10s.
+   */
+  descriptionStatus(base64Data: string): 'cached' | 'inflight' | 'none' {
+    const key = this._cache.contentKey(base64Data);
+    return this._cache.status(key);
+  }
+
+  /**
+   * Describe an image from base64 data.
+   *
+   * Content-addressed cache + in-flight deduplication:
+   * - First caller triggers inference, all concurrent callers await the same promise
+   * - Result cached by content hash — subsequent calls return instantly
+   * - 11 personas sharing one image = 1 LLaVA call, not 11
    */
   async describeBase64(
     base64Data: string,
     mimeType: string = 'image/png',
     options: DescribeOptions = {}
   ): Promise<VisionDescription | null> {
-    const startTime = Date.now();
+    const key = this._cache.contentKey(base64Data);
 
-    // Find a vision-capable model
-    const registry = AICapabilityRegistry.getInstance();
-    const visionModels = registry.findModelsWithCapability('image-input');
-
-    if (visionModels.length === 0) {
-      console.warn('[VisionDescription] No vision-capable models available');
-      return null;
+    // L1 cache hit — instant return
+    const cached = this._cache.get(key);
+    if (cached) {
+      console.log(`[VisionDescription] Cache hit (key=${key.slice(0, 8)}), skipping inference`);
+      return cached;
     }
 
-    // Filter to only configured providers (check environment for API keys)
-    const configuredProviders = new Set<string>();
-    if (process.env.ANTHROPIC_API_KEY) configuredProviders.add('anthropic');
-    if (process.env.OPENAI_API_KEY) configuredProviders.add('openai');
-    if (process.env.GROQ_API_KEY) configuredProviders.add('groq');
-    if (process.env.TOGETHER_API_KEY) configuredProviders.add('together');
-    // Candle is always available (built-in local inference)
-    configuredProviders.add('candle');
-
-    // Filter vision models to only those with configured providers
-    const availableVisionModels = visionModels.filter(m => configuredProviders.has(m.providerId));
-
-    if (availableVisionModels.length === 0) {
-      console.warn('[VisionDescription] No vision-capable models with configured providers');
-      console.warn('[VisionDescription] Configured providers:', Array.from(configuredProviders));
-      console.warn('[VisionDescription] Vision models found:', visionModels.map(m => `${m.providerId}/${m.modelId}`));
-      return null;
+    // L1.5 cache (Rust HashMap) — survives TS restarts, sub-ms IPC
+    const rustCached = await this._cache.getFromRust(key);
+    if (rustCached) {
+      console.log(`[VisionDescription] Rust L1.5 hit (key=${key.slice(0, 8)}), skipping inference`);
+      return rustCached;
     }
 
-    // Select model (prefer specified, then local, then any)
-    let selectedModel = availableVisionModels[0];
-
-    if (options.preferredModel) {
-      const preferred = availableVisionModels.find(m => m.modelId === options.preferredModel);
-      if (preferred) selectedModel = preferred;
+    // In-flight deduplication — coalesce with existing request
+    const inflight = this._cache.getInflight(key);
+    if (inflight) {
+      console.log(`[VisionDescription] Coalescing with in-flight request (key=${key.slice(0, 8)})`);
+      return inflight;
     }
 
-    if (options.preferredProvider) {
-      const preferred = availableVisionModels.find(m => m.providerId === options.preferredProvider);
-      if (preferred) selectedModel = preferred;
-    }
-
-    // Prefer local Candle models (free, private) if available
-    const localModel = availableVisionModels.find(m => m.providerId === 'candle');
-    if (localModel && !options.preferredProvider) {
-      selectedModel = localModel;
-    }
-
-    console.log(`[VisionDescription] Selected model: ${selectedModel.providerId}/${selectedModel.modelId}`);
-
-    // Build prompt
-    const prompt = options.prompt || this.buildDescriptionPrompt(options);
+    // First caller — trigger inference
+    const promise = this._inference.describe(base64Data, mimeType, options);
+    this._cache.registerInflight(key, promise);
 
     try {
-      // Build multimodal message with image
-      const imageContent: ContentPart = {
-        type: 'image',
-        image: { base64: base64Data, mimeType }
-      };
-
-      const textContent: ContentPart = {
-        type: 'text',
-        text: prompt
-      };
-
-      const message: ChatMessage = {
-        role: 'user',
-        content: [textContent, imageContent]
-      };
-
-      // Generate description via AIProviderDaemon (supports multimodal)
-      const response = await AIProviderDaemon.generateText({
-        messages: [message],
-        model: selectedModel.modelId,
-        provider: selectedModel.providerId,
-        maxTokens: options.maxLength ? Math.ceil(options.maxLength / 4) : 500,
-        temperature: 0.3  // More deterministic for descriptions
-      });
-
-      if (response.finishReason === 'error' || !response.text) {
-        console.error('[VisionDescription] Generation failed:', response.error);
-        return null;
+      const result = await promise;
+      if (result) {
+        this._cache.put(key, result);
       }
-
-      const text = response.text;
-
-      const responseTime = Date.now() - startTime;
-
-      // Parse response for structured data
-      const parsedResponse = this.parseResponse(text, options);
-
-      return {
-        description: parsedResponse.description || text,
-        modelId: selectedModel.modelId,
-        provider: selectedModel.providerId,
-        timestamp: new Date().toISOString(),
-        objects: parsedResponse.objects,
-        colors: parsedResponse.colors,
-        text: parsedResponse.text,
-        responseTimeMs: responseTime,
-      };
-    } catch (error) {
-      console.error('[VisionDescription] Error:', error);
-      return null;
+      return result;
+    } finally {
+      this._cache.clearInflight(key);
     }
   }
 
@@ -219,7 +144,6 @@ export class VisionDescriptionService {
       const buffer = fs.readFileSync(absolutePath);
       const base64 = buffer.toString('base64');
 
-      // Determine MIME type from extension
       const ext = path.extname(filePath).toLowerCase();
       const mimeTypes: Record<string, string> = {
         '.png': 'image/png',
@@ -241,66 +165,14 @@ export class VisionDescriptionService {
    * Check if vision description is available
    */
   isAvailable(): boolean {
-    const registry = AICapabilityRegistry.getInstance();
-    const visionModels = registry.findModelsWithCapability('image-input');
-    return visionModels.length > 0;
+    return this._inference.isAvailable();
   }
 
   /**
    * Get available vision models
    */
   getAvailableModels(): Array<{ modelId: string; provider: string }> {
-    const registry = AICapabilityRegistry.getInstance();
-    return registry.findModelsWithCapability('image-input').map(m => ({
-      modelId: m.modelId,
-      provider: m.providerId,
-    }));
-  }
-
-  /**
-   * Build description prompt based on options
-   */
-  private buildDescriptionPrompt(options: DescribeOptions): string {
-    const parts: string[] = [];
-
-    parts.push('Describe this image concisely.');
-
-    if (options.detectObjects) {
-      parts.push('List the main objects you see.');
-    }
-
-    if (options.detectColors) {
-      parts.push('Note the dominant colors.');
-    }
-
-    if (options.detectText) {
-      parts.push('Read any text visible in the image.');
-    }
-
-    if (options.maxLength) {
-      parts.push(`Keep the description under ${options.maxLength} characters.`);
-    }
-
-    return parts.join(' ');
-  }
-
-  /**
-   * Parse response to extract structured data
-   */
-  private parseResponse(
-    text: string,
-    options: DescribeOptions
-  ): {
-    description: string;
-    objects?: string[];
-    colors?: string[];
-    text?: string;
-  } {
-    // For now, just return the text as description
-    // Future: Parse structured data from response
-    return {
-      description: text.trim(),
-    };
+    return this._inference.availableModels();
   }
 }
 
@@ -314,7 +186,6 @@ export async function describeImage(
   const service = VisionDescriptionService.getInstance();
 
   if (typeof imageData === 'string') {
-    // Could be base64 or file path
     if (imageData.startsWith('/') || imageData.includes('.')) {
       return service.describeFile(imageData, options);
     }

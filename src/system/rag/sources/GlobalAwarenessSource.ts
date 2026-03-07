@@ -63,20 +63,20 @@ export class GlobalAwarenessSource implements RAGSource {
   readonly name = 'global-awareness';
   readonly priority = 85;  // After identity (95), before conversation (80)
   readonly defaultBudgetPercent = 5;
+  readonly isShared = true;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
-  // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.
-  // Without this, each failing persona makes a 1-3s IPC call every RAG build
-  // that returns nothing but an error — pure waste.
-  private static _corpusUnavailable: Map<string, number> = new Map();
-  private static readonly NEGATIVE_CACHE_TTL_MS = 60_000;
+  // Negative cache with exponential backoff: skip IPC when corpus unavailable.
+  // Backoff: 2s → 4s → 8s → 16s → 30s (cap). Resets on success.
+  private static _corpusBackoff: Map<string, { failedAt: number; ttlMs: number }> = new Map();
+  private static readonly BACKOFF_MIN_MS = 2_000;
+  private static readonly BACKOFF_MAX_MS = 30_000;
 
   isApplicable(context: RAGSourceContext): boolean {
     if (!initializedPersonas.has(context.personaId)) return false;
 
-    // Skip if we recently learned this persona's corpus is unavailable
-    const failedAt = GlobalAwarenessSource._corpusUnavailable.get(context.personaId);
-    if (failedAt && (Date.now() - failedAt) < GlobalAwarenessSource.NEGATIVE_CACHE_TTL_MS) {
+    const backoff = GlobalAwarenessSource._corpusBackoff.get(context.personaId);
+    if (backoff && (Date.now() - backoff.failedAt) < backoff.ttlMs) {
       return false;
     }
     return true;
@@ -181,6 +181,9 @@ export class GlobalAwarenessSource implements RAGSource {
         isVoiceMode  // skipSemanticSearch
       );
 
+      // Clear backoff on success — corpus is available
+      GlobalAwarenessSource._corpusBackoff.delete(context.personaId);
+
       if (!result.formatted_prompt) {
         log.debug(`No cross-context content for room ${context.roomId}`);
         return this.createEmptySection(performance.now() - startTime);
@@ -207,10 +210,15 @@ export class GlobalAwarenessSource implements RAGSource {
       };
 
     } catch (error: any) {
-      // Negative-cache "No memory corpus" errors — skip IPC for 60s
+      // Negative-cache "No memory corpus" errors with exponential backoff
       if (error.message?.includes('No memory corpus')) {
-        GlobalAwarenessSource._corpusUnavailable.set(context.personaId, Date.now());
-        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 60s`);
+        const prev = GlobalAwarenessSource._corpusBackoff.get(context.personaId);
+        const nextTtl = Math.min(
+          (prev?.ttlMs ?? GlobalAwarenessSource.BACKOFF_MIN_MS) * 2,
+          GlobalAwarenessSource.BACKOFF_MAX_MS
+        );
+        GlobalAwarenessSource._corpusBackoff.set(context.personaId, { failedAt: Date.now(), ttlMs: nextTtl });
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, backoff ${nextTtl}ms`);
       } else {
         log.error(`Failed to load global awareness: ${error.message}`);
       }

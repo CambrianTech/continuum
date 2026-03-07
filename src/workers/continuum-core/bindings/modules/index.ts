@@ -46,6 +46,9 @@ export type { RuntimeMixin as RuntimeMixinInterface, ModuleInfo, ModuleMetrics, 
 export { DatasetMixin } from './dataset';
 export type { DatasetMixin as DatasetMixinInterface, DatasetManifest, DatasetMetrics, DatasetListResult } from './dataset';
 
+export { VisionCacheMixin } from './vision_cache';
+export type { VisionCacheMixin as VisionCacheMixinInterface, VisionCacheEntry, VisionCacheGetResult, VisionCacheStats, VisionCacheWarmEntry } from './vision_cache';
+
 /**
  * Compose all mixins into a single client class.
  * Usage: const Client = composeClient(RustCoreIPCClientBase);

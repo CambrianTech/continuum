@@ -106,13 +106,13 @@ futures-util = "0.3"
 msedge-tts = "0.3"
 
 
-# Defense-in-depth for protobuf symbol conflicts between ort and webrtc-sys.
-# Both statically link DIFFERENT versions of protobuf C++. Multiple codegen units
-# can change linker symbol resolution order unpredictably. codegen-units=1 reduces
-# (but doesn't eliminate) this risk. The primary fix is module declaration order
-# in live/mod.rs — webrtc modules MUST be declared before ort/fastembed modules.
+# Protobuf symbol conflict (ort vs webrtc-sys) is fixed by module declaration
+# order in live/mod.rs — webrtc modules MUST be declared before ort/fastembed.
+# codegen-units was set to 1 as defense-in-depth but that forces LLVM to run
+# single-threaded, pinning one core at 99% during compilation. The symbol conflict
+# is a link-time issue unaffected by codegen units. Default 16 enables parallel LLVM.
 [profile.release]
-codegen-units = 1
+# codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
 
 [workspace.package]
 edition = "2021"

@@ -46,8 +46,9 @@ use tokio::sync::{mpsc, Mutex};
 const AVATAR_VIDEO_BITRATE: u64 = 1_500_000;
 
 /// Max WebRTC video framerate advertised to the encoder.
-/// Matches the Bevy render tick rate (bevy_renderer::AVATAR_FPS).
-const AVATAR_VIDEO_MAX_FPS: f64 = 30.0;
+/// Matches the Bevy render tick rate (bevy_renderer::AVATAR_FPS = 15fps).
+/// Effective readback rate is ~half this (~7.5fps) due to one-shot Readback.
+const AVATAR_VIDEO_MAX_FPS: f64 = 15.0;
 
 /// Lip sync RMS window duration in milliseconds.
 /// 66ms = ~15Hz update rate, matching effective readback cadence
@@ -223,20 +224,26 @@ impl LiveKitAgent {
                 room_join: true,
                 room: call_id.to_string(),
                 can_publish: true,
-                can_subscribe: true,
+                can_subscribe: true, // Needed for data channels (tile_resolution). auto_subscribe=false prevents media track decode.
                 can_publish_data: true,
                 ..Default::default()
             })
             .to_jwt()
             .map_err(|e| format!("Failed to generate LiveKit token: {}", e))?;
 
-        // Connect to room
-        let (room, mut room_events) = Room::connect(livekit_url, &token, RoomOptions::default())
+        // Connect to room — publish-only, no subscriptions.
+        // Persona agents don't need to receive other participants' tracks.
+        // The STT listener (separate agent) handles all incoming audio.
+        // auto_subscribe: false prevents WebRTC from decoding 13 video streams
+        // per agent (14 agents × 13 streams = 182 video decode pipelines burning CPU).
+        let mut room_opts = RoomOptions::default();
+        room_opts.auto_subscribe = false;
+        let (room, mut room_events) = Room::connect(livekit_url, &token, room_opts)
             .await
             .map_err(|e| format!("Failed to connect to LiveKit room: {}", e))?;
 
         clog_info!(
-            "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona)",
+            "🔊 LiveKitAgent '{}' connected to room '{}' (role=ai_persona, auto_subscribe=false)",
             persona_name,
             call_id
         );
@@ -1157,47 +1164,75 @@ async fn spawn_stt_listener(
                     let speaker_name = participant.name().to_string();
                     let meta = ParticipantMetadata::from_json(&participant.metadata());
 
-                    // Only transcribe audio from human participants.
-                    // AI persona TTS, STT listeners, and ambient audio are skipped.
-                    // Without this, AI TTS gets transcribed → infinite echo loop.
+                    // Determine role for routing decisions
                     let is_human = meta
                         .as_ref()
                         .map(|m| m.role == ParticipantRole::Human)
                         .unwrap_or(true); // Unknown metadata = probably human
-                    if !is_human {
-                        clog_info!(
-                            "🎤 STT: Skipping non-human track from '{}' (role={:?})",
-                            speaker_id,
-                            meta.as_ref().map(|m| &m.role)
-                        );
-                        continue;
-                    }
+                    let is_visible = meta
+                        .as_ref()
+                        .map(|m| {
+                            m.role == ParticipantRole::Human
+                                || m.role == ParticipantRole::AiPersona
+                        })
+                        .unwrap_or(true);
 
-                    if let RemoteTrack::Audio(audio_track) = track {
-                        // Capture the remote track SID for native transcription sync
-                        let track_sid: String = publication.sid().into();
-                        clog_info!(
-                            "🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
-                            speaker_name,
-                            speaker_id,
-                            &track_sid[..8.min(track_sid.len())]
-                        );
+                    match track {
+                        RemoteTrack::Audio(audio_track) => {
+                            // Only transcribe audio from human participants.
+                            // AI persona TTS, STT listeners, and ambient audio are skipped.
+                            // Without this, AI TTS gets transcribed -> infinite echo loop.
+                            if !is_human {
+                                clog_info!(
+                                    "🎤 STT: Skipping non-human audio from '{}' (role={:?})",
+                                    speaker_id,
+                                    meta.as_ref().map(|m| &m.role)
+                                );
+                                continue;
+                            }
 
-                        let room_ref = room_for_events.clone();
-                        let cid = call_id_owned.clone();
-                        let tbuf = transcription_buffer.clone();
-                        tokio::spawn(async move {
-                            listen_and_transcribe(
-                                audio_track,
-                                speaker_id,
+                            let track_sid: String = publication.sid().into();
+                            clog_info!(
+                                "🎤 STT listener: subscribed to audio from '{}' ({}) track={}",
                                 speaker_name,
-                                track_sid,
-                                room_ref,
-                                cid,
-                                tbuf,
-                            )
-                            .await;
-                        });
+                                speaker_id,
+                                &track_sid[..8.min(track_sid.len())]
+                            );
+
+                            let room_ref = room_for_events.clone();
+                            let cid = call_id_owned.clone();
+                            let tbuf = transcription_buffer.clone();
+                            tokio::spawn(async move {
+                                listen_and_transcribe(
+                                    audio_track,
+                                    speaker_id,
+                                    speaker_name,
+                                    track_sid,
+                                    room_ref,
+                                    cid,
+                                    tbuf,
+                                )
+                                .await;
+                            });
+                        }
+                        RemoteTrack::Video(video_track) => {
+                            // Capture video from all visible participants (humans + AI personas).
+                            // STT listeners and ambient audio don't publish video.
+                            if !is_visible {
+                                continue;
+                            }
+
+                            clog_info!(
+                                "👁 STT listener: subscribed to video from '{}' ({})",
+                                speaker_name,
+                                &speaker_id[..8.min(speaker_id.len())]
+                            );
+
+                            let capture = crate::live::video::capture::VideoFrameCapture::instance().clone();
+                            capture
+                                .start_capture(video_track, speaker_id, speaker_name)
+                                .await;
+                        }
                     }
                 }
                 RoomEvent::Disconnected { reason } => {
@@ -1807,7 +1842,9 @@ async fn run_ambient_audio_loop(
     let metadata = ParticipantMetadata::new(ParticipantRole::AmbientAudio);
     let token = generate_token(&identity, "Background Audio", call_id, true, &metadata)?;
 
-    let (room, _events) = Room::connect(livekit_url, &token, RoomOptions::default())
+    let mut room_opts = RoomOptions::default();
+    room_opts.auto_subscribe = false;
+    let (room, _events) = Room::connect(livekit_url, &token, room_opts)
         .await
         .map_err(|e| format!("Failed to connect ambient agent: {}", e))?;
 

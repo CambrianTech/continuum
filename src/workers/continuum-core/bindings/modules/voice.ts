@@ -78,11 +78,36 @@ export interface PollTranscriptionsResult {
 	count: number;
 }
 
+export interface RoomSnapshotResult {
+	success: boolean;
+	base64?: string;
+	mimeType?: string;
+	width?: number;
+	height?: number;
+	participants?: string;
+	hash?: string;
+	capturedAt?: number;
+	error?: string;
+}
+
+export interface ParticipantSnapshotResult {
+	success: boolean;
+	base64?: string;
+	mimeType?: string;
+	width?: number;
+	height?: number;
+	identity?: string;
+	displayName?: string;
+	hash?: string;
+	capturedAt?: number;
+	error?: string;
+}
+
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
 	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
-	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string, displayName?: string): Promise<VoiceSynthesizeResult>;
+	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string, displayName?: string, seq?: number): Promise<VoiceSynthesizeResult>;
 	voiceInjectAudio(callId: string, userId: string, samples: number[]): Promise<void>;
 	voiceAmbientAdd(callId: string, sourceName: string): Promise<{ handle: string; source_name: string }>;
 	voiceAmbientInject(callId: string, handle: string, samples: number[]): Promise<void>;
@@ -92,6 +117,8 @@ export interface VoiceMixin {
 	voiceTestAudioGenerate(noiseType: string, durationMs: number, params?: Record<string, any>): Promise<TestAudioGenerateResult>;
 	voicePollTranscriptions(callId?: string): Promise<PollTranscriptionsResult>;
 	voiceSetCognitiveState(userId: string, state: 'evaluating' | 'generating' | 'idle'): Promise<{ set: boolean }>;
+	voiceSnapshotRoom(): Promise<RoomSnapshotResult>;
+	voiceSnapshotParticipant(identity: string): Promise<ParticipantSnapshotResult>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -197,6 +224,7 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			voice?: string,
 			adapter?: string,
 			displayName?: string,
+			seq?: number,
 		): Promise<VoiceSynthesizeResult> {
 			const { response, binaryData } = await this.requestFull({
 				command: 'voice/speak-in-call',
@@ -206,6 +234,7 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 				voice,
 				adapter,
 				display_name: displayName,
+				...(seq != null ? { timeline_seq: seq } : {}),
 			});
 
 			if (!response.success) {
@@ -383,6 +412,31 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 			}
 
 			return response.result as { set: boolean };
+		}
+
+		async voiceSnapshotRoom(): Promise<RoomSnapshotResult> {
+			const response = await this.request({
+				command: 'voice/snapshot-room',
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to get room snapshot');
+			}
+
+			return response.result as RoomSnapshotResult;
+		}
+
+		async voiceSnapshotParticipant(identity: string): Promise<ParticipantSnapshotResult> {
+			const response = await this.request({
+				command: 'voice/snapshot-participant',
+				identity,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to get participant snapshot');
+			}
+
+			return response.result as ParticipantSnapshotResult;
 		}
 	};
 }

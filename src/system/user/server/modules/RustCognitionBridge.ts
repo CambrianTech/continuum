@@ -69,7 +69,7 @@ export interface PersonaUserForRustCognition {
 }
 
 export class RustCognitionBridge {
-  private readonly client: RustCoreIPCClient;
+  private client!: RustCoreIPCClient;
   private readonly personaId: UUID;
   private readonly personaName: string;
   private readonly personaUniqueId: string;
@@ -94,7 +94,6 @@ export class RustCognitionBridge {
     this.personaId = personaUser.id;
     this.personaName = personaUser.displayName;
     this.personaUniqueId = personaUser.entity.uniqueId;
-    this.client = new RustCoreIPCClient(SOCKET_PATH);
 
     // Logger writes to persona's logs directory: .continuum/personas/{uniqueId}/logs/rust-cognition.log
     this.logger = new SubsystemLogger('rust-cognition', personaUser.id, personaUser.entity.uniqueId, {
@@ -104,20 +103,22 @@ export class RustCognitionBridge {
   }
 
   /**
-   * Initialize connection and create cognition engine
-   * THROWS if Rust unavailable - no silent degradation
+   * Initialize connection and create cognition engine.
+   * Uses SHARED singleton IPC client — all 14 personas share ONE connection.
+   * The base client uses requestId correlation for concurrent requests.
+   * THROWS if Rust unavailable - no silent degradation.
    */
   async initialize(): Promise<void> {
     const start = performance.now();
     this.stats.connectAttempts++;
 
-    this.logger.info(`Connecting to ${SOCKET_PATH}...`);
+    this.logger.info(`Connecting via shared IPC client...`);
 
     try {
-      await this.client.connect();
+      this.client = await RustCoreIPCClient.getInstanceAsync();
       this.connected = true;
       const connectMs = performance.now() - start;
-      this.logger.info(`Socket connected in ${connectMs.toFixed(2)}ms`);
+      this.logger.info(`Shared IPC client ready in ${connectMs.toFixed(2)}ms`);
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`CONNECT FAILED after ${elapsed.toFixed(2)}ms`);
@@ -1181,15 +1182,14 @@ export class RustCognitionBridge {
   }
 
   /**
-   * Cleanup on persona shutdown
+   * Cleanup on persona shutdown.
+   * Does NOT disconnect the shared IPC client — other personas still use it.
+   * Only resets local state so this bridge stops making requests.
    */
   disconnect(): void {
-    this.logger.info(`Disconnecting. Final stats: ${JSON.stringify(this.stats)}`);
-    if (this.connected) {
-      this.client.disconnect();
-      this.connected = false;
-      this.engineCreated = false;
-    }
+    this.logger.info(`Shutting down bridge. Final stats: ${JSON.stringify(this.stats)}`);
+    this.connected = false;
+    this.engineCreated = false;
   }
 }
 

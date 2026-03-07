@@ -707,6 +707,54 @@ continuum/
 
 ---
 
+## Cognitive Architecture: Universal Learning
+
+> See [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) and [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) for full details.
+
+The engines above aren't isolated services. They form a **cognitive loop** where every activity — regardless of domain — produces three outputs through the same generic pipeline:
+
+```
+Queue Item (any domain: code, chess, writing, music, vision, ...)
+    -> Recipe ragTemplate (declares what context the activity needs)
+    -> RAG Compose (generic Map<sourceName, section> — zero domain-specific logic)
+    -> Persona Response
+    -> Three outputs, all domain-agnostic:
+        1. Training pair  -> Genome adapter (improve at this activity)
+        2. Memory         -> Hippocampus (remember this experience)
+        3. Action/reply   -> Back to queue (continue the work)
+```
+
+### Why This Matters
+
+**RAG composition is generic.** Queue items declare their own context requirements via recipes. The persona composes them without knowing what domain it's serving. Adding a new activity (game, novel, data analysis) requires zero changes to persona cognition.
+
+**Training is comprehensive.** The composed RAG context IS the training input. The persona's response IS the training output. Every activity automatically produces domain-tagged training data that flows into the appropriate genome adapter.
+
+**Memory is universal.** The Hippocampus consolidates from whatever context was active during cognition. A persona that played chess remembers board positions. A persona that wrote code remembers architectural patterns. No domain-specific memory logic.
+
+**Learning isn't limited to LLMs.** The genome stores any learned capability:
+
+| Domain | Adapter Type | Learning Method |
+|--------|-------------|-----------------|
+| Coding | LoRA checkpoint | Language model fine-tuning |
+| Chess | ONNX policy net | Reinforcement learning |
+| Vision | Safetensor model | CNN/ViT training |
+| Audio | PyTorch model | Diffusion/RNN training |
+| Planning | ONNX decision model | Tree search optimization |
+
+The paging system doesn't care what it loads. `activate(domain)` loads weights, `infer()` uses them, `train()` improves them. The cognitive loop is model-agnostic.
+
+**The self-improving loop:**
+```
+domain -> load adapter -> compose RAG -> generate response
+   ^                                          |
+   |    capture training pair -> train adapter-+
+```
+
+Every activity makes the persona better at that activity. Every memory makes future context richer. The architecture doesn't just enable cognition — it enables continuous, universal self-improvement across all domains and all model types.
+
+---
+
 ## Design Principles
 
 ### 1. Rust First
@@ -909,4 +957,6 @@ You put on your AR glasses. The AIs appear as avatars in your space. They point 
 
 - [CONTINUUM-VISION.md](CONTINUUM-VISION.md) - Philosophy and product vision
 - [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) - Commands.execute() and Events
+- [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) - Queue items declare RAG requirements
+- [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) - Training, memory, and beyond-LLM learning
 - [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Persona architecture

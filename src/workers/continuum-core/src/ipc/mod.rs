@@ -20,6 +20,7 @@ use crate::modules::search::SearchModule;
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::tool_parsing::ToolParsingModule;
+use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core
 ///
 /// Unix socket server that accepts JSON requests and returns JSON responses.
@@ -766,6 +767,11 @@ pub fn start_server(
     // DatasetModule: Training dataset import and management
     // Provides dataset/import-csv, dataset/import-realclasseval, dataset/list, dataset/info
     runtime.register(Arc::new(DatasetModule::new()));
+
+    // VisionModule: Content-addressed cache + event notification for vision descriptions
+    // Provides vision/description-get, vision/description-put, vision/description-status,
+    // vision/cache-stats, vision/cache-warm, vision/cache-evict
+    runtime.register(Arc::new(VisionModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

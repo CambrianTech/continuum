@@ -55,34 +55,56 @@ export function EmbeddingMixin<T extends new (...args: any[]) => RustCoreIPCClie
 		 * Generate embedding for a single text
 		 */
 		async embeddingGenerate(text: string, model?: string): Promise<EmbeddingResult> {
-			const response = await this.request({
-				command: 'embedding/generate',
-				text,
-				model: model ?? 'default',
-			});
-
-			if (!response.success) {
-				throw new Error(response.error || 'Failed to generate embedding');
+			const results = await this.embeddingGenerateBatch([text], model);
+			if (results.length === 0) {
+				throw new Error('No embeddings returned');
 			}
-
-			return response.result as EmbeddingResult;
+			return results[0];
 		}
 
 		/**
-		 * Generate embeddings for multiple texts in batch
+		 * Generate embeddings for multiple texts in batch.
+		 * Rust returns binary f32 data — we reconstruct into EmbeddingResult arrays.
 		 */
 		async embeddingGenerateBatch(texts: string[], model?: string): Promise<EmbeddingResult[]> {
-			const response = await this.request({
-				command: 'embedding/batch',
+			const modelName = model ?? 'AllMiniLML6V2';
+			const { response, binaryData } = await this.requestFull({
+				command: 'embedding/generate',
 				texts,
-				model: model ?? 'default',
+				model: modelName,
 			});
 
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to generate batch embeddings');
 			}
 
-			return response.result?.embeddings ?? [];
+			if (!binaryData || binaryData.byteLength === 0) {
+				throw new Error('No binary embedding data returned');
+			}
+
+			const batchSize = response.result?.batchSize ?? texts.length;
+			const dimensions = response.result?.shape?.[0] ?? 384;
+			const resultModel = response.result?.model ?? modelName;
+
+			// Reconstruct float32 arrays from binary data
+			// Only copy if buffer is misaligned (Float32Array requires 4-byte alignment)
+			let floats: Float32Array;
+			if (binaryData.byteOffset % 4 === 0) {
+				floats = new Float32Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength / 4);
+			} else {
+				const aligned = new Uint8Array(binaryData.byteLength);
+				aligned.set(new Uint8Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength));
+				floats = new Float32Array(aligned.buffer);
+			}
+			const results: EmbeddingResult[] = [];
+
+			for (let i = 0; i < batchSize; i++) {
+				const start = i * dimensions;
+				const embedding = Array.from(floats.slice(start, start + dimensions));
+				results.push({ embedding, model: resultModel, dimensions });
+			}
+
+			return results;
 		}
 
 		/**

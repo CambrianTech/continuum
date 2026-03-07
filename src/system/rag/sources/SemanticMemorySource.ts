@@ -1,27 +1,26 @@
 /**
- * SemanticMemorySource - Loads private memories for RAG context via Rust IPC
+ * SemanticMemorySource - Tiered memory recall for RAG context
  *
- * Delegates to Rust's 6-layer multi-recall algorithm which runs in parallel:
- *   Core (importance >= 0.8) | Semantic (embedding cosine similarity)
- *   Temporal (recent 2h)     | Associative (tag/relatedTo graph)
- *   Decay Resurface (spaced repetition) | Cross-Context (other rooms)
+ * Architecture: L1/L2/L3 cache hierarchy (like CPU caches, like the hippocampus).
+ * The brain doesn't block cognition while recalling — neither do we.
  *
- * All layers execute concurrently via Rayon in ~30ms total,
- * bypassing the Node.js event loop entirely.
+ * L1 (in-memory, ~0ms) — cached memories from last recall
+ * L2 (Rust IPC, ~30ms) — 6-layer parallel recall via Rayon
+ * L3 (sentinel, seconds+) — deep research, web queries, cross-persona (future)
+ *
+ * RAG builds NEVER block on memory recall after the first cold start.
+ * L2 refreshes happen in the background. L3 results arrive asynchronously
+ * and enrich future responses — like a background thought completing.
  *
  * BATCHING SUPPORT:
- * This source implements supportsBatching=true to participate in RAGComposer's
- * batched loading. Instead of making individual IPC calls, it provides a
- * RagSourceRequest that's combined with other batching sources into ONE Rust call.
- *
- * Performance:
- * - Before: 1 IPC call per persona per RAG build (1-7s under socket congestion)
- * - After: Combined into single rag/compose call (~30ms total for all sources)
+ * Still supports batched loading via RAGComposer for the Rust rag/compose path.
+ * The tiered cache is used for the direct load() path (TypeScript sources).
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
 import type { PersonaMemory } from '../shared/RAGTypes';
+import { TieredMemoryCache } from '../cache/TieredMemoryCache';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('SemanticMemorySource', 'rag');
@@ -35,15 +34,15 @@ export class SemanticMemorySource implements RAGSource {
   readonly defaultBudgetPercent = 12;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
-  // Negative cache: when Rust returns "No memory corpus", skip IPC for 10s.
-  // Without this, each failing persona makes a 1-3s IPC call every RAG build.
-  private static _corpusUnavailable: Map<string, number> = new Map();
-  private static readonly NEGATIVE_CACHE_TTL_MS = 10_000;
+  // Negative cache with exponential backoff: skip IPC when corpus unavailable.
+  // Backoff: 2s → 4s → 8s → 16s (cap). Resets on success.
+  private static _corpusBackoff: Map<string, { failedAt: number; ttlMs: number }> = new Map();
+  private static readonly BACKOFF_MIN_MS = 2_000;
+  private static readonly BACKOFF_MAX_MS = 16_000;
 
   isApplicable(context: RAGSourceContext): boolean {
-    // Skip if we recently learned this persona's corpus is unavailable
-    const failedAt = SemanticMemorySource._corpusUnavailable.get(context.personaId);
-    if (failedAt && (Date.now() - failedAt) < SemanticMemorySource.NEGATIVE_CACHE_TTL_MS) {
+    const backoff = SemanticMemorySource._corpusBackoff.get(context.personaId);
+    if (backoff && (Date.now() - backoff.failedAt) < backoff.ttlMs) {
       return false;
     }
     return true;
@@ -99,6 +98,12 @@ export class SemanticMemorySource implements RAGSource {
       }
     }
 
+    // Populate L1 cache with batch results so subsequent load() calls are instant
+    if (memories.length > 0) {
+      // We don't have personaId in this method signature — batch results are
+      // handled at composer level. The L1 cache will be populated on next load().
+    }
+
     // Extract metadata from the result
     const metadata = result.metadata as any || {};
 
@@ -119,63 +124,34 @@ export class SemanticMemorySource implements RAGSource {
 
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
     const startTime = performance.now();
-
     const maxMemories = Math.max(3, Math.floor(allocatedBudget / TOKENS_PER_MEMORY_ESTIMATE));
 
     try {
-      // Get PersonaUser to access Rust bridge
-      const { UserDaemonServer } = await import('../../../daemons/user-daemon/server/UserDaemonServer');
-      const userDaemon = UserDaemonServer.getInstance();
+      const cache = TieredMemoryCache.instance;
+      cache.setLogger((msg) => log.debug(msg));
 
-      if (!userDaemon) {
-        log.debug('UserDaemon not available, skipping memories');
-        return this.emptySection(startTime);
-      }
-
-      const personaUser = userDaemon.getPersonaUser(context.personaId);
-      if (!personaUser) {
-        return this.emptySection(startTime);
-      }
-
-      // Access the Rust cognition bridge (nullable getter — no throw)
-      const bridge = (personaUser as any).rustCognitionBridge;
-      if (!bridge) {
-        log.debug('Rust cognition bridge not available, skipping memories');
-        return this.emptySection(startTime);
-      }
-
-      // Build semantic query from current message
       const queryText = this.buildSemanticQuery(context);
 
-      // Single IPC call → Rust runs all 6 recall layers in parallel via Rayon
-      const result = await bridge.memoryMultiLayerRecall({
-        query_text: queryText ?? null,
-        room_id: context.roomId,
-        max_results: maxMemories,
-        layers: null,  // All layers
+      // Tiered recall: returns L1 cache instantly, refreshes L2 in background
+      const result = await cache.recall({
+        personaId: context.personaId,
+        roomId: context.roomId,
+        queryText,
+        maxResults: maxMemories,
       });
 
       if (result.memories.length === 0) {
         return this.emptySection(startTime);
       }
 
-      // Convert Rust MemoryRecord to PersonaMemory format
-      const personaMemories: PersonaMemory[] = result.memories.map((mem: any) => ({
-        id: mem.id,
-        type: this.mapMemoryType(mem.memory_type),
-        content: mem.content,
-        timestamp: new Date(mem.timestamp),
-        relevanceScore: mem.relevance_score ?? mem.importance
-      }));
+      // Clear backoff on success — corpus is available
+      SemanticMemorySource._corpusBackoff.delete(context.personaId);
 
+      const personaMemories = result.memories.slice(0, maxMemories);
       const loadTimeMs = performance.now() - startTime;
       const tokenCount = personaMemories.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
 
-      // Log layer-level detail for performance monitoring
-      const layerSummary = result.layer_timings
-        .map((l: any) => `${l.layer}(${l.results_found})`)
-        .join(', ');
-      log.debug(`Loaded ${personaMemories.length} memories in ${loadTimeMs.toFixed(1)}ms (~${tokenCount} tokens) layers=[${layerSummary}] rust=${result.recall_time_ms.toFixed(1)}ms`);
+      log.debug(`${result.tier} recall: ${personaMemories.length} memories in ${loadTimeMs.toFixed(1)}ms (~${tokenCount} tokens)`);
 
       return {
         sourceName: this.name,
@@ -185,17 +161,21 @@ export class SemanticMemorySource implements RAGSource {
         systemPromptSection: this.formatMemoriesSection(personaMemories),
         metadata: {
           memoryCount: personaMemories.length,
-          totalCandidates: result.total_candidates,
-          rustRecallMs: result.recall_time_ms,
-          semanticQuery: queryText?.slice(0, 50),
-          layers: layerSummary
+          tier: result.tier,
+          cacheLatencyMs: result.latencyMs,
+          ...result.metadata,
         }
       };
     } catch (error: any) {
-      // Negative-cache "No memory corpus" errors — skip IPC for 60s
+      // Negative-cache "No memory corpus" errors with exponential backoff
       if (error.message?.includes('No memory corpus')) {
-        SemanticMemorySource._corpusUnavailable.set(context.personaId, Date.now());
-        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 10s`);
+        const prev = SemanticMemorySource._corpusBackoff.get(context.personaId);
+        const nextTtl = Math.min(
+          (prev?.ttlMs ?? SemanticMemorySource.BACKOFF_MIN_MS) * 2,
+          SemanticMemorySource.BACKOFF_MAX_MS
+        );
+        SemanticMemorySource._corpusBackoff.set(context.personaId, { failedAt: Date.now(), ttlMs: nextTtl });
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, backoff ${nextTtl}ms`);
       } else {
         log.error(`Failed to load memories: ${error.message}`);
       }
@@ -227,8 +207,7 @@ export class SemanticMemorySource implements RAGSource {
 
   /**
    * Format memories into the system prompt section.
-   * This is the SINGLE AUTHORITY for memory formatting — previously done
-   * as an unbudgeted bypass in PersonaResponseGenerator.
+   * This is the SINGLE AUTHORITY for memory formatting.
    */
   private formatMemoriesSection(memories: PersonaMemory[]): string | undefined {
     if (memories.length === 0) return undefined;

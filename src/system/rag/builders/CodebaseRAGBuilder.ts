@@ -24,7 +24,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import type { CodeIndexEntry } from '../shared/CodebaseTypes';
-import { COLLECTIONS } from '../../shared/Constants';
+import { getCodebaseIndexer } from '../services/CodebaseIndexer';
 
 /**
  * Codebase-specific RAG builder
@@ -154,28 +154,22 @@ A: "Commands.execute() (Commands.ts:89-156) uses TypeScript inference to provide
   }
 
   /**
-   * Query indexed codebase
-   * TODO: Implement actual vector search with embeddings
-   * For now, returns mock results
+   * Query indexed codebase using semantic vector search.
+   * Uses CodebaseIndexer which generates query embeddings via Rust IPC
+   * and finds the most similar code chunks by cosine similarity.
    */
   private async queryCodebase(query: string, maxResults: number): Promise<CodeIndexEntry[]> {
     try {
-      // TODO: Query code_index collection with vector similarity search
-      const result = await ORM.query<CodeIndexEntry>({
-        collection: COLLECTIONS.CODE_INDEX,
-        filter: {}, // TODO: Add vector similarity filter
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit: maxResults
-      }, 'default');
+      const indexer = getCodebaseIndexer();
+      const results = await indexer.query(query, maxResults);
 
-      if (!result.success || !result.data || result.data.length === 0) {
-        console.log(`ℹ️ CodebaseRAGBuilder: No results for query "${query.slice(0, 50)}..."`);
+      if (results.length === 0) {
+        console.log(`ℹ️ CodebaseRAGBuilder: No results for query "${query.slice(0, 50)}..." — codebase may not be indexed. Run: ./jtag rag/index-codebase`);
         return [];
       }
 
-      const entries = result.data.map(record => record.data);
-      console.log(`✅ CodebaseRAGBuilder: Found ${entries.length} results for query`);
-      return entries;
+      console.log(`✅ CodebaseRAGBuilder: Found ${results.length} results for query (top score: ${results[0].relevanceScore?.toFixed(3)})`);
+      return results;
     } catch (error) {
       console.error(`❌ CodebaseRAGBuilder: Error querying codebase:`, error);
       return [];

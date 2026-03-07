@@ -419,6 +419,7 @@ export class ORMRustClient {
       sort: query.sort,
       limit: query.limit,
       offset: query.offset,
+      select: query.select,
     });
 
     if (!response.success) {
@@ -428,33 +429,7 @@ export class ORMRustClient {
     const rustResult = response.result;
     const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
 
-    const records: DataRecord<T>[] = rawRecords.map((item: RustDataRecord) => {
-      let entityData: T;
-
-      if (typeof item.data === 'string') {
-        entityData = JSON.parse(item.data) as T;
-      } else if (item.data && typeof item.data === 'object') {
-        entityData = item.data as T;
-      } else {
-        const { id: _id, created_at: _ca, updated_at: _ua, version: _v, collection: _c, metadata: _m, ...rest } = item as unknown as Record<string, unknown>;
-        entityData = this.toCamelCaseObject(rest) as T;
-      }
-
-      if (!entityData.id) {
-        (entityData as BaseEntity).id = item.id as UUID;
-      }
-
-      return {
-        id: item.id,
-        collection: query.collection,
-        data: entityData,
-        metadata: {
-          createdAt: item.metadata?.created_at || new Date().toISOString(),
-          updatedAt: item.metadata?.updated_at || new Date().toISOString(),
-          version: item.metadata?.version || 1,
-        },
-      };
-    });
+    const records = this.deserializeRecords<T>(rawRecords, query.collection);
 
     return {
       success: true,
@@ -482,6 +457,7 @@ export class ORMRustClient {
       limit: query.limit,
       offset: query.offset,
       joins: query.joins,
+      select: query.select,
     });
 
     if (!response.success) {
@@ -490,34 +466,7 @@ export class ORMRustClient {
 
     const rustResult = response.result;
     const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
-
-    const records: DataRecord<T>[] = rawRecords.map((item: RustDataRecord) => {
-      let entityData: T;
-
-      if (typeof item.data === 'string') {
-        entityData = JSON.parse(item.data) as T;
-      } else if (item.data && typeof item.data === 'object') {
-        entityData = item.data as T;
-      } else {
-        const { id: _id, created_at: _ca, updated_at: _ua, version: _v, collection: _c, metadata: _m, ...rest } = item as unknown as Record<string, unknown>;
-        entityData = this.toCamelCaseObject(rest) as T;
-      }
-
-      if (!entityData.id) {
-        (entityData as BaseEntity).id = item.id as UUID;
-      }
-
-      return {
-        id: item.id,
-        collection: query.collection,
-        data: entityData,
-        metadata: {
-          createdAt: item.metadata?.created_at || new Date().toISOString(),
-          updatedAt: item.metadata?.updated_at || new Date().toISOString(),
-          version: item.metadata?.version || 1,
-        },
-      };
-    });
+    const records = this.deserializeRecords<T>(rawRecords, query.collection);
 
     return {
       success: true,
@@ -1072,36 +1021,65 @@ export class ORMRustClient {
     return { success: true, data: result };
   }
 
+  // ─── Deserialization ────────────────────────────────────────────────────────
+
+  /**
+   * Shared record deserialization — single code path for query + queryWithJoin.
+   * Rust sends data as objects (not strings) in the normal path.
+   * Only falls back to JSON.parse when data arrives as a string (legacy/edge case).
+   */
+  private deserializeRecords<T extends BaseEntity>(
+    rawRecords: RustDataRecord[],
+    collection: string,
+  ): DataRecord<T>[] {
+    // Cache timestamp for this batch — avoid N×2 Date allocations
+    const now = new Date().toISOString();
+
+    return rawRecords.map((item: RustDataRecord) => {
+      let entityData: T;
+
+      if (item.data && typeof item.data === 'object') {
+        // Fast path: Rust already sent a parsed object
+        entityData = item.data as T;
+      } else if (typeof item.data === 'string') {
+        // Legacy/edge: data arrived as JSON string
+        entityData = JSON.parse(item.data) as T;
+      } else {
+        // Fallback: extract entity fields from flat row
+        const { id: _id, created_at: _ca, updated_at: _ua, version: _v, collection: _c, metadata: _m, ...rest } = item as unknown as Record<string, unknown>;
+        entityData = this.toCamelCaseObject(rest) as T;
+      }
+
+      if (!entityData.id) {
+        (entityData as BaseEntity).id = item.id as UUID;
+      }
+
+      return {
+        id: item.id,
+        collection,
+        data: entityData,
+        metadata: {
+          createdAt: item.metadata?.created_at || now,
+          updatedAt: item.metadata?.updated_at || now,
+          version: item.metadata?.version || 1,
+        },
+      };
+    });
+  }
+
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
-  // NOTE: Only used for Rust response parsing (Rust returns snake_case, we need camelCase)
+  // NOTE: Only used for flat-row fallback (Rust normally returns parsed objects)
 
   private toCamelCaseObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      const camelKey = this.snakeToCamel(key);
-      result[camelKey] = this.hydrateValue(value);
+      result[this.snakeToCamel(key)] = value;
     }
     return result;
   }
 
   private snakeToCamel(s: string): string {
     return s.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
-  }
-
-  private hydrateValue(value: unknown): unknown {
-    if (typeof value !== 'string') return value;
-    const trimmed = value.trim();
-    if (
-      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-      (trimmed.startsWith('[') && trimmed.endsWith(']'))
-    ) {
-      try {
-        return JSON.parse(trimmed);
-      } catch {
-        return value;
-      }
-    }
-    return value;
   }
 
   /**

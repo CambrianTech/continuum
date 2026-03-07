@@ -251,8 +251,11 @@ export class PersonaToolExecutor {
       this.log.error(`  error: ${result.error || 'unknown error'}`);
     }
 
-    // Store tool result in working memory
-    const resultId = await this.storeToolResult(
+    // Generate ID upfront so we can return it immediately
+    const resultId = generateUUID();
+
+    // Store tool result in working memory (fire-and-forget — not on response path)
+    this.storeToolResult(
       corrected.toolName,
       corrected.parameters,
       {
@@ -260,9 +263,9 @@ export class PersonaToolExecutor {
         data: result.content,
         error: result.error,
       },
-      context.contextId
-    );
-    this.log.debug(`Stored tool result #${resultId.slice(0, 8)}`);
+      context.contextId,
+      resultId
+    ).catch(err => this.log.error(`Failed to store tool result: ${err.message}`));
 
     // Collect media for this tool (persona config filtering)
     const collectedMedia: MediaItem[] = [];
@@ -479,12 +482,13 @@ ${result.error || 'Unknown error'}
     toolName: string,
     parameters: Record<string, unknown>,
     result: { success: boolean; data: unknown; error?: string; media?: MediaItem[] },
-    roomId: UUID
+    roomId: UUID,
+    preGeneratedId?: UUID
   ): Promise<UUID> {
     const summary = this.generateSummary(toolName, result);
 
     const message = new ChatMessageEntity();
-    message.id = generateUUID();
+    message.id = preGeneratedId || generateUUID();
     message.roomId = roomId;
     message.senderId = this.persona.id;
     message.senderName = this.persona.displayName;

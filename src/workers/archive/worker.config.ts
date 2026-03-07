@@ -12,7 +12,7 @@ export default {
   socket: '/tmp/jtag-archive-worker.sock',
   args: [
     '/tmp/jtag-command-router.sock',
-    SystemPaths.database.main,
+    `${SystemPaths.database.root}/archive/source.sqlite`,
     `${SystemPaths.database.root}/archive/database-001.sqlite`
   ],
   description: 'Archive worker for moving old data to cold storage using Commands.execute()',

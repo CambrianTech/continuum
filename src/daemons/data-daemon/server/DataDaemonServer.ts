@@ -12,7 +12,7 @@ import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonB
 import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } from '../shared/DataDaemon';
 import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
-import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
+import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
@@ -34,15 +34,15 @@ export class DataDaemonServer extends DataDaemonBase {
     const className = this.constructor.name;
     this.log = Logger.create(className, `daemons/${className}`);
 
-    // Create storage configuration - SQLite-based for proper data storage
+    // Storage configuration — actual data goes through ORM → Rust → Postgres.
+    // The adapter is a no-op MemoryStorageAdapter (see DefaultStorageAdapterFactory).
     const storageConfig: StorageStrategyConfig = {
       strategy: 'sql',
-      backend: 'sqlite',
-      namespace: context.uuid, // Use context UUID as namespace
+      backend: 'sqlite',  // Routes to MemoryStorageAdapter (no-op); real I/O is ORM → Rust → Postgres
+      namespace: context.uuid,
       options: {
-        basePath: getDatabaseDir(),  // Expand $HOME in path
-        databaseName: DATABASE_FILES.SQLITE_FILENAME,
-        foreignKeys: false  // Disable foreign key constraints to avoid constraint violations
+        basePath: getDatabaseDir(),
+        foreignKeys: false
       },
       features: {
         enableTransactions: true,

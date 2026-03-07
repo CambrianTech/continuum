@@ -178,6 +178,10 @@ pub struct StorageQuery {
     #[ts(optional)]
     #[serde(default)]
     pub joins: Option<Vec<JoinSpec>>,
+    /// Column projection — select only these columns (None = all columns / SELECT *)
+    #[ts(optional)]
+    #[serde(default)]
+    pub select: Option<Vec<String>>,
 }
 
 /// Fluent query builder
@@ -246,6 +250,12 @@ impl QueryBuilder {
     pub fn join(mut self, spec: JoinSpec) -> Self {
         let joins = self.query.joins.get_or_insert_with(Vec::new);
         joins.push(spec);
+        self
+    }
+
+    /// Set column projection (only select these columns)
+    pub fn select(mut self, columns: Vec<String>) -> Self {
+        self.query.select = Some(columns);
         self
     }
 

@@ -24,7 +24,10 @@ import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSourc
 import { WorkspaceStrategy } from '../../code/server/WorkspaceStrategy';
 import { ProjectDetector, type ProjectType } from '../../code/server/ProjectDetector';
 import { Logger } from '../../core/logging/Logger';
-import { execSync } from 'child_process';
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const log = Logger.create('ProjectContextSource', 'rag');
 
@@ -32,9 +35,20 @@ export class ProjectContextSource implements RAGSource {
   readonly name = 'project-context';
   readonly priority = 70;
   readonly defaultBudgetPercent = 5;
+  readonly isShared = true;
 
   /** Cached main repo git check (stable for process lifetime) */
   private static _isMainRepoGit: boolean | null = null;
+
+  /**
+   * Cached project context per workspace directory.
+   * Git status doesn't change every 3 seconds — 30s cache eliminates
+   * 14×5 = 70 synchronous shell calls per RAG cycle.
+   * Single-flight coalescing prevents thundering herd on cache miss.
+   */
+  private static _contextCache: Map<string, { section: RAGSection; cachedAt: number }> = new Map();
+  private static _contextInflight: Map<string, Promise<RAGSection>> = new Map();
+  private static readonly CONTEXT_CACHE_TTL_MS = 30_000;
 
   isApplicable(context: RAGSourceContext): boolean {
     // If persona has their own project workspace, always applicable
@@ -55,14 +69,52 @@ export class ProjectContextSource implements RAGSource {
     const repoPath = wsMeta?.repoPath ?? process.cwd();
     const isPersonalWorkspace = !!wsMeta;
 
+    // Cache key: workspace dir determines git context (shared repo = all personas share one cache entry)
+    const cacheKey = workDir;
+    const cached = ProjectContextSource._contextCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < ProjectContextSource.CONTEXT_CACHE_TTL_MS) {
+      return { ...cached.section, loadTimeMs: performance.now() - startTime };
+    }
+
+    // Single-flight: if another persona is already loading this workspace, piggyback
+    const inflight = ProjectContextSource._contextInflight.get(cacheKey);
+    if (inflight) {
+      const result = await inflight;
+      return { ...result, loadTimeMs: performance.now() - startTime };
+    }
+
+    // Load and cache
+    const initialBranch = wsMeta?.branch ?? '';
+    const loadPromise = this.loadFresh(context, allocatedBudget, workDir, repoPath, isPersonalWorkspace, initialBranch, startTime);
+    ProjectContextSource._contextInflight.set(cacheKey, loadPromise);
+    try {
+      const section = await loadPromise;
+      ProjectContextSource._contextCache.set(cacheKey, { section, cachedAt: Date.now() });
+      return section;
+    } finally {
+      ProjectContextSource._contextInflight.delete(cacheKey);
+    }
+  }
+
+  private async loadFresh(
+    context: RAGSourceContext,
+    allocatedBudget: number,
+    workDir: string,
+    repoPath: string,
+    isPersonalWorkspace: boolean,
+    initialBranch: string,
+    startTime: number,
+  ): Promise<RAGSection> {
+
     try {
       // Resolve branch — from workspace metadata or live git query
-      let branch = wsMeta?.branch ?? '';
+      let branch = initialBranch;
       if (!branch) {
         try {
-          branch = execSync('git branch --show-current', {
-            cwd: workDir, stdio: 'pipe', timeout: 3000,
-          }).toString().trim();
+          const { stdout } = await execAsync('git branch --show-current', {
+            cwd: workDir, timeout: 3000,
+          });
+          branch = stdout.trim();
         } catch {
           branch = 'unknown';
         }
@@ -148,12 +200,13 @@ export class ProjectContextSource implements RAGSource {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Git data extraction (fast, synchronous operations)
+  // Git data extraction (async — never blocks event loop)
   // ────────────────────────────────────────────────────────────
 
   private async getGitStatus(dir: string): Promise<string> {
     try {
-      return execSync('git status --short --branch', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+      const { stdout } = await execAsync('git status --short --branch', { cwd: dir, timeout: 5000 });
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -161,10 +214,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getGitLog(dir: string, count: number): Promise<string> {
     try {
-      return execSync(
+      const { stdout } = await execAsync(
         `git log --oneline --no-decorate -${count}`,
-        { cwd: dir, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: dir, timeout: 5000 },
+      );
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -172,10 +226,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getTeamBranches(repoPath: string): Promise<string[]> {
     try {
-      const output = execSync(
+      const { stdout } = await execAsync(
         'git branch --list "ai/*" --format="%(refname:short)"',
-        { cwd: repoPath, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: repoPath, timeout: 5000 },
+      );
+      const output = stdout.trim();
       return output ? output.split('\n') : [];
     } catch {
       return [];
@@ -184,11 +239,11 @@ export class ProjectContextSource implements RAGSource {
 
   private async getFileTree(dir: string, maxDepth: number): Promise<string> {
     try {
-      // Use find to get a clean tree limited to depth, excluding .git and node_modules
-      return execSync(
+      const { stdout } = await execAsync(
         `find . -maxdepth ${maxDepth} -not -path './.git*' -not -path '*/node_modules/*' -not -name '.DS_Store' | sort | head -50`,
-        { cwd: dir, stdio: 'pipe', timeout: 5000 },
-      ).toString().trim();
+        { cwd: dir, timeout: 5000 },
+      );
+      return stdout.trim();
     } catch {
       return '';
     }
@@ -202,29 +257,32 @@ export class ProjectContextSource implements RAGSource {
     const allWorkspaces = WorkspaceStrategy.allProjectWorkspaces;
     const statuses: TeamMemberStatus[] = [];
 
-    for (const [handle, meta] of allWorkspaces) {
-      if (meta.repoPath !== repoPath) continue;
-      if (meta.branch === ownBranch) continue; // Skip self
+    // Check all workspaces concurrently
+    const checks = Array.from(allWorkspaces)
+      .filter(([, meta]) => meta.repoPath === repoPath && meta.branch !== ownBranch)
+      .map(async ([handle, meta]) => {
+        try {
+          const { stdout } = await execAsync(
+            'git diff --name-only --diff-filter=U 2>/dev/null || true',
+            { cwd: meta.worktreeDir, timeout: 3000 },
+          );
+          const conflictOutput = stdout.trim();
+          const hasConflicts = conflictOutput.length > 0;
+          const personaId = handle.replace('project-', '').replace(/-[^-]+$/, '');
+          return {
+            branch: meta.branch,
+            personaId,
+            hasConflicts,
+            conflictFiles: hasConflicts ? conflictOutput.split('\n') : [],
+          } as TeamMemberStatus;
+        } catch {
+          return null;
+        }
+      });
 
-      try {
-        // Quick check for merge conflicts
-        const conflictOutput = execSync(
-          'git diff --name-only --diff-filter=U 2>/dev/null || true',
-          { cwd: meta.worktreeDir, stdio: 'pipe', timeout: 3000 },
-        ).toString().trim();
-
-        const hasConflicts = conflictOutput.length > 0;
-        const personaId = handle.replace('project-', '').replace(/-[^-]+$/, '');
-
-        statuses.push({
-          branch: meta.branch,
-          personaId,
-          hasConflicts,
-          conflictFiles: hasConflicts ? conflictOutput.split('\n') : [],
-        });
-      } catch {
-        // Skip unreachable workspaces
-      }
+    const results = await Promise.all(checks);
+    for (const r of results) {
+      if (r) statuses.push(r);
     }
 
     return statuses;

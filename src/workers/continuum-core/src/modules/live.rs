@@ -7,7 +7,8 @@
 //!          voice/test-audio-generate,
 //!          voice/inject-audio, voice/ambient-add, voice/ambient-inject,
 //!          voice/ambient-remove, voice/poll-transcriptions,
-//!          voice/set-cognitive-state
+//!          voice/set-cognitive-state,
+//!          voice/snapshot-room, voice/snapshot-participant
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
@@ -248,6 +249,10 @@ impl ServiceModule for VoiceModule {
                 let voice = p.str_opt("voice");
                 let adapter = p.str_opt("adapter");
                 let display_name = p.str_opt("display_name");
+                // Timeline sequence number for output ordering.
+                // Tells us WHERE in the conversation this response belongs.
+                // TODO: Use for Rust-side TTS output scheduling (ordering + stale detection).
+                let _timeline_seq = p.u64_opt("timeline_seq");
 
                 let (num_samples, duration_ms, sample_rate) = self
                     .state
@@ -784,6 +789,60 @@ impl ServiceModule for VoiceModule {
                 };
 
                 Ok(CommandResult::Json(serde_json::json!({ "set": found })))
+            }
+
+            "voice/snapshot-room" => {
+                use crate::live::video::capture::VideoFrameCapture;
+                use base64::Engine;
+
+                let capture = VideoFrameCapture::instance();
+                match capture.snapshot_room().await {
+                    Some(snap) => {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
+                        Ok(CommandResult::Json(serde_json::json!({
+                            "success": true,
+                            "base64": b64,
+                            "mimeType": "image/jpeg",
+                            "width": snap.width,
+                            "height": snap.height,
+                            "participants": snap.display_name,
+                            "hash": snap.hash,
+                            "capturedAt": snap.captured_at,
+                        })))
+                    }
+                    None => Ok(CommandResult::Json(serde_json::json!({
+                        "success": false,
+                        "error": "No video frames captured yet"
+                    }))),
+                }
+            }
+
+            "voice/snapshot-participant" => {
+                use crate::live::video::capture::VideoFrameCapture;
+                use base64::Engine;
+
+                let identity = p.str("identity")?;
+                let capture = VideoFrameCapture::instance();
+                match capture.snapshot_participant(identity).await {
+                    Some(snap) => {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
+                        Ok(CommandResult::Json(serde_json::json!({
+                            "success": true,
+                            "base64": b64,
+                            "mimeType": "image/jpeg",
+                            "width": snap.width,
+                            "height": snap.height,
+                            "identity": snap.identity,
+                            "displayName": snap.display_name,
+                            "hash": snap.hash,
+                            "capturedAt": snap.captured_at,
+                        })))
+                    }
+                    None => Ok(CommandResult::Json(serde_json::json!({
+                        "success": false,
+                        "error": format!("No video frame for participant '{}'", identity)
+                    }))),
+                }
             }
 
             _ => Err(format!("Unknown voice command: {command}")),
