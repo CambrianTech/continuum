@@ -20,6 +20,7 @@ import { AICapabilityRegistry } from '../../daemons/ai-provider-daemon/shared/AI
 import { VisionCapabilityService } from '../../daemons/ai-provider-daemon/shared/VisionCapabilityService';
 import { AIProviderDaemon } from '../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { ChatMessage, ContentPart } from '../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -81,8 +82,29 @@ export interface DescribeOptions {
 /**
  * Service for generating vision descriptions
  */
+/**
+ * Content-addressed description cache entry.
+ * Key = hash of image content. One LLaVA call serves all consumers.
+ */
+interface CachedDescription {
+  description: VisionDescription;
+  cachedAt: number;
+}
+
+/** Cache TTL: 5 minutes. Images don't change — but descriptions may improve with better models. */
+const DESCRIPTION_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Max cache entries. Each is ~1KB (description text + metadata). */
+const MAX_CACHE_ENTRIES = 500;
+
 export class VisionDescriptionService {
   private static instance: VisionDescriptionService | null = null;
+
+  /** Content-addressed cache: hash(base64) → description. Process once, serve many. */
+  private readonly _cache = new Map<string, CachedDescription>();
+
+  /** In-flight deduplication: hash → promise. Prevents N concurrent calls for the same image. */
+  private readonly _inflight = new Map<string, Promise<VisionDescription | null>>();
 
   static getInstance(): VisionDescriptionService {
     if (!this.instance) {
@@ -91,13 +113,81 @@ export class VisionDescriptionService {
     return this.instance;
   }
 
+  /** Cache stats for diagnostics */
+  get cacheStats(): { size: number; maxSize: number; ttlMs: number } {
+    return { size: this._cache.size, maxSize: MAX_CACHE_ENTRIES, ttlMs: DESCRIPTION_CACHE_TTL_MS };
+  }
+
   /**
-   * Describe an image from base64 data
+   * Content-address key: SHA-256 of first 4KB + total length.
+   * Hashing the full base64 of a 5MB image would be wasteful — first 4KB + length
+   * is sufficient to distinguish images while keeping key generation <1ms.
+   */
+  private contentKey(base64Data: string): string {
+    const sample = base64Data.slice(0, 4096);
+    return createHash('sha256').update(`${sample}:${base64Data.length}`).digest('hex').slice(0, 16);
+  }
+
+  /**
+   * Describe an image from base64 data.
+   *
+   * Content-addressed cache + in-flight deduplication:
+   * - First caller triggers inference, all concurrent callers await the same promise
+   * - Result cached by content hash — subsequent calls return instantly
+   * - 11 personas sharing one image = 1 LLaVA call, not 11
    */
   async describeBase64(
     base64Data: string,
     mimeType: string = 'image/png',
     options: DescribeOptions = {}
+  ): Promise<VisionDescription | null> {
+    const key = this.contentKey(base64Data);
+
+    // Check cache first — instant return for previously described images
+    const cached = this._cache.get(key);
+    if (cached && (Date.now() - cached.cachedAt) < DESCRIPTION_CACHE_TTL_MS) {
+      console.log(`[VisionDescription] Cache hit (key=${key.slice(0, 8)}), skipping inference`);
+      return cached.description;
+    }
+
+    // In-flight deduplication — if another caller is already describing this image, await their result
+    const inflight = this._inflight.get(key);
+    if (inflight) {
+      console.log(`[VisionDescription] Coalescing with in-flight request (key=${key.slice(0, 8)})`);
+      return inflight;
+    }
+
+    // First caller — trigger inference and register the in-flight promise
+    const promise = this._describeBase64Uncached(base64Data, mimeType, options, key);
+    this._inflight.set(key, promise);
+
+    try {
+      const result = await promise;
+
+      // Cache the result
+      if (result) {
+        // LRU eviction: drop oldest entry if at capacity
+        if (this._cache.size >= MAX_CACHE_ENTRIES) {
+          const oldestKey = this._cache.keys().next().value;
+          if (oldestKey) this._cache.delete(oldestKey);
+        }
+        this._cache.set(key, { description: result, cachedAt: Date.now() });
+      }
+
+      return result;
+    } finally {
+      this._inflight.delete(key);
+    }
+  }
+
+  /**
+   * Internal: actual inference call (no caching). Called only by describeBase64.
+   */
+  private async _describeBase64Uncached(
+    base64Data: string,
+    mimeType: string,
+    options: DescribeOptions,
+    cacheKey: string
   ): Promise<VisionDescription | null> {
     const startTime = Date.now();
 
@@ -148,7 +238,7 @@ export class VisionDescriptionService {
       selectedModel = localModel;
     }
 
-    console.log(`[VisionDescription] Selected model: ${selectedModel.providerId}/${selectedModel.modelId}`);
+    console.log(`[VisionDescription] Selected model: ${selectedModel.providerId}/${selectedModel.modelId} (key=${cacheKey.slice(0, 8)})`);
 
     // Build prompt
     const prompt = options.prompt || this.buildDescriptionPrompt(options);
