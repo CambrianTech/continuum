@@ -106,12 +106,19 @@ bevy = { version = "0.18", default-features = false, features = [
     "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
 ] }
 
+# wgpu HAL access — needed for Metal texture extraction (GPU→GPU pipeline)
+# Version matches Bevy 0.18's wgpu dependency
+wgpu = "27"
+wgpu-hal = "27"
+
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 
-# GPU detection — Metal API for VRAM detection on macOS
+# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
+# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.31"
+metal = "0.32"
+objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
 
 # Dataset module — CSV parsing for training data import
 csv = "1"

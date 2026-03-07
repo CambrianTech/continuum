@@ -236,6 +236,25 @@ impl IoSurfacePair {
         self.frame_counter.fetch_add(1, Ordering::Release);
     }
 
+    /// Get the current write buffer's IOSurface and buffer index.
+    /// Called by the Metal GPU compute path to create texture views into the IOSurface.
+    ///
+    /// Returns (IOSurfaceRef, buffer_index) for the current write target.
+    /// The caller writes NV12 data via Metal compute, then calls `signal_gpu_frame_written`.
+    pub fn current_write_surface(&self) -> (IOSurfaceRef, usize) {
+        let idx = (self.frame_counter.load(Ordering::Relaxed) % 2) as usize;
+        (self.surfaces[idx], idx)
+    }
+
+    /// Signal that a GPU compute shader has finished writing NV12 to the write buffer.
+    /// Called after Metal compute dispatch + waitUntilCompleted.
+    ///
+    /// Increments the frame counter so the publisher sees the new frame.
+    /// `_write_idx` is for debug verification (not used in release).
+    pub fn signal_gpu_frame_written(&self, _write_idx: usize) {
+        self.frame_counter.fetch_add(1, Ordering::Release);
+    }
+
     /// Take the most recently completed frame's IOSurface, if a new frame is available.
     /// Called from GpuBridgePublisher::try_publish (tokio thread).
     ///
@@ -377,6 +396,32 @@ fn unregister_bridge(slot: u8) {
             clog_info!("📹 GPU bridge unregistered for slot {}", slot);
         }
     }
+}
+
+/// Check if a GPU bridge is registered for a given slot.
+/// Used by ensure_continuous_readback to skip Readback for GPU-compute slots.
+pub fn has_bridge(slot_id: u8) -> bool {
+    if let Some(lock) = GPU_BRIDGES.get() {
+        if let Ok(guard) = lock.read() {
+            if let Some(Some(_)) = guard.get(slot_id as usize) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Get the IoSurfacePair for a given slot (if registered).
+/// Used by the Metal GPU compute path to access the IOSurface for texture binding.
+pub fn get_bridge_pair(slot_id: u8) -> Option<Arc<IoSurfacePair>> {
+    if let Some(lock) = GPU_BRIDGES.get() {
+        if let Ok(guard) = lock.read() {
+            if let Some(Some(pair)) = guard.get(slot_id as usize) {
+                return Some(pair.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Called from ReadbackComplete observer in bevy_renderer.rs.

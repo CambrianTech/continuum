@@ -10,6 +10,12 @@
 //! Architecture: Rust is the brain, TypeScript is the face.
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
 
+// objc macros (sel!, msg_send!, class!) must be imported at crate root.
+// Used by live::video::metal_gpu_convert for Metal compute shader dispatch.
+#[cfg(target_os = "macos")]
+#[macro_use]
+extern crate objc;
+
 pub mod ai;
 pub mod audio_constants;
 pub mod code;
