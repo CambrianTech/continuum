@@ -149,24 +149,19 @@ Complex activities (academy, coding projects) use Sentinel pipelines where each 
 ### Genome (LoRA Paging)
 The queue item's domain drives adapter activation. A code domain activates the coding LoRA. A creative domain activates the creative writing LoRA. This already works via `PersonaAutonomousLoop.dispatchItem()`.
 
-## Current State vs. Target
+## Implementation Status
 
-### Current (PR #285)
-- CodebaseSearchSource always evaluates, filters by cosine similarity threshold
-- ChatRAGBuilder has hardcoded source extraction (each source name manually mapped)
-- RAG composition not driven by queue item domain
+### Completed
+1. **CodebaseSearchSource** — Proves the pattern (RAG source + vector search + system prompt injection). E2E: 180 files, 855 entries, 20s.
+2. **Generic extraction** — `ChatRAGBuilder.extractFromComposition()` collects all `systemPromptSection` values into `Map<sourceName, string>`. Adding a new RAGSource requires ZERO changes to the builder.
+3. **Recipe `ragTemplate.sources`** — `RAGTemplate` now has a `sources?: string[]` field declaring which RAG sources to activate.
+4. **`RAGSourceContext.activeSources`** — Composer receives activation list. If present, only listed sources fire. If absent, all applicable sources fire (backwards compatible).
+5. **End-to-end plumbing** — Recipe → `loadRecipeContext()` extracts `ragTemplateSources` → `RAGSourceContext.activeSources` → `RAGComposer.compose()` filters by list.
 
-### Target
-- Queue item carries recipe reference → recipe declares ragTemplate
-- RAG composition resolves ragTemplate → activates only declared sources
-- ChatRAGBuilder extracts systemPromptSection generically (no source name switch)
-- New activities require zero changes to persona cognition code
-
-### Migration Path
-1. **Done**: CodebaseSearchSource proves the pattern (RAG source + vector search + system prompt injection)
-2. **Next**: Recipe entity gets `ragTemplate.customSources` field
-3. **Then**: RAGComposer accepts source activation list from recipe, not static registration
-4. **Finally**: Queue item dispatch resolves recipe → passes source list to RAG compose
+### Remaining
+- **Queue item `recipeId`** — `BaseQueueItem` should carry an optional recipe reference so non-room-based tasks can declare RAG requirements without being tied to a room's recipe.
+- **Domain-to-recipe mapping** — Default recipes per `TaskDomain` so even tasks without explicit recipe references get appropriate context.
+- **Recipe generator** — Generator that produces recipe JSON with ragTemplate, strategy, tools, and pipeline for new activity types.
 
 ## The Test
 

@@ -216,4 +216,15 @@ export interface RAGBuildOptions {
 
   // Tool capability for tool-aware RAG sources
   toolCapability?: 'native' | 'xml' | 'none';  // Provider's tool calling capability
+
+  /**
+   * Override recipe for RAG source activation.
+   *
+   * When set, this recipe's ragTemplate.sources drives which RAG sources activate,
+   * overriding the room's default recipe. Used by queue items (tasks) that need
+   * different context than the room they're associated with.
+   *
+   * If absent, the room's recipe is used (standard behavior for chat messages).
+   */
+  recipeId?: string;
 }

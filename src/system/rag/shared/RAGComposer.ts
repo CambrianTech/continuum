@@ -139,15 +139,27 @@ export class RAGComposer {
     timer.setMeta('totalBudget', context.totalBudget);
 
     // 1. Filter to applicable sources
+    // If activeSources is set (from recipe ragTemplate), only those sources are eligible.
+    // This is how queue items declare their own RAG requirements.
     const applicableSources: RAGSource[] = [];
     const skippedSources: string[] = [];
+    const activeFilter = context.activeSources;
 
     for (const source of this.sources) {
+      // Recipe-driven activation: if activeSources is set, source must be listed
+      if (activeFilter && !activeFilter.includes(source.name)) {
+        skippedSources.push(source.name);
+        continue;
+      }
       if (source.isApplicable(context)) {
         applicableSources.push(source);
       } else {
         skippedSources.push(source.name);
       }
+    }
+
+    if (activeFilter) {
+      log.debug(`RAG recipe filter: ${activeFilter.length} sources requested, ${applicableSources.length} applicable`);
     }
     timer.mark('filter_sources');
     timer.setMeta('applicableSources', applicableSources.length);

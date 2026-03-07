@@ -23,6 +23,19 @@ export interface BaseQueueItem {
   timestamp: number;         // When item was created (ms since epoch)
   domain: TaskDomain;        // Which domain this work belongs to (chat, code, self, etc.)
   enqueuedAt?: number;       // When item entered the inbox queue (ms since epoch, set by inbox)
+
+  /**
+   * Optional recipe reference for RAG-driven context composition.
+   *
+   * When present, the recipe's ragTemplate.sources controls which RAG sources
+   * activate during context building. This is how queue items declare their
+   * own RAG requirements without the persona needing domain-specific logic.
+   *
+   * For messages: typically resolved from the room's recipe (room.recipeId).
+   * For tasks: can be set explicitly per task type (e.g., code review, academy lesson).
+   * If absent: all applicable RAG sources fire (backwards-compatible default).
+   */
+  recipeId?: string;
 }
 
 /**

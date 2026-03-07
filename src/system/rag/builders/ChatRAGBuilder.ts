@@ -242,6 +242,25 @@ export class ChatRAGBuilder extends RAGBuilder {
         this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
       }
 
+      // Load recipe FIRST — its ragTemplate.sources drives which RAG sources activate
+      const legacyStart = performance.now();
+      const artifactStart = performance.now();
+      const extractedArtifactsPromise = includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]);
+      const recipePromise = this.loadRecipeContext(contextId, options.recipeId);
+      const learningPromise = this.loadLearningConfig(contextId, personaId);
+
+      const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
+        extractedArtifactsPromise.then(r => { this._lastArtifactMs = performance.now() - artifactStart; return r; }),
+        recipePromise.then(r => { this._lastRecipeMs = performance.now() - artifactStart; return r; }),
+        learningPromise.then(r => { this._lastLearningMs = performance.now() - artifactStart; return r; })
+      ]);
+      legacyMs = performance.now() - legacyStart;
+      artifacts = extractedArtifacts;
+      recipeStrategy = extractedRecipeContext?.strategy;
+      recipeTools = extractedRecipeContext?.tools;
+      learningConfig = extractedLearningConfig;
+
+      // Build source context — pass recipe's source activation list if declared
       const sourceContext: RAGSourceContext = {
         personaId,
         roomId: contextId,
@@ -256,9 +275,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         totalBudget,
         provider: options.provider,
         toolCapability: options?.toolCapability,
+        activeSources: extractedRecipeContext?.ragTemplateSources,
       };
 
-      // Load core sources via composer (parallel)
+      // Load core sources via composer (parallel, filtered by recipe's activeSources)
       const composeStart = performance.now();
       const composition = await composer.compose(sourceContext);
       composeMs = performance.now() - composeStart;
@@ -273,24 +293,6 @@ export class ChatRAGBuilder extends RAGBuilder {
       privateMemories = extracted.memories;
       systemPromptSections = extracted.systemPromptSections;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
-
-      // Still load these via legacy methods (not yet extracted to sources)
-      const legacyStart = performance.now();
-      const artifactStart = performance.now();
-      const extractedArtifactsPromise = includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]);
-      const recipePromise = this.loadRecipeContext(contextId);
-      const learningPromise = this.loadLearningConfig(contextId, personaId);
-
-      const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
-        extractedArtifactsPromise.then(r => { this._lastArtifactMs = performance.now() - artifactStart; return r; }),
-        recipePromise.then(r => { this._lastRecipeMs = performance.now() - artifactStart; return r; }),
-        learningPromise.then(r => { this._lastLearningMs = performance.now() - artifactStart; return r; })
-      ]);
-      legacyMs = performance.now() - legacyStart;
-      artifacts = extractedArtifacts;
-      recipeStrategy = extractedRecipeContext?.strategy;
-      recipeTools = extractedRecipeContext?.tools;
-      learningConfig = extractedLearningConfig;
 
       this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [artifacts=${this._lastArtifactMs?.toFixed(1)}ms, recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms])`);
 
@@ -326,8 +328,8 @@ export class ChatRAGBuilder extends RAGBuilder {
           options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
         ) : Promise.resolve([]),
 
-        // 5. Load room's recipe context (strategy + tool highlights)
-        this.loadRecipeContext(contextId),
+        // 5. Load recipe context (override from queue item, or room's default)
+        this.loadRecipeContext(contextId, options.recipeId),
 
         // 6. Load learning configuration (Phase 2: Per-participant learning mode)
         this.loadLearningConfig(contextId, personaId),
@@ -1174,17 +1176,19 @@ LIMITS:
   /**
    * Load recipe context (strategy + tools) from room's recipeId
    */
-  private async loadRecipeContext(roomId: UUID): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[] } | undefined> {
+  private async loadRecipeContext(roomId: UUID, overrideRecipeId?: string): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[]; ragTemplateSources?: string[] } | undefined> {
     try {
-      // 1. Load room to get recipeId (from cache — shared with loadRoomName, loadRoomMembers, etc.)
-      const room = await ChatRAGBuilder.getCachedRoom(roomId);
+      // Use override recipeId (from queue item) or fall back to room's recipe
+      let recipeId = overrideRecipeId;
 
-      if (!room) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
-        return undefined;
+      if (!recipeId) {
+        const room = await ChatRAGBuilder.getCachedRoom(roomId);
+        if (!room) {
+          this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
+          return undefined;
+        }
+        recipeId = room.recipeId;
       }
-
-      const recipeId = room.recipeId;
 
       if (!recipeId) {
         this.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no recipeId, using default behavior`);
@@ -1200,10 +1204,12 @@ LIMITS:
         return undefined;
       }
 
-      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}`);
+      const ragTemplateSources = recipe.ragTemplate?.sources;
+      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}, ragSources=${ragTemplateSources?.length ?? 'all'}`);
       return {
         strategy: recipe.strategy,
         tools: recipe.tools,
+        ragTemplateSources,
       };
     } catch (error) {
       this.log(`❌ ChatRAGBuilder: Error loading recipe context:`, error);

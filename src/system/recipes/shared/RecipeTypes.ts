@@ -65,6 +65,25 @@ export interface RAGTemplate {
   browserContext?: boolean;
   examResults?: boolean;
   custom?: Record<string, unknown>;
+
+  /**
+   * RAG source activation list.
+   *
+   * If present, ONLY these sources are activated during RAG composition.
+   * If absent, ALL applicable sources fire (backwards-compatible default).
+   *
+   * Source names match RAGSource.name (e.g., 'codebase-search', 'semantic-memory',
+   * 'global-awareness', 'widget-context', 'tool-definitions', etc.)
+   *
+   * This is the bridge between recipes and the RAG pipeline:
+   * Queue item -> recipe -> ragTemplate.sources -> RAGSourceContext.activeSources
+   *
+   * Examples:
+   * - Code review recipe: ['conversation-history', 'codebase-search', 'semantic-memory', 'tool-definitions']
+   * - Chess game recipe: ['conversation-history', 'game-state', 'semantic-memory']
+   * - Academy lesson: ['conversation-history', 'semantic-memory', 'activity-context']
+   */
+  sources?: string[];
 }
 
 /**
