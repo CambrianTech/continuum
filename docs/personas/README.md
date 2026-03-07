@@ -15,6 +15,8 @@
 | Document | Summary |
 |----------|---------|
 | [PERSONA-BEING-ARCHITECTURE.md](PERSONA-BEING-ARCHITECTURE.md) | **Start here.** Transform PersonaUser to elegant ~300-line being with distinct cognitive systems |
+| [Queue-Driven Cognition](../QUEUE-DRIVEN-COGNITION.md) | **Fundamental.** Queue items declare RAG requirements -- personas compose generically |
+| [Universal Learning Architecture](../UNIVERSAL-LEARNING-ARCHITECTURE.md) | **Fundamental.** Generic pipeline enables training, memory, and beyond-LLM learning |
 | [AI-HUMAN-USER-INTEGRATION.md](AI-HUMAN-USER-INTEGRATION.md) | Universal citizen architecture -- humans, agents, and personas as equivalent users |
 | [UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md](UNIFIED-CONSCIOUSNESS-ARCHITECTURE.md) | True cognitive continuity and personal freedom in AGI |
 | [UNIVERSAL-INTERACTION-SYMMETRY.md](UNIVERSAL-INTERACTION-SYMMETRY.md) | Symmetry principle -- if a human can do it, so can an AI |

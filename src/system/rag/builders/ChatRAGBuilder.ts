@@ -158,93 +158,46 @@ export class ChatRAGBuilder extends RAGBuilder {
   }
 
   /**
-   * Extract loaded data from RAGCompositionResult sections
-   * Maps RAGSection fields to the format expected by buildContext
+   * Extract loaded data from RAGCompositionResult sections.
+   *
+   * GENERIC: Collects all systemPromptSection values into a Map keyed by sourceName.
+   * Adding a new RAGSource requires ZERO changes here — the source's systemPromptSection
+   * is automatically collected and injected into the persona's system prompt.
+   *
+   * Only structured data (identity, messages, memories, tool metadata) needs explicit extraction
+   * because these have special shapes that can't be expressed as a system prompt string.
    */
   private extractFromComposition(result: RAGCompositionResult): {
     identity: PersonaIdentity | null;
     conversationHistory: LLMMessage[];
     memories: PersonaMemory[];
-    widgetContext: string | null;
-    globalAwareness: string | null;
-    socialAwareness: string | null;
-    codeToolGuidance: string | null;
-    toolMethodology: string | null;
-    projectContext: string | null;
-    consolidatedMemories: string | null;
+    systemPromptSections: Map<string, string>;
     toolDefinitionsMetadata: Record<string, unknown> | null;
-    toolDefinitionsPrompt: string | null;
-    documentationAwareness: string | null;
-    codebaseContext: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
     let memories: PersonaMemory[] = [];
-    let widgetContext: string | null = null;
-    let globalAwareness: string | null = null;
-    let socialAwareness: string | null = null;
-    let codeToolGuidance: string | null = null;
-    let toolMethodology: string | null = null;
-    let projectContext: string | null = null;
-    let consolidatedMemories: string | null = null;
+    const systemPromptSections = new Map<string, string>();
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
-    let toolDefinitionsPrompt: string | null = null;
-    let documentationAwareness: string | null = null;
-    let codebaseContext: string | null = null;
 
     for (const section of result.sections) {
-      if (section.identity) {
-        identity = section.identity;
+      // Structured data — extracted by type, not by source name
+      if (section.identity) identity = section.identity;
+      if (section.messages && section.messages.length > 0) conversationHistory = section.messages;
+      if (section.memories && section.memories.length > 0) memories = section.memories;
+
+      // Generic: every source's systemPromptSection collected by name
+      if (section.systemPromptSection) {
+        systemPromptSections.set(section.sourceName, section.systemPromptSection);
       }
-      if (section.messages && section.messages.length > 0) {
-        conversationHistory = section.messages;
-      }
-      if (section.memories && section.memories.length > 0) {
-        memories = section.memories;
-      }
-      if (section.sourceName === 'semantic-memory' && section.systemPromptSection) {
-        // Formatted memory section — produced by SemanticMemorySource
-        consolidatedMemories = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'widget-context') {
-        widgetContext = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'global-awareness') {
-        globalAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'social-media') {
-        socialAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'code-tools') {
-        codeToolGuidance = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'tool-methodology') {
-        toolMethodology = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'documentation') {
-        documentationAwareness = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'project-context') {
-        projectContext = section.systemPromptSection;
-      }
-      if (section.systemPromptSection && section.sourceName === 'codebase-search') {
-        codebaseContext = section.systemPromptSection;
-      }
-      if (section.sourceName === 'tool-definitions') {
-        // Tool definitions — metadata contains nativeToolSpecs for native providers,
-        // systemPromptSection contains XML for text-based providers
-        toolDefinitionsMetadata = section.metadata ?? null;
-        if (section.systemPromptSection) {
-          toolDefinitionsPrompt = section.systemPromptSection;
-        }
+
+      // Tool definitions need metadata extraction (native tool specs for non-XML providers)
+      if (section.sourceName === 'tool-definitions' && section.metadata) {
+        toolDefinitionsMetadata = section.metadata;
       }
     }
 
-    return {
-      identity, conversationHistory, memories,
-      widgetContext, globalAwareness, socialAwareness, codeToolGuidance, toolMethodology, projectContext,
-      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt, documentationAwareness, codebaseContext
-    };
+    return { identity, conversationHistory, memories, systemPromptSections, toolDefinitionsMetadata };
   }
 
   /**
@@ -274,17 +227,8 @@ export class ChatRAGBuilder extends RAGBuilder {
     let recipeStrategy: RecipeStrategy | undefined;
     let recipeTools: RecipeToolDeclaration[] | undefined;
     let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
-    let widgetContext: string | null;
-    let globalAwareness: string | null;
-    let socialAwareness: string | null;
-    let codeToolGuidance: string | null;
-    let toolMethodology: string | null;
-    let projectContext: string | null;
-    let documentationAwareness: string | null;
-    let codebaseContext: string | null;
-    let consolidatedMemories: string | null = null;
+    let systemPromptSections = new Map<string, string>();
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
-    let toolDefinitionsPrompt: string | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
     // Token budget from model's context window — 75% for input.
@@ -327,17 +271,8 @@ export class ChatRAGBuilder extends RAGBuilder {
       };
       conversationHistory = extracted.conversationHistory;
       privateMemories = extracted.memories;
-      widgetContext = extracted.widgetContext;
-      globalAwareness = extracted.globalAwareness;
-      socialAwareness = extracted.socialAwareness;
-      codeToolGuidance = extracted.codeToolGuidance;
-      toolMethodology = extracted.toolMethodology;
-      projectContext = extracted.projectContext;
-      documentationAwareness = extracted.documentationAwareness;
-      codebaseContext = extracted.codebaseContext;
-      consolidatedMemories = extracted.consolidatedMemories;
+      systemPromptSections = extracted.systemPromptSections;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
-      toolDefinitionsPrompt = extracted.toolDefinitionsPrompt;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const legacyStart = performance.now();
@@ -408,14 +343,10 @@ export class ChatRAGBuilder extends RAGBuilder {
       recipeStrategy = loadedRecipeContext?.strategy;
       recipeTools = loadedRecipeContext?.tools;
       learningConfig = loadedLearningConfig;
-      widgetContext = loadedWidgetContext;
-      globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
-      socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
-      codeToolGuidance = null; // Legacy path doesn't use CodeToolSource
-      toolMethodology = null;  // Legacy path doesn't use ToolMethodologySource
-      projectContext = null;   // Legacy path doesn't use ProjectContextSource
-      documentationAwareness = null; // Legacy path doesn't use DocumentationSource
-      codebaseContext = null; // Legacy path doesn't use CodebaseSearchSource
+      if (loadedWidgetContext) {
+        systemPromptSections.set('widget-context', loadedWidgetContext);
+      }
+      // Legacy path only loads widget context — other sources require modular path
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -430,16 +361,13 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Any model under ~4K context should skip injections — there's no room.
     const isSmallContext = totalBudget < 3000;
 
-    // 2.4. Inject widget context into system prompt if available
-    // This enables AI to be aware of what the user is currently viewing
+    // 2.4. Inject RAG source context into system prompt — GENERIC LOOP
+    // Each RAGSource provides a systemPromptSection. We inject them all without
+    // knowing source names. Adding a new source requires ZERO changes here.
     const finalIdentity = { ...identity };
-    if (!isSmallContext && widgetContext) {
-      finalIdentity.systemPrompt = identity.systemPrompt +
-        `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
-      this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
-    }
 
-    // 2.4.4b. Inject human presence awareness (which room each user is viewing)
+    // 2.4.1. Inject human presence awareness (which room each user is viewing)
+    // This is NOT a RAG source — it's lightweight synchronous state, always injected.
     const allPresence = HumanPresenceTracker.allPresence;
     if (allPresence.length > 0) {
       const lines = allPresence.map(p => {
@@ -450,71 +378,47 @@ export class ChatRAGBuilder extends RAGBuilder {
         `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
     }
 
-    // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
-    // This gives AIs unified knowledge that flows between rooms/contexts
-    if (!isSmallContext && globalAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
-      this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
+    // 2.4.2. Inject all RAG source systemPromptSections generically
+    //
+    // Sources with wrapper instructions — the section content gets wrapped with
+    // additional context instructions. Eventually these wrappers should move INTO
+    // the sources themselves, making this map empty.
+    const SOURCE_WRAPPERS: Record<string, (section: string) => string> = {
+      'widget-context': (s) =>
+        `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${s}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`,
+      'global-awareness': (s) =>
+        `\n\n${s}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`,
+    };
+
+    // Sources that MUST be injected even for small-context models.
+    // Most sources are skipped in small-context mode to fit tight token budgets.
+    // Codebase search is critical — if someone asks about code, they need the answer.
+    const ALWAYS_INJECT = new Set(['codebase-search']);
+
+    // Tool definitions are injected separately (native specs vs XML have different paths)
+    const SKIP_GENERIC = new Set(['tool-definitions']);
+
+    let injectedCount = 0;
+    for (const [sourceName, section] of systemPromptSections) {
+      if (SKIP_GENERIC.has(sourceName)) continue;
+      if (isSmallContext && !ALWAYS_INJECT.has(sourceName)) continue;
+
+      const wrapper = SOURCE_WRAPPERS[sourceName];
+      finalIdentity.systemPrompt += wrapper ? wrapper(section) : `\n\n${section}`;
+      injectedCount++;
+      this.log(`🔧 ChatRAGBuilder: Injected ${sourceName} into system prompt`);
     }
 
-    // 2.4.6. Inject social media HUD into system prompt (engagement awareness)
-    // This gives AIs awareness of their social media presence and engagement duty
-    if (!isSmallContext && socialAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${socialAwareness}`;
-      this.log('📱 ChatRAGBuilder: Injected social media HUD into system prompt');
-    }
-
-    // 2.4.7. Inject code tool workflow guidance (coding capabilities)
-    if (!isSmallContext && codeToolGuidance) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${codeToolGuidance}`;
-      this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
-    }
-
-    // 2.4.7a. Inject tool methodology (non-code tool workflows)
-    if (!isSmallContext && toolMethodology) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${toolMethodology}`;
-      this.log('🔧 ChatRAGBuilder: Injected tool methodology into system prompt');
-    }
-
-    // 2.4.7b. Inject documentation awareness (chapter map + exploration workflow)
-    if (!isSmallContext && documentationAwareness) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${documentationAwareness}`;
-      this.log('📚 ChatRAGBuilder: Injected documentation awareness into system prompt');
-    }
-
-    // 2.4.7c. Inject codebase search results (semantic code search from indexed codebase)
-    if (codebaseContext) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${codebaseContext}`;
-      this.log('🔍 ChatRAGBuilder: Injected codebase search results into system prompt');
-    }
-
-    // 2.4.8. Inject project workspace context (git status, team activity, build info)
-    if (!isSmallContext && projectContext) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n${projectContext}`;
-      this.log('📦 ChatRAGBuilder: Injected project workspace context into system prompt');
-    }
-
-    // 2.4.9. Inject consolidated memories (budget-aware via SemanticMemorySource)
-    if (!isSmallContext && consolidatedMemories) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt + consolidatedMemories;
-      this.log(`🧠 ChatRAGBuilder: Injected ${privateMemories.length} consolidated memories into system prompt`);
-    }
-
-    // 2.4.10. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
+    // 2.4.3. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
+    const toolDefinitionsPrompt = systemPromptSections.get('tool-definitions');
     if (!isSmallContext && toolDefinitionsPrompt) {
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt + toolDefinitionsPrompt;
+      finalIdentity.systemPrompt += toolDefinitionsPrompt;
+      injectedCount++;
       this.log(`🔧 ChatRAGBuilder: Injected tool definitions into system prompt (XML format)`);
     }
 
     if (isSmallContext) {
-      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — skipped injections to fit ${options.modelId}`);
+      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — injected ${injectedCount}/${systemPromptSections.size} sources for ${options.modelId}`);
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -573,17 +477,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
         inputTokenCount: budgetCalculation.inputTokenCount,
 
-        // Positron Layer 1: Widget context awareness
-        hasWidgetContext: !!widgetContext,
-
-        // Cross-context awareness (no severance!)
-        hasGlobalAwareness: !!globalAwareness,
-
-        // Social media HUD (engagement awareness)
-        hasSocialAwareness: !!socialAwareness,
-
-        // Project workspace context (git, team, build)
-        hasProjectContext: !!projectContext,
+        // RAG source presence flags (computed from generic map)
+        hasWidgetContext: systemPromptSections.has('widget-context'),
+        hasGlobalAwareness: systemPromptSections.has('global-awareness'),
+        hasSocialAwareness: systemPromptSections.has('social-media'),
+        hasProjectContext: systemPromptSections.has('project-context'),
 
         // Tool definitions (budget-aware via ToolDefinitionsSource)
         toolDefinitions: toolDefinitionsMetadata ? {
