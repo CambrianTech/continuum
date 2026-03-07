@@ -764,6 +764,15 @@ export class PersonaUser extends AIUser {
             } else {
               const corpusResult = await this._rustCognition!.memoryLoadCorpus(memories, events);
               this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+
+              // Pre-warm L1 memory cache so first RAG build is instant (~0ms recall)
+              // Corpus is loaded — L2 recall will work now
+              const { TieredMemoryCache } = await import('../../rag/cache/TieredMemoryCache');
+              const generalRoom = [...this.myRoomIds][0]; // Pre-warm with first room
+              if (generalRoom) {
+                await TieredMemoryCache.instance.preWarm(this.id, generalRoom);
+                this.log.info(`${this.displayName}: L1 memory cache pre-warmed`);
+              }
             }
           } catch (error) {
             this.log.error(`${this.displayName}: Corpus load failed:`, error);

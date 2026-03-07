@@ -236,18 +236,14 @@ export class ChatRAGBuilder extends RAGBuilder {
         this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
       }
 
-      // Load recipe + learning config in parallel (both needed before compose)
+      // Load recipe BEFORE compose (needed for activeSources filtering).
+      // Learning config loads IN PARALLEL with compose (only needed after compose).
+      // This saves ~200-500ms by not waiting for learning config before compose starts.
       const legacyStart = performance.now();
-      const recipePromise = this.loadRecipeContext(contextId, options.recipeId);
-      const learningPromise = this.loadLearningConfig(contextId, personaId);
-
-      const [extractedRecipeContext, extractedLearningConfig] = await Promise.all([
-        recipePromise.then(r => { this._lastRecipeMs = performance.now() - legacyStart; return r; }),
-        learningPromise.then(r => { this._lastLearningMs = performance.now() - legacyStart; return r; })
-      ]);
+      const extractedRecipeContext = await this.loadRecipeContext(contextId, options.recipeId);
+      this._lastRecipeMs = performance.now() - legacyStart;
       recipeStrategy = extractedRecipeContext?.strategy;
       recipeTools = extractedRecipeContext?.tools;
-      learningConfig = extractedLearningConfig;
 
       // Build source context — pass recipe's source activation list if declared
       const sourceContext: RAGSourceContext = {
@@ -267,11 +263,16 @@ export class ChatRAGBuilder extends RAGBuilder {
         activeSources: extractedRecipeContext?.ragTemplateSources,
       };
 
-      // Load core sources via composer (parallel, filtered by recipe's activeSources)
-      // This populates ConversationHistorySource cache — artifact extraction depends on it
+      // Load compose + learning config in parallel
+      // Compose is the heavy operation; learning config is lightweight but independent
       const composeStart = performance.now();
-      const composition = await composer.compose(sourceContext);
+      const learningPromise = this.loadLearningConfig(contextId, personaId);
+      const [composition, extractedLearningConfig] = await Promise.all([
+        composer.compose(sourceContext),
+        learningPromise.then(r => { this._lastLearningMs = performance.now() - legacyStart; return r; })
+      ]);
       composeMs = performance.now() - composeStart;
+      learningConfig = extractedLearningConfig;
       const extracted = this.extractFromComposition(composition);
       legacyMs = performance.now() - legacyStart;
 
@@ -290,7 +291,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       systemPromptSections = extracted.systemPromptSections;
       toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
 
-      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms], artifacts=${artifacts.length})`);
+      // Per-source timing breakdown — sorted slowest first to identify the gating source
+      const sourceTimings = composition.sections
+        .slice()
+        .sort((a, b) => b.loadTimeMs - a.loadTimeMs)
+        .map(s => `${s.sourceName}:${s.loadTimeMs.toFixed(0)}ms`)
+        .join(', ');
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms], artifacts=${artifacts.length}) | ${sourceTimings}`);
     }
 
     // Artifacts already preprocessed by MediaArtifactSource during compose

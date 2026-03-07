@@ -19,8 +19,6 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import { type RAGArtifact, type MediaArtifactMetadata, hasMediaMetadata } from '../shared/RAGTypes';
-import { ORM } from '../../../daemons/data-daemon/server/ORM';
-import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 import { ConversationHistorySource } from './ConversationHistorySource';
 import { Logger } from '../../core/logging/Logger';
@@ -92,47 +90,23 @@ export class MediaArtifactSource implements RAGSource {
   /**
    * Extract media artifacts from conversation history.
    *
-   * Cache-first: reads from ConversationHistorySource's event-maintained cache
-   * to avoid duplicate IPC queries (base64 payloads are massive). Falls back to
-   * a DB query with 5s timeout when cache is empty or expired.
+   * Cache-only: reads from ConversationHistorySource's event-maintained cache.
+   * NEVER does its own DB query — the old fallback caused 5-7s timeouts under
+   * load (14 personas × 50-message queries with base64 payloads = IPC congestion).
+   *
+   * If cache is empty, returns empty. Media context appears on the next RAG build
+   * once ConversationHistorySource has populated the cache. This is consistent with
+   * the non-blocking philosophy: media awareness shouldn't gate cognition.
    */
   private async extractArtifacts(roomId: string, maxMessages: number): Promise<{ artifacts: RAGArtifact[]; messageCount: number; source: string }> {
-    // Try ConversationHistorySource cache first — it's already loaded by RAG compose
-    // and avoids a duplicate DB query (which is expensive with base64 image payloads).
-    let messages: ChatMessageEntity[];
-    let source: string;
-
     const cached = ConversationHistorySource.getCachedRawMessages(roomId);
-    if (cached && cached.length > 0) {
-      messages = cached.slice(0, maxMessages);
-      source = 'cache';
-    } else {
-      // Cache miss — fall back to DB query with timeout.
-      // Large base64 payloads can cause IPC congestion when 10+ personas query simultaneously.
-      const QUERY_TIMEOUT_MS = 5_000;
-      const queryPromise = ORM.query<ChatMessageEntity>({
-        collection: ChatMessageEntity.collection,
-        filter: { roomId },
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit: maxMessages
-      }, 'default');
-
-      const result = await Promise.race([
-        queryPromise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), QUERY_TIMEOUT_MS)),
-      ]);
-
-      if (!result || !result.success || !result.data) {
-        if (!result) {
-          log.warn(`Media scan query timed out after ${QUERY_TIMEOUT_MS}ms for room ${roomId}`);
-        } else {
-          log.warn(`Media scan query failed for room ${roomId}: ${result.error ?? 'no data'}`);
-        }
-        return { artifacts: [], messageCount: 0, source: 'db-fail' };
-      }
-      messages = result.data.map(record => record.data);
-      source = 'db';
+    if (!cached || cached.length === 0) {
+      log.debug(`No cached messages for room ${roomId?.slice(0, 8)} — media will appear next cycle`);
+      return { artifacts: [], messageCount: 0, source: 'cache-miss' };
     }
+
+    const messages = cached.slice(0, maxMessages);
+    const source = 'cache';
 
     const artifacts: RAGArtifact[] = [];
 

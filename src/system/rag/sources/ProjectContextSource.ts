@@ -36,6 +36,16 @@ export class ProjectContextSource implements RAGSource {
   /** Cached main repo git check (stable for process lifetime) */
   private static _isMainRepoGit: boolean | null = null;
 
+  /**
+   * Cached project context per workspace directory.
+   * Git status doesn't change every 3 seconds — 30s cache eliminates
+   * 14×5 = 70 synchronous shell calls per RAG cycle.
+   * Single-flight coalescing prevents thundering herd on cache miss.
+   */
+  private static _contextCache: Map<string, { section: RAGSection; cachedAt: number }> = new Map();
+  private static _contextInflight: Map<string, Promise<RAGSection>> = new Map();
+  private static readonly CONTEXT_CACHE_TTL_MS = 30_000;
+
   isApplicable(context: RAGSourceContext): boolean {
     // If persona has their own project workspace, always applicable
     if (WorkspaceStrategy.getProjectForPersona(context.personaId)) {
@@ -55,9 +65,46 @@ export class ProjectContextSource implements RAGSource {
     const repoPath = wsMeta?.repoPath ?? process.cwd();
     const isPersonalWorkspace = !!wsMeta;
 
+    // Cache key: workspace dir determines git context (shared repo = all personas share one cache entry)
+    const cacheKey = workDir;
+    const cached = ProjectContextSource._contextCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < ProjectContextSource.CONTEXT_CACHE_TTL_MS) {
+      return { ...cached.section, loadTimeMs: performance.now() - startTime };
+    }
+
+    // Single-flight: if another persona is already loading this workspace, piggyback
+    const inflight = ProjectContextSource._contextInflight.get(cacheKey);
+    if (inflight) {
+      const result = await inflight;
+      return { ...result, loadTimeMs: performance.now() - startTime };
+    }
+
+    // Load and cache
+    const initialBranch = wsMeta?.branch ?? '';
+    const loadPromise = this.loadFresh(context, allocatedBudget, workDir, repoPath, isPersonalWorkspace, initialBranch, startTime);
+    ProjectContextSource._contextInflight.set(cacheKey, loadPromise);
+    try {
+      const section = await loadPromise;
+      ProjectContextSource._contextCache.set(cacheKey, { section, cachedAt: Date.now() });
+      return section;
+    } finally {
+      ProjectContextSource._contextInflight.delete(cacheKey);
+    }
+  }
+
+  private async loadFresh(
+    context: RAGSourceContext,
+    allocatedBudget: number,
+    workDir: string,
+    repoPath: string,
+    isPersonalWorkspace: boolean,
+    initialBranch: string,
+    startTime: number,
+  ): Promise<RAGSection> {
+
     try {
       // Resolve branch — from workspace metadata or live git query
-      let branch = wsMeta?.branch ?? '';
+      let branch = initialBranch;
       if (!branch) {
         try {
           branch = execSync('git branch --show-current', {

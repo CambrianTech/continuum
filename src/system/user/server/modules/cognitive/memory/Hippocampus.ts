@@ -43,6 +43,7 @@ import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../.
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
 import { CognitionLogger } from '../../cognition/CognitionLogger';
+import { TieredMemoryCache } from '../../../../../rag/cache/TieredMemoryCache';
 
 import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
@@ -557,6 +558,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       if (consolidatedIds.length > 0) {
         await this.persona.prefrontal?.workingMemory.clearBatch(consolidatedIds as any);
         this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
+
+        // Invalidate L1 memory cache so next RAG build picks up new memories via L2
+        TieredMemoryCache.instance.invalidate(this.persona.id);
 
         // Reset time decay timer (successful consolidation)
         this.adaptiveThreshold.recordConsolidation();

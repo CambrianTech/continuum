@@ -29,60 +29,20 @@ import { TimingHarness } from '../../core/shared/TimingHarness';
 const log = Logger.create('RAGComposer', 'rag');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SHARED IPC CLIENT — Persistent connection to avoid socket congestion
+// SHARED IPC CLIENT — Uses the canonical singleton from RustCoreIPCClient
+// All consumers (RAG, cognition, ORM) share ONE connection.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
-let sharedIPCClient: RustCoreIPCClientType | null = null;
-let ipcConnecting: Promise<void> | null = null;
-
 /**
- * Get or create a shared IPC client with persistent connection.
- * Prevents socket congestion from multiple personas creating connections.
+ * Get the shared IPC client singleton.
+ * All 14 personas + RAG composer share ONE Unix socket connection.
+ * RequestId correlation handles concurrent requests safely.
  */
 async function getSharedIPCClient(): Promise<RustCoreIPCClientType> {
-  // Already have a connected client - reuse it
-  if (sharedIPCClient) {
-    return sharedIPCClient;
-  }
-
-  // Connection in progress - wait for it
-  if (ipcConnecting) {
-    await ipcConnecting;
-    if (sharedIPCClient) {
-      return sharedIPCClient;
-    }
-  }
-
-  // Create new client and connect
-  const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
-  const client = new RustCoreIPCClient(getContinuumCoreSocketPath());
-
-  ipcConnecting = client.connect().then(() => {
-    sharedIPCClient = client;
-    log.info('RAG IPC client connected (shared)');
-
-    // Handle disconnection - clear the shared client so next call reconnects
-    client.on('close', () => {
-      log.warn('RAG IPC client disconnected - will reconnect on next call');
-      if (sharedIPCClient === client) {
-        sharedIPCClient = null;
-      }
-    });
-
-    client.on('error', (err: Error) => {
-      log.error(`RAG IPC client error: ${err.message}`);
-      if (sharedIPCClient === client) {
-        sharedIPCClient = null;
-      }
-    });
-  }).finally(() => {
-    ipcConnecting = null;
-  });
-
-  await ipcConnecting;
-  return client;
+  const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+  return RustCoreIPCClient.getInstanceAsync();
 }
 
 export class RAGComposer {
@@ -230,11 +190,12 @@ export class RAGComposer {
     }
     timer.mark('collect_results');
 
-    // Log slow sources (> 1 second)
-    const allLoadTimes = [...batchResults, ...tsResults].filter(r => r.loadTime > 1000);
-    if (allLoadTimes.length > 0) {
-      log.warn(`Slow RAG sources: ${allLoadTimes.map(s => `${s.success ? s.sourceName : s.source}(${s.loadTime.toFixed(0)}ms)`).join(', ')}`);
-    }
+    // Log ALL source timings for performance diagnosis
+    const allResults = [...batchResults, ...tsResults];
+    const sortedByTime = allResults.slice().sort((a, b) => b.loadTime - a.loadTime);
+    const sourceTimingSummary = sortedByTime
+      .map(s => `${s.success ? (s as any).sourceName : s.source}:${s.loadTime.toFixed(0)}ms`)
+      .join(', ');
 
     // Calculate totals
     const totalTokens = sections.reduce((sum, s) => sum + s.tokenCount, 0);
@@ -242,7 +203,8 @@ export class RAGComposer {
     timer.setMeta('failedSources', failedSources.length);
 
     const record = timer.finish();
-    log.info(`RAG composed: ${sections.length} sections, ${totalTokens} tokens, ${record.totalMs.toFixed(1)}ms (batched=${batchingSources.length}, ts=${typescriptSources.length})`);
+    // Always log source breakdown — critical for finding the gating source in parallel loads
+    log.info(`RAG composed: ${sections.length} sections, ${totalTokens} tokens, ${record.totalMs.toFixed(1)}ms | sources: ${sourceTimingSummary}`);
 
     return {
       sections,
@@ -346,11 +308,6 @@ export class RAGComposer {
     } catch (error: any) {
       const record = sourceTimer.finish();
       log.error(`Batch load failed after ${record.totalMs.toFixed(1)}ms: ${error.message}`);
-
-      // If connection error, clear shared client so next call reconnects
-      if (error.message?.includes('connect') || error.message?.includes('ENOENT')) {
-        sharedIPCClient = null;
-      }
 
       // Return failures for all batched sources
       return batchingSources.map(bs => ({
