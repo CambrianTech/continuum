@@ -1,9 +1,71 @@
-# Media Pipeline Fix Plan
+# Media & Perception Pipeline Architecture
 
-## The Problem
+## Vision: Unified Perception/Action Loop
 
-Media artifacts (images, screenshots, drag-and-drop files) are broken in RAG context.
-AIs used to see images shared in chat — now they don't.
+AIs in Continuum can **see, hear, speak, and act** — each through the same adapter pattern.
+The perception pipeline feeds RAG sources. The action pipeline provides tools. The recipe
+controls which senses are active and which actions are available.
+
+```
+PERCEIVE (inputs → RAG sources)              ACT (tools → outputs)
+─────────────────────────                    ─────────────────────
+See:  video/screenshot/UI state              Speak: TTS → LiveKit
+Hear: audio stream → STT                    Click:  interface/click, type
+Read: chat, code, documents                  Draw:   canvas/stroke/add
+                    │                                    │
+                    ▼                                    ▲
+              ┌──────────┐                         ┌──────────┐
+              │   RAG    │──→ LLM Inference ──→    │  Tools   │
+              │ Sources  │                         │ Executor │
+              └──────────┘                         └──────────┘
+                    │                                    │
+              Recipe controls                    Recipe controls
+              which sources                      which tools
+              activate                           are available
+```
+
+### Tiered Perception (parallel to audio pipeline)
+
+| Tier | Audio Pipeline | Visual Pipeline | Cost |
+|------|---------------|-----------------|------|
+| T0 (trigger) | VAD (voice activity) | YOLO / semantic segmentation | Cheap, every frame |
+| T1 (transcribe) | STT transcription | VisionDescriptionService | Medium, on trigger |
+| T2 (raw) | Audio-native models hear PCM | Vision models see raw frame | Full, by choice |
+
+Each tier flows into the timeline. All consumers read from the timeline.
+Processing is lazy, cached, and shared — one inference serves all consumers.
+
+### Use Cases Enabled
+
+- **Live chat**: AIs see shared images, describe them for text-only peers
+- **Live video**: AIs see the room, each other, the human — by choice via recipe
+- **Web browsing**: AIs screenshot pages, click buttons, navigate autonomously
+- **Gaming**: AIs see the screen (YOLO for objects), click/type to play
+- **Code review**: AIs see screenshots of UI, correlate with code changes
+- **Whiteboard**: AIs see drawings, describe diagrams, suggest changes
+
+All use the same pipeline: source → MediaFrame → lazy representation → RAG → LLM → tool action.
+
+---
+
+## Status
+
+| Priority | Description | Status |
+|----------|------------|--------|
+| P1 | Fix artifact extraction race condition | DONE (artifacts=0.0ms cache hit) |
+| P2 | MediaArtifactSource as proper RAGSource | Planned |
+| P3 | Vision description cache + in-flight dedup | DONE (1 call, not 11) |
+| P4 | MediaFrame interface (CBarFrame) | Designed below |
+| P5 | Recipe-driven media config | Designed below |
+| P6 | LivePerceptionSource for video/avatar | Designed below |
+
+---
+
+## Completed Fixes
+
+### P1: Race Condition Fix (DONE)
+
+Media artifacts (images, screenshots, drag-and-drop files) were broken in RAG context.
 
 ### Root Cause: Race Condition in ChatRAGBuilder
 
@@ -112,32 +174,15 @@ export class MediaArtifactSource implements RAGSource {
 
 ---
 
-## Priority 3: Lazy Vision Description Cache
+## P3: Vision Description Cache (DONE)
 
-**Problem**: `VisionDescriptionService.describeBase64()` is called per-image per-non-vision-model.
-With 3 text-only personas and 5 images, that's 15 vision API calls for the same 5 descriptions.
+**Problem**: 11 personas sharing one image = 11 independent LLaVA calls (100-150s each).
 
-**Fix**: Content-addressed description cache.
-
-```typescript
-class VisionDescriptionCache {
-  // Key = hash of base64 content (first 1KB + length for speed)
-  // Value = { description, timestamp, model }
-  private cache: Map<string, CachedDescription> = new Map();
-
-  async getOrDescribe(base64: string, mimeType: string): Promise<string | null> {
-    const key = this.contentKey(base64);
-    const cached = this.cache.get(key);
-    if (cached && Date.now() - cached.timestamp < TTL) return cached.description;
-
-    const desc = await visionService.describeBase64(base64, mimeType);
-    if (desc) this.cache.set(key, { description: desc.description, timestamp: Date.now() });
-    return desc?.description ?? null;
-  }
-}
-```
-
-**Performance**: Each image described exactly once regardless of how many personas need it.
+**Fix**: Content-addressed cache + in-flight deduplication in `VisionDescriptionService`.
+- Key: SHA-256 of first 4KB + total length (~0ms to compute)
+- In-flight dedup: concurrent callers await the same promise
+- LRU cache: 500 entries, 5 min TTL
+- **Result**: 1 `Selected model` + 9 `Coalescing` in production logs
 
 ---
 
@@ -242,4 +287,148 @@ P5 (recipe media config)    ← After P4
 ```
 
 P1 is a reorder of 3 lines. P2 extracts existing code into proper RAGSource.
-P3 adds caching. P4-P5 are architecture that builds on P1-P3.
+P3 adds caching. P4-P6 are architecture that builds on P1-P3.
+
+---
+
+## Priority 6: LivePerceptionSource — Video/Avatar Awareness
+
+RAGSource that gives AIs visual awareness of live video calls and avatar scenes.
+Same pattern as VoiceConversationSource (which gives AIs audio awareness via timeline).
+
+### Architecture
+
+```
+Live Video Feed (Bevy/LiveKit)
+        │
+        ▼
+  SceneChangeDetector (Rust, cheap)
+  - Frame diff threshold (% pixels changed)
+  - YOLO object detection (optional, Rust ONNX)
+  - Semantic segmentation (optional, Rust ONNX)
+  - Emits: scene_metadata events with structured data
+        │
+        ▼
+  MediaFrame (cached, content-addressed)
+  - Lazily populated representations
+  - image/base64, image/description, image/objects
+  - One VisionDescriptionService call per unique frame
+        │
+        ▼
+  LivePerceptionSource (RAGSource)
+  - Subscribes to scene_metadata events
+  - Provides system prompt section: "Current scene: ..."
+  - Budget-aware: drops old frames, keeps N most recent
+  - Recipe-activated: only fires when recipe includes 'live-perception'
+```
+
+### SceneChangeDetector (Rust module)
+
+Runs in the Bevy render pipeline or as a post-processing step.
+Cheap enough to run every frame or every Nth frame.
+
+```rust
+pub struct SceneChangeDetector {
+    last_frame_hash: u64,       // Perceptual hash of last processed frame
+    change_threshold: f32,       // 0.0-1.0, how much change triggers event
+    detection_interval: u32,     // Process every Nth frame (e.g., every 15 = 1/sec at 15fps)
+    yolo_model: Option<OrtSession>,  // Optional YOLO for object detection
+}
+
+// Emits via MessageBus:
+pub struct SceneMetadata {
+    pub call_id: String,
+    pub timestamp_ms: u64,
+    pub change_type: SceneChangeType,  // PersonMoved, ObjectAppeared, SceneChanged, etc.
+    pub objects: Vec<DetectedObject>,   // YOLO results if model loaded
+    pub frame_hash: u64,               // For dedup
+}
+```
+
+### LivePerceptionSource (TypeScript RAGSource)
+
+```typescript
+export class LivePerceptionSource implements RAGSource {
+  readonly name = 'live-perception';
+  readonly priority = 70;
+  readonly defaultBudgetPercent = 8;
+
+  isApplicable(context: RAGSourceContext): boolean {
+    // Only active during live calls with visual component
+    return !!context.options.voiceSessionId;
+  }
+
+  async load(context: RAGSourceContext, budget: number): Promise<RAGSection> {
+    // Get latest scene metadata from event buffer
+    // If scene changed recently, get/cache description via VisionDescriptionService
+    // Return as system prompt section: "Visual context: ..."
+    // Include structured YOLO data if available
+  }
+}
+```
+
+### Recipe Integration
+
+```json
+{
+  "name": "live-call-with-vision",
+  "ragTemplate": {
+    "sources": [
+      "conversation-history",
+      "persona-identity",
+      "voice-conversation",
+      "live-perception",
+      "media-artifacts"
+    ],
+    "mediaConfig": {
+      "maxFrameSnapshots": 3,
+      "sceneChangeThreshold": 0.3,
+      "enableYolo": true,
+      "preferredVisionModel": "candle"
+    }
+  },
+  "tools": ["voice/synthesize", "interface/screenshot", "canvas/vision"]
+}
+```
+
+### Command Interface
+
+All perception capabilities are command-callable:
+
+| Command | Purpose |
+|---------|---------|
+| `interface/screenshot` | Capture current browser/UI state |
+| `avatar/snapshot` | Capture avatar scene for a slot |
+| `canvas/vision` | Describe canvas content |
+| `media/process` | Process media through perception tiers |
+
+Future additions:
+| Command | Purpose |
+|---------|---------|
+| `live/snapshot` | Capture live call room view |
+| `live/scene-metadata` | Get latest YOLO/segmentation results |
+| `live/perception-config` | Adjust detection thresholds at runtime |
+
+---
+
+## The Perception/Action Symmetry
+
+Every sense has a corresponding action. Every input adapter has an output adapter.
+The recipe controls both sides:
+
+| Sense (RAG Source) | Action (Tool) | Domain |
+|-------------------|---------------|--------|
+| VoiceConversationSource | voice/synthesize (TTS) | Audio |
+| LivePerceptionSource | avatar/snapshot, live/snapshot | Video |
+| ConversationHistorySource | collaboration/chat/send | Chat |
+| WidgetContextSource | interface/click, type, navigate | UI |
+| CodebaseSearchSource | code/edit, code/write | Code |
+| MediaArtifactSource | media/process | Media |
+
+AIs are citizens with senses and capabilities. Recipes define their role.
+The same AI with a "web researcher" recipe browses websites.
+With a "game player" recipe it plays games.
+With a "voice call" recipe it talks.
+With a "live observer" recipe it watches and describes.
+
+The infrastructure is the same. Only the recipe changes.
