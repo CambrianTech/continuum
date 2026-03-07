@@ -175,7 +175,7 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
     database: {
       root: path.join(baseRoot, 'data'),
-      main: path.join(baseRoot, 'data', 'database.sqlite'),
+      main: process.env.DATABASE_URL || 'postgres://joel@localhost:5432/continuum',
       backup: path.join(baseRoot, 'data', 'backups'),
     },
 
