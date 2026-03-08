@@ -399,6 +399,175 @@ This builds on top of the proven Dojo architecture:
   --provider="anthropic"
 ```
 
+## Competitive Cohort Training -- The AP Classroom Effect
+
+### The Insight
+
+A student trained in isolation learns from the teacher. A student trained alongside *better* students learns from the environment. This is the AP classroom effect: you don't need a perfect SAT score to beat perfect-SAT peers in physics -- you need the *pressure* of competing alongside them.
+
+In our system: Claude Code, DeepSeek, Groq, and a local Candle model all take the same cascading exam. They see each other's solutions after each round. A SmolLM2 training against Claude's solutions learns patterns it could never discover solo. Claude seeing DeepSeek's more token-efficient approach learns something too. Different architectures have different strengths.
+
+### Architecture: Multi-Student Sessions
+
+The teacher runs one curriculum. Multiple students take the same exam simultaneously. After grading, solutions are shared.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    TEACHER SENTINEL (Cohort Mode)                       │
+│                                                                         │
+│  1. Design cascading curriculum (same as single-student)                │
+│  2. For each stage:                                                     │
+│     a. Emit exam to ALL students simultaneously                        │
+│     b. Collect all student responses                                    │
+│     c. Grade each against constraints                                   │
+│     d. RANK students by performance                                     │
+│     e. Share top solutions with all students as learning material       │
+│     f. Generate comparative training pairs:                             │
+│        - Student A's approach vs Student B's (better) approach          │
+│        - WHY B's approach is better (teacher explains)                  │
+│     g. Run downstream integration on ALL solutions                      │
+│     h. Retroactive signals: which student's Stage 1 survived Stage 5?  │
+│  3. After all stages:                                                   │
+│     a. Build per-student training datasets including:                   │
+│        - Own attempts + corrections                                     │
+│        - Peer solutions (labeled as "expert approach")                  │
+│        - Comparative analysis from teacher                              │
+│     b. Train each student's LoRA                                        │
+│     c. Re-examine: did weaker students improve toward stronger ones?    │
+│     d. Key metric: did ANY student exceed ALL others on retake?         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Cohort Event Taxonomy
+
+```
+academy:{sessionId}:cohort:enrolled          — All students registered
+academy:{sessionId}:stage:{N}:exam:ready     — Exam broadcast to all students
+academy:{sessionId}:stage:{N}:response:{studentId}  — Individual response
+academy:{sessionId}:stage:{N}:all-responses  — All responses collected
+academy:{sessionId}:stage:{N}:rankings       — Teacher's ranked results
+academy:{sessionId}:stage:{N}:peer-review    — Shared solutions for learning
+academy:{sessionId}:cohort:complete          — Final rankings + metrics
+```
+
+### Comparative Training Pairs
+
+The most valuable training data comes from comparing approaches:
+
+```
+STAGE 3: "Implement spatial indexing for collision detection"
+
+Student A (Claude, Sonnet 4.5):
+  Used: KD-tree with bulk loading
+  Result: 1.2ms per frame, passed constraint
+
+Student B (DeepSeek):
+  Used: Uniform grid with spatial hashing
+  Result: 0.4ms per frame, passed constraint (3x faster)
+
+Student C (Local Candle, SmolLM2):
+  Used: Brute force O(n²)
+  Result: 48ms per frame, FAILED constraint
+
+TRAINING PAIRS GENERATED:
+
+For Student A (learn from B):
+  INPUT:  "Implement spatial indexing, budget <2ms, 10K particles"
+  WORSE:  KD-tree with bulk loading (1.2ms — correct but suboptimal)
+  BETTER: Uniform grid with spatial hashing (0.4ms — 3x faster)
+  WHY:    "Uniform grids have O(1) lookup for fixed-radius queries.
+           KD-trees optimize for variable-radius but pay log(n) overhead
+           that's unnecessary when collision radius is constant."
+
+For Student C (learn from both A and B):
+  INPUT:  "Implement spatial indexing, budget <2ms, 10K particles"
+  BAD:    Brute force O(n²) (48ms — 24x over budget)
+  GOOD:   Uniform grid with spatial hashing (0.4ms)
+  WHY:    "O(n²) is never acceptable for real-time with n>100.
+           Spatial partitioning reduces to O(n) average case."
+```
+
+Student C's LoRA trains on the *best* solution from the cohort. It won't match Claude or DeepSeek at inference, but its architectural instincts improve dramatically -- it learns "never try O(n²) for real-time" from seeing what the strong students do.
+
+### Grading Against Known-Good Models
+
+The teacher doesn't just grade correctness -- it grades against what the *best available model* would produce. This creates an aspirational ceiling:
+
+```typescript
+interface CohortGrading {
+  // Absolute: did it meet constraints?
+  passedConstraints: boolean;
+
+  // Relative: how does it compare to the best student?
+  rankInCohort: number;        // 1 = best
+  percentileScore: number;     // 0-100
+
+  // Aspirational: how close to the best-known solution?
+  bestKnownSolution?: string;  // From strongest model in cohort
+  gapAnalysis: string;         // Teacher's analysis of what's missing
+
+  // Growth: improvement from previous round
+  previousRank?: number;
+  rankDelta?: number;          // Negative = improved (moved up)
+}
+```
+
+### The Exceeding-Limits Effect
+
+The real breakthrough isn't that weak models learn from strong ones. It's that weak models can *exceed their expected ceiling* when trained in a competitive environment.
+
+Mechanisms:
+1. **Pattern transfer**: A 3B model can't reason like a 70B model, but it CAN memorize the *patterns* that 70B reasoning produces. KD-tree → spatial hash isn't reasoning -- it's a learned heuristic.
+2. **Constraint internalization**: Seeing "48ms FAILED, 0.4ms PASSED" enough times, even a small model learns "real-time = spatial partitioning, not brute force."
+3. **Architectural vocabulary**: The small model's LoRA builds a vocabulary of solutions it never would have generated independently. It becomes a specialist that knows one domain deeply.
+4. **Competitive pressure**: Models that see rankings improve faster than models trained in isolation. The teacher can emphasize: "You are currently ranked 4th of 4. Student B solved this in 0.4ms. Your approach took 48ms."
+
+This is exactly the AP classroom effect: the environment, not raw capability, determines the ceiling.
+
+### New Academy Session Mode: Cohort
+
+```bash
+./jtag genome/academy-session \
+  --mode=cascade-cohort \
+  --skill="real-time-particle-system" \
+  --targetHardware="m1" \
+  --stages=5 \
+  --students="helper,deepseek,local-assistant" \
+  --teacher-provider="anthropic" \
+  --share-solutions=true
+```
+
+### Cohort Metrics
+
+```typescript
+interface CohortMetrics extends CascadeMetrics {
+  // Per-student performance
+  studentRankings: {
+    studentId: string;
+    model: string;
+    provider: string;
+    finalRank: number;
+    initialRank: number;
+    rankImprovement: number;
+    passRate: number;
+    avgConstraintMargin: number;  // How far under budget (positive = headroom)
+  }[];
+
+  // Cohort dynamics
+  peerLearningEfficiency: number;   // How much did sharing solutions help?
+  ceilingExceeded: boolean;         // Did any student exceed expected performance?
+  convergenceRate: number;          // How quickly did rankings stabilize?
+
+  // Cross-pollination: which student pairs learned most from each other
+  pairwiseLearning: {
+    from: string;       // Student whose solution was studied
+    to: string;         // Student who improved from it
+    stageIndex: number;
+    improvementDelta: number;
+  }[];
+}
+```
+
 ## Why This Works
 
 1. **Temporal credit assignment** connects early decisions to late failures -- the hardest training signal to generate
@@ -407,5 +576,7 @@ This builds on top of the proven Dojo architecture:
 4. **CodingAgent integration** means students work in real environments with real tools, not toy examples
 5. **The delta** between naive and retrained attempts quantifies whether the model learned foresight
 6. **Domain-agnostic**: the dependency graph + retroactive grading pattern works for code, prose, music, architecture
+7. **Competitive cohort** -- peers motivate AND you distill their knowledge by merely being together. A 3B model training alongside a 70B model absorbs architectural patterns it could never discover solo
+8. **Free compute for the hard work** -- API-based students (Claude, DeepSeek, Groq) run on remote GPUs, not our M1. The expensive inference happens on someone else's hardware. We only pay local GPU for the LoRA training step, which is small and fast. The exam-taking, solution-generating, comparative-analysis work is all remote API calls
 
-The expert doesn't "know everything upfront." The expert makes decisions that *leave room* for what they don't know yet. That's what cascading curriculum training produces.
+The expert doesn't "know everything upfront." The expert makes decisions that *leave room* for what they don't know yet. That's what cascading curriculum training produces -- amplified by competition with peers who think differently.
