@@ -5,9 +5,8 @@
  * Essential for AI discovery — find other personas, check who's online, discover collaboration partners.
  */
 
-import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
-import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { UserType, UserStatus } from '@system/data/entities/UserEntity';

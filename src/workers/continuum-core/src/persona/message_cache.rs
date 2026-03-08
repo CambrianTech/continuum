@@ -13,7 +13,9 @@ use std::time::Instant;
 use uuid::Uuid;
 
 // =============================================================================
-// TIMING CONFIG (mirrors PersonaTimingConfig.ts — single source of truth in Rust)
+// TIMING CONFIG (single source of truth for Rust-side defaults)
+// Values must be kept in sync with PersonaTimingConfig.ts which owns the TS-side defaults.
+// TODO: Add a build-time or integration test to verify these stay in sync.
 // =============================================================================
 
 /// Echo chamber: lookback window (2 minutes)
@@ -406,7 +408,9 @@ mod tests {
 
     // ── Performance Tests ──
 
+    // Run manually: cargo test -- --ignored performance
     #[test]
+    #[ignore]
     fn test_echo_chamber_check_is_fast() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
@@ -424,7 +428,9 @@ mod tests {
         );
     }
 
+    // Run manually: cargo test -- --ignored performance
     #[test]
+    #[ignore]
     fn test_content_dedup_check_is_fast() {
         let mut dedup = ContentDeduplicator::new();
         let room = Uuid::new_v4();

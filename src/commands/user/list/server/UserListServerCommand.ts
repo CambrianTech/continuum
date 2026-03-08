@@ -22,15 +22,17 @@ export class UserListServerCommand extends CommandBase<UserListParams, UserListR
   async execute(params: UserListParams): Promise<UserListResult> {
     const limit = params.limit ?? 50;
 
-    // Build ORM filter from params
+    // Build ORM filter from params (type/status are DB-level filters)
     const filter: Record<string, string> = {};
     if (params.type) filter.type = params.type;
     if (params.status) filter.status = params.status;
 
+    // Query WITHOUT limit — post-query filters (provider, capability) may discard
+    // rows, so we need the full filtered set to report accurate total and avoid
+    // missing matches that fall outside an arbitrary DB-level limit.
     const result = await ORM.query<UserEntity>({
       collection: COLLECTIONS.USERS,
       filter,
-      limit,
       sort: [{ field: 'lastActiveAt', direction: 'desc' }],
     }, 'default');
 
@@ -64,10 +66,14 @@ export class UserListServerCommand extends CommandBase<UserListParams, UserListR
       });
     }
 
+    // total reflects full post-filtered count; slice to requested limit for response
+    const total = users.length;
+    const pagedUsers = users.slice(0, limit);
+
     return createUserListResultFromParams(params, {
       success: true,
-      users,
-      total: users.length,
+      users: pagedUsers,
+      total,
     });
   }
 

@@ -49,6 +49,15 @@ export class PersonaMessageGate {
     PersonaMessageGate._rustBridges.add(bridge);
   }
 
+  /**
+   * Unregister a Rust bridge during persona shutdown to prevent leaks.
+   */
+  static unregisterRustBridge(bridge: RustCognitionBridge | null): void {
+    if (bridge) {
+      PersonaMessageGate._rustBridges.delete(bridge);
+    }
+  }
+
   private static initMessageCache(): void {
     if (PersonaMessageGate._cacheInitialized) return;
     PersonaMessageGate._cacheInitialized = true;

@@ -106,6 +106,7 @@ import { getTrainingBuffer } from './modules/TrainingBuffer';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { TimingHarness } from '../../core/shared/TimingHarness';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
+import { PersonaMessageGate } from './modules/PersonaMessageGate';
 import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
@@ -2145,6 +2146,9 @@ export class PersonaUser extends AIUser {
     } catch (e) {
       this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
     }
+
+    // Unregister Rust bridge from PersonaMessageGate to prevent leak
+    PersonaMessageGate.unregisterRustBridge(this._rustCognition);
 
     // Unregister inbox from global registry
     unregisterPersonaInbox(this.id);
