@@ -15,6 +15,7 @@ import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemPaths } from '@system/core/config/SystemPaths';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ChatExportServerCommand extends ChatExportCommand {
@@ -41,7 +42,11 @@ export class ChatExportServerCommand extends ChatExportCommand {
 
     // Write to file or return as string
     if (params.output) {
-      const filepath = path.resolve(params.output);
+      // Resolve relative paths against safe exports directory, not cwd (which is src/)
+      // This prevents bare filenames like "export.md" from polluting the repo
+      const filepath = path.isAbsolute(params.output)
+        ? params.output
+        : path.join(SystemPaths.shared.exports, params.output);
       const dir = path.dirname(filepath);
 
       // Ensure directory exists

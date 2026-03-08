@@ -131,6 +131,8 @@ export interface ContinuumPaths {
   shared: {
     root: string;
     rooms: (roomId: string) => string;
+    /** Default directory for file exports (chat/export, etc.) */
+    exports: string;
   };
 
   /** Generated reports */
@@ -298,6 +300,7 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
       rooms: (roomId: string): string => {
         return path.join(baseRoot, 'shared', 'rooms', roomId);
       },
+      exports: path.join(baseRoot, 'shared', 'exports'),
     },
 
     reports: {
