@@ -23,7 +23,7 @@ export class GenomeLayersServerCommand extends CommandBase<GenomeLayersParams, G
 
   async execute(params: GenomeLayersParams): Promise<GenomeLayersResult> {
     try {
-      const { personaId } = params;
+      const { personaId, personaName } = params;
 
       if (!personaId) {
         return createGenomeLayersResultFromParams(params, {
@@ -32,7 +32,7 @@ export class GenomeLayersServerCommand extends CommandBase<GenomeLayersParams, G
         });
       }
 
-      const adapters = AdapterStore.discoverForPersona(personaId);
+      const adapters = AdapterStore.discoverForPersona(personaId, personaName);
 
       const layers = adapters.map(a => ({
         name: a.manifest.name,

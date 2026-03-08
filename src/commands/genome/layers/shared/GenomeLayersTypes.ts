@@ -12,6 +12,8 @@ import { Commands } from '../../../../system/core/shared/Commands';
 export interface GenomeLayersParams extends CommandParams {
   /** Persona ID to query adapters for */
   personaId: string;
+  /** Persona display name — fallback matching when UUID changes after reseed */
+  personaName?: string;
 }
 
 /** Summary of a single LoRA adapter layer */

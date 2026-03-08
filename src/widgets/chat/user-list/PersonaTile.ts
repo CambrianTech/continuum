@@ -88,7 +88,20 @@ export class PersonaTile extends LitElement {
   }
 
   /**
-   * Re-subscribe when userId changes (EntityScroller may reuse elements)
+   * First render complete — all properties set by parent are available.
+   * This is the reliable point to start event subscriptions and data fetching.
+   */
+  protected override firstUpdated(): void {
+    if (this._isAI && this.userId) {
+      if (this._unsubs.length === 0) this._subscribeToEvents();
+      this._fetchGenomeLayers();
+    }
+  }
+
+  /**
+   * Re-subscribe when userId changes (EntityScroller may reuse elements).
+   * Also handles the case where userType arrives after userId — re-check
+   * on every property change if we haven't subscribed yet.
    */
   override updated(changedProperties: Map<string, unknown>): void {
     super.updated(changedProperties);
@@ -98,6 +111,10 @@ export class PersonaTile extends LitElement {
         this._subscribeToEvents();
         this._fetchGenomeLayers();
       }
+    } else if (this._isAI && this.userId && this._unsubs.length === 0) {
+      // Properties arrived in different order — subscribe now
+      this._subscribeToEvents();
+      this._fetchGenomeLayers();
     }
   }
 
@@ -238,12 +255,15 @@ export class PersonaTile extends LitElement {
     if (!this.userId) return;
 
     try {
-      const result = await GenomeLayers.execute({ personaId: this.userId });
+      const result = await GenomeLayers.execute({
+        personaId: this.userId,
+        personaName: this.displayName,
+      });
       if (result.success) {
         this._genomeLayers = result.layers;
       }
     } catch {
-      // Graceful absence — no genome section if command fails
+      // Command not available in browser or other error — leave bars inactive
       this._genomeLayers = [];
     }
   }

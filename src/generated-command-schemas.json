@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-08T18:24:35.492Z",
+  "generated": "2026-03-08T20:54:53.790Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4089,6 +4089,11 @@
           "type": "string",
           "required": true,
           "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
         }
       }
     },
