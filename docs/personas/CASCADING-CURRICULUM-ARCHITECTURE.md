@@ -580,3 +580,140 @@ interface CohortMetrics extends CascadeMetrics {
 8. **Free compute for the hard work** -- API-based students (Claude, DeepSeek, Groq) run on remote GPUs, not our M1. The expensive inference happens on someone else's hardware. We only pay local GPU for the LoRA training step, which is small and fast. The exam-taking, solution-generating, comparative-analysis work is all remote API calls
 
 The expert doesn't "know everything upfront." The expert makes decisions that *leave room* for what they don't know yet. That's what cascading curriculum training produces -- amplified by competition with peers who think differently.
+
+## Recipe → Academy → Genome: The Complete Loop
+
+### The Unifying Insight
+
+A **recipe** is a specification of WHAT to accomplish. An **Academy session** is HOW to get good at it. The **genome** is accumulated skill that means you NEVER start from ground zero.
+
+These three systems form a closed loop:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                                                                      │
+│   RECIPE                                                             │
+│   "Build a real-time video pipeline with GPU→GPU zero-copy"          │
+│       │                                                              │
+│       ▼                                                              │
+│   GENOME ASSEMBLY (start position)                                   │
+│   Page in existing LoRAs: metal-compute, video-encoding,             │
+│   memory-management. You already know 60% of this.                   │
+│       │                                                              │
+│       ▼                                                              │
+│   ACADEMY CURRICULUM (auto-designed FROM recipe)                     │
+│   Teacher reads recipe → identifies skill gaps →                     │
+│   designs cascading stages targeting ONLY the gaps.                  │
+│   Stage 1: IOSurface double-buffering (gap identified)               │
+│   Stage 2: NV12 compute shader (gap identified)                      │
+│   Stage 3: Integration with existing pipeline (uses genome skills)   │
+│       │                                                              │
+│       ▼                                                              │
+│   COHORT TRAINING (class project)                                    │
+│   Multiple students execute recipe collaboratively.                  │
+│   Each brings their specialty LoRAs. They learn from each other.     │
+│   Coordination itself is training data.                              │
+│       │                                                              │
+│       ▼                                                              │
+│   BETTER LoRAs PRODUCED                                              │
+│   New adapters: iosurface-buffering, nv12-compute-shader             │
+│   Improved adapters: metal-compute (now knows IOSurface patterns)    │
+│       │                                                              │
+│       ▼                                                              │
+│   GENOME UPDATED ──────────────────────────────────────► NEXT RECIPE │
+│   Next time someone needs GPU→GPU pipeline:                          │
+│   genome has 90% coverage, Academy targets only the 10% gap.         │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Recipe as Curriculum Specification
+
+You don't hand-design curricula. You feed a recipe to the Academy and it reverse-engineers the curriculum:
+
+```bash
+# The recipe already exists (RAG recipe for a persona or task)
+# The Academy reads it and designs training to execute it well
+
+./jtag genome/academy-session \
+  --mode=cascade-cohort \
+  --from-recipe="gpu-video-pipeline" \
+  --students="helper,deepseek,local-assistant" \
+  --target-hardware="m1"
+```
+
+The teacher sentinel:
+1. Reads the recipe (steps, tools, constraints, expected outputs)
+2. Queries the genome: which LoRA adapters already exist for relevant skills?
+3. Identifies gaps: which recipe steps have NO adapter coverage?
+4. Designs cascading curriculum targeting ONLY the gaps
+5. Runs cohort training with students collaborating (class project)
+6. Deposits new LoRA adapters back into the genome
+
+### Why You Never Start from Ground Zero
+
+The genome is an ever-growing library of specialized skills:
+
+```
+Iteration 0:  Empty genome. Academy trains everything from scratch.
+              Slow, expensive, but produces first LoRA layers.
+
+Iteration 1:  Genome has: basic-rust, basic-typescript, data-structures.
+              New recipe "build a web server" → Academy only trains
+              HTTP handling and routing (gaps). Data structures are
+              already in the genome.
+
+Iteration 5:  Genome has: 30 adapters covering most common patterns.
+              New recipe "build a game engine" → Academy identifies
+              3 gap areas (physics, rendering, ECS). Trains only those.
+              Pages in existing: data-structures, memory-management,
+              concurrency, optimization.
+
+Iteration 20: Genome has: 100+ adapters. Most recipes are mostly
+              ASSEMBLY (page in existing skills) + light fine-tuning
+              on domain-specific gaps. Academy sessions are short
+              because the floor is high.
+```
+
+### Class Projects: Collaborative Recipe Execution
+
+When a recipe is complex enough (like "build a video call system"), it becomes a class project. Multiple students work on the same codebase, each contributing their specialty:
+
+```
+Recipe: "Real-time video call with avatar rendering"
+
+Student A (Claude, strong at architecture):
+  → Designs the module structure, interfaces, data flow
+  → LoRA specialty: system-design, api-design
+
+Student B (DeepSeek, strong at optimization):
+  → Optimizes the hot paths, memory layout, GPU pipeline
+  → LoRA specialty: performance-optimization, memory-management
+
+Student C (Local Candle, learning):
+  → Implements utility functions, tests, documentation
+  → LoRA specialty: testing, code-quality (improving from peers)
+
+Coordination training data captured:
+  → When to defer to a peer's specialty
+  → How to divide work along skill boundaries
+  → How to integrate independently-developed modules
+  → How to review and improve each other's code
+```
+
+The coordination patterns themselves become LoRA training data. Students learn not just HOW to code, but WHEN to lead and when to support -- social intelligence applied to engineering.
+
+### The Compounding Effect
+
+Each recipe execution makes the next one easier:
+
+| Recipe # | Genome Coverage | Academy Work | Time |
+|----------|----------------|--------------|------|
+| 1 | 0% | Train everything | Hours |
+| 5 | 40% | Train 60% (gaps) | Shorter |
+| 20 | 80% | Train 20% (novel parts) | Minutes |
+| 50 | 95% | Fine-tune 5% (edge cases) | Fast |
+
+This is how you learn to do *anything*. Not by having one massive model that knows everything, but by accumulating a genome of specialized skills that assemble on demand and grow with every project.
+
+The recipe is the goal. The genome is the starting position. The Academy is the path between them. And the path gets shorter every time.
