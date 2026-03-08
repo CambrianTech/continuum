@@ -17,6 +17,7 @@ import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/sha
 import { hasMediaMetadata } from '../../../rag/shared/RAGTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import type { ProcessableMessage } from './QueueItemTypes';
+import type { SocialSignals } from '../../../../shared/generated';
 
 export type LLMMessage = { role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] };
 
@@ -42,11 +43,19 @@ export class PersonaPromptAssembler {
   assembleMessages(
     fullRAGContext: RAGContext,
     originalMessage: ProcessableMessage,
+    socialSignals?: SocialSignals,
   ): LLMMessage[] {
     const messages: LLMMessage[] = [];
 
     // System prompt from RAG builder
-    const systemPrompt = fullRAGContext.identity.systemPrompt;
+    let systemPrompt = fullRAGContext.identity.systemPrompt;
+
+    // Inject social awareness signals (Rust-collected, microsecond-fast)
+    // These are INFORMATION for the LLM to make its own social decisions.
+    if (socialSignals) {
+      systemPrompt += this.buildSocialAwarenessBlock(socialSignals);
+    }
+
     this.log(`📋 ${this.personaName}: [ASSEMBLE] ${systemPrompt.length} chars (~${Math.ceil(systemPrompt.length / 4)} tokens), provider=${this.modelConfig.provider}`);
 
     messages.push({ role: 'system', content: systemPrompt });
@@ -68,6 +77,34 @@ export class PersonaPromptAssembler {
 
     this.log(`✅ ${this.personaName}: [ASSEMBLE] LLM message array built (${messages.length} messages)`);
     return messages;
+  }
+
+  /**
+   * Build social awareness block from Rust-collected signals.
+   * The LLM uses this to make its own social decisions (not hardcoded gates).
+   */
+  private buildSocialAwarenessBlock(signals: SocialSignals): string {
+    const lines: string[] = ['\n\n[Social Awareness]'];
+
+    if (signals.ai_messages_recent > 0) {
+      lines.push(`- ${signals.ai_messages_recent} AI messages in this room in the last 2 minutes`);
+    }
+    if (!signals.human_spoke_recently) {
+      lines.push('- No human has spoken recently in this room');
+    }
+    if (signals.has_directed_mention && !signals.is_mentioned) {
+      lines.push('- This message is directed at another persona (not you)');
+    }
+    if (signals.seconds_since_last_response != null) {
+      const secs = Math.round(signals.seconds_since_last_response);
+      lines.push(`- You last responded ${secs}s ago in this room`);
+    }
+    if (signals.response_count_this_session != null && signals.response_cap != null) {
+      lines.push(`- You have responded ${signals.response_count_this_session}/${signals.response_cap} times this session`);
+    }
+
+    lines.push('Use this awareness to decide naturally whether to respond. You are free to speak or stay silent based on your own judgment.');
+    return lines.join('\n');
   }
 
   /**

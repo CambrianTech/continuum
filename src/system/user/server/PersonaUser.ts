@@ -1569,7 +1569,8 @@ export class PersonaUser extends AIUser {
   public async respondToMessage(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
-    preBuiltRagContext?: PipelineRAGContext
+    preBuiltRagContext?: PipelineRAGContext,
+    socialSignals?: import('../../../shared/generated').SocialSignals
   ): Promise<void> {
     // Check dormancy state before responding
     const shouldRespond = this.responseGenerator.shouldRespondToMessage(
@@ -1582,7 +1583,7 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext);
+    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext, socialSignals);
 
     // Mark tool results as processed to prevent infinite loops
     if (result.success && result.storedToolResultIds.length > 0) {

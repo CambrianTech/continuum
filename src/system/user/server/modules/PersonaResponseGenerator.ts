@@ -53,6 +53,7 @@ import { PersonaPromptAssembler } from './PersonaPromptAssembler';
 import { PersonaResponseValidator } from './PersonaResponseValidator';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
+import type { SocialSignals } from '../../../../shared/generated';
 /**
  * Response generation result
  */
@@ -204,7 +205,8 @@ export class PersonaResponseGenerator {
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
-    preBuiltRagContext?: RAGContext
+    preBuiltRagContext?: RAGContext,
+    socialSignals?: SocialSignals
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     // Voice modality is a typed field — no cast needed
@@ -255,7 +257,7 @@ export class PersonaResponseGenerator {
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM (delegated to PersonaPromptAssembler)
       const phase32Start = Date.now();
-      const messages = this.promptAssembler.assembleMessages(fullRAGContext, originalMessage);
+      const messages = this.promptAssembler.assembleMessages(fullRAGContext, originalMessage, socialSignals);
 
       // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider, this.modelConfig);

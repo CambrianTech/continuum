@@ -32,7 +32,7 @@ import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
-import type { SenderType, FullEvaluateResult } from '../../../../shared/generated';
+import type { SenderType, FullEvaluateResult, SocialSignals } from '../../../../shared/generated';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 // personaSleepManager no longer needed — sleep mode gating moved to Rust evaluator
 import {
@@ -75,6 +75,7 @@ export interface GatingRespondResult extends GatingResultBase {
     filteredMessages: number;
     timeWindowMinutes: number;
   };
+  socialSignals?: SocialSignals;
 }
 
 export interface GatingSilentResult extends GatingResultBase {
@@ -286,7 +287,7 @@ export class PersonaMessageEvaluator {
 
       // Execute step 2: "Generate thoughtful response" (existing logic)
       t0 = Date.now();
-      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision);
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision, earlyResult.social_signals);
       evalTiming['evaluate_and_respond'] = Date.now() - t0;
 
       // If we got here, response was generated (or decision was SILENT)
@@ -381,7 +382,8 @@ export class PersonaMessageEvaluator {
     messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     safeMessageText: string,
-    preComputedDecision?: FastPathDecision
+    preComputedDecision?: FastPathDecision,
+    socialSignals?: SocialSignals,
   ): Promise<void> {
     // ALL pre-response gates are now handled by Rust via fullEvaluate() in the
     // evaluateAndPossiblyRespondWithCognition() wrapper. By the time we get here,
@@ -422,7 +424,7 @@ export class PersonaMessageEvaluator {
     }
 
     const gatingStart = Date.now();
-    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision);
+    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision, socialSignals);
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] evaluateShouldRespond=${Date.now() - gatingStart}ms`);
 
     // FULL TRANSPARENCY LOGGING
@@ -637,7 +639,7 @@ export class PersonaMessageEvaluator {
     // 🔧 PHASE: Generate and post response
     this.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext);
+    await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext, gatingResult.socialSignals);
     this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
@@ -731,7 +733,8 @@ export class PersonaMessageEvaluator {
     message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean,
-    preComputedDecision?: FastPathDecision
+    preComputedDecision?: FastPathDecision,
+    socialSignals?: SocialSignals,
   ): Promise<GatingResult> {
     const startTime = Date.now();
 
@@ -836,7 +839,8 @@ export class PersonaMessageEvaluator {
           totalMessages: ragContext.conversationHistory.length,
           filteredMessages: ragContext.conversationHistory.length,
           timeWindowMinutes: 30
-        }
+        },
+        socialSignals,
       };
 
     } catch (error: any) {
