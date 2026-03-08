@@ -12,6 +12,7 @@
 
 import type { SubsystemLogger } from './being/logging/SubsystemLogger';
 import { Events } from '../../../core/shared/Events';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 /**
  * Persona internal state
@@ -38,9 +39,9 @@ export interface StateConfig {
 }
 
 export const DEFAULT_STATE_CONFIG: StateConfig = {
-  energyDepletionRate: 0,         // DISABLED - was causing 15-minute death spiral
-  energyRecoveryRate: 0,          // DISABLED - not needed if no depletion
-  attentionFatigueRate: 0,        // DISABLED - let AIs be in charge of their own destiny
+  energyDepletionRate: PersonaTimingConfig.energy.depletionRatePerMs,
+  energyRecoveryRate: PersonaTimingConfig.energy.recoveryRatePerMs,
+  attentionFatigueRate: PersonaTimingConfig.energy.attentionFatigueRate,
   enableLogging: true
 };
 
@@ -81,7 +82,7 @@ export class PersonaStateManager {
     // Deplete energy based on duration and complexity
     const energyLoss = durationMs * this.config.energyDepletionRate * complexity;
     this.state.energy -= energyLoss;
-    this.state.energy = Math.max(0, this.state.energy);
+    this.state.energy = Math.max(PersonaTimingConfig.energy.floor, this.state.energy);
 
     // Update attention (fatigue when low energy)
     if (this.state.energy < 0.3) {
@@ -149,8 +150,8 @@ export class PersonaStateManager {
   /**
    * Should persona engage with message? (traffic management decision)
    *
-   * THERMODYNAMIC SYSTEM DISABLED - was causing 15-minute death spiral
-   * Simple priority-based engagement, no energy/mood gating
+   * Energy floor (0.1) prevents the old "15-minute death spiral" —
+   * personas degrade gracefully but never fully die.
    *
    * Traffic rules:
    * 1. High priority (>0.5) - always engage
@@ -189,16 +190,16 @@ export class PersonaStateManager {
 
     switch (this.state.mood) {
       case 'idle':
-        cadence = 1000; // 1s — quick to respond to first message
+        cadence = PersonaTimingConfig.cadence.idleMs;
         break;
       case 'active':
-        cadence = 500; // 500ms — stay responsive during active conversations
+        cadence = PersonaTimingConfig.cadence.activeMs;
         break;
       case 'tired':
-        cadence = 2000; // 2s — moderate pace
+        cadence = PersonaTimingConfig.cadence.tiredMs;
         break;
       case 'overwhelmed':
-        cadence = 3000; // 3s — back pressure
+        cadence = PersonaTimingConfig.cadence.overwhelmedMs;
         break;
     }
 

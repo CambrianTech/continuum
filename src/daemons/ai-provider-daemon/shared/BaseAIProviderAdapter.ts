@@ -8,6 +8,7 @@ import type {
 } from './AIProviderTypesV2';
 import { Logger, FileMode, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { LoggingConfig } from '../../../system/core/logging/LoggingConfig';
+import { PersonaTimingConfig } from '../../../system/user/server/modules/PersonaTimingConfig';
 import { Events } from '../../../system/core/shared/Events';
 import * as path from 'path';
 
@@ -38,14 +39,12 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private isPermanentlyDisabled: boolean = false;
   private permanentDisableReason: string = '';
 
-  // Circuit breaker state - DISABLED for now
-  // The shared circuit breaker caused memory-synthesis failures to block chat responses.
-  // TODO: Implement per-operation-type circuit breakers if needed
+  // Circuit breaker state — re-enabled with sane threshold (10 failures, 60s cooldown)
   private consecutiveFailures: number = 0;
-  private readonly maxConsecutiveFailures: number = 999999; // Effectively disabled
+  private readonly maxConsecutiveFailures: number = PersonaTimingConfig.circuitBreaker.maxConsecutiveFailures;
   private circuitBreakerOpen: boolean = false;
   private circuitBreakerResetTime: number = 0;
-  private readonly circuitBreakerCooldown: number = 5000; // Reduced from 30s
+  private readonly circuitBreakerCooldown: number = PersonaTimingConfig.circuitBreaker.cooldownMs;
 
   // Base layer timeout - adapters get this for FREE (can override in subclass)
   protected baseTimeout: number = 30000; // 30s default, Candle overrides to 60s
