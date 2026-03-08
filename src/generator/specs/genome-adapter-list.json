@@ -1,0 +1,65 @@
+{
+  "name": "genome/adapter-list",
+  "description": "List all LoRA adapters in the genome with sizes, domains, last-used timestamps, and cascade scores. Shows both on-disk (available) and loaded (active) adapters.",
+  "params": [
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Filter adapters for a specific persona. If omitted, lists all adapters across all personas."
+    },
+    {
+      "name": "domain",
+      "type": "string",
+      "optional": true,
+      "description": "Filter adapters by skill domain (e.g., 'coding', 'reasoning')"
+    },
+    {
+      "name": "sortBy",
+      "type": "string",
+      "optional": true,
+      "description": "Sort field: 'name' (default), 'size', 'lastUsed', 'domain', 'created'"
+    },
+    {
+      "name": "includeMetrics",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include cascade scores and training provenance (default: false)"
+    }
+  ],
+  "results": [
+    {
+      "name": "adapters",
+      "type": "array",
+      "description": "Array of adapter info objects"
+    },
+    {
+      "name": "totalCount",
+      "type": "number",
+      "description": "Total number of adapters found"
+    },
+    {
+      "name": "totalSizeMB",
+      "type": "number",
+      "description": "Total disk usage in megabytes"
+    },
+    {
+      "name": "activeCount",
+      "type": "number",
+      "description": "Number of adapters currently loaded in GPU memory"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all adapters",
+      "command": "./jtag genome/adapter-list",
+      "expectedResult": "{ adapters: [...], totalCount: 12, totalSizeMB: 4200, activeCount: 2 }"
+    },
+    {
+      "description": "List coding adapters for helper persona",
+      "command": "./jtag genome/adapter-list --personaId=helper --domain=coding",
+      "expectedResult": "{ adapters: [...], totalCount: 3, totalSizeMB: 900, activeCount: 1 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/adapter-list",
+  "version": "1.0.0",
+  "description": "List all LoRA adapters in the genome with sizes, domains, last-used timestamps, and cascade scores. Shows both on-disk (available) and loaded (active) adapters.",
+  "main": "server/GenomeAdapterListServerCommand.ts",
+  "types": "shared/GenomeAdapterListTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeAdapterListIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/adapter-list"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

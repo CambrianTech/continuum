@@ -23,7 +23,8 @@ export interface MediaItem {
 
   // Content sources (at least one required)
   url?: string;        // URL to media (local file:// or remote https://)
-  base64?: string;     // Base64-encoded data
+  base64?: string;     // Base64-encoded data (cleared after blob externalization)
+  blobHash?: string;   // Content-addressed blob hash (sha256:hex) — replaces inline base64
 
   // Metadata
   mimeType?: string;   // e.g., 'image/png', 'audio/mp3'
@@ -291,8 +292,8 @@ export class ChatMessageEntity extends BaseEntity {
     // Validate media items if present
     if (this.content.media && this.content.media.length > 0) {
       for (const mediaItem of this.content.media) {
-        if (!mediaItem.url && !mediaItem.base64) {
-          return { success: false, error: 'Media item must have either url or base64 data' };
+        if (!mediaItem.url && !mediaItem.base64 && !mediaItem.blobHash) {
+          return { success: false, error: 'Media item must have url, base64 data, or blobHash' };
         }
         if (!mediaItem.type) {
           return { success: false, error: 'Media item must have a type' };

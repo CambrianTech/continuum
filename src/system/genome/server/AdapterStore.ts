@@ -94,11 +94,24 @@ export class AdapterStore {
   }
 
   /**
-   * Discover all adapters belonging to a specific persona
+   * Discover all adapters belonging to a specific persona.
+   * Matches by personaId (UUID) first. If no UUID match, falls back
+   * to personaName matching — critical because data reseeding assigns
+   * new UUIDs while adapter manifests retain the training-time UUID.
    */
-  static discoverForPersona(personaId: string): DiscoveredAdapter[] {
-    return AdapterStore.discoverAll()
-      .filter(a => a.manifest.personaId === personaId);
+  static discoverForPersona(personaId: string, personaName?: string): DiscoveredAdapter[] {
+    const all = AdapterStore.discoverAll();
+
+    // Primary: exact UUID match
+    const byId = all.filter(a => a.manifest.personaId === personaId);
+    if (byId.length > 0) return byId;
+
+    // Fallback: match by personaName (survives reseed)
+    if (personaName) {
+      return all.filter(a => a.manifest.personaName === personaName);
+    }
+
+    return [];
   }
 
   /**
@@ -107,8 +120,8 @@ export class AdapterStore {
    * When multiple training runs exist for the same domain,
    * returns the most recently created one (by createdAt timestamp).
    */
-  static latestForPersonaDomain(personaId: string, domain: string): DiscoveredAdapter | null {
-    const matches = AdapterStore.discoverForPersona(personaId)
+  static latestForPersonaDomain(personaId: string, domain: string, personaName?: string): DiscoveredAdapter | null {
+    const matches = AdapterStore.discoverForPersona(personaId, personaName)
       .filter(a => a.manifest.traitType === domain && a.hasWeights)
       .sort((a, b) => {
         // Sort descending by creation time (newest first)
@@ -126,8 +139,8 @@ export class AdapterStore {
    * Returns a Map of domain → DiscoveredAdapter (most recent per domain).
    * This is what PersonaGenome should register as initial adapters.
    */
-  static latestByDomainForPersona(personaId: string): Map<string, DiscoveredAdapter> {
-    const all = AdapterStore.discoverForPersona(personaId)
+  static latestByDomainForPersona(personaId: string, personaName?: string): Map<string, DiscoveredAdapter> {
+    const all = AdapterStore.discoverForPersona(personaId, personaName)
       .filter(a => a.hasWeights);
 
     const byDomain = new Map<string, DiscoveredAdapter>();
@@ -180,8 +193,8 @@ export class AdapterStore {
    * This is the primary method for production use — returns only adapters
    * that can actually be applied to the current inference model.
    */
-  static discoverCompatible(personaId: string, inferenceModel: string): DiscoveredAdapter[] {
-    return AdapterStore.discoverForPersona(personaId)
+  static discoverCompatible(personaId: string, inferenceModel: string, personaName?: string): DiscoveredAdapter[] {
+    return AdapterStore.discoverForPersona(personaId, personaName)
       .filter(a => a.hasWeights && AdapterStore.isCompatibleWithModel(a, inferenceModel));
   }
 
@@ -191,8 +204,8 @@ export class AdapterStore {
    * Like latestByDomainForPersona but filtered to only adapters
    * matching the inference model architecture.
    */
-  static latestCompatibleByDomain(personaId: string, inferenceModel: string): Map<string, DiscoveredAdapter> {
-    const compatible = AdapterStore.discoverCompatible(personaId, inferenceModel);
+  static latestCompatibleByDomain(personaId: string, inferenceModel: string, personaName?: string): Map<string, DiscoveredAdapter> {
+    const compatible = AdapterStore.discoverCompatible(personaId, inferenceModel, personaName);
     const byDomain = new Map<string, DiscoveredAdapter>();
 
     for (const adapter of compatible) {

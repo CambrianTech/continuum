@@ -25,6 +25,9 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { unsanitizeToolName } from './ToolFormatAdapter';
 import { Logger } from '../../../core/logging/Logger';
 import { AgentToolExecutor, type ToolCall, type ToolCallContext } from '../../../tools/server/AgentToolExecutor';
+import { Events } from '../../../core/shared/Events';
+import { TOOL_EVENTS } from '../../../core/shared/ToolResult';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 import type {
@@ -187,6 +190,17 @@ export class PersonaToolExecutor {
     this.log.info(`CALL: ${corrected.toolName}`);
     this.log.info(`  params: ${paramsJson.replace(/\n/g, '\n  ')}`);
 
+    // Emit tool:started for browser-side diamond activation (PersonaTile tools diamond)
+    const ctx = DataDaemon.jtagContext;
+    if (ctx) {
+      Events.emit(ctx, TOOL_EVENTS.STARTED, {
+        tool: corrected.toolName,
+        handle: corrected.toolName,
+        userId: context.personaId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // Execute via AgentToolExecutor (corrections already applied, so pass corrected directly)
     const agentResult = await this.agentExecutor.executeToolCall(
       corrected.toolName,
@@ -292,6 +306,18 @@ export class PersonaToolExecutor {
       } catch {
         // Not JSON or no media field
       }
+    }
+
+    // Emit tool:result for browser-side diamond activation
+    if (ctx) {
+      Events.emit(ctx, TOOL_EVENTS.RESULT, {
+        tool: corrected.toolName,
+        handle: corrected.toolName,
+        userId: context.personaId,
+        success: result.success,
+        summary: result.success ? 'OK' : (result.error || 'error'),
+        timestamp: new Date().toISOString(),
+      });
     }
 
     // Fire-and-forget: Cognition telemetry

@@ -212,12 +212,12 @@ $ai-statuses: (
   white-space: nowrap;
 }
 
-// === METERS (replaces IQ bars — same visual area, real data) ===
+// === METERS — Real-time persona telemetry (NRG, ATN, QUE) ===
 
 .meters {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   margin-top: 2px;
 }
 
@@ -239,8 +239,9 @@ $ai-statuses: (
 }
 
 .meter-track {
-  flex: 1;
-  height: 6px;
+  width: 50px;
+  flex-shrink: 0;
+  height: 5px;
   background: rgba(20, 30, 45, 0.6);
   border: 1px solid rgba(60, 80, 100, 0.4);
   border-radius: 2px;
@@ -261,16 +262,17 @@ $ai-statuses: (
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 4px 6px;
   background: rgba(10, 25, 35, 0.9);
   border: 1px solid rgba(0, 255, 200, 0.4);
   border-radius: 6px;
   box-shadow: 0 0 8px rgba(0, 255, 200, 0.15);
   flex-shrink: 0;
-  margin-left: 8px;
-  height: 32px;
+  margin-left: auto;
+  min-height: 42px;
   align-self: flex-end;
+  overflow: visible;  // Let rotated diamond extend beyond panel
 }
 
 .genome-label {
@@ -291,13 +293,13 @@ $ai-statuses: (
   flex-direction: row;
   gap: 2px;
   align-items: flex-end;
-  height: 24px;
+  height: 38px;
   justify-content: center;
 }
 
 .genome-layer {
-  width: 4px;
-  min-height: 8px;
+  width: 5px;
+  min-height: 10px;
   border-radius: 1px;
   border: 1px solid rgba(0, 255, 200, 0.4);
   transition: height 0.2s ease, background 0.2s ease;
@@ -314,62 +316,56 @@ $ai-statuses: (
   }
 
   &.inactive {
-    height: 35%;
+    height: 30%;
     background: rgba(60, 80, 100, 0.5);
     border-color: rgba(80, 100, 120, 0.6);
     box-shadow: none;
   }
 }
 
-// Diamond grid — inside genome panel, identical to old
-@keyframes diamond-pulse {
-  0%, 100% { box-shadow: 0 0 4px rgba(0, 255, 200, 0.5); }
-  50% { box-shadow: 0 0 10px rgba(0, 255, 200, 0.9); }
+// Diamond grid — 2x2 grid rotated 45° to form a diamond shape
+// Each cell = 6px, gap = 1px → 13px grid, rotated diagonal ~18px
+// Margin accounts for rotation overhang so parent doesn't clip
+//
+// GPU-composited animation: uses opacity only (no box-shadow animation).
+// box-shadow triggers paint on every frame — opacity is free on GPU.
+
+@keyframes diamond-glow {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
 }
 
 .genome-diamond {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  transform: rotate(45deg);
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 6px 6px;
+  grid-template-rows: 6px 6px;
   gap: 1px;
-  overflow: hidden;
+  transform: rotate(45deg);
   flex-shrink: 0;
+  margin: 4px;
 }
 
 .diamond-cell {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
   background: rgba(60, 80, 100, 0.3);
   border: 1px solid rgba(80, 100, 120, 0.4);
   border-radius: 1px;
-  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  // Only transition background and border — no box-shadow transitions
+  transition: background 0.3s ease, border-color 0.3s ease, opacity 0.3s ease;
   box-sizing: border-box;
+  will-change: opacity;
 
   &.active {
-    background: linear-gradient(135deg,
-      rgba(0, 255, 200, 0.8) 0%,
-      rgba(0, 220, 255, 0.7) 100%);
+    background: rgba(0, 255, 200, 0.85);
     border-color: rgba(0, 255, 255, 0.6);
-    animation: diamond-pulse 1.5s ease-in-out infinite;
+    animation: diamond-glow 1.8s ease-in-out infinite;
   }
 }
 
-// Hover effects — identical to old
+// Hover effects — static box-shadow only (no animation, just :hover state change)
 :host(:hover) {
   .genome-panel {
     border-color: rgba(0, 255, 200, 0.6);
-    box-shadow: 0 0 12px rgba(0, 255, 200, 0.25);
-  }
-
-  .genome-layer.active {
-    box-shadow: 0 0 8px rgba(0, 255, 200, 0.8);
-  }
-
-  .diamond-cell.active {
-    box-shadow: 0 0 6px rgba(0, 255, 200, 0.7);
   }
 }

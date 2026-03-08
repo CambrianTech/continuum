@@ -536,8 +536,6 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
     await this.discoverCommands();
 
-    // Initialize scoped event system now that connection is established
-    this.initializeScopedEvents();
   }
 
 
@@ -705,14 +703,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
           };
         }
 
-        // For other commands, check if discovered
-        const commandSignature = self.getDiscoveredCommands().get(commandName);
-        if (!commandSignature) {
-          const available = Array.from(self.getDiscoveredCommands().keys());
-          throw new Error(`Command '${commandName}' not available. Available commands: ${available.join(', ')}`);
-        }
-
-        // Delegate to connection
+        // Delegate to connection — works for both local and remote commands.
+        // Commands without a browser implementation are auto-forwarded to the server
+        // by the router, so we don't gate on discovered commands here.
         return async (params?: JTAGPayload): Promise<JTAGPayload> => {
           const fullParams = {
             ...params,

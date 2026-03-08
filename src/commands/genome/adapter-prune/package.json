@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/adapter-prune",
+  "version": "1.0.0",
+  "description": "Prune unused LoRA adapters to reclaim disk space. Removes adapters not used since the specified cutoff date. Supports dry-run mode to preview what would be deleted.",
+  "main": "server/GenomeAdapterPruneServerCommand.ts",
+  "types": "shared/GenomeAdapterPruneTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeAdapterPruneIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/adapter-prune"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

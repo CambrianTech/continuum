@@ -308,7 +308,24 @@ export class PersonaResponseGenerator {
         return { success: false, error: 'Context budget exceeded — prompt too large for model', storedToolResultIds: [] };
       }
 
-      const currentDomain = this.genome?.getCurrentAdapter()?.getDomain();
+      // PHASE 1B: Classify message domain → activate matching adapter → select model
+      // This closes the gap: adapters were discovered on startup but never activated before inference.
+      // Flow: classify domain (Rust, ~μs) → activate adapter (page into GPU) → select model (uses active adapter)
+      let currentDomain: string | undefined = this.genome?.getCurrentAdapter()?.getDomain();
+      if (this.genome && this._rustBridge) {
+        try {
+          const messageText = originalMessage.content.text;
+          const classification = await this._rustBridge.classifyDomain(messageText);
+          if (classification.confidence > 0.3) {
+            await this.genome.activateForDomain(classification.domain);
+            currentDomain = classification.domain;
+            this.log(`🧬 ${this.personaName}: Domain classified='${classification.domain}' (confidence=${classification.confidence.toFixed(2)}), adapter=${classification.adapter_name || 'none'}`);
+          }
+        } catch (err) {
+          // Classification failure is non-fatal — proceed with whatever adapter is currently active
+          this.log(`⚠️ ${this.personaName}: Domain classification failed: ${err}`);
+        }
+      }
       const effectiveModel = await this.getEffectiveModel(currentDomain);
       const request: TextGenerationRequest = {
         messages,

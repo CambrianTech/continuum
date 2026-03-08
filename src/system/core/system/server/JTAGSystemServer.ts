@@ -19,6 +19,7 @@ import { startVoiceServer, getVoiceWebSocketServer } from '../../../voice/server
 import { GpuPressureWatcher } from '../../../gpu/server/GpuPressureWatcher';
 import { ResourcePressureWatcher } from '../../../resources/server/ResourcePressureWatcher';
 import { GpuGovernor } from '../../../gpu/server/GpuGovernor';
+import { MetricsCollector } from '../../../metrics/server/MetricsCollector';
 
 export class JTAGSystemServer extends JTAGSystem {
   private commandRouter: CommandRouterServer | null = null;
@@ -212,6 +213,11 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 7.3. Start GPU Governor (active budget rebalancing based on pressure events)
     GpuGovernor.instance.start();
+
+    // 7.4. Start Metrics Collector (fire-and-forget persistence of system telemetry)
+    MetricsCollector.instance.start().catch(err =>
+      console.warn('⚠️  JTAG System: MetricsCollector failed to start:', err)
+    );
 
     // 7.5. Start Voice WebSocket Server
     try {

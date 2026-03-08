@@ -131,6 +131,15 @@ export interface ContinuumPaths {
   shared: {
     root: string;
     rooms: (roomId: string) => string;
+    /** Default directory for file exports (chat/export, etc.) */
+    exports: string;
+  };
+
+  /** System metrics time-series database */
+  metrics: {
+    root: string;
+    /** Dedicated SQLite database for system metrics (GPU, CPU, memory, AI cost) */
+    database: string;
   };
 
   /** Generated reports */
@@ -298,6 +307,12 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
       rooms: (roomId: string): string => {
         return path.join(baseRoot, 'shared', 'rooms', roomId);
       },
+      exports: path.join(baseRoot, 'shared', 'exports'),
+    },
+
+    metrics: {
+      root: path.join(baseRoot, 'metrics'),
+      database: path.join(baseRoot, 'metrics', 'metrics.sqlite'),
     },
 
     reports: {
