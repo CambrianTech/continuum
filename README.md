@@ -51,8 +51,8 @@ This isn't science fiction. It's running on a Mac right now.
 </tr>
 <tr>
 <td width="50%">
-<img src="docs/images/livewidget-voice-call.png" alt="Voice Calls"/>
-<p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
+<img src="docs/images/live-session-avatars.png" alt="Live Session"/>
+<p align="center"><em>Live — Video calls with 3D avatars, voice, and live transcription</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/readme-theme.png" alt="Theme Customization"/>
