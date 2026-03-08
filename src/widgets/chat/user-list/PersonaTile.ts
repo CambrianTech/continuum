@@ -4,7 +4,7 @@
  * Every visual element is backed by real data:
  *   Ring       → AI_DECISION_EVENTS (cognitive phase)
  *   Diamonds   → THINKING / SPEAKING / LEARNING / TOOLS activity
- *   Meters     → Energy (persona state) + Fitness (adapter count)
+ *   Meters     → INT (intelligence) + NRG (energy) + QUE (inbox queue depth)
  *   Genome bars→ Real LoRA adapters from AdapterStore via genome/layers
  *
  * EntityScroller caches the outer DOM node, but this component manages
@@ -38,6 +38,7 @@ export class PersonaTile extends LitElement {
   @reactive() requiresMention: boolean = false;
   @reactive() ragCertified: boolean = false;
   @reactive() lastActive: string = '';
+  @reactive() intelligenceLevel: number = 0;
 
   // === REACTIVE STATE (event-driven) ===
   @reactive() private _cognitivePhase: CognitivePhase = null;
@@ -46,7 +47,8 @@ export class PersonaTile extends LitElement {
   @reactive() private _learningActive: boolean = false;
   @reactive() private _toolsActive: boolean = false;
   @reactive() private _energy: number = 1.0;
-  @reactive() private _fitness: number = 0;
+  @reactive() private _inboxLoad: number = 0;
+  @reactive() private _mood: string = 'idle';
   @reactive() private _genomeLayers: GenomeLayerInfo[] = [];
 
 
@@ -172,11 +174,16 @@ export class PersonaTile extends LitElement {
       })
     );
 
-    // Energy meter — persona state snapshots
+    // State meters — persona state snapshots (energy, inbox, mood)
     this._unsubs.push(
-      Events.subscribe('persona:state:snapshot', (data: { personaId: string; energy: number }) => {
+      Events.subscribe('persona:state:snapshot', (data: {
+        personaId: string; energy: number;
+        inboxLoad: number; mood: string;
+      }) => {
         if (data.personaId === uid) {
           this._energy = data.energy;
+          this._inboxLoad = data.inboxLoad;
+          this._mood = data.mood;
         }
       })
     );
@@ -210,12 +217,10 @@ export class PersonaTile extends LitElement {
       const result = await GenomeLayers.execute({ personaId: this.userId });
       if (result.success) {
         this._genomeLayers = result.layers;
-        this._fitness = result.fitness;
       }
     } catch {
       // Graceful absence — no genome section if command fails
       this._genomeLayers = [];
-      this._fitness = 0;
     }
   }
 
@@ -280,25 +285,69 @@ export class PersonaTile extends LitElement {
     `;
   }
 
-  // === METERS (replaces IQ bars — same visual position, real data) ===
+  // === METERS — Real-time persona telemetry ===
+  //   INT: Intelligence level (model capability, static per persona)
+  //   NRG: Energy (depletes with work, recovers with rest)
+  //   QUE: Inbox queue depth (how busy this persona is)
+
+  /** Derive intelligence from provider/model when not explicitly set */
+  private get _effectiveIntelligence(): number {
+    if (this.intelligenceLevel > 0) return this.intelligenceLevel;
+
+    // Infer from provider badge when not seeded
+    const badge = this.modelBadge.toLowerCase();
+    if (badge.includes('anthropic') || badge.includes('claude')) return 92;
+    if (badge.includes('openai') || badge.includes('gpt')) return 88;
+    if (badge.includes('google') || badge.includes('gemini')) return 85;
+    if (badge.includes('deepseek') || badge.includes('deepsee')) return 82;
+    if (badge.includes('firework') || badge.includes('firewor')) return 78;
+    if (badge.includes('groq')) return 75;
+    if (badge.includes('alibaba') || badge.includes('qwen')) return 72;
+    if (badge.includes('candle')) return 45;  // Local small models
+    if (badge.includes('ollama')) return 50;
+    return 60;  // Unknown provider
+  }
 
   private _renderMeters(): TemplateResult {
+    const intel = this._effectiveIntelligence;
+    const intelNorm = intel / 100;
+    const intelColor = intel >= 80 ? '#a78bfa' :  // Purple for frontier
+                       intel >= 60 ? '#00d4ff' :  // Cyan for capable
+                       intel >= 40 ? '#ffaa00' :  // Orange for basic
+                                     '#ff6b6b';   // Red for minimal
+
     const energyColor = this._energy >= 0.7 ? '#00ff88' :
                         this._energy >= 0.4 ? '#ffaa00' : '#ff6b6b';
-    const fitnessColor = '#00d4ff';
+
+    // Queue: normalize to 0-1 (saturate at 20+ items)
+    const queueNorm = Math.min(1.0, this._inboxLoad / 20);
+    // Queue color inverts: empty = dim, full = hot
+    const queueColor = queueNorm >= 0.7 ? '#ff6b6b' :
+                       queueNorm >= 0.3 ? '#ffaa00' : 'rgba(0, 255, 200, 0.3)';
+
+    // Mood indicator
+    const moodEmoji = this._mood === 'active' ? 'active' :
+                      this._mood === 'tired' ? 'tired' :
+                      this._mood === 'overwhelmed' ? 'overwhelmed' : 'idle';
 
     return html`
-      <div class="meters">
-        <div class="meter" title="Energy: ${Math.round(this._energy * 100)}%">
+      <div class="meters" title="Mood: ${moodEmoji}">
+        <div class="meter" title="Intelligence: ${intel}/100 — model capability level">
+          <span class="meter-label">INT</span>
+          <div class="meter-track">
+            <div class="meter-fill" style="width: ${intelNorm * 100}%; background: ${intelColor};"></div>
+          </div>
+        </div>
+        <div class="meter" title="Energy: ${Math.round(this._energy * 100)}% — depletes with work, recovers at rest">
           <span class="meter-label">NRG</span>
           <div class="meter-track">
             <div class="meter-fill" style="width: ${this._energy * 100}%; background: ${energyColor};"></div>
           </div>
         </div>
-        <div class="meter" title="Fitness: ${Math.round(this._fitness * 100)}%">
-          <span class="meter-label">FIT</span>
+        <div class="meter" title="Queue: ${this._inboxLoad} items — messages waiting to process">
+          <span class="meter-label">QUE</span>
           <div class="meter-track">
-            <div class="meter-fill" style="width: ${this._fitness * 100}%; background: ${fitnessColor};"></div>
+            <div class="meter-fill" style="width: ${queueNorm * 100}%; background: ${queueColor};"></div>
           </div>
         </div>
       </div>

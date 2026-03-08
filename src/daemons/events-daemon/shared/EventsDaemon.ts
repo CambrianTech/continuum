@@ -1,8 +1,8 @@
 /**
  * Events Daemon - Cross-Context Event Bridge Handler
  *
- * Handles 'event-bridge' messages sent by ScopedEventSystem's EventBridge
- * to propagate events between browser and server contexts.
+ * Handles 'event-bridge' messages from Events.emit() to propagate
+ * events between browser and server contexts.
  *
  * CRITICAL: Includes rate limiting to prevent cascade failures.
  */

@@ -1,0 +1,76 @@
+{
+  "name": "genome/adapter-prune",
+  "description": "Prune unused LoRA adapters to reclaim disk space. Removes adapters not used since the specified cutoff date. Supports dry-run mode to preview what would be deleted.",
+  "params": [
+    {
+      "name": "unusedSince",
+      "type": "string",
+      "optional": true,
+      "description": "Prune adapters unused since this duration (e.g., '30d', '7d', '90d'). Default: '30d'"
+    },
+    {
+      "name": "dryRun",
+      "type": "boolean",
+      "optional": true,
+      "description": "Preview what would be pruned without actually deleting (default: true for safety)"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Only prune adapters for a specific persona"
+    },
+    {
+      "name": "domain",
+      "type": "string",
+      "optional": true,
+      "description": "Only prune adapters for a specific domain"
+    },
+    {
+      "name": "keepLatest",
+      "type": "number",
+      "optional": true,
+      "description": "Always keep the N most recent adapters per domain regardless of age (default: 1)"
+    }
+  ],
+  "results": [
+    {
+      "name": "prunedCount",
+      "type": "number",
+      "description": "Number of adapters pruned (or would be pruned in dry-run)"
+    },
+    {
+      "name": "reclaimedMB",
+      "type": "number",
+      "description": "Disk space reclaimed (or would be reclaimed) in megabytes"
+    },
+    {
+      "name": "prunedAdapters",
+      "type": "array",
+      "description": "List of pruned adapter names with sizes"
+    },
+    {
+      "name": "keptCount",
+      "type": "number",
+      "description": "Number of adapters kept"
+    },
+    {
+      "name": "isDryRun",
+      "type": "boolean",
+      "description": "Whether this was a dry-run (no actual deletion)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Preview pruning adapters unused for 30 days",
+      "command": "./jtag genome/adapter-prune --unusedSince=30d --dryRun=true",
+      "expectedResult": "{ prunedCount: 5, reclaimedMB: 1500, isDryRun: true, ... }"
+    },
+    {
+      "description": "Actually prune old adapters",
+      "command": "./jtag genome/adapter-prune --unusedSince=30d --dryRun=false",
+      "expectedResult": "{ prunedCount: 5, reclaimedMB: 1500, isDryRun: false, ... }"
+    }
+  ],
+  "accessLevel": "admin"
+}

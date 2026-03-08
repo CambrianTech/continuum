@@ -212,12 +212,12 @@ $ai-statuses: (
   white-space: nowrap;
 }
 
-// === METERS (replaces IQ bars — same visual area, real data) ===
+// === METERS — Real-time persona telemetry (NRG, ATN, QUE) ===
 
 .meters {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   margin-top: 2px;
 }
 
@@ -239,8 +239,9 @@ $ai-statuses: (
 }
 
 .meter-track {
-  flex: 1;
-  height: 6px;
+  width: 50px;
+  flex-shrink: 0;
+  height: 5px;
   background: rgba(20, 30, 45, 0.6);
   border: 1px solid rgba(60, 80, 100, 0.4);
   border-radius: 2px;
@@ -261,16 +262,17 @@ $ai-statuses: (
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 4px 6px;
   background: rgba(10, 25, 35, 0.9);
   border: 1px solid rgba(0, 255, 200, 0.4);
   border-radius: 6px;
   box-shadow: 0 0 8px rgba(0, 255, 200, 0.15);
   flex-shrink: 0;
-  margin-left: 8px;
-  height: 32px;
+  margin-left: auto;
+  min-height: 32px;
   align-self: flex-end;
+  overflow: visible;  // Let rotated diamond extend beyond panel
 }
 
 .genome-label {
@@ -291,7 +293,7 @@ $ai-statuses: (
   flex-direction: row;
   gap: 2px;
   align-items: flex-end;
-  height: 24px;
+  height: 32px;
   justify-content: center;
 }
 
@@ -327,22 +329,22 @@ $ai-statuses: (
   50% { box-shadow: 0 0 10px rgba(0, 255, 200, 0.9); }
 }
 
+// Diamond: 2x2 grid rotated 45° to form a diamond shape
+// Each cell = 6px, gap = 1px → 13px grid, rotated diagonal ~18px
+// Margin accounts for rotation overhang so parent doesn't clip
 .genome-diamond {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  transform: rotate(45deg);
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 6px 6px;
+  grid-template-rows: 6px 6px;
   gap: 1px;
-  overflow: hidden;
+  transform: rotate(45deg);
   flex-shrink: 0;
+  margin: 4px;  // Room for rotation overhang
 }
 
 .diamond-cell {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
   background: rgba(60, 80, 100, 0.3);
   border: 1px solid rgba(80, 100, 120, 0.4);
   border-radius: 1px;

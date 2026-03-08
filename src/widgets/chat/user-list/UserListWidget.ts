@@ -203,6 +203,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           .requiresMention=${requiresMention}
           .ragCertified=${ragCertified}
           .lastActive=${lastActive}
+          .intelligenceLevel=${user.intelligenceLevel ?? 0}
         ></persona-tile>
         <div class="user-controls">
           <button class="user-call-btn" title="Message" @click=${(e: Event) => this.handleCallClick(e, user)}>

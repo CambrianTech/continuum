@@ -13,6 +13,7 @@
 import type { SubsystemLogger } from './being/logging/SubsystemLogger';
 import { Events } from '../../../core/shared/Events';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 
 /**
  * Persona internal state
@@ -224,6 +225,9 @@ export class PersonaStateManager {
     if (oldMood !== this.state.mood) {
       this.log(`🎭 Mood changed: ${oldMood} → ${this.state.mood} (inboxLoad=${size})`);
     }
+
+    // Emit snapshot so browser-side meters update in real time
+    this.emitSnapshot();
   }
 
   /**
@@ -260,12 +264,14 @@ export class PersonaStateManager {
   }
 
   /**
-   * Emit state snapshot event for browser-side consumers (PersonaTile meters)
+   * Emit state snapshot event for browser-side consumers (PersonaTile meters).
+   * Uses DataDaemon.jtagContext for cross-context (server→browser) delivery.
+   * Without the context, bare Events.emit() stays server-local.
    */
   private emitSnapshot(): void {
     if (!this.personaId) return;
 
-    Events.emit('persona:state:snapshot', {
+    const payload = {
       personaId: this.personaId,
       energy: this.state.energy,
       attention: this.state.attention,
@@ -273,7 +279,14 @@ export class PersonaStateManager {
       inboxLoad: this.state.inboxLoad,
       computeBudget: this.state.computeBudget,
       timestamp: Date.now()
-    });
+    };
+
+    const ctx = DataDaemon.jtagContext;
+    if (ctx) {
+      Events.emit(ctx, 'persona:state:snapshot', payload);
+    } else {
+      Events.emit('persona:state:snapshot', payload);
+    }
   }
 
   /**

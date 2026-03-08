@@ -8,8 +8,7 @@ import { JTAGModule } from './JTAGModule';
 import type { CommandParams, CommandResult } from '../types/JTAGTypes';
 import type { UUID } from '../types/CrossPlatformUUID';
 import type { CommandBase } from '../../../daemons/command-daemon/shared/CommandBase';
-import { EventManager, type EventsInterface } from '../../events';
-import { ScopedEventSystem, type ScopedEventsInterface } from '../../events/shared/ScopedEventSystem';
+import { EventManager } from '../../events';
 
 /**
  * Strongly-typed command function signature
@@ -27,7 +26,6 @@ export abstract class JTAGBase extends JTAGModule {
   public abstract get sessionId(): UUID;
 
   public readonly eventManager = new EventManager();
-  protected scopedEventSystem?: ScopedEventSystem;
 
 
   // Abstract method for subclasses to provide their command source
@@ -39,41 +37,9 @@ export abstract class JTAGBase extends JTAGModule {
   protected abstract initialize(): Promise<void>;
   
   /**
-   * Initialize scoped event system (call from subclass after router is ready)
-   */
-  protected initializeScopedEvents(): void {
-    if (!this.scopedEventSystem) {
-      const router = this.getRouter();
-      if (router) {
-        this.scopedEventSystem = new ScopedEventSystem(router, this.sessionId, this.context);
-        // ScopedEventSystem ready
-      }
-    }
-  }
-  
-  /**
-   * Events interface - type-safe event system access
-   * Provides jtag.events.on(), jtag.events.emit(), jtag.events.waitFor()
-   *
-   * Enhanced with scoped subscriptions:
-   * - jtag.events.room('room-123').on('chat:message-received', handler)
-   * - jtag.events.user('user-456').on('session:status-update', handler)
-   * - jtag.events.system.on('system:ready', handler)
+   * Events interface - event system access via EventManager
    */
   get events() {
-    // Initialize scoped events if available
-    if (this.scopedEventSystem) {
-      // Return enhanced interface with scoped subscriptions
-      return {
-        // Backwards compatibility - standard events interface
-        ...this.eventManager.events,
-
-        // Enhanced scoped subscriptions
-        ...this.scopedEventSystem.scopedEvents
-      } as EventsInterface & ScopedEventsInterface;
-    }
-
-    // Fallback to basic events if scoped system not initialized
     return this.eventManager.events;
   }
 

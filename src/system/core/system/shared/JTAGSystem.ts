@@ -227,9 +227,6 @@ export abstract class JTAGSystem extends JTAGBase {
     try {      
       this.updateConsoleDaemonSessionId();
       
-      // Initialize scoped event system now that router and session are ready
-      this.initializeScopedEvents();
-      
       console.log(`✅ ${this.toString()}: Session connected - ${this.sessionId} (context: ${this.context.uuid})`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Error connecting session:`, error);

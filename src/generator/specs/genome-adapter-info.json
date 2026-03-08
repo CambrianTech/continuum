@@ -1,0 +1,74 @@
+{
+  "name": "genome/adapter-info",
+  "description": "Get detailed information about a specific LoRA adapter including full manifest, training provenance, architecture details, and compatibility status.",
+  "params": [
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Adapter name or path to inspect"
+    }
+  ],
+  "results": [
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Adapter name"
+    },
+    {
+      "name": "domain",
+      "type": "string",
+      "description": "Skill domain this adapter was trained for"
+    },
+    {
+      "name": "sizeMB",
+      "type": "number",
+      "description": "Adapter size on disk in megabytes"
+    },
+    {
+      "name": "baseModel",
+      "type": "string",
+      "description": "Base model this adapter was trained on"
+    },
+    {
+      "name": "createdAt",
+      "type": "string",
+      "description": "ISO timestamp of when adapter was trained"
+    },
+    {
+      "name": "lastUsedAt",
+      "type": "string",
+      "optional": true,
+      "description": "ISO timestamp of last inference use"
+    },
+    {
+      "name": "trainingInfo",
+      "type": "object",
+      "optional": true,
+      "description": "Training provenance: dataset, epochs, loss, examples count"
+    },
+    {
+      "name": "architecture",
+      "type": "object",
+      "optional": true,
+      "description": "LoRA architecture: rank, alpha, target modules, layer count"
+    },
+    {
+      "name": "compatibility",
+      "type": "object",
+      "description": "Model compatibility status: compatible models, quantization format"
+    },
+    {
+      "name": "isActive",
+      "type": "boolean",
+      "description": "Whether this adapter is currently loaded in GPU memory"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Inspect a specific adapter",
+      "command": "./jtag genome/adapter-info --name=helper-coding-2026-03-01",
+      "expectedResult": "{ name: 'helper-coding-2026-03-01', domain: 'coding', sizeMB: 312, baseModel: 'unsloth/Llama-3.2-3B-Instruct', ... }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}
