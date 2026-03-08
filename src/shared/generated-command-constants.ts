@@ -281,6 +281,7 @@ export const COMMANDS = {
   TRAINING_IMPORT: 'training/import',
   USER_CREATE: 'user/create',
   USER_GET_ME: 'user/get-me',
+  USER_LIST: 'user/list',
   UTILITIES_DOCS_LIST: 'utilities/docs/list',
   UTILITIES_DOCS_READ: 'utilities/docs/read',
   UTILITIES_DOCS_SEARCH: 'utilities/docs/search',

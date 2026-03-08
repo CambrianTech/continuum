@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/user/list",
+  "version": "1.0.0",
+  "description": "List users in the system with filtering by type, status, and capabilities. Essential for AI discovery — find other personas, check who's online, discover collaboration partners.",
+  "main": "server/UserListServerCommand.ts",
+  "types": "shared/UserListTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/UserListIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "user/list"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

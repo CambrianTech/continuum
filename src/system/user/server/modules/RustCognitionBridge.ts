@@ -1191,6 +1191,63 @@ export class RustCognitionBridge {
     this.connected = false;
     this.engineCreated = false;
   }
+
+  // ========================================================================
+  // Message Cache — feed Rust-side ring buffer for echo chamber + adequacy
+  // ========================================================================
+
+  /**
+   * Cache a message in Rust for echo chamber detection.
+   * Called when new messages arrive in rooms this persona is in.
+   */
+  async cacheMessage(
+    roomId: UUID,
+    messageId: UUID,
+    senderId: UUID,
+    senderType: string,
+    senderName: string,
+    content: string,
+    timestamp: number,
+  ): Promise<void> {
+    if (!this.connected) return;
+    try {
+      await this.client.cognitionCacheMessage(
+        this.personaId, roomId, messageId, senderId, senderType, senderName, content, timestamp,
+      );
+    } catch {
+      // Non-fatal — cache miss just means echo chamber check is less accurate
+    }
+  }
+
+  // ========================================================================
+  // Content Deduplication — Rust-side hash-based dedup
+  // ========================================================================
+
+  /**
+   * Check if response content is a duplicate (same hash in same room within window).
+   */
+  async checkContentDedup(roomId: UUID, content: string): Promise<boolean> {
+    this.assertReady('checkContentDedup');
+    try {
+      const result = await this.client.cognitionCheckContentDedup(this.personaId, roomId, content);
+      return result.is_duplicate;
+    } catch (error) {
+      this.logger.error(`checkContentDedup FAILED: ${error}`);
+      return false; // On error, allow the response through
+    }
+  }
+
+  /**
+   * Record response content for future dedup checks.
+   */
+  async recordContent(roomId: UUID, content: string): Promise<void> {
+    if (!this.connected) return;
+    try {
+      await this.client.cognitionRecordContent(this.personaId, roomId, content);
+    } catch {
+      // Non-fatal
+    }
+  }
 }
 
 /**

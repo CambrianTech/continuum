@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-07T16:42:35.743Z",
+  "generated": "2026-03-08T14:29:44.609Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -556,6 +556,37 @@
           "type": "boolean",
           "required": false,
           "description": "includeReadmes parameter"
+        }
+      }
+    },
+    {
+      "name": "user/list",
+      "description": "List users in the system with filtering by type, status, and capabilities. Essential for AI discovery — find other personas, check who's online, discover collaboration partners.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "capability": {
+          "type": "string",
+          "required": false,
+          "description": "capability parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         }
       }
     },
@@ -5690,6 +5721,11 @@
           "type": "array",
           "required": false,
           "description": "fields parameter"
+        },
+        "select": {
+          "type": "array",
+          "required": false,
+          "description": "select parameter"
         },
         "verbose": {
           "type": "boolean",

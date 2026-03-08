@@ -14,6 +14,7 @@
 //! Types exported to TypeScript via ts-rs.
 
 use crate::persona::cognition::PersonaCognitionEngine;
+use crate::persona::message_cache::RecentMessageCache;
 use crate::persona::text_analysis;
 use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
@@ -248,13 +249,16 @@ pub struct GateDetails {
     pub has_directed_mention: Option<bool>,
     #[ts(optional)]
     pub topic_similarity: Option<f32>,
+    /// Echo chamber: AI message count in window (gate 7)
+    #[ts(optional, type = "number")]
+    pub echo_chamber_ai_count: Option<u32>,
 }
 
 // =============================================================================
 // UNIFIED EVALUATOR
 // =============================================================================
 
-/// Run all 6 gates in order, short-circuiting on first SILENT decision.
+/// Run all 7 gates in order, short-circuiting on first SILENT decision.
 ///
 /// Gate order:
 /// 1. Response cap
@@ -262,12 +266,14 @@ pub struct GateDetails {
 /// 3. Rate limiting
 /// 4. Sleep mode (with topic detection for until_topic)
 /// 5. Directed mention filter
-/// 6. Fast-path decision (dedup, self-check, state gating, mention/human heuristics)
+/// 6. Echo chamber (AI-only conversation without human participation)
+/// 7. Fast-path decision (dedup, self-check, state gating, mention/human heuristics)
 pub fn full_evaluate(
     request: &FullEvaluateRequest,
     rate_limiter: &RateLimiterState,
     sleep_state: &SleepState,
     engine: &PersonaCognitionEngine,
+    message_cache: &RecentMessageCache,
     now_ms: u64,
 ) -> FullEvaluateResult {
     let start = Instant::now();
@@ -294,6 +300,7 @@ pub fn full_evaluate(
                 is_mentioned: None,
                 has_directed_mention: None,
                 topic_similarity: None,
+                echo_chamber_ai_count: None,
             }),
         };
     }
@@ -329,6 +336,7 @@ pub fn full_evaluate(
                 is_mentioned: Some(is_mentioned),
                 has_directed_mention: Some(has_directed_mention),
                 topic_similarity: None,
+                echo_chamber_ai_count: None,
             }),
         };
     }
@@ -379,6 +387,7 @@ pub fn full_evaluate(
                     is_mentioned: Some(is_mentioned),
                     has_directed_mention: Some(has_directed_mention),
                     topic_similarity: request.topic_similarity,
+                    echo_chamber_ai_count: None,
                 }),
             };
         }
@@ -402,12 +411,45 @@ pub fn full_evaluate(
                 is_mentioned: Some(false),
                 has_directed_mention: Some(true),
                 topic_similarity: None,
+                echo_chamber_ai_count: None,
             }),
         };
     }
 
     // =========================================================================
-    // GATE 6: Fast-path decision (dedup, self, state gating, mention/human heuristics)
+    // GATE 6: Echo chamber (AI-only conversation without human)
+    // =========================================================================
+    let echo_result = message_cache.check_echo_chamber(
+        request.room_id,
+        request.sender_is_human,
+        is_mentioned,
+        now_ms,
+    );
+    if echo_result.is_echo_chamber {
+        return FullEvaluateResult {
+            should_respond: false,
+            confidence: 0.9,
+            reason: format!(
+                "Echo chamber: {} AI messages, no human in 2min",
+                echo_result.ai_message_count
+            ),
+            gate: "echo_chamber".into(),
+            decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
+            gate_details: Some(GateDetails {
+                response_count: None,
+                max_responses: None,
+                rate_limit_wait_seconds: None,
+                sleep_mode: None,
+                is_mentioned: Some(is_mentioned),
+                has_directed_mention: Some(has_directed_mention),
+                topic_similarity: None,
+                echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
+            }),
+        };
+    }
+
+    // =========================================================================
+    // GATE 7: Fast-path decision (dedup, self, state gating, mention/human heuristics)
     // =========================================================================
     let priority = engine.calculate_priority(
         &request.content,
@@ -456,6 +498,7 @@ pub fn full_evaluate(
             is_mentioned: Some(is_mentioned),
             has_directed_mention: Some(has_directed_mention),
             topic_similarity: None,
+            echo_chamber_ai_count: None,
         }),
     }
 }
@@ -605,7 +648,7 @@ mod tests {
         rate_limiter.track_response(room_id, now - 20_000);
         rate_limiter.track_response(room_id, now - 11_000); // 11s ago — not rate limited
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
         assert!(!result.should_respond);
         assert_eq!(result.gate, "response_cap");
         assert_eq!(result.gate_details.unwrap().response_count, Some(3));
@@ -622,7 +665,7 @@ mod tests {
         // Response 5 seconds ago — within 10s window
         rate_limiter.track_response(request.room_id, now - 5_000);
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
         assert!(!result.should_respond);
         assert_eq!(result.gate, "rate_limit");
         let details = result.gate_details.unwrap();
@@ -641,7 +684,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -659,7 +702,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Should pass sleep gate (mentioned) and reach fast_path
         assert!(result.should_respond);
         assert_ne!(result.gate, "sleep_mode");
@@ -678,7 +721,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
         // Should NOT be blocked by sleep — auto-wake expired
         assert_ne!(result.gate, "sleep_mode");
     }
@@ -692,7 +735,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "directed_mention");
     }
@@ -705,7 +748,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "fast_path");
         assert!(result.reason.contains("Own message"));
@@ -718,7 +761,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Human sender + recent message = high priority → should respond
         assert!(result.should_respond);
     }
@@ -733,7 +776,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(result.should_respond);
     }
 
@@ -744,7 +787,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(result.should_respond);
         assert!(
             result.decision_time_ms < 10.0,
@@ -767,7 +810,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -786,7 +829,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Should pass sleep gate (new topic) and reach fast_path
         assert_ne!(result.gate, "sleep_mode");
     }

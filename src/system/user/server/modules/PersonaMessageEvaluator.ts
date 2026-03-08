@@ -94,7 +94,7 @@ export type GatingResult = GatingRespondResult | GatingSilentResult;
  */
 export class PersonaMessageEvaluator {
   private readonly trainingSignalExtractor: PersonaTrainingSignalExtractor;
-  private readonly messageGate: PersonaMessageGate;
+  readonly messageGate: PersonaMessageGate;
 
   constructor(private readonly personaUser: PersonaUser) {
     const logFn = this.log.bind(this);
@@ -173,16 +173,8 @@ export class PersonaMessageEvaluator {
       return;
     }
 
-    // ECHO CHAMBER GATE: delegated to PersonaMessageGate
-    const isMentioned = safeMessageText.toLowerCase().includes(this.personaUser.displayName.toLowerCase());
-    if (this.messageGate.isEchoChamber(messageEntity, senderIsHuman, isMentioned)) {
-      this.personaUser.logAIDecision('SILENT', 'Echo chamber: no human participation', {
-        message: safeMessageText.slice(0, 100),
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId,
-      });
-      return;
-    }
+    // ECHO CHAMBER: Now handled by Rust Gate 6 inside fullEvaluate() above.
+    // No separate TS-side check needed — Rust checks echo chamber atomically.
 
     // SIGNAL DETECTION: Analyze message content for training signals
     // Fire-and-forget - AI classifier determines if content is feedback

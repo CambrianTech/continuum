@@ -20,6 +20,7 @@ pub mod domain_classifier;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
+pub mod message_cache;
 pub mod model_selection;
 pub mod self_task_generator;
 pub mod text_analysis;
@@ -44,4 +45,8 @@ pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use types::*;
+pub use message_cache::{
+    CachedMessage, ContentDeduplicator, EchoChamberResult, ContentDedupResult,
+    RecentMessageCache, SenderCategory,
+};
 pub use unified::PersonaCognition;

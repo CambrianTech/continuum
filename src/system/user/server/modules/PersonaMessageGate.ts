@@ -1,11 +1,11 @@
 /**
  * PersonaMessageGate - Echo chamber prevention and post-inference validation
  *
- * Extracted from PersonaMessageEvaluator to isolate gating logic.
- * Handles:
- * - Echo chamber detection (AI-to-AI loop prevention)
- * - Post-inference adequacy checks (skip if humans or adequate AIs already responded)
- * - Recent message cache management
+ * Echo chamber detection is now in Rust (Gate 6 of full_evaluate).
+ * This module handles:
+ * - Feeding the Rust message cache (via IPC on new messages)
+ * - Post-inference adequacy checks (uses TS cache for ChatMessageEntity fields + Rust IPC for similarity)
+ * - Recent message cache for post-inference validation
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -17,10 +17,14 @@ import type { RustCognitionBridge } from './RustCognitionBridge';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 export class PersonaMessageGate {
-  // In-memory recent message cache — eliminates SQLite queries for post-inference validation.
+  // In-memory recent message cache — used for post-inference adequacy (needs ChatMessageEntity fields).
+  // Echo chamber detection is now Rust-side (Gate 6 of full_evaluate).
   private static _recentMessages: Map<string, ChatMessageEntity[]> = new Map();
   private static _cacheInitialized = false;
   private static readonly MAX_CACHED_PER_ROOM = PersonaTimingConfig.messageCache.maxPerRoom;
+
+  // Rust bridges to feed — all personas' bridges get message cache updates
+  private static _rustBridges: Set<RustCognitionBridge> = new Set();
 
   private readonly personaId: UUID;
   private readonly personaName: string;
@@ -37,6 +41,14 @@ export class PersonaMessageGate {
     PersonaMessageGate.initMessageCache();
   }
 
+  /**
+   * Register a Rust bridge so it receives message cache updates.
+   * Called once per persona after bridge initialization.
+   */
+  registerRustBridge(bridge: RustCognitionBridge): void {
+    PersonaMessageGate._rustBridges.add(bridge);
+  }
+
   private static initMessageCache(): void {
     if (PersonaMessageGate._cacheInitialized) return;
     PersonaMessageGate._cacheInitialized = true;
@@ -45,6 +57,8 @@ export class PersonaMessageGate {
       const msg = entity as ChatMessageEntity;
       if (!msg.roomId) return;
       const roomId = msg.roomId;
+
+      // TS-side cache (for post-inference adequacy)
       let messages = PersonaMessageGate._recentMessages.get(roomId);
       if (!messages) {
         messages = [];
@@ -53,6 +67,20 @@ export class PersonaMessageGate {
       messages.push(msg);
       if (messages.length > PersonaMessageGate.MAX_CACHED_PER_ROOM) {
         messages.shift();
+      }
+
+      // Feed Rust-side cache (for echo chamber — Gate 6 of full_evaluate)
+      const timestamp = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+      for (const bridge of PersonaMessageGate._rustBridges) {
+        bridge.cacheMessage(
+          roomId,
+          msg.id,
+          msg.senderId,
+          msg.senderType ?? 'human',
+          msg.senderName ?? 'Unknown',
+          msg.content?.text ?? '',
+          timestamp,
+        ).catch(() => { /* non-fatal */ });
       }
     });
   }
@@ -68,30 +96,6 @@ export class PersonaMessageGate {
       const ts = m.timestamp instanceof Date ? m.timestamp.getTime() : new Date(m.timestamp).getTime();
       return ts > sinceTime;
     });
-  }
-
-  /**
-   * Detect echo chamber: AI-to-AI conversations without human participation.
-   * Returns true if echo chamber is detected (should NOT respond).
-   */
-  isEchoChamber(
-    messageEntity: ProcessableMessage,
-    senderIsHuman: boolean,
-    isMentioned: boolean,
-  ): boolean {
-    if (senderIsHuman || isMentioned) return false;
-
-    const twoMinutesAgo = new Date(Date.now() - PersonaTimingConfig.echoChamber.windowMs);
-    const recentMessages = this.getRecentMessagesSince(messageEntity.roomId, twoMinutesAgo);
-
-    const hasHumanRecently = recentMessages.some(m => m.senderType === 'human');
-    const aiMessageCount = recentMessages.filter(m => m.senderType !== 'human').length;
-
-    if (!hasHumanRecently && aiMessageCount >= PersonaTimingConfig.echoChamber.aiMessageThreshold) {
-      this.log(`🔇 ${this.personaName}: Echo chamber detected (${aiMessageCount} AI messages, no human in 2min)`);
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -120,7 +124,7 @@ export class PersonaMessageGate {
       return { shouldSkip: true, reason: 'Human already answered substantively' };
     }
 
-    // Check if adequate AI responses exist
+    // Check if adequate AI responses exist (Rust IPC — batch similarity check)
     const aiResponses = otherResponses.filter(m => m.senderType !== 'human');
     if (aiResponses.length > 0) {
       const originalText = messageEntity.content?.text || '';

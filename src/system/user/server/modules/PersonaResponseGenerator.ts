@@ -39,7 +39,7 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { supportsNativeTools, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
-import { ContentDeduplicator } from './ContentDeduplicator';
+// ContentDeduplicator removed — content dedup now handled by Rust (cognition/check-content-dedup IPC)
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import type { ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
@@ -101,8 +101,6 @@ export class PersonaResponseGenerator {
   private trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
   private rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
 
-  /** Content deduplicator - prevents same content from being posted within time window */
-  private contentDeduplicator: ContentDeduplicator;
   /** Rust cognition bridge — set lazily after PersonaUser creates it */
   private _rustBridge: RustCognitionBridge | null = null;
   /** Extracted modules */
@@ -135,7 +133,6 @@ export class PersonaResponseGenerator {
     this.rustCognitionBridge = config.rustCognitionBridge;
 
     // Initialize modular helpers
-    this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
     this.promptAssembler = new PersonaPromptAssembler(config.personaName, config.modelConfig, this.log.bind(this));
     this.responseValidator = new PersonaResponseValidator(config.personaName, this.log.bind(this));
     this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));

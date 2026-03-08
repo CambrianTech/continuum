@@ -585,6 +585,11 @@ export class PersonaUser extends AIUser {
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this);
 
+    // Feed Rust-side message cache for echo chamber detection (Gate 6 of full_evaluate)
+    if (this._rustCognition) {
+      this.messageEvaluator.messageGate.registerRustBridge(this._rustCognition);
+    }
+
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
 
