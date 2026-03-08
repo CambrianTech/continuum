@@ -717,3 +717,182 @@ Each recipe execution makes the next one easier:
 This is how you learn to do *anything*. Not by having one massive model that knows everything, but by accumulating a genome of specialized skills that assemble on demand and grow with every project.
 
 The recipe is the goal. The genome is the starting position. The Academy is the path between them. And the path gets shorter every time.
+
+## Distillation Progression: Remote → Local Independence
+
+### The Four Phases
+
+The system is designed to progressively remove its dependency on remote APIs. The architecture doesn't change between phases -- you just swap which students are remote vs local.
+
+**Phase 1: Remote-heavy (current)**
+Remote APIs (Claude, DeepSeek, Groq) do the heavy exam inference. Their solutions train local LoRAs. The M1 only pays for the small, fast training step.
+
+**Phase 2: Distillation threshold**
+Local models trained on remote solutions start passing exams independently. Track per-domain pass rates. When local-assistant passes 80% of what Claude passes for a domain, that domain is *distilled* -- the LoRA captured the knowledge.
+
+**Phase 3: Mentorship handoff**
+Before removing a remote API from a cohort, it mentors its local replacement. One paired session where Claude and local-assistant work the same stages together. Claude's approach is explicit training signal with teacher commentary. Then Claude exits the cohort, local-assistant takes its seat permanently.
+
+**Phase 4: Fully local**
+The genome has enough LoRA coverage that new recipes are mostly assembly + light gap-filling. Academy sessions run student-on-student, all local Candle inference. The remote APIs were scaffolding -- the knowledge lives in the adapters now.
+
+### Distillation Metrics
+
+```typescript
+interface DistillationProgress {
+  domain: string;
+  remoteModel: string;           // The teacher being distilled from
+  localModel: string;            // The student absorbing knowledge
+  remotePassRate: number;        // Claude's pass rate on this domain
+  localPassRate: number;         // Local model's pass rate
+  distillationRatio: number;     // local/remote (1.0 = fully distilled)
+  readyForHandoff: boolean;      // distillationRatio >= 0.8
+  sessionsCompleted: number;     // How many cohort rounds
+  adapterCount: number;          // LoRA layers trained for this domain
+}
+```
+
+When `distillationRatio >= 0.8` for a domain, the system can automatically stop including the remote API in future cohort sessions for that domain. The knowledge is local now.
+
+### Network Effect: Shared Genomic Repository
+
+If the system is open and others use it, every cohort session anyone runs generates training pairs. The genome becomes a shared library -- Docker Hub for LoRA adapters.
+
+```bash
+# Docker-like adapter management
+genome images                                      # List local adapters with sizes
+genome images --format="{{.Name}} {{.Size}} {{.CascadeScore}}"
+genome pull cambrian/spatial-indexing:v3            # Pull proven adapter from registry
+genome push my-local/metal-compute:latest           # Share your trained adapter
+genome prune --unused-since=30d                    # Clean up stale adapters
+genome prune --cascade-score-below=0.3             # Remove low-quality adapters
+genome history cambrian/spatial-indexing             # Full training lineage
+genome inspect cambrian/spatial-indexing:v3          # Metadata, metrics, provenance
+genome tag my-local/particle-physics:latest v2      # Tag versions
+genome diff v1 v2                                   # Compare adapter versions
+```
+
+### Adapter Provenance
+
+Every adapter carries metadata about HOW it was trained -- this is what makes it trustworthy:
+
+```typescript
+interface AdapterManifest {
+  // Identity
+  name: string;                    // "spatial-indexing"
+  version: string;                 // "v3"
+  baseModel: string;               // "llama-3.2-3b"
+  domain: string;                  // "real-time-systems"
+
+  // Training provenance
+  trainedBy: string;               // Session/cohort that produced this
+  recipeSource: string;            // Recipe that drove the curriculum
+  cohortPeers: string[];           // Who else was in the cohort
+  teacherModel: string;            // What graded the exams
+
+  // Quality metrics
+  cascadeScore: number;            // Did it survive downstream integration?
+  cascadeDepth: number;            // How far downstream was it tested?
+  cohortRank: number;              // Where did it rank vs peers?
+  passRate: number;                // Exam pass rate
+  constraintMargin: number;        // How far under budget (headroom)
+
+  // Distillation lineage
+  distilledFrom?: string;          // Remote model this knowledge came from
+  distillationRatio: number;       // How much of the source was captured
+  generationsFromSource: number;   // 0 = direct distillation, 1 = trained on
+                                   // distilled adapter's outputs, etc.
+
+  // Practical
+  sizeBytes: number;
+  layerCount: number;              // e.g., 196 for Llama-3.2-3B
+  lastUsed: string;                // ISO timestamp (for LRU eviction)
+  useCount: number;                // How often paged in
+  compatibleModels: string[];      // Which base models this works with
+}
+```
+
+You don't just download a random LoRA. You download one that:
+- Passed Stage 8 of a cascading exam
+- Ranked 2nd in a 4-student cohort
+- Was distilled from Claude Sonnet 4.5's solutions
+- Survived integration testing at 60fps on M1
+- Has been paged in 47 times by other personas
+
+### Repository Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    GENOMIC REPOSITORY                     │
+│                                                           │
+│  Local Registry (on-device)                               │
+│  ├── adapters/                                            │
+│  │   ├── spatial-indexing/v3/                              │
+│  │   │   ├── manifest.json     (provenance + metrics)     │
+│  │   │   ├── adapter_model.safetensors                    │
+│  │   │   └── training_log.jsonl                           │
+│  │   ├── metal-compute/v1/                                │
+│  │   └── type-safety/v2/                                  │
+│  ├── index.json                (searchable catalog)       │
+│  └── eviction.json             (LRU tracking)             │
+│                                                           │
+│  Remote Registry (shared, like Docker Hub)                 │
+│  ├── cambrian/                 (org namespace)             │
+│  │   ├── spatial-indexing:v3                               │
+│  │   ├── gpu-pipeline:v2                                   │
+│  │   └── real-time-audio:v1                                │
+│  ├── community/                (public contributions)      │
+│  │   ├── python-optimization:v4                            │
+│  │   └── web-framework:v2                                  │
+│  └── search API               (by domain, cascade score,  │
+│                                 base model, etc.)          │
+│                                                           │
+│  Pull/Push Protocol                                        │
+│  ├── Manifest check (does local have this version?)        │
+│  ├── Delta transfer (only send changed layers)             │
+│  ├── Signature verification (training provenance valid?)   │
+│  └── Auto-compatibility check (base model match?)          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Integration with Genome Paging
+
+The existing genome paging system (LRU eviction, memory pressure, runtime activation) becomes the runtime layer for the repository:
+
+```
+Repository (storage)  →  Genome Paging (runtime)  →  Active Inference
+   "what exists"          "what's loaded"              "what's being used"
+
+genome pull X         →  genome.activateSkill(X)  →  inference with X active
+                         (pages in, evicts LRU)
+```
+
+When a recipe needs a skill that exists in the remote registry but not locally:
+1. `genome pull` fetches it (delta transfer, fast)
+2. Genome paging loads it into VRAM
+3. If VRAM pressure, LRU eviction makes room
+4. Adapter is now local -- future recipes don't need the pull step
+
+### Cleanup Commands (Immediate TODO)
+
+Current state: 58 old adapters accumulated to 21GB before manual cleanup. Need docker-like management NOW, before the repository scales:
+
+```bash
+# List all adapters with sizes and last-used dates
+./jtag genome/adapter-list --format=table
+
+# Show adapters not used in 30 days
+./jtag genome/adapter-list --unused-since=30d
+
+# Prune unused adapters (reclaim disk)
+./jtag genome/adapter-prune --unused-since=30d --dry-run
+./jtag genome/adapter-prune --unused-since=30d
+
+# Inspect a specific adapter's provenance
+./jtag genome/adapter-info --name="spatial-indexing" --version="v3"
+
+# Total disk usage
+./jtag genome/adapter-stats
+```
+
+These commands integrate with the existing `EvictionRegistry` for usage tracking and `AdapterStore` as the filesystem-based single source of truth.
