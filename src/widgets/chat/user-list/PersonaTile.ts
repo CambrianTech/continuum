@@ -20,8 +20,11 @@ import { TOOL_EVENTS } from '../../../system/core/shared/ToolResult';
 import { GenomeLayers, type GenomeLayerInfo } from '../../../commands/genome/layers/shared/GenomeLayersTypes';
 import { styles as tileStyles } from './persona-tile.styles';
 
-/** Diamond decay timeout in ms */
-const DIAMOND_DECAY_MS = 2000;
+/**
+ * Diamond persist duration — each stage of cognition holds its diamond
+ * lit for this long after the last event, giving a visible sequential glow.
+ */
+const DIAMOND_PERSIST_MS = 2500;
 
 type CognitivePhase = 'evaluating' | 'responding' | 'generating' | 'checking' | 'passed' | 'error' | null;
 
@@ -42,21 +45,23 @@ export class PersonaTile extends LitElement {
 
   // === REACTIVE STATE (event-driven) ===
   @reactive() private _cognitivePhase: CognitivePhase = null;
-  @reactive() private _thinkingActive: boolean = false;
-  @reactive() private _speakingActive: boolean = false;
-  @reactive() private _learningActive: boolean = false;
-  @reactive() private _toolsActive: boolean = false;
+
+  // Diamond states — map to cognition pipeline stages (clockwise: eval → generate → respond → learn)
+  @reactive() private _evaluateActive: boolean = false;   // TOP: evaluating message
+  @reactive() private _generateActive: boolean = false;   // RIGHT: LLM inference
+  @reactive() private _respondActive: boolean = false;    // BOTTOM: posted response
+  @reactive() private _learnActive: boolean = false;      // LEFT: captured training signal
+
   @reactive() private _energy: number = 1.0;
   @reactive() private _inboxLoad: number = 0;
   @reactive() private _mood: string = 'idle';
   @reactive() private _genomeLayers: GenomeLayerInfo[] = [];
 
-
-  // Decay timers
-  private _thinkingTimer: ReturnType<typeof setTimeout> | null = null;
-  private _speakingTimer: ReturnType<typeof setTimeout> | null = null;
-  private _learningTimer: ReturnType<typeof setTimeout> | null = null;
-  private _toolsTimer: ReturnType<typeof setTimeout> | null = null;
+  // Decay timers (one per diamond)
+  private _evaluateTimer: ReturnType<typeof setTimeout> | null = null;
+  private _generateTimer: ReturnType<typeof setTimeout> | null = null;
+  private _respondTimer: ReturnType<typeof setTimeout> | null = null;
+  private _learnTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Event unsubscribers
   private _unsubs: Array<() => void> = [];
@@ -97,84 +102,103 @@ export class PersonaTile extends LitElement {
   }
 
   // === EVENT SUBSCRIPTIONS ===
+  //
+  // Diamonds map to the 4 stages of the cognition pipeline (clockwise):
+  //   TOP    = Evaluate  (EVALUATING, DECIDED_RESPOND, CHECKING_REDUNDANCY)
+  //   RIGHT  = Generate  (GENERATING, tool execution during generation)
+  //   BOTTOM = Respond   (POSTED — persona has spoken)
+  //   LEFT   = Learn     (INTERACTION_CAPTURED, training events)
+  //
+  // Every chat response fires all 4 in sequence, giving a visible clockwise sweep.
 
   private _subscribeToEvents(): void {
     const uid = this.userId;
 
-    // THINKING diamond — any AI decision activity for this persona
+    // ── TOP: Evaluate ──────────────────────────────────────────
+    // Fires when persona begins evaluating whether to respond
     this._unsubs.push(
       Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('thinking');
-        if (data.personaId === uid) this._cognitivePhase = 'evaluating';
+        if (data.personaId === uid) {
+          this._activateDiamond('evaluate');
+          this._cognitivePhase = 'evaluating';
+        }
       }),
       Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('thinking');
-        if (data.personaId === uid) this._cognitivePhase = 'responding';
-      }),
-      Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('thinking');
-        if (data.personaId === uid) this._cognitivePhase = 'generating';
+        if (data.personaId === uid) {
+          this._activateDiamond('evaluate');
+          this._cognitivePhase = 'responding';
+        }
       }),
       Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('thinking');
-        if (data.personaId === uid) this._cognitivePhase = 'checking';
+        if (data.personaId === uid) {
+          this._activateDiamond('evaluate');
+          this._cognitivePhase = 'checking';
+        }
       }),
       Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: { personaId: string }) => {
         if (data.personaId === uid) this._cognitivePhase = 'passed';
-      }),
-      Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._cognitivePhase = null;
       }),
       Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string }) => {
         if (data.personaId === uid) this._cognitivePhase = 'error';
       })
     );
 
-    // SPEAKING diamond — voice synthesis events
+    // ── RIGHT: Generate ────────────────────────────────────────
+    // Fires when LLM inference starts and during tool execution
     this._unsubs.push(
-      Events.subscribe('voice:ai:speech:start', (data: { personaId?: string; speakerId?: string }) => {
-        if ((data.personaId ?? data.speakerId) === uid) this._activateDiamond('speaking');
+      Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string }) => {
+        if (data.personaId === uid) {
+          this._activateDiamond('generate');
+          this._cognitivePhase = 'generating';
+        }
       }),
-      Events.subscribe('voice:ai:speech:end', (data: { personaId?: string; speakerId?: string }) => {
-        // Let decay timer handle it, but reset the active duration
-        if ((data.personaId ?? data.speakerId) === uid) this._activateDiamond('speaking');
+      Events.subscribe(TOOL_EVENTS.STARTED, (data: { userId?: string }) => {
+        if (data.userId === uid) this._activateDiamond('generate');
+      }),
+      Events.subscribe(TOOL_EVENTS.RESULT, (data: { userId?: string }) => {
+        if (data.userId === uid) this._activateDiamond('generate');
       })
     );
 
-    // LEARNING diamond — training events
+    // ── BOTTOM: Respond ────────────────────────────────────────
+    // Fires when persona posts a response (the "speaking" moment)
     this._unsubs.push(
+      Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string }) => {
+        if (data.personaId === uid) {
+          this._activateDiamond('respond');
+          this._cognitivePhase = null;
+        }
+      }),
+      // Also fires on voice synthesis (same semantic: persona is speaking)
+      Events.subscribe('voice:ai:speech:start', (data: { personaId?: string; speakerId?: string }) => {
+        if ((data.personaId ?? data.speakerId) === uid) this._activateDiamond('respond');
+      })
+    );
+
+    // ── LEFT: Learn ────────────────────────────────────────────
+    // Fires when training signal captured or active training
+    this._unsubs.push(
+      Events.subscribe(AI_LEARNING_EVENTS.INTERACTION_CAPTURED, (data: { personaId: string }) => {
+        if (data.personaId === uid) this._activateDiamond('learn');
+      }),
       Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('learning');
+        if (data.personaId === uid) this._activateDiamond('learn');
       }),
       Events.subscribe(AI_LEARNING_EVENTS.TRAINING_PROGRESS, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('learning');
+        if (data.personaId === uid) this._activateDiamond('learn');
       }),
       Events.subscribe(AI_LEARNING_EVENTS.TRAINING_COMPLETE, (data: { personaId: string }) => {
         if (data.personaId === uid) {
-          this._activateDiamond('learning');
-          // Refresh genome bars — new adapter may have been trained
+          this._activateDiamond('learn');
           this._fetchGenomeLayers();
         }
       }),
       Events.subscribe(AI_LEARNING_EVENTS.TRAINING_ERROR, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('learning');
-      }),
-      Events.subscribe(AI_LEARNING_EVENTS.INTERACTION_CAPTURED, (data: { personaId: string }) => {
-        if (data.personaId === uid) this._activateDiamond('learning');
+        if (data.personaId === uid) this._activateDiamond('learn');
       })
     );
 
-    // TOOLS diamond — tool execution events
-    this._unsubs.push(
-      Events.subscribe(TOOL_EVENTS.STARTED, (data: { userId?: string }) => {
-        if (data.userId === uid) this._activateDiamond('tools');
-      }),
-      Events.subscribe(TOOL_EVENTS.RESULT, (data: { userId?: string }) => {
-        if (data.userId === uid) this._activateDiamond('tools');
-      })
-    );
-
-    // State meters — persona state snapshots (energy, inbox, mood)
+    // ── State meters (energy, inbox, mood) ─────────────────────
     this._unsubs.push(
       Events.subscribe('persona:state:snapshot', (data: {
         personaId: string; energy: number;
@@ -189,23 +213,23 @@ export class PersonaTile extends LitElement {
     );
   }
 
-  // === DIAMOND ACTIVATION WITH DECAY ===
+  // === DIAMOND ACTIVATION WITH PERSIST ===
 
-  private _activateDiamond(which: 'thinking' | 'speaking' | 'learning' | 'tools'): void {
-    const timerKey = `_${which}Timer` as '_thinkingTimer' | '_speakingTimer' | '_learningTimer' | '_toolsTimer';
-    const stateKey = `_${which}Active` as '_thinkingActive' | '_speakingActive' | '_learningActive' | '_toolsActive';
+  private _activateDiamond(which: 'evaluate' | 'generate' | 'respond' | 'learn'): void {
+    const timerKey = `_${which}Timer` as '_evaluateTimer' | '_generateTimer' | '_respondTimer' | '_learnTimer';
+    const stateKey = `_${which}Active` as '_evaluateActive' | '_generateActive' | '_respondActive' | '_learnActive';
 
     // Activate
     (this as Record<string, unknown>)[stateKey] = true;
 
-    // Clear existing timer
+    // Clear existing timer (re-firing extends the persist window)
     if (this[timerKey]) clearTimeout(this[timerKey]!);
 
-    // Set decay timer
+    // Persist then fade
     this[timerKey] = setTimeout(() => {
       (this as Record<string, unknown>)[stateKey] = false;
       this[timerKey] = null;
-    }, DIAMOND_DECAY_MS);
+    }, DIAMOND_PERSIST_MS);
   }
 
   // === DATA FETCHING ===
@@ -230,14 +254,14 @@ export class PersonaTile extends LitElement {
     this._unsubs.forEach(unsub => unsub());
     this._unsubs = [];
 
-    if (this._thinkingTimer) clearTimeout(this._thinkingTimer);
-    if (this._speakingTimer) clearTimeout(this._speakingTimer);
-    if (this._learningTimer) clearTimeout(this._learningTimer);
-    if (this._toolsTimer) clearTimeout(this._toolsTimer);
-    this._thinkingTimer = null;
-    this._speakingTimer = null;
-    this._learningTimer = null;
-    this._toolsTimer = null;
+    if (this._evaluateTimer) clearTimeout(this._evaluateTimer);
+    if (this._generateTimer) clearTimeout(this._generateTimer);
+    if (this._respondTimer) clearTimeout(this._respondTimer);
+    if (this._learnTimer) clearTimeout(this._learnTimer);
+    this._evaluateTimer = null;
+    this._generateTimer = null;
+    this._respondTimer = null;
+    this._learnTimer = null;
   }
 
   // === RENDER ===
@@ -378,10 +402,10 @@ export class PersonaTile extends LitElement {
           })}
         </div>
         <div class="genome-diamond">
-          <div class="diamond-cell top ${this._thinkingActive ? 'active' : ''}" title="Thinking"></div>
-          <div class="diamond-cell right ${this._speakingActive ? 'active' : ''}" title="Speaking"></div>
-          <div class="diamond-cell bottom ${this._learningActive ? 'active' : ''}" title="Learning"></div>
-          <div class="diamond-cell left ${this._toolsActive ? 'active' : ''}" title="Tools"></div>
+          <div class="diamond-cell ${this._evaluateActive ? 'active' : ''}" title="Evaluate"></div>
+          <div class="diamond-cell ${this._generateActive ? 'active' : ''}" title="Generate"></div>
+          <div class="diamond-cell ${this._respondActive ? 'active' : ''}" title="Respond"></div>
+          <div class="diamond-cell ${this._learnActive ? 'active' : ''}" title="Learn"></div>
         </div>
       </div>
     `;
