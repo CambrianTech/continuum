@@ -79,6 +79,9 @@ export interface CognitionMixin {
 	cognitionGenomeRecordActivity(personaId: string, domain: string, success: boolean): Promise<{ recorded: boolean }>;
 	cognitionGenomeCoverageReport(personaId: string): Promise<CoverageReport>;
 	cognitionScoreInteraction(input: string, output: string, feedback?: string, taskSuccess?: boolean): Promise<QualityScore>;
+	cognitionCacheMessage(personaId: string, roomId: string, messageId: string, senderId: string, senderType: string, senderName: string, content: string, timestamp: number): Promise<void>;
+	cognitionCheckContentDedup(personaId: string, roomId: string, content: string): Promise<{ is_duplicate: boolean; check_time_us: number }>;
+	cognitionRecordContent(personaId: string, roomId: string, content: string): Promise<void>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -645,6 +648,71 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as QualityScore;
+		}
+
+		/**
+		 * Cache a message for echo chamber detection and post-inference adequacy.
+		 * Called by TS event handler when messages arrive — feeds the Rust-side ring buffer.
+		 */
+		async cognitionCacheMessage(
+			personaId: string,
+			roomId: string,
+			messageId: string,
+			senderId: string,
+			senderType: string,
+			senderName: string,
+			content: string,
+			timestamp: number,
+		): Promise<void> {
+			await this.request({
+				command: 'cognition/cache-message',
+				persona_id: personaId,
+				room_id: roomId,
+				message_id: messageId,
+				sender_id: senderId,
+				sender_type: senderType,
+				sender_name: senderName,
+				content,
+				timestamp,
+			});
+		}
+
+		/**
+		 * Check if content is a duplicate (same hash posted to same room within window).
+		 */
+		async cognitionCheckContentDedup(
+			personaId: string,
+			roomId: string,
+			content: string,
+		): Promise<{ is_duplicate: boolean; check_time_us: number }> {
+			const response = await this.request({
+				command: 'cognition/check-content-dedup',
+				persona_id: personaId,
+				room_id: roomId,
+				content,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to check content dedup');
+			}
+
+			return response.result as { is_duplicate: boolean; check_time_us: number };
+		}
+
+		/**
+		 * Record content for future dedup checks.
+		 */
+		async cognitionRecordContent(
+			personaId: string,
+			roomId: string,
+			content: string,
+		): Promise<void> {
+			await this.request({
+				command: 'cognition/record-content',
+				persona_id: personaId,
+				room_id: roomId,
+				content,
+			});
 		}
 	};
 }

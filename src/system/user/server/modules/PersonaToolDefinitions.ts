@@ -454,14 +454,22 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     fullPage: 'Capture full scrollable page (boolean)',
   },
 
+  // ── User discovery ───────────────────────────────────────────────
+  'user/list': {
+    type: 'Filter by user type: human, agent, persona, system',
+    status: 'Filter by status: online, offline, away, busy',
+    provider: 'Filter AI users by provider: anthropic, openai, groq, deepseek, candle, etc.',
+    limit: 'Max results (default: 50)',
+  },
+
   // ── Live collaboration ─────────────────────────────────────────────
   'collaboration/live/start': {
-    participants: 'JSON array of user IDs to invite',
+    participants: 'User uniqueId(s) to call — string for 1:1, JSON array for group (e.g., "helper" or ["helper","teacher"])',
     name: 'Optional session name',
-    withVideo: 'Enable video (boolean, default: false)',
+    withVideo: 'Enable video (boolean, default: false for audio-only)',
   },
   'collaboration/dm': {
-    participants: 'JSON array of user IDs for the DM room',
+    participants: 'User uniqueId(s) to DM — string for 1:1, JSON array for group (e.g., "helper" or ["helper","teacher"])',
     name: 'Optional room display name',
   },
 

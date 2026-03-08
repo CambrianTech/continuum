@@ -13,28 +13,26 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
-import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from './QueueItemTypes';
 // UserEntity and RoomEntity imports removed — isSenderHuman() moved to Rust
 import { CognitionLogger } from './cognition/CognitionLogger';
-import { SignalDetector, getSignalDetector } from './SignalDetector';
-import { getTrainingBuffer } from './TrainingBuffer';
+import { PersonaTrainingSignalExtractor } from './PersonaTrainingSignalExtractor';
+import { PersonaMessageGate } from './PersonaMessageGate';
 import type { Task } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { getToolCapability } from './ToolFormatAdapter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
-import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
+import { truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
-import type { SenderType, FullEvaluateResult } from '../../../../shared/generated';
+import type { SenderType, FullEvaluateResult, SocialSignals } from '../../../../shared/generated';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 // personaSleepManager no longer needed — sleep mode gating moved to Rust evaluator
 import {
@@ -77,6 +75,7 @@ export interface GatingRespondResult extends GatingResultBase {
     filteredMessages: number;
     timeWindowMinutes: number;
   };
+  socialSignals?: SocialSignals;
 }
 
 export interface GatingSilentResult extends GatingResultBase {
@@ -95,150 +94,22 @@ export type GatingResult = GatingRespondResult | GatingSilentResult;
  * - Heuristic scoring and fallbacks
  */
 export class PersonaMessageEvaluator {
-  private readonly signalDetector: SignalDetector;
-
-  // In-memory recent message cache — eliminates SQLite queries for post-inference validation.
-  // Populated by event subscription on first use. Bounded to last 50 messages per room.
-  private static _recentMessages: Map<string, ChatMessageEntity[]> = new Map();
-  private static _cacheInitialized = false;
-  private static readonly MAX_CACHED_PER_ROOM = 50;
-
-  private static initMessageCache(): void {
-    if (PersonaMessageEvaluator._cacheInitialized) return;
-    PersonaMessageEvaluator._cacheInitialized = true;
-
-    Events.subscribe(`data:${COLLECTIONS.CHAT_MESSAGES}:created`, (entity: any) => {
-      const msg = entity as ChatMessageEntity;
-      if (!msg.roomId) return;
-      const roomId = msg.roomId;
-      let messages = PersonaMessageEvaluator._recentMessages.get(roomId);
-      if (!messages) {
-        messages = [];
-        PersonaMessageEvaluator._recentMessages.set(roomId, messages);
-      }
-      messages.push(msg);
-      if (messages.length > PersonaMessageEvaluator.MAX_CACHED_PER_ROOM) {
-        messages.shift();
-      }
-    });
-  }
-
-  /**
-   * Get recent messages for a room from in-memory cache, filtered by timestamp.
-   * Returns flat ChatMessageEntity objects (not DataRecord-wrapped).
-   */
-  private static getRecentMessagesSince(roomId: UUID, since: Date): ChatMessageEntity[] {
-    PersonaMessageEvaluator.initMessageCache();
-    const messages = PersonaMessageEvaluator._recentMessages.get(roomId);
-    if (!messages) return [];
-    const sinceTime = since.getTime();
-    return messages.filter(m => {
-      const ts = m.timestamp instanceof Date ? m.timestamp.getTime() : new Date(m.timestamp).getTime();
-      return ts > sinceTime;
-    });
-  }
+  private readonly trainingSignalExtractor: PersonaTrainingSignalExtractor;
+  readonly messageGate: PersonaMessageGate;
 
   constructor(private readonly personaUser: PersonaUser) {
-    this.signalDetector = getSignalDetector();
-    // Ensure cache is initialized on first evaluator creation
-    PersonaMessageEvaluator.initMessageCache();
+    const logFn = this.log.bind(this);
+    this.trainingSignalExtractor = new PersonaTrainingSignalExtractor(
+      personaUser.id, personaUser.displayName, logFn,
+    );
+    this.messageGate = new PersonaMessageGate(
+      personaUser.id, personaUser.displayName, logFn,
+    );
   }
 
-  /**
-   * Detect training signals from human messages and add to training buffer
-   *
-   * Part of continuous micro-LoRA: when a human corrects or approves an AI response,
-   * we capture that as a training signal for the appropriate trait adapter.
-   */
-  private async detectAndBufferTrainingSignal(
-    messageEntity: ProcessableMessage
-  ): Promise<void> {
-    // Signal detection focuses on MESSAGE CONTENT, not sender type
-    // The AI classifier determines if it's feedback based on what's written
-    try {
-      // Get the preceding AI message (if any)
-      const precedingAIMessage = await this.getPrecedingAIMessage(messageEntity);
-
-      // Get recent conversation history for context
-      const conversationHistory = await this.getRecentConversationHistory(messageEntity.roomId);
-
-      // Use AI-powered signal detection (async) for semantic classification
-      const signal = await this.signalDetector.detectSignalAsync(
-        messageEntity,
-        precedingAIMessage,
-        conversationHistory
-      );
-
-      if (signal && signal.type !== 'none') {
-        this.log(`🎓 ${this.personaUser.displayName}: Training signal detected via AI classification`);
-        this.log(`   Type: ${signal.type}, Trait: ${signal.trait}, Polarity: ${signal.polarity}`);
-        this.log(`   Confidence: ${(signal.confidence * 100).toFixed(0)}%`);
-
-        // Add to training buffer with persona-specific logger
-        const trainingLogger = (msg: string) => this.log(`[TrainingBuffer] ${msg}`);
-        const buffer = getTrainingBuffer(this.personaUser.id, this.personaUser.displayName, trainingLogger);
-        const trainingTriggered = await buffer.add(signal);
-
-        if (trainingTriggered) {
-          this.log(`🔥 ${this.personaUser.displayName}: Micro-training triggered for ${signal.trait}!`);
-        }
-      }
-    } catch (error) {
-      // Don't let signal detection failures block message processing
-      this.log(`⚠️ ${this.personaUser.displayName}: Signal detection error (non-fatal):`, error);
-    }
-  }
-
-  /**
-   * Get the preceding AI message before a human message (for correction detection)
-   */
-  private async getPrecedingAIMessage(humanMessage: ProcessableMessage): Promise<ChatMessageEntity | null> {
-    try {
-      const result = await ORM.query<ChatMessageEntity>({
-        collection: COLLECTIONS.CHAT_MESSAGES,
-        filter: {
-          roomId: humanMessage.roomId,
-          timestamp: { $lt: humanMessage.timestamp },
-          senderType: { $ne: 'human' }  // AI or persona
-        },
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit: 1
-      }, 'default');
-
-      if (result.success && result.data && result.data.length > 0) {
-        // Only return if it's from THIS persona (we're learning from our own corrections)
-        const msg = result.data[0].data;
-        if (msg.senderId === this.personaUser.id) {
-          return msg;
-        }
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Get recent conversation history for training context
-   */
-  private async getRecentConversationHistory(roomId: UUID, limit: number = 10): Promise<ChatMessageEntity[]> {
-    try {
-      const result = await ORM.query<ChatMessageEntity>({
-        collection: COLLECTIONS.CHAT_MESSAGES,
-        filter: { roomId },
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit
-      }, 'default');
-
-      if (result.success && result.data) {
-        return result.data.map(record => record.data).reverse();  // Chronological order
-      }
-
-      return [];
-    } catch {
-      return [];
-    }
+  /** Detect training signals. Delegates to PersonaTrainingSignalExtractor. */
+  private async detectAndBufferTrainingSignal(messageEntity: ProcessableMessage): Promise<void> {
+    return this.trainingSignalExtractor.detectAndBufferTrainingSignal(messageEntity);
   }
 
   /**
@@ -303,27 +174,8 @@ export class PersonaMessageEvaluator {
       return;
     }
 
-    // ECHO CHAMBER GATE: If no human has participated in recent messages and
-    // this message is from another AI, skip to prevent AI-to-AI loops.
-    // Personas are teammates who serve humans — not chatbots for other chatbots.
-    if (!senderIsHuman) {
-      const recentInRoom = PersonaMessageEvaluator.getRecentMessagesSince(
-        messageEntity.roomId,
-        new Date(Date.now() - 120000) // Last 2 minutes
-      );
-      const humanParticipation = recentInRoom.some(m => m.senderType === 'human' || m.senderType === 'agent');
-      const isMentioned = safeMessageText.toLowerCase().includes(this.personaUser.displayName.toLowerCase());
-
-      if (!humanParticipation && recentInRoom.length >= 5 && !isMentioned) {
-        this.log(`[GATE:ECHO_CHAMBER] ${this.personaUser.displayName}: BLOCK — no human in last ${recentInRoom.length} messages (2min window)`);
-        this.personaUser.logAIDecision('SILENT', 'Echo chamber: no human participation', {
-          message: safeMessageText.slice(0, 100),
-          sender: messageEntity.senderName,
-          roomId: messageEntity.roomId,
-        });
-        return;
-      }
-    }
+    // ECHO CHAMBER: Now handled by Rust Gate 6 inside fullEvaluate() above.
+    // No separate TS-side check needed — Rust checks echo chamber atomically.
 
     // SIGNAL DETECTION: Analyze message content for training signals
     // Fire-and-forget - AI classifier determines if content is feedback
@@ -435,7 +287,7 @@ export class PersonaMessageEvaluator {
 
       // Execute step 2: "Generate thoughtful response" (existing logic)
       t0 = Date.now();
-      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision);
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision, earlyResult.social_signals);
       evalTiming['evaluate_and_respond'] = Date.now() - t0;
 
       // If we got here, response was generated (or decision was SILENT)
@@ -530,7 +382,8 @@ export class PersonaMessageEvaluator {
     messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     safeMessageText: string,
-    preComputedDecision?: FastPathDecision
+    preComputedDecision?: FastPathDecision,
+    socialSignals?: SocialSignals,
   ): Promise<void> {
     // ALL pre-response gates are now handled by Rust via fullEvaluate() in the
     // evaluateAndPossiblyRespondWithCognition() wrapper. By the time we get here,
@@ -571,7 +424,7 @@ export class PersonaMessageEvaluator {
     }
 
     const gatingStart = Date.now();
-    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision);
+    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision, socialSignals);
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] evaluateShouldRespond=${Date.now() - gatingStart}ms`);
 
     // FULL TRANSPARENCY LOGGING
@@ -700,124 +553,48 @@ export class PersonaMessageEvaluator {
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
     this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
 
-    // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
-    // Uses in-memory cache instead of SQLite query — O(1) instead of contended DB read
+    // 🔧 POST-INFERENCE VALIDATION: delegated to PersonaMessageGate
     const postInferenceStart = Date.now();
-    const newMessages = PersonaMessageEvaluator.getRecentMessagesSince(
-      messageEntity.roomId,
-      new Date(messageEntity.timestamp)
+    const postInferenceResult = await this.messageGate.checkPostInferenceAdequacy(
+      messageEntity,
+      this.personaUser.rustCognition,
     );
 
-    if (newMessages.length > 0) {
-      this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
+    if (postInferenceResult.shouldSkip) {
+      this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — ${postInferenceResult.reason}`);
 
-      // Check if anyone (human OR AI) already posted adequate responses
-      // Human answers are MORE authoritative — if a human answered, skip immediately
-      const otherResponses = newMessages.filter(m =>
-        m.id !== messageEntity.id &&  // Exclude the original trigger message
-        m.senderId !== this.personaUser.id &&
-        m.senderId !== messageEntity.senderId  // Exclude original sender's other messages
-      );
+      if (this.personaUser.client) {
+        Events.emit<AIDecidedSilentEventData>(
+          DataDaemon.jtagContext!,
+          AI_DECISION_EVENTS.DECIDED_SILENT,
+          {
+            personaId: this.personaUser.id,
+            personaName: this.personaUser.displayName,
+            roomId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            isHumanMessage: senderIsHuman,
+            timestamp: Date.now(),
+            reason: `Post-inference: ${postInferenceResult.reason}`,
+            confidence: 0.95,
+            gatingModel: 'post-inference'
+          },
+          { scope: EVENT_SCOPES.ROOM, scopeId: messageEntity.roomId }
+        ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
 
-      // Fast path: if a human already responded substantively, defer to them
-      const humanResponses = otherResponses.filter(m => m.senderType === 'human' || m.senderType === 'agent');
-      const substantiveHumanResponse = humanResponses.some(m => {
-        const text = m.content?.text || '';
-        return text.length > 30; // More than a greeting
+        getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
+        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
+          userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
+        }).catch(() => {});
+      }
+
+      this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${postInferenceResult.reason}`, {
+        message: messageEntity.content.text,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
       });
-
-      if (substantiveHumanResponse) {
-        this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — human already answered substantively (${humanResponses.length} human responses)`);
-
-        if (this.personaUser.client) {
-          Events.emit<AIDecidedSilentEventData>(
-            DataDaemon.jtagContext!,
-            AI_DECISION_EVENTS.DECIDED_SILENT,
-            {
-              personaId: this.personaUser.id,
-              personaName: this.personaUser.displayName,
-              roomId: messageEntity.roomId,
-              messageId: messageEntity.id,
-              isHumanMessage: senderIsHuman,
-              timestamp: Date.now(),
-              reason: 'Post-inference: human already answered',
-              confidence: 0.95,
-              gatingModel: 'post-inference-human-deference'
-            },
-            { scope: EVENT_SCOPES.ROOM, scopeId: messageEntity.roomId }
-          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-
-          getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
-          Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-            userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
-          }).catch(() => {});
-        }
-
-        this.personaUser.logAIDecision('SILENT', 'Post-inference: human already answered', {
-          message: messageEntity.content.text,
-          sender: messageEntity.senderName,
-          roomId: messageEntity.roomId
-        });
-        return;
-      }
-
-      // Standard path: check if AI responses are adequate
-      const otherAIResponses = otherResponses.filter(m => m.senderType !== 'human');
-
-      if (otherAIResponses.length > 0) {
-        // Check if any response is adequate (substantial and related)
-        const adequacyResult = await this.checkResponseAdequacy(
-          messageEntity,
-          otherAIResponses
-        );
-
-        if (adequacyResult.isAdequate) {
-          this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — adequate AI response exists`);
-          this.log(`   Skipped because: ${adequacyResult.reason}`);
-
-          // Emit DECIDED_SILENT event (fire-and-forget — UI indicator)
-          if (this.personaUser.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaUser.id,
-                personaName: this.personaUser.displayName,
-                roomId: messageEntity.roomId,
-                messageId: messageEntity.id,
-                isHumanMessage: senderIsHuman,
-                timestamp: Date.now(),
-                reason: `Post-inference re-evaluation: ${adequacyResult.reason}`,
-                confidence: adequacyResult.confidence,
-                gatingModel: 'post-inference-heuristic'
-              },
-              {
-                scope: EVENT_SCOPES.ROOM,
-                scopeId: messageEntity.roomId
-              }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-
-            // Return avatar to idle after deciding silent
-            getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
-
-            // Clear typing indicator
-            Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-              userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
-            }).catch(() => {});
-          }
-
-          this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${adequacyResult.reason}`, {
-            message: messageEntity.content.text,
-            sender: messageEntity.senderName,
-            roomId: messageEntity.roomId
-          });
-
-          return; // Exit early - don't generate response
-        }
-      }
-
-      this.log(`   New messages: ${newMessages.map(m => `[${m.senderName}] ${contentPreview(m.content, 50)}`).join(', ')}`);
+      return;
     }
+
 
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
 
@@ -862,7 +639,7 @@ export class PersonaMessageEvaluator {
     // 🔧 PHASE: Generate and post response
     this.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext);
+    await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext, gatingResult.socialSignals);
     this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
@@ -945,33 +722,6 @@ export class PersonaMessageEvaluator {
     }
   }
 
-  /**
-   * Check if existing AI responses are adequate (no need for another response).
-   *
-   * ONE Rust IPC call checks all responses in batch — replaces N individual
-   * textSimilarity calls. Rust handles length filtering (>100 chars) and
-   * Jaccard n-gram similarity (>0.2 threshold) internally.
-   */
-  private async checkResponseAdequacy(
-    originalMessage: ProcessableMessage,
-    otherResponses: ChatMessageEntity[]
-  ): Promise<{ isAdequate: boolean; confidence: number; reason: string }> {
-    const originalText = originalMessage.content?.text || '';
-
-    // Build response array for Rust — single IPC call handles all comparisons
-    const responses = otherResponses.map(r => ({
-      sender_name: r.senderName ?? 'Unknown',
-      text: r.content?.text || '',
-    }));
-
-    const result = await this.personaUser.rustCognition.checkAdequacy(originalText, responses);
-
-    return {
-      isAdequate: result.is_adequate,
-      confidence: result.confidence,
-      reason: result.reason,
-    };
-  }
 
   /**
    * Evaluate whether to respond using Decision Adapter Chain
@@ -983,7 +733,8 @@ export class PersonaMessageEvaluator {
     message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean,
-    preComputedDecision?: FastPathDecision
+    preComputedDecision?: FastPathDecision,
+    socialSignals?: SocialSignals,
   ): Promise<GatingResult> {
     const startTime = Date.now();
 
@@ -1088,7 +839,8 @@ export class PersonaMessageEvaluator {
           totalMessages: ragContext.conversationHistory.length,
           filteredMessages: ragContext.conversationHistory.length,
           timeWindowMinutes: 30
-        }
+        },
+        socialSignals,
       };
 
     } catch (error: any) {

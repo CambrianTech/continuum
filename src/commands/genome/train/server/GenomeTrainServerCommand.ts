@@ -40,7 +40,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
   async execute(params: GenomeTrainParams): Promise<GenomeTrainResult> {
     const { personaId, personaName, traitType, datasetPath } = params;
     const baseModel = params.baseModel ?? LOCAL_MODELS.DEFAULT;
-    const asyncMode = (params as any).async === true;
+    const asyncMode = params.async === true;
 
     this.log.info(`GENOME TRAIN: persona=${personaName}, model=${baseModel}, dataset=${datasetPath}, async=${asyncMode}`);
 
@@ -145,7 +145,19 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     const hfModelName = LOCAL_MODELS.mapToHuggingFace(baseModel);
     const datasetTempPath = await adapter.exportDatasetForAsync(dataset);
     const configPath = await adapter.createConfigForAsync(
-      { ...params, baseModel: hfModelName } as any,
+      {
+        personaId: params.personaId,
+        personaName: params.personaName,
+        traitType: params.traitType,
+        baseModel: hfModelName,
+        dataset: dataset,
+        rank: params.rank ?? 32,
+        epochs: params.epochs ?? 3,
+        learningRate: params.learningRate ?? 0.0001,
+        batchSize: params.batchSize ?? 4,
+        quantize: params.quantize ?? true,
+        quantizeBits: params.quantizeBits ?? 4,
+      },
       datasetTempPath,
     );
     const outputDir = path.join(os.tmpdir(), `jtag-training-${Date.now()}`);
@@ -167,7 +179,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       type: 'training',
       parentPersonaId: personaId,
       sentinelName,
-    } as any);
+    });
 
     const handle = runResult.handle;
     this.log.info(`Async training started: handle=${handle}`);

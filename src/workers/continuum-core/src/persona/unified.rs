@@ -13,6 +13,7 @@ use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::evaluator::{RateLimiterState, SleepState};
 use crate::persona::genome_paging::GenomePagingEngine;
 use crate::persona::inbox::PersonaInbox;
+use crate::persona::message_cache::{ContentDeduplicator, RecentMessageCache};
 use crate::persona::model_selection::AdapterRegistry;
 use crate::rag::RagEngine;
 use std::sync::Arc;
@@ -27,6 +28,10 @@ pub struct PersonaCognition {
     pub adapter_registry: AdapterRegistry,
     pub genome_engine: GenomePagingEngine,
     pub domain_classifier: DomainClassifier,
+    /// Per-room recent message cache — echo chamber detection & post-inference adequacy
+    pub message_cache: RecentMessageCache,
+    /// Content hash dedup — prevents duplicate responses within time window
+    pub content_dedup: ContentDeduplicator,
 }
 
 impl PersonaCognition {
@@ -52,6 +57,8 @@ impl PersonaCognition {
             adapter_registry: AdapterRegistry::default(),
             genome_engine: GenomePagingEngine::new(genome_budget_mb),
             domain_classifier: DomainClassifier::new(),
+            message_cache: RecentMessageCache::new(),
+            content_dedup: ContentDeduplicator::new(),
         }
     }
 }

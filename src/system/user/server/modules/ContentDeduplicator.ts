@@ -9,6 +9,7 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 /**
  * Content deduplication entry - tracks recent responses to prevent duplicates
@@ -31,8 +32,8 @@ export interface ContentDeduplicatorConfig {
   log?: (message: string) => void;
 }
 
-const DEFAULT_WINDOW_MS = 60000;  // 60 seconds
-const DEFAULT_MAX_ENTRIES = 50;
+const DEFAULT_WINDOW_MS = PersonaTimingConfig.dedup.contentWindowMs;
+const DEFAULT_MAX_ENTRIES = PersonaTimingConfig.dedup.maxEntriesPerPersona;
 
 /**
  * ContentDeduplicator - Per-persona content deduplication

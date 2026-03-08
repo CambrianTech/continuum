@@ -106,6 +106,7 @@ import { getTrainingBuffer } from './modules/TrainingBuffer';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { TimingHarness } from '../../core/shared/TimingHarness';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
+import { PersonaMessageGate } from './modules/PersonaMessageGate';
 import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
@@ -584,6 +585,11 @@ export class PersonaUser extends AIUser {
 
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this);
+
+    // Feed Rust-side message cache for echo chamber detection (Gate 6 of full_evaluate)
+    if (this._rustCognition) {
+      this.messageEvaluator.messageGate.registerRustBridge(this._rustCognition);
+    }
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
@@ -1564,7 +1570,8 @@ export class PersonaUser extends AIUser {
   public async respondToMessage(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
-    preBuiltRagContext?: PipelineRAGContext
+    preBuiltRagContext?: PipelineRAGContext,
+    socialSignals?: import('../../../shared/generated').SocialSignals
   ): Promise<void> {
     // Check dormancy state before responding
     const shouldRespond = this.responseGenerator.shouldRespondToMessage(
@@ -1577,7 +1584,7 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext);
+    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext, socialSignals);
 
     // Mark tool results as processed to prevent infinite loops
     if (result.success && result.storedToolResultIds.length > 0) {
@@ -2139,6 +2146,9 @@ export class PersonaUser extends AIUser {
     } catch (e) {
       this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
     }
+
+    // Unregister Rust bridge from PersonaMessageGate to prevent leak
+    PersonaMessageGate.unregisterRustBridge(this._rustCognition);
 
     // Unregister inbox from global registry
     unregisterPersonaInbox(this.id);

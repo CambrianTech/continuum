@@ -1,29 +1,22 @@
 /**
- * PersonaResponseGenerator - AI response generation and posting
+ * PersonaResponseGenerator - Orchestrator for AI response generation and posting
  *
- * Extracted from PersonaUser.ts to separate concerns:
- * - RAG context building
- * - LLM message formatting
- * - AI generation with tool execution loop
- * - Response cleaning and posting
- * - Redundancy checking
+ * Delegates to extracted modules:
+ * - PersonaPromptAssembler: LLM message array construction
+ * - PersonaResponseValidator: Response cleaning and validation gates
+ * - PersonaEngagementDecider: Dormancy/engagement checks
  *
- * This module handles everything from receiving a decision to "respond"
- * through to posting the final message to the chat.
+ * This module orchestrates: RAG build → prompt assembly → inference → validation → tool loop → post
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-// DATA_COMMANDS import removed — response posting now uses ORM.store() directly
 import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
-import { Commands } from '../../../core/shared/Commands';
-// DataCreateParams/DataCreateResult imports removed — response posting now uses ORM.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, NativeToolSpec, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
-import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
@@ -41,19 +34,14 @@ import {
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
-import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
-import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
+import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { supportsNativeTools, unsanitizeToolName, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
+import { supportsNativeTools, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
-import { hasMediaMetadata } from '../../../rag/shared/RAGTypes';
-import { ContentDeduplicator } from './ContentDeduplicator';
-// AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
-// import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+// ContentDeduplicator removed — content dedup now handled by Rust (cognition/check-content-dedup IPC)
 import { SystemPaths } from '../../../core/config/SystemPaths';
-// GarbageDetector — moved to Rust (persona/text_analysis/garbage_detection.rs)
-import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
+import type { ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
@@ -61,10 +49,11 @@ import type { RustCognitionBridge } from './RustCognitionBridge';
 import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
-// SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
-
-// import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
-// DataCreate import removed — response posting now uses ORM.store() directly
+import { PersonaPromptAssembler } from './PersonaPromptAssembler';
+import { PersonaResponseValidator } from './PersonaResponseValidator';
+import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
+import type { SocialSignals } from '../../../../shared/generated';
 /**
  * Response generation result
  */
@@ -113,10 +102,12 @@ export class PersonaResponseGenerator {
   private trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
   private rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
 
-  /** Content deduplicator - prevents same content from being posted within time window */
-  private contentDeduplicator: ContentDeduplicator;
   /** Rust cognition bridge — set lazily after PersonaUser creates it */
   private _rustBridge: RustCognitionBridge | null = null;
+  /** Extracted modules */
+  private promptAssembler: PersonaPromptAssembler;
+  private responseValidator: PersonaResponseValidator;
+  private engagementDecider: PersonaEngagementDecider;
 
   /**
    * Set Rust cognition bridge (called after PersonaUser creates it).
@@ -124,6 +115,7 @@ export class PersonaResponseGenerator {
    */
   setRustBridge(bridge: RustCognitionBridge): void {
     this._rustBridge = bridge;
+    this.responseValidator.setRustBridge(bridge);
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -142,7 +134,9 @@ export class PersonaResponseGenerator {
     this.rustCognitionBridge = config.rustCognitionBridge;
 
     // Initialize modular helpers
-    this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
+    this.promptAssembler = new PersonaPromptAssembler(config.personaName, config.modelConfig, this.log.bind(this));
+    this.responseValidator = new PersonaResponseValidator(config.personaName, this.log.bind(this));
+    this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));
   }
 
   /**
@@ -183,15 +177,10 @@ export class PersonaResponseGenerator {
   }
 
   /**
-   * Convert MediaItems to ContentPart blocks for inclusion in model messages.
+   * Convert MediaItems to ContentPart blocks. Delegates to PersonaPromptAssembler.
    */
   private mediaToContentParts(media: MediaItem[]): ContentPart[] {
-    return media.map(m => {
-      if (m.type === 'image') return { type: 'image' as const, image: m };
-      if (m.type === 'audio') return { type: 'audio' as const, audio: m };
-      if (m.type === 'video') return { type: 'video' as const, video: m };
-      return { type: 'image' as const, image: m }; // Default fallback
-    });
+    return this.promptAssembler.mediaToContentParts(media);
   }
 
   // NOTE: calculateSafeMessageCount was removed (dead code)
@@ -199,67 +188,14 @@ export class PersonaResponseGenerator {
   // which uses ModelContextWindows as the single source of truth
 
   /**
-   * Check if persona should respond to message based on dormancy level
-   *
-   * Dormancy filtering (Phase 2 of dormancy system):
-   * - Level 0 (active): Respond to everything
-   * - Level 1 (mention-only): Only respond to @mentions
-   * - Level 2 (human-only): Only respond to humans OR @mentions
-   *
-   * **CRITICAL**: @mentions ALWAYS work as failsafe - no sleep mode that blocks mentions
-   *
-   * @param message - The message to evaluate
-   * @param dormancyState - Current dormancy state from UserStateEntity
-   * @returns true if should respond, false if should skip
+   * Check if persona should respond to message based on dormancy level.
+   * Delegates to PersonaEngagementDecider.
    */
   shouldRespondToMessage(
     message: ProcessableMessage,
-    dormancyState?: { level: 'active' | 'mention-only' | 'human-only' }
+    dormancyState?: DormancyState
   ): boolean {
-    // If no dormancy state, default to active (backward compatible)
-    if (!dormancyState) {
-      return true;
-    }
-
-    const dormancyLevel = dormancyState.level;
-
-    // Check if message mentions this persona (FAILSAFE - always check first)
-    const mentionsPersona = message.content.text.includes(`@${this.personaName.toLowerCase()}`) ||
-                            message.content.text.includes(`@${this.personaName}`);
-
-    // FAILSAFE: @mentions ALWAYS wake - regardless of dormancy level
-    if (mentionsPersona) {
-      if (dormancyLevel !== 'active') {
-        this.log(`✨ ${this.personaName}: @mention detected, waking from ${dormancyLevel} mode`);
-      }
-      return true;
-    }
-
-    // Level 0: Active - respond to everything
-    if (dormancyLevel === 'active') {
-      return true;
-    }
-
-    // Level 1: Mention-Only - only respond to @mentions (already handled above)
-    if (dormancyLevel === 'mention-only') {
-      this.log(`💤 ${this.personaName}: Dormant (mention-only), skipping message`);
-      return false;
-    }
-
-    // Level 2: Human-Only - respond to humans OR @mentions (mentions already handled)
-    if (dormancyLevel === 'human-only') {
-      const isHumanSender = message.senderType === 'human';
-
-      if (isHumanSender) {
-        return true;
-      }
-
-      this.log(`💤 ${this.personaName}: Dormant (human-only), skipping AI message`);
-      return false;
-    }
-
-    // Default: respond (shouldn't reach here, but safe fallback)
-    return true;
+    return this.engagementDecider.shouldRespondToMessage(message, dormancyState);
   }
 
   /**
@@ -269,7 +205,8 @@ export class PersonaResponseGenerator {
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
-    preBuiltRagContext?: RAGContext
+    preBuiltRagContext?: RAGContext,
+    socialSignals?: SocialSignals
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     // Voice modality is a typed field — no cast needed
@@ -318,258 +255,12 @@ export class PersonaResponseGenerator {
         this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
       }
 
-      // 🔧 SUB-PHASE 3.2: Build message history for LLM
+      // 🔧 SUB-PHASE 3.2: Build message history for LLM (delegated to PersonaPromptAssembler)
       const phase32Start = Date.now();
-      this.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
-      // ✅ Support multimodal content (images, audio, video) for vision-capable models
-      // Adapters will transform based on model capability (raw images vs text descriptions)
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
-
-      // System prompt from RAG builder — includes room membership, memories, tool definitions,
-      // widget context, global awareness, etc. ALL injected by budget-aware RAG sources.
-      // No bypasses here — everything flows through the RAG budget system.
-      let systemPrompt = fullRAGContext.identity.systemPrompt;
+      const messages = this.promptAssembler.assembleMessages(fullRAGContext, originalMessage, socialSignals);
 
       // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider, this.modelConfig);
-
-      // Log system prompt size for monitoring
-      this.log(`📋 ${this.personaName}: [RAG] ${systemPrompt.length} chars (~${Math.ceil(systemPrompt.length / 4)} tokens), toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
-
-      messages.push({
-        role: 'system',
-        content: systemPrompt
-      });
-
-      // Inject system-level image artifacts (e.g. live room screenshot) for vision models.
-      // These aren't tied to a chat message — they come from RAG sources like LiveRoomAwarenessSource.
-      const hasVisionCapability = AICapabilityRegistry.getInstance().hasCapability(
-        this.modelConfig.provider, this.modelConfig.model, 'image-input'
-      );
-      if (hasVisionCapability) {
-        const systemArtifacts = fullRAGContext.artifacts.filter(
-          a => a.type === 'screenshot' && a.base64 && !hasMediaMetadata(a)
-        );
-        if (systemArtifacts.length > 0) {
-          const parts: ContentPart[] = [
-            { type: 'text', text: 'Current visual context:' }
-          ];
-          for (const artifact of systemArtifacts) {
-            const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/jpeg';
-            parts.push({ type: 'image', image: { base64: artifact.base64!, mimeType } });
-          }
-          messages.push({ role: 'user', content: parts });
-          this.log(`🖼️  ${this.personaName}: Injected ${systemArtifacts.length} system-level screenshot(s) for vision model`);
-        }
-      }
-
-      // Build artifact lookup maps for multimodal support
-      // This enables vision models to see images from messages with media
-      type RAGArtifact = typeof fullRAGContext.artifacts[number];
-      const artifactsByMessageId = new Map<string, RAGArtifact[]>();
-      const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
-
-      for (const artifact of fullRAGContext.artifacts) {
-        if (!hasMediaMetadata(artifact)) continue;
-        const { messageId, senderName, timestamp } = artifact.metadata;
-
-        // By messageId
-        if (!artifactsByMessageId.has(messageId)) {
-          artifactsByMessageId.set(messageId, []);
-        }
-        artifactsByMessageId.get(messageId)!.push(artifact);
-
-        // By timestamp+name (LLMMessages don't have IDs)
-        const key = `${timestamp}_${senderName}`;
-        if (!artifactsByTimestampName.has(key)) {
-          artifactsByTimestampName.set(key, []);
-        }
-        artifactsByTimestampName.get(key)!.push(artifact);
-      }
-
-      this.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
-
-      // Add conversation history from RAG context with human-readable timestamps
-      // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
-      // Format: "[HH:MM] SpeakerName: message" - timestamps help LLM understand time gaps
-      if (fullRAGContext.conversationHistory.length > 0) {
-        let lastTimestamp: number | undefined;
-
-        for (let i = 0; i < fullRAGContext.conversationHistory.length; i++) {
-          const msg = fullRAGContext.conversationHistory[i];
-
-          // Format timestamp as human-readable time
-          let timePrefix = '';
-          if (msg.timestamp) {
-            const date = new Date(msg.timestamp);
-            const hours = date.getHours().toString().padStart(2, '0');
-            const minutes = date.getMinutes().toString().padStart(2, '0');
-            timePrefix = `[${hours}:${minutes}] `;
-
-            // Detect significant time gaps (> 1 hour)
-            if (lastTimestamp && (msg.timestamp - lastTimestamp > 3600000)) {
-              const gapHours = Math.floor((msg.timestamp - lastTimestamp) / 3600000);
-              messages.push({
-                role: 'system',
-                content: `⏱️ ${gapHours} hour${gapHours > 1 ? 's' : ''} passed - conversation resumed`
-              });
-            }
-
-            lastTimestamp = msg.timestamp;
-          }
-
-          // For Llama models, embed speaker identity + timestamp in the content
-          const formattedContent = msg.name
-            ? `${timePrefix}${msg.name}: ${msg.content}`
-            : `${timePrefix}${msg.content}`;
-
-          // Check if this message has associated artifacts (images, audio, video)
-          // Match by timestamp+name since LLMMessages don't have IDs
-          const lookupKey = msg.timestamp && msg.name ? `${msg.timestamp}_${msg.name}` : null;
-          const messageArtifacts = lookupKey ? artifactsByTimestampName.get(lookupKey) : undefined;
-
-          if (messageArtifacts && messageArtifacts.length > 0) {
-            const hasVision = AICapabilityRegistry.getInstance().hasCapability(
-              this.modelConfig.provider, this.modelConfig.model, 'image-input'
-            );
-
-            if (hasVision) {
-              // Vision model: send raw base64 as ContentPart[]
-              const contentParts: ContentPart[] = [
-                { type: 'text', text: formattedContent }
-              ];
-
-              for (const artifact of messageArtifacts) {
-                const mimeType = hasMediaMetadata(artifact) ? artifact.metadata.mimeType : undefined;
-
-                if (artifact.type === 'image' && artifact.base64) {
-                  contentParts.push({ type: 'image', image: { base64: artifact.base64, mimeType } });
-                } else if (artifact.type === 'audio' && artifact.base64) {
-                  contentParts.push({ type: 'audio', audio: { base64: artifact.base64, mimeType } });
-                } else if (artifact.type === 'video' && artifact.base64) {
-                  contentParts.push({ type: 'video', video: { base64: artifact.base64, mimeType } });
-                }
-              }
-
-              messages.push({ role: msg.role, content: contentParts });
-            } else {
-              // Text-only model: append descriptions as text (base64 is useless to them)
-              const descriptions: string[] = [];
-              for (const artifact of messageArtifacts) {
-                const description = typeof artifact.preprocessed?.result === 'string'
-                  ? artifact.preprocessed.result
-                  : artifact.content;
-                const filename = hasMediaMetadata(artifact) ? artifact.metadata.filename : undefined;
-                if (description) {
-                  descriptions.push(`[Image${filename ? ` "${filename}"` : ''}: ${description}]`);
-                } else {
-                  descriptions.push(`[Shared image${filename ? ` "${filename}"` : ''} — visual description not yet available]`);
-                }
-              }
-
-              const textWithDescriptions = descriptions.length > 0
-                ? `${formattedContent}\n${descriptions.join('\n')}`
-                : formattedContent;
-
-              messages.push({ role: msg.role, content: textWithDescriptions });
-            }
-
-            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name} (vision=${hasVision})`);
-          } else {
-            // Text-only message
-            messages.push({
-              role: msg.role,
-              content: formattedContent
-            });
-          }
-        }
-      }
-
-      // CRITICAL: Identity reminder at END of context (research shows this prevents "prompt drift")
-      // LLMs have recency bias - instructions at the end have MORE influence than at beginning
-      const now = new Date();
-      const currentTime = `${now.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
-
-      messages.push({
-        role: 'system',
-        content: `You are ${this.personaName}.
-
-In the conversation above:
-- Messages with role='assistant' are YOUR past messages
-- Messages with role='user' are from everyone else (humans and other AIs)
-- Names are shown in the format "[HH:MM] Name: message"
-
-Respond naturally with JUST your message - NO name prefix, NO labels.
-
-CURRENT TIME: ${currentTime}
-
-CRITICAL TOPIC DETECTION PROTOCOL:
-
-Step 1: Check for EXPLICIT TOPIC MARKERS in the most recent message
-- "New topic:", "Different question:", "Changing subjects:", "Unrelated, but..."
-- If present: STOP. Ignore ALL previous context. This is a NEW conversation.
-
-Step 2: Extract HARD CONSTRAINTS from the most recent message
-- Look for: "NOT", "DON'T", "WITHOUT", "NEVER", "AVOID", "NO"
-- Example: "NOT triggering the app to foreground" = YOUR SOLUTION MUST NOT DO THIS
-- Example: "WITHOUT user interaction" = YOUR SOLUTION MUST BE AUTOMATIC
-- Your answer MUST respect these constraints or you're wrong.
-
-Step 3: Compare SUBJECT of most recent message to previous 2-3 messages
-- Previous: "Worker Threads" → Recent: "Webview authentication" = DIFFERENT SUBJECTS
-- Previous: "TypeScript code" → Recent: "What's 2+2?" = TEST QUESTION
-- Previous: "Worker pools" → Recent: "Should I use 5 or 10 workers?" = SAME SUBJECT
-
-Step 4: Determine response strategy
-IF EXPLICIT TOPIC MARKER or COMPLETELY DIFFERENT SUBJECT:
-- Respond ONLY to the new topic
-- Ignore old messages (they're from a previous discussion)
-- Focus 100% on the most recent message
-- Address the constraints explicitly
-
-IF SAME SUBJECT (continued conversation):
-- Use full conversation context
-- Build on previous responses
-- Still check for NEW constraints in the recent message
-- Avoid redundancy
-
-CRITICAL READING COMPREHENSION:
-- Read the ENTIRE most recent message carefully
-- Don't skim - every word matters
-- Constraints are REQUIREMENTS, not suggestions
-- If the user says "NOT X", suggesting X is a failure
-
-Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts (consecutive messages about different subjects) are also topic changes.`
-      });
-
-      // VOICE MODE: Add conversational brevity instruction (only if not already in RAG context)
-      // VoiceConversationSource injects these via systemPromptSection when active
-      // This is a fallback for cases where sourceModality is set but VoiceConversationSource wasn't used
-      const hasVoiceRAGContext = fullRAGContext.metadata && (fullRAGContext.metadata as any).responseStyle?.voiceMode;
-      if (originalMessage.sourceModality === 'voice' && !hasVoiceRAGContext) {
-        messages.push({
-          role: 'system',
-          content: `🎙️ VOICE CONVERSATION MODE:
-This is a SPOKEN conversation. Your response will be converted to speech.
-
-CRITICAL: Keep responses SHORT and CONVERSATIONAL:
-- Maximum 2-3 sentences
-- No bullet points, lists, or formatting
-- Speak naturally, as if talking face-to-face
-- Ask clarifying questions instead of long explanations
-- If the topic is complex, give a brief answer and offer to elaborate
-
-BAD (too long): "There are several approaches to this problem. First, you could... Second, another option is... Third, additionally you might consider..."
-GOOD (conversational): "The simplest approach would be X. Want me to explain the alternatives?"
-
-Remember: This is voice chat, not a written essay. Be brief, be natural, be human.`
-        });
-        this.log(`🔊 ${this.personaName}: Added voice conversation mode instructions (fallback - VoiceConversationSource not active)`);
-      } else if (hasVoiceRAGContext) {
-        this.log(`🔊 ${this.personaName}: Voice instructions provided by VoiceConversationSource`);
-      }
-
-      this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
       this.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
@@ -593,10 +284,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       if (isVoiceMode) {
         // Voice mode: Use generous limit for natural speech (800 tokens ≈ 600 words ≈ 60 seconds)
         // Previous 100-token limit caused mid-sentence cutoffs - unacceptable
-        const VOICE_MAX_TOKENS = 800;
-        if (effectiveMaxTokens > VOICE_MAX_TOKENS) {
-          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens`);
-          effectiveMaxTokens = VOICE_MAX_TOKENS;
+        if (effectiveMaxTokens > PersonaTimingConfig.generation.voiceMaxTokens) {
+          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${PersonaTimingConfig.generation.voiceMaxTokens} tokens`);
+          effectiveMaxTokens = PersonaTimingConfig.generation.voiceMaxTokens;
         }
       }
 
@@ -709,9 +399,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // Wrap generation call with timeout (180s - generous limit for local Candle/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
       // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
-      const GENERATION_TIMEOUT_MS = 180000;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('AI generation timeout after 180 seconds')), GENERATION_TIMEOUT_MS);
+        setTimeout(() => reject(new Error(`AI generation timeout after ${PersonaTimingConfig.generation.timeoutMs / 1000} seconds`)), PersonaTimingConfig.generation.timeoutMs);
       });
 
       let aiResponse: TextGenerationResponse;
@@ -802,56 +491,29 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           }
         ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
 
-        // Clean AI response via Rust IPC — strip name prefixes LLMs add
-        if (!this._rustBridge) {
-          throw new Error('Rust bridge not initialized — cannot validate response');
-        }
-
-        const cleaned = await this._rustBridge.cleanResponse(aiResponse.text.trim());
-        if (cleaned.was_cleaned && cleaned.text.length > 0) {
-          aiResponse.text = cleaned.text;
-        } else if (cleaned.was_cleaned && cleaned.text.length === 0) {
-          // Cleaning produced empty text (e.g. response was ONLY <thinking> tags).
-          // Keep original text stripped of thinking tags but don't post empty messages.
-          this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5] Response empty after cleaning — suppressing`);
+        // Phase 3.3.5: Clean and validate response (delegated to PersonaResponseValidator)
+        const cleanResult = await this.responseValidator.cleanResponse(aiResponse.text.trim());
+        if (cleanResult.wasCleaned && cleanResult.text.length === 0) {
           InferenceCoordinator.releaseSlot(this.personaId, provider);
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
-        // Store extracted thinking content for cognition logging
-        if (cleaned.thinking) {
-          extractedThinking = cleaned.thinking;
-          this.log(`💭 ${this.personaName}: [thinking] ${truncate(cleaned.thinking, 200)}`);
+        if (cleanResult.wasCleaned) {
+          aiResponse.text = cleanResult.text;
+        }
+        if (cleanResult.thinking) {
+          extractedThinking = cleanResult.thinking;
+          this.log(`💭 ${this.personaName}: [thinking] ${truncate(cleanResult.thinking, 200)}`);
         }
 
-        // Combined validation gates (1 Rust IPC call)
-        // Runs 4 gates in Rust: garbage detection, response loop, truncated tool call, semantic loop.
         const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
-
-        const validation = await this._rustBridge.validateResponse(
-          aiResponse.text,
+        const validation = await this.responseValidator.validate({
+          responseText: aiResponse.text,
           hasToolCalls,
-          fullRAGContext.conversationHistory
-        );
+          conversationHistory: fullRAGContext.conversationHistory,
+        });
 
         if (!validation.passed) {
-          const gate = validation.gate_failed ?? 'unknown';
-          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5] Validation gate FAILED: ${gate} (${validation.total_time_us}us)`);
-
-          // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
-
-          // Build gate-specific event data
-          const gateConfidence = gate === 'garbage' ? validation.garbage_result.score
-            : gate === 'response_loop' ? 0.9
-            : gate === 'truncated_tool_call' ? 0.95
-            : gate === 'semantic_loop' ? validation.semantic_result.similarity
-            : 0.8;
-
-          const gateReason = gate === 'garbage' ? `Garbage output: ${validation.garbage_result.reason} - ${validation.garbage_result.details}`
-            : gate === 'response_loop' ? `Response loop detected - ${validation.loop_duplicate_count} duplicates`
-            : gate === 'truncated_tool_call' ? 'Truncated tool call detected - response cut off mid-tool-call'
-            : gate === 'semantic_loop' ? validation.semantic_result.reason
-            : `Validation failed: ${gate}`;
 
           // Emit DECIDED_SILENT event (fire-and-forget)
           if (this.client) {
@@ -865,25 +527,21 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 messageId: originalMessage.id,
                 isHumanMessage: originalMessage.senderType === 'human',
                 timestamp: Date.now(),
-                confidence: gateConfidence,
-                reason: gateReason,
-                gatingModel: `rust-${gate}`
+                confidence: validation.confidence,
+                reason: validation.reason,
+                gatingModel: `rust-${validation.gate}`
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
 
-            // Return avatar to idle
             getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
-
-            // Clear typing indicator
             Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
               userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
             }).catch(() => {});
           }
 
-          // Garbage returns failure; loops/truncated return redundant
-          if (gate === 'garbage') {
-            return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${validation.garbage_result.reason}` };
+          if (this.responseValidator.isHardFailure(validation.gate!)) {
+            return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${validation.reason}` };
           }
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
@@ -1091,13 +749,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               break;
             }
 
-            // Update full response state — clean via Rust IPC
-            const loopCleaned = await this._rustBridge!.cleanResponse(regeneratedResponse.text?.trim() || '');
-            // Only update text if cleaning produced non-empty result
+            // Update full response state — clean via validator
+            const loopCleaned = await this.responseValidator.cleanResponse(regeneratedResponse.text?.trim() || '');
             if (loopCleaned.text.length > 0) {
               aiResponse.text = loopCleaned.text;
             } else if (regeneratedResponse.text?.trim()) {
-              // Cleaning emptied it (thinking-only response) — keep previous text
               this.log(`⚠️ ${this.personaName}: [AGENT-LOOP] Regenerated response empty after cleaning — keeping previous text`);
             }
             aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;

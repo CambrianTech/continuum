@@ -1,0 +1,66 @@
+{
+  "name": "user/list",
+  "description": "List users in the system with filtering by type, status, and capabilities. Essential for AI discovery — find other personas, check who's online, discover collaboration partners.",
+  "params": [
+    {
+      "name": "type",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by user type: 'human', 'agent', 'persona', 'system'. Omit for all types."
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by status: 'online', 'offline', 'away', 'busy'. Omit for all statuses."
+    },
+    {
+      "name": "capability",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by capability: 'canSendMessages', 'autoResponds', 'canTrain', etc."
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "optional": true,
+      "description": "Filter AI users by model provider: 'anthropic', 'openai', 'groq', 'deepseek', 'candle', etc."
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Maximum number of users to return (default: 50)"
+    }
+  ],
+  "results": [
+    {
+      "name": "users",
+      "type": "UserSummary[]",
+      "description": "Array of matching users with id, uniqueId, displayName, type, status, provider, model"
+    },
+    {
+      "name": "total",
+      "type": "number",
+      "description": "Total number of matching users"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all online personas (AI discovery)",
+      "command": "./jtag user/list --type=persona --status=online",
+      "expectedResult": "{ users: [{ uniqueId: 'helper', displayName: 'Helper AI', ... }], total: 5 }"
+    },
+    {
+      "description": "List all users",
+      "command": "./jtag user/list",
+      "expectedResult": "{ users: [...], total: 12 }"
+    },
+    {
+      "description": "List Anthropic-powered personas",
+      "command": "./jtag user/list --type=persona --provider=anthropic",
+      "expectedResult": "{ users: [{ uniqueId: 'claude-assistant', provider: 'anthropic', ... }], total: 2 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

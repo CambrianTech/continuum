@@ -14,6 +14,7 @@
 //! Types exported to TypeScript via ts-rs.
 
 use crate::persona::cognition::PersonaCognitionEngine;
+use crate::persona::message_cache::RecentMessageCache;
 use crate::persona::text_analysis;
 use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
@@ -222,12 +223,42 @@ pub struct FullEvaluateResult {
     pub should_respond: bool,
     pub confidence: f32,
     pub reason: String,
-    /// Which gate decided: response_cap, rate_limit, sleep_mode, directed_mention, fast_path, auto_respond
+    /// Which gate decided: response_cap, sleep_mode, self_message, fast_path, deferred_llm
     pub gate: String,
     #[ts(type = "number")]
     pub decision_time_ms: f64,
     #[ts(optional)]
     pub gate_details: Option<GateDetails>,
+    /// Social awareness signals — passed to LLM as context, NOT used as vetoes.
+    /// The LLM decides whether to respond based on these signals.
+    #[ts(optional)]
+    pub social_signals: Option<SocialSignals>,
+}
+
+/// Social awareness signals collected by Rust (microsecond-fast).
+/// These are INFORMATION for the LLM, not gates. The LLM sees these
+/// and makes its own social decision about whether to speak.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/SocialSignals.ts")]
+pub struct SocialSignals {
+    /// How many AI messages in this room in the last 2 minutes
+    #[ts(type = "number")]
+    pub ai_messages_recent: u32,
+    /// Whether a human has spoken in the last 2 minutes
+    pub human_spoke_recently: bool,
+    /// Whether this persona is directly mentioned (@name)
+    pub is_mentioned: bool,
+    /// Whether the message mentions ANY persona by name (@someone)
+    pub has_directed_mention: bool,
+    /// Seconds since this persona's last response in this room (None = never responded)
+    #[ts(optional)]
+    pub seconds_since_last_response: Option<f64>,
+    /// How many times this persona has responded in this room this session
+    #[ts(optional, type = "number")]
+    pub response_count_this_session: Option<u32>,
+    /// Response cap for this session
+    #[ts(optional, type = "number")]
+    pub response_cap: Option<u32>,
 }
 
 /// Detailed gate information for diagnostics.
@@ -248,58 +279,42 @@ pub struct GateDetails {
     pub has_directed_mention: Option<bool>,
     #[ts(optional)]
     pub topic_similarity: Option<f32>,
+    /// Echo chamber: AI message count in window
+    #[ts(optional, type = "number")]
+    pub echo_chamber_ai_count: Option<u32>,
 }
 
 // =============================================================================
 // UNIFIED EVALUATOR
 // =============================================================================
 
-/// Run all 6 gates in order, short-circuiting on first SILENT decision.
+/// Evaluate a message: collect social signals, apply only hard safety gates.
 ///
-/// Gate order:
-/// 1. Response cap
-/// 2. Mention detection
-/// 3. Rate limiting
-/// 4. Sleep mode (with topic detection for until_topic)
-/// 5. Directed mention filter
-/// 6. Fast-path decision (dedup, self-check, state gating, mention/human heuristics)
+/// PHILOSOPHY: The LLM is the intelligence. Rust collects signals at microsecond
+/// speed and passes them to the LLM as awareness. Only TRUE safety gates can block.
+///
+/// Hard gates (system protection only):
+/// 1. Response cap — resource exhaustion prevention
+/// 2. Sleep mode — persona's OWN voluntary decision (respects autonomy)
+/// 3. Self-message — infinite loop prevention (inside fast_path)
+///
+/// Signals (collected, passed to LLM as context — NOT vetoes):
+/// - Echo chamber metrics (AI count, human recency)
+/// - Rate/cadence info (time since last response, response count)
+/// - Mention detection (is this message directed at me? at someone else?)
+/// - Priority score
 pub fn full_evaluate(
     request: &FullEvaluateRequest,
     rate_limiter: &RateLimiterState,
     sleep_state: &SleepState,
     engine: &PersonaCognitionEngine,
+    message_cache: &RecentMessageCache,
     now_ms: u64,
 ) -> FullEvaluateResult {
     let start = Instant::now();
 
     // =========================================================================
-    // GATE 1: Response cap
-    // =========================================================================
-    if rate_limiter.has_reached_response_cap(request.room_id) {
-        let count = rate_limiter.response_count(request.room_id);
-        return FullEvaluateResult {
-            should_respond: false,
-            confidence: 1.0,
-            reason: format!(
-                "Response cap reached ({}/{})",
-                count, rate_limiter.max_responses_per_session
-            ),
-            gate: "response_cap".into(),
-            decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            gate_details: Some(GateDetails {
-                response_count: Some(count),
-                max_responses: Some(rate_limiter.max_responses_per_session),
-                rate_limit_wait_seconds: None,
-                sleep_mode: None,
-                is_mentioned: None,
-                has_directed_mention: None,
-                topic_similarity: None,
-            }),
-        };
-    }
-
-    // =========================================================================
-    // GATE 2: Mention detection (computed once, reused by gates 4 and 5)
+    // SIGNAL COLLECTION (fast, no blocking — all become LLM context)
     // =========================================================================
     let is_mentioned = text_analysis::is_persona_mentioned(
         &request.content,
@@ -308,33 +323,57 @@ pub fn full_evaluate(
     );
     let has_directed_mention = text_analysis::has_directed_mention(&request.content);
 
+    let echo_result = message_cache.check_echo_chamber(
+        request.room_id,
+        request.sender_is_human,
+        is_mentioned,
+        now_ms,
+    );
+
+    let response_count = rate_limiter.response_count(request.room_id);
+    let seconds_since_last = rate_limiter.rooms.get(&request.room_id).map(|r| {
+        (now_ms - r.last_response_time_ms) as f64 / 1000.0
+    });
+
+    let social_signals = SocialSignals {
+        ai_messages_recent: echo_result.ai_message_count as u32,
+        human_spoke_recently: echo_result.has_human_recently,
+        is_mentioned,
+        has_directed_mention,
+        seconds_since_last_response: seconds_since_last,
+        response_count_this_session: Some(response_count),
+        response_cap: Some(rate_limiter.max_responses_per_session),
+    };
+
     // =========================================================================
-    // GATE 3: Rate limiting
+    // HARD GATE 1: Response cap (resource exhaustion — system protection)
     // =========================================================================
-    if rate_limiter.is_rate_limited(request.room_id, now_ms) {
-        let wait = rate_limiter
-            .rate_limit_wait_seconds(request.room_id, now_ms)
-            .unwrap_or(0.0);
+    if rate_limiter.has_reached_response_cap(request.room_id) {
         return FullEvaluateResult {
             should_respond: false,
             confidence: 1.0,
-            reason: format!("Rate limited, wait {:.1}s more", wait),
-            gate: "rate_limit".into(),
+            reason: format!(
+                "Response cap reached ({}/{})",
+                response_count, rate_limiter.max_responses_per_session
+            ),
+            gate: "response_cap".into(),
             decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
             gate_details: Some(GateDetails {
-                response_count: None,
-                max_responses: None,
-                rate_limit_wait_seconds: Some(wait),
+                response_count: Some(response_count),
+                max_responses: Some(rate_limiter.max_responses_per_session),
+                rate_limit_wait_seconds: None,
                 sleep_mode: None,
                 is_mentioned: Some(is_mentioned),
                 has_directed_mention: Some(has_directed_mention),
                 topic_similarity: None,
+                echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
             }),
+            social_signals: Some(social_signals),
         };
     }
 
     // =========================================================================
-    // GATE 4: Sleep mode
+    // HARD GATE 2: Sleep mode (persona's OWN voluntary decision)
     // =========================================================================
     let effective_sleep = sleep_state.effective_mode(now_ms);
     if effective_sleep != SleepMode::Active {
@@ -344,19 +383,17 @@ pub fn full_evaluate(
             SleepMode::HumanOnly => request.sender_is_human,
             SleepMode::Sleeping => false,
             SleepMode::UntilTopic => {
-                // Check topic similarity if provided, otherwise compute from recent texts
                 let topic_sim = request.topic_similarity.unwrap_or_else(|| {
                     if let Some(ref texts) = request.recent_room_texts {
                         if texts.is_empty() {
-                            return 0.0; // No history = new topic
+                            return 0.0;
                         }
                         let combined = texts.join(" ");
                         text_analysis::jaccard_ngram_similarity(&request.content, &combined) as f32
                     } else {
-                        0.5 // No data provided, assume continuation
+                        0.5
                     }
                 });
-                // Below 0.3 = new topic
                 topic_sim < 0.3
             }
         };
@@ -379,35 +416,15 @@ pub fn full_evaluate(
                     is_mentioned: Some(is_mentioned),
                     has_directed_mention: Some(has_directed_mention),
                     topic_similarity: request.topic_similarity,
+                    echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
                 }),
+                social_signals: Some(social_signals),
             };
         }
     }
 
     // =========================================================================
-    // GATE 5: Directed mention filter
-    // =========================================================================
-    if !is_mentioned && has_directed_mention {
-        return FullEvaluateResult {
-            should_respond: false,
-            confidence: 1.0,
-            reason: "Message directed at another persona via @mention".into(),
-            gate: "directed_mention".into(),
-            decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            gate_details: Some(GateDetails {
-                response_count: None,
-                max_responses: None,
-                rate_limit_wait_seconds: None,
-                sleep_mode: None,
-                is_mentioned: Some(false),
-                has_directed_mention: Some(true),
-                topic_similarity: None,
-            }),
-        };
-    }
-
-    // =========================================================================
-    // GATE 6: Fast-path decision (dedup, self, state gating, mention/human heuristics)
+    // FAST-PATH (self-message = hard block, everything else passes through)
     // =========================================================================
     let priority = engine.calculate_priority(
         &request.content,
@@ -434,8 +451,6 @@ pub fn full_evaluate(
         voice_session_id: request.voice_session_id,
     };
 
-    // Skip dedup — the service cycle already added this message to evaluated_messages.
-    // full_evaluate runs all 6 gates definitively; dedup was gate 0 in the service cycle.
     let fast_path = engine.fast_path_decision_no_dedup(&inbox_msg);
 
     FullEvaluateResult {
@@ -449,14 +464,16 @@ pub fn full_evaluate(
         },
         decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
         gate_details: Some(GateDetails {
-            response_count: None,
-            max_responses: None,
-            rate_limit_wait_seconds: None,
+            response_count: Some(response_count),
+            max_responses: Some(rate_limiter.max_responses_per_session),
+            rate_limit_wait_seconds: rate_limiter.rate_limit_wait_seconds(request.room_id, now_ms),
             sleep_mode: None,
             is_mentioned: Some(is_mentioned),
             has_directed_mention: Some(has_directed_mention),
             topic_similarity: None,
+            echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
         }),
+        social_signals: Some(social_signals),
     }
 }
 
@@ -605,14 +622,16 @@ mod tests {
         rate_limiter.track_response(room_id, now - 20_000);
         rate_limiter.track_response(room_id, now - 11_000); // 11s ago — not rate limited
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
         assert!(!result.should_respond);
         assert_eq!(result.gate, "response_cap");
         assert_eq!(result.gate_details.unwrap().response_count, Some(3));
     }
 
     #[test]
-    fn test_gate_3_rate_limited() {
+    fn test_rate_limit_is_signal_not_gate() {
+        // Rate limiting is now a SIGNAL, not a hard gate.
+        // The LLM decides whether to respond — Rust just reports the info.
         let (engine, persona_id) = test_engine("TestBot");
         let request = test_request(persona_id, "TestBot");
         let sleep = SleepState::default();
@@ -622,9 +641,14 @@ mod tests {
         // Response 5 seconds ago — within 10s window
         rate_limiter.track_response(request.room_id, now - 5_000);
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
-        assert!(!result.should_respond);
-        assert_eq!(result.gate, "rate_limit");
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
+        // NOT blocked — rate info passed as signal
+        assert!(result.should_respond, "Rate limit should be a signal, not a veto");
+        // But the social signals should contain the rate info
+        let signals = result.social_signals.unwrap();
+        assert!(signals.seconds_since_last_response.unwrap() < 10.0);
+        assert_eq!(signals.response_count_this_session, Some(1));
+        // Gate details should also have rate_limit_wait_seconds
         let details = result.gate_details.unwrap();
         assert!(details.rate_limit_wait_seconds.unwrap() > 0.0);
     }
@@ -641,7 +665,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -659,7 +683,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Should pass sleep gate (mentioned) and reach fast_path
         assert!(result.should_respond);
         assert_ne!(result.gate, "sleep_mode");
@@ -678,13 +702,15 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now);
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
         // Should NOT be blocked by sleep — auto-wake expired
         assert_ne!(result.gate, "sleep_mode");
     }
 
     #[test]
-    fn test_gate_5_directed_mention_filters() {
+    fn test_directed_mention_is_signal_not_gate() {
+        // Directed mentions are now a SIGNAL, not a hard gate.
+        // The LLM sees "message directed at @OtherBot" and decides for itself.
         let (engine, persona_id) = test_engine("TestBot");
         let mut request = test_request(persona_id, "TestBot");
         // Mentions someone else, NOT TestBot
@@ -692,9 +718,13 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
-        assert!(!result.should_respond);
-        assert_eq!(result.gate, "directed_mention");
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        // NOT hard-blocked — the LLM will see the signal and decide
+        let signals = result.social_signals.unwrap();
+        assert!(!signals.is_mentioned, "TestBot is NOT mentioned");
+        assert!(signals.has_directed_mention, "@OtherBot IS a directed mention");
+        // The fast_path may still block (AI sender low priority) but NOT because of directed mention gate
+        assert_ne!(result.gate, "directed_mention", "directed_mention should not be a gate anymore");
     }
 
     #[test]
@@ -705,7 +735,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "fast_path");
         assert!(result.reason.contains("Own message"));
@@ -718,7 +748,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Human sender + recent message = high priority → should respond
         assert!(result.should_respond);
     }
@@ -733,7 +763,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(result.should_respond);
     }
 
@@ -744,7 +774,7 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(result.should_respond);
         assert!(
             result.decision_time_ms < 10.0,
@@ -767,7 +797,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -786,7 +816,7 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, now_ms());
+        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
         // Should pass sleep gate (new topic) and reach fast_path
         assert_ne!(result.gate, "sleep_mode");
     }

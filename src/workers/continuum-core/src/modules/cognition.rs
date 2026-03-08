@@ -37,6 +37,7 @@ use crate::persona::text_analysis::LoopDetector;
 use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
 use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
+use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -423,6 +424,7 @@ impl ServiceModule for CognitionModule {
                     &persona.rate_limiter,
                     &persona.sleep_state,
                     &persona.engine,
+                    &persona.message_cache,
                     now_ms,
                 );
 
@@ -944,6 +946,85 @@ impl ServiceModule for CognitionModule {
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
+            }
+
+            // =================================================================
+            // Message Cache (echo chamber + post-inference adequacy)
+            // =================================================================
+            "cognition/cache-message" => {
+                let _timer = TimingGuard::new("module", "cognition_cache_message");
+                let persona_uuid = p.uuid("persona_id")?;
+                let room_uuid = p.uuid("room_id")?;
+
+                let msg = CachedMessage {
+                    id: p.uuid("message_id")?,
+                    sender_id: p.uuid("sender_id")?,
+                    sender_type: if p.str_or("sender_type", "human") == "human" {
+                        SenderCategory::Human
+                    } else {
+                        SenderCategory::AI
+                    },
+                    sender_name: p.str("sender_name")?.to_string(),
+                    content_text: p.str_or("content", "").to_string(),
+                    timestamp_ms: p.u64("timestamp")?,
+                };
+
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.message_cache.push(room_uuid, msg);
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "success": true,
+                    "cached": true
+                })))
+            }
+
+            // =================================================================
+            // Content Deduplication
+            // =================================================================
+            "cognition/check-content-dedup" => {
+                let _timer = TimingGuard::new("module", "cognition_check_content_dedup");
+                let persona_uuid = p.uuid("persona_id")?;
+                let room_uuid = p.uuid("room_id")?;
+                let content = p.str("content")?;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let result = persona.content_dedup.is_duplicate(content, room_uuid, now_ms);
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "success": true,
+                    "is_duplicate": result.is_duplicate,
+                    "check_time_us": result.check_time_us
+                })))
+            }
+
+            "cognition/record-content" => {
+                let _timer = TimingGuard::new("module", "cognition_record_content");
+                let persona_uuid = p.uuid("persona_id")?;
+                let room_uuid = p.uuid("room_id")?;
+                let content = p.str("content")?;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.content_dedup.record(content, room_uuid, now_ms);
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "success": true,
+                    "recorded": true
+                })))
             }
 
             _ => Err(format!("Unknown cognition command: {command}")),

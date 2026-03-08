@@ -116,7 +116,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       }
 
       // 2. Validate provider
-      if (!FINE_TUNING_PROVIDERS.includes(createParams.provider as any)) {
+      if (!(FINE_TUNING_PROVIDERS as readonly string[]).includes(createParams.provider)) {
         return transformPayload(params, {
           success: false,
           error: `Invalid provider: ${createParams.provider}. Must be one of: ${FINE_TUNING_PROVIDERS.join(', ')}`

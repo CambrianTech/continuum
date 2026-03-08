@@ -21,6 +21,7 @@ import { isInboxMessage, isInboxTask, toChannelEnqueueRequest } from './QueueIte
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { HumanPresenceTracker } from '../HumanPresenceTracker';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 // Initialize presence tracking (idempotent — safe to call multiple times)
 HumanPresenceTracker.initialize();
@@ -48,8 +49,8 @@ export const DEFAULT_INBOX_CONFIG: InboxConfig = {
  * This prevents starvation: no item waits forever regardless of base priority.
  * Like a traffic intersection — every direction eventually gets a green light.
  */
-const AGING_RATE_MS = 30_000;       // Time for aging boost to reach maximum (30 seconds)
-const MAX_AGING_BOOST = 0.5;        // Maximum priority boost from aging (0.5)
+const AGING_RATE_MS = PersonaTimingConfig.inbox.agingRateMs;
+const MAX_AGING_BOOST = PersonaTimingConfig.inbox.maxAgingBoost;
 
 /**
  * Compute effective priority with RTOS-style aging
@@ -117,7 +118,7 @@ export class PersonaInbox {
 
   // Load-aware deduplication (feedback-driven)
   private queueStatsProvider: (() => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }) | null = null;
-  private readonly DEDUP_WINDOW_MS = 3000; // Look back 3s for duplicates
+  private readonly DEDUP_WINDOW_MS = PersonaTimingConfig.dedup.inboxWindowMs;
 
   constructor(personaId: UUID, personaName: string, config: Partial<InboxConfig> = {}) {
     this.personaId = personaId;
