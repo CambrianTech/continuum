@@ -7,8 +7,9 @@
 
 import { DaemonBase } from './DaemonBase';
 import type { JTAGContext, JTAGMessage, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import { JTAG_ENVIRONMENTS } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import type{ CommandBase, CommandEntry } from './CommandBase';
+import { CommandBase, type CommandEntry, type ICommandDaemon } from './CommandBase';
 import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -157,15 +158,24 @@ export abstract class CommandDaemon extends DaemonBase {
    */
   async execute(commandName: string, sessionId: UUID, params?: CommandParams): Promise<CommandResult> {
     const command = this.commands.get(commandName);
-    if (!command) {
-      throw new Error(`Command '${commandName}' not available in ${this.context.environment} context`);
+
+    // Command found locally — execute directly
+    if (command) {
+      const fullParams = command.withDefaults(params ?? {}, sessionId, this.context);
+      this.log.info(`⚡ ${this.toString()}: Executing ${commandName} directly`, fullParams);
+      return await command.execute(fullParams);
     }
 
-    const fullParams = command.withDefaults(params ?? {}, sessionId, this.context);
+    // Browser: auto-forward unknown commands to server via remoteExecute.
+    // Server-only commands (e.g., filesystem access, training) work seamlessly
+    // without needing boilerplate browser forwarding files.
+    if (this.context.environment === JTAG_ENVIRONMENTS.BROWSER) {
+      const proxy = new RemoteForwardingCommand(commandName, this.context, commandName, this as unknown as ICommandDaemon);
+      const fullParams = { ...params, context: this.context, sessionId } as CommandParams;
+      return await proxy.forward(fullParams);
+    }
 
-    this.log.info(`⚡ ${this.toString()}: Executing ${commandName} directly`, fullParams);
-
-    return await command.execute(fullParams);
+    throw new Error(`Command '${commandName}' not available in ${this.context.environment} context`);
   }
 
   /**
@@ -225,5 +235,23 @@ export abstract class CommandDaemon extends DaemonBase {
       
       checkReady();
     });
+  }
+}
+
+/**
+ * Lightweight concrete command for auto-forwarding browser → server.
+ * Used by CommandDaemon.execute() when a command has no browser implementation.
+ */
+class RemoteForwardingCommand extends CommandBase {
+  constructor(name: string, context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super(name, context, subpath, commander);
+  }
+
+  async execute(_params: CommandParams): Promise<CommandResult> {
+    throw new Error('RemoteForwardingCommand.execute should not be called directly');
+  }
+
+  async forward(params: CommandParams): Promise<CommandResult> {
+    return await this.remoteExecute(params, this.subpath);
   }
 }
