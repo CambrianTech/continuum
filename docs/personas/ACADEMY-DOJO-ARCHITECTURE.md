@@ -8,6 +8,8 @@ The Academy Dojo is a self-sustaining learning system where two sentinels work t
 
 **Key insight**: Training data is **synthesized** by the teacher LLM, not downloaded or harvested. This gives the Academy unlimited generation capacity, topic-specific data, and the ability to generate remedial data targeting specific weaknesses.
 
+**Next evolution**: [Cascading Curriculum Architecture](CASCADING-CURRICULUM-ARCHITECTURE.md) -- stages form dependency graphs, not flat lists. Late-stage failures generate retroactive training signals for early stages, teaching models to make decisions that survive downstream integration. This is how you train an AI to avoid "optimize later" from the start.
+
 ## Architecture
 
 ```

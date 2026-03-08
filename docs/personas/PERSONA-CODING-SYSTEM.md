@@ -218,3 +218,9 @@ The persona coding system is now fully implemented:
 3. ✅ Visual commands
 4. ✅ Integration (ShellEventHandler connected to PersonaUser.initialize())
 5. ✅ Cognition enhancements (SimplePlanFormulator handles code domain tasks)
+
+## Next: Cascading Curriculum for Coding Sentinels
+
+The coding sentinel system feeds directly into [Cascading Curriculum Architecture](CASCADING-CURRICULUM-ARCHITECTURE.md). CodingAgent steps in the Academy pipeline give students real coding environments (file editing, compilation, test running). Combined with cascading evaluation, students learn to write code that survives integration -- not just code that passes local tests.
+
+Key integration: `captureTraining: true` on CodingAgent steps captures full interaction history. Retroactive signals from late-stage integration failures generate the highest-value training pairs for LoRA fine-tuning.
