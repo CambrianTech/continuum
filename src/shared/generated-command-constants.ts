@@ -276,6 +276,7 @@ export const COMMANDS = {
   STATE_GET: 'state/get',
   STATE_UPDATE: 'state/update',
   SYSTEM_DAEMONS: 'system/daemons',
+  SYSTEM_METRICS: 'system/metrics',
   SYSTEM_RESOURCES: 'system/resources',
   THEME: 'theme',
   THEME_GET: 'theme/get',

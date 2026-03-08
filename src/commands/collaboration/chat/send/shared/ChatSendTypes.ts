@@ -6,7 +6,7 @@
 import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
+import type { ChatMessageEntity, MediaItem } from '@system/data/entities/ChatMessageEntity';
 
 export interface ChatSendParams extends CommandParams {
   /** Message text to send */
@@ -24,8 +24,11 @@ export interface ChatSendParams extends CommandParams {
   /** Mark as system test (AIs will ignore) */
   isSystemTest?: boolean;
 
-  /** Array of file paths to attach as media (images, videos, audio, documents) */
+  /** Array of file paths to attach as media (CLI/server usage) */
   media?: string[];
+
+  /** Pre-encoded media items with base64 data (browser drag-and-drop) */
+  mediaItems?: MediaItem[];
 }
 
 export interface ChatSendResult extends CommandResult {

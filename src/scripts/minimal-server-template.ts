@@ -85,6 +85,9 @@ class MinimalServer {
           const avatarPath = path.join(os.homedir(), '.continuum', 'avatars', filename);
           this.serveBinaryFile(res, avatarPath, 'image/png');
         }
+      } else if (url.startsWith('/media/')) {
+        // Content-addressed media blobs from ~/.continuum/blobs/media/
+        this.serveMediaBlob(res, url);
       } else {
         // SPA fallback: serve the main HTML for client-side routing
         // This allows routes like /settings, /help, /chat/academy to work
@@ -153,6 +156,41 @@ class MinimalServer {
       console.error(`Failed to serve binary file ${filePath}:`, error);
       this.serve404(res);
     }
+  }
+
+  /**
+   * Serve a content-addressed media blob from ~/.continuum/blobs/media/
+   * URL format: /media/sha256:{hex}.{ext}
+   */
+  private serveMediaBlob(res: http.ServerResponse, url: string): void {
+    // Parse: /media/sha256:aabbcc...{ext} → hash = sha256:aabbcc..., ext determines content type
+    const segment = url.substring('/media/'.length);
+    // Extract hash (sha256:hex) and extension
+    const dotIdx = segment.lastIndexOf('.');
+    const hash = dotIdx > 0 ? segment.substring(0, dotIdx) : segment;
+    const ext = dotIdx > 0 ? segment.substring(dotIdx) : '';
+
+    // Validate hash format: sha256:{64 hex chars}
+    if (!/^sha256:[0-9a-f]{64}$/.test(hash)) {
+      this.serve404(res);
+      return;
+    }
+
+    const hex = hash.replace('sha256:', '');
+    const shard = hex.substring(0, 2);
+    const filename = hex.substring(2);
+    const blobPath = path.join(os.homedir(), '.continuum', 'blobs', 'media', shard, filename);
+
+    const mimeMap: Record<string, string> = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+      '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+      '.mp4': 'video/mp4', '.webm': 'video/webm', '.pdf': 'application/pdf',
+      '.bin': 'application/octet-stream',
+    };
+    const contentType = mimeMap[ext] ?? 'application/octet-stream';
+
+    this.serveBinaryFile(res, blobPath, contentType);
   }
 
   /**

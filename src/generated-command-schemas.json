@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-08T21:09:59.303Z",
+  "generated": "2026-03-08T23:10:17.266Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -759,6 +759,22 @@
           "type": "number",
           "required": false,
           "description": "topN parameter"
+        }
+      }
+    },
+    {
+      "name": "system/metrics",
+      "description": "System Metrics Command Parameters",
+      "params": {
+        "range": {
+          "type": "string",
+          "required": false,
+          "description": "range parameter"
+        },
+        "maxPoints": {
+          "type": "number",
+          "required": false,
+          "description": "maxPoints parameter"
         }
       }
     },
@@ -6550,6 +6566,11 @@
           "type": "array",
           "required": false,
           "description": "media parameter"
+        },
+        "mediaItems": {
+          "type": "array",
+          "required": false,
+          "description": "mediaItems parameter"
         }
       }
     },

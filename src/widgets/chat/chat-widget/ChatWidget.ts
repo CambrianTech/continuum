@@ -1913,9 +1913,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Track temp ID so we can remove it when real message arrives
     this._pendingMessageTempIds.add(tempId);
 
-    // Clear input
+    // Clear input — save attachments before clearing for ChatSend
     this.messageInput.value = '';
-    const attachmentCount = this.pendingAttachments.length;
+    const savedAttachments = this.pendingAttachments.length > 0 ? [...this.pendingAttachments] : undefined;
     this.pendingAttachments = [];
     this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
 
@@ -1929,7 +1929,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       message: text,
       room: this.currentRoomId,
       senderId: DEFAULT_USERS.HUMAN as UUID,  // Explicitly send as Joel, not browser session identity
-      // Media attachments would need to be file paths for chat/send - TODO: handle properly
+      mediaItems: savedAttachments,
     }).then((result) => {
       console.log(`📤 ChatWidget: chat/send response:`, JSON.stringify(result, null, 2));
       console.log(`📤 ChatWidget: Message sent successfully, ID: ${result.messageEntity?.id}, replacing temp: ${tempId}`);

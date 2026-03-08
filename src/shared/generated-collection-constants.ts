@@ -99,6 +99,8 @@ export const COLLECTIONS = {
   SYSTEM_CHECKPOINTS: 'system_checkpoints' as const,
   /** From SystemConfigEntity */
   SYSTEM_CONFIG: 'system_config' as const,
+  /** From SystemMetricsEntity */
+  SYSTEM_METRICS: 'system_metrics' as const,
   /** From TaskEntity */
   TASKS: 'tasks' as const,
   /** From TestExecutionEntity */

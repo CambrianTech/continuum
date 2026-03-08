@@ -1,5 +1,5 @@
 /**
- * ContinuumMetrics - AI Performance Dashboard
+ * ContinuumMetrics - System & AI Performance Dashboard
  */
 
 @use '../../shared/styles/variables' as *;
@@ -26,13 +26,35 @@
   flex-shrink: 0;
 }
 
-.title {
-  font-size: 11px;
-  font-weight: 600;
+.tab-bar {
+  display: flex;
+  gap: 2px;
+}
+
+.tab {
+  padding: 2px 8px;
+  font-size: 9px;
+  font-weight: 700;
   font-family: var(--font-mono, monospace);
-  color: var(--content-secondary, #8a92a5);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  color: var(--content-tertiary, #6a7280);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  &:hover {
+    color: var(--content-secondary, #8a92a5);
+    background: var(--surface-primary, #1a1d24);
+  }
+
+  &.active {
+    color: var(--accent-primary, #4a9eff);
+    border-color: var(--accent-primary, #4a9eff);
+    background: rgba(74, 158, 255, 0.08);
+  }
 }
 
 .time-select {
@@ -75,14 +97,6 @@
   font-family: var(--font-mono, monospace);
   color: var(--content-tertiary, #6a7280);
   letter-spacing: 0.3px;
-}
-
-.line {
-  fill: none;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0.85;
 }
 
 .legend {

@@ -19,9 +19,11 @@ import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 import { FileMimeType } from '../../../../file/mime-type/shared/FileMimeTypeTypes';
 import { FileLoad } from '../../../../file/load/shared/FileLoadTypes';
 import { MediaPrewarm } from '../../../../media/prewarm/shared/MediaPrewarmTypes';
+import { MediaBlobService } from '@system/storage/MediaBlobService';
 export class ChatSendServerCommand extends ChatSendCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -29,43 +31,32 @@ export class ChatSendServerCommand extends ChatSendCommand {
   }
 
   protected async executeChatSend(params: ChatSendParams): Promise<ChatSendResult> {
-    console.log('🔧 ChatSendServerCommand.executeChatSend START', { room: params.room });
-
     // 1. Find room (single source of truth: RoutingService)
     const resolved = await resolveRoomIdentifier(params.room || 'general');
     if (!resolved) {
       throw new Error(`Room not found: ${params.room || 'general'}`);
     }
-    console.log('🔧 ChatSendServerCommand.executeChatSend ROOM FOUND', { roomId: resolved.id, roomName: resolved.displayName });
 
     // 2. Get sender — explicit senderId (CLI) or params.userId (auto-injected by infrastructure)
     const sender = await this.findUserById(params.senderId || params.userId, params);
-    console.log('🔧 ChatSendServerCommand.executeChatSend SENDER FOUND', { senderId: sender.id, senderName: sender.entity.displayName });
 
     // 3. Create message entity
     const messageEntity = new ChatMessageEntity();
     messageEntity.roomId = resolved.id;  // From RoutingService resolution
     messageEntity.senderId = sender.id;  // sender is also DataRecord with .id
-    console.log('🔧 ChatSendServerCommand.executeChatSend MESSAGE ENTITY', { roomId: messageEntity.roomId, senderId: messageEntity.senderId });
     messageEntity.senderName = sender.entity.displayName;
     messageEntity.senderType = sender.entity.type;
 
-    // Process media files if provided
-    // Normalize to array: CLI may send string (single) or string[] (multiple)
-    const mediaPaths = params.media
-      ? (Array.isArray(params.media) ? params.media : [params.media])
-      : [];
-    console.log('🔧 ChatSendServerCommand MEDIA PROCESSING', {
-      rawMedia: params.media,
-      isArray: Array.isArray(params.media),
-      normalizedPaths: mediaPaths,
-      pathCount: mediaPaths.length
-    });
-    const mediaItems = mediaPaths.length > 0 ? await this.processMediaPaths(mediaPaths, params.context, params.sessionId) : [];
-    console.log('🔧 ChatSendServerCommand MEDIA PROCESSED', {
-      mediaItemCount: mediaItems.length,
-      mediaItems: mediaItems.map(m => ({ type: m.type, mimeType: m.mimeType, filename: m.filename, hasBase64: !!m.base64, base64Length: m.base64?.length }))
-    });
+    // Process media: browser sends pre-encoded mediaItems, CLI sends file paths
+    let mediaItems: MediaItem[] = [];
+    if (params.mediaItems && params.mediaItems.length > 0) {
+      // Browser path: pre-encoded base64 MediaItems from drag-and-drop
+      mediaItems = params.mediaItems;
+    } else if (params.media) {
+      // CLI path: file paths that need loading + MIME detection
+      const mediaPaths = Array.isArray(params.media) ? params.media : [params.media];
+      mediaItems = await this.processMediaPaths(mediaPaths, params.context, params.sessionId);
+    }
 
     messageEntity.content = {
       text: params.message,
@@ -115,10 +106,13 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // Without pre-warming, every persona's 10s timeout fires before LLaVA finishes.
     this.prewarmVisionDescriptions(mediaItems);
 
-    // 6. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
-    const shortId = storedEntity.id.slice(-6);
+    // 6. Externalize media to blob storage (fire-and-forget).
+    // The data/create event already fired with full base64 for real-time rendering.
+    // This updates the stored record to use blobHash + URL, clearing inline base64.
+    this.externalizeMedia(storedEntity, params);
 
-    console.log(`✅ Message sent: #${shortId} to ${resolved.displayName}`);
+    // 7. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
+    const shortId = storedEntity.id.slice(-6);
 
     return transformPayload(params, {
       success: true,
@@ -158,19 +152,15 @@ export class ChatSendServerCommand extends ChatSendCommand {
    */
   private async processMediaPaths(mediaPaths: string[], context: JTAGContext, sessionId: UUID): Promise<MediaItem[]> {
     const mediaItems: MediaItem[] = [];
-    console.log(`🔧 processMediaPaths START: Processing ${mediaPaths.length} file(s)`);
 
     for (const filePath of mediaPaths) {
       try {
-        console.log(`🔧 processMediaPaths: Processing file: ${filePath}`);
-
         // Step 1: Detect MIME type using file/mime-type command
         const mimeResult = await FileMimeType.execute({
           filepath: filePath,
           context,
           sessionId
         });
-        console.log(`🔧 processMediaPaths: MIME result for ${filePath}:`, { success: mimeResult.success, mimeType: mimeResult.mimeType, mediaType: mimeResult.mediaType });
 
         if (!mimeResult.success) {
           const error = new Error(`Failed to detect MIME type for: ${filePath}`);
@@ -187,7 +177,6 @@ export class ChatSendServerCommand extends ChatSendCommand {
           context,
           sessionId
         });
-        console.log(`🔧 processMediaPaths: Load result for ${filePath}:`, { success: fileResult.success, contentLength: fileResult.content?.length, hasError: !!fileResult.error });
 
         if (!fileResult.success) {
           const error = new Error(`Failed to load media file: ${filePath}`);
@@ -204,7 +193,6 @@ export class ChatSendServerCommand extends ChatSendCommand {
           mimeType: mimeResult.mimeType,
           filename: filePath.split('/').pop() || filePath
         };
-        console.log(`✅ processMediaPaths: Created MediaItem for ${filePath}:`, { type: mediaItem.type, mimeType: mediaItem.mimeType, filename: mediaItem.filename, base64Length: mediaItem.base64?.length || 0 });
 
         mediaItems.push(mediaItem);
       } catch (error) {
@@ -217,7 +205,6 @@ export class ChatSendServerCommand extends ChatSendCommand {
       }
     }
 
-    console.log(`🔧 processMediaPaths END: Processed ${mediaItems.length}/${mediaPaths.length} files successfully`);
     return mediaItems;
   }
 
@@ -238,6 +225,53 @@ export class ChatSendServerCommand extends ChatSendCommand {
       })),
     }).catch(() => {
       // Best-effort pre-warming — swallow errors
+    });
+  }
+
+  /**
+   * Fire-and-forget: externalize media to content-addressed blob storage.
+   *
+   * After data/create has stored the entity AND emitted the event (with full
+   * base64 for real-time browser rendering), we:
+   * 1. Write base64 → binary file on disk via MediaBlobService
+   * 2. Update the stored record: set blobHash + url, clear base64
+   *
+   * Historical loads serve media via /media/{hash}.{ext} HTTP route.
+   */
+  private externalizeMedia(storedEntity: ChatMessageEntity, params: ChatSendParams): void {
+    const media = storedEntity.content?.media;
+    if (!media || media.length === 0) return;
+
+    // Only externalize items that have base64 data
+    const hasBase64 = media.some(m => m.base64 && m.base64.length >= 5000);
+    if (!hasBase64) return;
+
+    // Fire-and-forget — don't await, don't block chat/send response
+    (async () => {
+      // Make mutable copies of the media items for externalization
+      const mutableMedia: MediaItem[] = media.map(m => ({ ...m }));
+      const stored = await MediaBlobService.externalize(mutableMedia);
+
+      if (stored.length === 0) return;
+
+      // Update the stored entity to use blob references instead of inline base64.
+      // Suppress events — this is a storage optimization, not a content change.
+      await DataUpdate.execute<ChatMessageEntity>({
+        dbHandle: 'default',
+        collection: ChatMessageEntity.collection,
+        id: storedEntity.id,
+        suppressEvents: true,
+        data: {
+          content: {
+            text: storedEntity.content.text,
+            media: mutableMedia,
+          }
+        } as Partial<ChatMessageEntity>,
+        context: params.context,
+        sessionId: params.sessionId,
+      });
+    })().catch(() => {
+      // Best-effort externalization — inline base64 remains in DB as fallback
     });
   }
 }
