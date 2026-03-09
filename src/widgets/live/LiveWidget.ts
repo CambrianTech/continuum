@@ -425,6 +425,7 @@ export class LiveWidget extends ReactiveWidget {
         this.isJoined = true;
         this.loadCallState();
         this._stateLoaded = true;
+        Events.emit('live:call-joined', { entityId: this.entityId });
 
         // Start with just the local user. Remote participants are added
         // incrementally via LiveKit's ParticipantConnected events as agents
@@ -613,6 +614,7 @@ export class LiveWidget extends ReactiveWidget {
     }
 
     // 2. Reset UI state immediately — responsive first
+    Events.emit('live:call-left', { entityId: this.entityId });
     this.isJoined = false;
     this.sessionId = null;
     this.participants = [];
@@ -1033,11 +1035,13 @@ export class LiveWidget extends ReactiveWidget {
         ? this.participants.find(p => p.userId === this.spotlightUserId)
         : this.participants.find(p => p.screenShareEnabled);
 
-      if (presenter) {
-        return this._renderSpotlightView(presenter);
-      }
+      // Transcript panel rendered at top level — persists across grid↔spotlight switches.
+      // Without this, switching layouts destroys/recreates the panel (re-triggers animation, loses scroll).
+      const view = presenter
+        ? this._renderSpotlightView(presenter)
+        : this._renderGridView();
 
-      return this._renderGridView();
+      return html`${view}${this._renderTranscriptPanel()}`;
     }
 
     if (this.isJoined && !this._stateLoaded) {
@@ -1100,7 +1104,6 @@ export class LiveWidget extends ReactiveWidget {
             }
           </div>
           <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
-          ${this._renderTranscriptPanel()}
         </div>
         <live-controls ${ref(this._controlsRef)}
           .micEnabled=${this._micIntent && this.micPermissionGranted}
@@ -1154,7 +1157,6 @@ export class LiveWidget extends ReactiveWidget {
             ></live-participant-tile>
           </div>
           <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
-          ${this._renderTranscriptPanel()}
         </div>
 
         <!-- Other participants in strip -->

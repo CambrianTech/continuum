@@ -16,6 +16,7 @@
   height: 100%;
   background: #1a1a1a;
   color: $color-text;
+  position: relative; // Positioning context for transcript panel overlay
 }
 
 // Main container

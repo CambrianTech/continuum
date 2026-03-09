@@ -81,6 +81,22 @@
   }
 }
 
+// Live call media indicator — small green dot like Opera's tab indicator
+.media-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00e676;
+  flex-shrink: 0;
+  animation: media-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 4px rgba(0, 230, 118, 0.6);
+}
+
+@keyframes media-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .empty-state {
   padding: 8px 16px;
   color: var(--content-secondary, #8a92a5);
