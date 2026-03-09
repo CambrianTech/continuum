@@ -49,12 +49,17 @@ export const DEFAULT_STATE_CONFIG: StateConfig = {
 /**
  * PersonaStateManager: Manages internal state and traffic decisions
  */
+/** Minimum interval between snapshot emissions per persona (ms) */
+const SNAPSHOT_THROTTLE_MS = 2000;
+
 export class PersonaStateManager {
   private readonly config: StateConfig;
   private state: PersonaState;
   private readonly personaName: string;
   private readonly personaId?: string;
   private readonly logger?: SubsystemLogger;
+  private _lastSnapshotTime = 0;
+  private _snapshotPending = false;
 
   constructor(personaName: string, config: Partial<StateConfig> = {}, personaId?: string) {
     this.personaName = personaName;
@@ -268,8 +273,33 @@ export class PersonaStateManager {
    * Uses DataDaemon.jtagContext for cross-context (server→browser) delivery.
    * Without the context, bare Events.emit() stays server-local.
    */
+  /**
+   * Throttled snapshot emission — max once per SNAPSHOT_THROTTLE_MS.
+   * With 15 personas each calling this on every cycle (3-5s) plus rest(),
+   * unthrottled emission hit 200+/s and flooded the WebSocket to browser.
+   */
   private emitSnapshot(): void {
     if (!this.personaId) return;
+
+    const now = Date.now();
+    if (now - this._lastSnapshotTime < SNAPSHOT_THROTTLE_MS) {
+      // Schedule a trailing emit so the latest state always gets sent
+      if (!this._snapshotPending) {
+        this._snapshotPending = true;
+        setTimeout(() => {
+          this._snapshotPending = false;
+          this.emitSnapshotNow();
+        }, SNAPSHOT_THROTTLE_MS - (now - this._lastSnapshotTime));
+      }
+      return;
+    }
+
+    this.emitSnapshotNow();
+  }
+
+  private emitSnapshotNow(): void {
+    if (!this.personaId) return;
+    this._lastSnapshotTime = Date.now();
 
     const payload = {
       personaId: this.personaId,
@@ -278,7 +308,7 @@ export class PersonaStateManager {
       mood: this.state.mood,
       inboxLoad: this.state.inboxLoad,
       computeBudget: this.state.computeBudget,
-      timestamp: Date.now()
+      timestamp: this._lastSnapshotTime
     };
 
     const ctx = DataDaemon.jtagContext;
