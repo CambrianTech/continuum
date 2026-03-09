@@ -309,6 +309,7 @@ class RoutingServiceImpl {
   async resolve(contentType: string, identifier: string): Promise<ResolvedEntity | null> {
     switch (contentType) {
       case 'chat':
+      case 'live': // Live calls are room-scoped — resolve room name for tab title
         return this.resolveRoom(identifier);
       case 'profile':
       case 'persona':

@@ -17,8 +17,9 @@ import { positronicContext } from './PositronicRAGContext';
 
 import { WidgetStateDebug } from '../../commands/development/debug/widget-state/shared/WidgetStateDebugTypes';
 import { SessionGetId } from '../../commands/session/get-id/shared/SessionGetIdTypes';
+import { jtagWindow } from '../core/types/GlobalAugmentations';
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => jtagWindow?.JTAG_VERBOSE === true;
 
 /**
  * PositronicBridge - Singleton that bridges browser state to server RAG

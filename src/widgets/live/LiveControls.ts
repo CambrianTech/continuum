@@ -14,10 +14,14 @@ import { reactive } from '../shared/ReactiveWidget';
 
 export class LiveControls extends LitElement {
   @reactive() micEnabled: boolean = true;
+  @reactive() micPermissionNeeded: boolean = false;
   @reactive() speakerEnabled: boolean = true;
   @reactive() cameraEnabled: boolean = false;
+  @reactive() cameraPermissionNeeded: boolean = false;
   @reactive() screenShareEnabled: boolean = false;
   @reactive() captionsEnabled: boolean = true;
+  @reactive() transcriptOpen: boolean = false;
+  @reactive() transcriptCount: number = 0;
 
   static override styles = [unsafeCSS(CONTROLS_STYLES)] as CSSResultGroup;
 
@@ -25,12 +29,12 @@ export class LiveControls extends LitElement {
     return html`
       <div class="controls">
         <button
-          class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
+          class="control-btn ${this.micPermissionNeeded ? 'permission-needed' : this.micEnabled ? 'active' : 'inactive'}"
           @click=${this._onToggleMic}
-          title="${this.micEnabled ? 'Mute your mic' : 'Unmute your mic'}"
+          title="${this.micPermissionNeeded ? 'Mic requires permission — click to grant' : this.micEnabled ? 'Mute your mic' : 'Unmute your mic'}"
         >
-          ${this.micEnabled ? this._renderMicOnIcon() : this._renderMicOffIcon()}
-          ${this.micEnabled ? html`<span class="mic-level-indicator" id="mic-level"></span>` : ''}
+          ${this.micEnabled && !this.micPermissionNeeded ? this._renderMicOnIcon() : this._renderMicOffIcon()}
+          ${this.micEnabled && !this.micPermissionNeeded ? html`<span class="mic-level-indicator" id="mic-level"></span>` : ''}
         </button>
         <button
           class="control-btn ${this.speakerEnabled ? 'active' : 'inactive'}"
@@ -40,11 +44,11 @@ export class LiveControls extends LitElement {
           ${this.speakerEnabled ? this._renderSpeakerOnIcon() : this._renderSpeakerOffIcon()}
         </button>
         <button
-          class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
+          class="control-btn ${this.cameraPermissionNeeded ? 'permission-needed' : this.cameraEnabled ? 'active' : 'inactive'}"
           @click=${this._onToggleCamera}
-          title="${this.cameraEnabled ? 'Turn off camera' : 'Turn on camera'}"
+          title="${this.cameraPermissionNeeded ? 'Camera requires permission — click to grant' : this.cameraEnabled ? 'Turn off camera' : 'Turn on camera'}"
         >
-          ${this.cameraEnabled ? this._renderCameraOnIcon() : this._renderCameraOffIcon()}
+          ${this.cameraEnabled && !this.cameraPermissionNeeded ? this._renderCameraOnIcon() : this._renderCameraOffIcon()}
         </button>
         <button
           class="control-btn ${this.screenShareEnabled ? 'active' : 'inactive'}"
@@ -59,6 +63,14 @@ export class LiveControls extends LitElement {
           title="${this.captionsEnabled ? 'Hide captions' : 'Show captions'}"
         >
           ${this._renderCaptionsIcon()}
+        </button>
+        <button
+          class="control-btn ${this.transcriptOpen ? 'active' : 'inactive'}"
+          @click=${this._onToggleTranscript}
+          title="${this.transcriptOpen ? 'Hide transcript' : 'Show transcript'}"
+        >
+          ${this._renderTranscriptIcon()}
+          ${this.transcriptCount > 0 ? html`<span class="transcript-badge">${this.transcriptCount}</span>` : ''}
         </button>
         <button
           class="control-btn leave"
@@ -78,7 +90,7 @@ export class LiveControls extends LitElement {
   setMicLevel(level: number): void {
     const indicator = this.shadowRoot?.getElementById('mic-level') as HTMLElement;
     if (indicator) {
-      indicator.style.height = `${Math.min(100, level * 300)}%`;
+      indicator.style.setProperty('--mic-level', `${Math.min(100, level * 300)}%`);
     }
   }
 
@@ -104,6 +116,10 @@ export class LiveControls extends LitElement {
 
   private _onToggleCaptions(): void {
     this.dispatchEvent(new CustomEvent('toggle-captions', { bubbles: true, composed: true }));
+  }
+
+  private _onToggleTranscript(): void {
+    this.dispatchEvent(new CustomEvent('toggle-transcript', { bubbles: true, composed: true }));
   }
 
   private _onLeave(): void {
@@ -195,6 +211,18 @@ export class LiveControls extends LitElement {
         <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
         <line x1="22" x2="16" y1="2" y2="8"></line>
         <line x1="16" x2="22" y1="2" y2="8"></line>
+      </svg>
+    `;
+  }
+
+  private _renderTranscriptIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="8" x2="16" y1="13" y2="13"></line>
+        <line x1="8" x2="16" y1="17" y2="17"></line>
+        <line x1="8" x2="10" y1="9" y2="9"></line>
       </svg>
     `;
   }

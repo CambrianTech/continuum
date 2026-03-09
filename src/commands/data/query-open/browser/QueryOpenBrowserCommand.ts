@@ -21,10 +21,6 @@ export class QueryOpenBrowserCommand extends QueryOpenCommand {
    * All pagination state managed server-side
    */
   protected async executeDataCommand(params: DataQueryOpenParams): Promise<DataQueryOpenResult> {
-    console.log(`📖 QueryOpenBrowser: Delegating to server for collection: ${params.collection}`);
-
-    // Browser always delegates to server for query handle management
-    // This ensures pagination state is maintained server-side
-    throw new Error('Browser must delegate query-open to server');
+    return await this.remoteExecute(params);
   }
 }

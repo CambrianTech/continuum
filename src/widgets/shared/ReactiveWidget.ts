@@ -29,7 +29,7 @@
  * ```
  */
 
-import { LitElement, html, css, unsafeCSS, type TemplateResult, type CSSResultGroup, type PropertyDeclaration } from 'lit';
+import { LitElement, html, svg, css, unsafeCSS, type TemplateResult, type CSSResultGroup, type SVGTemplateResult, type PropertyDeclaration } from 'lit';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
@@ -99,7 +99,7 @@ export interface UseCollectionHandle {
 }
 
 // Re-export Lit utilities for subclasses
-export { html, css, unsafeCSS, type TemplateResult, type CSSResultGroup };
+export { html, svg, css, unsafeCSS, type TemplateResult, type CSSResultGroup, type SVGTemplateResult };
 export type { InteractionHint };
 
 /**

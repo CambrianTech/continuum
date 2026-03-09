@@ -296,31 +296,37 @@ export class AIProviderDaemon extends DaemonBase {
    * Log successful AI generation to database for cost tracking
    * SINGLE source of truth - called only by AIProviderDaemon, not adapters
    */
-  private async logGeneration(response: TextGenerationResponse, request: TextGenerationRequest): Promise<void> {
+  protected async logGeneration(response: TextGenerationResponse, request: TextGenerationRequest): Promise<void> {
     try {
+      const usage = response.usage;
+      if (!usage) {
+        console.error('[AIProviderDaemon.logGeneration] SKIPPED: response.usage is undefined');
+        return;
+      }
+
       const result = AIGenerationEntity.create({
         timestamp: Date.now(),
-        requestId: response.requestId,
-        provider: response.provider,
-        model: response.model,
-        inputTokens: response.usage.inputTokens,
-        outputTokens: response.usage.outputTokens,
-        totalTokens: response.usage.totalTokens,
-        estimatedCost: response.usage.estimatedCost || 0,
-        responseTimeMs: response.responseTimeMs,
+        requestId: response.requestId || `req-${Date.now()}`,
+        provider: response.provider || 'unknown',
+        model: response.model || 'unknown',
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
+        totalTokens: usage.totalTokens || 0,
+        estimatedCost: usage.estimatedCost || 0,
+        responseTimeMs: response.responseTimeMs || 0,
         userId: request.userId,
         roomId: request.roomId,
         purpose: request.purpose || 'chat',
-        finishReason: response.finishReason,
+        finishReason: response.finishReason || 'stop',
         success: true
       });
 
       if (!result.success || !result.entity) {
-        this.log.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity: ${result.error}`);
+        console.error(`[AIProviderDaemon.logGeneration] Entity creation failed: ${result.error}`);
         return;
       }
 
-      // Persist to database using data/create command
+      // Persist via data/create command — server subclass overrides with direct ORM call
       await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
@@ -329,10 +335,10 @@ export class AIProviderDaemon extends DaemonBase {
         }
       );
 
-      this.log.info(`💾 AIProviderDaemon: Logged generation (${response.provider}/${response.model}, ${response.usage.totalTokens} tokens, $${(response.usage.estimatedCost || 0).toFixed(4)})`);
+      this.log.info(`💾 AIProviderDaemon: Logged generation (${response.provider}/${response.model}, ${usage.totalTokens} tokens, $${(usage.estimatedCost || 0).toFixed(4)})`);
     } catch (error) {
-      // Don't fail generation if logging fails - just warn
-      this.log.error(`❌ AIProviderDaemon: Failed to log generation:`, error);
+      // Don't fail generation if logging fails — but DO log visibly
+      console.error(`[AIProviderDaemon.logGeneration] FAILED:`, error instanceof Error ? error.message : error);
     }
   }
 

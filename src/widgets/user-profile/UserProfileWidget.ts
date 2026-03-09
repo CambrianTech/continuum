@@ -36,7 +36,6 @@ import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
 import { Dm } from '../../commands/collaboration/dm/shared/DmTypes';
-import { CollaborationLiveStart } from '../../commands/collaboration/live/start/shared/CollaborationLiveStartTypes';
 import { styles as PROFILE_STYLES } from './public/user-profile-widget.styles';
 
 export class UserProfileWidget extends ReactiveWidget {
@@ -377,25 +376,14 @@ export class UserProfileWidget extends ReactiveWidget {
   private async openDm(): Promise<void> {
     if (!this.user) return;
 
-    // If we already have the DM room, open it directly
-    if (this.dmRoomId) {
-      ContentService.open('chat', this.dmRoomId, {
+    try {
+      const roomId = await this.ensureDmRoom();
+      if (!roomId) return;
+
+      ContentService.open('chat', roomId, {
         title: `DM - ${this.user.displayName}`,
         uniqueId: `dm-${this.user.uniqueId || this.user.id}`
       });
-      return;
-    }
-
-    // Otherwise create-or-find the DM room on-click
-    try {
-      const result = await Dm.execute({ participants: this.user.id });
-      if (result?.success && result.roomId) {
-        this.dmRoomId = result.roomId as string;
-        ContentService.open('chat', result.roomId as string, {
-          title: `DM - ${this.user.displayName}`,
-          uniqueId: result.uniqueId || `dm-${this.user.uniqueId || this.user.id}`
-        });
-      }
     } catch (err) {
       console.error('UserProfile: Failed to create DM room:', err);
     }
@@ -413,22 +401,33 @@ export class UserProfileWidget extends ReactiveWidget {
   private async startVideoCall(): Promise<void> {
     if (!this.user) return;
 
+    // Ensure DM room exists, then navigate to live view for that room
+    // Same pattern as chat widget's call button — navigate:live handles the join
     try {
-      const result = await CollaborationLiveStart.execute({
-        participants: this.user.id,
-        withVideo: true
-      });
+      const dmRoomId = await this.ensureDmRoom();
+      if (!dmRoomId) return;
 
-      if (result.success && result.roomId) {
-        ContentService.open('live', result.roomId as string, {
-          title: `Call - ${this.user.displayName}`,
-          uniqueId: result.room?.uniqueId || `live-${this.user.uniqueId || this.user.id}`,
-          metadata: { room: result.room, session: result.session }
-        });
-      }
+      Events.emit('navigate:live', {
+        entityId: dmRoomId,
+        entityType: 'room',
+        displayName: `Call - ${this.user.displayName}`,
+        video: true
+      });
     } catch (err) {
       console.error('UserProfile: Failed to start video call:', err);
     }
+  }
+
+  /** Get or create the DM room for this user, return roomId */
+  private async ensureDmRoom(): Promise<string | null> {
+    if (this.dmRoomId) return this.dmRoomId;
+
+    const result = await Dm.execute({ participants: this.user!.id });
+    if (result?.success && result.roomId) {
+      this.dmRoomId = result.roomId as string;
+      return this.dmRoomId;
+    }
+    return null;
   }
 
   // === Visual Identity Helpers ===

@@ -22,6 +22,7 @@ import {
 } from '../shared/ReactiveWidget';
 import { contentState, type ContentStateData } from '../../system/state/ContentStateService';
 import { ContentService } from '../../system/state/ContentService';
+import { LiveCallTracker, type LiveCallState } from '../live/LiveCallTracker';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType } from '../../system/data/entities/UserStateEntity';
 import { styles as externalStyles } from './public/content-tabs-widget.styles';
@@ -65,10 +66,29 @@ export class ContentTabsWidget extends ReactiveWidget {
   // Reactive state
   @reactive() private tabs: TabInfo[] = [];
 
+  /** Active live call states — for media indicator on tabs */
+  @reactive() private _liveCalls: Map<string, LiveCallState> = new Map();
+  private _liveTrackerUnsub?: () => void;
+
   constructor() {
     super({
       widgetName: 'ContentTabsWidget'
     });
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+
+    // Track active live calls via shared browser-side tracker (no event bus complexity)
+    this._liveTrackerUnsub = LiveCallTracker.subscribe((calls) => {
+      this._liveCalls = calls;
+      this.requestUpdate();
+    });
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this._liveTrackerUnsub?.();
   }
 
   protected override async onFirstRender(): Promise<void> {
@@ -115,9 +135,14 @@ export class ContentTabsWidget extends ReactiveWidget {
       <div class="content-tabs-container">
         ${this.tabs.map(tab => {
           const typeIcon = tab.contentType ? TYPE_ICONS[tab.contentType as ContentType] : undefined;
+          const callState = tab.contentType === 'live' && tab.entityId
+            ? this._liveCalls.get(tab.entityId)
+            : undefined;
+          const hasActiveMedia = callState && (callState.micActive || callState.cameraActive);
           return html`
-            <div class="content-tab ${tab.active ? 'active' : ''}"
+            <div class="content-tab ${tab.active ? 'active' : ''} ${hasActiveMedia ? 'media-active' : ''}"
                  @click=${(e: Event) => this.handleTabClick(e, tab)}>
+              ${hasActiveMedia ? html`<span class="media-indicator"></span>` : ''}
               ${typeIcon ? html`<span class="tab-type-icon">${typeIcon}</span>` : ''}
               <span class="tab-label">${tab.label}</span>
               ${tab.closeable ? html`

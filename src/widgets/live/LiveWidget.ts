@@ -23,8 +23,9 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
-import type { CallEntity } from '../../system/data/entities/CallEntity';
+import type { CallEntity, CallParticipant } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
+import { LiveCallTracker } from './LiveCallTracker';
 import { ContentService } from '../../system/state/ContentService';
 import { contentState } from '../../system/state/ContentStateService';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
@@ -41,7 +42,7 @@ import type { LiveCaptions } from './LiveCaptions';
 type ActivityState = 'thinking' | 'generating' | 'using-tool' | null;
 
 interface Participant {
-  userId: UUID;
+  userId: string;
   displayName: string;
   avatar?: string;
   micEnabled: boolean;
@@ -50,6 +51,17 @@ interface Participant {
   isSpeaking: boolean;
   activityState: ActivityState;
 }
+
+interface TranscriptEntry {
+  speakerName: string;
+  text: string;
+  timestamp: number;
+}
+
+// Constants
+const DEFAULT_AI_SPEECH_DURATION_MS = 5000;
+const CAPTION_EXTEND_BUFFER_MS = 500;
+const TILE_RESOLUTION_DEBOUNCE_MS = 1000;
 
 export class LiveWidget extends ReactiveWidget {
   // Session state
@@ -67,7 +79,12 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private cameraEnabled: boolean = false;
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
+  @reactive() private cameraPermissionGranted: boolean = false;
   @reactive() private captionsEnabled: boolean = true;
+
+  // Transcript panel
+  @reactive() private _transcriptOpen: boolean = false;
+  private _transcript: TranscriptEntry[] = [];
 
   // Transient conditions — affect effective media state, NEVER persisted.
   // Tab switches and visibility changes mute media without touching user intent.
@@ -104,21 +121,24 @@ export class LiveWidget extends ReactiveWidget {
   // Typed refs to child components (Lit ref directive — no querySelector)
   private _captionsRef = createRef<LiveCaptions>();
   private _controlsRef = createRef<LiveControls>();
+  private _transcriptBodyRef = createRef<HTMLDivElement>();
+  private _transcriptScrollTop: number = 0;
 
   // Speaking state is driven by LiveKit ActiveSpeakersChanged
   // Spotlight hold: keep current speaker spotlighted through brief pauses
   private _spotlightHoldTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly SPOTLIGHT_HOLD_MS = 1500; // Hold spotlight 1.5s after speaker goes silent
 
-  /** Effective mic state: user intent AND all transient conditions satisfied */
+  /** Effective mic state: user intent AND permission granted AND all transient conditions satisfied */
   private get _effectiveMic(): boolean {
-    return this._micIntent && this._tabActive && this._widgetVisible;
+    return this._micIntent && this.micPermissionGranted && this._tabActive && this._widgetVisible;
   }
 
   /** Effective speaker state: user intent AND all transient conditions satisfied */
   private get _effectiveSpeaker(): boolean {
     return this._speakerIntent && this._tabActive && this._widgetVisible;
   }
+
 
   // Track last applied state to deduplicate LiveKit calls
   private _lastAppliedMic: boolean | null = null;
@@ -141,6 +161,7 @@ export class LiveWidget extends ReactiveWidget {
 
   // Reentrancy guard for handleJoin (async — prevents duplicate joins on rapid refresh)
   private _joining = false;
+  private _tabCloseUnsub: (() => void) | null = null;
 
   // Page unload handler (must be stored for removeEventListener)
   private _unloadHandler: (() => void) | null = null;
@@ -193,11 +214,40 @@ export class LiveWidget extends ReactiveWidget {
     }, { threshold: 0.1 });
 
     this.visibilityObserver.observe(this);
+
+    // Leave call when our tab is closed (tab X button, ContentService.close)
+    this._tabCloseUnsub = Events.subscribe('content:tab:closed', (data: { contentType: string; entityId?: string }) => {
+      if (data.contentType === 'live' && data.entityId === this.entityId && this.isJoined) {
+        this.handleLeave();
+      }
+    });
+  }
+
+  /** Save transcript scroll position before Lit re-renders */
+  protected override willUpdate(_changedProperties: Map<string, unknown>): void {
+    super.willUpdate(_changedProperties);
+    const body = this._transcriptBodyRef.value;
+    if (body) {
+      this._transcriptScrollTop = body.scrollTop;
+    }
   }
 
   protected override updated(_changedProperties: Map<string, unknown>): void {
     super.updated(_changedProperties);
     this._syncMediaState();
+    // Restore transcript scroll position after re-render
+    const body = this._transcriptBodyRef.value;
+    if (body && this._transcriptScrollTop > 0) {
+      body.scrollTop = this._transcriptScrollTop;
+    }
+    // Update tab indicator with actual streaming state (not just permission)
+    if (this.isJoined && this.entityId) {
+      LiveCallTracker.updateMedia(
+        this.entityId,
+        this._effectiveMic,
+        this.cameraEnabled && this.cameraPermissionGranted
+      );
+    }
   }
 
   /**
@@ -240,6 +290,8 @@ export class LiveWidget extends ReactiveWidget {
       window.removeEventListener('beforeunload', this._unloadHandler);
       this._unloadHandler = null;
     }
+    this._tabCloseUnsub?.();
+    this._tabCloseUnsub = null;
 
     // Fire live/leave before cleanup — best-effort, fire-and-forget.
     // Cleanup disconnects LiveKit immediately; this notifies the server
@@ -368,26 +420,7 @@ export class LiveWidget extends ReactiveWidget {
       return;
     }
 
-    if (this._micIntent && !this.micPermissionGranted) {
-      try {
-        this.previewStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        this.micPermissionGranted = true;
-        console.log('LiveWidget: Mic permission granted');
-      } catch (error) {
-        console.warn('LiveWidget: Mic permission denied:', error);
-        this._micIntent = false;
-      }
-    }
-
     this.isPreview = false;
-
-    // Release the permission-check stream BEFORE LiveKit captures its own.
-    // Two active getUserMedia streams on the same device can cause the second
-    // to be silenced on macOS (CoreAudio exclusive access).
-    if (this.previewStream) {
-      this.previewStream.getTracks().forEach(track => track.stop());
-      this.previewStream = null;
-    }
 
     try {
       const userId = this.currentUser?.id;
@@ -399,6 +432,9 @@ export class LiveWidget extends ReactiveWidget {
       if (result.success && result.callId) {
         this.sessionId = result.callId;
         this.isJoined = true;
+        this.loadCallState();
+        this._stateLoaded = true;
+        LiveCallTracker.join(this.entityId);
 
         // Start with just the local user. Remote participants are added
         // incrementally via LiveKit's ParticipantConnected events as agents
@@ -515,17 +551,21 @@ export class LiveWidget extends ReactiveWidget {
           },
           onTranscription: async (transcription: TranscriptionResult) => {
             if (!this.sessionId) return;
-            if (!this.captionsEnabled) return;
 
             const resolvedName = this.participants.find(p => p.userId === transcription.userId)?.displayName
               || transcription.displayName;
 
-            // Show caption immediately (speaking state handled by ActiveSpeakersChanged).
+            // Always log to transcript (even when captions hidden)
+            this._appendTranscript(resolvedName, transcription.text);
+
+            // Show caption overlay only when enabled.
             // AI routing is handled server-side: Rust STT listener calls
             // collaboration/live/transcription directly via IPC. DO NOT relay from
             // browser — that caused every transcription to reach AIs twice.
-            const captions = this._captionsRef.value ?? null;
-            captions?.setCaption(resolvedName, transcription.text);
+            if (this.captionsEnabled) {
+              const captions = this._captionsRef.value ?? null;
+              captions?.setCaption(resolvedName, transcription.text);
+            }
           },
         });
 
@@ -572,37 +612,37 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
-  private async handleLeave(): Promise<void> {
+  private handleLeave(): void {
     if (!this.sessionId) return;
+    const sessionId = this.sessionId;
 
+    // 1. Disconnect audio immediately (non-blocking)
     if (this.audioClient) {
       this.audioClient.leave();
       this.audioClient = null;
     }
 
-    try {
-      await Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
-        sessionId: this.sessionId
-      });
-    } catch (error) {
-      console.error('LiveWidget: Failed to leave:', error);
-    }
-
+    // 2. Reset UI state immediately — responsive first
+    LiveCallTracker.leave(this.entityId);
     this.isJoined = false;
     this.sessionId = null;
     this.participants = [];
     this.isPreview = false;
+    this._transcript = [];
+    this._transcriptOpen = false;
     this.cleanup();
     this.requestUpdate();
 
-    // Close the content tab through ContentService — the single source of truth.
-    // This removes the tab, switches to next tab, updates URL, and persists.
-    // DO NOT use window.history.back() — it doesn't remove the tab from state,
-    // causing the tab to respawn with a GUID name on next state sync.
+    // 3. Close the content tab immediately
     const liveTab = contentState.findItem('live', this.entityId);
     if (liveTab) {
       ContentService.close(liveTab.id);
     }
+
+    // 4. Notify server in background — fire-and-forget
+    Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
+      sessionId
+    }).catch(err => console.error('LiveWidget: leave notify failed:', err));
   }
 
   // ========================================
@@ -657,15 +697,19 @@ export class LiveWidget extends ReactiveWidget {
         timestamp: number;
       }) => {
         if (data.sessionId !== this.sessionId) return;
+
+        // Always log to transcript
+        this._appendTranscript(data.speakerName, data.text);
+
         if (!this.captionsEnabled) return;
 
-        const durationMs = data.audioDurationMs || 5000;
+        const durationMs = data.audioDurationMs || DEFAULT_AI_SPEECH_DURATION_MS;
         const captions = this._captionsRef.value ?? null;
         if (captions) {
           if (captions.hasCaption(data.speakerName)) {
-            captions.extendCaption(data.speakerName, durationMs + 500);
+            captions.extendCaption(data.speakerName, durationMs + CAPTION_EXTEND_BUFFER_MS);
           } else {
-            captions.setCaption(data.speakerName, data.text, durationMs + 500);
+            captions.setCaption(data.speakerName, data.text, durationMs + CAPTION_EXTEND_BUFFER_MS);
           }
         }
       })
@@ -702,7 +746,9 @@ export class LiveWidget extends ReactiveWidget {
         await this.audioClient.startMicrophone();
       } catch (error) {
         console.error('LiveWidget: Failed to start mic:', error);
-        this._micIntent = false;
+        // Don't reset _micIntent — that's the user's preference.
+        // Mark permission as not granted so button shows amber.
+        this.micPermissionGranted = false;
       }
     } else {
       this.audioClient.stopMicrophone();
@@ -710,6 +756,27 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private async toggleMic(): Promise<void> {
+    if (!this.micPermissionGranted) {
+      // Permission not yet granted in this tab — clicking means "activate".
+      // Browsers require getUserMedia from a user gesture (click). We're in one now.
+      // Don't flip intent — user already wants mic ON, they're just activating it.
+      if (!this.audioClient?.isConnected) {
+        console.warn('LiveWidget: Cannot activate mic — not connected');
+        return;
+      }
+      try {
+        await this.audioClient.startMicrophone();
+        this.micPermissionGranted = true;
+        this._lastAppliedMic = true; // Prevent _syncMediaState from re-calling startMicrophone
+        console.log('LiveWidget: Mic activated (first click in this tab)');
+      } catch (error) {
+        console.warn('LiveWidget: Mic activation failed:', error);
+        this.micPermissionGranted = false;
+      }
+      return;
+    }
+
+    // Permission already granted — normal toggle
     this._micIntent = !this._micIntent;
     // _syncMediaState via updated() applies the new effective state to LiveKit
     await this.saveCallState();
@@ -728,13 +795,34 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private async toggleCamera(): Promise<void> {
-    this.cameraEnabled = !this.cameraEnabled;
-
     if (!this.audioClient) {
       console.error('LiveWidget: No audio client for camera toggle');
-      this.cameraEnabled = false;
       return;
     }
+
+    if (!this.cameraPermissionGranted) {
+      // Permission not yet granted in this tab — clicking means "activate camera".
+      // We're in a user gesture context. Enable camera via LiveKit (triggers getUserMedia).
+      try {
+        const videoElement = await this.audioClient.setCameraEnabled(true);
+        this.cameraEnabled = true;
+        this.cameraPermissionGranted = true;
+        if (videoElement) {
+          const myUserId = this.currentUser?.id || '';
+          this._remoteVideoElements.set(myUserId, videoElement);
+          this.activeVideoUsers = new Set([...this.activeVideoUsers, myUserId]);
+        }
+        console.log('LiveWidget: Camera activated (first click in this tab)');
+      } catch (error) {
+        console.error('LiveWidget: Camera activation failed:', error);
+        this.cameraEnabled = false;
+        this.cameraPermissionGranted = false;
+      }
+      return;
+    }
+
+    // Permission already granted — normal toggle
+    this.cameraEnabled = !this.cameraEnabled;
 
     try {
       const videoElement = await this.audioClient.setCameraEnabled(this.cameraEnabled);
@@ -755,6 +843,7 @@ export class LiveWidget extends ReactiveWidget {
     } catch (error) {
       console.error('LiveWidget: Failed to toggle camera:', error);
       this.cameraEnabled = false;
+      this.cameraPermissionGranted = false;
     }
   }
 
@@ -781,6 +870,20 @@ export class LiveWidget extends ReactiveWidget {
       captions?.clearAll();
     }
     await this.saveCallState();
+  }
+
+  private toggleTranscript(): void {
+    this._transcriptOpen = !this._transcriptOpen;
+  }
+
+  /** Append to running transcript log. Deduplicates consecutive identical entries from same speaker. */
+  private _appendTranscript(speakerName: string, text: string): void {
+    const last = this._transcript[this._transcript.length - 1];
+    // Skip if identical to last entry from same speaker (dedup rapid updates)
+    if (last && last.speakerName === speakerName && last.text === text) return;
+    this._transcript.push({ speakerName, text, timestamp: Date.now() });
+    // If transcript panel is open, trigger re-render
+    if (this._transcriptOpen) this.requestUpdate();
   }
 
   // ========================================
@@ -864,7 +967,7 @@ export class LiveWidget extends ReactiveWidget {
       if (this.audioClient && this._tileResolutions.size > 0) {
         this.audioClient.sendTileResolutions(this._tileResolutions);
       }
-    }, 1000);
+    }, TILE_RESOLUTION_DEBOUNCE_MS);
   }
 
   // ========================================
@@ -887,7 +990,8 @@ export class LiveWidget extends ReactiveWidget {
       this.audioClient = null;
     }
 
-    this._stateLoaded = false;
+    // NOTE: Do NOT reset _stateLoaded here — user context persists across calls.
+    // Only call-specific state (mic applied state, video elements) needs resetting.
 
     // Reset applied-state tracking so next join gets a clean sync
     this._lastAppliedMic = null;
@@ -940,11 +1044,13 @@ export class LiveWidget extends ReactiveWidget {
         ? this.participants.find(p => p.userId === this.spotlightUserId)
         : this.participants.find(p => p.screenShareEnabled);
 
-      if (presenter) {
-        return this._renderSpotlightView(presenter);
-      }
+      // Transcript panel rendered at top level — persists across grid↔spotlight switches.
+      // Without this, switching layouts destroys/recreates the panel (re-triggers animation, loses scroll).
+      const view = presenter
+        ? this._renderSpotlightView(presenter)
+        : this._renderGridView();
 
-      return this._renderGridView();
+      return html`${view}${this._renderTranscriptPanel()}`;
     }
 
     if (this.isJoined && !this._stateLoaded) {
@@ -980,6 +1086,7 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-camera=${() => this.toggleCamera()}
         @toggle-screenshare=${() => this.toggleScreenShare()}
         @toggle-captions=${() => this.toggleCaptions()}
+        @toggle-transcript=${() => this.toggleTranscript()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
         @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
@@ -1008,11 +1115,15 @@ export class LiveWidget extends ReactiveWidget {
           <live-captions ${ref(this._captionsRef)} .visible=${this.captionsEnabled}></live-captions>
         </div>
         <live-controls ${ref(this._controlsRef)}
-          .micEnabled=${this._micIntent}
+          .micEnabled=${this._micIntent && this.micPermissionGranted}
+          .micPermissionNeeded=${this._micIntent && !this.micPermissionGranted}
           .speakerEnabled=${this._speakerIntent}
-          .cameraEnabled=${this.cameraEnabled}
+          .cameraEnabled=${this.cameraEnabled && this.cameraPermissionGranted}
+          .cameraPermissionNeeded=${this.cameraEnabled && !this.cameraPermissionGranted}
           .screenShareEnabled=${this.screenShareEnabled}
           .captionsEnabled=${this.captionsEnabled}
+          .transcriptOpen=${this._transcriptOpen}
+          .transcriptCount=${this._transcript.length}
         ></live-controls>
       </div>
     `;
@@ -1028,6 +1139,7 @@ export class LiveWidget extends ReactiveWidget {
         @toggle-camera=${() => this.toggleCamera()}
         @toggle-screenshare=${() => this.toggleScreenShare()}
         @toggle-captions=${() => this.toggleCaptions()}
+        @toggle-transcript=${() => this.toggleTranscript()}
         @leave=${() => this.handleLeave()}
         @participant-click=${(e: CustomEvent) => this._onParticipantClick(e)}
         @pin-participant=${(e: CustomEvent) => this._onPinParticipant(e)}
@@ -1078,14 +1190,49 @@ export class LiveWidget extends ReactiveWidget {
         ` : ''}
 
         <live-controls ${ref(this._controlsRef)}
-          .micEnabled=${this._micIntent}
+          .micEnabled=${this._micIntent && this.micPermissionGranted}
+          .micPermissionNeeded=${this._micIntent && !this.micPermissionGranted}
           .speakerEnabled=${this._speakerIntent}
-          .cameraEnabled=${this.cameraEnabled}
+          .cameraEnabled=${this.cameraEnabled && this.cameraPermissionGranted}
+          .cameraPermissionNeeded=${this.cameraEnabled && !this.cameraPermissionGranted}
           .screenShareEnabled=${this.screenShareEnabled}
           .captionsEnabled=${this.captionsEnabled}
+          .transcriptOpen=${this._transcriptOpen}
+          .transcriptCount=${this._transcript.length}
         ></live-controls>
       </div>
     `;
+  }
+
+  private _renderTranscriptPanel(): TemplateResult {
+    if (!this._transcriptOpen) return html``;
+
+    return html`
+      <div class="transcript-panel">
+        <div class="transcript-header">
+          <span class="transcript-title">Transcript</span>
+          <span class="transcript-count">${this._transcript.length} entries</span>
+          <button class="transcript-close" @click=${() => this.toggleTranscript()} title="Close transcript">&times;</button>
+        </div>
+        <div class="transcript-body" ${ref(this._transcriptBodyRef)}>
+          ${this._transcript.length === 0
+            ? html`<div class="transcript-empty">No transcriptions yet. Speak or wait for others to speak.</div>`
+            : this._transcript.map(entry => html`
+              <div class="transcript-entry">
+                <span class="transcript-time">${this._formatTime(entry.timestamp)}</span>
+                <span class="transcript-speaker">${entry.speakerName}</span>
+                <span class="transcript-text">${entry.text}</span>
+              </div>
+            `)
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  private _formatTime(timestamp: number): string {
+    const d = new Date(timestamp);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
   private async loadExistingParticipants(): Promise<void> {
@@ -1101,7 +1248,7 @@ export class LiveWidget extends ReactiveWidget {
 
       if (result.success && result.items?.length > 0) {
         const call = result.items[0];
-        this.participants = (call.participants || []).map((p: any) => ({
+        this.participants = (call.participants || []).map((p: CallParticipant) => ({
           userId: p.userId,
           displayName: p.displayName || 'Unknown',
           micEnabled: p.micEnabled ?? true,

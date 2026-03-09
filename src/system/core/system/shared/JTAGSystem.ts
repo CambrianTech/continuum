@@ -9,6 +9,7 @@
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
 import type { JTAGContext } from '../../types/JTAGTypes';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
+import { jtagGlobal } from '../../types/GlobalAugmentations';
 import { SYSTEM_EVENTS } from '../../../events';
 import type { JTAGRouter } from '../../router/shared/JTAGRouter';
 import type { DaemonBase } from '../../../../daemons/command-daemon/shared/DaemonBase';
@@ -194,7 +195,7 @@ export abstract class JTAGSystem extends JTAGBase {
 
       // Register CommandDaemon to globalThis for server-side Commands.execute() routing
       if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
-        (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
+        jtagGlobal.__JTAG_COMMAND_DAEMON__ = daemon;
       }
     }
 
@@ -269,8 +270,8 @@ export abstract class JTAGSystem extends JTAGBase {
   public getCommandsInterface(): CommandsInterface {
     // Check globalThis first - available during daemon initialization
     // CommandDaemonServer registers itself here in its initialize() method
-    if (typeof process !== 'undefined' && (globalThis as any).__JTAG_COMMAND_DAEMON__) {
-      return (globalThis as any).__JTAG_COMMAND_DAEMON__.commands;
+    if (typeof process !== 'undefined' && jtagGlobal.__JTAG_COMMAND_DAEMON__) {
+      return jtagGlobal.__JTAG_COMMAND_DAEMON__.commands as CommandsInterface;
     }
 
     // Fall back to checking daemons array (populated after orchestrator returns)

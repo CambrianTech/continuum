@@ -66,6 +66,7 @@ export class AIStatusIndicator {
   private removeTimeout = 2000; // Auto-remove after 2 seconds
   private dismissedErrors = new Map<string, number>(); // errorKey -> dismissTimestamp
   private dismissDuration = 5 * 60 * 1000; // Don't show same error for 5 minutes after dismissal
+  private pendingTimeouts = new Map<UUID, ReturnType<typeof setTimeout>>(); // Track auto-remove timers
 
   constructor(container?: HTMLElement) {
     this.container = container;
@@ -117,10 +118,8 @@ export class AIStatusIndicator {
       timestamp: data.timestamp
     });
 
-    // Auto-remove after delay
-    setTimeout(() => {
-      this.removeStatus(data.personaId);
-    }, this.removeTimeout);
+    // Auto-remove after delay (clear any existing timer for this persona)
+    this.scheduleRemove(data.personaId);
   }
 
   /**
@@ -153,10 +152,8 @@ export class AIStatusIndicator {
    * Handle POSTED - AI posted response, remove status after delay
    */
   onPosted(data: AIPostedEventData): void {
-    // Auto-remove immediately (message will appear in chat)
-    setTimeout(() => {
-      this.removeStatus(data.personaId);
-    }, this.removeTimeout);
+    // Auto-remove after delay (clear any existing timer for this persona)
+    this.scheduleRemove(data.personaId);
   }
 
   /**
@@ -282,11 +279,10 @@ export class AIStatusIndicator {
         }
       }
 
-      // Fade out animation
+      // Fade out animation then remove from DOM
       status.element.style.opacity = '0';
-      setTimeout(() => {
-        status.element?.remove();
-      }, 300);
+      const el = status.element;
+      setTimeout(() => el?.remove(), 300);
     }
 
     this.activeStatuses.delete(personaId);
@@ -338,9 +334,31 @@ export class AIStatusIndicator {
   }
 
   /**
+   * Schedule auto-removal for a persona, cancelling any existing timer.
+   * Prevents timeout accumulation from rapid events.
+   */
+  private scheduleRemove(personaId: UUID): void {
+    const existing = this.pendingTimeouts.get(personaId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.pendingTimeouts.delete(personaId);
+      this.removeStatus(personaId);
+    }, this.removeTimeout);
+
+    this.pendingTimeouts.set(personaId, timer);
+  }
+
+  /**
    * Clear all status indicators (e.g., when switching rooms)
    */
   clearAll(): void {
+    // Clear all pending auto-remove timers
+    for (const timer of this.pendingTimeouts.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingTimeouts.clear();
+
     for (const [personaId] of this.activeStatuses) {
       this.removeStatus(personaId);
     }

@@ -7,6 +7,7 @@
  * 
  * PURE TYPESCRIPT - No eval() or inline code generation
  */
+import { jtagWindow } from '../core/types/GlobalAugmentations';
 
 export interface ShadowDOMSearchResult {
   found: boolean;
@@ -422,9 +423,9 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
   // Try different connection methods
   try {
     // Method 1: window.jtag.connect()
-    if ((window as any).jtag?.connect) {
+    if (jtagWindow?.jtag?.connect) {
       console.log(`🔄 ShadowDOMUtils: Trying window.jtag.connect()`);
-      const jtagSystem = await (window as any).jtag.connect();
+      const jtagSystem = await jtagWindow.jtag.connect() as Record<string, unknown> | undefined;
       if (jtagSystem?.client) {
         widgetElement.jtagClient = jtagSystem.client;
         return {
@@ -434,11 +435,11 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
         };
       }
     }
-    
+
     // Method 2: Use widgetDaemon directly
-    if ((window as any).widgetDaemon) {
+    if (jtagWindow?.widgetDaemon) {
       console.log(`🔄 ShadowDOMUtils: Trying widgetDaemon direct connection`);
-      const daemon = (window as any).widgetDaemon;
+      const daemon = jtagWindow.widgetDaemon;
       if (daemon.router) {
         widgetElement.jtagClient = {
           commands: daemon.router.commands || {},
@@ -451,12 +452,12 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
         };
       }
     }
-    
+
     // Method 3: Manual JTAG client creation
     console.log(`🔄 ShadowDOMUtils: Trying manual JTAG client creation`);
-    if ((window as any).JTAGClientFactory) {
-      const factory = (window as any).JTAGClientFactory.getInstance();
-      const connection = await factory.createClient({ timeout: 10000 });
+    if (jtagWindow?.JTAGClientFactory) {
+      const factory = jtagWindow.JTAGClientFactory.getInstance() as Record<string, Function>;
+      const connection = await factory.createClient({ timeout: 10000 }) as Record<string, unknown>;
       widgetElement.jtagClient = connection.client;
       return {
         success: true,

@@ -19,11 +19,12 @@ import type { EventScope } from '../../events/shared/EventSystemConstants';
 import { RouterRegistry } from './RouterRegistry';
 import { BaseEntity } from '../../data/entities/BaseEntity';
 import { ElegantSubscriptionParser, type SubscriptionFilter } from '../../events/shared/ElegantSubscriptionParser';
+import { jtagWindow, jtagGlobal } from '../types/GlobalAugmentations';
 
 // Verbose logging helper (works in both browser and server)
 const verbose = () => {
   if (typeof window !== 'undefined') {
-    return (window as any).JTAG_VERBOSE === true;
+    return jtagWindow?.JTAG_VERBOSE === true;
   }
   if (typeof process !== 'undefined') {
     return process.env.JTAG_VERBOSE === '1';
@@ -89,12 +90,12 @@ export class Events {
 
         // Try SYNCHRONOUS check first (no polling/waiting)
         const registeredClient = JTAGClient.getRegisteredClientSync?.('default');
-        const globalJtag = (globalThis as any).jtag;
+        const globalJtag = jtagGlobal.jtag;
 
         if (registeredClient) {
           context = registeredClient.context;
         } else if (globalJtag?.context) {
-          context = globalJtag.context;
+          context = globalJtag.context as JTAGContext;
         } else if (isBrowserRuntime) {
           // Browser: Use async sharedInstance (waits for initialization)
           // This is acceptable in browser because the client WILL be ready shortly
@@ -507,6 +508,6 @@ export class Events {
 
 // Expose Events on window for cross-module access (e.g., transport layer)
 // This enables immediate disconnect events without import cycles
-if (typeof window !== 'undefined') {
-  (window as any).JTAGEvents = Events;
+if (jtagWindow) {
+  jtagWindow.JTAGEvents = Events;
 }

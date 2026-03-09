@@ -47,9 +47,10 @@ import { Events } from '../../shared/Events';
 import { startConnectionMonitoring } from './ConnectionMonitor';
 import { initializeFaviconManager } from './FaviconManager';
 import type { ClientType, ConnectionIdentity } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import { jtagWindow } from '../../types/GlobalAugmentations';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => jtagWindow?.JTAG_VERBOSE === true;
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 

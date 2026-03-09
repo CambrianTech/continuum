@@ -32,6 +32,7 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   private _unsubscribeEvents?: () => void;
   private _scrollerInitialized = false;
   private _pendingUpdate = false;
+  @reactive() private _entityCount: number = 0;
 
   /**
    * Batched requestUpdate() - prevents cascading re-renders from rapid CRUD events.
@@ -42,6 +43,7 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
     this._pendingUpdate = true;
     queueMicrotask(() => {
       this._pendingUpdate = false;
+      this._entityCount = this.scroller?.entities().length ?? 0;
       this.requestUpdate();
     });
   }
@@ -135,7 +137,8 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
     await this.scroller.load();
     this._scrollerInitialized = true;
 
-    // Trigger reactive update for entity count
+    // Update reactive entity count — triggers header re-render
+    this._entityCount = this.scroller.entities().length;
     this.requestUpdate();
   }
 
@@ -183,9 +186,9 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
 
   // === Convenience methods ===
 
-  /** Get current entity count */
+  /** Get current entity count (reactive — triggers re-render when changed) */
   protected get entityCount(): number {
-    return this.scroller?.entities().length ?? 0;
+    return this._entityCount;
   }
 
   /** Get all entities */

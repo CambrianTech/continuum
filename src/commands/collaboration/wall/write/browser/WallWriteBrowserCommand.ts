@@ -1,21 +1,19 @@
 /**
  * wall/write Browser Command
  *
- * Browser-side stub - delegates to server
+ * Browser-side — delegates to server via remoteExecute
  */
 
-import { WallWriteCommand } from '../shared/WallWriteCommand';
+import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { WallWriteParams, WallWriteResult } from '../../shared/WallTypes';
 
-export class WallWriteBrowserCommand extends WallWriteCommand {
+export class WallWriteBrowserCommand extends CommandBase<WallWriteParams, WallWriteResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('collaboration/wall/write', context, subpath, commander);
   }
 
   async execute(params: WallWriteParams): Promise<WallWriteResult> {
-    // Browser cannot write files - delegate to server
-    throw new Error('wall/write must be executed on server');
+    return await this.remoteExecute(params);
   }
 }

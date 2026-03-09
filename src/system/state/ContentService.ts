@@ -18,6 +18,7 @@ import { contentState } from './ContentStateService';
 import { pageState } from './PageStateService';
 import { entityCache } from './EntityCacheService';
 import { Commands } from '../core/shared/Commands';
+import { Events } from '../core/shared/Events';
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority, ContentItem } from '../data/entities/UserStateEntity';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
@@ -185,6 +186,16 @@ class ContentServiceImpl {
    */
   close(tabId: string): void {
     const wasCurrentItem = contentState.currentItemId === tabId;
+    const closingItem = contentState.openItems.find(i => i.id === tabId);
+
+    // 0. Notify widgets that this tab is being closed (not just deactivated)
+    if (closingItem) {
+      Events.emit('content:tab:closed', {
+        tabId,
+        contentType: closingItem.type,
+        entityId: closingItem.entityId
+      });
+    }
 
     // 1. Remove from contentState
     contentState.removeItem(tabId as UUID);

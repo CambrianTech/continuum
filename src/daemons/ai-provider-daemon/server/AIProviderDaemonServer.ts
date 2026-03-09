@@ -13,6 +13,9 @@
  */
 
 import { AIProviderDaemon } from '../shared/AIProviderDaemon';
+import type { TextGenerationResponse, TextGenerationRequest } from '../shared/AIProviderTypesV2';
+import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ProcessPool } from '../../../system/genome/server/ProcessPool';
@@ -21,6 +24,8 @@ import { Logger } from '../../../system/core/logging/Logger';
 import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { CollectionName } from '../../../shared/generated-collection-constants';
+import { MetricsCollector } from '../../../system/metrics/server/MetricsCollector';
 
 export class AIProviderDaemonServer extends AIProviderDaemon {
   private processPool?: ProcessPool;
@@ -66,6 +71,46 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    */
   protected getProcessPoolInstance(): ProcessPool | undefined {
     return this.processPool;
+  }
+
+  /**
+   * Server override: persist AI generation records to the metrics SQLite database.
+   * Uses the same database as system metrics (GPU/CPU/memory) — designed for
+   * high-frequency fire-and-forget telemetry writes.
+   *
+   * Previous approach (Postgres via 'default' handle) silently dropped writes
+   * despite reporting success — the Postgres adapter returns success but doesn't
+   * actually persist records. SQLite via MetricsCollector's handle works reliably.
+   */
+  protected override async logGeneration(response: TextGenerationResponse, request: TextGenerationRequest): Promise<void> {
+    try {
+      const usage = response.usage;
+      if (!usage) return;
+
+      // Get the metrics database handle (opened by MetricsCollector on startup)
+      const metricsHandle = MetricsCollector.instance.handle;
+      if (!metricsHandle) {
+        // MetricsCollector not started yet — skip silently
+        return;
+      }
+
+      const entity = await AIGenerationEntity.createFromResponse(response, {
+        userId: request.userId,
+        roomId: request.roomId,
+        purpose: request.purpose || 'chat',
+      });
+
+      await ORM.store(
+        AIGenerationEntity.collection as CollectionName,
+        entity,
+        true,  // suppressEvents — cost-tracking writes don't need broadcast
+        metricsHandle
+      );
+
+      this.log.info(`💾 Logged generation (${response.provider}/${response.model}, ${usage.totalTokens} tokens, $${(usage.estimatedCost || 0).toFixed(4)})`);
+    } catch (error) {
+      this.log.error(`❌ logGeneration failed: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   /**

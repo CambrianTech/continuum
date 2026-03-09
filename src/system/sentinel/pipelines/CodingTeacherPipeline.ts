@@ -18,7 +18,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { CodingTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
 
 /**
  * Build the coding teacher sentinel pipeline.
@@ -54,7 +54,7 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
   } = config;
 
   const testCommand = config.testCommand ?? `npx tsx ${testFile}`;
-  const evt = (action: string) => academyEvent(sessionId, action as any);
+  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
 
   const steps: PipelineStep[] = [
     // Step 0: Read buggy source code

@@ -20,10 +20,6 @@ export class QueryCloseBrowserCommand extends QueryCloseCommand {
    * Query handles managed server-side only
    */
   protected async executeDataCommand(params: DataQueryCloseParams): Promise<DataQueryCloseResult> {
-    console.log(`🔒 QueryCloseBrowser: Delegating to server for query: ${params.queryHandle}`);
-
-    // Browser always delegates to server
-    // Query handles are server-side only
-    throw new Error('Browser must delegate query-close to server');
+    return await this.remoteExecute(params);
   }
 }

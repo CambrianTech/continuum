@@ -21,10 +21,6 @@ export class QueryNextBrowserCommand extends QueryNextCommand {
    * Query state maintained server-side only
    */
   protected async executeDataCommand(params: DataQueryNextParams): Promise<DataQueryNextResult> {
-    console.log(`📄 QueryNextBrowser: Delegating to server for query: ${params.queryHandle}`);
-
-    // Browser always delegates to server
-    // Query handles and pagination state are server-side only
-    throw new Error('Browser must delegate query-next to server');
+    return await this.remoteExecute(params);
   }
 }

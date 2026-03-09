@@ -380,9 +380,10 @@ export class ORMRustClient {
     data: T,
     dbPath?: string
   ): Promise<StorageResult<T>> {
+    const actualDbPath = dbPath ?? this.dbPath;
     const response = await this.request<RustDataRecord>({
       command: 'data/create',
-      dbPath: dbPath ?? this.dbPath,
+      dbPath: actualDbPath,
       collection,
       id: data.id,
       data,

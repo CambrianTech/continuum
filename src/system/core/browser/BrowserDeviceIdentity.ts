@@ -13,9 +13,10 @@
  */
 
 import { generateUUID, type UUID } from '../types/CrossPlatformUUID';
+import { jtagWindow } from '../types/GlobalAugmentations';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => jtagWindow?.JTAG_VERBOSE === true;
 
 interface DeviceIdentity {
   deviceId: string;        // Unique device identifier (browser stores this)

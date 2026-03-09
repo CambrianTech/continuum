@@ -26,7 +26,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { TeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
 import { buildKnowledgeExplorationPipeline } from './KnowledgeExplorationPipeline';
 
 /**
@@ -44,7 +44,7 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
   const { sessionId, skill, personaName, baseModel, config: academyConfig } = config;
   const hasKnowledgeSources = config.dataSources && config.dataSources.length > 0;
 
-  const evt = (action: string) => academyEvent(sessionId, action as any);
+  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
 
   const steps: PipelineStep[] = [];
 
