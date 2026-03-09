@@ -25,6 +25,7 @@ import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaborat
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import type { CallEntity, CallParticipant } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
+import { LiveCallTracker } from './LiveCallTracker';
 import { ContentService } from '../../system/state/ContentService';
 import { contentState } from '../../system/state/ContentStateService';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
@@ -239,6 +240,14 @@ export class LiveWidget extends ReactiveWidget {
     if (body && this._transcriptScrollTop > 0) {
       body.scrollTop = this._transcriptScrollTop;
     }
+    // Update tab indicator with actual streaming state (not just permission)
+    if (this.isJoined && this.entityId) {
+      LiveCallTracker.updateMedia(
+        this.entityId,
+        this._effectiveMic,
+        this.cameraEnabled && this.cameraPermissionGranted
+      );
+    }
   }
 
   /**
@@ -425,7 +434,7 @@ export class LiveWidget extends ReactiveWidget {
         this.isJoined = true;
         this.loadCallState();
         this._stateLoaded = true;
-        Events.emit('live:call-joined', { entityId: this.entityId });
+        LiveCallTracker.join(this.entityId);
 
         // Start with just the local user. Remote participants are added
         // incrementally via LiveKit's ParticipantConnected events as agents
@@ -614,7 +623,7 @@ export class LiveWidget extends ReactiveWidget {
     }
 
     // 2. Reset UI state immediately — responsive first
-    Events.emit('live:call-left', { entityId: this.entityId });
+    LiveCallTracker.leave(this.entityId);
     this.isJoined = false;
     this.sessionId = null;
     this.participants = [];

@@ -81,15 +81,15 @@
   }
 }
 
-// Live call media indicator — small green dot like Opera's tab indicator
+// Live call media indicator — green dot like Opera's tab indicator
 .media-indicator {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: #00e676;
   flex-shrink: 0;
   animation: media-pulse 2s ease-in-out infinite;
-  box-shadow: 0 0 4px rgba(0, 230, 118, 0.6);
+  box-shadow: 0 0 6px rgba(0, 230, 118, 0.8), 0 0 2px rgba(0, 230, 118, 1);
 }
 
 @keyframes media-pulse {
