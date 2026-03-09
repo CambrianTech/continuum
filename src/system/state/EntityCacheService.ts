@@ -183,10 +183,17 @@ class EntityCacheServiceImpl {
     for (const entity of entities) {
       const id = entity.id;
       eventAdded.delete(id); // No longer event-only if in DB
+
+      // Track insertion order (only for new entries)
+      if (!store.entities.has(id)) {
+        store.insertionOrder.push(id);
+      }
+
       store.entities.set(id, entity);
     }
 
     this.eventAddedIds.set(collection, eventAdded);
+    this.evictIfNeeded(collection);
     this.scheduleNotify(collection, { type: 'populated', collection });
   }
 
@@ -197,6 +204,7 @@ class EntityCacheServiceImpl {
     const store = this.collections.get(collection);
     if (store) {
       store.entities.clear();
+      store.insertionOrder = [];
     }
     this.eventAddedIds.get(collection)?.clear();
     this.scheduleNotify(collection, { type: 'populated', collection });

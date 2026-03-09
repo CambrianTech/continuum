@@ -1,19 +1,19 @@
 /**
  * wall/read Browser Command
+ *
+ * Browser-side — delegates to server via remoteExecute
  */
 
-import { WallReadCommand } from '../shared/WallReadCommand';
+import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { WallReadParams, WallReadResult } from '../../shared/WallTypes';
 
-export class WallReadBrowserCommand extends WallReadCommand {
+export class WallReadBrowserCommand extends CommandBase<WallReadParams, WallReadResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('collaboration/wall/read', context, subpath, commander);
   }
 
   async execute(params: WallReadParams): Promise<WallReadResult> {
-    // Browser cannot read files - delegate to server
-    throw new Error('wall/read must be executed on server');
+    return await this.remoteExecute(params);
   }
 }

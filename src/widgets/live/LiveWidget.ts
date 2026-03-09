@@ -141,6 +141,7 @@ export class LiveWidget extends ReactiveWidget {
 
   // Reentrancy guard for handleJoin (async — prevents duplicate joins on rapid refresh)
   private _joining = false;
+  private _tabCloseUnsub: (() => void) | null = null;
 
   // Page unload handler (must be stored for removeEventListener)
   private _unloadHandler: (() => void) | null = null;
@@ -193,6 +194,13 @@ export class LiveWidget extends ReactiveWidget {
     }, { threshold: 0.1 });
 
     this.visibilityObserver.observe(this);
+
+    // Leave call when our tab is closed (tab X button, ContentService.close)
+    this._tabCloseUnsub = Events.subscribe('content:tab:closed', (data: { contentType: string; entityId?: string }) => {
+      if (data.contentType === 'live' && data.entityId === this.entityId && this.isJoined) {
+        this.handleLeave();
+      }
+    });
   }
 
   protected override updated(_changedProperties: Map<string, unknown>): void {
@@ -240,6 +248,8 @@ export class LiveWidget extends ReactiveWidget {
       window.removeEventListener('beforeunload', this._unloadHandler);
       this._unloadHandler = null;
     }
+    this._tabCloseUnsub?.();
+    this._tabCloseUnsub = null;
 
     // Fire live/leave before cleanup — best-effort, fire-and-forget.
     // Cleanup disconnects LiveKit immediately; this notifies the server
@@ -399,6 +409,8 @@ export class LiveWidget extends ReactiveWidget {
       if (result.success && result.callId) {
         this.sessionId = result.callId;
         this.isJoined = true;
+        this.loadCallState();
+        this._stateLoaded = true;
 
         // Start with just the local user. Remote participants are added
         // incrementally via LiveKit's ParticipantConnected events as agents
@@ -572,22 +584,17 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
-  private async handleLeave(): Promise<void> {
+  private handleLeave(): void {
     if (!this.sessionId) return;
+    const sessionId = this.sessionId;
 
+    // 1. Disconnect audio immediately (non-blocking)
     if (this.audioClient) {
       this.audioClient.leave();
       this.audioClient = null;
     }
 
-    try {
-      await Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
-        sessionId: this.sessionId
-      });
-    } catch (error) {
-      console.error('LiveWidget: Failed to leave:', error);
-    }
-
+    // 2. Reset UI state immediately — responsive first
     this.isJoined = false;
     this.sessionId = null;
     this.participants = [];
@@ -595,14 +602,16 @@ export class LiveWidget extends ReactiveWidget {
     this.cleanup();
     this.requestUpdate();
 
-    // Close the content tab through ContentService — the single source of truth.
-    // This removes the tab, switches to next tab, updates URL, and persists.
-    // DO NOT use window.history.back() — it doesn't remove the tab from state,
-    // causing the tab to respawn with a GUID name on next state sync.
+    // 3. Close the content tab immediately
     const liveTab = contentState.findItem('live', this.entityId);
     if (liveTab) {
       ContentService.close(liveTab.id);
     }
+
+    // 4. Notify server in background — fire-and-forget
+    Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
+      sessionId
+    }).catch(err => console.error('LiveWidget: leave notify failed:', err));
   }
 
   // ========================================
@@ -887,7 +896,8 @@ export class LiveWidget extends ReactiveWidget {
       this.audioClient = null;
     }
 
-    this._stateLoaded = false;
+    // NOTE: Do NOT reset _stateLoaded here — user context persists across calls.
+    // Only call-specific state (mic applied state, video elements) needs resetting.
 
     // Reset applied-state tracking so next join gets a clean sync
     this._lastAppliedMic = null;

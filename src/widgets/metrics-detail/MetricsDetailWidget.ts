@@ -322,7 +322,7 @@ export class MetricsDetailWidget extends ReactiveWidget {
     return html`
       <div class="detail-panel">
         <div class="detail-header">
-          <h2>System Metrics</h2>
+          <h2>${this._tab === 'sys' ? 'System Metrics' : 'AI Metrics'}</h2>
           <div class="controls">
             <div class="tab-bar">
               <button class="tab-btn ${this._tab === 'sys' ? 'active' : ''}"

@@ -3,13 +3,17 @@
  * Delegates to server for actual room creation/lookup
  */
 
-import { DmCommand } from '../shared/DmCommand';
+import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DmParams, DmResult } from '../shared/DmTypes';
 
-export class DmBrowserCommand extends DmCommand {
+export class DmBrowserCommand extends CommandBase<DmParams, DmResult> {
 
-  protected async executeDm(params: DmParams): Promise<DmResult> {
-    // Browser delegates to server
-    throw new Error('DM command must run on server');
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('collaboration/dm', context, subpath, commander);
+  }
+
+  async execute(params: DmParams): Promise<DmResult> {
+    return await this.remoteExecute(params);
   }
 }
