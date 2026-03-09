@@ -140,6 +140,17 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
+  // System & AI metrics detail view
+  // Opened by clicking sparklines in sidebar ContinuumMetricsWidget
+  metrics: {
+    widget: 'metrics-detail-widget',
+    displayName: 'Metrics',
+    pathPrefix: '/metrics',
+    requiresEntity: false,
+    defaultTitle: 'System Metrics',
+    rightPanel: null,  // Full-width dashboard, no right panel
+  },
+
   // Individual log viewer (opened from diagnostics)
   // Help assistant for understanding log entries
   'diagnostics-log': {

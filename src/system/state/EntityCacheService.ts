@@ -7,6 +7,11 @@
  * 3. DB queries fill cache on miss (lazy loading)
  * 4. Cache never discards event-added data until DB confirms
  *
+ * Memory Safety:
+ * - Per-collection size limits prevent unbounded growth overnight
+ * - When a collection exceeds MAX_COLLECTION_SIZE, oldest entities are evicted
+ * - Event-added entities are evicted last (they're most recent)
+ *
  * This replaces scattered per-widget caching (ChatMessageCache, EntityScroller cache)
  * with a unified, centralized approach.
  */
@@ -36,7 +41,19 @@ interface CollectionStore<T extends BaseEntity> {
   entities: Map<string, T>;
   subscribers: Set<CacheSubscriber<T>>;
   entitySubscribers: Map<string, Set<EntitySubscriber<T>>>;
+  insertionOrder: string[];  // Track insertion order for LRU eviction
 }
+
+/**
+ * Per-collection size limits. Collections not listed use DEFAULT.
+ * chat_messages is the biggest offender — 60+ AIs generating messages overnight.
+ */
+const COLLECTION_SIZE_LIMITS: Record<string, number> = {
+  chat_messages: 2000,
+  ai_generations: 500,
+  system_metrics: 500,
+};
+const DEFAULT_COLLECTION_SIZE_LIMIT = 5000;
 
 /**
  * EntityCacheService Implementation
@@ -119,11 +136,17 @@ class EntityCacheServiceImpl {
       // If entity is now in DB, it's no longer "event-only"
       eventAdded.delete(id);
 
+      // Track insertion order (only for new entries)
+      if (!store.entities.has(id)) {
+        store.insertionOrder.push(id);
+      }
+
       // Add/update in cache
       store.entities.set(id, entity);
     }
 
     this.eventAddedIds.set(collection, eventAdded);
+    this.evictIfNeeded(collection);
     this.scheduleNotify(collection, { type: 'populated', collection });
   }
 
@@ -199,6 +222,10 @@ class EntityCacheServiceImpl {
 
     // Add to cache
     store.entities.set(id, entity);
+    store.insertionOrder.push(id);
+
+    // Evict oldest if over limit
+    this.evictIfNeeded(collection);
 
     // Notify subscribers
     this.scheduleNotify(collection, { type: 'created', entity, entityId: id, collection });
@@ -347,12 +374,60 @@ class EntityCacheServiceImpl {
       store = {
         entities: new Map(),
         subscribers: new Set(),
-        entitySubscribers: new Map()
+        entitySubscribers: new Map(),
+        insertionOrder: []
       };
       this.collections.set(collection, store);
     }
     // Type assertion required: collections Map stores BaseEntity but we return typed store
     return store as unknown as CollectionStore<T>;
+  }
+
+  /**
+   * Evict oldest entities when collection exceeds size limit.
+   * Event-added entities are preserved longer (evicted last).
+   */
+  private evictIfNeeded(collection: string): void {
+    const store = this.collections.get(collection);
+    if (!store) return;
+
+    const limit = COLLECTION_SIZE_LIMITS[collection] ?? DEFAULT_COLLECTION_SIZE_LIMIT;
+    if (store.entities.size <= limit) return;
+
+    const eventAdded = this.eventAddedIds.get(collection);
+    const toEvict = store.entities.size - limit;
+
+    // Evict from insertionOrder (oldest first), skipping event-added entities
+    let evicted = 0;
+    const newOrder: string[] = [];
+
+    for (const id of store.insertionOrder) {
+      if (evicted < toEvict && !store.entities.has(id)) {
+        // Already removed — skip stale entry
+        continue;
+      }
+      if (evicted < toEvict && !(eventAdded?.has(id))) {
+        store.entities.delete(id);
+        store.entitySubscribers.delete(id);
+        evicted++;
+      } else {
+        newOrder.push(id);
+      }
+    }
+
+    // If still over limit after skipping event-added, evict those too
+    if (store.entities.size > limit) {
+      for (const id of newOrder) {
+        if (store.entities.size <= limit) break;
+        store.entities.delete(id);
+        store.entitySubscribers.delete(id);
+        eventAdded?.delete(id);
+      }
+      // Rebuild order from what remains
+      store.insertionOrder = Array.from(store.entities.keys());
+    } else {
+      store.insertionOrder = newOrder;
+    }
   }
 
   /**

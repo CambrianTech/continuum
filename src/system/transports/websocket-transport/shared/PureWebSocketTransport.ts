@@ -7,6 +7,7 @@
  * 
  * ARCHITECTURE PRINCIPLE: "Transports are dumb pipes"
  */
+import { jtagWindow } from '../../../core/types/GlobalAugmentations';
 
 import type { PureTransport, PureTransportConfig, PureSendResult } from '../../shared/PureTransportTypes';
 import { 
@@ -101,9 +102,9 @@ export class PureWebSocketTransport implements PureTransport {
           const reason = event.reason || `Code: ${event.code}`;
           this.disconnectCallback?.(reason);
           // Emit immediate disconnect event for browser widgets (like WebViewWidget freeze)
-          if (typeof window !== 'undefined' && (window as any).JTAGEvents) {
+          if (jtagWindow?.JTAGEvents) {
             console.log('🔌 PureWebSocketTransport: WebSocket closed - emitting connection:status');
-            (window as any).JTAGEvents.emit('connection:status', {
+            jtagWindow.JTAGEvents.emit('connection:status', {
               connected: false,
               state: 'disconnected',
               color: '#ff0000',
@@ -116,9 +117,9 @@ export class PureWebSocketTransport implements PureTransport {
           const error = new Error(`WebSocket error: ${event.type}`);
           this.errorCallback?.(error);
           // Emit immediate disconnect event for browser widgets
-          if (typeof window !== 'undefined' && (window as any).JTAGEvents) {
+          if (jtagWindow?.JTAGEvents) {
             console.log('⚠️ PureWebSocketTransport: WebSocket error - emitting connection:status');
-            (window as any).JTAGEvents.emit('connection:status', {
+            jtagWindow.JTAGEvents.emit('connection:status', {
               connected: false,
               state: 'disconnected',
               color: '#ff0000',

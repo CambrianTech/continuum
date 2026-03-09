@@ -22,6 +22,7 @@ import type {
   RecipeStrategy,
 } from '../shared/RAGTypes';
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
+import type { NativeToolSpec } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
@@ -434,9 +435,9 @@ export class ChatRAGBuilder extends RAGBuilder {
 
         // Tool definitions (budget-aware via ToolDefinitionsSource)
         toolDefinitions: toolDefinitionsMetadata ? {
-          nativeToolSpecs: (toolDefinitionsMetadata as any).nativeToolSpecs,
-          toolChoice: (toolDefinitionsMetadata as any).toolChoice,
-          toolCount: (toolDefinitionsMetadata as any).toolCount,
+          nativeToolSpecs: toolDefinitionsMetadata.nativeToolSpecs as NativeToolSpec[] | undefined,
+          toolChoice: toolDefinitionsMetadata.toolChoice as string | undefined,
+          toolCount: toolDefinitionsMetadata.toolCount as number | undefined,
         } : undefined,
       }
     };
@@ -454,7 +455,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       DataDaemon.jtagContext!,
       COGNITION_EVENTS.STAGE_COMPLETE,
       {
-        messageId: (options as any)?.messageId ?? contextId,  // Use messageId if available, fallback to contextId
+        messageId: options.triggeringMessageId ?? contextId,  // Use messageId if available, fallback to contextId
         personaId,
         contextId,
         stage: 'rag-build',

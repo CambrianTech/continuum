@@ -202,57 +202,52 @@ export function buildClientHttpUrl(ports: InstancePorts): string {
 
 // Configuration validation - runtime type checking
 export function validateInstanceConfig(config: unknown): config is InstanceConfiguration {
+  if (!config || typeof config !== 'object' || config === null) return false;
+  const c = config as Record<string, unknown>;
+  const ports = c.ports as Record<string, unknown> | undefined;
+  const paths = c.paths as Record<string, unknown> | undefined;
   return !!(
-    config &&
-    typeof config === 'object' &&
-    config !== null &&
-    'name' in config &&
-    'ports' in config &&
-    'paths' in config &&
-    'capabilities' in config &&
-    typeof (config as any).name === 'string' &&
-    typeof (config as any).ports?.http_server === 'number' &&
-    typeof (config as any).ports?.websocket_server === 'number' &&
-    typeof (config as any).paths?.directory === 'string' &&
-    typeof (config as any).capabilities === 'object'
+    typeof c.name === 'string' &&
+    ports && typeof ports.http_server === 'number' &&
+    typeof ports.websocket_server === 'number' &&
+    paths && typeof paths.directory === 'string' &&
+    typeof c.capabilities === 'object'
   );
 }
 
 export function validateServerConfig(config: unknown): config is JTAGServerConfiguration {
+  if (!config || typeof config !== 'object' || config === null) return false;
+  const c = config as Record<string, unknown>;
+  const server = c.server as Record<string, unknown> | undefined;
   return !!(
-    config &&
-    typeof config === 'object' &&
-    config !== null &&
-    'server' in config &&
-    typeof (config as any).server?.port === 'number' &&
-    typeof (config as any).server?.host === 'string' &&
-    ['ws', 'wss'].includes((config as any).server?.protocol)
+    server &&
+    typeof server.port === 'number' &&
+    typeof server.host === 'string' &&
+    ['ws', 'wss'].includes(server.protocol as string)
   );
 }
 
 export function validateClientConfig(config: unknown): config is JTAGClientConfiguration {
+  if (!config || typeof config !== 'object' || config === null) return false;
+  const c = config as Record<string, unknown>;
+  const client = c.client as Record<string, unknown> | undefined;
   return !!(
-    config &&
-    typeof config === 'object' &&
-    config !== null &&
-    'client' in config &&
-    typeof (config as any).client?.ui_port === 'number' &&
-    typeof (config as any).client?.host === 'string' &&
-    ['http', 'https'].includes((config as any).client?.protocol)
+    client &&
+    typeof client.ui_port === 'number' &&
+    typeof client.host === 'string' &&
+    ['http', 'https'].includes(client.protocol as string)
   );
 }
 
 export function validateJTAGConfig(config: unknown): config is JTAGConfig {
+  if (!config || typeof config !== 'object' || config === null) return false;
+  const c = config as Record<string, unknown>;
   return !!(
-    config &&
-    typeof config === 'object' &&
-    config !== null &&
-    'instance' in config &&
-    'server' in config &&
-    'client' in config &&
-    'test' in config &&
-    validateInstanceConfig((config as any).instance) &&
-    validateServerConfig((config as any).server) &&
-    validateClientConfig((config as any).client)
+    'instance' in c &&
+    'server' in c &&
+    'client' in c &&
+    validateInstanceConfig(c.instance) &&
+    validateServerConfig(c.server) &&
+    validateClientConfig(c.client)
   );
 }

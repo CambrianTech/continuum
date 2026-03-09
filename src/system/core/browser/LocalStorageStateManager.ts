@@ -20,9 +20,10 @@ import type { UUID } from '../types/CrossPlatformUUID';
 import { stringToUUID } from '../types/CrossPlatformUUID';
 import { getDefaultPreferencesForType } from '../../user/config/UserCapabilitiesDefaults';
 import { asyncStorage } from './AsyncStorage';
+import { jtagWindow } from '../types/GlobalAugmentations';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => jtagWindow?.JTAG_VERBOSE === true;
 
 export interface LocalStateData {
   userId: UUID;

@@ -28,6 +28,7 @@ import type {
   NodeDiscoveryResult,
   GridRoutingConfig,
   GridError,
+  GridErrorType,
   GridResult,
   GridEventType,
   GridEvent,
@@ -97,7 +98,7 @@ export abstract class GridRoutingService {
       
     } catch (error) {
       const gridError: GridError = {
-        type: 'network-error' as any,
+        type: GridErrorType.NETWORK_ERROR,
         message: `Failed to initialize Grid routing: ${(error as Error).message}`,
         nodeId: this.config.nodeId
       };
@@ -140,7 +141,7 @@ export abstract class GridRoutingService {
       
     } catch (error) {
       const gridError: GridError = {
-        type: 'network-error' as any,
+        type: GridErrorType.NETWORK_ERROR,
         message: `Node discovery failed: ${(error as Error).message}`
       };
       
@@ -166,7 +167,7 @@ export abstract class GridRoutingService {
       const route = this.routingTable.get(targetNodeId);
       if (!route) {
         const gridError: GridError = {
-          type: 'route-not-found' as any,
+          type: GridErrorType.ROUTE_NOT_FOUND,
           message: `No route found to node ${targetNodeId}`,
           nodeId: targetNodeId
         };
@@ -195,7 +196,7 @@ export abstract class GridRoutingService {
       
     } catch (error) {
       const gridError: GridError = {
-        type: 'network-error' as any,
+        type: GridErrorType.NETWORK_ERROR,
         message: `Failed to send message: ${(error as Error).message}`,
         messageId: message.messageId
       };
@@ -225,7 +226,7 @@ export abstract class GridRoutingService {
       
     } catch (error) {
       const gridError: GridError = {
-        type: 'network-error' as any,
+        type: GridErrorType.NETWORK_ERROR,
         message: `Broadcast failed: ${(error as Error).message}`,
         messageId: message.messageId
       };

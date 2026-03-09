@@ -23,6 +23,7 @@
  * 3. .env file (project-local, NOT committed to git)
  */
 
+import { jtagWindow } from '../core/types/GlobalAugmentations';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -63,7 +64,7 @@ export class SecretManager {
    */
   static isVerbose(): boolean {
     if (typeof window !== 'undefined') {
-      return (window as any).JTAG_VERBOSE === true;
+      return jtagWindow?.JTAG_VERBOSE === true;
     }
     if (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE) {
       const value = process.env.JTAG_VERBOSE.toLowerCase().trim();

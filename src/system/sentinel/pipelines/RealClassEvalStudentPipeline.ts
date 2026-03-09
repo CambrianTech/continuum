@@ -17,7 +17,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
 
 /**
  * Build the RealClassEval student sentinel pipeline.
@@ -52,10 +52,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as any);
+  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
   // Per-iteration event name — matches teacher's iterEvt pattern
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as any)}:{{input.iteration}}`;
-  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as any)}:{{input.iteration}}`;
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as AcademyEventAction)}:{{input.iteration}}`;
 
   // LLM config — only pass model/provider when explicitly set to avoid
   // "Model Not Exist" errors with cloud providers.

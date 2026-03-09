@@ -24,6 +24,7 @@ import type { SelfTaskGenerator } from './SelfTaskGenerator';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 /** Gap assessment runs every N service cycles (~25-50s during active operation) */
 const GAP_ASSESSMENT_INTERVAL = 50;
@@ -34,6 +35,10 @@ export class PersonaAutonomousLoop {
 
   /** Cycle counter for gap assessment cadence */
   private gapCycleCount = 0;
+
+  /** Circuit breaker: consecutive error tracking */
+  private consecutiveFailures = 0;
+  private circuitOpenUntil = 0;
 
   /** Optional gap detection + self-task generation */
   private gapDetector: GapDetector | null = null;
@@ -82,14 +87,41 @@ export class PersonaAutonomousLoop {
 
   /**
    * Continuous service loop — runs until servicingLoopActive = false.
-   * Each iteration: wait for signal → Rust serviceCycleFull → dispatch item → repeat
+   * Each iteration: wait for signal → Rust serviceCycleFull → dispatch item → repeat.
+   *
+   * Circuit breaker: after maxConsecutiveFailures errors in a row, the persona
+   * enters cooldown (stops processing for cooldownMs). On any success, the
+   * failure counter resets. This prevents hammering a broken provider.
    */
   private async runServiceLoop(): Promise<void> {
+    const { maxConsecutiveFailures, cooldownMs } = PersonaTimingConfig.circuitBreaker;
+
     while (this.servicingLoopActive) {
+      // Circuit breaker: if open, wait until cooldown expires
+      if (this.circuitOpenUntil > 0) {
+        const remaining = this.circuitOpenUntil - Date.now();
+        if (remaining > 0) {
+          this.log(`⚡ ${this.personaUser.displayName}: Circuit breaker open — cooling down ${Math.ceil(remaining / 1000)}s`);
+          await new Promise(resolve => setTimeout(resolve, Math.min(remaining, 5000)));
+          continue;
+        }
+        // Cooldown expired — close circuit, reset counter
+        this.log(`⚡ ${this.personaUser.displayName}: Circuit breaker closed — resuming`);
+        this.circuitOpenUntil = 0;
+        this.consecutiveFailures = 0;
+      }
+
       try {
         await this.serviceInbox();
+        this.consecutiveFailures = 0;
       } catch (error) {
-        this.log(`❌ ${this.personaUser.displayName}: Error in service loop: ${error}`);
+        this.consecutiveFailures++;
+        this.log(`❌ ${this.personaUser.displayName}: Error in service loop (${this.consecutiveFailures}/${maxConsecutiveFailures}): ${error}`);
+
+        if (this.consecutiveFailures >= maxConsecutiveFailures) {
+          this.circuitOpenUntil = Date.now() + cooldownMs;
+          this.log(`⚡ ${this.personaUser.displayName}: Circuit breaker OPEN — ${cooldownMs / 1000}s cooldown after ${this.consecutiveFailures} consecutive failures`);
+        }
       }
     }
     this.log(`🛑 ${this.personaUser.displayName}: Service loop stopped`);

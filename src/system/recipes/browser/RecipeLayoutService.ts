@@ -9,6 +9,7 @@
  * 2. NEW format (LayoutConfig): { widgets: [{ widget, position, order, config }] }
  */
 
+import { jtagWindow } from '../../core/types/GlobalAugmentations';
 import { Commands } from '../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
@@ -74,7 +75,7 @@ export class RecipeLayoutService {
   }
 
   private async doLoad(): Promise<void> {
-    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    const verbose = jtagWindow?.JTAG_VERBOSE === true;
     try {
       if (verbose) console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
 

@@ -1,25 +1,26 @@
 /**
- * ContinuumMetrics Widget - System & AI Performance Dashboard
+ * ContinuumMetrics Widget - System & AI Performance Dashboard (Sidebar)
  *
- * Two tabs:
+ * Compact sidebar widget with two tabs:
  *   SYS — CPU, GPU, Memory sparklines from system_metrics database
  *   AI  — Generations, Tokens, Latency, Cost from ai_generations
  *
- * Each tab has its own time range selector and auto-refreshes.
+ * Click the chart area to open a full-tab detailed metrics view.
  */
 
 import {
   ReactiveWidget,
   html,
   reactive,
-  unsafeCSS,
+  css,
   type TemplateResult,
-  type CSSResultGroup
+  type CSSResultGroup,
 } from '../shared/ReactiveWidget';
+import { renderSparkline, type ChartSeries } from '../shared/SparklineChart';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 import { AIGenerationEntity } from '../../system/data/entities/AIGenerationEntity';
-import { styles } from './public/continuum-metrics.styles';
+import { ContentService } from '../../system/state/ContentService';
 import { SystemMetrics, type SystemMetricsPoint } from '../../commands/system/metrics/shared/SystemMetricsTypes';
 import { AICost } from '../../commands/ai/cost/shared/AICostTypes';
 
@@ -37,10 +38,122 @@ interface AITimeSeriesPoint {
 
 type MetricsTab = 'sys' | 'ai';
 
+
 export class ContinuumMetricsWidget extends ReactiveWidget {
   static override styles = [
     ReactiveWidget.styles,
-    unsafeCSS(styles)
+    css`
+      :host { display: block; width: 100%; }
+
+      .metrics-panel {
+        display: flex;
+        flex-direction: column;
+        padding: 10px;
+        background: var(--surface-secondary, #0f1117);
+        border: 1px solid var(--border-primary, #2a2d35);
+        border-radius: 6px;
+      }
+
+      .metrics-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-shrink: 0;
+      }
+
+      .tab-bar { display: flex; gap: 2px; }
+
+      .tab {
+        padding: 2px 8px;
+        font-size: 9px;
+        font-weight: 700;
+        font-family: var(--font-mono, monospace);
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: var(--content-tertiary, #6a7280);
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 3px;
+        cursor: pointer;
+        transition: all .15s ease;
+      }
+      .tab:hover { color: var(--content-secondary, #8a92a5); background: var(--surface-primary, #1a1d24); }
+      .tab.active { color: var(--accent-primary, #4a9eff); border-color: var(--accent-primary, #4a9eff); background: rgba(74,158,255,.08); }
+
+      .time-select {
+        padding: 3px 8px;
+        font-size: 10px;
+        font-family: var(--font-mono, monospace);
+        background: var(--surface-primary, #1a1d24);
+        color: var(--content-primary, #e8eaed);
+        border: 1px solid var(--border-secondary, #383b44);
+        border-radius: 3px;
+        cursor: pointer;
+      }
+      .time-select:hover { border-color: var(--accent-primary, #4a9eff); }
+
+      .chart-container {
+        height: 80px;
+        background: var(--surface-primary, #1a1d24);
+        border: 1px solid var(--border-secondary, #383b44);
+        border-radius: 4px;
+        padding: 6px;
+        margin-bottom: 8px;
+        position: relative;
+        cursor: pointer;
+        transition: border-color .2s ease;
+      }
+      .chart-container:hover {
+        border-color: var(--accent-primary, #4a9eff);
+      }
+      .chart-container:hover .expand-hint { opacity: 1; }
+
+      .chart-container svg { width: 100%; height: 100%; }
+
+      .expand-hint {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        font-size: 9px;
+        font-family: var(--font-mono, monospace);
+        color: var(--accent-primary, #4a9eff);
+        opacity: 0;
+        transition: opacity .2s ease;
+        pointer-events: none;
+      }
+
+      .empty-state {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-family: var(--font-mono, monospace);
+        color: var(--content-tertiary, #6a7280);
+        letter-spacing: .3px;
+      }
+
+      .legend {
+        display: flex;
+        justify-content: space-between;
+        gap: 6px;
+        flex-shrink: 0;
+        min-height: 20px;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-family: var(--font-mono, monospace);
+      }
+
+      .dot { width: 8px; height: 8px; border-radius: 2px; }
+      .label { font-size: 9px; color: var(--content-tertiary, #6a7280); text-transform: uppercase; }
+      .value { font-size: 11px; font-weight: 600; }
+    `
   ] as CSSResultGroup;
 
   @reactive() private _activeTab: MetricsTab = 'sys';
@@ -68,7 +181,6 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
     this.createMountEffect(() => {
       const unsubs = [
-        // Refresh AI tab on new generations
         Events.subscribe(AI_DECISION_EVENTS.POSTED, () => {
           if (this._activeTab === 'ai') this._fetchAIData();
         }),
@@ -77,9 +189,9 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
         }),
       ];
 
-      // Auto-refresh system metrics every 30s
       this._refreshTimer = setInterval(() => {
         if (this._activeTab === 'sys') this._fetchSysData();
+        else this._fetchAIData();
       }, 30_000);
 
       return () => {
@@ -88,7 +200,6 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
       };
     });
 
-    // Initial data fetch for both tabs
     await Promise.all([
       this._fetchSysData(),
       this._fetchAIData(),
@@ -114,7 +225,8 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
           </select>
         </div>
 
-        <div class="chart-container">
+        <div class="chart-container" @click=${this._openDetailView}>
+          <span class="expand-hint">expand</span>
           ${this._activeTab === 'sys' ? this._renderSysChart() : this._renderAIChart()}
         </div>
 
@@ -131,28 +243,28 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     if (!this._sysTimeSeries.length) {
       return html`<div class="empty-state">Collecting data...</div>`;
     }
-    return html`
-      <svg viewBox="0 0 200 80" preserveAspectRatio="none">
-        <polyline stroke="#ff6b6b" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getSysPoints(p => p.cpuUsage)}" />
-        <polyline stroke="#4ade80" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getSysPoints(p => p.memoryPressure)}" />
-        <polyline stroke="#a78bfa" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getSysPoints(p => p.gpuPressure)}" />
-      </svg>
-    `;
+
+    const series: ChartSeries<SystemMetricsPoint>[] = [
+      { color: '#ff6b6b', getValue: p => p.cpuUsage },
+      { color: '#4ade80', getValue: p => p.memoryPressure },
+      { color: '#a78bfa', getValue: p => p.gpuPressure },
+    ];
+
+    return html`<svg viewBox="0 0 200 80" preserveAspectRatio="none">
+      ${renderSparkline(this._sysTimeSeries, series, false)}
+    </svg>`;
   }
 
   private _renderSysLegend(): TemplateResult {
     const c = this._sysCurrent;
     return html`
-      ${this._renderLegendItem('CPU', '#ff6b6b', `${(c.cpuUsage * 100).toFixed(0)}%`)}
-      ${this._renderLegendItem('MEM', '#4ade80',
+      ${this._legendItem('CPU', '#ff6b6b', `${(c.cpuUsage * 100).toFixed(0)}%`)}
+      ${this._legendItem('MEM', '#4ade80',
         c.memoryTotalMb > 0
           ? `${(c.memoryUsedMb / 1024).toFixed(1)}/${(c.memoryTotalMb / 1024).toFixed(0)}G`
           : `${(c.memoryPressure * 100).toFixed(0)}%`
       )}
-      ${this._renderLegendItem('GPU', '#a78bfa',
+      ${this._legendItem('GPU', '#a78bfa',
         c.gpuTotalMb > 0
           ? `${(c.gpuUsedMb / 1024).toFixed(1)}/${(c.gpuTotalMb / 1024).toFixed(0)}G`
           : `${(c.gpuPressure * 100).toFixed(0)}%`
@@ -160,62 +272,45 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     `;
   }
 
-  private _getSysPoints(getValue: (p: SystemMetricsPoint) => number): string {
-    return this._getPathPoints(this._sysTimeSeries, getValue);
-  }
-
   // ── AI chart ───────────────────────────────────────────────────────────────
 
   private _renderAIChart(): TemplateResult {
     if (!this._aiTimeSeries.length && this._aiSummary.requests === 0) {
-      return html`<div class="empty-state">No data yet</div>`;
+      return html`<div class="empty-state">No AI data yet</div>`;
     }
-    return html`
-      <svg viewBox="0 0 200 80" preserveAspectRatio="none">
-        <polyline stroke="#00d4ff" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getAIPoints(p => p.generations)}" />
-        <polyline stroke="#ff6b6b" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getAIPoints(p => p.tokens / 1000)}" />
-        <polyline stroke="#ffd700" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getAIPoints(p => p.avgResponseTime / 1000)}" />
-        <polyline stroke="#4ade80" stroke-width="2" fill="none" opacity="0.8"
-          points="${this._getAIPoints(p => p.cost * 100)}" />
-      </svg>
-    `;
+
+    if (!this._aiTimeSeries.length) {
+      // Have summary but no time series — show summary-only sparkline
+      return html`<div class="empty-state">
+        ${this._aiSummary.requests} req / ${this._formatNumber(this._aiSummary.tokens)} tok
+      </div>`;
+    }
+
+    const series: ChartSeries<AITimeSeriesPoint>[] = [
+      { color: '#00d4ff', getValue: p => p.generations },
+      { color: '#ff6b6b', getValue: p => p.tokens },
+      { color: '#ffd700', getValue: p => p.avgResponseTime },
+      { color: '#4ade80', getValue: p => p.cost },
+    ];
+
+    return html`<svg viewBox="0 0 200 80" preserveAspectRatio="none">
+      ${renderSparkline(this._aiTimeSeries, series, false)}
+    </svg>`;
   }
 
   private _renderAILegend(): TemplateResult {
     const s = this._aiSummary;
     return html`
-      ${this._renderLegendItem('Req', '#00d4ff', s.requests.toString())}
-      ${this._renderLegendItem('Tok', '#ff6b6b', this._formatNumber(s.tokens))}
-      ${this._renderLegendItem('Lat', '#ffd700', `${(s.latency / 1000).toFixed(1)}s`)}
-      ${this._renderLegendItem('Cost', '#4ade80', `$${s.cost.toFixed(2)}`)}
+      ${this._legendItem('Req', '#00d4ff', s.requests.toString())}
+      ${this._legendItem('Tok', '#ff6b6b', this._formatNumber(s.tokens))}
+      ${this._legendItem('Lat', '#ffd700', `${(s.latency / 1000).toFixed(1)}s`)}
+      ${this._legendItem('$', '#4ade80', `$${s.cost.toFixed(2)}`)}
     `;
   }
 
-  private _getAIPoints(getValue: (p: AITimeSeriesPoint) => number): string {
-    return this._getPathPoints(this._aiTimeSeries, getValue);
-  }
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
-  // ── Shared rendering helpers ───────────────────────────────────────────────
-
-  private _getPathPoints<T>(series: T[], getValue: (p: T) => number): string {
-    if (!series.length) return '2,40 198,40';
-
-    const values = series.map(getValue);
-    const max = Math.max(...values, 0.001);
-    const min = Math.min(...values, 0);
-    const range = max - min || 1;
-
-    return values.map((v, i) => {
-      const x = (i / Math.max(values.length - 1, 1)) * 196 + 2;
-      const y = 75 - ((v - min) / range) * 65;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-  }
-
-  private _renderLegendItem(label: string, color: string, value: string): TemplateResult {
+  private _legendItem(label: string, color: string, value: string): TemplateResult {
     return html`
       <div class="legend-item">
         <span class="dot" style="background:${color}"></span>
@@ -231,11 +326,10 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     return n.toString();
   }
 
-  // ── Tab & time range ───────────────────────────────────────────────────────
+  // ── Actions ────────────────────────────────────────────────────────────────
 
   private _switchTab(tab: MetricsTab): void {
     this._activeTab = tab;
-    // Refresh data for the newly active tab
     if (tab === 'sys') this._fetchSysData();
     else this._fetchAIData();
   }
@@ -244,6 +338,13 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     this._timeRange = (e.target as HTMLSelectElement).value;
     if (this._activeTab === 'sys') await this._fetchSysData();
     else await this._fetchAIData();
+  };
+
+  private _openDetailView = (): void => {
+    ContentService.open('metrics', undefined, {
+      title: 'Metrics',
+      metadata: { initialTab: this._activeTab, timeRange: this._timeRange },
+    });
   };
 
   // ── Data fetching ──────────────────────────────────────────────────────────
@@ -267,12 +368,20 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
   private async _fetchAIData(): Promise<void> {
     try {
+      // Adaptive interval: finer granularity for shorter time ranges
+      const intervalMap: Record<string, string> = {
+        '1h': '5m',
+        '6h': '30m',
+        '24h': '1h',
+        '7d': '6h',
+      };
+
       const result = await AICost.execute({
         startTime: this._timeRange,
         includeTimeSeries: true,
-        interval: '1h',
+        interval: intervalMap[this._timeRange] ?? '1h',
         includeBreakdown: false,
-      } as any) as any;
+      });
 
       if (result?.success && result.summary) {
         this._aiTimeSeries = result.timeSeries ?? [];

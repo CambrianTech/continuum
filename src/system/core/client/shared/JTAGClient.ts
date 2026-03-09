@@ -90,11 +90,12 @@ import type { SessionCreateResult } from '../../../../commands/session/create/sh
 import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
 import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
 import { DEFAULT_USER_UNIQUE_IDS } from '../../../data/domains/DefaultEntities';
+import { jtagWindow, jtagGlobal } from '../../types/GlobalAugmentations';
 
 // Verbose logging utility - only logs when JTAG_VERBOSE=1 (Node.js) or window.JTAG_VERBOSE (browser)
 const verbose = (message: string, ...args: unknown[]) => {
   const isVerbose = (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE === '1') ||
-                    (typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true);
+                    jtagWindow?.JTAG_VERBOSE === true;
   if (isVerbose) {
     console.log(message, ...args);
   }
@@ -697,7 +698,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
           return async (params?: Partial<ListParams>): Promise<ListResult> => {
             const fullParams = {
               ...createListParams(self.context, self.sessionId, params || {}),
-              userId: (params as any)?.userId ?? self.userId
+              userId: params?.userId ?? self.userId
             } as CommandParams;
             return await self.connection!.executeCommand('list', fullParams) as ListResult;
           };
@@ -711,7 +712,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
             ...params,
             context: params?.context ?? self.context,
             sessionId: params?.sessionId ?? self.sessionId,
-            userId: (params as any)?.userId ?? self.userId
+            userId: (params as Partial<CommandParams> | undefined)?.userId ?? self.userId
           } as CommandParams;
 
           return await self.connection!.executeCommand(commandName, fullParams);
@@ -906,7 +907,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   /**
    * Get shared instance from global context - works in browser and server
    * Browser: (window as WindowWithJTAG).jtag
-   * Server: (globalThis as any).jtag
+   * Server: jtagGlobal.jtag
    */
   static get sharedInstance(): Promise<JTAGClient> {
     return new Promise((resolve, reject) => {
@@ -917,9 +918,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         return;
       }
 
-      const jtag = (globalThis as any).jtag;
+      const jtag = jtagGlobal.jtag;
       if (jtag?.commands) {
-        resolve(jtag);
+        resolve(jtag as unknown as JTAGClient);
         return;
       }
 
@@ -938,9 +939,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
           return;
         }
 
-        const jtagNow = (globalThis as any).jtag;
+        const jtagNow = jtagGlobal.jtag;
         if (jtagNow?.commands) {
-          resolve(jtagNow);
+          resolve(jtagNow as unknown as JTAGClient);
           return;
         }
 

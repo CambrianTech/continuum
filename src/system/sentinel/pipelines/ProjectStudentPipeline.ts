@@ -18,7 +18,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { ProjectStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
 
 /**
  * Build the project student sentinel pipeline.
@@ -54,7 +54,7 @@ export function buildProjectStudentPipeline(config: ProjectStudentPipelineConfig
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as any);
+  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
   const boundary = 'STUDENT_CODE_EOF';
 
   const steps: PipelineStep[] = [

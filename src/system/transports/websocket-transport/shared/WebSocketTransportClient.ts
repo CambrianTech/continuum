@@ -5,6 +5,7 @@
  * client and server implementations.
  */
 
+import { jtagWindow } from '../../../core/types/GlobalAugmentations';
 import { TransportBase } from '../../shared/TransportBase';
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -26,7 +27,7 @@ import { Events } from '../../../core/shared/Events';
 // Verbose logging helper (works in both browser and server)
 const verbose = () => {
   if (typeof window !== 'undefined') {
-    return (window as any).JTAG_VERBOSE === true;
+    return jtagWindow?.JTAG_VERBOSE === true;
   }
   if (typeof process !== 'undefined') {
     return process.env.JTAG_VERBOSE === '1';

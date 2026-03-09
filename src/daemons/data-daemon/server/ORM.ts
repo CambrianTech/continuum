@@ -127,6 +127,14 @@ export class ORM {
     suppressEvents: boolean = false,
     handle: DbHandle
   ): Promise<T> {
+    // Validate entity before persisting — prevents ghost records with NULL required fields
+    if (typeof data.validate === 'function') {
+      const validation = data.validate();
+      if (!validation.success) {
+        throw new Error(`ORM.store validation failed for ${collection}: ${validation.error}`);
+      }
+    }
+
     const dbPath = ORM.resolveHandle(handle);
     const done = logOperationStart('store', collection, { id: (data as any).id });
 

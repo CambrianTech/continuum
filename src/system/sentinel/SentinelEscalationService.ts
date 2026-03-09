@@ -18,7 +18,6 @@
  *   Rust is the single source of truth for sentinel lifecycle.
  */
 
-import { Commands } from '../core/shared/Commands';
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import { generateUUID } from '../core/types/CrossPlatformUUID';
 import type { InboxTask } from '../user/server/modules/QueueItemTypes';
@@ -26,8 +25,13 @@ import type { SentinelEntity, SentinelExecutionResult } from './SentinelDefiniti
 import type { EscalationRule, EscalationPriority } from './entities/SentinelEntity';
 import { DEFAULT_ESCALATION_RULES } from './entities/SentinelEntity';
 import type { MemoryEntity } from '../user/server/modules/MemoryTypes';
+import { MemoryType } from '../user/server/modules/MemoryTypes';
+import { ISOString } from '../data/domains/CoreTypes';
 import { CognitionLogger } from '../user/server/modules/cognition/CognitionLogger';
 import { getPersonaInbox } from '../user/server/PersonaInboxRegistry';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
+import { DataCreate } from '../../commands/data/create/shared/DataCreateTypes';
 
 /**
  * Priority mapping: escalation priority → numeric inbox priority
@@ -133,20 +137,20 @@ async function persistExecutionResult(
   status: string,
 ): Promise<void> {
   try {
-    const listResult = await Commands.execute('data/list', {
+    const listResult = await DataList.execute({
       collection: 'sentinels',
       filter: { id: entityId },
       limit: 1,
-    } as any) as any;
+    });
 
-    const entity = listResult?.items?.[0] as SentinelEntity | undefined;
+    const entity = listResult?.items?.[0] as unknown as SentinelEntity | undefined;
     if (!entity) return;
 
     const executions = [result, ...(entity.executions || [])].slice(0, 50);
 
-    await Commands.execute('data/update', {
+    await DataUpdate.execute({
       collection: 'sentinels',
-      id: entityId,
+      id: entityId as UUID,
       data: {
         executions,
         status,
@@ -156,7 +160,7 @@ async function persistExecutionResult(
         lastRunAt: result.startedAt,
         updatedAt: new Date().toISOString(),
       },
-    } as any);
+    });
   } catch (err) {
     console.error(`[SentinelEscalation] Failed to persist execution result for ${entityId}: ${err}`);
   }
@@ -213,10 +217,10 @@ async function escalateToPersonaInbox(
   } else {
     // Persona not active — persist to DB for pickup on next startup
     try {
-      await Commands.execute('data/create', {
+      await DataCreate.execute({
         collection: 'tasks',
         data: task,
-      } as any);
+      });
       console.log(`[SentinelEscalation] Persona offline, persisted ${taskType} task to DB (sentinel=${sentinelName})`);
     } catch (err) {
       console.error(`[SentinelEscalation] Failed to create ${taskType} task: ${err}`);
@@ -236,7 +240,7 @@ async function storeSentinelMemory(
   error?: string,
 ): Promise<void> {
   try {
-    const now = new Date().toISOString();
+    const now = ISOString(new Date().toISOString());
     const durationStr = durationMs ? `${(durationMs / 1000).toFixed(1)}s` : 'unknown';
 
     const content = status === 'completed'
@@ -251,7 +255,7 @@ async function storeSentinelMemory(
       id: generateUUID(),
       personaId: parentPersonaId,
       sessionId: 'sentinel-lifecycle',
-      type: 'sentinel' as any,
+      type: MemoryType.SENTINEL,
       content,
       context: {
         sentinelName,
@@ -260,7 +264,7 @@ async function storeSentinelMemory(
         durationMs,
         error,
       },
-      timestamp: now as any,
+      timestamp: now,
       importance,
       accessCount: 0,
       relatedTo: [entityId],
@@ -269,11 +273,11 @@ async function storeSentinelMemory(
     };
 
     const dbHandle = CognitionLogger.getDbHandle(parentPersonaId as UUID);
-    await Commands.execute('data/create', {
+    await DataCreate.execute({
       dbHandle,
       collection: 'memories',
       data: memory,
-    } as any);
+    });
 
     console.log(`[SentinelEscalation] Stored sentinel memory for persona ${parentPersonaId}: ${content.slice(0, 80)}`);
   } catch (err) {

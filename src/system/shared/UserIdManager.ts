@@ -9,6 +9,7 @@
  */
 
 import type { UUID } from '../core/types/CrossPlatformUUID';
+import { jtagWindow } from '../core/types/GlobalAugmentations';
 
 export interface User {
   readonly userId: UUID;
@@ -132,13 +133,12 @@ export class UserIdManager {
 
     try {
       // In browser environment, we need to load via JTAG command
-      if (typeof window !== 'undefined' && (window as any).jtag) {
-        const jtag = (window as any).jtag;
-        const result = await jtag.commands['file/load']({
-          filePath: UserIdManager.FAKE_USERS_PATH
-        });
-        
-        if (result.success && result.content) {
+      if (jtagWindow?.jtag?.commands) {
+        const fileLoad = jtagWindow.jtag.commands['file/load'] as
+          ((params: Record<string, unknown>) => Promise<{ success?: boolean; content?: string }>) | undefined;
+        const result = fileLoad ? await fileLoad({ filePath: UserIdManager.FAKE_USERS_PATH }) : undefined;
+
+        if (result?.success && result?.content) {
           this.fakeUsersData = JSON.parse(result.content);
           console.log(`🔧 CLAUDE-USER-ID-DEBUG: Loaded fake users data from ${UserIdManager.FAKE_USERS_PATH} (${this.fakeUsersData?.users?.length || 0} users)`);
         }

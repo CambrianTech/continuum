@@ -22,7 +22,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
 
 /**
  * Build the RealClassEval teacher sentinel pipeline.
@@ -51,9 +51,9 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as any);
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as any)}:{{input.iteration}}`;
-  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as any)}:{{input.iteration}}`;
+  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as AcademyEventAction)}:{{input.iteration}}`;
 
   const resultsDir = `${datasetDir}/session-${sessionId.slice(0, 8)}`;
 
