@@ -227,6 +227,35 @@ export class AdapterStore {
   }
 
   /**
+   * Get latest compatible adapter per domain across ALL personas for a given model.
+   *
+   * Used when a persona has no persona-specific adapters but wants to use any
+   * compatible adapter. LoRA adapters are architecture-specific (model-bound),
+   * not persona-specific — a Helper AI adapter works on any Llama-3.2 inference.
+   */
+  static latestCompatibleByDomainForModel(inferenceModel: string): Map<string, DiscoveredAdapter> {
+    const all = AdapterStore.discoverAll()
+      .filter(a => a.hasWeights && AdapterStore.isCompatibleWithModel(a, inferenceModel));
+
+    const byDomain = new Map<string, DiscoveredAdapter>();
+    for (const adapter of all) {
+      const domain = adapter.manifest.traitType;
+      const existing = byDomain.get(domain);
+      if (!existing) {
+        byDomain.set(domain, adapter);
+      } else {
+        const existingTime = new Date(existing.manifest.createdAt).getTime();
+        const newTime = new Date(adapter.manifest.createdAt).getTime();
+        if (newTime > existingTime) {
+          byDomain.set(domain, adapter);
+        }
+      }
+    }
+
+    return byDomain;
+  }
+
+  /**
    * Validate that an adapter path is a real, usable adapter on disk
    *
    * Checks for:
