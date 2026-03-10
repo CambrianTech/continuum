@@ -41,6 +41,8 @@ export interface GenomeAcademySessionParams extends CommandParams {
   questionsPerExam?: number;
   /** Number of training examples to synthesize per failed challenge (default: 10) */
   examplesPerTopic?: number;
+  /** Number of curriculum topics per session (default: 3) */
+  topicsPerSession?: number;
   /** Teacher LLM model */
   model?: string;
   /** Teacher LLM provider */

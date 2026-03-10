@@ -117,6 +117,9 @@ export interface AcademyConfig {
   /** Number of exam questions per topic (default: 10) */
   questionsPerExam: number;
 
+  /** Number of curriculum topics per session (default: 3) */
+  topicsPerSession: number;
+
   /** LLM model for teacher (curriculum design, data synthesis, grading) */
   teacherModel?: string;
 
@@ -144,6 +147,7 @@ export const DEFAULT_ACADEMY_CONFIG: AcademyConfig = {
   batchSize: 4,
   examplesPerTopic: 10,
   questionsPerExam: 10,
+  topicsPerSession: 3,
 };
 
 // ============================================================================

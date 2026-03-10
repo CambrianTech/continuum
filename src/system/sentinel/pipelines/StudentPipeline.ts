@@ -57,7 +57,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
     // Intra-loop references use {{loop.N.field}} for stable referencing
     {
       type: 'loop',
-      count: 5,  // Max topics (safety limit)
+      count: academyConfig.topicsPerSession,
       steps: [
         // loop.0: Wait for training data from teacher (iteration-scoped)
         {

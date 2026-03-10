@@ -87,12 +87,11 @@ export function buildRecipeTeacherPipeline(config: RecipeTeacherPipelineConfig):
   });
 
   // === Step 3: Outer Loop — iterate over gap topics ===
-  // Matches curriculum prompt's "3-5 topics" request.
-  // If LLM returns fewer, extra iterations will no-op (undefined topic references).
+  // Count matches the prompt's exact topic request from academyConfig.topicsPerSession.
   nextStepIdx++;
   steps.push({
     type: 'loop',
-    count: 5,
+    count: academyConfig.topicsPerSession,
     steps: buildTopicLoopSteps(
       sessionId, skill, personaName, recipe, academyConfig, evt, iterEvt,
       curriculumStepIdx,
@@ -233,7 +232,7 @@ function buildRecipeCurriculumStep(
     '- **Domain Knowledge**: Subject matter expertise the recipe context requires',
     '- **Coordination**: Multi-agent interaction patterns (if collaborative/competitive)',
     '',
-    'Design a curriculum with 3-5 topics targeting ONLY the gaps.',
+    `Design a curriculum with exactly ${academyConfig.topicsPerSession} topics targeting ONLY the gaps.`,
     'If the persona already has strong coverage for a skill, SKIP it.',
     'If no gaps exist, return an empty topics array.',
     '',

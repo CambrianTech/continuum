@@ -103,6 +103,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.rank !== undefined && { rank: params.rank }),
       ...(params.questionsPerExam !== undefined && { questionsPerExam: params.questionsPerExam }),
       ...(params.examplesPerTopic !== undefined && { examplesPerTopic: params.examplesPerTopic }),
+      ...(params.topicsPerSession !== undefined && { topicsPerSession: params.topicsPerSession }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
       // Student defaults to same model/provider as teacher when not explicitly set.
@@ -176,7 +177,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // Scale timeout: base 600s + 120s per challenge (initial + re-exam) + training buffer.
     // Post-benchmark training on N examples × E epochs × ~15s each can take significant time.
     const trainingBuffer = config.questionsPerExam * (config.epochs ?? 3) * 15;
-    const pipelineTimeout = Math.max(1800, 600 + config.questionsPerExam * 120 + trainingBuffer);
+    const topicMultiplier = config.topicsPerSession ?? 3;
+    const pipelineTimeout = Math.max(1800, 600 + (config.questionsPerExam * 120 + trainingBuffer) * topicMultiplier);
     const modePrefix = ACADEMY_MODE_PREFIXES[mode];
     const modeLabel = ACADEMY_MODE_LABELS[mode];
     const teacherName = teacherPipeline.name ?? `academy-${modePrefix}teacher-${skill}`;

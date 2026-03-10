@@ -103,12 +103,11 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
   });
 
   // === Outer Loop: iterate over topics ===
-  // Matches curriculum prompt's "3-5 topics" request.
-  // If LLM returns fewer, extra iterations will no-op (undefined topic references).
+  // Count matches the prompt's exact topic request from academyConfig.topicsPerSession.
   const loopStepIdx = nextStepIdx++;
   steps.push({
     type: 'loop',
-    count: 5,
+    count: academyConfig.topicsPerSession,
     steps: buildTopicLoopSteps(
       sessionId, skill, personaName, academyConfig, evt, iterEvt,
       curriculumStepIdx, knowledgeStepIdx,
@@ -168,7 +167,7 @@ function buildCurriculumStep(
   }
 
   promptLines.push(
-    'Design a curriculum with 3-5 progressive topics, ordered from foundational to advanced.',
+    `Design a curriculum with exactly ${academyConfig.topicsPerSession} progressive topics, ordered from foundational to advanced.`,
     'Each topic should build on the previous one.',
     '',
     'Output ONLY a JSON object with this structure (no markdown, no code fences):',

@@ -245,6 +245,7 @@ export const DEFAULT_COMPETITION_CONFIG: CompetitionConfig = {
   batchSize: 4,
   examplesPerTopic: 10,
   questionsPerExam: 10,
+  topicsPerSession: 3,
   tournamentRounds: 1,
   remediateBetweenRounds: true,
 };

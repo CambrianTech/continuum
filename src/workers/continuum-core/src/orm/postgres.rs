@@ -82,12 +82,6 @@ impl Default for PostgresAdapter {
 
 // ─── SQL Helpers ──────────────────────────────────────────────────────────────
 
-/// Convert a serde_json Value to a boxed ToSql for tokio-postgres.
-/// Uses default type inference (i64 for integers, f64 for floats).
-fn value_to_pg(value: &Value) -> Box<dyn ToSql + Sync + Send> {
-    value_to_pg_typed(value, None)
-}
-
 /// Convert a serde_json Value to a boxed ToSql, coercing types to match
 /// the target PostgreSQL column type. This avoids tokio-postgres type mismatches.
 ///
@@ -269,14 +263,23 @@ fn pg_type_from_field_type(ft: &super::types::FieldType) -> &'static str {
     }
 }
 
-/// Build WHERE clause with $N placeholders and collect parameter values
+/// Build WHERE clause with $N placeholders and collect parameter values.
+/// When `col_types` is provided, uses type-aware coercion to match actual Postgres
+/// column types — prevents WrongType errors when auto-created columns have unexpected types.
 fn build_where_clause(
     filter: &Option<HashMap<String, FieldFilter>>,
     param_offset: usize,
+    col_types: &HashMap<String, String>,
 ) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
     let mut conditions = Vec::new();
     let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let mut idx = param_offset;
+
+    // Helper: coerce value using column type if known
+    let coerce = |v: &Value, column: &str| -> Box<dyn ToSql + Sync + Send> {
+        let pg_type = col_types.get(column).map(|s| s.as_str());
+        value_to_pg_typed(v, pg_type)
+    };
 
     if let Some(filters) = filter {
         for (field, filter) in filters {
@@ -288,46 +291,46 @@ fn build_where_clause(
                     } else {
                         idx += 1;
                         conditions.push(format!("{} = ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                 }
                 FieldFilter::Operator(op) => match op {
                     QueryOperator::Eq(v) => {
                         idx += 1;
                         conditions.push(format!("{} = ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Ne(v) => {
                         idx += 1;
                         conditions.push(format!("{} != ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Gt(v) => {
                         idx += 1;
                         conditions.push(format!("{} > ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Gte(v) => {
                         idx += 1;
                         conditions.push(format!("{} >= ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Lt(v) => {
                         idx += 1;
                         conditions.push(format!("{} < ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Lte(v) => {
                         idx += 1;
                         conditions.push(format!("{} <= ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::In(values) => {
                         let placeholders: Vec<String> = values
                             .iter()
                             .map(|v| {
                                 idx += 1;
-                                params.push(value_to_pg(v));
+                                params.push(coerce(v, &column));
                                 format!("${}", idx)
                             })
                             .collect();
@@ -338,7 +341,7 @@ fn build_where_clause(
                             .iter()
                             .map(|v| {
                                 idx += 1;
-                                params.push(value_to_pg(v));
+                                params.push(coerce(v, &column));
                                 format!("${}", idx)
                             })
                             .collect();
@@ -781,8 +784,10 @@ impl StorageAdapter for PostgresAdapter {
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
+        let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
         let select_clause = build_select_clause(&query.select);
@@ -898,7 +903,9 @@ impl StorageAdapter for PostgresAdapter {
             ));
         }
 
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let bare_table = naming::to_table_name(&query.collection);
+        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
         let mut sql = format!(
@@ -954,8 +961,10 @@ impl StorageAdapter for PostgresAdapter {
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
+        let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
 
         let mut sql = format!("SELECT COUNT(*) FROM {}", table);
         if !where_clause.is_empty() {
