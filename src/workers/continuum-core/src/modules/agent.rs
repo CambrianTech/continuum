@@ -1207,7 +1207,7 @@ impl ServiceModule for AgentModule {
                     .to_string();
 
                 // Generate handle
-                let handle = format!("agent-{}", Uuid::new_v4().to_string()[..8].to_string());
+                let handle = format!("agent-{}", &Uuid::new_v4().to_string()[..8]);
 
                 // Spawn agent in background
                 self.spawn_agent(

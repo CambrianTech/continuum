@@ -257,7 +257,7 @@ impl BevyAvatarSystem {
 
         // Clone notifiers for Bevy thread — it fires these on readback completion
         let notifiers_for_bevy: Vec<std::sync::Arc<tokio::sync::Notify>> =
-            frame_notifiers.iter().map(|n| n.clone()).collect();
+            frame_notifiers.to_vec();
 
         std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
@@ -1119,10 +1119,10 @@ fn spawn_readback_entity_opt(
 
                 // Log first readback per slot + pixel diversity diagnostic
                 static FIRST_READBACK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
-                static FRAME_COUNTER: [std::sync::atomic::AtomicU32; 16] = {
-                    const INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                    [INIT; 16]
-                };
+                #[allow(clippy::declare_interior_mutable_const)]
+                const ATOMIC_ZERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                #[allow(clippy::borrow_interior_mutable_const)]
+                static FRAME_COUNTER: [std::sync::atomic::AtomicU32; 16] = [ATOMIC_ZERO; 16];
                 let mask = 1u16 << slot_id;
                 let prev = FIRST_READBACK.fetch_or(mask, std::sync::atomic::Ordering::Relaxed);
                 if prev & mask == 0 {
@@ -1184,12 +1184,12 @@ fn spawn_readback_entity_opt(
                             }
                         }
                         Err(crossbeam_channel::TrySendError::Full(_)) => {
-                            static DROP_COUNTS: [std::sync::atomic::AtomicU32; 16] = {
-                                const INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                                [INIT; 16]
-                            };
+                            #[allow(clippy::declare_interior_mutable_const)]
+                            const DROP_ZERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                            #[allow(clippy::borrow_interior_mutable_const)]
+                            static DROP_COUNTS: [std::sync::atomic::AtomicU32; 16] = [DROP_ZERO; 16];
                             let count = DROP_COUNTS[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if count % 150 == 0 {
+                            if count.is_multiple_of(150) {
                                 clog_warn!("🎨 Slot {}: {} frames dropped (channel full)", slot_id, count + 1);
                             }
                         }
@@ -1585,6 +1585,7 @@ fn manage_render_cadence(
 ///
 /// Only readbacks slots whose camera is active this frame (per render cadence).
 /// Uses `ReadbackMarker` to distinguish readback entities from cameras/scenes.
+#[allow(clippy::type_complexity)]
 fn ensure_continuous_readback(
     query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
     registry: Res<SlotRegistry>,
@@ -1619,6 +1620,7 @@ fn ensure_continuous_readback(
 }
 
 /// Process commands from the main application.
+#[allow(clippy::too_many_arguments)]
 fn process_commands(
     command_channel: Res<CommandChannel>,
     time: Res<Time>,
@@ -1893,7 +1895,7 @@ fn process_commands(
                 let state = emotion_state
                     .slots
                     .entry(slot)
-                    .or_insert_with(SlotEmotionState::default);
+                    .or_default();
                 state.target = emotion;
                 state.target_weight = weight.clamp(0.0, 1.0);
                 state.transition_rate = rate;
@@ -2438,6 +2440,7 @@ fn discover_morph_targets(
 /// Like a game engine animation system: one clip drives all speech-related
 /// attributes from a single timeline. Clips can be interrupted by new speech
 /// or StopSpeech commands.
+#[allow(clippy::too_many_arguments)]
 fn animate_speaking(
     time: Res<Time>,
     speaking_query: Query<&AvatarSlotId, With<Speaking>>,
@@ -2479,7 +2482,7 @@ fn animate_speaking(
         use std::sync::atomic::{AtomicU32, Ordering};
         static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
         let frame = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if frame % 300 == 0 {
+        if frame.is_multiple_of(300) {
             let started = speech_clips.clips_started;
             let stopped = speech_clips.clips_auto_stopped;
             let interrupted = speech_clips.clips_interrupted;
@@ -3378,7 +3381,7 @@ fn fix_tpose_arms(
 
     for (bone_entity, rotation) in adjustments {
         if let Ok(mut transform) = transforms.get_mut(bone_entity) {
-            transform.rotation = transform.rotation * rotation;
+            transform.rotation *= rotation;
         }
     }
 }

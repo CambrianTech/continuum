@@ -74,9 +74,10 @@ pub struct AdapterCapabilities {
 }
 
 /// LoRA capabilities reported by adapters
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum LoRACapabilities {
     /// No LoRA support (most cloud APIs)
+    #[default]
     None,
     /// Single adapter at a time (cloud fine-tuning APIs like Together, Fireworks)
     SingleAdapter,
@@ -87,11 +88,6 @@ pub enum LoRACapabilities {
     },
 }
 
-impl Default for LoRACapabilities {
-    fn default() -> Self {
-        LoRACapabilities::None
-    }
-}
 
 /// Information about a loaded LoRA adapter
 #[derive(Debug, Clone)]

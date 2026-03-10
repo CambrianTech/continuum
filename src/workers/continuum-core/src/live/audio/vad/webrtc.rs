@@ -113,7 +113,7 @@ impl VoiceActivityDetection for WebRtcVAD {
         // If input isn't a multiple, chunk it and use majority voting
         const CHUNK_SIZE: usize = 240;
 
-        let is_speech = if samples.len() % CHUNK_SIZE == 0 {
+        let is_speech = if samples.len().is_multiple_of(CHUNK_SIZE) {
             // Perfect size - process directly
             let mut detector = self.detector.lock();
             detector.predict_16khz(samples).map_err(|e| {

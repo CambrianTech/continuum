@@ -23,11 +23,17 @@ pub struct RuntimeModule {
     registry: OnceCell<Arc<ModuleRegistry>>,
 }
 
-impl RuntimeModule {
-    pub fn new() -> Self {
+impl Default for RuntimeModule {
+    fn default() -> Self {
         Self {
             registry: OnceCell::new(),
         }
+    }
+}
+
+impl RuntimeModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

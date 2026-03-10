@@ -22,7 +22,7 @@
 //!   6. When VideoFrame drops, C++ releases the CVPixelBuffer (refcount → 1)
 //!   7. We CVPixelBufferRelease our retain (refcount → 0, freed)
 
-#![cfg(target_os = "macos")]
+// cfg(target_os = "macos") is applied at the mod declaration in publishers/mod.rs
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use livekit::webrtc::video_frame::{native::NativeBuffer, VideoFrame, VideoRotation};
@@ -220,7 +220,7 @@ impl FramePublisher for NativeBufferPublisher {
         };
         if result != K_CV_RETURN_SUCCESS || cv_pb.is_null() {
             self.alloc_failures += 1;
-            if self.alloc_failures == 1 || self.alloc_failures % 100 == 0 {
+            if self.alloc_failures == 1 || self.alloc_failures.is_multiple_of(100) {
                 clog_warn!(
                     "📹 NativeBufferPublisher: CVPixelBufferCreate NV12 failed (CVReturn={}, failures={})",
                     result, self.alloc_failures
@@ -301,7 +301,7 @@ impl FramePublisher for NativeBufferPublisher {
         self.frame_count += 1;
 
         // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
-        if self.frame_count == 1 || self.frame_count % 450 == 0 {
+        if self.frame_count == 1 || self.frame_count.is_multiple_of(450) {
             let elapsed = self.started_at.elapsed().as_secs_f64();
             let fps = if elapsed > 0.0 {
                 self.frame_count as f64 / elapsed
@@ -361,8 +361,8 @@ pub(crate) unsafe fn rgba_to_nv12(
     }
 
     // UV plane: interleaved Cb/Cr, subsampled 2×2
-    let ch = (height + 1) / 2;
-    let cw = (width + 1) / 2;
+    let ch = height.div_ceil(2);
+    let cw = width.div_ceil(2);
     for cy in 0..ch {
         let uv_row = uv_base.add(cy * uv_stride);
         let py = cy * 2;

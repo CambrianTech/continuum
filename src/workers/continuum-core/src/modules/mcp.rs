@@ -67,6 +67,12 @@ pub struct MCPModule {
     categories: HashMap<&'static str, ToolCategory>,
 }
 
+impl Default for MCPModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MCPModule {
     pub fn new() -> Self {
         // Compute schemas path relative to the binary location
@@ -477,7 +483,7 @@ impl MCPModule {
 
             // Exact segment match
             let segments: Vec<&str> = name_lower
-                .split(|c| c == '/' || c == '-' || c == '_')
+                .split(['/', '-', '_'])
                 .collect();
             if segments.contains(&query_lower.as_str()) {
                 score += 8;

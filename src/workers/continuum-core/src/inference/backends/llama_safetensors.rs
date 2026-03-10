@@ -55,6 +55,7 @@ impl LlamaSafetensorsBackend {
     ///
     /// This is the construction path from `model::load_model_by_id()`.
     /// Context length is read from `config.max_position_embeddings`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: Llama,
         cache: Cache,

@@ -140,17 +140,14 @@ impl AnthropicAdapter {
                                                 "data": b64
                                             }
                                         }))
-                                    } else if let Some(url) = &image.url {
-                                        // Anthropic prefers base64, but supports URLs
-                                        Some(json!({
+                                    } else {
+                                        image.url.as_ref().map(|url| json!({
                                             "type": "image",
                                             "source": {
                                                 "type": "url",
                                                 "url": url
                                             }
                                         }))
-                                    } else {
-                                        None
                                     }
                                 }
                                 _ => None,

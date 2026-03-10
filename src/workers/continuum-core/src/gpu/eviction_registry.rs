@@ -99,6 +99,12 @@ pub struct EvictionRegistry {
     entries: Mutex<HashMap<String, EvictableEntry>>,
 }
 
+impl Default for EvictionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EvictionRegistry {
     pub fn new() -> Self {
         Self {
@@ -171,6 +177,11 @@ impl EvictionRegistry {
     /// Number of registered entries.
     pub fn len(&self) -> usize {
         self.entries.lock().map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// Whether the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

@@ -682,13 +682,13 @@ impl DataModule {
         };
 
         // Log when column projection is active (visibility into optimization)
-        if query.select.is_some() {
+        if let Some(ref select) = query.select {
             log_info!(
                 "data",
                 "query",
                 "Column projection active for {}: SELECT {} (instead of *)",
                 params.collection,
-                query.select.as_ref().unwrap().join(", ")
+                select.join(", ")
             );
         }
 
@@ -1570,7 +1570,7 @@ impl DataModule {
                     "items": [],
                     "pageNumber": current_page,
                     "hasMore": false,
-                    "totalCount": total_count as u64
+                    "totalCount": total_count
                 }
             })));
         }

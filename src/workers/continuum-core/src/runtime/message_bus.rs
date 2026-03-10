@@ -57,6 +57,12 @@ pub struct MessageBus {
     recent_events: Mutex<Vec<TimestampedEvent>>,
 }
 
+impl Default for MessageBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageBus {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(1024);

@@ -54,41 +54,31 @@ impl Default for EmbeddingModel {
 }
 
 /// Similarity metric for vector search
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq)]
 #[ts(
     export,
     export_to = "../../../shared/generated/orm/SimilarityMetric.ts"
 )]
 #[serde(rename_all = "lowercase")]
 pub enum SimilarityMetric {
+    #[default]
     Cosine,
     Euclidean,
     DotProduct,
 }
 
-impl Default for SimilarityMetric {
-    fn default() -> Self {
-        SimilarityMetric::Cosine
-    }
-}
-
 /// Hybrid search mode
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq)]
 #[ts(
     export,
     export_to = "../../../shared/generated/orm/HybridSearchMode.ts"
 )]
 #[serde(rename_all = "lowercase")]
 pub enum HybridSearchMode {
+    #[default]
     Semantic,
     Keyword,
     Hybrid,
-}
-
-impl Default for HybridSearchMode {
-    fn default() -> Self {
-        HybridSearchMode::Semantic
-    }
 }
 
 /// Vector search query options
@@ -473,7 +463,7 @@ pub mod similarity {
         match metric {
             super::SimilarityMetric::Cosine => (1.0 + distance) / 2.0, // cosine is already -1 to 1
             super::SimilarityMetric::Euclidean => 1.0 / (1.0 + distance), // larger distance = lower score
-            super::SimilarityMetric::DotProduct => distance.max(0.0).min(1.0), // clamp to 0-1
+            super::SimilarityMetric::DotProduct => distance.clamp(0.0, 1.0), // clamp to 0-1
         }
     }
 }

@@ -20,7 +20,7 @@
 //!
 //! The entire pixel pipeline stays on GPU. CPU only orchestrates (dispatch + signal).
 
-#![cfg(target_os = "macos")]
+// cfg(target_os = "macos") is applied at the mod declaration in video/mod.rs
 
 use bevy::asset::AssetId;
 use bevy::prelude::*;
@@ -211,7 +211,7 @@ impl MetalGpuConverter {
 
         // Periodic logging
         let count = self.frame_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count == 1 || count % 450 == 0 {
+        if count == 1 || count.is_multiple_of(450) {
             let elapsed = self.created_at.elapsed().as_secs_f64();
             let fps = if elapsed > 0.0 {
                 count as f64 / elapsed
@@ -351,14 +351,12 @@ fn extract_gpu_bridge_data(
     extracted_dims.dims.clear();
 
     for (slot, state) in &registry.slots {
-        if state.active && state.model_loaded {
-            if gpu_bridge::has_bridge(*slot) {
-                extracted_slots
-                    .slots
-                    .push((*slot, state.render_target_id()));
-                if let Some(&dims) = slot_dims.dims.get(slot) {
-                    extracted_dims.dims.insert(*slot, dims);
-                }
+        if state.active && state.model_loaded && gpu_bridge::has_bridge(*slot) {
+            extracted_slots
+                .slots
+                .push((*slot, state.render_target_id()));
+            if let Some(&dims) = slot_dims.dims.get(slot) {
+                extracted_dims.dims.insert(*slot, dims);
             }
         }
     }

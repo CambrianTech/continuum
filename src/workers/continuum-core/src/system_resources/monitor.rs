@@ -131,6 +131,12 @@ struct MonitorInner {
     processes_baselined: bool,
 }
 
+impl Default for SystemResourceMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemResourceMonitor {
     /// Create a new monitor. Performs initial CPU + memory refresh.
     pub fn new() -> Self {

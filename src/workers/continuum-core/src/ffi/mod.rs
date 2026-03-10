@@ -282,10 +282,6 @@ pub unsafe extern "C" fn continuum_voice_on_utterance(
     0
 }
 
-/// Check if TTS should be routed to a session
-///
-/// @param ptr VoiceOrchestrator pointer
-/// @param session_id UUID string
 // ============================================================================
 // PersonaInbox FFI
 // ============================================================================

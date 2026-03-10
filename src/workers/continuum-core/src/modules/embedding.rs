@@ -314,7 +314,7 @@ pub fn generate_embeddings_batch(
 
     // Generate embeddings
     embedding_model
-        .embed(texts.to_vec(), None)
+        .embed(texts, None)
         .map_err(|e| format!("Embedding generation failed: {e}"))
 }
 
@@ -474,8 +474,8 @@ pub fn detect_clusters(
             component.push(node);
 
             // Add neighbors above threshold
-            for neighbor in 0..n {
-                if !visited[neighbor] && get_sim(node, neighbor) >= min_similarity {
+            for (neighbor, &is_visited) in visited.iter().enumerate() {
+                if !is_visited && get_sim(node, neighbor) >= min_similarity {
                     queue.push(neighbor);
                 }
             }

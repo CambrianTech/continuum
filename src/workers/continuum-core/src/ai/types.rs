@@ -115,8 +115,8 @@ pub struct VideoInput {
 ///
 /// Field names match the Anthropic API wire format (snake_case):
 /// - `input_schema` NOT `inputSchema`
-/// This must NOT use rename_all = "camelCase" because the wire format
-/// from TypeScript AND the Anthropic API both use snake_case for this struct.
+///   This must NOT use rename_all = "camelCase" because the wire format
+///   from TypeScript AND the Anthropic API both use snake_case for this struct.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/ai/NativeToolSpec.ts")]
 pub struct NativeToolSpec {

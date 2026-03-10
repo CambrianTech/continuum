@@ -79,8 +79,8 @@ pub struct VisionModule {
     bus: RwLock<Option<Arc<MessageBus>>>,
 }
 
-impl VisionModule {
-    pub fn new() -> Self {
+impl Default for VisionModule {
+    fn default() -> Self {
         Self {
             cache: RwLock::new(HashMap::with_capacity(256)),
             hits: RwLock::new(0),
@@ -88,6 +88,12 @@ impl VisionModule {
             evictions: RwLock::new(0),
             bus: RwLock::new(None),
         }
+    }
+}
+
+impl VisionModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn now_ms() -> u64 {

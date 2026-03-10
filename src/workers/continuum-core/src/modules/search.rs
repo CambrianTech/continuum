@@ -604,9 +604,10 @@ impl SearchModule {
         let input: VectorSearchInput = serde_json::from_value(params)
             .map_err(|e| format!("Invalid vector search params: {e}"))?;
 
-        let mut algo = CosineAlgorithm::default();
-        algo.normalize = input.normalize;
-        algo.threshold = input.threshold;
+        let algo = CosineAlgorithm {
+            normalize: input.normalize,
+            threshold: input.threshold,
+        };
 
         let output = algo.vector_search(&input);
 

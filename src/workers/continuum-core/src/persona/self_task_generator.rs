@@ -214,11 +214,11 @@ impl SelfTaskGenerator {
             let updated_at = data
                 .get("updatedAt")
                 .and_then(|v| v.as_str())
-                .and_then(|s| parse_iso_to_epoch_ms(s))
+                .and_then(parse_iso_to_epoch_ms)
                 .or_else(|| {
                     data.get("createdAt")
                         .and_then(|v| v.as_str())
-                        .and_then(|s| parse_iso_to_epoch_ms(s))
+                        .and_then(parse_iso_to_epoch_ms)
                 })
                 .unwrap_or(now_ms);
 
@@ -386,7 +386,7 @@ fn chrono_now_iso() -> String {
         .unwrap_or_default();
     let secs = duration.as_secs();
     // Approximate: good enough for task timestamps
-    format!("1970-01-01T00:00:00.000Z") // Placeholder — overwritten by DB on insert
+    "1970-01-01T00:00:00.000Z".to_string() // Placeholder — overwritten by DB on insert
         .replace("1970-01-01T00:00:00.000Z", &format_epoch_secs(secs))
 }
 
@@ -437,7 +437,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn parse_iso_to_epoch_ms(iso: &str) -> Option<u64> {
@@ -479,8 +479,8 @@ fn parse_iso_to_epoch_ms(iso: &str) -> Option<u64> {
         [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
 
-    for m in 0..(month.saturating_sub(1) as usize).min(11) {
-        days += month_days[m];
+    for &md in month_days.iter().take((month.saturating_sub(1) as usize).min(11)) {
+        days += md;
     }
     days += day.saturating_sub(1);
 

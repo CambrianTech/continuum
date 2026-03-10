@@ -108,7 +108,7 @@ impl FramePublisher for CpuI420Publisher {
 
                 self.frame_count += 1;
                 // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
-                if self.frame_count == 1 || self.frame_count % 450 == 0 {
+                if self.frame_count == 1 || self.frame_count.is_multiple_of(450) {
                     let elapsed = self.started_at.elapsed().as_secs_f64();
                     let fps = if elapsed > 0.0 {
                         self.frame_count as f64 / elapsed
@@ -235,8 +235,8 @@ pub(crate) fn rgba_to_i420_into(rgba: &[u8], buffer: &mut I420Buffer, width: u32
     }
 
     // U and V planes: one chroma value per 2x2 block (subsampled)
-    let cw = (w + 1) / 2;
-    let ch = (h + 1) / 2;
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
     for cy in 0..ch {
         for cx in 0..cw {
             let px = cx * 2;

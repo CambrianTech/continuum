@@ -124,13 +124,14 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 
 /// Backend factory for the procedural renderer.
 /// Always available, supports all formats as a fallback (renders identity-colored circle).
+#[derive(Default)]
 pub struct ProceduralBackend {
     initialized: bool,
 }
 
 impl ProceduralBackend {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self::default()
     }
 }
 

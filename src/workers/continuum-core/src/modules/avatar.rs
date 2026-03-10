@@ -17,6 +17,12 @@ use std::any::Any;
 
 pub struct AvatarModule;
 
+impl Default for AvatarModule {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl AvatarModule {
     pub fn new() -> Self {
         Self
