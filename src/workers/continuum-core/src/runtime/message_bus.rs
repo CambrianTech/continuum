@@ -7,6 +7,7 @@
 //! Modules subscribe via their config().event_subscriptions.
 
 use dashmap::DashMap;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
 use tokio::sync::broadcast;
@@ -54,7 +55,7 @@ pub struct MessageBus {
     /// Ring buffer of recent events for race-condition-safe watch steps.
     /// Watch steps check this before subscribing to the broadcast channel
     /// so they don't miss events emitted just before their subscription.
-    recent_events: Mutex<Vec<TimestampedEvent>>,
+    recent_events: Mutex<VecDeque<TimestampedEvent>>,
 }
 
 impl Default for MessageBus {
@@ -69,7 +70,7 @@ impl MessageBus {
         Self {
             subscriptions: DashMap::new(),
             sender,
-            recent_events: Mutex::new(Vec::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
+            recent_events: Mutex::new(VecDeque::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
         }
     }
 
@@ -82,7 +83,7 @@ impl MessageBus {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
         let mut buf = self.recent_events.lock().unwrap();
-        // Search from newest to oldest, find position + clone event
+        // Search from newest to oldest (VecDeque: back = newest)
         let found_idx = buf
             .iter()
             .enumerate()
@@ -92,7 +93,7 @@ impl MessageBus {
             })
             .map(|(i, te)| (i, te.event.clone()));
         if let Some((idx, event)) = found_idx {
-            buf.remove(idx);
+            buf.remove(idx); // O(min(idx, len-idx)) — acceptable for consumed matches
             Some(event)
         } else {
             None
@@ -100,14 +101,26 @@ impl MessageBus {
     }
 
     /// Record an event in the recent buffer (ring buffer with eviction).
+    /// Sweeps expired events from the front before inserting.
     fn record_recent(&self, event: &BusEvent) {
+        let now = Instant::now();
+        let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
         let mut buf = self.recent_events.lock().unwrap();
-        if buf.len() >= RECENT_EVENT_BUFFER_SIZE {
-            buf.remove(0); // evict oldest
+        // Sweep expired events from the front (oldest first, O(1) each)
+        while let Some(front) = buf.front() {
+            if now.duration_since(front.at) >= ttl {
+                buf.pop_front();
+            } else {
+                break;
+            }
         }
-        buf.push(TimestampedEvent {
+        // Capacity guard (shouldn't trigger after TTL sweep, but safety net)
+        if buf.len() >= RECENT_EVENT_BUFFER_SIZE {
+            buf.pop_front();
+        }
+        buf.push_back(TimestampedEvent {
             event: event.clone(),
-            at: Instant::now(),
+            at: now,
         });
     }
 
@@ -246,5 +259,51 @@ mod tests {
     fn test_all_wildcard() {
         assert!(glob_matches("*", "anything"));
         assert!(glob_matches("*", "deep:nested:event"));
+    }
+
+    #[test]
+    fn test_recent_event_buffer_is_ring() {
+        let bus = MessageBus::new();
+        // Fill beyond capacity
+        for i in 0..RECENT_EVENT_BUFFER_SIZE + 10 {
+            bus.publish_async_only(&format!("test:{i}"), serde_json::Value::Null);
+        }
+        let buf = bus.recent_events.lock().unwrap();
+        assert_eq!(buf.len(), RECENT_EVENT_BUFFER_SIZE);
+        // Oldest surviving event should be #10 (first 10 evicted)
+        assert_eq!(buf.front().unwrap().event.name, "test:10");
+        assert_eq!(
+            buf.back().unwrap().event.name,
+            format!("test:{}", RECENT_EVENT_BUFFER_SIZE + 9)
+        );
+    }
+
+    #[test]
+    fn test_find_recent_event_consumes() {
+        let bus = MessageBus::new();
+        bus.publish_async_only("foo:bar", serde_json::json!({"x": 1}));
+        bus.publish_async_only("foo:baz", serde_json::json!({"x": 2}));
+
+        // First find succeeds
+        let found = bus.find_recent_event("foo:bar");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "foo:bar");
+
+        // Second find fails (consumed)
+        assert!(bus.find_recent_event("foo:bar").is_none());
+
+        // Other event still there
+        assert!(bus.find_recent_event("foo:baz").is_some());
+    }
+
+    #[test]
+    fn test_find_recent_event_glob() {
+        let bus = MessageBus::new();
+        bus.publish_async_only("academy:sess1:topic:ready:3", serde_json::Value::Null);
+
+        // Glob match
+        let found = bus.find_recent_event("academy:sess1:topic:ready:*");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "academy:sess1:topic:ready:3");
     }
 }

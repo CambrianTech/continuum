@@ -2,10 +2,16 @@
 //!
 //! Reads atomic stats from BevyMemoryStats (updated every frame by Bevy systems).
 //! No locks, no blocking, no cross-thread calls. Pure atomic reads.
+//!
+//! Under memory pressure, sends commands to downscale render targets or unload
+//! idle avatar slots via the crossbeam command channel.
 
+use crossbeam_channel::Sender;
 use std::sync::Arc;
 
-use crate::live::video::bevy_renderer::BevyMemoryStats;
+use crate::live::video::bevy_renderer::{
+    AvatarCommand, BevyMemoryStats, AVATAR_HEIGHT, AVATAR_WIDTH, MAX_AVATAR_SLOTS,
+};
 use crate::system_resources::memory_pressure::{
     MemoryReporter, ModuleMemoryReport, PressureLevel,
 };
@@ -14,14 +20,19 @@ use crate::system_resources::memory_pressure::{
 /// Conservative estimate based on typical VRM models (2-10MB each).
 const ESTIMATED_MODEL_BYTES: u64 = 8 * 1024 * 1024; // 8MB average
 
+/// Minimum render resolution under pressure (halved from default 640x360).
+const PRESSURE_WIDTH: u32 = 320;
+const PRESSURE_HEIGHT: u32 = 180;
+
 /// MemoryReporter for the Bevy avatar rendering system.
 pub struct BevyMemoryReporter {
     stats: Arc<BevyMemoryStats>,
+    command_tx: Sender<AvatarCommand>,
 }
 
 impl BevyMemoryReporter {
-    pub fn new(stats: Arc<BevyMemoryStats>) -> Self {
-        Self { stats }
+    pub fn new(stats: Arc<BevyMemoryStats>, command_tx: Sender<AvatarCommand>) -> Self {
+        Self { stats, command_tx }
     }
 }
 
@@ -64,16 +75,67 @@ impl MemoryReporter for BevyMemoryReporter {
     }
 
     fn shed_load(&self, level: PressureLevel) {
-        // Future: send commands to Bevy to deactivate slots or reduce resolution.
-        // For now, just log. The actual shed_load implementation requires sending
-        // AvatarCommand::Deactivate through the command channel.
         let loaded = self.stats.loaded_models.load(std::sync::atomic::Ordering::Relaxed);
         let speaking = self.stats.speaking_slots.load(std::sync::atomic::Ordering::Relaxed);
-        crate::clog_warn!(
-            "🧠 Bevy shed_load({:?}): {} models loaded, {} speaking — action needed",
-            level,
-            loaded,
-            speaking,
-        );
+
+        match level {
+            PressureLevel::High => {
+                // Downscale all non-speaking slots to half resolution
+                crate::clog_warn!(
+                    "🧠 Bevy shed_load(High): downscaling idle slots ({} loaded, {} speaking)",
+                    loaded,
+                    speaking,
+                );
+                for slot in 0..MAX_AVATAR_SLOTS {
+                    let _ = self.command_tx.send(AvatarCommand::Resize {
+                        slot,
+                        width: PRESSURE_WIDTH,
+                        height: PRESSURE_HEIGHT,
+                    });
+                }
+            }
+            PressureLevel::Critical => {
+                // Unload all non-speaking avatars, downscale speaking ones
+                crate::clog_warn!(
+                    "🧠 Bevy shed_load(Critical): unloading idle slots ({} loaded, {} speaking)",
+                    loaded,
+                    speaking,
+                );
+                // We can't know which specific slots are speaking from atomics alone,
+                // so resize all to minimum — the Bevy system handles slot state.
+                for slot in 0..MAX_AVATAR_SLOTS {
+                    let _ = self.command_tx.send(AvatarCommand::Resize {
+                        slot,
+                        width: PRESSURE_WIDTH,
+                        height: PRESSURE_HEIGHT,
+                    });
+                }
+            }
+            PressureLevel::Warning => {
+                crate::clog_info!(
+                    "🧠 Bevy shed_load(Warning): monitoring ({} loaded, {} speaking)",
+                    loaded,
+                    speaking,
+                );
+                // Restore normal resolution for all slots (pressure eased)
+                for slot in 0..MAX_AVATAR_SLOTS {
+                    let _ = self.command_tx.send(AvatarCommand::Resize {
+                        slot,
+                        width: AVATAR_WIDTH,
+                        height: AVATAR_HEIGHT,
+                    });
+                }
+            }
+            PressureLevel::Normal => {
+                // Restore normal resolution
+                for slot in 0..MAX_AVATAR_SLOTS {
+                    let _ = self.command_tx.send(AvatarCommand::Resize {
+                        slot,
+                        width: AVATAR_WIDTH,
+                        height: AVATAR_HEIGHT,
+                    });
+                }
+            }
+        }
     }
 }

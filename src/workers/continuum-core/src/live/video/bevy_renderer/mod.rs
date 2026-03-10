@@ -169,6 +169,11 @@ impl BevyAvatarSystem {
         self.ready.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Clone the command sender for use by external systems (e.g., memory pressure shedding).
+    pub fn command_sender(&self) -> Sender<AvatarCommand> {
+        self.command_tx.clone()
+    }
+
     pub fn frame_receiver(&self, slot: u8) -> Option<&Receiver<RgbaFrame>> {
         self.frame_receivers.get(slot as usize)
     }

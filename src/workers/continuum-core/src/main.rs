@@ -129,6 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             r.push(Arc::new(
                 continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
                     bevy.memory_stats.clone(),
+                    bevy.command_sender(),
                 ),
             ));
         }

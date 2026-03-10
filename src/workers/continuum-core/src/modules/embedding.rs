@@ -100,9 +100,12 @@ impl EmbeddingResultCache {
     }
 
     fn insert(&mut self, model: &str, text_hash: u64, embedding: Vec<f32>) {
-        // Evict oldest if at capacity
+        // Sweep expired entries before inserting (amortized cleanup)
+        let ttl = self.ttl;
+        self.entries.retain(|_, v| v.created_at.elapsed() < ttl);
+
+        // Evict oldest if still at capacity after sweep
         if self.entries.len() >= self.max_entries {
-            // Find oldest entry
             if let Some(oldest_key) = self
                 .entries
                 .iter()
