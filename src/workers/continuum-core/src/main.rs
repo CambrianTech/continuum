@@ -1,3 +1,10 @@
+// jemalloc: returns memory to OS aggressively instead of hoarding pages.
+// macOS system allocator fragments badly under Bevy's 15fps readback churn
+// (14 slots × 921KB per frame) — RSS grows to 30-40GB and never shrinks.
+// jemalloc's dirty page purging returns freed memory within seconds.
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use continuum_core::live::transport::livekit_agent::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 /// Continuum Core Server - Unified Modular Rust Runtime
@@ -112,6 +119,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Give IPC server time to create socket (satisfies start-workers.sh check)
     std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Start memory pressure monitor — own task, non-blocking, crash-proof.
+    // Polls every 2s, publishes via watch channel. Modules subscribe to react.
+    let reporters: Vec<Arc<dyn continuum_core::system_resources::MemoryReporter>> = {
+        let mut r: Vec<Arc<dyn continuum_core::system_resources::MemoryReporter>> = Vec::new();
+        // Bevy reporter — reads atomic stats from the renderer (if initialized)
+        if let Some(bevy) = continuum_core::live::video::bevy_renderer::try_get() {
+            r.push(Arc::new(
+                continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
+                    bevy.memory_stats.clone(),
+                ),
+            ));
+        }
+        r
+    };
+    let _pressure_monitor =
+        continuum_core::system_resources::MemoryPressureMonitor::start(reporters);
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     tokio::spawn(async {

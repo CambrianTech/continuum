@@ -8,7 +8,7 @@
 //! Follows the GpuModule pattern: stateless handler wrapping shared state.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::system_resources::SystemResourceMonitor;
+use crate::system_resources::{MemoryPressureMonitor, SystemResourceMonitor};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -16,11 +16,21 @@ use std::sync::Arc;
 
 pub struct SystemResourceModule {
     monitor: Arc<SystemResourceMonitor>,
+    pressure_monitor: Option<Arc<MemoryPressureMonitor>>,
 }
 
 impl SystemResourceModule {
     pub fn new(monitor: Arc<SystemResourceMonitor>) -> Self {
-        Self { monitor }
+        Self {
+            monitor,
+            pressure_monitor: None,
+        }
+    }
+
+    /// Set the memory pressure monitor reference.
+    /// Called after both are created in main.rs.
+    pub fn set_pressure_monitor(&mut self, pm: Arc<MemoryPressureMonitor>) {
+        self.pressure_monitor = Some(pm);
     }
 }
 
@@ -77,6 +87,18 @@ impl ServiceModule for SystemResourceModule {
                 let json = serde_json::to_value(snapshot)
                     .map_err(|e| format!("Failed to serialize system resources: {e}"))?;
                 Ok(CommandResult::Json(json))
+            }
+
+            "system/pressure" => {
+                // Memory pressure snapshot from the autonomous monitor
+                if let Some(pm) = &self.pressure_monitor {
+                    let snapshot = pm.current();
+                    let json = serde_json::to_value(snapshot)
+                        .map_err(|e| format!("Failed to serialize pressure: {e}"))?;
+                    Ok(CommandResult::Json(json))
+                } else {
+                    Err("Memory pressure monitor not initialized".to_string())
+                }
             }
 
             _ => Err(format!("Unknown system command: {command}")),

@@ -23,6 +23,7 @@ import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 import { VoiceSessionTimeline } from './VoiceSessionTimeline';
+import { getRustVoiceOrchestrator } from './VoiceOrchestratorRustBridge';
 /**
  * Utterance event from voice transcription
  */
@@ -167,7 +168,8 @@ export class VoiceOrchestrator {
   }
 
   /**
-   * Unregister a voice session
+   * Unregister a voice session — cleans up TypeScript state AND tells Rust to
+   * drop all LiveKit agents, Room listeners, and session state for this call.
    */
   unregisterSession(sessionId: UUID): void {
     // Disconnect AI participants from both bridges
@@ -192,6 +194,12 @@ export class VoiceOrchestrator {
       session.timeline.clear();
       this.sessions.delete(sessionId);
     }
+
+    // Tell Rust to drop LiveKit agents, Room listeners, and session state.
+    // Fire-and-forget — TS cleanup above is already done.
+    getRustVoiceOrchestrator().endSession(sessionId).catch(err => {
+      console.error(`[VoiceOrchestrator] Rust session cleanup failed for ${sessionId}:`, err);
+    });
   }
 
   /**

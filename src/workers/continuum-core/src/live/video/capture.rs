@@ -171,6 +171,26 @@ impl VideoFrameCapture {
     async fn remove_capture(&self, identity: &str) {
         let mut captures = self.active_captures.lock().await;
         captures.remove(identity);
+        // Also remove stale snapshot for this participant
+        let mut snapshots = self.snapshots.lock().await;
+        snapshots.remove(identity);
+    }
+
+    /// Remove snapshots for participants not in the active set.
+    /// Call periodically or when participants leave.
+    pub async fn evict_stale_snapshots(&self) {
+        let active = self.active_captures.lock().await;
+        let mut snapshots = self.snapshots.lock().await;
+        let before = snapshots.len();
+        snapshots.retain(|identity, _| active.contains_key(identity));
+        let evicted = before - snapshots.len();
+        if evicted > 0 {
+            clog_info!(
+                "👁 Evicted {} stale snapshots ({} active)",
+                evicted,
+                snapshots.len()
+            );
+        }
     }
 }
 

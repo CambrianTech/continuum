@@ -222,6 +222,33 @@ pub enum AvatarCommand {
 /// The singleton Bevy avatar rendering system.
 /// Manages a headless Bevy app on a dedicated thread that renders
 /// all avatar models and delivers RGBA frames via channels.
+/// Atomic stats updated by Bevy systems, read by MemoryReporter.
+/// No locks — atomics only. Safe to read from any thread at any time.
+pub struct BevyMemoryStats {
+    /// Number of slots with active == true
+    pub active_slots: std::sync::atomic::AtomicU8,
+    /// Number of slots with model_loaded == true
+    pub loaded_models: std::sync::atomic::AtomicU8,
+    /// Number of slots currently speaking
+    pub speaking_slots: std::sync::atomic::AtomicU8,
+    /// Approximate bytes: render targets (width × height × 4 × slot_count)
+    pub render_target_bytes: std::sync::atomic::AtomicU64,
+    /// Pending load entries count
+    pub pending_loads: std::sync::atomic::AtomicU32,
+}
+
+impl BevyMemoryStats {
+    fn new() -> Self {
+        Self {
+            active_slots: std::sync::atomic::AtomicU8::new(0),
+            loaded_models: std::sync::atomic::AtomicU8::new(0),
+            speaking_slots: std::sync::atomic::AtomicU8::new(0),
+            render_target_bytes: std::sync::atomic::AtomicU64::new(0),
+            pending_loads: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+}
+
 pub struct BevyAvatarSystem {
     command_tx: Sender<AvatarCommand>,
     /// Frame receivers, one per slot. Each LiveKit agent gets one.
@@ -235,12 +262,14 @@ pub struct BevyAvatarSystem {
     /// Maps persona identity (user_id) → Bevy render slot index.
     /// Populated by register_identity() when a renderer is created.
     identity_to_slot: std::sync::Mutex<HashMap<String, u8>>,
+    /// Atomic stats for MemoryReporter — updated by Bevy systems, read from any thread.
+    pub memory_stats: Arc<BevyMemoryStats>,
 }
 
 impl BevyAvatarSystem {
     /// Start the Bevy renderer on a dedicated OS thread.
     fn start() -> Self {
-        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let (command_tx, command_rx) = crossbeam_channel::bounded(512);
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let ready_clone = ready.clone();
 
@@ -259,10 +288,13 @@ impl BevyAvatarSystem {
         let notifiers_for_bevy: Vec<std::sync::Arc<tokio::sync::Notify>> =
             frame_notifiers.to_vec();
 
+        let memory_stats = Arc::new(BevyMemoryStats::new());
+        let stats_for_bevy = memory_stats.clone();
+
         std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
-                run_bevy_app(command_rx, frame_senders, notifiers_for_bevy, ready_clone);
+                run_bevy_app(command_rx, frame_senders, notifiers_for_bevy, ready_clone, stats_for_bevy);
             })
             .expect("Failed to spawn Bevy avatar renderer thread");
 
@@ -290,6 +322,7 @@ impl BevyAvatarSystem {
             frame_notifiers,
             ready,
             identity_to_slot: std::sync::Mutex::new(HashMap::new()),
+            memory_stats: Arc::new(BevyMemoryStats::new()),
         }
     }
 
@@ -964,11 +997,16 @@ struct GpuGuards {
     model_guards: HashMap<u8, GpuAllocationGuard>,
 }
 
+/// Bevy resource wrapping the shared atomic stats for cross-thread reporting.
+#[derive(Resource)]
+struct SharedMemoryStats(Arc<BevyMemoryStats>);
+
 fn run_bevy_app(
     command_rx: Receiver<AvatarCommand>,
     frame_senders: Vec<Sender<RgbaFrame>>,
     frame_notifiers: Vec<std::sync::Arc<tokio::sync::Notify>>,
     ready_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    memory_stats: Arc<BevyMemoryStats>,
 ) {
     // Bevy's FileAssetReader resolves asset paths relative to the BINARY location
     // (current_exe().parent()), NOT the process cwd. Since our binary lives at
@@ -1002,6 +1040,7 @@ fn run_bevy_app(
         .insert_resource(SlotHealthStatus::default())
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
+        .insert_resource(SharedMemoryStats(memory_stats))
         // DefaultPlugins with no window — the official Bevy headless rendering approach.
         // WindowPlugin registers Events<WindowResized> etc. needed by camera_system,
         // but primary_window: None means no actual OS window is created.
@@ -1040,6 +1079,7 @@ fn run_bevy_app(
                 process_commands,
                 monitor_load_states,
                 touch_ambient_light,
+                update_memory_stats,
             ),
         )
         .add_systems(
@@ -1486,16 +1526,21 @@ fn monitor_load_states(
             _ => {
                 static SCENE_LOADING_TICKS: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
-                let tick = SCENE_LOADING_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if tick == 30 || tick == 150 || tick == 300 {
+                let tck = SCENE_LOADING_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if tck == 30 || tck == 150 || tck == 300 {
                     bevy_debug(&format!(
                         "⏳ Scene still loading slot {}: {} (tick {})",
-                        entry.slot, entry.path, tick
+                        entry.slot, entry.path, tck
                     ));
                 }
             }
         }
     }
+
+    // Drain completed entries — drop the strong Handle so Bevy can free the asset.
+    // Without this, every loaded model stays in memory forever via its Handle refcount.
+    pending.gltf_handles.retain(|e| !e.logged_final);
+    pending.scene_handles.retain(|e| !e.logged_final);
 }
 
 /// Signal to the main thread that Bevy has finished initializing.
@@ -1532,6 +1577,44 @@ fn touch_ambient_light(mut ambient: ResMut<GlobalAmbientLight>) {
     // Force Bevy's change detection by writing the same value back.
     // ResMut::set_changed() is the explicit way to mark as changed.
     ambient.set_changed();
+}
+
+/// Update shared atomic stats for MemoryReporter. Runs every frame (cheap: just atomic stores).
+fn update_memory_stats(
+    registry: Res<SlotRegistry>,
+    pending: Res<PendingLoads>,
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    stats: Res<SharedMemoryStats>,
+    slot_dims: Res<SlotDimensions>,
+) {
+    let mut active = 0u8;
+    let mut loaded = 0u8;
+    let mut rt_bytes = 0u64;
+
+    for (slot_id, state) in &registry.slots {
+        if state.active {
+            active += 1;
+        }
+        if state.model_loaded {
+            loaded += 1;
+        }
+        // Render target memory: width × height × 4 bytes (RGBA)
+        let (w, h) = slot_dims
+            .dims
+            .get(slot_id)
+            .copied()
+            .unwrap_or((AVATAR_WIDTH, AVATAR_HEIGHT));
+        rt_bytes += (w as u64) * (h as u64) * 4;
+    }
+
+    let speaking = speaking_query.iter().count() as u8;
+    let pending_count = pending.gltf_handles.len() + pending.scene_handles.len();
+
+    stats.0.active_slots.store(active, std::sync::atomic::Ordering::Relaxed);
+    stats.0.loaded_models.store(loaded, std::sync::atomic::Ordering::Relaxed);
+    stats.0.speaking_slots.store(speaking, std::sync::atomic::Ordering::Relaxed);
+    stats.0.render_target_bytes.store(rt_bytes, std::sync::atomic::Ordering::Relaxed);
+    stats.0.pending_loads.store(pending_count as u32, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Force the directional light to be visible every frame.

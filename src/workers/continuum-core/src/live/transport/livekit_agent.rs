@@ -1606,6 +1606,63 @@ impl LiveKitAgentManager {
         Ok(agent)
     }
 
+    /// Remove an agent when a persona leaves a call. Disconnects from LiveKit room
+    /// and drops the Arc, freeing WebRTC state and media buffers.
+    pub async fn remove_agent(&self, call_id: &str, user_id: &str) {
+        let key = (call_id.to_string(), user_id.to_string());
+        let removed = self.agents.write().await.remove(&key);
+        if let Some(agent) = removed {
+            clog_info!(
+                "🔊 LiveKitAgentManager: removing agent {} from call {}",
+                user_id,
+                call_id
+            );
+            // Arc::try_unwrap will succeed if we hold the last reference,
+            // allowing us to call disconnect(self). Otherwise just drop it.
+            if let Ok(agent) = Arc::try_unwrap(agent) {
+                agent.disconnect().await;
+            }
+        }
+
+        // Clean up creation lock for this key
+        #[allow(clippy::type_complexity)]
+        static CREATION_LOCKS: std::sync::Mutex<
+            Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
+        > = std::sync::Mutex::new(None);
+        if let Ok(mut locks) = CREATION_LOCKS.lock() {
+            if let Some(map) = locks.as_mut() {
+                map.remove(&key);
+            }
+        }
+    }
+
+    /// Remove all agents for a given call (call ended).
+    pub async fn remove_agents_for_call(&self, call_id: &str) {
+        let keys_to_remove: Vec<AgentKey> = {
+            let agents = self.agents.read().await;
+            agents
+                .keys()
+                .filter(|(cid, _)| cid == call_id)
+                .cloned()
+                .collect()
+        };
+        for (cid, uid) in keys_to_remove {
+            self.remove_agent(&cid, &uid).await;
+        }
+    }
+
+    /// Remove a listener room when a call ends.
+    pub async fn remove_listener(&self, call_id: &str) {
+        let removed = self.listeners.write().await.remove(call_id);
+        if let Some(room) = removed {
+            clog_info!(
+                "🔊 LiveKitAgentManager: removing listener for call {}",
+                call_id
+            );
+            let _ = room.close().await;
+        }
+    }
+
     /// Synthesize TTS and inject into a call (replaces CallManager::speak_in_call).
     ///
     /// Publishes the subtitle BEFORE feeding audio frames so the browser receives
