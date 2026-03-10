@@ -16,8 +16,10 @@
 
 import { Events } from '../core/shared/Events';
 import { Commands } from '../core/shared/Commands';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import type { SentinelTrigger, PipelineSentinelDefinition } from './SentinelDefinition';
 import type { SentinelEntity } from './SentinelDefinition';
+import type { PipelineSentinelParams, SentinelRunResult } from '../../commands/sentinel/run/shared/SentinelRunTypes';
 
 /**
  * Tracked trigger registration for cleanup
@@ -87,13 +89,13 @@ export async function initializeSentinelTriggers(): Promise<void> {
  */
 async function loadExistingTriggers(): Promise<void> {
   try {
-    const result = await Commands.execute('data/list', {
+    const result = await DataList.execute({
       collection: 'sentinels',
       filter: { status: 'saved' },
       limit: 500,
-    } as any) as any;
+    });
 
-    const sentinels = (result?.items ?? []) as SentinelEntity[];
+    const sentinels = (result?.items ?? []) as unknown as SentinelEntity[];
 
     for (const entity of sentinels) {
       if (entity.definition && hasTrigger(entity.definition)) {
@@ -248,18 +250,18 @@ async function executeSentinel(
   registration.isRunning = true;
 
   try {
-    const result = await Commands.execute('sentinel/run', {
+    const result = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
       type: 'pipeline',
       definition: registration.entityId,  // sentinel/run can accept entity ID
       entityId: registration.entityId,
       parentPersonaId: registration.parentPersonaId,
       sentinelName: registration.sentinelName,
-    } as any) as any;
+    });
 
     if (result?.success) {
       console.log(`[SentinelTrigger] Started "${registration.sentinelName}" → handle: ${result.handle}`);
     } else {
-      console.error(`[SentinelTrigger] Failed to start "${registration.sentinelName}": ${result?.error}`);
+      console.error(`[SentinelTrigger] Failed to start "${registration.sentinelName}": ${result?.data?.error}`);
     }
   } catch (err) {
     console.error(`[SentinelTrigger] Error starting "${registration.sentinelName}": ${err}`);

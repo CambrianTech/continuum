@@ -136,8 +136,8 @@ export interface TaskSentinelParams extends SentinelRunParams {
 export interface PipelineSentinelParams extends SentinelRunParams {
   type: 'pipeline';
 
-  /** Pipeline definition (JSON) */
-  definition: PipelineSentinelDefinition;
+  /** Pipeline definition (JSON), or entity ID string to load from database */
+  definition: PipelineSentinelDefinition | string;
 }
 
 /**
