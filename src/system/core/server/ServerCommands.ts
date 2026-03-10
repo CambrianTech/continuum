@@ -27,6 +27,7 @@ import type { CommandParams, CommandResult } from '../types/JTAGTypes';
 import type { HandleRef, HandleRecord } from '../types/Handle';
 import { Handles } from '../shared/Handles';
 import { Events } from '../shared/Events';
+import { SYSTEM_SCOPES } from '../types/SystemScopes';
 
 export class ServerCommands implements TrackedCommandExecutor {
   private static _instance: ServerCommands | null = null;
@@ -132,7 +133,7 @@ export class ServerCommands implements TrackedCommandExecutor {
     params: Partial<T> | undefined,
     executeDirect: (command: string, params?: Partial<T>) => Promise<U>,
   ): Promise<U> {
-    const requesterId = params?.userId ?? '00000000-0000-0000-0000-000000000000';
+    const requesterId = params?.userId ?? SYSTEM_SCOPES.SYSTEM;
 
     // Create handle for tracking
     const handle = await Handles.create(

@@ -42,6 +42,8 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
   const { sessionId, personaId, personaName, baseModel, config: academyConfig } = config;
 
   const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  /** Iteration-scoped event: prevents watch from matching previous iteration's events */
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for teacher to publish curriculum
@@ -57,10 +59,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
       type: 'loop',
       count: 5,  // Max topics (safety limit)
       steps: [
-        // loop.0: Wait for training data from teacher
+        // loop.0: Wait for training data from teacher (iteration-scoped)
         {
           type: 'watch',
-          event: evt('dataset:ready'),
+          event: iterEvt('dataset:ready'),
           timeoutSecs: 300,  // 5 minutes for data synthesis
         },
 
@@ -91,10 +93,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           maxTokens: 2048,
         },
 
-        // loop.2: Emit training:started
+        // loop.2: Emit training:started (iteration-scoped)
         {
           type: 'emit',
-          event: evt('training:started'),
+          event: iterEvt('training:started'),
           payload: {
             sessionId,
             personaId,
@@ -120,10 +122,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // loop.4: Emit training:complete
+        // loop.4: Emit training:complete (iteration-scoped)
         {
           type: 'emit',
-          event: evt('training:complete'),
+          event: iterEvt('training:complete'),
           payload: {
             sessionId,
             personaId,
@@ -138,10 +140,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // loop.5: Wait for exam from teacher
+        // loop.5: Wait for exam from teacher (iteration-scoped)
         {
           type: 'watch',
-          event: evt('exam:ready'),
+          event: iterEvt('exam:ready'),
           timeoutSecs: 300,
         },
 
@@ -170,10 +172,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           maxTokens: 2048,
         },
 
-        // loop.7: Emit exam:responses
+        // loop.7: Emit exam:responses (iteration-scoped)
         {
           type: 'emit',
-          event: evt('exam:responses'),
+          event: iterEvt('exam:responses'),
           payload: {
             sessionId,
             examId: '{{loop.5.data.payload.examId}}',
@@ -182,10 +184,10 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // loop.8: Wait for grading results
+        // loop.8: Wait for grading results (iteration-scoped)
         {
           type: 'watch',
-          event: evt('exam:graded'),
+          event: iterEvt('exam:graded'),
           timeoutSecs: 300,
         },
 
@@ -231,7 +233,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             // Emit inference demo — showcase what the adapted model learned
             {
               type: 'emit',
-              event: evt('inference:demo'),
+              event: iterEvt('inference:demo'),
               payload: {
                 sessionId,
                 personaId,
@@ -252,7 +254,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             // Training didn't help enough — emit quality gate failure
             {
               type: 'emit',
-              event: evt('quality:gate:failed'),
+              event: iterEvt('quality:gate:failed'),
               payload: {
                 sessionId,
                 personaId,

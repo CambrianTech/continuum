@@ -14,6 +14,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { CollectionName } from '../../../../shared/generated-collection-constants';
 import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
+import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export class DataCreateServerCommand extends DataCreateCommand {
 
@@ -27,11 +28,24 @@ export class DataCreateServerCommand extends DataCreateCommand {
    */
   protected async executeDataCommand(params: DataCreateParams): Promise<DataCreateResult> {
     const collection = params.collection;
+    const data = params.data as BaseEntity;
+
+    // Ensure entity has required BaseEntity fields when created from plain objects
+    // (e.g., sentinel pipelines pass plain JSON, not BaseEntity instances)
+    if (!data.id) {
+      data.id = generateUUID();
+    }
+    if (!data.createdAt) {
+      data.createdAt = new Date();
+    }
+    if (!data.updatedAt) {
+      data.updatedAt = new Date();
+    }
 
     // Pass handle directly to ORM — ORM resolves handle → path internally
     const entity = await ORM.store(
       collection as CollectionName,
-      params.data as BaseEntity,
+      data,
       params.suppressEvents ?? false,
       resolveDbHandle(collection, params.dbHandle)
     );

@@ -21,7 +21,7 @@ use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult,
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
-    RecordMetadata, StorageResult, UUID,
+    RecordMetadata, StorageResult, UUID, METADATA_KEYS,
 };
 
 // No artificial cap on reader pool — AdapterConfig.max_connections controls it.
@@ -267,14 +267,7 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
 
     if let Value::Object(obj) = data {
         for (key, value) in obj {
-            // Skip fields already in base columns to avoid duplicates
-            if key == "id"
-                || key == "createdAt"
-                || key == "created_at"
-                || key == "updatedAt"
-                || key == "updated_at"
-                || key == "version"
-            {
+            if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
             let col_name = naming::to_snake_case(key);
@@ -330,14 +323,7 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
 
     if let Value::Object(data) = &record.data {
         for (key, value) in data {
-            // Skip fields already in base columns to avoid duplicates
-            if key == "id"
-                || key == "createdAt"
-                || key == "created_at"
-                || key == "updatedAt"
-                || key == "updated_at"
-                || key == "version"
-            {
+            if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
             columns.push(naming::to_snake_case(key));
@@ -480,7 +466,7 @@ fn do_update(
 
     if let Value::Object(obj) = &data {
         for (key, value) in obj {
-            if key == "id" || key == "createdAt" || key == "created_at" {
+            if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
             sets.push(format!("{} = ?", naming::to_snake_case(key)));

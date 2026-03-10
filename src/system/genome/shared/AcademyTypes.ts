@@ -11,6 +11,33 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { RecipeDefinition } from '../../recipes/shared/RecipeTypes';
+import type { AdapterManifest } from './AdapterPackageTypes';
+
+// ============================================================================
+// Academy Session Mode — Single source of truth
+// ============================================================================
+
+/** All supported Academy session modes */
+export type AcademySessionMode = 'knowledge' | 'coding' | 'project' | 'realclasseval' | 'recipe';
+
+/** Display labels for each mode — eliminates string comparison chains */
+export const ACADEMY_MODE_LABELS: Record<AcademySessionMode, string> = {
+  knowledge: 'Knowledge',
+  coding: 'Coding',
+  project: 'Project',
+  realclasseval: 'RealClassEval',
+  recipe: 'Recipe',
+} as const;
+
+/** Sentinel name prefixes per mode */
+export const ACADEMY_MODE_PREFIXES: Record<AcademySessionMode, string> = {
+  knowledge: '',
+  coding: 'coding-',
+  project: 'project-',
+  realclasseval: 'realclasseval-',
+  recipe: 'recipe-',
+} as const;
 
 // ============================================================================
 // Event Taxonomy — All events scoped by session ID
@@ -506,6 +533,31 @@ export interface ProjectStudentPipelineConfig {
   baseModel: string;
   projectDir: string;
   milestones: MilestoneSpec[];
+  config: AcademyConfig;
+}
+
+// ============================================================================
+// Recipe-Driven Academy Pipeline Types
+// ============================================================================
+
+/**
+ * Configuration for the recipe-driven teacher sentinel pipeline.
+ *
+ * Phase 5 of the Academy roadmap: the teacher reads a recipe specification,
+ * analyzes the persona's existing genome for gaps, and designs curriculum
+ * targeting ONLY the missing skills. Training data is grounded in the
+ * recipe's strategy, rules, tools, and conversation patterns.
+ */
+export interface RecipeTeacherPipelineConfig {
+  sessionId: UUID;
+  skill: string;
+  personaName: string;
+  personaId: UUID;
+  baseModel: string;
+  /** The recipe specification — source of truth for required skills */
+  recipe: RecipeDefinition;
+  /** Existing adapter manifests for gap analysis */
+  existingAdapters: AdapterManifest[];
   config: AcademyConfig;
 }
 

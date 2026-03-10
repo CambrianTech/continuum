@@ -93,6 +93,8 @@ export interface RecipeStrategy {
   conversationPattern: ConversationPattern;
   responseRules: string[];      // Human-readable rules
   decisionCriteria: string[];   // What LLM should consider
+  /** Mandatory verification/feedback rules (e.g., "always verify after edit") */
+  feedbackLoopRules?: string[];
 }
 
 /**

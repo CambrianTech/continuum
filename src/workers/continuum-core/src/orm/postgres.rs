@@ -24,8 +24,23 @@ use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult,
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
-    RecordMetadata, StorageResult, UUID,
+    RecordMetadata, StorageResult, UUID, METADATA_KEYS,
 };
+
+
+/// Format a tokio-postgres error with full detail chain.
+/// The default Display for these errors often just says "db error" — useless.
+fn format_pg_error(e: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = e.as_db_error() {
+        format!("{}: {} (column: {}, detail: {})",
+            db_err.severity(),
+            db_err.message(),
+            db_err.column().unwrap_or("?"),
+            db_err.detail().unwrap_or("none"))
+    } else {
+        format!("{:?}", e)
+    }
+}
 
 /// PostgreSQL storage adapter — async-native with connection pooling
 pub struct PostgresAdapter {
@@ -102,7 +117,20 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
                 _ => Box::new(Option::<String>::None),
             }
         }
-        Value::Bool(b) => Box::new(*b),
+        Value::Bool(b) => {
+            match pg_data_type {
+                Some("text") | Some("character varying") => {
+                    // Column is TEXT but value is boolean — serialize as string
+                    Box::new(if *b { "true".to_string() } else { "false".to_string() })
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    // Column is integer — store as 0/1
+                    Box::new(if *b { 1_i64 } else { 0_i64 })
+                }
+                Some("jsonb") | Some("json") => Box::new(Json(value.clone())),
+                _ => Box::new(*b),
+            }
+        }
         Value::Number(n) => {
             match pg_data_type {
                 Some("boolean") => {
@@ -651,13 +679,7 @@ impl StorageAdapter for PostgresAdapter {
 
         if let Value::Object(data) = &record.data {
             for (key, value) in data {
-                if key == "id"
-                    || key == "createdAt"
-                    || key == "created_at"
-                    || key == "updatedAt"
-                    || key == "updated_at"
-                    || key == "version"
-                {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 let col_name = naming::to_snake_case(key);
@@ -735,7 +757,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::err(format!("Record not found: {}", id));
                 }
-                return StorageResult::err(format!("Query failed: {}", e));
+                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
             }
         };
 
@@ -792,7 +814,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::ok(Vec::new());
                 }
-                return StorageResult::err(format!("Query failed: {}", e));
+                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
             }
         };
 
@@ -956,7 +978,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::ok(0);
                 }
-                StorageResult::err(format!("Count failed: {}", e))
+                StorageResult::err(format!("Count failed: {}", format_pg_error(&e)))
             }
         }
     }
@@ -994,7 +1016,7 @@ impl StorageAdapter for PostgresAdapter {
 
         if let Value::Object(obj) = &data {
             for (key, value) in obj {
-                if key == "id" || key == "createdAt" || key == "created_at" {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 idx += 1;
@@ -1020,7 +1042,31 @@ impl StorageAdapter for PostgresAdapter {
         match client.execute(&sql, &params_ref).await {
             Ok(rows) if rows > 0 => self.read(collection, id).await,
             Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-            Err(e) => StorageResult::err(format!("Update failed: {}", e)),
+            Err(e) => {
+                // Schema evolution: auto-add missing columns and retry
+                let err_msg = format_pg_error(&e);
+                if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    if let Err(evolve_err) = ensure_table_exists_pg(
+                        &client, &table, &bare_table, &self.schema, &data
+                    ).await {
+                        return StorageResult::err(format!(
+                            "Update failed [{}]: {} (schema evolution also failed: {})",
+                            bare_table, err_msg, evolve_err
+                        ));
+                    }
+                    // Retry the update after adding columns
+                    match client.execute(&sql, &params_ref).await {
+                        Ok(rows) if rows > 0 => self.read(collection, id).await,
+                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => StorageResult::err(format!(
+                            "Update failed [{}] after schema evolution: {}",
+                            bare_table, format_pg_error(&e2)
+                        ))
+                    }
+                } else {
+                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                }
+            }
         }
     }
 
@@ -1313,13 +1359,7 @@ async fn ensure_table_exists_pg(
             let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
 
             for (key, value) in obj {
-                if key == "id"
-                    || key == "createdAt"
-                    || key == "created_at"
-                    || key == "updatedAt"
-                    || key == "updated_at"
-                    || key == "version"
-                {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 let col_name = naming::to_snake_case(key);
@@ -1349,13 +1389,7 @@ async fn ensure_table_exists_pg(
 
     if let Value::Object(obj) = data {
         for (key, value) in obj {
-            if key == "id"
-                || key == "createdAt"
-                || key == "created_at"
-                || key == "updatedAt"
-                || key == "updated_at"
-                || key == "version"
-            {
+            if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
             let col_name = naming::to_snake_case(key);

@@ -59,7 +59,8 @@ function generateUUIDFallback(): UUID {
  * Validate UUID format
  */
 export function isValidUUID(value: string): value is UUID {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  // Accept v4 UUIDs and the nil UUID (00000000-0000-0000-0000-000000000000)
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidRegex.test(value);
 }
 

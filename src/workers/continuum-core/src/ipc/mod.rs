@@ -339,7 +339,29 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
 
                 match result {
                     Some(Ok(CommandResult::Json(value))) => {
-                        HandleResult::Json(Response::success(value))
+                        // Propagate operation-level failure: if the inner value
+                        // has success:false, the IPC response must reflect that.
+                        // Otherwise callers only see the transport-level success.
+                        let is_inner_failure = value
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .map(|s| !s)
+                            .unwrap_or(false);
+                        if is_inner_failure {
+                            let error = value
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Operation failed")
+                                .to_string();
+                            HandleResult::Json(Response {
+                                success: false,
+                                result: Some(value),
+                                error: Some(error),
+                                request_id: None,
+                            })
+                        } else {
+                            HandleResult::Json(Response::success(value))
+                        }
                     }
                     Some(Ok(CommandResult::Binary { metadata, data })) => HandleResult::Binary {
                         json_header: Response::success(metadata),

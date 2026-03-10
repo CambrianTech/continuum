@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-09T21:34:44.345Z",
+  "generated": "2026-03-10T01:28:26.142Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4579,6 +4579,11 @@
           "type": "string",
           "required": false,
           "description": "mode parameter"
+        },
+        "recipeId": {
+          "type": "string",
+          "required": false,
+          "description": "recipeId parameter"
         },
         "baseModel": {
           "type": "string",

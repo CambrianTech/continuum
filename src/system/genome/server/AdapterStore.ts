@@ -15,34 +15,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { LOCAL_MODELS } from '../../shared/Constants';
-import type { QuantizationInfo } from '../shared/AdapterPackageTypes';
+import type { AdapterManifest } from '../shared/AdapterPackageTypes';
 
-/**
- * Adapter manifest — the metadata written by genome/train to each adapter directory
- */
-export interface AdapterManifest {
-  id: string;
-  name: string;
-  traitType: string;
-  source: string;
-  baseModel: string;
-  rank: number;
-  sizeMB: number;
-  personaId: string;
-  personaName: string;
-  trainingMetadata?: {
-    epochs: number;
-    loss: number;
-    performance: number;
-    trainingDuration: number;
-    datasetHash?: string;
-  };
-  contentHash?: string;
-  createdAt: string;
-  version: number;
-  /** QLoRA quantization metadata — tracks base model quantization during training */
-  quantization?: QuantizationInfo;
-}
+// Re-export for consumers that imported from here
+export type { AdapterManifest } from '../shared/AdapterPackageTypes';
 
 /**
  * A discovered adapter on disk — manifest + validated path

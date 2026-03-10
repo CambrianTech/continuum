@@ -13,7 +13,8 @@ import { SystemPaths } from '../system/core/config/SystemPaths';
 const ADAPTERS_DIR = resolve(SystemPaths.genome.adapters, 'installed');
 const TEST_PROMPT = 'Hello, how are you today?';
 
-interface AdapterManifest {
+/** PEFT adapter_config.json schema (NOT our manifest.json — different file, different structure) */
+interface PeftAdapterConfig {
   alpha: number;
   base_model: string;
   peft_type: string;
@@ -22,7 +23,7 @@ interface AdapterManifest {
   target_modules: string[];
 }
 
-async function testAdapter(client: InferenceGrpcClient, name: string, path: string, manifest: AdapterManifest): Promise<void> {
+async function testAdapter(client: InferenceGrpcClient, name: string, path: string, manifest: PeftAdapterConfig): Promise<void> {
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Testing: ${name}`);
   console.log(`${'='.repeat(60)}`);
@@ -168,7 +169,7 @@ async function main() {
     }
 
     try {
-      const manifest: AdapterManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      const manifest: PeftAdapterConfig = JSON.parse(readFileSync(manifestPath, 'utf-8'));
       await testAdapter(client, adapterDir, weightsPath, manifest);
 
       // IMPORTANT: After merge, model is permanently modified!

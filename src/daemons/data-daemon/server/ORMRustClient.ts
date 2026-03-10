@@ -394,6 +394,12 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Store failed' };
     }
 
+    // Check operation-level success (StorageResult.success), not just IPC transport
+    if (response.result && !response.result.success) {
+      console.error('[ORMRustClient.store] Store failed at storage level:', response.result.error);
+      return { success: false, error: response.result.error || 'Store failed at storage level' };
+    }
+
     const rustRecord = response.result?.data;
     const mergedData = rustRecord
       ? { ...data, id: rustRecord.id ?? data.id } as T
@@ -425,6 +431,11 @@ export class ORMRustClient {
 
     if (!response.success) {
       return { success: false, error: response.error || 'Query failed' };
+    }
+
+    // Check operation-level success
+    if (response.result && !response.result.success) {
+      return { success: false, error: response.result.error || 'Query failed at storage level' };
     }
 
     const rustResult = response.result;
@@ -465,6 +476,11 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Query with join failed' };
     }
 
+    // Check operation-level success
+    if (response.result && !response.result.success) {
+      return { success: false, error: response.result.error || 'Query with join failed at storage level' };
+    }
+
     const rustResult = response.result;
     const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
     const records = this.deserializeRecords<T>(rawRecords, query.collection);
@@ -492,6 +508,11 @@ export class ORMRustClient {
 
     if (!response.success) {
       return { success: false, error: response.error || 'Count failed' };
+    }
+
+    // Check operation-level success
+    if (response.result && !response.result.success) {
+      return { success: false, error: response.result.error || 'Count failed at storage level' };
     }
 
     const count = response.result?.data ?? 0;
@@ -563,6 +584,11 @@ export class ORMRustClient {
       throw new Error(response.error || 'Update failed');
     }
 
+    // Check operation-level success (StorageResult.success), not just IPC transport
+    if (response.result && !response.result.success) {
+      throw new Error(response.result.error || 'Update failed at storage level');
+    }
+
     return { id, ...data } as T;
   }
 
@@ -585,6 +611,11 @@ export class ORMRustClient {
 
     if (!response.success) {
       return { success: false, error: response.error || 'Delete failed' };
+    }
+
+    // Check operation-level success (StorageResult.success), not just IPC transport
+    if (response.result && !response.result.success) {
+      return { success: false, error: response.result.error || 'Delete failed at storage level' };
     }
 
     return { success: true, data: true };

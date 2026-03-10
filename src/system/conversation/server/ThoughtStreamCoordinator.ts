@@ -566,14 +566,16 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     const decidedStreamMaxAge = 5000; // 5 seconds for decided streams (fast cleanup)
     const healthMaxAge = 600000; // 10 minutes
 
-    // Clean up old streams
+    // Clean up old streams (clear timers to prevent orphaned callbacks)
     for (const [messageId, stream] of Array.from(this.streams.entries())) {
       // FAST CLEANUP: Decided streams cleaned up after 5 seconds (prevent deadlock)
       if (stream.phase === 'decided' && now - stream.startTime > decidedStreamMaxAge) {
+        if (stream.decisionTimer) clearTimeout(stream.decisionTimer);
         this.streams.delete(messageId);
       }
       // SLOW CLEANUP: Gathering streams cleaned up after 60 seconds (stuck evaluations)
       else if (now - stream.startTime > streamMaxAge) {
+        if (stream.decisionTimer) clearTimeout(stream.decisionTimer);
         this.streams.delete(messageId);
       }
     }
@@ -630,6 +632,10 @@ export class ThoughtStreamCoordinator extends EventEmitter {
    */
   shutdown(): void {
     clearInterval(this.cleanupInterval);
+    // Clear all pending decision timers before dropping references
+    for (const stream of this.streams.values()) {
+      if (stream.decisionTimer) clearTimeout(stream.decisionTimer);
+    }
     this.streams.clear();
     this.evaluationQueue.clear();
     this.recentResponders.clear();
