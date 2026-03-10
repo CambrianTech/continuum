@@ -17,7 +17,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { StudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the student sentinel pipeline.
@@ -41,15 +43,16 @@ import { academyEvent, type AcademyEventAction } from '../../genome/shared/Acade
 export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
   const { sessionId, personaId, personaName, baseModel, config: academyConfig } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
   /** Iteration-scoped event: prevents watch from matching previous iteration's events */
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
+
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for teacher to publish curriculum
     {
       type: 'watch',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       timeoutSecs: 300,  // 5 minutes for curriculum design
     },
 
@@ -62,7 +65,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.0: Wait for training data from teacher (iteration-scoped)
         {
           type: 'watch',
-          event: iterEvt('dataset:ready'),
+          event: iterEvt(E.DATASET_READY),
           timeoutSecs: 300,  // 5 minutes for data synthesis
         },
 
@@ -96,7 +99,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.2: Emit training:started (iteration-scoped)
         {
           type: 'emit',
-          event: iterEvt('training:started'),
+          event: iterEvt(E.TRAINING_STARTED),
           payload: {
             sessionId,
             personaId,
@@ -125,7 +128,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.4: Emit training:complete (iteration-scoped)
         {
           type: 'emit',
-          event: iterEvt('training:complete'),
+          event: iterEvt(E.TRAINING_COMPLETE),
           payload: {
             sessionId,
             personaId,
@@ -143,7 +146,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.5: Wait for exam from teacher (iteration-scoped)
         {
           type: 'watch',
-          event: iterEvt('exam:ready'),
+          event: iterEvt(E.EXAM_READY),
           timeoutSecs: 300,
         },
 
@@ -175,7 +178,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.7: Emit exam:responses (iteration-scoped)
         {
           type: 'emit',
-          event: iterEvt('exam:responses'),
+          event: iterEvt(E.EXAM_RESPONSES),
           payload: {
             sessionId,
             examId: '{{loop.5.data.payload.examId}}',
@@ -187,7 +190,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         // loop.8: Wait for grading results (iteration-scoped)
         {
           type: 'watch',
-          event: iterEvt('exam:graded'),
+          event: iterEvt(E.EXAM_GRADED),
           timeoutSecs: 300,
         },
 
@@ -233,7 +236,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             // Emit inference demo — showcase what the adapted model learned
             {
               type: 'emit',
-              event: iterEvt('inference:demo'),
+              event: iterEvt(E.INFERENCE_DEMO),
               payload: {
                 sessionId,
                 personaId,
@@ -254,7 +257,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             // Training didn't help enough — emit quality gate failure
             {
               type: 'emit',
-              event: iterEvt('quality:gate:failed'),
+              event: iterEvt(E.QUALITY_GATE_FAILED),
               payload: {
                 sessionId,
                 personaId,

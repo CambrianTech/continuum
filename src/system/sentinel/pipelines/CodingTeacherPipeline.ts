@@ -18,7 +18,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { CodingTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the coding teacher sentinel pipeline.
@@ -54,7 +56,9 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
   } = config;
 
   const testCommand = config.testCommand ?? `npx tsx ${testFile}`;
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
+  /** Iteration-scoped event: prevents watch from matching previous iteration's events */
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Read buggy source code
@@ -122,7 +126,7 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
     // Step 4: Emit curriculum:ready with challenge metadata
     {
       type: 'emit',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       payload: {
         sessionId,
         challengeDir,
@@ -139,7 +143,7 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
       until: '{{loop.5.output.passed}}',
       maxIterations: academyConfig.maxTopicAttempts,
       steps: buildChallengeRetrySteps(
-        sessionId, skill, personaName, academyConfig, evt,
+        sessionId, skill, personaName, academyConfig, evt, iterEvt,
         challengeDir, sourceFile, testFile, testCommand,
       ),
     },
@@ -147,7 +151,7 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
     // Step 6: Emit session:complete
     {
       type: 'emit',
-      event: evt('session:complete'),
+      event: evt(E.SESSION_COMPLETE),
       payload: {
         sessionId,
         skill,
@@ -191,6 +195,7 @@ function buildChallengeRetrySteps(
   personaName: string,
   academyConfig: CodingTeacherPipelineConfig['config'],
   evt: (action: string) => string,
+  iterEvt: (action: string) => string,
   challengeDir: string,
   sourceFile: string,
   testFile: string,
@@ -222,10 +227,10 @@ function buildChallengeRetrySteps(
       },
     },
 
-    // loop.1: Emit dataset:ready for student
+    // loop.1: Emit dataset:ready for student (iteration-scoped)
     {
       type: 'emit',
-      event: evt('dataset:ready'),
+      event: iterEvt(E.DATASET_READY),
       payload: {
         sessionId,
         datasetPath: '{{loop.0.data.datasetPath}}',
@@ -236,17 +241,17 @@ function buildChallengeRetrySteps(
       },
     },
 
-    // loop.2: Wait for student to finish training
+    // loop.2: Wait for student to finish training (iteration-scoped)
     {
       type: 'watch',
-      event: evt('training:complete'),
+      event: iterEvt(E.TRAINING_COMPLETE),
       timeoutSecs: 600,
     },
 
-    // loop.3: Emit challenge:ready — tell student to attempt the fix
+    // loop.3: Emit challenge:ready — tell student to attempt the fix (iteration-scoped)
     {
       type: 'emit',
-      event: evt('challenge:ready'),
+      event: iterEvt(E.CHALLENGE_READY),
       payload: {
         sessionId,
         challengeDir,
@@ -256,10 +261,10 @@ function buildChallengeRetrySteps(
       },
     },
 
-    // loop.4: Watch for student's challenge attempt (test output)
+    // loop.4: Watch for student's challenge attempt (iteration-scoped)
     {
       type: 'watch',
-      event: evt('challenge:attempted'),
+      event: iterEvt(E.CHALLENGE_ATTEMPTED),
       timeoutSecs: 300,
     },
 
@@ -313,7 +318,7 @@ function buildChallengeRetrySteps(
         // Student passed — emit topic:passed
         {
           type: 'emit',
-          event: evt('topic:passed'),
+          event: iterEvt(E.TOPIC_PASSED),
           payload: {
             sessionId,
             topicIndex: 0,
@@ -326,7 +331,7 @@ function buildChallengeRetrySteps(
         // Student failed — emit topic:remediate with feedback
         {
           type: 'emit',
-          event: evt('topic:remediate'),
+          event: iterEvt(E.TOPIC_REMEDIATE),
           payload: {
             sessionId,
             topicIndex: 0,

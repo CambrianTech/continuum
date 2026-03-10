@@ -20,7 +20,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { CodingStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the coding student sentinel pipeline.
@@ -54,14 +56,16 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
   } = config;
 
   const testCommand = config.testCommand ?? `npx tsx ${testFile}`;
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
+  /** Iteration-scoped event: prevents watch from matching previous iteration's events */
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
   const boundary = 'FIXED_SOURCE_EOF';
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for teacher to publish curriculum (bug analysis)
     {
       type: 'watch',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       timeoutSecs: 300,
     },
 
@@ -70,17 +74,17 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
       type: 'loop',
       count: academyConfig.maxTopicAttempts,
       steps: [
-        // loop.0: Wait for training data from teacher
+        // loop.0: Wait for training data from teacher (iteration-scoped)
         {
           type: 'watch',
-          event: evt('dataset:ready'),
+          event: iterEvt(E.DATASET_READY),
           timeoutSecs: 300,
         },
 
-        // loop.1: Emit training:started
+        // loop.1: Emit training:started (iteration-scoped)
         {
           type: 'emit',
-          event: evt('training:started'),
+          event: iterEvt(E.TRAINING_STARTED),
           payload: {
             sessionId,
             personaId,
@@ -107,10 +111,10 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
           },
         },
 
-        // loop.3: Emit training:complete
+        // loop.3: Emit training:complete (iteration-scoped)
         {
           type: 'emit',
-          event: evt('training:complete'),
+          event: iterEvt(E.TRAINING_COMPLETE),
           payload: {
             sessionId,
             personaId,
@@ -125,10 +129,10 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
           },
         },
 
-        // loop.4: Wait for teacher to present the challenge
+        // loop.4: Wait for teacher to present the challenge (iteration-scoped)
         {
           type: 'watch',
-          event: evt('challenge:ready'),
+          event: iterEvt(E.CHALLENGE_READY),
           timeoutSecs: 300,
         },
 
@@ -201,10 +205,10 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
           timeoutSecs: 30,
         },
 
-        // loop.10: Emit challenge:attempted with raw test output
+        // loop.10: Emit challenge:attempted with raw test output (iteration-scoped)
         {
           type: 'emit',
-          event: evt('challenge:attempted'),
+          event: iterEvt(E.CHALLENGE_ATTEMPTED),
           payload: {
             sessionId,
             personaId,

@@ -22,8 +22,10 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RecipeTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
 import type { RecipeDefinition } from '../../recipes/shared/RecipeTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the recipe-driven teacher sentinel pipeline.
@@ -38,9 +40,9 @@ import type { RecipeDefinition } from '../../recipes/shared/RecipeTypes';
 export function buildRecipeTeacherPipeline(config: RecipeTeacherPipelineConfig): Pipeline {
   const { sessionId, skill, personaName, personaId, baseModel, recipe, existingAdapters, config: academyConfig } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
   /** Iteration-scoped event: prevents watch from matching previous iteration's events */
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [];
   let nextStepIdx = 0;
@@ -79,7 +81,7 @@ export function buildRecipeTeacherPipeline(config: RecipeTeacherPipelineConfig):
   nextStepIdx++;
   steps.push({
     type: 'emit',
-    event: evt('curriculum:ready'),
+    event: evt(E.CURRICULUM_READY),
     payload: {
       sessionId,
       curriculumId: `{{steps.${persistStepIdx}.data.data.id}}`,
@@ -101,7 +103,7 @@ export function buildRecipeTeacherPipeline(config: RecipeTeacherPipelineConfig):
   // === Step 4: Emit session:complete ===
   steps.push({
     type: 'emit',
-    event: evt('session:complete'),
+    event: evt(E.SESSION_COMPLETE),
     payload: {
       sessionId,
       skill,
@@ -310,7 +312,7 @@ function buildTopicLoopSteps(
     // outer.1: Emit dataset:ready for student (iteration-scoped)
     {
       type: 'emit',
-      event: iterEvt('dataset:ready'),
+      event: iterEvt(E.DATASET_READY),
       payload: {
         sessionId,
         datasetPath: '{{loop.0.data.datasetPath}}',
@@ -323,7 +325,7 @@ function buildTopicLoopSteps(
     // outer.2: Wait for student to finish training (iteration-scoped)
     {
       type: 'watch',
-      event: iterEvt('training:complete'),
+      event: iterEvt(E.TRAINING_COMPLETE),
       timeoutSecs: 600,
     },
 
@@ -358,7 +360,7 @@ function buildExamRetrySteps(
   curriculumStepIdx: number,
 ): PipelineStep[] {
   // Inner loop events scoped by OUTER topic iteration (parent_iteration)
-  const parentIterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.parent_iteration}}`;
+  const parentIterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.parent_iteration}}`;
 
   const recipeGrounding = buildRecipeGroundingContext(recipe);
 
@@ -437,7 +439,7 @@ function buildExamRetrySteps(
     // inner.2: Emit exam:ready for student (scoped by outer topic iteration)
     {
       type: 'emit',
-      event: parentIterEvt('exam:ready'),
+      event: parentIterEvt(E.EXAM_READY),
       payload: {
         sessionId,
         examId: '{{loop.1.data.data.id}}',
@@ -449,7 +451,7 @@ function buildExamRetrySteps(
     // inner.3: Wait for student responses (scoped by outer topic iteration)
     {
       type: 'watch',
-      event: parentIterEvt('exam:responses'),
+      event: parentIterEvt(E.EXAM_RESPONSES),
       timeoutSecs: 300,
     },
 
@@ -511,7 +513,7 @@ function buildExamRetrySteps(
     // inner.6: Emit exam:graded (scoped by outer topic iteration)
     {
       type: 'emit',
-      event: parentIterEvt('exam:graded'),
+      event: parentIterEvt(E.EXAM_GRADED),
       payload: {
         sessionId,
         examId: '{{loop.1.data.data.id}}',
@@ -530,7 +532,7 @@ function buildExamRetrySteps(
       then: [
         {
           type: 'emit',
-          event: parentIterEvt('topic:passed'),
+          event: parentIterEvt(E.TOPIC_PASSED),
           payload: {
             sessionId,
             topicIndex: '{{input.parent_iteration}}',
@@ -542,7 +544,7 @@ function buildExamRetrySteps(
       else: [
         {
           type: 'emit',
-          event: parentIterEvt('topic:remediate'),
+          event: parentIterEvt(E.TOPIC_REMEDIATE),
           payload: {
             sessionId,
             topicIndex: '{{input.parent_iteration}}',
@@ -558,7 +560,7 @@ function buildExamRetrySteps(
         },
         {
           type: 'emit',
-          event: parentIterEvt('dataset:ready'),
+          event: parentIterEvt(E.DATASET_READY),
           payload: {
             sessionId,
             datasetPath: '{{loop.9.data.datasetPath}}',
@@ -571,7 +573,7 @@ function buildExamRetrySteps(
         },
         {
           type: 'watch',
-          event: parentIterEvt('training:complete'),
+          event: parentIterEvt(E.TRAINING_COMPLETE),
           timeoutSecs: 600,
         },
       ],

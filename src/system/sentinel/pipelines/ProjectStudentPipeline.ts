@@ -18,7 +18,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { ProjectStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the project student sentinel pipeline.
@@ -54,21 +56,23 @@ export function buildProjectStudentPipeline(config: ProjectStudentPipelineConfig
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
+  /** Iteration-scoped event: prevents watch from matching previous iteration's events */
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
   const boundary = 'STUDENT_CODE_EOF';
 
   const steps: PipelineStep[] = [
     // Step 0: Wait for curriculum from teacher
     {
       type: 'watch',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       timeoutSecs: 300,
     },
 
     // Step 1: Wait for project working directory to be ready
     {
       type: 'watch',
-      event: evt('project:setup:complete'),
+      event: evt(E.PROJECT_SETUP_COMPLETE),
       timeoutSecs: 300,
     },
 
@@ -77,7 +81,7 @@ export function buildProjectStudentPipeline(config: ProjectStudentPipelineConfig
       type: 'loop',
       count: config.milestones.length,
       steps: buildMilestoneStudentSteps(
-        sessionId, personaId, personaName, baseModel, projectDir, academyConfig, evt, boundary,
+        sessionId, personaId, personaName, baseModel, projectDir, academyConfig, evt, iterEvt, boundary,
       ),
     },
 
@@ -122,13 +126,14 @@ function buildMilestoneStudentSteps(
   projectDir: string,
   academyConfig: ProjectStudentPipelineConfig['config'],
   evt: (action: string) => string,
+  iterEvt: (action: string) => string,
   boundary: string,
 ): PipelineStep[] {
   return [
-    // loop.0: Watch for milestone spec from teacher
+    // loop.0: Watch for milestone spec from teacher (iteration-scoped)
     {
       type: 'watch',
-      event: evt('milestone:ready'),
+      event: iterEvt(E.MILESTONE_READY),
       timeoutSecs: 300,
     },
 
@@ -239,10 +244,10 @@ function buildMilestoneStudentSteps(
       timeoutSecs: 10,
     },
 
-    // loop.5: Emit milestone:attempted (COLD payload)
+    // loop.5: Emit milestone:attempted (COLD payload, iteration-scoped)
     {
       type: 'emit',
-      event: evt('milestone:attempted'),
+      event: iterEvt(E.MILESTONE_ATTEMPTED),
       payload: {
         sessionId,
         personaId,
@@ -256,17 +261,17 @@ function buildMilestoneStudentSteps(
       },
     },
 
-    // loop.6: Watch for training data from teacher
+    // loop.6: Watch for training data from teacher (iteration-scoped)
     {
       type: 'watch',
-      event: evt('dataset:ready'),
+      event: iterEvt(E.DATASET_READY),
       timeoutSecs: 300,
     },
 
-    // loop.7: Emit training:started
+    // loop.7: Emit training:started (iteration-scoped)
     {
       type: 'emit',
-      event: evt('training:started'),
+      event: iterEvt(E.TRAINING_STARTED),
       payload: {
         sessionId,
         personaId,
@@ -293,10 +298,10 @@ function buildMilestoneStudentSteps(
       },
     },
 
-    // loop.9: Emit training:complete
+    // loop.9: Emit training:complete (iteration-scoped)
     {
       type: 'emit',
-      event: evt('training:complete'),
+      event: iterEvt(E.TRAINING_COMPLETE),
       payload: {
         sessionId,
         personaId,
@@ -311,10 +316,10 @@ function buildMilestoneStudentSteps(
       },
     },
 
-    // loop.10: Watch for teacher's retry signal with feedback
+    // loop.10: Watch for teacher's retry signal with feedback (iteration-scoped)
     {
       type: 'watch',
-      event: evt('milestone:retry'),
+      event: iterEvt(E.MILESTONE_RETRY),
       timeoutSecs: 300,
     },
 
@@ -404,10 +409,10 @@ function buildMilestoneStudentSteps(
       timeoutSecs: 10,
     },
 
-    // loop.14: Emit milestone:attempted (WARM payload)
+    // loop.14: Emit milestone:attempted (WARM payload, iteration-scoped)
     {
       type: 'emit',
-      event: evt('milestone:attempted'),
+      event: iterEvt(E.MILESTONE_ATTEMPTED),
       payload: {
         sessionId,
         personaId,

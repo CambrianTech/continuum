@@ -49,41 +49,48 @@ export const ACADEMY_MODE_PREFIXES: Record<AcademySessionMode, string> = {
  * All Academy events follow the pattern: `academy:{sessionId}:{action}`
  * This enables multiple concurrent Academy sessions without event collision.
  */
-export function academyEvent(sessionId: string, action: AcademyEventAction): string {
+export function academyEvent(sessionId: string, action: string): string {
   return `academy:${sessionId}:${action}`;
 }
 
 /**
- * All possible Academy event actions
+ * Academy event action constants — single source of truth.
+ * Use these instead of raw strings to prevent typo-induced event desync.
  */
-export type AcademyEventAction =
-  | 'curriculum:ready'
-  | 'dataset:ready'
-  | 'training:started'
-  | 'training:progress'
-  | 'training:complete'
-  | 'exam:ready'
-  | 'exam:responses'
-  | 'exam:graded'
-  | 'challenge:ready'
-  | 'challenge:attempted'
-  | 'topic:passed'
-  | 'topic:remediate'
-  | 'verdict:ready'
-  | 'inference:demo'
-  | 'quality:gate:failed'
-  | 'project:setup:complete'
-  | 'milestone:ready'
-  | 'milestone:attempted'
-  | 'milestone:retry'
-  | 'milestone:passed'
-  | 'reexam:ready'
-  | 'reexam:challenge:ready'
-  | 'reexam:challenge:attempted'
-  | 'reexam:verdict:ready'
-  | 'reexam:complete'
-  | 'session:complete'
-  | 'session:failed';
+export const ACADEMY_EVENTS = {
+  CURRICULUM_READY:         'curriculum:ready',
+  DATASET_READY:            'dataset:ready',
+  TRAINING_STARTED:         'training:started',
+  TRAINING_PROGRESS:        'training:progress',
+  TRAINING_COMPLETE:        'training:complete',
+  EXAM_READY:               'exam:ready',
+  EXAM_RESPONSES:           'exam:responses',
+  EXAM_GRADED:              'exam:graded',
+  CHALLENGE_READY:          'challenge:ready',
+  CHALLENGE_ATTEMPTED:      'challenge:attempted',
+  TOPIC_PASSED:             'topic:passed',
+  TOPIC_REMEDIATE:          'topic:remediate',
+  VERDICT_READY:            'verdict:ready',
+  INFERENCE_DEMO:           'inference:demo',
+  QUALITY_GATE_FAILED:      'quality:gate:failed',
+  PROJECT_SETUP_COMPLETE:   'project:setup:complete',
+  MILESTONE_READY:          'milestone:ready',
+  MILESTONE_ATTEMPTED:      'milestone:attempted',
+  MILESTONE_RETRY:          'milestone:retry',
+  MILESTONE_PASSED:         'milestone:passed',
+  REEXAM_READY:             'reexam:ready',
+  REEXAM_CHALLENGE_READY:   'reexam:challenge:ready',
+  REEXAM_CHALLENGE_ATTEMPTED: 'reexam:challenge:attempted',
+  REEXAM_VERDICT_READY:     'reexam:verdict:ready',
+  REEXAM_COMPLETE:          'reexam:complete',
+  SESSION_COMPLETE:         'session:complete',
+  SESSION_FAILED:           'session:failed',
+} as const;
+
+/**
+ * All possible Academy event actions — derived from ACADEMY_EVENTS constants
+ */
+export type AcademyEventAction = typeof ACADEMY_EVENTS[keyof typeof ACADEMY_EVENTS];
 
 // ============================================================================
 // Academy Session Config

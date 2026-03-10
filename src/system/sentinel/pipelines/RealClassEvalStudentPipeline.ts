@@ -17,7 +17,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the RealClassEval student sentinel pipeline.
@@ -52,10 +54,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
   // Per-iteration event name — matches teacher's iterEvt pattern
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
-  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as AcademyEventAction)}:{{input.iteration}}`;
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}`)}:{{input.iteration}}`;
 
   // LLM config — only pass model/provider when explicitly set to avoid
   // "Model Not Exist" errors with cloud providers.
@@ -68,7 +70,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     // Step 0: Wait for teacher to publish curriculum
     {
       type: 'watch',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       timeoutSecs: 600,
     },
 
@@ -82,7 +84,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     // Step 2: Watch for session:complete (teacher finished grading all challenges)
     {
       type: 'watch',
-      event: evt('session:complete'),
+      event: evt(E.SESSION_COMPLETE),
       timeoutSecs: 60,
     },
 
@@ -111,7 +113,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         // Then sub-step 1: Signal teacher that training is done, ready for re-exam
         {
           type: 'emit',
-          event: evt('reexam:ready'),
+          event: evt(E.REEXAM_READY),
           payload: {
             sessionId,
             personaId,
@@ -129,7 +131,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         // Then sub-step 3: Watch for teacher's re-exam comparison results
         {
           type: 'watch',
-          event: evt('reexam:complete'),
+          event: evt(E.REEXAM_COMPLETE),
           timeoutSecs: 120,
         },
       ],
@@ -174,7 +176,7 @@ function buildInitialChallengeSteps(
     // loop.0: Watch for challenge:ready (iteration-scoped)
     {
       type: 'watch',
-      event: iterEvt('challenge:ready'),
+      event: iterEvt(E.CHALLENGE_READY),
       timeoutSecs: 300,
     },
 
@@ -209,7 +211,7 @@ function buildInitialChallengeSteps(
     // loop.2: Emit challenge:attempted (iteration-scoped)
     {
       type: 'emit',
-      event: iterEvt('challenge:attempted'),
+      event: iterEvt(E.CHALLENGE_ATTEMPTED),
       payload: {
         sessionId,
         personaId,
@@ -250,7 +252,7 @@ function buildInitialChallengeSteps(
         // Emit training:complete
         {
           type: 'emit',
-          event: evt('training:complete'),
+          event: evt(E.TRAINING_COMPLETE),
           payload: {
             sessionId,
             personaId,

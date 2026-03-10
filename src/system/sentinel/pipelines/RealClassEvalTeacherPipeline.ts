@@ -22,7 +22,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the RealClassEval teacher sentinel pipeline.
@@ -51,9 +53,9 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
-  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as AcademyEventAction)}:{{input.iteration}}`;
+  const evt = (action: string) => academyEvent(sessionId, action);
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}`)}:{{input.iteration}}`;
 
   const resultsDir = `${datasetDir}/session-${sessionId.slice(0, 8)}`;
 
@@ -81,7 +83,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
     // Step 2: Emit curriculum:ready
     {
       type: 'emit',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       payload: {
         sessionId,
         totalChallenges: '{{steps.1.output.totalChallenges}}',
@@ -111,7 +113,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
     // Step 5: Emit session:complete with training data path
     {
       type: 'emit',
-      event: evt('session:complete'),
+      event: evt(E.SESSION_COMPLETE),
       payload: {
         sessionId,
         skill,
@@ -130,7 +132,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
         // Then.0: Wait for student to finish training
         {
           type: 'watch',
-          event: evt('reexam:ready'),
+          event: evt(E.REEXAM_READY),
           timeoutSecs: 1800,
         },
 
@@ -184,7 +186,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
       then: [
         {
           type: 'emit',
-          event: evt('reexam:complete'),
+          event: evt(E.REEXAM_COMPLETE),
           payload: {
             sessionId,
             skill,
@@ -239,7 +241,7 @@ function buildChallengeSteps(
     // loop.0: Emit challenge:ready (iteration-scoped event name)
     {
       type: 'emit',
-      event: iterEvt('challenge:ready'),
+      event: iterEvt(E.CHALLENGE_READY),
       payload: {
         sessionId,
         skeleton: '{{steps.1.output.challenges.{{input.iteration}}.skeleton}}',
@@ -253,7 +255,7 @@ function buildChallengeSteps(
     // loop.1: Watch for student's implementation attempt (iteration-scoped)
     {
       type: 'watch',
-      event: iterEvt('challenge:attempted'),
+      event: iterEvt(E.CHALLENGE_ATTEMPTED),
       timeoutSecs: 600,
     },
 
@@ -308,7 +310,7 @@ function buildChallengeSteps(
       then: [
         {
           type: 'emit',
-          event: iterEvt('verdict:ready'),
+          event: iterEvt(E.VERDICT_READY),
           payload: {
             sessionId,
             passed: true,
@@ -322,7 +324,7 @@ function buildChallengeSteps(
       else: [
         {
           type: 'emit',
-          event: iterEvt('verdict:ready'),
+          event: iterEvt(E.VERDICT_READY),
           payload: {
             sessionId,
             passed: false,

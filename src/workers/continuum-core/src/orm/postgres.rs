@@ -17,6 +17,8 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::NoTls;
 
@@ -47,6 +49,9 @@ pub struct PostgresAdapter {
     pool: Option<Pool>,
     /// Database schema (namespace) for multi-tenant isolation
     schema: String,
+    /// Cached column types per table — avoids repeated information_schema queries.
+    /// Invalidated per-table when schema evolution adds new columns.
+    col_type_cache: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
 }
 
 impl PostgresAdapter {
@@ -54,6 +59,7 @@ impl PostgresAdapter {
         Self {
             pool: None,
             schema: "public".to_string(),
+            col_type_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -61,6 +67,35 @@ impl PostgresAdapter {
         self.pool
             .as_ref()
             .ok_or_else(|| "PostgreSQL adapter not initialized".to_string())
+    }
+
+    /// Get column types for a table, using cache when available.
+    /// Cache is invalidated per-table when schema evolution adds columns.
+    async fn cached_column_types(
+        &self,
+        client: &deadpool_postgres::Client,
+        bare_table: &str,
+    ) -> HashMap<String, String> {
+        // Check cache first (read lock — concurrent reads OK)
+        {
+            let cache = self.col_type_cache.read().await;
+            if let Some(types) = cache.get(bare_table) {
+                return types.clone();
+            }
+        }
+        // Cache miss — fetch from information_schema and populate
+        let types = get_column_types(client, bare_table, &self.schema).await;
+        if !types.is_empty() {
+            let mut cache = self.col_type_cache.write().await;
+            cache.insert(bare_table.to_string(), types.clone());
+        }
+        types
+    }
+
+    /// Invalidate cached column types for a table (after schema evolution)
+    async fn invalidate_column_cache(&self, bare_table: &str) {
+        let mut cache = self.col_type_cache.write().await;
+        cache.remove(bare_table);
     }
 
     /// Return a schema-qualified table name for SQL statements
@@ -650,7 +685,8 @@ impl StorageAdapter for PostgresAdapter {
         let now: DateTime<Utc> = Utc::now();
         let now_rfc3339 = now.to_rfc3339();
 
-        // Ensure table exists (auto-create from data shape)
+        // Ensure table exists (auto-create from data shape).
+        // Invalidate column type cache afterwards — table may have been created or altered.
         if let Err(e) = ensure_table_exists_pg(
             &client,
             &qualified_table,
@@ -662,9 +698,10 @@ impl StorageAdapter for PostgresAdapter {
         {
             return StorageResult::err(e);
         }
+        self.invalidate_column_cache(&bare_table).await;
 
         // Get column types for type-aware parameter coercion
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
 
         // Build column list and values
         let mut columns = vec![
@@ -786,7 +823,7 @@ impl StorageAdapter for PostgresAdapter {
 
         let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
         let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
@@ -904,7 +941,7 @@ impl StorageAdapter for PostgresAdapter {
         }
 
         let bare_table = naming::to_table_name(&query.collection);
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
         let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
@@ -963,7 +1000,7 @@ impl StorageAdapter for PostgresAdapter {
 
         let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
         let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
 
         let mut sql = format!("SELECT COUNT(*) FROM {}", table);
@@ -1013,7 +1050,7 @@ impl StorageAdapter for PostgresAdapter {
         let now: DateTime<Utc> = Utc::now();
 
         // Get column types for type-aware parameter coercion
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
 
         let mut sets = vec!["updated_at = $1".to_string()];
         let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
@@ -1063,6 +1100,7 @@ impl StorageAdapter for PostgresAdapter {
                             bare_table, err_msg, evolve_err
                         ));
                     }
+                    self.invalidate_column_cache(&bare_table).await;
                     // Retry the update after adding columns
                     match client.execute(&sql, &params_ref).await {
                         Ok(rows) if rows > 0 => self.read(collection, id).await,
