@@ -43,6 +43,10 @@ export interface GenomeAcademySessionParams extends CommandParams {
   examplesPerTopic?: number;
   /** Number of curriculum topics per session (default: 3) */
   topicsPerSession?: number;
+  /** Training learning rate (default: 0.0001) */
+  learningRate?: number;
+  /** Training batch size (default: 4) */
+  batchSize?: number;
   /** Teacher LLM model */
   model?: string;
   /** Teacher LLM provider */

@@ -104,6 +104,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.questionsPerExam !== undefined && { questionsPerExam: params.questionsPerExam }),
       ...(params.examplesPerTopic !== undefined && { examplesPerTopic: params.examplesPerTopic }),
       ...(params.topicsPerSession !== undefined && { topicsPerSession: params.topicsPerSession }),
+      ...(params.learningRate !== undefined && { learningRate: params.learningRate }),
+      ...(params.batchSize !== undefined && { batchSize: params.batchSize }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
       // Student defaults to same model/provider as teacher when not explicitly set.

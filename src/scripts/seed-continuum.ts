@@ -16,6 +16,8 @@ import { RoomEntity } from '../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
+import { ActivityEntity } from '../system/data/entities/ActivityEntity';
+import { ActivityDataSeed } from '../api/data-seed/ActivityDataSeed';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
@@ -447,6 +449,10 @@ async function seedViaJTAG() {
       // Ensure profiles exist even for pre-existing databases
       await ensurePersonaProfiles(usersByUniqueId);
 
+      // Ensure activities exist (idempotent — seedRecords skips existing)
+      const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
+      await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
+
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -632,6 +638,10 @@ async function seedViaJTAG() {
     );
     await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
     await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
+
+    // Seed activities (canvas, browser co-browsing)
+    const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
+    await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 

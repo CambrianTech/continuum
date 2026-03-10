@@ -76,6 +76,9 @@ export interface LoRATrainingRequest {
   // Output configuration
   outputPath?: string;        // Where to save adapter (default: system-generated)
 
+  // Resume from a previous checkpoint
+  resumeFromCheckpoint?: string | null;
+
   // Optional validation dataset
   validationDataset?: TrainingDataset;
 }
