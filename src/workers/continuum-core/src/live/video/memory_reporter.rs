@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::live::video::bevy_renderer::{BevyMemoryStats, AVATAR_HEIGHT, AVATAR_WIDTH};
+use crate::live::video::bevy_renderer::BevyMemoryStats;
 use crate::system_resources::memory_pressure::{
     MemoryReporter, ModuleMemoryReport, PressureLevel,
 };
