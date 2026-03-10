@@ -160,7 +160,7 @@ function buildMilestoneStudentSteps(
     },
 
     // loop.2: LLM (baseModel) — COLD attempt: generate code for this milestone
-    // Uses local model so LoRA training can improve this step
+    // Uses Candle (local model) so LoRA training can improve this step
     {
       type: 'llm',
       prompt: [
@@ -186,6 +186,7 @@ function buildMilestoneStudentSteps(
         '- Preserve existing working functionality from previous milestones',
       ].join('\n'),
       model: baseModel,
+      provider: 'candle',
       temperature: 0.3,
       maxTokens: 8192,
     },
@@ -323,7 +324,8 @@ function buildMilestoneStudentSteps(
       timeoutSecs: 300,
     },
 
-    // loop.11: LLM (baseModel) — WARM attempt: fix code using feedback + training
+    // loop.11: LLM (baseModel) — WARM attempt: fix code using feedback + trained LoRA
+    // Uses Candle WITH trained adapter — the adapter improves code generation quality
     {
       type: 'llm',
       prompt: [
@@ -351,8 +353,15 @@ function buildMilestoneStudentSteps(
         'IMPORTANT: Valid JSON only, no markdown, no code fences.',
       ].join('\n'),
       model: baseModel,
+      provider: 'candle',
       temperature: 0.3,
       maxTokens: 8192,
+      activeAdapters: [{
+        name: '{{loop.8.data.layerId}}',
+        path: '{{loop.8.data.adapterPath}}',
+        domain: `project-${sessionId.slice(0, 8)}`,
+        scale: 1.0,
+      }],
     },
 
     // loop.12: Write warm attempt files, compile, run tests

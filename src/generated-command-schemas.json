@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-10T02:55:43.810Z",
+  "generated": "2026-03-10T15:44:57.200Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4489,6 +4489,27 @@
       }
     },
     {
+      "name": "genome/adapter-update-metrics",
+      "description": "Writes phenotype validation results and other metrics back to an adapter's manifest. Called by StudentPipeline after quality gate passes to persist phenotype scores.",
+      "params": {
+        "adapterPath": {
+          "type": "string",
+          "required": true,
+          "description": "adapterPath parameter"
+        },
+        "phenotypeScore": {
+          "type": "number",
+          "required": false,
+          "description": "phenotypeScore parameter"
+        },
+        "phenotypeImprovement": {
+          "type": "number",
+          "required": false,
+          "description": "phenotypeImprovement parameter"
+        }
+      }
+    },
+    {
       "name": "genome/adapter-prune",
       "description": "Prune unused LoRA adapters to reclaim disk space. Removes adapters not used since the specified cutoff date. Supports dry-run mode to preview what would be deleted.",
       "params": {
@@ -4555,6 +4576,53 @@
           "description": "name parameter"
         }
       }
+    },
+    {
+      "name": "genome/adapter-backfill-metrics",
+      "description": "One-time migration: scans all existing adapters and backfills training metrics from checkpoint trainer_state.json and training_metrics.json files. Also useful for maintenance when metrics get out of sync.",
+      "params": {
+        "missingOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "missingOnly parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/academy-session-restart",
+      "description": "Genome Academy Session Restart Command Parameters",
+      "params": {}
+    },
+    {
+      "name": "genome/academy-session-list",
+      "description": "Genome Academy Session List Command Parameters",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "skill": {
+          "type": "string",
+          "required": false,
+          "description": "skill parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/academy-session-detail",
+      "description": "Genome Academy Session Detail Command Parameters",
+      "params": {}
     },
     {
       "name": "genome/academy-session",

@@ -61,6 +61,11 @@ export interface TrainingMetadata {
   performance: number;         // Benchmark score (0-1)
   trainingDuration: number;    // Milliseconds
   checkpoints?: string[];      // Saved checkpoint paths
+  lossHistory?: number[];      // Per-step loss values for convergence visualization
+  trainRuntime?: number;       // Wall-clock training time in seconds
+  examplesProcessed?: number;  // Number of training examples used
+  phenotypeScore?: number;     // Post-training phenotype validation score
+  phenotypeImprovement?: number; // Phenotype improvement delta (adapted - baseline)
 }
 
 /**

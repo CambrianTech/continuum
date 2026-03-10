@@ -25,6 +25,7 @@ import type { ContentOpenParams, ContentOpenResult } from '../../commands/collab
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import { getRecipeLayoutService } from '../recipes/browser/RecipeLayoutService';
+import { buildContentPath } from '../../widgets/main/shared/ContentTypeRegistry';
 
 import { ContentOpen } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { StateContentSwitch } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
@@ -227,7 +228,7 @@ class ContentServiceImpl {
    * Update browser URL - ONLY called from this service
    */
   private updateUrl(contentType: string, identifier?: string): void {
-    const newPath = identifier ? `/${contentType}/${identifier}` : `/${contentType}`;
+    const newPath = buildContentPath(contentType, identifier);
     if (window.location.pathname !== newPath) {
       window.history.pushState({ path: newPath }, '', newPath);
     }

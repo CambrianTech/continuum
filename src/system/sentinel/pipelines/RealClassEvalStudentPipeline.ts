@@ -111,6 +111,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         },
 
         // Then sub-step 1: Signal teacher that training is done, ready for re-exam
+        // Include adapterPath so teacher can echo it back in reexam challenge events
         {
           type: 'emit',
           event: evt(E.REEXAM_READY),
@@ -118,6 +119,12 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
             sessionId,
             personaId,
             trained: true,
+            // TODO: These references resolve to the condition sub-step's training result.
+            // Currently may resolve empty due to step_index collision between condition
+            // sub-steps and the condition step itself. Needs step naming feature
+            // (named_outputs in ExecutionContext) for reliable cross-scope references.
+            adapterPath: '{{steps.3.data.adapterPath}}',
+            layerId: '{{steps.3.data.layerId}}',
           },
         },
 
@@ -297,7 +304,12 @@ function buildReexamChallengeSteps(
       timeoutSecs: 300,
     },
 
-    // loop.1: LLM — Re-implement (LoRA now active for local model inference)
+    // loop.1: LLM — Re-implement (LoRA should be active for local model inference)
+    // TODO: Add activeAdapters once step naming is implemented in the sentinel engine.
+    // The adapter was trained in the parent condition's then[0] (genome/train), but
+    // its step_index is dynamically assigned and can't be statically referenced from
+    // within this nested loop. Needs named_outputs support in ExecutionContext so we
+    // can reference it as {{named.reexam_training.data.adapterPath}}.
     {
       type: 'llm',
       prompt: [

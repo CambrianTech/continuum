@@ -241,6 +241,17 @@ class ContentStateServiceImpl {
   }
 
   /**
+   * Update a tab's display title (e.g., when widget resolves persona name after activation)
+   */
+  updateItemTitle(type: string, entityId: string | undefined, title: string): void {
+    const item = this.findItem(type, entityId);
+    if (item && item.title !== title) {
+      item.title = title;
+      this.scheduleNotify();
+    }
+  }
+
+  /**
    * Update item's real ID after server confirms
    * (replaces temp ID with server-generated ID)
    */

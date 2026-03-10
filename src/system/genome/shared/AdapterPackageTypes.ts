@@ -35,6 +35,11 @@ export interface AdapterManifest {
     performance: number;
     trainingDuration: number;
     datasetHash?: string;
+    lossHistory?: number[];
+    trainRuntime?: number;
+    examplesProcessed?: number;
+    phenotypeScore?: number;
+    phenotypeImprovement?: number;
   };
   contentHash?: string;
   createdAt: string;

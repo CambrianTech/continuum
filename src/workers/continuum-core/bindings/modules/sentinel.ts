@@ -124,7 +124,7 @@ export interface SentinelLogsTailResult {
  */
 export type PipelineStep =
 	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string; allowFailure?: boolean; env?: Record<string, string> }
-	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number }
+	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number; activeAdapters?: Array<{ name: string; path: string; domain?: string; scale?: number }> }
 	| { type: 'command'; command: string; params?: Record<string, unknown> }
 	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
 	| { type: 'loop'; count?: number; while?: string; until?: string; steps: PipelineStep[]; maxIterations?: number }

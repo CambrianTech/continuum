@@ -159,7 +159,7 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
         },
 
         // loop.8: LLM — Fix the buggy source code
-        // Uses baseModel (local model) so LoRA training improves this step
+        // Uses Candle with trained LoRA adapter so training directly improves this step
         {
           type: 'llm',
           prompt: [
@@ -183,8 +183,15 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
             '- Fix ONLY the bugs revealed by failing tests',
           ].join('\n'),
           model: baseModel,
+          provider: 'candle',
           temperature: 0.2,
           maxTokens: 4096,
+          activeAdapters: [{
+            name: '{{loop.2.data.layerId}}',
+            path: '{{loop.2.data.adapterPath}}',
+            domain: `debugging-${sessionId.slice(0, 8)}`,
+            scale: 1.0,
+          }],
         },
 
         // loop.9: Write fix to temp dir + run tests

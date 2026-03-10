@@ -220,9 +220,15 @@ export class MainWidget extends ReactiveWidget {
     }
 
     // 3. No existing tab - create via ContentService (centralized)
+    // Format title based on content type (genome-profile → "DeepSeek Genome")
+    let title = resolved?.displayName;
+    if (title && contentType === 'genome-profile') {
+      title = `${title} Genome`;
+    }
+
     ContentService.open(contentType, canonicalEntityId, {
       uniqueId: resolved?.uniqueId || identifier,
-      title: resolved?.displayName,
+      title,
       setAsCurrent: true
     });
 
@@ -309,7 +315,8 @@ export class MainWidget extends ReactiveWidget {
       widget: rightPanelConfig?.widget || null,
       room: rightPanelConfig?.room,
       compact: rightPanelConfig?.compact,
-      contentType: contentType
+      contentType: contentType,
+      sections: rightPanelConfig?.sections,
     });
 
     // Emit Positron widget state

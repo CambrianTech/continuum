@@ -70,30 +70,21 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         },
 
         // loop.1: PRE-TEST — Answer topic questions BEFORE training
-        // This establishes a baseline score to compare against post-training.
-        // The student uses its current (untrained) capability on this topic.
+        // Uses Candle (local model) WITHOUT adapters for baseline.
+        // This establishes the pre-training score that post-test compares against.
         {
           type: 'llm',
           prompt: [
-            `You are ${personaName}, an AI persona. Answer the following questions about "{{loop.0.data.payload.topicName}}" to the best of your current ability.`,
-            'Be thorough but concise. These questions test your knowledge BEFORE any specific training on this topic.',
-            '',
-            'For each question, provide your best answer.',
-            '',
-            'Questions (answer ALL of them):',
-            '1. What are the key concepts in {{loop.0.data.payload.topicName}}?',
-            '2. Explain the most important principle of {{loop.0.data.payload.topicName}}.',
-            '3. Give a practical example demonstrating {{loop.0.data.payload.topicName}}.',
-            '4. What are common mistakes when applying {{loop.0.data.payload.topicName}}?',
-            '5. How does {{loop.0.data.payload.topicName}} relate to other concepts in the field?',
-            '',
-            'Output ONLY a JSON array of response objects (no markdown, no code fences):',
-            '[',
-            '  { "questionIndex": 0, "studentAnswer": "Your answer here" }',
-            ']',
+            `You are ${personaName}. Answer about "{{loop.0.data.payload.topicName}}":`,
+            '1. Key concepts?',
+            '2. Most important principle?',
+            '3. Practical example?',
+            'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
           ].join('\n'),
+          model: baseModel,
+          provider: 'candle',
           temperature: 0.5,
-          maxTokens: 2048,
+          maxTokens: 1024,
         },
 
         // loop.2: Emit training:started (iteration-scoped)
@@ -151,28 +142,25 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         },
 
         // loop.6: Take the exam via LLM (POST-training)
-        // Uses the system default model; future: use base model +
-        // trained LoRA adapters via Candle local inference to prove training worked
+        // Uses Candle WITH trained LoRA adapter — this is the whole point.
+        // Comparing loop.1 (no adapter) vs loop.6 (with adapter) proves training worked.
         {
           type: 'llm',
           prompt: [
-            `You are ${personaName}, an AI persona taking an exam.`,
-            'Answer each question to the best of your ability.',
-            'Be thorough but concise in your answers.',
-            '',
-            'Questions:',
+            `You are ${personaName}. Answer these exam questions:`,
             '{{loop.5.data.payload.questions}}',
-            '',
-            'Output ONLY a JSON array of response objects (no markdown, no code fences):',
-            '[',
-            '  {',
-            '    "questionIndex": 0,',
-            '    "studentAnswer": "Your answer here"',
-            '  }',
-            ']',
+            'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
           ].join('\n'),
+          model: baseModel,
+          provider: 'candle',
           temperature: 0.5,
-          maxTokens: 2048,
+          maxTokens: 1024,
+          activeAdapters: [{
+            name: '{{loop.3.data.layerId}}',
+            path: '{{loop.3.data.adapterPath}}',
+            domain: '{{loop.0.data.payload.topicName}}',
+            scale: 1.0,
+          }],
         },
 
         // loop.7: Emit exam:responses (iteration-scoped)
@@ -212,6 +200,16 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           type: 'condition',
           if: '{{loop.9.data.passedQualityGate}}',
           then: [
+            // Write phenotype metrics back to adapter manifest
+            {
+              type: 'command',
+              command: 'genome/adapter-update-metrics',
+              params: {
+                adapterPath: '{{loop.3.data.adapterPath}}',
+                phenotypeScore: '{{loop.9.data.adaptedScore}}',
+                phenotypeImprovement: '{{loop.9.data.improvement}}',
+              },
+            },
             // Register the trained adapter in the paging registry
             {
               type: 'command',

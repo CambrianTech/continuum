@@ -389,6 +389,15 @@ export class UserProfileWidget extends ReactiveWidget {
     }
   }
 
+  private openGenome(): void {
+    if (!this.user) return;
+    ContentService.open('genome-profile', this.user.id, {
+      title: `${this.user.displayName} Genome`,
+      uniqueId: this.user.uniqueId || this.user.id,
+      metadata: { entity: this.user }
+    });
+  }
+
   private openLogs(): void {
     if (!this.user) return;
     const logPath = `personas/${this.user.uniqueId || this.user.id}/cognition`;
@@ -621,7 +630,7 @@ export class UserProfileWidget extends ReactiveWidget {
             <span class="pathway-title">Brain</span>
             <span class="pathway-subtitle">Cognitive View</span>
           </div>
-          <div class="pathway-card disabled">
+          <div class="pathway-card" @click=${() => this.openGenome()}>
             <span class="pathway-icon">🧬</span>
             <span class="pathway-title">Genome</span>
             <span class="pathway-subtitle">Adapters & Layers</span>

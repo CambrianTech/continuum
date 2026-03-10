@@ -384,6 +384,25 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
     print(f"   Training time: {trainer_stats.metrics['train_runtime']:.2f}s")
     print(f"   Examples/second: {trainer_stats.metrics.get('train_samples_per_second', 0):.2f}")
 
+    # Collect loss history from training log
+    loss_history = []
+    for entry in trainer.state.log_history:
+        if 'loss' in entry:
+            loss_history.append(round(entry['loss'], 4))
+
+    # Write structured training metrics JSON — the contract for TrainingCompletionHandler
+    training_metrics = {
+        "finalLoss": round(trainer_stats.training_loss, 4),
+        "trainRuntime": round(trainer_stats.metrics['train_runtime'], 2),
+        "epochs": num_epochs,
+        "examplesProcessed": num_examples,
+        "lossHistory": loss_history,
+    }
+    metrics_path = os.path.join(output_dir, "training_metrics.json")
+    with open(metrics_path, 'w') as f:
+        json.dump(training_metrics, f, indent=2)
+    print(f"📊 Training metrics written to: {metrics_path}")
+
     return trainer
 
 

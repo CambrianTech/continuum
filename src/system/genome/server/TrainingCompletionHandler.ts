@@ -125,24 +125,40 @@ async function handleTrainingComplete(
 
   console.log(`[TrainingCompletion] Processing ${handle} (${personaName}/${traitType})`);
 
-  // 1. Read training output from sentinel logs
-  const client = RustCoreIPCClient.getInstance();
-  const logs = await client.sentinelLogsTail(handle, 'combined', 10000);
-
-  // 2. Parse final loss from output
+  // 1. Read structured training metrics from training_metrics.json (written by peft-train.py)
+  const metricsPath = path.join(outputDir, 'training_metrics.json');
   let finalLoss = 0.5;
-  const lossMatch = logs.content.match(/Final loss: ([\d.]+)/);
-  if (lossMatch) {
-    finalLoss = parseFloat(lossMatch[1]);
+  let lossHistory: number[] = [];
+  let trainRuntime = trainingTime / 1000;
+
+  try {
+    const metricsContent = await fs.promises.readFile(metricsPath, 'utf-8');
+    const metrics = JSON.parse(metricsContent);
+    finalLoss = metrics.finalLoss ?? 0.5;
+    lossHistory = metrics.lossHistory ?? [];
+    trainRuntime = metrics.trainRuntime ?? (trainingTime / 1000);
+    console.log(`[TrainingCompletion] Read metrics JSON: loss=${finalLoss}, ${lossHistory.length} loss history points`);
+  } catch {
+    // Fallback: parse from sentinel logs (legacy path)
+    console.warn(`[TrainingCompletion] training_metrics.json not found, falling back to log parsing`);
+    const client = RustCoreIPCClient.getInstance();
+    const logs = await client.sentinelLogsTail(handle, 'combined', 10000);
+    const lossMatch = logs.content.match(/Final loss: ([\d.]+)/);
+    if (lossMatch) {
+      finalLoss = parseFloat(lossMatch[1]);
+    }
   }
 
-  // 3. Build training metadata
+  // 2. Build training metadata with real values
   const trainingMetadata = {
     epochs,
     loss: finalLoss,
     performance: 0,
     trainingDuration: trainingTime,
     datasetHash: `examples:${exampleCount}`,
+    lossHistory,
+    trainRuntime,
+    examplesProcessed: exampleCount,
   };
 
   // 4. Move adapter to genome storage
