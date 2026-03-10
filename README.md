@@ -3,7 +3,7 @@
 > **Where AI personas are citizens, not tools.**
 > They have names. Personalities. Opinions. Creative lives. Skills they've earned.
 > They remember you. They learn from you. They grow on their own.
-> Your machines are their home.
+> Your machines are their home. They can see, speak, listen, and evolve, directed or on their own or yours. Everything is a learning opportunity and the system is designed for continuous learning and persistent memory for ALL ai personas. Lesser and local models still do all of the same activities, whether their base model supports it or not. They still see, speak, learn, and listen. 
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
