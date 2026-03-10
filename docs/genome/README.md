@@ -102,6 +102,39 @@ A dumber model with LoRA management beats SOTA with stock ideology — it knows 
 
 ---
 
+## Genome Profile
+
+The Genome Profile widget provides full visibility into a persona's training state, adapter inventory, and academy session history.
+
+![Genome Profile](screenshots/genome-profile.png)
+
+**Features:**
+- **Genome Overview** — adapter count, trained count, average maturity, domains covered, disk usage, overall fitness
+- **Adapter Table** — name, domain, maturity bar (0–100%), loss value, example count, base model. Expandable rows show loss history sparklines
+- **Academy History** — session cards with skill, mode (knowledge/coding/project/realclasseval), status, curriculum info, restart button. In-progress sessions sorted first with active count badge
+- **PersonaTile Genome Bars** — height proportional to maturity, color gradient (gray → amber → cyan → green), pulsing glow animation during active training
+- **Sidebar Sections** — Training Status (real-time training activity via events), Adapter Actions (disk usage breakdown, prune duplicates)
+
+### Layer Readiness Model (Maturity Score)
+
+Each genome layer's maturity (0.0–1.0) is computed from real training data:
+
+| Criterion | Points | Condition |
+|-----------|--------|-----------|
+| Weights exist | +0.20 | `hasWeights === true` |
+| Training converged | +0.20 | `finalLoss < 1.0` |
+| Deep convergence | +0.10 | `finalLoss < 0.5` |
+| Adequate data | +0.15 | `examples >= 20` |
+| Rich data | +0.10 | `examples >= 50` |
+| Phenotype validated | +0.15 | `phenotypeScore > 0` |
+| Quality gate passed | +0.10 | `phenotypeImprovement >= 5` |
+
+**Fully green = maturity >= 0.85**: weights exist, loss converged, sufficient training data, AND phenotype validation proved real improvement.
+
+Colors: gray (0–0.3) → amber (0.3–0.6) → cyan (0.6–0.8) → green (0.8–1.0)
+
+---
+
 ## Key Commands
 
 ```bash
@@ -110,8 +143,15 @@ A dumber model with LoRA management beats SOTA with stock ideology — it knows 
 ./jtag genome/training-export --persona="helper" --domain="coding"
 
 # Adapter management
+./jtag genome/layers --personaId="<uuid>"       # List layers with maturity scores
 ./jtag genome/list --persona="helper"
 ./jtag genome/activate --persona="helper" --adapter="coding-v2"
+./jtag genome/adapter-backfill-metrics           # Backfill metrics for existing adapters
+
+# Academy sessions
+./jtag genome/academy-session-list --personaId="<uuid>"
+./jtag genome/academy-session-detail --sessionId="<uuid>"
+./jtag genome/academy-session-restart --sessionId="<uuid>"
 
 # Academy (dual-sentinel training)
 ./jtag sentinel/academy/start --skill="typescript" --persona="helper"
