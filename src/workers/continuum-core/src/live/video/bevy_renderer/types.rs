@@ -484,3 +484,8 @@ pub(super) struct GpuGuards {
 /// Bevy resource wrapping the shared atomic stats for cross-thread reporting.
 #[derive(Resource)]
 pub(super) struct SharedMemoryStats(pub Arc<BevyMemoryStats>);
+
+/// Cached set of currently-speaking slot IDs — computed once per frame,
+/// consumed by multiple animation systems (speaking, expression, idle gestures, eye gaze, cognitive).
+#[derive(Resource, Default)]
+pub(super) struct SpeakingSlots(pub std::collections::HashSet<u8>);

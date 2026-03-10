@@ -5,7 +5,6 @@
 
 use bevy::prelude::*;
 
-use super::bevy_debug;
 use super::types::{BoneInfo, BoneRegistry, SlotBones};
 use super::vrm;
 use crate::clog_info;
@@ -42,39 +41,8 @@ pub(super) fn propagate_render_layers(
 }
 
 /// Dump all named entities in a scene hierarchy (for debugging bone names).
-pub(super) fn dump_bone_names(entity: Entity, children: &Query<&Children>, names: &Query<&Name>) {
-    let mut bone_names = Vec::new();
-    collect_names(entity, children, names, &mut bone_names);
-    let arm_names: Vec<&str> = bone_names
-        .iter()
-        .filter(|n| n.to_lowercase().contains("arm"))
-        .map(|s| s.as_str())
-        .collect();
-    if !arm_names.is_empty() {
-        bevy_debug(&format!("Arm bones found: {:?}", arm_names));
-    } else {
-        bevy_debug(&format!(
-            "No 'arm' bones found. All {} named entities: {:?}",
-            bone_names.len(),
-            bone_names.iter().take(50).collect::<Vec<_>>()
-        ));
-    }
-}
-
-fn collect_names(
-    entity: Entity,
-    children: &Query<&Children>,
-    names: &Query<&Name>,
-    out: &mut Vec<String>,
-) {
-    if let Ok(name) = names.get(entity) {
-        out.push(name.as_str().to_string());
-    }
-    if let Ok(child_list) = children.get(entity) {
-        for child in child_list.iter() {
-            collect_names(child, children, names, out);
-        }
-    }
+pub(super) fn dump_bone_names(_entity: Entity, _children: &Query<&Children>, _names: &Query<&Name>) {
+    // No-op: bevy_debug calls removed. Function retained for call-site compatibility.
 }
 
 /// Reference head Y for VRM standard models (~1.50m).
@@ -209,28 +177,12 @@ fn collect_arm_adjustments(
 
         if is_left_upper {
             adjustments.push((entity, Quat::from_rotation_z(1.13)));
-            bevy_debug(&format!(
-                "T-pose fix: left upper arm '{}' -> rotate Z +65deg",
-                name_str
-            ));
         } else if is_right_upper {
             adjustments.push((entity, Quat::from_rotation_z(-1.13)));
-            bevy_debug(&format!(
-                "T-pose fix: right upper arm '{}' -> rotate Z -65deg",
-                name_str
-            ));
         } else if is_left_lower {
             adjustments.push((entity, Quat::from_rotation_z(0.26)));
-            bevy_debug(&format!(
-                "T-pose fix: left lower arm '{}' -> rotate Z +15deg",
-                name_str
-            ));
         } else if is_right_lower {
             adjustments.push((entity, Quat::from_rotation_z(-0.26)));
-            bevy_debug(&format!(
-                "T-pose fix: right lower arm '{}' -> rotate Z -15deg",
-                name_str
-            ));
         }
     }
 
@@ -313,23 +265,15 @@ pub(super) fn discover_upper_body_bones(
         "lower_arm.R",
     ];
 
-    let discover = |target_names: &[&str], label: &str| -> Option<BoneInfo> {
+    let discover = |target_names: &[&str], _label: &str| -> Option<BoneInfo> {
         find_bone_by_name(root, children, names, target_names).and_then(|entity| {
             if let Ok(t) = transforms.get(entity) {
-                bevy_debug(&format!(
-                    "{} bone slot {}: entity {:?}, local_pos={:?}, local_rot={:?}",
-                    label, slot, entity, t.translation, t.rotation
-                ));
                 Some(BoneInfo {
                     entity,
                     rest_translation: t.translation,
                     rest_rotation: t.rotation,
                 })
             } else {
-                bevy_debug(&format!(
-                    "{} bone slot {}: entity {:?} — no Transform!",
-                    label, slot, entity
-                ));
                 None
             }
         })
@@ -382,15 +326,11 @@ pub(super) fn discover_upper_body_bones(
     // Parse VRM humanoid bone mapping for any bones that name-based discovery missed.
     let vrm_bones = vrm::parse_vrm_humanoid_bones(model_path);
     if !vrm_bones.is_empty() {
-        let vrm_discover = |vrm_name: &str, label: &str| -> Option<BoneInfo> {
+        let vrm_discover = |vrm_name: &str, _label: &str| -> Option<BoneInfo> {
             vrm_bones.get(vrm_name).and_then(|node_name| {
                 find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(
                     |entity| {
                         if let Ok(t) = transforms.get(entity) {
-                            bevy_debug(&format!(
-                                "{} bone slot {} (VRM '{}'->'{}'):  entity {:?}",
-                                label, slot, vrm_name, node_name, entity
-                            ));
                             Some(BoneInfo {
                                 entity,
                                 rest_translation: t.translation,

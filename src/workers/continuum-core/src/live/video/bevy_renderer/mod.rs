@@ -61,11 +61,6 @@ use types::*;
 // correct/stale frames (the strobe). The ReadbackComplete → try_write_bridge path
 // is correct and should be used until proper GPU sync is implemented.
 
-/// Debug logging — no-op in production. Enable via BEVY_AVATAR_DEBUG=1 env var.
-fn bevy_debug(_msg: &str) {
-    // Intentionally empty — file I/O per call was killing performance
-}
-
 /// Maximum number of concurrent avatar render slots.
 pub const MAX_AVATAR_SLOTS: u8 = 16;
 
@@ -98,7 +93,6 @@ static BEVY_SYSTEM: OnceLock<BevyAvatarSystem> = OnceLock::new();
 /// Get or initialize the global BevyAvatarSystem.
 pub fn get_or_init() -> &'static BevyAvatarSystem {
     BEVY_SYSTEM.get_or_init(|| {
-        bevy_debug(&format!("Starting Bevy headless renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)"));
         clog_info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)");
         BevyAvatarSystem::start()
     })
@@ -156,12 +150,9 @@ impl BevyAvatarSystem {
         }
 
         if !ready.load(std::sync::atomic::Ordering::Acquire) {
-            bevy_debug("WARN: Bevy did not report ready within 5s — may have failed to init GPU");
             clog_warn!(
                 "🎨 Bevy renderer did not report ready within 5s — may have failed to init GPU"
             );
-        } else {
-            bevy_debug("Bevy confirmed READY");
         }
 
         Self {
@@ -214,38 +205,37 @@ impl BevyAvatarSystem {
             .lock()
             .unwrap()
             .insert(identity.to_string(), slot);
-        bevy_debug(&format!(
-            "Registered identity '{}' -> slot {}",
-            &identity[..8.min(identity.len())],
-            slot
-        ));
     }
 
     pub fn unregister_identity(&self, identity: &str) {
         self.identity_to_slot.lock().unwrap().remove(identity);
-        bevy_debug(&format!(
-            "Unregistered identity '{}'",
-            &identity[..8.min(identity.len())]
-        ));
     }
 
     pub fn identity_to_slot_map(&self) -> HashMap<String, u8> {
         self.identity_to_slot.lock().unwrap().clone()
     }
 
-    pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
+    /// Resolve identity to slot and execute a command. Returns false if identity not registered.
+    fn send_by_identity(&self, identity: &str, make_cmd: impl FnOnce(u8) -> AvatarCommand) -> bool {
         if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            self.set_speaking(slot, speaking);
+            let _ = self.command_tx.send(make_cmd(slot));
             true
         } else {
-            if speaking {
-                clog_warn!(
-                    "🎨 set_speaking: identity '{}' not registered (no slot)",
-                    &identity[..8.min(identity.len())]
-                );
-            }
             false
         }
+    }
+
+    pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
+        let found = self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetSpeaking { slot, speaking }
+        });
+        if !found && speaking {
+            clog_warn!(
+                "🎨 set_speaking: identity '{}' not registered (no slot)",
+                &identity[..8.min(identity.len())]
+            );
+        }
+        found
     }
 
     pub fn set_mouth_weight(&self, slot: u8, weight: f32) {
@@ -255,12 +245,9 @@ impl BevyAvatarSystem {
     }
 
     pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            self.set_mouth_weight(slot, weight);
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetMouthWeight { slot, weight }
+        })
     }
 
     pub fn set_mouth_weight_sequence_by_identity(
@@ -269,52 +256,23 @@ impl BevyAvatarSystem {
         weights: Vec<f32>,
         interval_ms: u32,
     ) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self.command_tx.send(AvatarCommand::SetMouthWeightSequence {
-                slot,
-                weights,
-                interval_ms,
-            });
-            true
-        } else {
-            clog_warn!(
-                "🎨 set_mouth_weight_sequence: identity '{}' not registered",
-                &identity[..8.min(identity.len())]
-            );
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetMouthWeightSequence { slot, weights, interval_ms }
+        })
     }
 
     pub fn play_speech_by_identity(&self, identity: &str, clip: SpeechAnimationClip) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self
-                .command_tx
-                .send(AvatarCommand::PlaySpeech { slot, clip });
-            true
-        } else {
-            clog_warn!(
-                "🎨 play_speech: identity '{}' not registered (no slot)",
-                &identity[..8.min(identity.len())]
-            );
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::PlaySpeech { slot, clip }
+        })
     }
 
     pub fn stop_speech_by_identity(&self, identity: &str) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self.command_tx.send(AvatarCommand::StopSpeech { slot });
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| AvatarCommand::StopSpeech { slot })
     }
 
     pub fn resize_slot(&self, slot: u8, width: u32, height: u32) {
-        let _ = self.command_tx.send(AvatarCommand::Resize {
-            slot,
-            width,
-            height,
-        });
+        let _ = self.command_tx.send(AvatarCommand::Resize { slot, width, height });
     }
 
     pub fn set_emotion_by_identity(
@@ -324,17 +282,9 @@ impl BevyAvatarSystem {
         weight: f32,
         transition_ms: u32,
     ) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self.command_tx.send(AvatarCommand::SetEmotion {
-                slot,
-                emotion,
-                weight,
-                transition_ms,
-            });
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetEmotion { slot, emotion, weight, transition_ms }
+        })
     }
 
     pub fn set_gesture_by_identity(
@@ -343,16 +293,9 @@ impl BevyAvatarSystem {
         gesture: Gesture,
         duration_ms: u32,
     ) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self.command_tx.send(AvatarCommand::SetGesture {
-                slot,
-                gesture,
-                duration_ms,
-            });
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetGesture { slot, gesture, duration_ms }
+        })
     }
 
     pub fn set_cognitive_state_by_identity(
@@ -360,23 +303,15 @@ impl BevyAvatarSystem {
         identity: &str,
         state: crate::live::session::cognitive_animation::CognitiveState,
     ) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            let _ = self
-                .command_tx
-                .send(AvatarCommand::SetCognitiveState { slot, state });
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::SetCognitiveState { slot, state }
+        })
     }
 
     pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
-            self.resize_slot(slot, width, height);
-            true
-        } else {
-            false
-        }
+        self.send_by_identity(identity, |slot| {
+            AvatarCommand::Resize { slot, width, height }
+        })
     }
 }
 
@@ -395,7 +330,6 @@ fn run_bevy_app(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    bevy_debug(&format!("Asset base path: {}", asset_base));
 
     App::new()
         .insert_resource(CommandChannel(command_rx))
@@ -420,6 +354,7 @@ fn run_bevy_app(
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
         .insert_resource(SharedMemoryStats(memory_stats))
+        .insert_resource(SpeakingSlots::default())
         .add_plugins(
             DefaultPlugins
                 .set(bevy::window::WindowPlugin {
@@ -449,6 +384,10 @@ fn run_bevy_app(
         )
         .add_systems(
             Update,
+            animation::cache_speaking_slots.run_if(has_active_slots),
+        )
+        .add_systems(
+            Update,
             (
                 animation::manage_render_cadence,
                 ensure_continuous_readback,
@@ -463,7 +402,8 @@ fn run_bevy_app(
                 animation::drive_cognitive_gestures,
                 animation::animate_body_gestures,
             )
-                .run_if(has_active_slots),
+                .run_if(has_active_slots)
+                .after(animation::cache_speaking_slots),
         )
         .add_systems(
             PostUpdate,
@@ -780,7 +720,6 @@ fn setup_render_slots(
 
 fn signal_ready(flag: Res<ReadyFlag>) {
     flag.0.store(true, std::sync::atomic::Ordering::Release);
-    bevy_debug("signal_ready: Bevy startup systems completed, flag set to true");
 }
 
 fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
@@ -889,17 +828,7 @@ fn monitor_load_states(
                 );
                 entry.logged_final = true;
             }
-            _ => {
-                static GLTF_LOADING_TICKS: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let tick = GLTF_LOADING_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if tick == 30 || tick == 150 || tick == 300 {
-                    bevy_debug(&format!(
-                        "Gltf still loading slot {}: {} (tick {})",
-                        entry.slot, entry.path, tick
-                    ));
-                }
-            }
+            _ => {}
         }
     }
 
@@ -921,17 +850,7 @@ fn monitor_load_states(
                 );
                 entry.logged_final = true;
             }
-            _ => {
-                static SCENE_LOADING_TICKS: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let tck = SCENE_LOADING_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if tck == 30 || tck == 150 || tck == 300 {
-                    bevy_debug(&format!(
-                        "Scene still loading slot {}: {} (tick {})",
-                        entry.slot, entry.path, tck
-                    ));
-                }
-            }
+            _ => {}
         }
     }
 

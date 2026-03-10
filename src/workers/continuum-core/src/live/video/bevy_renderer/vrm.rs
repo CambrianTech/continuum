@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use super::bevy_debug;
 use super::types::VrmLookAtConfig;
 
 // =============================================================================
@@ -95,7 +94,7 @@ pub(super) fn parse_vrm_blend_shapes(glb_path: &str) -> Option<Vec<VrmBlendShape
 /// Parse VRM 0.x blend shape groups (extensions.VRM.blendShapeMaster.blendShapeGroups).
 fn parse_vrm0x_blend_shapes(
     root: &serde_json::Value,
-    glb_path: &str,
+    _glb_path: &str,
 ) -> Option<Vec<VrmBlendShape>> {
     let groups = root
         .get("extensions")?
@@ -137,21 +136,11 @@ fn parse_vrm0x_blend_shapes(
         });
     }
 
-    bevy_debug(&format!(
-        "VRM 0.x blend shapes from '{}': {} groups — {:?}",
-        glb_path,
-        shapes.len(),
-        shapes
-            .iter()
-            .map(|s| format!("{}({})[{}binds]", s.name, s.preset_name, s.binds.len()))
-            .collect::<Vec<_>>()
-    ));
-
     Some(shapes)
 }
 
 /// Parse VRM 1.0 expressions (extensions.VRMC_vrm.expressions.preset).
-fn parse_vrmc_expressions(root: &serde_json::Value, glb_path: &str) -> Option<Vec<VrmBlendShape>> {
+fn parse_vrmc_expressions(root: &serde_json::Value, _glb_path: &str) -> Option<Vec<VrmBlendShape>> {
     let preset = root
         .get("extensions")?
         .get("VRMC_vrm")?
@@ -181,16 +170,6 @@ fn parse_vrmc_expressions(root: &serde_json::Value, glb_path: &str) -> Option<Ve
             binds,
         });
     }
-
-    bevy_debug(&format!(
-        "VRM 1.0 expressions from '{}': {} presets — {:?}",
-        glb_path,
-        shapes.len(),
-        shapes
-            .iter()
-            .map(|s| format!("{}[{}binds]", s.preset_name, s.binds.len()))
-            .collect::<Vec<_>>()
-    ));
 
     Some(shapes)
 }
@@ -237,11 +216,6 @@ pub(super) fn parse_vrm_humanoid_bones(glb_path: &str) -> HashMap<String, String
             }
         }
         if !bone_map.is_empty() {
-            bevy_debug(&format!(
-                "VRM 0.x humanoid bones from '{}': {} bones",
-                glb_path,
-                bone_map.len()
-            ));
             return bone_map;
         }
     }
@@ -261,13 +235,6 @@ pub(super) fn parse_vrm_humanoid_bones(glb_path: &str) -> HashMap<String, String
                     bone_map.insert(bone_name.clone(), node_name);
                 }
             }
-        }
-        if !bone_map.is_empty() {
-            bevy_debug(&format!(
-                "VRM 1.0 humanoid bones from '{}': {} bones",
-                glb_path,
-                bone_map.len()
-            ));
         }
     }
 
@@ -294,10 +261,6 @@ pub(super) fn parse_vrm_look_at_config(glb_path: &str) -> Option<VrmLookAtConfig
             .unwrap_or("");
 
         if look_at_type != "Bone" {
-            bevy_debug(&format!(
-                "VRM lookAt type '{}' — not bone-based",
-                look_at_type
-            ));
             return None;
         }
 
@@ -315,13 +278,6 @@ pub(super) fn parse_vrm_look_at_config(glb_path: &str) -> Option<VrmLookAtConfig
             vertical_up_deg: get_output("lookAtVerticalUp"),
             vertical_down_deg: get_output("lookAtVerticalDown"),
         };
-        bevy_debug(&format!(
-            "VRM lookAt config: inner={:.1}deg outer={:.1}deg up={:.1}deg down={:.1}deg",
-            config.horizontal_inner_deg,
-            config.horizontal_outer_deg,
-            config.vertical_up_deg,
-            config.vertical_down_deg
-        ));
         return Some(config);
     }
 
@@ -334,10 +290,6 @@ pub(super) fn parse_vrm_look_at_config(glb_path: &str) -> Option<VrmLookAtConfig
         let look_at_type = look_at.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         if look_at_type != "bone" {
-            bevy_debug(&format!(
-                "VRMC lookAt type '{}' — not bone-based",
-                look_at_type
-            ));
             return None;
         }
 

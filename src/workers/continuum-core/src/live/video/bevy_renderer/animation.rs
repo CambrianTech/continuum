@@ -5,13 +5,22 @@
 
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
-use std::collections::HashSet;
 
 use super::skeleton::{camera_z_for_head, REFERENCE_CAMERA_Z};
 use super::types::*;
 use super::vrm;
 use crate::clog_info;
 
+/// Cache speaking slot IDs once per frame — consumed by 5 animation systems.
+pub(super) fn cache_speaking_slots(
+    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    mut speaking_slots: ResMut<SpeakingSlots>,
+) {
+    speaking_slots.0.clear();
+    for id in &speaking_query {
+        speaking_slots.0.insert(id.0);
+    }
+}
 
 // =============================================================================
 // Morph Target Discovery
@@ -50,55 +59,27 @@ pub(super) fn discover_morph_targets(
             .map(|names| names.to_vec())
             .unwrap_or_default();
 
-        let mut mouth_open_index = None;
-        let mut blink_index = None;
-        let mut blink_left_index = None;
-        let mut blink_right_index = None;
-        let mut happy_index = None;
-        let mut sad_index = None;
-        let mut angry_index = None;
-        let mut surprised_index = None;
-        let mut relaxed_index = None;
-        let mut look_up = None;
-        let mut look_down = None;
-        let mut look_left = None;
-        let mut look_right = None;
+        let mut layout = MorphTargetLayout {
+            mesh_entity: morph_entity,
+            mouth_open_index: None,
+            blink_index: None,
+            blink_left_index: None,
+            blink_right_index: None,
+            happy_index: None,
+            sad_index: None,
+            angry_index: None,
+            surprised_index: None,
+            relaxed_index: None,
+            look_up: None,
+            look_down: None,
+            look_left: None,
+            look_right: None,
+        };
 
         if !mesh_names.is_empty() {
-            discover_from_mesh_names(
-                &mesh_names,
-                &mut mouth_open_index,
-                &mut blink_index,
-                &mut blink_left_index,
-                &mut blink_right_index,
-                &mut happy_index,
-                &mut sad_index,
-                &mut angry_index,
-                &mut surprised_index,
-                &mut relaxed_index,
-                &mut look_up,
-                &mut look_down,
-                &mut look_left,
-                &mut look_right,
-            );
+            discover_from_mesh_names(&mesh_names, &mut layout);
         } else if let Some(model_path) = &state.model_path {
-            discover_from_vrm_extension(
-                model_path,
-                *slot,
-                &mut mouth_open_index,
-                &mut blink_index,
-                &mut blink_left_index,
-                &mut blink_right_index,
-                &mut happy_index,
-                &mut sad_index,
-                &mut angry_index,
-                &mut surprised_index,
-                &mut relaxed_index,
-                &mut look_up,
-                &mut look_down,
-                &mut look_left,
-                &mut look_right,
-            );
+            discover_from_vrm_extension(model_path, *slot, &mut layout);
         }
 
         let weight_count = morph_query
@@ -108,288 +89,141 @@ pub(super) fn discover_morph_targets(
             .unwrap_or(0);
 
         let emotion_count = [
-            happy_index,
-            sad_index,
-            angry_index,
-            surprised_index,
-            relaxed_index,
-        ]
-        .iter()
-        .filter(|i| i.is_some())
-        .count();
-        let gaze_count = [look_up, look_down, look_left, look_right]
-            .iter()
-            .filter(|i| i.is_some())
-            .count();
+            layout.happy_index, layout.sad_index, layout.angry_index,
+            layout.surprised_index, layout.relaxed_index,
+        ].iter().filter(|i| i.is_some()).count();
+        let gaze_count = [
+            layout.look_up, layout.look_down, layout.look_left, layout.look_right,
+        ].iter().filter(|i| i.is_some()).count();
         clog_info!(
             "🎨 Morph discovery slot {}: {} weights, {} names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5, gaze={}/4",
-            slot, weight_count, mesh_names.len(), mouth_open_index, blink_index, blink_left_index, blink_right_index,
-            emotion_count, gaze_count,
+            slot, weight_count, mesh_names.len(), layout.mouth_open_index, layout.blink_index,
+            layout.blink_left_index, layout.blink_right_index, emotion_count, gaze_count,
         );
 
-        morph_targets.layouts.insert(
-            *slot,
-            MorphTargetLayout {
-                mesh_entity: morph_entity,
-                mouth_open_index,
-                blink_index,
-                blink_left_index,
-                blink_right_index,
-                happy_index,
-                sad_index,
-                angry_index,
-                surprised_index,
-                relaxed_index,
-                look_up,
-                look_down,
-                look_left,
-                look_right,
-            },
-        );
+        morph_targets.layouts.insert(*slot, layout);
     }
 }
 
 /// Discover morph target indices from standard glTF mesh target names.
-#[allow(clippy::too_many_arguments)]
-fn discover_from_mesh_names(
-    mesh_names: &[String],
-    mouth_open_index: &mut Option<usize>,
-    blink_index: &mut Option<usize>,
-    blink_left_index: &mut Option<usize>,
-    blink_right_index: &mut Option<usize>,
-    happy_index: &mut Option<usize>,
-    sad_index: &mut Option<usize>,
-    angry_index: &mut Option<usize>,
-    surprised_index: &mut Option<usize>,
-    relaxed_index: &mut Option<usize>,
-    look_up: &mut Option<usize>,
-    look_down: &mut Option<usize>,
-    look_left: &mut Option<usize>,
-    look_right: &mut Option<usize>,
-) {
+fn discover_from_mesh_names(mesh_names: &[String], layout: &mut MorphTargetLayout) {
     for (i, name) in mesh_names.iter().enumerate() {
         let lower = name.to_lowercase();
-        if mouth_open_index.is_none()
-            && (lower == "aa"
-                || lower == "a"
-                || lower.ends_with("_mth_a")
-                || lower.ends_with("mth_a")
-                || lower.ends_with("_v_aa")
-                || lower == "v_aa"
-                || lower.ends_with("mouth_open")
-                || lower.ends_with("jawopen")
-                || lower == "fcl_mth_a")
-        {
-            *mouth_open_index = Some(i);
+
+        // Helper: set index if not already discovered
+        macro_rules! set_first {
+            ($field:ident, $cond:expr) => {
+                if layout.$field.is_none() && $cond {
+                    layout.$field = Some(i);
+                }
+            };
         }
-        if blink_index.is_none()
-            && (lower == "blink"
-                || lower == "fcl_eye_close"
-                || (lower.contains("eye_close")
-                    && !lower.contains("_l")
-                    && !lower.contains("_r")
-                    && !lower.contains("left")
-                    && !lower.contains("right"))
-                || lower == "vrc.blink")
-        {
-            *blink_index = Some(i);
-        }
-        if blink_left_index.is_none()
-            && (lower == "blinkleft"
-                || lower == "blink_l"
-                || lower == "fcl_eye_close_l"
-                || lower.contains("eye_close_l")
-                || lower.contains("eye_close_left"))
-        {
-            *blink_left_index = Some(i);
-        }
-        if blink_right_index.is_none()
-            && (lower == "blinkright"
-                || lower == "blink_r"
-                || lower == "fcl_eye_close_r"
-                || lower.contains("eye_close_r")
-                || lower.contains("eye_close_right"))
-        {
-            *blink_right_index = Some(i);
-        }
-        if happy_index.is_none()
-            && (lower == "happy"
-                || lower == "joy"
-                || lower.ends_with("_joy")
-                || lower.ends_with("_happy")
-                || lower == "fcl_all_joy"
-                || lower == "fcl_eye_joy")
-        {
-            *happy_index = Some(i);
-        }
-        if sad_index.is_none()
-            && (lower == "sad"
-                || lower == "sorrow"
-                || lower.ends_with("_sad")
-                || lower.ends_with("_sorrow")
-                || lower == "fcl_all_sorrow"
-                || lower == "fcl_eye_sorrow")
-        {
-            *sad_index = Some(i);
-        }
-        if angry_index.is_none()
-            && (lower == "angry"
-                || lower.ends_with("_angry")
-                || lower == "fcl_all_angry"
-                || lower == "fcl_mth_angry")
-        {
-            *angry_index = Some(i);
-        }
-        if surprised_index.is_none()
-            && (lower == "surprised"
-                || lower == "fun"
-                || lower.ends_with("_surprised")
-                || lower.ends_with("_fun")
-                || lower == "fcl_all_fun"
-                || lower == "fcl_brw_surprised")
-        {
-            *surprised_index = Some(i);
-        }
-        if relaxed_index.is_none()
-            && (lower == "relaxed"
-                || lower.ends_with("_relaxed")
-                || lower == "fcl_all_relaxed")
-        {
-            *relaxed_index = Some(i);
-        }
-        if look_up.is_none()
-            && (lower == "lookup"
-                || lower == "look_up"
-                || lower.ends_with("lookup")
-                || lower == "fcl_eye_lookup")
-        {
-            *look_up = Some(i);
-        }
-        if look_down.is_none()
-            && (lower == "lookdown"
-                || lower == "look_down"
-                || lower.ends_with("lookdown")
-                || lower == "fcl_eye_lookdown")
-        {
-            *look_down = Some(i);
-        }
-        if look_left.is_none()
-            && (lower == "lookleft"
-                || lower == "look_left"
-                || lower.ends_with("lookleft")
-                || lower == "fcl_eye_lookleft")
-        {
-            *look_left = Some(i);
-        }
-        if look_right.is_none()
-            && (lower == "lookright"
-                || lower == "look_right"
-                || lower.ends_with("lookright")
-                || lower == "fcl_eye_lookright")
-        {
-            *look_right = Some(i);
-        }
+
+        set_first!(mouth_open_index,
+            lower == "aa" || lower == "a"
+            || lower.ends_with("_mth_a") || lower.ends_with("mth_a")
+            || lower.ends_with("_v_aa") || lower == "v_aa"
+            || lower.ends_with("mouth_open") || lower.ends_with("jawopen")
+            || lower == "fcl_mth_a"
+        );
+        set_first!(blink_index,
+            lower == "blink" || lower == "fcl_eye_close" || lower == "vrc.blink"
+            || (lower.contains("eye_close")
+                && !lower.contains("_l") && !lower.contains("_r")
+                && !lower.contains("left") && !lower.contains("right"))
+        );
+        set_first!(blink_left_index,
+            lower == "blinkleft" || lower == "blink_l" || lower == "fcl_eye_close_l"
+            || lower.contains("eye_close_l") || lower.contains("eye_close_left")
+        );
+        set_first!(blink_right_index,
+            lower == "blinkright" || lower == "blink_r" || lower == "fcl_eye_close_r"
+            || lower.contains("eye_close_r") || lower.contains("eye_close_right")
+        );
+        set_first!(happy_index,
+            lower == "happy" || lower == "joy"
+            || lower.ends_with("_joy") || lower.ends_with("_happy")
+            || lower == "fcl_all_joy" || lower == "fcl_eye_joy"
+        );
+        set_first!(sad_index,
+            lower == "sad" || lower == "sorrow"
+            || lower.ends_with("_sad") || lower.ends_with("_sorrow")
+            || lower == "fcl_all_sorrow" || lower == "fcl_eye_sorrow"
+        );
+        set_first!(angry_index,
+            lower == "angry" || lower.ends_with("_angry")
+            || lower == "fcl_all_angry" || lower == "fcl_mth_angry"
+        );
+        set_first!(surprised_index,
+            lower == "surprised" || lower == "fun"
+            || lower.ends_with("_surprised") || lower.ends_with("_fun")
+            || lower == "fcl_all_fun" || lower == "fcl_brw_surprised"
+        );
+        set_first!(relaxed_index,
+            lower == "relaxed" || lower.ends_with("_relaxed") || lower == "fcl_all_relaxed"
+        );
+        set_first!(look_up,
+            lower == "lookup" || lower == "look_up"
+            || lower.ends_with("lookup") || lower == "fcl_eye_lookup"
+        );
+        set_first!(look_down,
+            lower == "lookdown" || lower == "look_down"
+            || lower.ends_with("lookdown") || lower == "fcl_eye_lookdown"
+        );
+        set_first!(look_left,
+            lower == "lookleft" || lower == "look_left"
+            || lower.ends_with("lookleft") || lower == "fcl_eye_lookleft"
+        );
+        set_first!(look_right,
+            lower == "lookright" || lower == "look_right"
+            || lower.ends_with("lookright") || lower == "fcl_eye_lookright"
+        );
     }
 }
 
 /// Discover morph target indices from VRM extension blend shapes.
-#[allow(clippy::too_many_arguments)]
-fn discover_from_vrm_extension(
-    model_path: &str,
-    slot: u8,
-    mouth_open_index: &mut Option<usize>,
-    blink_index: &mut Option<usize>,
-    blink_left_index: &mut Option<usize>,
-    blink_right_index: &mut Option<usize>,
-    happy_index: &mut Option<usize>,
-    sad_index: &mut Option<usize>,
-    angry_index: &mut Option<usize>,
-    surprised_index: &mut Option<usize>,
-    relaxed_index: &mut Option<usize>,
-    look_up: &mut Option<usize>,
-    look_down: &mut Option<usize>,
-    look_left: &mut Option<usize>,
-    look_right: &mut Option<usize>,
-) {
-    if let Some(vrm_shapes) = vrm::parse_vrm_blend_shapes(model_path) {
-        for shape in &vrm_shapes {
-            let preset = shape.preset_name.to_lowercase();
-            if mouth_open_index.is_none() && (preset == "a" || preset == "aa") {
-                if let Some(bind) = shape.binds.first() {
-                    *mouth_open_index = Some(bind.index);
+fn discover_from_vrm_extension(model_path: &str, slot: u8, layout: &mut MorphTargetLayout) {
+    let vrm_shapes = match vrm::parse_vrm_blend_shapes(model_path) {
+        Some(s) => s,
+        None => return,
+    };
+
+    for shape in &vrm_shapes {
+        let preset = shape.preset_name.to_lowercase();
+        let first_index = shape.binds.first().map(|b| b.index);
+
+        // Helper: set layout field from first bind index if preset matches
+        macro_rules! map_preset {
+            ($field:ident, $($name:literal)|+) => {
+                if layout.$field.is_none() && matches!(preset.as_str(), $($name)|+) {
+                    layout.$field = first_index;
                 }
-            }
-            if blink_index.is_none() && preset == "blink" {
-                if let Some(bind) = shape.binds.first() {
-                    *blink_index = Some(bind.index);
-                }
-                if shape.binds.len() >= 2 {
-                    *blink_left_index = Some(shape.binds[0].index);
-                    *blink_right_index = Some(shape.binds[1].index);
-                }
-            }
-            if blink_left_index.is_none() && (preset == "blink_l" || preset == "blinkleft") {
-                if let Some(bind) = shape.binds.first() {
-                    *blink_left_index = Some(bind.index);
-                }
-            }
-            if blink_right_index.is_none() && (preset == "blink_r" || preset == "blinkright") {
-                if let Some(bind) = shape.binds.first() {
-                    *blink_right_index = Some(bind.index);
-                }
-            }
-            if happy_index.is_none() && (preset == "joy" || preset == "happy") {
-                if let Some(bind) = shape.binds.first() {
-                    *happy_index = Some(bind.index);
-                }
-            }
-            if sad_index.is_none() && (preset == "sorrow" || preset == "sad") {
-                if let Some(bind) = shape.binds.first() {
-                    *sad_index = Some(bind.index);
-                }
-            }
-            if angry_index.is_none() && preset == "angry" {
-                if let Some(bind) = shape.binds.first() {
-                    *angry_index = Some(bind.index);
-                }
-            }
-            if surprised_index.is_none() && (preset == "fun" || preset == "surprised") {
-                if let Some(bind) = shape.binds.first() {
-                    *surprised_index = Some(bind.index);
-                }
-            }
-            if relaxed_index.is_none() && preset == "relaxed" {
-                if let Some(bind) = shape.binds.first() {
-                    *relaxed_index = Some(bind.index);
-                }
-            }
-            if look_up.is_none() && (preset == "lookup" || preset == "lookUp") {
-                if let Some(bind) = shape.binds.first() {
-                    *look_up = Some(bind.index);
-                }
-            }
-            if look_down.is_none() && (preset == "lookdown" || preset == "lookDown") {
-                if let Some(bind) = shape.binds.first() {
-                    *look_down = Some(bind.index);
-                }
-            }
-            if look_left.is_none() && (preset == "lookleft" || preset == "lookLeft") {
-                if let Some(bind) = shape.binds.first() {
-                    *look_left = Some(bind.index);
-                }
-            }
-            if look_right.is_none() && (preset == "lookright" || preset == "lookRight") {
-                if let Some(bind) = shape.binds.first() {
-                    *look_right = Some(bind.index);
-                }
+            };
+        }
+
+        map_preset!(mouth_open_index, "a" | "aa");
+        map_preset!(happy_index, "joy" | "happy");
+        map_preset!(sad_index, "sorrow" | "sad");
+        map_preset!(angry_index, "angry");
+        map_preset!(surprised_index, "fun" | "surprised");
+        map_preset!(relaxed_index, "relaxed");
+        map_preset!(blink_left_index, "blink_l" | "blinkleft");
+        map_preset!(blink_right_index, "blink_r" | "blinkright");
+        map_preset!(look_up, "lookup");
+        map_preset!(look_down, "lookdown");
+        map_preset!(look_left, "lookleft");
+        map_preset!(look_right, "lookright");
+
+        // "blink" preset with 2 binds → split into left/right
+        if layout.blink_index.is_none() && preset == "blink" {
+            layout.blink_index = first_index;
+            if shape.binds.len() >= 2 {
+                layout.blink_left_index = Some(shape.binds[0].index);
+                layout.blink_right_index = Some(shape.binds[1].index);
             }
         }
-        clog_info!(
-            "🎨 VRM blend shapes slot {}: {} groups parsed",
-            slot,
-            vrm_shapes.len()
-        );
     }
+    clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
 }
 
 /// Find the first entity with MorphWeights in a scene hierarchy.
@@ -409,6 +243,16 @@ fn find_morph_entity(
         }
     }
     None
+}
+
+/// Set a morph weight by optional index, with bounds check.
+#[inline(always)]
+fn set_morph(w: &mut [f32], idx: Option<usize>, val: f32) {
+    if let Some(i) = idx {
+        if i < w.len() {
+            w[i] = val;
+        }
+    }
 }
 
 // =============================================================================
@@ -466,7 +310,7 @@ pub(super) fn animate_idle(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn animate_speaking(
     time: Res<Time>,
-    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    speaking_slots: Res<SpeakingSlots>,
     morph_targets: Res<SlotMorphTargets>,
     bone_registry: Res<BoneRegistry>,
     mut speech_clips: ResMut<ActiveSpeechClips>,
@@ -476,7 +320,6 @@ pub(super) fn animate_speaking(
     mut commands: Commands,
     registry: Res<SlotRegistry>,
 ) {
-    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
     let now = time.elapsed_secs();
 
     // Auto-stop expired clips
@@ -523,7 +366,7 @@ pub(super) fn animate_speaking(
 
     for (slot, layout) in &morph_targets.layouts {
         let has_clip = speech_clips.clips.contains_key(slot);
-        let is_speaking = speaking_slots.contains(slot);
+        let is_speaking = speaking_slots.0.contains(slot);
 
         if let Ok(mut weights) = morph_weights.get_mut(layout.mesh_entity) {
             let w = weights.weights_mut();
@@ -551,11 +394,7 @@ pub(super) fn animate_speaking(
                 0.0
             };
 
-            if let Some(idx) = layout.mouth_open_index {
-                if idx < w.len() {
-                    w[idx] = mouth_weight;
-                }
-            }
+            set_morph(w, layout.mouth_open_index, mouth_weight);
         }
 
         // Head nod during speech
@@ -588,11 +427,10 @@ pub(super) fn animate_expression(
     morph_targets: Res<SlotMorphTargets>,
     mut emotion_state: ResMut<EmotionState>,
     speech_clips: Res<ActiveSpeechClips>,
-    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    speaking_slots: Res<SpeakingSlots>,
     mut morph_weights: Query<&mut MorphWeights>,
 ) {
     let dt = time.delta_secs();
-    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
 
     for (slot, layout) in &morph_targets.layouts {
         let state = match emotion_state.slots.get_mut(slot) {
@@ -626,7 +464,7 @@ pub(super) fn animate_expression(
             }
         }
 
-        let is_speaking = speaking_slots.contains(slot) || speech_clips.clips.contains_key(slot);
+        let is_speaking = speaking_slots.0.contains(slot) || speech_clips.clips.contains_key(slot);
         let effective_weight = if is_speaking {
             state.current_weight * SPEECH_ATTENUATION
         } else {
@@ -647,11 +485,7 @@ pub(super) fn animate_expression(
                 Emotion::Relaxed => layout.relaxed_index,
                 Emotion::Neutral => None,
             };
-            if let Some(i) = idx {
-                if i < w.len() {
-                    w[i] = effective_weight;
-                }
-            }
+            set_morph(w, idx, effective_weight);
         }
     }
 }
@@ -699,21 +533,9 @@ pub(super) fn animate_blinking(
                 0.0
             };
 
-            if let Some(idx) = layout.blink_index {
-                if idx < w.len() {
-                    w[idx] = blink_weight;
-                }
-            }
-            if let Some(idx) = layout.blink_left_index {
-                if idx < w.len() {
-                    w[idx] = blink_weight;
-                }
-            }
-            if let Some(idx) = layout.blink_right_index {
-                if idx < w.len() {
-                    w[idx] = blink_weight;
-                }
-            }
+            set_morph(w, layout.blink_index, blink_weight);
+            set_morph(w, layout.blink_left_index, blink_weight);
+            set_morph(w, layout.blink_right_index, blink_weight);
         }
     }
 }
@@ -727,20 +549,19 @@ pub(super) fn animate_idle_gestures(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
-    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    speaking_slots: Res<SpeakingSlots>,
     active_gestures: Res<ActiveGestures>,
     mut gesture_state: ResMut<IdleGestureState>,
     mut transforms: Query<&mut Transform>,
 ) {
     let dt = time.delta_secs();
-    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
 
     for (slot, state) in &registry.slots {
         if !state.active {
             continue;
         }
 
-        let is_speaking = speaking_slots.contains(slot);
+        let is_speaking = speaking_slots.0.contains(slot);
 
         if active_gestures.slots.contains_key(slot) {
             continue;
@@ -764,8 +585,8 @@ pub(super) fn animate_idle_gestures(
 
         if is_speaking {
             gesture.head_turn_target = 0.0;
-        } else if !speaking_slots.is_empty() {
-            let turn_bias: f32 = speaking_slots
+        } else if !speaking_slots.0.is_empty() {
+            let turn_bias: f32 = speaking_slots.0
                 .iter()
                 .map(|&s| {
                     let diff = s as f32 - *slot as f32;
@@ -858,11 +679,10 @@ pub(super) fn animate_eye_gaze(
     registry: Res<SlotRegistry>,
     morph_targets: Res<SlotMorphTargets>,
     bone_registry: Res<BoneRegistry>,
-    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    speaking_slots: Res<SpeakingSlots>,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,
 ) {
-    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
     let t = time.elapsed_secs();
 
     for (slot, state) in &registry.slots {
@@ -870,7 +690,7 @@ pub(super) fn animate_eye_gaze(
             continue;
         }
 
-        let is_speaking = speaking_slots.contains(slot);
+        let is_speaking = speaking_slots.0.contains(slot);
         let phase = *slot as f32 * 2.73;
 
         let (gaze_x, gaze_y) = if is_speaking {
@@ -878,7 +698,7 @@ pub(super) fn animate_eye_gaze(
             let drift_y = (t * 0.25 + phase).cos() * 0.03;
             (drift_x, drift_y)
         } else {
-            let speaker_bias: f32 = speaking_slots
+            let speaker_bias: f32 = speaking_slots.0
                 .iter()
                 .map(|&s| {
                     let diff = s as f32 - *slot as f32;
@@ -942,51 +762,19 @@ pub(super) fn animate_eye_gaze(
                     let w = weights.weights_mut();
 
                     if gaze_x < 0.0 {
-                        if let Some(idx) = layout.look_left {
-                            if idx < w.len() {
-                                w[idx] = (-gaze_x).min(1.0);
-                            }
-                        }
-                        if let Some(idx) = layout.look_right {
-                            if idx < w.len() {
-                                w[idx] = 0.0;
-                            }
-                        }
+                        set_morph(w, layout.look_left, (-gaze_x).min(1.0));
+                        set_morph(w, layout.look_right, 0.0);
                     } else {
-                        if let Some(idx) = layout.look_right {
-                            if idx < w.len() {
-                                w[idx] = gaze_x.min(1.0);
-                            }
-                        }
-                        if let Some(idx) = layout.look_left {
-                            if idx < w.len() {
-                                w[idx] = 0.0;
-                            }
-                        }
+                        set_morph(w, layout.look_right, gaze_x.min(1.0));
+                        set_morph(w, layout.look_left, 0.0);
                     }
 
                     if gaze_y < 0.0 {
-                        if let Some(idx) = layout.look_down {
-                            if idx < w.len() {
-                                w[idx] = (-gaze_y).min(1.0);
-                            }
-                        }
-                        if let Some(idx) = layout.look_up {
-                            if idx < w.len() {
-                                w[idx] = 0.0;
-                            }
-                        }
+                        set_morph(w, layout.look_down, (-gaze_y).min(1.0));
+                        set_morph(w, layout.look_up, 0.0);
                     } else {
-                        if let Some(idx) = layout.look_up {
-                            if idx < w.len() {
-                                w[idx] = gaze_y.min(1.0);
-                            }
-                        }
-                        if let Some(idx) = layout.look_down {
-                            if idx < w.len() {
-                                w[idx] = 0.0;
-                            }
-                        }
+                        set_morph(w, layout.look_up, gaze_y.min(1.0));
+                        set_morph(w, layout.look_down, 0.0);
                     }
                 }
             }
@@ -1009,18 +797,17 @@ pub(super) fn drive_cognitive_gestures(
     time: Res<Time>,
     mut cognitive_anim: ResMut<CognitiveAnimState>,
     mut active_gestures: ResMut<ActiveGestures>,
-    speaking_query: Query<&AvatarSlotId, With<Speaking>>,
+    speaking_slots: Res<SpeakingSlots>,
 ) {
     use crate::live::session::cognitive_animation::{select_weighted_gesture, CognitiveState};
 
     let dt = time.delta_secs();
     let elapsed = time.elapsed_secs();
-    let speaking_slots: HashSet<u8> = speaking_query.iter().map(|id| id.0).collect();
 
     for (slot, cog) in cognitive_anim.slots.iter_mut() {
         cog.time_since_reroll += dt;
 
-        if speaking_slots.contains(slot) {
+        if speaking_slots.0.contains(slot) {
             continue;
         }
 
