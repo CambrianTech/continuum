@@ -228,47 +228,78 @@ impl MemoryCorpus {
             .max_by(|a, b| a.timestamp.cmp(&b.timestamp))
     }
 
-    // ─── Copy-on-Write Append ─────────────────────────────────────────────
+    // ─── In-Place Append ───────────────────────────────────────────────────
 
-    /// Create a new corpus with an additional memory appended.
-    /// Copy-on-write: clones all data, pushes new memory, returns new corpus.
-    /// O(n) but appends are rare (~1/min/persona). Readers on old Arc unaffected.
-    pub fn with_appended_memory(&self, corpus_memory: CorpusMemory) -> Self {
-        let mut memories = self.memories.clone();
-        let mut memory_embeddings = self.memory_embeddings.clone();
-
+    /// Append a memory in-place. O(1) amortized — no cloning.
+    /// Caller must hold a write lock (via RwLock in PersonaMemoryManager).
+    pub fn append_memory_mut(&mut self, corpus_memory: CorpusMemory) {
         if let Some(emb) = corpus_memory.embedding {
-            memory_embeddings.insert(corpus_memory.record.id.clone(), emb);
+            self.memory_embeddings.insert(corpus_memory.record.id.clone(), emb);
         }
-        memories.push(corpus_memory.record);
-
-        Self {
-            memories,
-            memory_embeddings,
-            timeline_events: self.timeline_events.clone(),
-            event_embeddings: self.event_embeddings.clone(),
-            loaded_at: self.loaded_at,
-        }
+        self.memories.push(corpus_memory.record);
     }
 
-    /// Create a new corpus with an additional timeline event appended.
-    /// Copy-on-write: clones all data, pushes new event, returns new corpus.
-    pub fn with_appended_event(&self, corpus_event: CorpusTimelineEvent) -> Self {
-        let mut timeline_events = self.timeline_events.clone();
-        let mut event_embeddings = self.event_embeddings.clone();
-
+    /// Append a timeline event in-place. O(1) amortized — no cloning.
+    /// Caller must hold a write lock (via RwLock in PersonaMemoryManager).
+    pub fn append_event_mut(&mut self, corpus_event: CorpusTimelineEvent) {
         if let Some(emb) = corpus_event.embedding {
-            event_embeddings.insert(corpus_event.event.id.clone(), emb);
+            self.event_embeddings.insert(corpus_event.event.id.clone(), emb);
         }
-        timeline_events.push(corpus_event.event);
+        self.timeline_events.push(corpus_event.event);
+    }
 
-        Self {
-            memories: self.memories.clone(),
-            memory_embeddings: self.memory_embeddings.clone(),
-            timeline_events,
-            event_embeddings,
-            loaded_at: self.loaded_at,
+    /// Trim memories to a max count, keeping highest-importance entries.
+    /// Returns number of entries evicted.
+    pub fn trim_memories(&mut self, max_count: usize) -> usize {
+        if self.memories.len() <= max_count {
+            return 0;
         }
+        // Sort by importance DESC, keep top N
+        self.memories.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let evicted = self.memories.len() - max_count;
+        // Collect IDs of memories being removed so we can clean up embeddings
+        let removed_ids: Vec<String> = self.memories[max_count..]
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        self.memories.truncate(max_count);
+        for id in &removed_ids {
+            self.memory_embeddings.remove(id);
+        }
+        evicted
+    }
+
+    /// Trim timeline events to a max count, keeping most recent.
+    /// Returns number of entries evicted.
+    pub fn trim_events(&mut self, max_count: usize) -> usize {
+        if self.timeline_events.len() <= max_count {
+            return 0;
+        }
+        // Sort by timestamp DESC, keep most recent N
+        self.timeline_events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        let evicted = self.timeline_events.len() - max_count;
+        let removed_ids: Vec<String> = self.timeline_events[max_count..]
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        self.timeline_events.truncate(max_count);
+        for id in &removed_ids {
+            self.event_embeddings.remove(id);
+        }
+        evicted
+    }
+
+    /// Total approximate memory usage in bytes.
+    pub fn approx_size_bytes(&self) -> usize {
+        let memory_size = self.memories.len() * std::mem::size_of::<MemoryRecord>();
+        let event_size = self.timeline_events.len() * std::mem::size_of::<TimelineEvent>();
+        // Each embedding is 384 f32s = 1536 bytes + HashMap overhead
+        let embedding_size = (self.memory_embeddings.len() + self.event_embeddings.len()) * (384 * 4 + 64);
+        memory_size + event_size + embedding_size
     }
 
     // ─── Timeline Queries (continued) ────────────────────────────────────

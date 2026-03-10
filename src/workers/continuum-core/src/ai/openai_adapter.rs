@@ -438,16 +438,14 @@ impl OpenAICompatibleAdapter {
                                             "type": "image_url",
                                             "image_url": { "url": url }
                                         }))
-                                    } else if let Some(b64) = &image.base64 {
-                                        Some(json!({
+                                    } else {
+                                        image.base64.as_ref().map(|b64| json!({
                                             "type": "image_url",
                                             "image_url": {
                                                 "url": format!("data:{};base64,{}",
                                                     image.mime_type.as_deref().unwrap_or("image/png"), b64)
                                             }
                                         }))
-                                    } else {
-                                        None
                                     }
                                 }
                                 _ => None,
@@ -847,7 +845,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
         // Return prefixes based on provider
-        match self.config.provider_id.as_ref() {
+        match self.config.provider_id {
             "openai" => vec!["gpt", "o1", "o3"],
             "deepseek" => vec!["deepseek"],
             "groq" => vec!["llama-3", "mixtral", "gemma2"], // Groq's hosted models

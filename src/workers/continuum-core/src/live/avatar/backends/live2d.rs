@@ -205,13 +205,14 @@ impl AvatarRenderer for Live2DRenderer {
 
 /// Backend factory for Live2D sprite-sheet rendering.
 /// Handles .moc3 (future: real Cubism SDK) and sprite-sheet formats.
+#[derive(Default)]
 pub struct Live2DBackend {
     initialized: bool,
 }
 
 impl Live2DBackend {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self::default()
     }
 }
 
@@ -254,7 +255,7 @@ impl RenderBackend for Live2DBackend {
         // Load the atlas image
         // For now, we support raw RGBA files (width/height encoded in filename or manifest).
         // A real implementation would use image crate to decode PNG/WebP.
-        let atlas_data = std::fs::read(&atlas_path).map_err(|e| AvatarError::IoError(e))?;
+        let atlas_data = std::fs::read(&atlas_path).map_err(AvatarError::IoError)?;
 
         // Infer atlas dimensions from file size assuming square-ish atlas
         // with EXPRESSION_COLS × VISEME_ROWS cells.

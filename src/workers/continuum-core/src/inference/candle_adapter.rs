@@ -178,9 +178,11 @@ impl CandleAdapter {
             }
         }
 
-        let mut active = self.active_adapters.write();
-        if !active.contains(&adapter_id.to_string()) {
-            active.push(adapter_id.to_string());
+        {
+            let mut active = self.active_adapters.write();
+            if !active.contains(&adapter_id.to_string()) {
+                active.push(adapter_id.to_string());
+            }
         }
 
         {

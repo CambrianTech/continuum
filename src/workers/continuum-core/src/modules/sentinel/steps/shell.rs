@@ -13,6 +13,7 @@ use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepRes
 /// Environment variables in `env` are interpolated and set on the child process.
 /// This is the safe way to pass arbitrary data (code, JSON, etc.) to shell commands
 /// without shell quoting issues — the data goes through env vars, not the command string.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     cmd: &str,
     args: &[String],

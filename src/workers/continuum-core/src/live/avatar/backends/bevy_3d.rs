@@ -102,13 +102,14 @@ impl AvatarRenderer for BevyChannelRenderer {
 
 /// Backend factory for the Bevy 3D renderer.
 /// Handles VRM and glTF models via the BevyAvatarSystem GPU pipeline.
+#[derive(Default)]
 pub struct Bevy3DBackend {
     initialized: bool,
 }
 
 impl Bevy3DBackend {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self::default()
     }
 }
 

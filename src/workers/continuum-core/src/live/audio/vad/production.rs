@@ -230,7 +230,7 @@ impl ProductionVAD {
 
             if !quick_result.is_speech {
                 // Debug: log WebRTC rejections periodically
-                if self.frame_count % 100 == 0 {
+                if self.frame_count.is_multiple_of(100) {
                     clog_debug!("VAD frame #{}: WebRTC=silence, max_amp={}, speech_frames={}, silence_frames={}",
                         self.frame_count, max_amp, self.buffer.speech_frames, self.buffer.silence_frames);
                 }
@@ -241,7 +241,7 @@ impl ProductionVAD {
                 let accurate_result = self.silero.detect(audio)?;
                 let confirmed = accurate_result.confidence > self.config.silero_threshold;
                 // Periodic Silero decision log (every 100th speech frame, not every frame)
-                if self.frame_count % 100 == 0 {
+                if self.frame_count.is_multiple_of(100) {
                     clog_debug!("VAD frame #{}: WebRTC=SPEECH, Silero={:.3} (threshold={:.1}), confirmed={}, max_amp={}",
                         self.frame_count, accurate_result.confidence, self.config.silero_threshold,
                         confirmed, max_amp);

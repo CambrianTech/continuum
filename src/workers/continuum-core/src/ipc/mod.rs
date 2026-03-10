@@ -810,7 +810,7 @@ pub fn start_server(
     // Verify all expected modules are registered (fails server if any missing)
     if let Err(e) = runtime.verify_registration() {
         log_error!("ipc", "server", "{}", e);
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+        return Err(std::io::Error::other(e));
     }
 
     log_info!(

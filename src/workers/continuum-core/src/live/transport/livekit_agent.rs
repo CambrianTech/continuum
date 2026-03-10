@@ -134,7 +134,7 @@ pub type TranscriptionBuffer = Arc<Mutex<VecDeque<TranscriptionEntry>>>;
 const MAX_TRANSCRIPTION_BUFFER: usize = 100;
 
 /// Audio samples per 10ms at 16kHz — LiveKit processes in 10ms chunks
-const SAMPLES_PER_10MS: u32 = (AUDIO_SAMPLE_RATE / 100) as u32;
+const SAMPLES_PER_10MS: u32 = AUDIO_SAMPLE_RATE / 100;
 
 /// STT listener identity prefix (for descriptive LiveKit room identities only).
 /// Role classification uses ParticipantMetadata, NOT these prefixes.
@@ -757,7 +757,7 @@ async fn publish_data_channel_transcription(
 
     room.local_participant()
         .publish_data(DataPacket {
-            payload: bytes.into(),
+            payload: bytes,
             topic: Some("transcription".to_string()),
             reliable: true,
             ..Default::default()
@@ -1300,7 +1300,7 @@ async fn listen_and_transcribe(
         frame_count += 1;
 
         // Log first frame + every 3000th frame
-        if frame_count == 1 || frame_count % 3000 == 0 {
+        if frame_count == 1 || frame_count.is_multiple_of(3000) {
             let max_amp = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
             clog_info!(
                 "🎤 STT: Frame #{} from '{}' — {} samples, max_amp={}, sr={}",
@@ -1465,6 +1465,12 @@ pub struct LiveKitAgentManager {
     transcription_buffer: TranscriptionBuffer,
 }
 
+impl Default for LiveKitAgentManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LiveKitAgentManager {
     /// Create manager, resolving LiveKit URL from secrets (config.env) with dev fallback.
     pub fn new() -> Self {
@@ -1555,6 +1561,7 @@ impl LiveKitAgentManager {
         // then all call connect(), creating 3 agents and 3 video loops
         // that burn 3 Bevy render slots for the same identity.
         let creation_lock = {
+            #[allow(clippy::type_complexity)]
             static CREATION_LOCKS: std::sync::Mutex<
                 Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
             > = std::sync::Mutex::new(None);
@@ -1870,7 +1877,7 @@ async fn run_ambient_audio_loop(
     // Wait for other participants (human, STT listener) to join the room
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-    let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE as u32);
+    let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
     let chunk_duration_ms: u64 = 100; // 100ms chunks
     let chunk_samples = (AUDIO_SAMPLE_RATE as usize * chunk_duration_ms as usize) / 1000;
 
@@ -1909,7 +1916,7 @@ async fn run_ambient_audio_loop(
         for frame_chunk in samples.chunks(frame_size) {
             let frame = AudioFrame {
                 data: Cow::Borrowed(frame_chunk),
-                sample_rate: AUDIO_SAMPLE_RATE as u32,
+                sample_rate: AUDIO_SAMPLE_RATE,
                 num_channels: 1,
                 samples_per_channel: frame_chunk.len() as u32,
             };

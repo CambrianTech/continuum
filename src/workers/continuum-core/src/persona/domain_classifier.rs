@@ -325,15 +325,12 @@ impl DomainClassifier {
                         matches += 2; // Multi-word matches are worth more
                     }
                 } else {
-                    // Single-word keywords: check word boundaries
+                    // Single-word keywords: check word boundaries or substring for compound words
                     if text_words
                         .iter()
                         .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == keyword.as_str())
+                        || text_lower.contains(keyword.as_str())
                     {
-                        matches += 1;
-                    }
-                    // Also check substring for compound words (e.g. "typescript" in "typescript-expertise")
-                    else if text_lower.contains(keyword.as_str()) {
                         matches += 1;
                     }
                 }
@@ -412,6 +409,12 @@ impl DomainClassifier {
             .iter()
             .map(|(domain, vocab)| (domain.clone(), vocab.adapter_name.is_some()))
             .collect()
+    }
+}
+
+impl Default for DomainClassifier {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

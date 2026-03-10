@@ -31,6 +31,7 @@ pub mod module_context;
 pub mod module_logger;
 pub mod module_metrics;
 pub mod registry;
+#[allow(clippy::module_inception)]
 pub mod runtime;
 pub mod service_module;
 pub mod shared_compute;

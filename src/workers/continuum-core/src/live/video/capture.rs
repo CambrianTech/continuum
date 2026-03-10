@@ -277,7 +277,7 @@ async fn capture_video_stream(
         match result {
             Ok((Some(snapshot), hash)) => {
                 let jpeg_kb = snapshot.jpeg.len() / 1024;
-                if frame_count <= 3 || frame_count % 60 == 0 {
+                if frame_count <= 3 || frame_count.is_multiple_of(60) {
                     clog_info!(
                         "👁 Captured frame #{} from '{}': {}x{}, {}KB JPEG",
                         frame_count,
@@ -319,7 +319,7 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
     // Determine grid layout (try to keep aspect ratio reasonable)
     let count = participants.len();
     let cols = (count as f64).sqrt().ceil() as u32;
-    let rows = ((count as u32) + cols - 1) / cols;
+    let rows = (count as u32).div_ceil(cols);
 
     // Target cell size — scale each participant's frame to fit
     let cell_w: u32 = 320;

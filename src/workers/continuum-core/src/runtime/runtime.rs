@@ -47,6 +47,12 @@ pub struct Runtime {
     compute: Arc<SharedCompute>,
 }
 
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Runtime {
     pub fn new() -> Self {
         Self {

@@ -97,7 +97,7 @@ impl EmbeddingProvider for FastEmbedProvider {
             .lock()
             .map_err(|e| EmbeddingError(format!("Model lock poisoned: {e}")))?;
         model
-            .embed(texts.to_vec(), None)
+            .embed(texts, None)
             .map_err(|e| EmbeddingError(format!("Batch embed failed: {e}")))
     }
 }
@@ -138,7 +138,7 @@ impl EmbeddingProvider for ModuleBackedEmbeddingProvider {
 
     fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         crate::modules::embedding::generate_embedding(text, &self.model_name)
-            .map_err(|e| EmbeddingError(e))
+            .map_err(EmbeddingError)
     }
 
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -147,7 +147,7 @@ impl EmbeddingProvider for ModuleBackedEmbeddingProvider {
         }
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         crate::modules::embedding::generate_embeddings_batch(&refs, &self.model_name)
-            .map_err(|e| EmbeddingError(e))
+            .map_err(EmbeddingError)
     }
 }
 

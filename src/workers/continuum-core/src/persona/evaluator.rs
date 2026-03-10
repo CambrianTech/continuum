@@ -28,21 +28,16 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Voluntary sleep modes — persona controls own attention.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../shared/generated/persona/SleepMode.ts")]
 pub enum SleepMode {
+    #[default]
     Active,
     MentionedOnly,
     HumanOnly,
     Sleeping,
     UntilTopic,
-}
-
-impl Default for SleepMode {
-    fn default() -> Self {
-        SleepMode::Active
-    }
 }
 
 /// Per-persona sleep state with optional auto-wake.

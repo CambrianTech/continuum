@@ -45,12 +45,17 @@ pub struct DatasetModule {
     datasets_root: PathBuf,
 }
 
-impl DatasetModule {
-    pub fn new() -> Self {
-        // Default datasets root — overridable per-request via params
+impl Default for DatasetModule {
+    fn default() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
         Self { datasets_root }
+    }
+}
+
+impl DatasetModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Resolve the datasets root directory, preferring param override.

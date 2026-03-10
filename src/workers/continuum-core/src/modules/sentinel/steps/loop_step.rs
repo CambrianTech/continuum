@@ -16,6 +16,7 @@ use crate::modules::sentinel::types::{
 };
 
 /// Execute a loop step with flexible termination
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     count: Option<usize>,
     while_condition: Option<&str>,

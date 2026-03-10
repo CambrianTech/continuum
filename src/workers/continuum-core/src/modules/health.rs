@@ -14,11 +14,17 @@ pub struct HealthModule {
     started_at: Instant,
 }
 
-impl HealthModule {
-    pub fn new() -> Self {
+impl Default for HealthModule {
+    fn default() -> Self {
         Self {
             started_at: Instant::now(),
         }
+    }
+}
+
+impl HealthModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

@@ -28,11 +28,17 @@ const RESPONSE_LOOP_WINDOW_MS: u128 = 600_000; // 10 minutes
 const RESPONSE_LOOP_THRESHOLD: usize = 3; // Block after 3 similar responses
 const RESPONSE_HASH_LENGTH: usize = 200; // First 200 chars for comparison
 
-impl LoopDetector {
-    pub fn new() -> Self {
+impl Default for LoopDetector {
+    fn default() -> Self {
         Self {
             states: DashMap::new(),
         }
+    }
+}
+
+impl LoopDetector {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Check if a response is a loop (repeating similar content).
@@ -76,7 +82,6 @@ impl LoopDetector {
 /// Matches TypeScript hashResponse() exactly.
 fn hash_response(text: &str) -> String {
     text.to_lowercase()
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

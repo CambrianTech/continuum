@@ -20,11 +20,17 @@ pub struct ToolParsingModule {
     codec: Arc<ToolNameCodec>,
 }
 
-impl ToolParsingModule {
-    pub fn new() -> Self {
+impl Default for ToolParsingModule {
+    fn default() -> Self {
         Self {
             codec: Arc::new(ToolNameCodec::new()),
         }
+    }
+}
+
+impl ToolParsingModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

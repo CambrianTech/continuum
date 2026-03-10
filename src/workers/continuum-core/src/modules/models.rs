@@ -16,6 +16,12 @@ use std::any::Any;
 
 pub struct ModelsModule;
 
+impl Default for ModelsModule {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl ModelsModule {
     pub fn new() -> Self {
         Self

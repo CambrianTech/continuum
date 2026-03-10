@@ -18,6 +18,12 @@ pub struct ToolNameCodec {
     reverse_map: RwLock<HashMap<String, String>>,
 }
 
+impl Default for ToolNameCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolNameCodec {
     pub fn new() -> Self {
         Self {

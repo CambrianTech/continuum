@@ -110,7 +110,7 @@ impl CommandExecutor {
             "command": command,
             "params": params,
         });
-        let request_line = format!("{}\n", request.to_string());
+        let request_line = format!("{}\n", request);
 
         log.debug(&format!("Sending: {}", command));
         writer

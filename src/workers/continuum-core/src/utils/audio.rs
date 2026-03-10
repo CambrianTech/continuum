@@ -12,7 +12,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 ///
 /// Returns empty vec if byte count is not even (i16 requires 2 bytes)
 pub fn bytes_to_i16(data: &[u8]) -> Vec<i16> {
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         return Vec::new();
     }
     data.chunks_exact(2)

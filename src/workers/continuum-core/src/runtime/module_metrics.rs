@@ -109,7 +109,7 @@ impl ModuleMetrics {
         let mut timings = self
             .command_timings
             .entry(timing.command.clone())
-            .or_insert_with(VecDeque::new);
+            .or_default();
 
         timings.push_back(timing);
         while timings.len() > TIMING_WINDOW_SIZE {

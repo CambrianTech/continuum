@@ -18,10 +18,10 @@
 //!   Tokio thread: take_frame() → surface[(N-1)%2] → CVPixelBufferCreateWithIOSurface → publish
 //!
 //! Per-frame cost: CVPixelBufferCreateWithIOSurface (~40 bytes metadata wrapper)
-//!   + Retain/Release pair (~2 atomic ops). Orders of magnitude cheaper than
-//!   1.2MB heap alloc + 460KB kernel alloc.
+//! plus Retain/Release pair (~2 atomic ops). Orders of magnitude cheaper than
+//! 1.2MB heap alloc + 460KB kernel alloc.
 
-#![cfg(target_os = "macos")]
+// cfg(target_os = "macos") is applied at the mod declaration in publishers/mod.rs
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use livekit::webrtc::video_frame::{native::NativeBuffer, VideoFrame, VideoRotation};
@@ -154,14 +154,13 @@ impl IoSurfacePair {
         let mut uv_stride = 0usize;
 
         for i in 0..2 {
-            let (pb, ios) = create_iosurface_backed_nv12(width, height).map_err(|e| {
+            let (pb, ios) = create_iosurface_backed_nv12(width, height).inspect_err(|_| {
                 // Clean up already-allocated buffers on failure
                 for master in masters.iter().take(i) {
                     unsafe {
                         CVPixelBufferRelease(*master);
                     }
                 }
-                e
             })?;
 
             masters[i] = pb;
@@ -300,20 +299,20 @@ fn create_iosurface_backed_nv12(
             std::ptr::null(),
             std::ptr::null(),
             0,
-            &kCFTypeDictionaryKeyCallBacks as *const _ as *const std::ffi::c_void,
-            &kCFTypeDictionaryValueCallBacks as *const _ as *const std::ffi::c_void,
+            &kCFTypeDictionaryKeyCallBacks as *const _,
+            &kCFTypeDictionaryValueCallBacks as *const _,
         );
 
         // Attributes dict: { kCVPixelBufferIOSurfacePropertiesKey: {} }
-        let keys = [kCVPixelBufferIOSurfacePropertiesKey as *const std::ffi::c_void];
-        let values = [empty_dict as *const std::ffi::c_void];
+        let keys = [kCVPixelBufferIOSurfacePropertiesKey];
+        let values = [empty_dict];
         let attrs = CFDictionaryCreate(
             std::ptr::null(),
             keys.as_ptr(),
             values.as_ptr(),
             1,
-            &kCFTypeDictionaryKeyCallBacks as *const _ as *const std::ffi::c_void,
-            &kCFTypeDictionaryValueCallBacks as *const _ as *const std::ffi::c_void,
+            &kCFTypeDictionaryKeyCallBacks as *const _,
+            &kCFTypeDictionaryValueCallBacks as *const _,
         );
         CFRelease(empty_dict);
 
@@ -608,7 +607,7 @@ impl FramePublisher for GpuBridgePublisher {
         self.frame_count += 1;
 
         // Periodic health log: every 450 frames (~30s at ~15fps effective readback)
-        if self.frame_count == 1 || self.frame_count % 450 == 0 {
+        if self.frame_count == 1 || self.frame_count.is_multiple_of(450) {
             let elapsed = self.started_at.elapsed().as_secs_f64();
             let fps = if elapsed > 0.0 {
                 self.frame_count as f64 / elapsed

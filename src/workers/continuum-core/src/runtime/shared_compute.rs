@@ -47,6 +47,12 @@ pub struct SharedCompute {
     cache: DashMap<String, DashMap<String, LazyValue>>,
 }
 
+impl Default for SharedCompute {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharedCompute {
     pub fn new() -> Self {
         Self {
@@ -71,7 +77,7 @@ impl SharedCompute {
         let scope_map = self
             .cache
             .entry(scope.to_string())
-            .or_insert_with(DashMap::new);
+            .or_default();
 
         let lazy = scope_map
             .entry(key.to_string())

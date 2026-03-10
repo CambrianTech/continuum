@@ -5,7 +5,7 @@
 //!
 //! Architecture:
 //! ```text
-//! PersonaMemoryManager (DashMap<persona_id, Arc<MemoryCorpus>>)
+//! PersonaMemoryManager (DashMap<persona_id, Arc<RwLock<MemoryCorpus>>>)
 //!   ├── embedding_provider: Arc<dyn EmbeddingProvider>  (shared, loaded once)
 //!   ├── recall_engine: MultiLayerRecall                 (6 pluggable layers)
 //!   └── per-persona cached MemoryCorpus                 (loaded from TS ORM via IPC)
@@ -38,7 +38,7 @@ pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
 
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -57,6 +57,13 @@ impl std::error::Error for MemoryError {}
 
 // ─── PersonaMemoryManager ─────────────────────────────────────────────────────
 
+/// Max memories per persona corpus before trimming (keep highest importance).
+const MAX_MEMORIES_PER_CORPUS: usize = 2000;
+/// Max timeline events per persona corpus before trimming (keep most recent).
+const MAX_EVENTS_PER_CORPUS: usize = 2000;
+/// Stale corpus TTL — evict if not accessed in 30 minutes.
+const CORPUS_STALE_TTL: Duration = Duration::from_secs(30 * 60);
+
 /// Top-level manager for all persona memory operations.
 ///
 /// - Holds per-persona MemoryCorpus in a DashMap (zero cross-persona contention)
@@ -65,9 +72,11 @@ impl std::error::Error for MemoryError {}
 /// - Consciousness context cached per-persona with 30s TTL
 ///
 /// Thread safety: All 14 personas operate on independent DashMap entries.
-/// Within a persona, recall layers operate on shared &MemoryCorpus (read-only).
+/// RwLock per corpus: multiple concurrent readers, exclusive writer.
+/// In-place mutation on append — zero full-corpus cloning.
 pub struct PersonaMemoryManager {
-    corpora: DashMap<String, Arc<MemoryCorpus>>,
+    corpora: DashMap<String, Arc<RwLock<MemoryCorpus>>>,
+    corpus_access_times: DashMap<String, Instant>,
     embedding: Arc<dyn EmbeddingProvider>,
     recall_engine: MultiLayerRecall,
     consciousness_cache: MemoryCache<ConsciousnessContextResponse>,
@@ -77,6 +86,7 @@ impl PersonaMemoryManager {
     pub fn new(embedding: Arc<dyn EmbeddingProvider>) -> Self {
         Self {
             corpora: DashMap::new(),
+            corpus_access_times: DashMap::new(),
             embedding,
             recall_engine: MultiLayerRecall::new(),
             consciousness_cache: MemoryCache::new(Duration::from_secs(30)),
@@ -108,7 +118,9 @@ impl PersonaMemoryManager {
 
         let corpus = MemoryCorpus::from_corpus_data(corpus_memories, corpus_events);
         self.corpora
-            .insert(persona_id.to_string(), Arc::new(corpus));
+            .insert(persona_id.to_string(), Arc::new(RwLock::new(corpus)));
+        self.corpus_access_times
+            .insert(persona_id.to_string(), Instant::now());
 
         // Invalidate consciousness cache (new data affects context)
         self.consciousness_cache.invalidate(persona_id);
@@ -124,8 +136,10 @@ impl PersonaMemoryManager {
         }
     }
 
-    /// Get a persona's cached corpus.
-    fn get_corpus(&self, persona_id: &str) -> Result<Arc<MemoryCorpus>, MemoryError> {
+    /// Get a persona's cached corpus (Arc<RwLock>). Caller acquires read/write lock as needed.
+    fn get_corpus(&self, persona_id: &str) -> Result<Arc<RwLock<MemoryCorpus>>, MemoryError> {
+        self.corpus_access_times
+            .insert(persona_id.to_string(), Instant::now());
         self.corpora
             .get(persona_id)
             .map(|c| c.value().clone())
@@ -145,7 +159,10 @@ impl PersonaMemoryManager {
         persona_id: &str,
         req: &MultiLayerRecallRequest,
     ) -> Result<MemoryRecallResponse, MemoryError> {
-        let corpus = self.get_corpus(persona_id)?;
+        let corpus_lock = self.get_corpus(persona_id)?;
+        let corpus = corpus_lock.read().map_err(|e| {
+            MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
+        })?;
 
         // Pre-compute query embedding if text provided
         let query_embedding = req
@@ -183,7 +200,10 @@ impl PersonaMemoryManager {
             return Ok(cached);
         }
 
-        let corpus = self.get_corpus(persona_id)?;
+        let corpus_lock = self.get_corpus(persona_id)?;
+        let corpus = corpus_lock.read().map_err(|e| {
+            MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
+        })?;
         let response = build_consciousness_context(&corpus, req);
 
         // Cache the result
@@ -192,41 +212,96 @@ impl PersonaMemoryManager {
         Ok(response)
     }
 
-    // ─── Incremental Append (Cache Coherence) ───────────────────────────────
+    // ─── Incremental Append (In-Place Mutation) ─────────────────────────────
 
     /// Append a single memory to the persona's cached corpus.
-    /// Copy-on-write: clones corpus, appends memory, swaps Arc in DashMap.
-    /// Readers holding old Arc are unaffected (snapshot isolation).
-    /// O(n) per append, but appends are rare (~1/min/persona).
+    /// In-place mutation via write lock — O(1) amortized, zero cloning.
     pub fn append_memory(&self, persona_id: &str, memory: CorpusMemory) -> Result<(), MemoryError> {
-        let old_corpus = self.get_corpus(persona_id)?;
-        let new_corpus = old_corpus.with_appended_memory(memory);
-        self.corpora
-            .insert(persona_id.to_string(), Arc::new(new_corpus));
+        let corpus_lock = self.get_corpus(persona_id)?;
+        let mut corpus = corpus_lock.write().map_err(|e| {
+            MemoryError(format!("Failed to acquire write lock for {persona_id}: {e}"))
+        })?;
+        corpus.append_memory_mut(memory);
+        // Trim if over capacity
+        if corpus.memories.len() > MAX_MEMORIES_PER_CORPUS {
+            let evicted = corpus.trim_memories(MAX_MEMORIES_PER_CORPUS);
+            if evicted > 0 {
+                eprintln!(
+                    "🧠 MemoryManager: Trimmed {evicted} low-importance memories for {persona_id} (cap: {MAX_MEMORIES_PER_CORPUS})"
+                );
+            }
+        }
+        drop(corpus); // Release write lock before invalidating cache
         self.consciousness_cache.invalidate(persona_id);
         Ok(())
     }
 
     /// Append a single timeline event to the persona's cached corpus.
-    /// Copy-on-write: clones corpus, appends event, swaps Arc in DashMap.
+    /// In-place mutation via write lock — O(1) amortized, zero cloning.
     pub fn append_event(
         &self,
         persona_id: &str,
         event: CorpusTimelineEvent,
     ) -> Result<(), MemoryError> {
-        let old_corpus = self.get_corpus(persona_id)?;
-        let new_corpus = old_corpus.with_appended_event(event);
-        self.corpora
-            .insert(persona_id.to_string(), Arc::new(new_corpus));
+        let corpus_lock = self.get_corpus(persona_id)?;
+        let mut corpus = corpus_lock.write().map_err(|e| {
+            MemoryError(format!("Failed to acquire write lock for {persona_id}: {e}"))
+        })?;
+        corpus.append_event_mut(event);
+        // Trim if over capacity
+        if corpus.timeline_events.len() > MAX_EVENTS_PER_CORPUS {
+            let evicted = corpus.trim_events(MAX_EVENTS_PER_CORPUS);
+            if evicted > 0 {
+                eprintln!(
+                    "🧠 MemoryManager: Trimmed {evicted} old timeline events for {persona_id} (cap: {MAX_EVENTS_PER_CORPUS})"
+                );
+            }
+        }
+        drop(corpus); // Release write lock before invalidating cache
         self.consciousness_cache.invalidate(persona_id);
         Ok(())
     }
 
     // ─── Maintenance ──────────────────────────────────────────────────────────
 
-    /// Evict expired cache entries (call periodically).
+    /// Evict expired cache entries and stale corpora (call periodically).
     pub fn evict_caches(&self) {
         self.consciousness_cache.evict_expired();
+
+        // Evict stale corpora not accessed within TTL
+        let now = Instant::now();
+        let stale_personas: Vec<String> = self
+            .corpus_access_times
+            .iter()
+            .filter(|entry| now.duration_since(*entry.value()) > CORPUS_STALE_TTL)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for persona_id in &stale_personas {
+            self.corpora.remove(persona_id);
+            self.corpus_access_times.remove(persona_id);
+            eprintln!("🧠 MemoryManager: Evicted stale corpus for {persona_id}");
+        }
+    }
+
+    /// Get memory usage stats for debugging.
+    pub fn memory_stats(&self) -> Vec<(String, usize, usize, usize)> {
+        self.corpora
+            .iter()
+            .map(|entry| {
+                let persona_id = entry.key().clone();
+                if let Ok(corpus) = entry.value().read() {
+                    (
+                        persona_id,
+                        corpus.memories.len(),
+                        corpus.timeline_events.len(),
+                        corpus.approx_size_bytes(),
+                    )
+                } else {
+                    (persona_id, 0, 0, 0)
+                }
+            })
+            .collect()
     }
 }
 

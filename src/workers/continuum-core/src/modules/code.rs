@@ -144,7 +144,7 @@ impl ServiceModule for CodeModule {
 
                 let result = engine
                     .read(file_path, start_line, end_line)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
                 ))
@@ -165,7 +165,7 @@ impl ServiceModule for CodeModule {
 
                 let result = engine
                     .write(file_path, content, description)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 log_info!(
                     "module",
                     "code",
@@ -194,7 +194,7 @@ impl ServiceModule for CodeModule {
 
                 let result = engine
                     .edit(file_path, &edit, description)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 log_info!("module", "code", "Edit {} by {}", file_path, persona_id);
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
@@ -215,7 +215,7 @@ impl ServiceModule for CodeModule {
 
                 let result = engine
                     .delete(file_path, description)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 log_info!("module", "code", "Delete {} by {}", file_path, persona_id);
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
@@ -236,7 +236,7 @@ impl ServiceModule for CodeModule {
 
                 let result = engine
                     .preview_diff(file_path, &edit)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
                 ))
@@ -257,7 +257,7 @@ impl ServiceModule for CodeModule {
                 if let Some(id_str) = change_id {
                     let change_uuid =
                         Uuid::parse_str(id_str).map_err(|e| format!("Invalid change_id: {}", e))?;
-                    let result = engine.undo(&change_uuid).map_err(|e| format!("{}", e))?;
+                    let result = engine.undo(&change_uuid).map_err(|e| e.to_string())?;
                     log_info!("module", "code", "Undo {} by {}", id_str, persona_id);
                     Ok(CommandResult::Json(serde_json::json!({
                         "success": true,
@@ -266,7 +266,7 @@ impl ServiceModule for CodeModule {
                     })))
                 } else {
                     let n = count.unwrap_or(1);
-                    let result = engine.undo_last(n).map_err(|e| format!("{}", e))?;
+                    let result = engine.undo_last(n).map_err(|e| e.to_string())?;
                     log_info!(
                         "module",
                         "code",
@@ -500,7 +500,7 @@ impl ServiceModule for CodeModule {
 
                     let exec_id = shell
                         .execute(cmd, timeout_ms, &self.state.rt_handle)
-                        .map_err(|e| format!("{}", e))?;
+                        .map_err(|e| e.to_string())?;
                     let state = shell
                         .get_execution_state(&exec_id)
                         .ok_or_else(|| "Execution vanished".to_string())?;
@@ -594,7 +594,7 @@ impl ServiceModule for CodeModule {
                     .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
-                let result = shell.poll(execution_id).map_err(|e| format!("{}", e))?;
+                let result = shell.poll(execution_id).map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
                 ))
@@ -611,7 +611,7 @@ impl ServiceModule for CodeModule {
                     .get(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
-                shell.kill(execution_id).map_err(|e| format!("{}", e))?;
+                shell.kill(execution_id).map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(serde_json::json!({ "killed": true })))
             }
 
@@ -626,7 +626,7 @@ impl ServiceModule for CodeModule {
                     .get_mut(persona_id)
                     .ok_or_else(|| format!("No shell session for {}", persona_id))?;
 
-                let new_cwd = shell.cd(path).map_err(|e| format!("{}", e))?;
+                let new_cwd = shell.cd(path).map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(
                     serde_json::json!({ "changed": true, "cwd": new_cwd }),
                 ))
@@ -661,7 +661,7 @@ impl ServiceModule for CodeModule {
                         .ok_or_else(|| format!("No shell session for {}", persona_id))?;
                     shell
                         .get_watch_handles(execution_id)
-                        .map_err(|e| format!("{}", e))?
+                        .map_err(|e| e.to_string())?
                 };
 
                 let exec_id = execution_id.to_string();
@@ -669,7 +669,7 @@ impl ServiceModule for CodeModule {
                     .state
                     .rt_handle
                     .block_on(async { code::watch_execution(&exec_id, exec_state, notify).await })
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
@@ -690,7 +690,7 @@ impl ServiceModule for CodeModule {
 
                 let count = shell
                     .set_sentinel(execution_id, &rules)
-                    .map_err(|e| format!("{}", e))?;
+                    .map_err(|e| e.to_string())?;
                 Ok(CommandResult::Json(
                     serde_json::json!({ "rules_applied": count }),
                 ))
