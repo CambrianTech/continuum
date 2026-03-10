@@ -18,16 +18,27 @@
 
 import { getRecipeLayoutService } from '../../../system/recipes/browser/RecipeLayoutService';
 
+import type { RightPanelSectionPayload } from '../../../system/core/shared/EventConstants';
+
+/** Re-export for convenience — canonical definition is in EventConstants */
+export type RightPanelSection = RightPanelSectionPayload;
+
 /**
  * Right panel configuration - matches recipe.layout.rightPanel
+ *
+ * Supports two modes:
+ *   1. Legacy: { widget, room, compact } — single chat widget (auto-converted to one section)
+ *   2. Sections: { sections: [...] } — IDE-style accordion with multiple widgets
  */
 export interface RightPanelConfig {
-  /** Widget to display (default: 'chat-widget') */
+  /** Widget to display (default: 'chat-widget') — legacy single-widget mode */
   widget?: string;
-  /** For chat-widget: which room to connect to */
+  /** For chat-widget: which room to connect to — legacy */
   room?: string;
-  /** Display in compact mode for sidebar use */
+  /** Display in compact mode for sidebar use — legacy */
   compact?: boolean;
+  /** IDE-style accordion sections. When present, legacy fields are ignored. */
+  sections?: RightPanelSection[];
 }
 
 export interface ContentTypeConfig {
@@ -105,6 +116,21 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     pathPrefix: '/persona',
     requiresEntity: true,  // Needs userId (uniqueId)
     rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
+  },
+
+  // Genome profile — adapter inventory, training metrics, academy history
+  'genome-profile': {
+    widget: 'genome-profile-widget',
+    displayName: 'Genome',
+    pathPrefix: '/genome',
+    requiresEntity: true,  // Needs userId
+    rightPanel: {
+      sections: [
+        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
+        { id: 'adapter-actions', title: 'Adapter Actions', icon: '🧬', widgetTag: 'adapter-actions-section', collapsedByDefault: true, flexWeight: 1 },
+        { id: 'genome-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
+      ],
+    },
   },
 
   // Web browser (collaborative)

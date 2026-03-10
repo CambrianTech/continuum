@@ -313,14 +313,11 @@ class RoutingServiceImpl {
         return this.resolveRoom(identifier);
       case 'profile':
       case 'persona':
+      case 'genome-profile':
         return this.resolveUser(identifier);
       default:
-        // For content types without entities, return a synthetic resolved entity
-        return {
-          id: identifier as UUID,
-          uniqueId: identifier,
-          displayName: identifier
-        };
+        // Unknown content type — return null, let ContentService derive title from contentType
+        return null;
     }
   }
 

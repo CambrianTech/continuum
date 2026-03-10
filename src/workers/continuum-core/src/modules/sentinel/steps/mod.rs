@@ -57,6 +57,7 @@ pub fn execute_step<'a>(
                 tools,
                 agent_mode,
                 max_iterations,
+                active_adapters,
             } => {
                 llm::execute(
                     llm::LlmStepParams {
@@ -69,6 +70,7 @@ pub fn execute_step<'a>(
                         tools: tools.as_ref(),
                         agent_mode: *agent_mode,
                         max_iterations: *max_iterations,
+                        active_adapters: active_adapters.as_ref(),
                     },
                     index,
                     ctx,

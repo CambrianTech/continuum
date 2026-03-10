@@ -102,8 +102,16 @@ export class LimbicSystem {
     // AdapterStore is the SINGLE SOURCE OF TRUTH for what adapters exist
     // Only include adapters compatible with this persona's inference model
     const inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
-    const discoveredAdapters = AdapterStore.latestCompatibleByDomain(personaUser.id, inferenceModel);
-    const initialAdapters = Array.from(discoveredAdapters.values()).map(adapter => ({
+    const discoveredAdapters = AdapterStore.latestCompatibleByDomain(personaUser.id, inferenceModel, personaUser.displayName);
+
+    // If no persona-specific adapters, discover ANY compatible adapter for this model.
+    // This enables cross-persona sharing: Local Assistant can use Helper AI's trained adapters
+    // as long as they're for the same base model architecture (LoRA is model-specific, not persona-specific).
+    const effectiveAdapters = discoveredAdapters.size > 0
+      ? discoveredAdapters
+      : AdapterStore.latestCompatibleByDomainForModel(inferenceModel);
+
+    const initialAdapters = Array.from(effectiveAdapters.values()).map(adapter => ({
       name: adapter.manifest.name,
       domain: adapter.manifest.traitType,
       path: adapter.dirPath,
@@ -112,11 +120,13 @@ export class LimbicSystem {
     }));
 
     // Also log incompatible adapters so the user knows they exist but need retraining
-    const allAdapters = AdapterStore.discoverForPersona(personaUser.id).filter(a => a.hasWeights);
+    const allAdapters = AdapterStore.discoverForPersona(personaUser.id, personaUser.displayName).filter(a => a.hasWeights);
     const incompatible = allAdapters.length - initialAdapters.length;
 
+    const isShared = discoveredAdapters.size === 0 && effectiveAdapters.size > 0;
     if (initialAdapters.length > 0) {
-      this.logger.info(`Discovered ${initialAdapters.length} compatible adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+      const source = isShared ? 'shared (cross-persona)' : 'persona-specific';
+      this.logger.info(`Discovered ${initialAdapters.length} ${source} adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
     }
     if (incompatible > 0) {
       this.logger.info(`Skipped ${incompatible} incompatible adapters (trained on different base model)`);
@@ -390,7 +400,7 @@ export class LimbicSystem {
    */
   private async hotLoadNewAdapters(domain: string): Promise<void> {
     this.logger.info(`Hot-loading adapters for domain: ${domain}`);
-    const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel);
+    const discovered = AdapterStore.latestCompatibleByDomain(this.personaId, this.inferenceModel, this.displayName);
     let newCount = 0;
     for (const [adapterDomain, adapter] of discovered) {
       if (!this.memory.genome.hasAdapter(adapter.manifest.name)) {

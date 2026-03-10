@@ -414,17 +414,43 @@ impl AIProviderAdapter for CandleAdapter {
             }
         }
 
+        // Resolve requested model: use request.model if provided, else default
+        let requested_model = request.model.as_deref().unwrap_or(&self.config.default_model);
+        let model_id = resolve_model_id(requested_model);
+
         let prompt_len = prompt.len();
         log.info(&format!(
-            "Prompt length: {} chars, max_tokens: {}",
-            prompt_len, max_tokens
+            "Prompt length: {} chars, max_tokens: {}, model: {} (requested: {})",
+            prompt_len, max_tokens, model_id, requested_model
         ));
 
         let backend_arc = Arc::clone(&self.backend);
-        let default_model = self.config.default_model.clone();
+        let resolved_model = model_id.clone();
         let use_quantized = self.use_quantized;
-        let model_id = self.config.default_model.clone();
         let gpu_mgr = self.gpu_manager.clone();
+
+        // Check if currently loaded model differs from requested — unload if so
+        let needs_switch = {
+            let backend_guard = self.backend.read();
+            backend_guard.as_ref().and_then(|wrapper| {
+                let loaded = wrapper.0.model_id();
+                if loaded != model_id { Some(loaded.to_string()) } else { None }
+            })
+        };
+        if let Some(old_model_id) = needs_switch {
+            log.info(&format!(
+                "Model switch: loaded='{}' != requested='{}' — unloading current model",
+                old_model_id, model_id
+            ));
+            *self.backend.write() = None;
+            *self.model_guard.write() = None;
+            self.loaded_adapters.write().clear();
+            self.active_adapters.write().clear();
+            self.adapter_guards.write().clear();
+            if let Some(mgr) = &self.gpu_manager {
+                mgr.eviction_registry.unregister(&format!("candle:model:{}", old_model_id));
+            }
+        }
 
         // Run inference on blocking thread pool (lazy model loading on first call)
         let result = tokio::task::spawn_blocking(move || {
@@ -435,13 +461,13 @@ impl AIProviderAdapter for CandleAdapter {
 
             // Lazy load: if model not loaded yet, load it now
             if backend_guard.is_none() {
-                log.info("First inference call — loading model...");
+                log.info(&format!("Loading model: {}", resolved_model));
                 let model: Box<dyn ModelBackend> = if use_quantized {
                     load_default_quantized()
                         .map_err(|e| format!("Failed to load quantized model: {e}"))?
                 } else {
-                    load_model_by_id(&model_id)
-                        .map_err(|e| format!("Failed to load model: {e}"))?
+                    load_model_by_id(&resolved_model)
+                        .map_err(|e| format!("Failed to load model '{}': {e}", resolved_model))?
                 };
 
                 // Track GPU allocation for model weights
@@ -492,7 +518,7 @@ impl AIProviderAdapter for CandleAdapter {
         // Touch eviction registry entries (model + active adapters) on use
         if let Some(mgr) = &self.gpu_manager {
             mgr.eviction_registry
-                .touch(&format!("candle:model:{}", default_model));
+                .touch(&format!("candle:model:{}", model_id));
             for adapter_id in &applied_adapters {
                 mgr.eviction_registry
                     .touch(&format!("candle:adapter:{}", adapter_id));
@@ -505,7 +531,7 @@ impl AIProviderAdapter for CandleAdapter {
 
         Ok(TextGenerationResponse {
             text: output_text,
-            model: default_model,
+            model: model_id,
             provider: "candle".to_string(),
             finish_reason: FinishReason::Stop,
             usage: UsageMetrics {
@@ -599,7 +625,47 @@ impl AIProviderAdapter for CandleAdapter {
             "yi",
             "deepseek-coder",
             "unsloth/",
+            "smollm",
         ]
+    }
+}
+
+/// Map Ollama-style model names to HuggingFace repo IDs for Candle loading.
+///
+/// Academy pipelines pass model names in Ollama format (e.g., "smollm2:135m").
+/// Candle needs HuggingFace repo IDs (e.g., "HuggingFaceTB/SmolLM2-135M-Instruct").
+/// If the name is already a HF repo ID (contains '/'), it's returned as-is.
+fn resolve_model_id(requested: &str) -> String {
+    // Already a HuggingFace repo ID
+    if requested.contains('/') {
+        return requested.to_string();
+    }
+
+    // Normalize: lowercase, strip leading/trailing whitespace
+    let normalized = requested.trim().to_lowercase();
+
+    // Ollama-style mappings: "model:variant" or just "model"
+    match normalized.as_str() {
+        // SmolLM2 family (tiny models, ~270MB-3GB)
+        "smollm2:135m" | "smollm2-135m" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
+        "smollm2:360m" | "smollm2-360m" => "HuggingFaceTB/SmolLM2-360M-Instruct".to_string(),
+        "smollm2:1.7b" | "smollm2-1.7b" | "smollm2:1.7B" => "HuggingFaceTB/SmolLM2-1.7B-Instruct".to_string(),
+        "smollm2" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(), // Default to smallest
+
+        // Llama 3.2 family
+        "llama3.2:1b" | "llama3.2-1b" => "unsloth/Llama-3.2-1B-Instruct".to_string(),
+        "llama3.2:3b" | "llama3.2-3b" | "llama3.2" => "unsloth/Llama-3.2-3B-Instruct".to_string(),
+
+        // TinyLlama
+        "tinyllama" | "tinyllama:1.1b" => "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
+
+        // Fallback: treat as HF repo ID (will fail gracefully on load if invalid)
+        _ => {
+            runtime::logger("candle").warn(&format!(
+                "Unknown model '{}' — treating as HuggingFace repo ID", requested
+            ));
+            requested.to_string()
+        }
     }
 }
 

@@ -17,6 +17,8 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::NoTls;
 
@@ -24,14 +26,32 @@ use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult,
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
-    RecordMetadata, StorageResult, UUID,
+    RecordMetadata, StorageResult, UUID, METADATA_KEYS,
 };
+
+
+/// Format a tokio-postgres error with full detail chain.
+/// The default Display for these errors often just says "db error" — useless.
+fn format_pg_error(e: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = e.as_db_error() {
+        format!("{}: {} (column: {}, detail: {})",
+            db_err.severity(),
+            db_err.message(),
+            db_err.column().unwrap_or("?"),
+            db_err.detail().unwrap_or("none"))
+    } else {
+        format!("{:?}", e)
+    }
+}
 
 /// PostgreSQL storage adapter — async-native with connection pooling
 pub struct PostgresAdapter {
     pool: Option<Pool>,
     /// Database schema (namespace) for multi-tenant isolation
     schema: String,
+    /// Cached column types per table — avoids repeated information_schema queries.
+    /// Invalidated per-table when schema evolution adds new columns.
+    col_type_cache: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
 }
 
 impl PostgresAdapter {
@@ -39,6 +59,7 @@ impl PostgresAdapter {
         Self {
             pool: None,
             schema: "public".to_string(),
+            col_type_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -46,6 +67,35 @@ impl PostgresAdapter {
         self.pool
             .as_ref()
             .ok_or_else(|| "PostgreSQL adapter not initialized".to_string())
+    }
+
+    /// Get column types for a table, using cache when available.
+    /// Cache is invalidated per-table when schema evolution adds columns.
+    async fn cached_column_types(
+        &self,
+        client: &deadpool_postgres::Client,
+        bare_table: &str,
+    ) -> HashMap<String, String> {
+        // Check cache first (read lock — concurrent reads OK)
+        {
+            let cache = self.col_type_cache.read().await;
+            if let Some(types) = cache.get(bare_table) {
+                return types.clone();
+            }
+        }
+        // Cache miss — fetch from information_schema and populate
+        let types = get_column_types(client, bare_table, &self.schema).await;
+        if !types.is_empty() {
+            let mut cache = self.col_type_cache.write().await;
+            cache.insert(bare_table.to_string(), types.clone());
+        }
+        types
+    }
+
+    /// Invalidate cached column types for a table (after schema evolution)
+    async fn invalidate_column_cache(&self, bare_table: &str) {
+        let mut cache = self.col_type_cache.write().await;
+        cache.remove(bare_table);
     }
 
     /// Return a schema-qualified table name for SQL statements
@@ -66,12 +116,6 @@ impl Default for PostgresAdapter {
 }
 
 // ─── SQL Helpers ──────────────────────────────────────────────────────────────
-
-/// Convert a serde_json Value to a boxed ToSql for tokio-postgres.
-/// Uses default type inference (i64 for integers, f64 for floats).
-fn value_to_pg(value: &Value) -> Box<dyn ToSql + Sync + Send> {
-    value_to_pg_typed(value, None)
-}
 
 /// Convert a serde_json Value to a boxed ToSql, coercing types to match
 /// the target PostgreSQL column type. This avoids tokio-postgres type mismatches.
@@ -102,7 +146,20 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
                 _ => Box::new(Option::<String>::None),
             }
         }
-        Value::Bool(b) => Box::new(*b),
+        Value::Bool(b) => {
+            match pg_data_type {
+                Some("text") | Some("character varying") => {
+                    // Column is TEXT but value is boolean — serialize as string
+                    Box::new(if *b { "true".to_string() } else { "false".to_string() })
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    // Column is integer — store as 0/1
+                    Box::new(if *b { 1_i64 } else { 0_i64 })
+                }
+                Some("jsonb") | Some("json") => Box::new(Json(value.clone())),
+                _ => Box::new(*b),
+            }
+        }
         Value::Number(n) => {
             match pg_data_type {
                 Some("boolean") => {
@@ -241,14 +298,23 @@ fn pg_type_from_field_type(ft: &super::types::FieldType) -> &'static str {
     }
 }
 
-/// Build WHERE clause with $N placeholders and collect parameter values
+/// Build WHERE clause with $N placeholders and collect parameter values.
+/// When `col_types` is provided, uses type-aware coercion to match actual Postgres
+/// column types — prevents WrongType errors when auto-created columns have unexpected types.
 fn build_where_clause(
     filter: &Option<HashMap<String, FieldFilter>>,
     param_offset: usize,
+    col_types: &HashMap<String, String>,
 ) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
     let mut conditions = Vec::new();
     let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let mut idx = param_offset;
+
+    // Helper: coerce value using column type if known
+    let coerce = |v: &Value, column: &str| -> Box<dyn ToSql + Sync + Send> {
+        let pg_type = col_types.get(column).map(|s| s.as_str());
+        value_to_pg_typed(v, pg_type)
+    };
 
     if let Some(filters) = filter {
         for (field, filter) in filters {
@@ -260,46 +326,46 @@ fn build_where_clause(
                     } else {
                         idx += 1;
                         conditions.push(format!("{} = ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                 }
                 FieldFilter::Operator(op) => match op {
                     QueryOperator::Eq(v) => {
                         idx += 1;
                         conditions.push(format!("{} = ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Ne(v) => {
                         idx += 1;
                         conditions.push(format!("{} != ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Gt(v) => {
                         idx += 1;
                         conditions.push(format!("{} > ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Gte(v) => {
                         idx += 1;
                         conditions.push(format!("{} >= ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Lt(v) => {
                         idx += 1;
                         conditions.push(format!("{} < ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::Lte(v) => {
                         idx += 1;
                         conditions.push(format!("{} <= ${}", column, idx));
-                        params.push(value_to_pg(v));
+                        params.push(coerce(v, &column));
                     }
                     QueryOperator::In(values) => {
                         let placeholders: Vec<String> = values
                             .iter()
                             .map(|v| {
                                 idx += 1;
-                                params.push(value_to_pg(v));
+                                params.push(coerce(v, &column));
                                 format!("${}", idx)
                             })
                             .collect();
@@ -310,7 +376,7 @@ fn build_where_clause(
                             .iter()
                             .map(|v| {
                                 idx += 1;
-                                params.push(value_to_pg(v));
+                                params.push(coerce(v, &column));
                                 format!("${}", idx)
                             })
                             .collect();
@@ -619,7 +685,8 @@ impl StorageAdapter for PostgresAdapter {
         let now: DateTime<Utc> = Utc::now();
         let now_rfc3339 = now.to_rfc3339();
 
-        // Ensure table exists (auto-create from data shape)
+        // Ensure table exists (auto-create from data shape).
+        // Invalidate column type cache afterwards — table may have been created or altered.
         if let Err(e) = ensure_table_exists_pg(
             &client,
             &qualified_table,
@@ -631,9 +698,10 @@ impl StorageAdapter for PostgresAdapter {
         {
             return StorageResult::err(e);
         }
+        self.invalidate_column_cache(&bare_table).await;
 
         // Get column types for type-aware parameter coercion
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
 
         // Build column list and values
         let mut columns = vec![
@@ -651,13 +719,7 @@ impl StorageAdapter for PostgresAdapter {
 
         if let Value::Object(data) = &record.data {
             for (key, value) in data {
-                if key == "id"
-                    || key == "createdAt"
-                    || key == "created_at"
-                    || key == "updatedAt"
-                    || key == "updated_at"
-                    || key == "version"
-                {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 let col_name = naming::to_snake_case(key);
@@ -735,7 +797,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::err(format!("Record not found: {}", id));
                 }
-                return StorageResult::err(format!("Query failed: {}", e));
+                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
             }
         };
 
@@ -759,8 +821,10 @@ impl StorageAdapter for PostgresAdapter {
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
+        let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
         let select_clause = build_select_clause(&query.select);
@@ -792,7 +856,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::ok(Vec::new());
                 }
-                return StorageResult::err(format!("Query failed: {}", e));
+                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
             }
         };
 
@@ -876,7 +940,9 @@ impl StorageAdapter for PostgresAdapter {
             ));
         }
 
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let bare_table = naming::to_table_name(&query.collection);
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
 
         let mut sql = format!(
@@ -932,8 +998,10 @@ impl StorageAdapter for PostgresAdapter {
             Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
         };
 
+        let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
-        let (where_clause, where_params) = build_where_clause(&query.filter, 0);
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
 
         let mut sql = format!("SELECT COUNT(*) FROM {}", table);
         if !where_clause.is_empty() {
@@ -956,7 +1024,7 @@ impl StorageAdapter for PostgresAdapter {
                 if msg.contains("does not exist") {
                     return StorageResult::ok(0);
                 }
-                StorageResult::err(format!("Count failed: {}", e))
+                StorageResult::err(format!("Count failed: {}", format_pg_error(&e)))
             }
         }
     }
@@ -982,7 +1050,7 @@ impl StorageAdapter for PostgresAdapter {
         let now: DateTime<Utc> = Utc::now();
 
         // Get column types for type-aware parameter coercion
-        let col_types = get_column_types(&client, &bare_table, &self.schema).await;
+        let col_types = self.cached_column_types(&client, &bare_table).await;
 
         let mut sets = vec!["updated_at = $1".to_string()];
         let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
@@ -994,7 +1062,7 @@ impl StorageAdapter for PostgresAdapter {
 
         if let Value::Object(obj) = &data {
             for (key, value) in obj {
-                if key == "id" || key == "createdAt" || key == "created_at" {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 idx += 1;
@@ -1020,7 +1088,32 @@ impl StorageAdapter for PostgresAdapter {
         match client.execute(&sql, &params_ref).await {
             Ok(rows) if rows > 0 => self.read(collection, id).await,
             Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-            Err(e) => StorageResult::err(format!("Update failed: {}", e)),
+            Err(e) => {
+                // Schema evolution: auto-add missing columns and retry
+                let err_msg = format_pg_error(&e);
+                if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    if let Err(evolve_err) = ensure_table_exists_pg(
+                        &client, &table, &bare_table, &self.schema, &data
+                    ).await {
+                        return StorageResult::err(format!(
+                            "Update failed [{}]: {} (schema evolution also failed: {})",
+                            bare_table, err_msg, evolve_err
+                        ));
+                    }
+                    self.invalidate_column_cache(&bare_table).await;
+                    // Retry the update after adding columns
+                    match client.execute(&sql, &params_ref).await {
+                        Ok(rows) if rows > 0 => self.read(collection, id).await,
+                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => StorageResult::err(format!(
+                            "Update failed [{}] after schema evolution: {}",
+                            bare_table, format_pg_error(&e2)
+                        ))
+                    }
+                } else {
+                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                }
+            }
         }
     }
 
@@ -1313,13 +1406,7 @@ async fn ensure_table_exists_pg(
             let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
 
             for (key, value) in obj {
-                if key == "id"
-                    || key == "createdAt"
-                    || key == "created_at"
-                    || key == "updatedAt"
-                    || key == "updated_at"
-                    || key == "version"
-                {
+                if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 let col_name = naming::to_snake_case(key);
@@ -1349,13 +1436,7 @@ async fn ensure_table_exists_pg(
 
     if let Value::Object(obj) = data {
         for (key, value) in obj {
-            if key == "id"
-                || key == "createdAt"
-                || key == "created_at"
-                || key == "updatedAt"
-                || key == "updated_at"
-                || key == "version"
-            {
+            if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
             }
             let col_name = naming::to_snake_case(key);

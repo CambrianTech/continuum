@@ -17,7 +17,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the RealClassEval student sentinel pipeline.
@@ -52,10 +54,10 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
   // Per-iteration event name — matches teacher's iterEvt pattern
-  const iterEvt = (action: string) => `${academyEvent(sessionId, action as AcademyEventAction)}:{{input.iteration}}`;
-  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}` as AcademyEventAction)}:{{input.iteration}}`;
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
+  const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}`)}:{{input.iteration}}`;
 
   // LLM config — only pass model/provider when explicitly set to avoid
   // "Model Not Exist" errors with cloud providers.
@@ -68,7 +70,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     // Step 0: Wait for teacher to publish curriculum
     {
       type: 'watch',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       timeoutSecs: 600,
     },
 
@@ -82,7 +84,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     // Step 2: Watch for session:complete (teacher finished grading all challenges)
     {
       type: 'watch',
-      event: evt('session:complete'),
+      event: evt(E.SESSION_COMPLETE),
       timeoutSecs: 60,
     },
 
@@ -109,13 +111,20 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         },
 
         // Then sub-step 1: Signal teacher that training is done, ready for re-exam
+        // Include adapterPath so teacher can echo it back in reexam challenge events
         {
           type: 'emit',
-          event: evt('reexam:ready'),
+          event: evt(E.REEXAM_READY),
           payload: {
             sessionId,
             personaId,
             trained: true,
+            // TODO: These references resolve to the condition sub-step's training result.
+            // Currently may resolve empty due to step_index collision between condition
+            // sub-steps and the condition step itself. Needs step naming feature
+            // (named_outputs in ExecutionContext) for reliable cross-scope references.
+            adapterPath: '{{steps.3.data.adapterPath}}',
+            layerId: '{{steps.3.data.layerId}}',
           },
         },
 
@@ -129,7 +138,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         // Then sub-step 3: Watch for teacher's re-exam comparison results
         {
           type: 'watch',
-          event: evt('reexam:complete'),
+          event: evt(E.REEXAM_COMPLETE),
           timeoutSecs: 120,
         },
       ],
@@ -174,7 +183,7 @@ function buildInitialChallengeSteps(
     // loop.0: Watch for challenge:ready (iteration-scoped)
     {
       type: 'watch',
-      event: iterEvt('challenge:ready'),
+      event: iterEvt(E.CHALLENGE_READY),
       timeoutSecs: 300,
     },
 
@@ -209,7 +218,7 @@ function buildInitialChallengeSteps(
     // loop.2: Emit challenge:attempted (iteration-scoped)
     {
       type: 'emit',
-      event: iterEvt('challenge:attempted'),
+      event: iterEvt(E.CHALLENGE_ATTEMPTED),
       payload: {
         sessionId,
         personaId,
@@ -250,7 +259,7 @@ function buildInitialChallengeSteps(
         // Emit training:complete
         {
           type: 'emit',
-          event: evt('training:complete'),
+          event: evt(E.TRAINING_COMPLETE),
           payload: {
             sessionId,
             personaId,
@@ -295,7 +304,12 @@ function buildReexamChallengeSteps(
       timeoutSecs: 300,
     },
 
-    // loop.1: LLM — Re-implement (LoRA now active for local model inference)
+    // loop.1: LLM — Re-implement (LoRA should be active for local model inference)
+    // TODO: Add activeAdapters once step naming is implemented in the sentinel engine.
+    // The adapter was trained in the parent condition's then[0] (genome/train), but
+    // its step_index is dynamically assigned and can't be statically referenced from
+    // within this nested loop. Needs named_outputs support in ExecutionContext so we
+    // can reference it as {{named.reexam_training.data.adapterPath}}.
     {
       type: 'llm',
       prompt: [

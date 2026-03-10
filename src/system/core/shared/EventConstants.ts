@@ -199,15 +199,33 @@ export type EventName = typeof ALL_EVENT_NAMES[number] | string;
 /**
  * Right panel configuration payload
  */
+/**
+ * A single section in the right sidebar accordion.
+ * Duplicated from ContentTypeRegistry to avoid circular imports.
+ * ContentTypeRegistry re-exports this type.
+ */
+export interface RightPanelSectionPayload {
+  id: string;
+  title: string;
+  icon?: string;
+  widgetTag: string;
+  props?: Record<string, string>;
+  collapsedByDefault?: boolean;
+  flexWeight?: number;
+  popOutContentType?: string;
+}
+
 export interface RightPanelConfigPayload {
-  /** Widget to display (null = hide panel) */
+  /** Widget to display (null = hide panel) — legacy single-widget mode */
   widget: string | null;
-  /** For chat-widget: which room to connect to */
+  /** For chat-widget: which room to connect to — legacy */
   room?: string;
-  /** Display in compact mode */
+  /** Display in compact mode — legacy */
   compact?: boolean;
   /** Content type that triggered this change */
   contentType: string;
+  /** IDE-style accordion sections. When present, legacy fields are ignored. */
+  sections?: RightPanelSectionPayload[];
 }
 
 /**

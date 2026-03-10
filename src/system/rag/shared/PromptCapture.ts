@@ -23,11 +23,21 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import { Logger } from '../../core/logging/Logger';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { SystemPaths } from '../../core/config/SystemPaths';
 
 const log = Logger.create('PromptCapture', 'rag');
+
+/** Maximum capture file size before rotation (50MB — not 7GB) */
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+
+/** Maximum entries queued in memory before forced flush */
+const MAX_WRITE_QUEUE = 20;
+
+/** Rotated files kept (prompt-captures.1.jsonl, .2.jsonl, etc.) */
+const MAX_ROTATED_FILES = 3;
 
 /**
  * A captured LLM prompt — contains everything needed to replay the request.
@@ -86,6 +96,24 @@ export class PromptCapture {
   private static _captureFile: string | null = null;
   private static _writeQueue: string[] = [];
   private static _flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether capture is enabled. Defaults to false — opt-in only. */
+  private static _enabled = false;
+
+  /** Enable or disable prompt capture at runtime */
+  static set enabled(value: boolean) {
+    this._enabled = value;
+    if (value) {
+      log.info('Prompt capture enabled');
+    } else {
+      // Flush anything pending before disabling
+      this.flush();
+      log.info('Prompt capture disabled');
+    }
+  }
+
+  static get enabled(): boolean {
+    return this._enabled;
+  }
 
   /** Get the capture file path, creating the directory if needed */
   private static captureFile(): string {
@@ -101,8 +129,45 @@ export class PromptCapture {
   }
 
   /**
+   * Rotate the capture file if it exceeds MAX_FILE_SIZE_BYTES.
+   * Keeps up to MAX_ROTATED_FILES old files.
+   */
+  private static rotateIfNeeded(): void {
+    const filePath = this.captureFile();
+    try {
+      if (!fs.existsSync(filePath)) return;
+      const stat = fs.statSync(filePath);
+      if (stat.size < MAX_FILE_SIZE_BYTES) return;
+
+      const dir = path.dirname(filePath);
+      const base = path.basename(filePath, '.jsonl');
+
+      // Shift existing rotated files (delete oldest if at limit)
+      for (let i = MAX_ROTATED_FILES; i >= 1; i--) {
+        const older = path.join(dir, `${base}.${i}.jsonl`);
+        if (i === MAX_ROTATED_FILES) {
+          if (fs.existsSync(older)) fs.unlinkSync(older);
+        } else {
+          const newer = path.join(dir, `${base}.${i + 1}.jsonl`);
+          if (fs.existsSync(older)) fs.renameSync(older, newer);
+        }
+      }
+
+      // Current → .1
+      fs.renameSync(filePath, path.join(dir, `${base}.1.jsonl`));
+      log.info(`Rotated prompt capture file (was ${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.warn(`Failed to rotate capture file: ${msg}`);
+    }
+  }
+
+  /**
    * Capture a prompt — fire-and-forget, non-blocking.
    * Extracts system prompt from messages array, serializes to JSONL.
+   *
+   * No-op when capture is disabled (default). Enable with:
+   *   PromptCapture.enabled = true;
    */
   static capture(params: {
     personaId: UUID;
@@ -120,6 +185,8 @@ export class PromptCapture {
     ragTotalTokens?: number;
     activeAdapters?: Array<{ name: string; path: string }>;
   }): void {
+    if (!this._enabled) return;
+
     try {
       const now = new Date();
       const shortId = params.personaId.slice(0, 8);
@@ -164,37 +231,49 @@ export class PromptCapture {
         activeAdapters: params.activeAdapters
       };
 
-      // Queue for batched write (avoids per-prompt I/O overhead)
       const line = JSON.stringify(capture);
       this._writeQueue.push(line);
+
+      // Force flush if queue is getting large (bounded memory)
+      if (this._writeQueue.length >= MAX_WRITE_QUEUE) {
+        this.flush();
+        return;
+      }
 
       // Flush every 500ms (batches multiple captures from concurrent personas)
       if (!this._flushTimer) {
         this._flushTimer = setTimeout(() => this.flush(), 500);
       }
-    } catch (error: any) {
-      log.warn(`Failed to capture prompt: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.warn(`Failed to capture prompt: ${msg}`);
     }
   }
 
   /** Flush queued captures to disk */
   private static flush(): void {
-    this._flushTimer = null;
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
     if (this._writeQueue.length === 0) return;
 
     const lines = this._writeQueue.splice(0);
     const data = lines.join('\n') + '\n';
 
     try {
+      this.rotateIfNeeded();
       fs.appendFileSync(this.captureFile(), data, 'utf-8');
-    } catch (error: any) {
-      log.warn(`Failed to write prompt captures: ${error.message}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.warn(`Failed to write prompt captures: ${msg}`);
     }
   }
 
   /**
    * Load captured prompts matching filter criteria.
-   * Reads from the JSONL file, parses, filters, and returns newest first.
+   * Streams the JSONL file line-by-line to avoid loading the entire file into memory.
+   * Returns newest first.
    */
   static async load(filter?: CaptureFilter): Promise<CapturedPrompt[]> {
     // Flush any pending writes first
@@ -203,46 +282,45 @@ export class PromptCapture {
     const filePath = this.captureFile();
     if (!fs.existsSync(filePath)) return [];
 
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.trim().split('\n').filter(l => l.length > 0);
+    const captures: CapturedPrompt[] = [];
+    const limit = filter?.limit && filter.limit > 0 ? filter.limit : Infinity;
 
-    let captures: CapturedPrompt[] = [];
-    for (const line of lines) {
+    const afterMs = filter?.after ? filter.after.getTime() : -Infinity;
+    const beforeMs = filter?.before ? filter.before.getTime() : Infinity;
+
+    const rl = readline.createInterface({
+      input: fs.createReadStream(filePath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (line.length === 0) continue;
+
+      let capture: CapturedPrompt;
       try {
-        captures.push(JSON.parse(line));
+        capture = JSON.parse(line);
       } catch {
-        // Skip malformed lines
+        continue; // Skip malformed lines
       }
-    }
 
-    // Apply filters
-    if (filter?.personaName) {
-      captures = captures.filter(c => c.personaName === filter.personaName);
-    }
-    if (filter?.personaId) {
-      captures = captures.filter(c => c.personaId === filter.personaId);
-    }
-    if (filter?.model) {
-      captures = captures.filter(c => c.model === filter.model);
-    }
-    if (filter?.provider) {
-      captures = captures.filter(c => c.provider === filter.provider);
-    }
-    if (filter?.after) {
-      const afterMs = filter.after.getTime();
-      captures = captures.filter(c => new Date(c.timestamp).getTime() >= afterMs);
-    }
-    if (filter?.before) {
-      const beforeMs = filter.before.getTime();
-      captures = captures.filter(c => new Date(c.timestamp).getTime() <= beforeMs);
+      // Apply filters inline (avoid accumulating everything then filtering)
+      if (filter?.personaName && capture.personaName !== filter.personaName) continue;
+      if (filter?.personaId && capture.personaId !== filter.personaId) continue;
+      if (filter?.model && capture.model !== filter.model) continue;
+      if (filter?.provider && capture.provider !== filter.provider) continue;
+
+      const ts = new Date(capture.timestamp).getTime();
+      if (ts < afterMs || ts > beforeMs) continue;
+
+      captures.push(capture);
     }
 
     // Newest first
     captures.reverse();
 
-    // Apply limit
-    if (filter?.limit && filter.limit > 0) {
-      captures = captures.slice(0, filter.limit);
+    // Apply limit after reverse (we want newest N)
+    if (captures.length > limit) {
+      captures.length = limit;
     }
 
     return captures;

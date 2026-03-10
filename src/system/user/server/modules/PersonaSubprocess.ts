@@ -67,8 +67,10 @@ export abstract class PersonaSubprocess<T = void> {
     this.running = true;
     this.log(`▶️ Started (priority: ${this.priority})`);
 
-    // Start service loop (non-blocking)
-    setImmediate(() => this.serviceLoop());
+    // Stagger start with random jitter to prevent thundering herd
+    // (all personas starting at once would hammer IPC simultaneously)
+    const jitterMs = Math.floor(Math.random() * this.getWaitTime());
+    setTimeout(() => this.serviceLoop(), jitterMs);
   }
 
   /**

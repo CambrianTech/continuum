@@ -110,9 +110,10 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
     const jsonlLines = this._parseToJSONL(generateResult.text!, personaName);
 
     if (jsonlLines.length === 0) {
+      const outputPreview = (generateResult.text ?? '').slice(0, 300);
       return createGenomeDatasetSynthesizeResultFromParams(params, {
         success: false,
-        error: 'LLM produced output but no valid training examples could be parsed',
+        error: `LLM produced output but no valid training examples could be parsed. Topic: "${topic}", output preview: ${outputPreview}`,
         datasetPath: '',
         exampleCount: 0,
         topic,
@@ -227,39 +228,99 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
    * The LLM should return a JSON array of { messages: [...] } objects.
    * Each gets serialized as one JSONL line.
    */
-  private _parseToJSONL(text: string, personaName: string): string[] {
+  private _parseToJSONL(text: string, _personaName: string): string[] {
     const lines: string[] = [];
 
     try {
-      // Try to extract JSON array from the text (handle markdown code fences)
       let cleaned = text.trim();
+
+      // Strip markdown code fences (```json ... ```)
+      const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+      if (fenceMatch) {
+        cleaned = fenceMatch[1].trim();
+      }
+
+      // Try to extract JSON array from the text
       const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
-        console.warn(`   SYNTHESIZE: Could not find JSON array in LLM output (${cleaned.length} chars)`);
+        console.warn(`   SYNTHESIZE: Could not find JSON array in LLM output (${cleaned.length} chars, first 200: ${cleaned.slice(0, 200)})`);
         return [];
       }
 
-      const examples = JSON.parse(jsonMatch[0]);
+      let examples: unknown[];
+      try {
+        examples = JSON.parse(jsonMatch[0]);
+      } catch (parseErr) {
+        // JSON parse failed — likely truncated output or syntax error.
+        // Try to salvage individual objects by splitting on },{ boundaries.
+        console.warn(`   SYNTHESIZE: JSON parse failed, attempting object-level recovery: ${parseErr}`);
+        const salvaged = this._salvageExamples(jsonMatch[0]);
+        if (salvaged.length > 0) {
+          console.log(`   SYNTHESIZE: Recovered ${salvaged.length} examples from malformed JSON`);
+          examples = salvaged;
+        } else {
+          console.warn(`   SYNTHESIZE: Recovery failed. Matched ${jsonMatch[0].length} chars, first 200: ${jsonMatch[0].slice(0, 200)}`);
+          return [];
+        }
+      }
+
       if (!Array.isArray(examples)) {
-        console.warn('   SYNTHESIZE: Parsed JSON is not an array');
+        console.warn(`   SYNTHESIZE: Parsed JSON is not an array, got ${typeof examples}`);
         return [];
       }
 
+      let skipped = 0;
       for (const example of examples) {
-        if (!example.messages || !Array.isArray(example.messages)) continue;
+        const ex = example as Record<string, unknown>;
+        if (!ex.messages || !Array.isArray(ex.messages)) {
+          skipped++;
+          continue;
+        }
 
         // Validate message structure
-        const validMessages = example.messages.every((m: { role?: string; content?: string }) =>
-          m.role && m.content && ['system', 'user', 'assistant'].includes(m.role)
+        const validMessages = (ex.messages as Array<Record<string, unknown>>).every(m =>
+          m.role && m.content && ['system', 'user', 'assistant'].includes(m.role as string)
         );
-        if (!validMessages) continue;
+        if (!validMessages) {
+          skipped++;
+          continue;
+        }
 
-        lines.push(JSON.stringify({ messages: example.messages }));
+        lines.push(JSON.stringify({ messages: ex.messages }));
+      }
+
+      if (skipped > 0 && lines.length === 0) {
+        console.warn(`   SYNTHESIZE: All ${examples.length} examples failed validation (no valid messages arrays). First example keys: ${Object.keys(examples[0] as object).join(', ')}`);
       }
     } catch (err) {
       console.warn(`   SYNTHESIZE: Failed to parse LLM output as JSON: ${err}`);
     }
 
     return lines;
+  }
+
+  /**
+   * Attempt to salvage individual training examples from malformed JSON array.
+   * Handles truncated LLM output by parsing each object independently.
+   */
+  private _salvageExamples(text: string): unknown[] {
+    const results: unknown[] = [];
+
+    // Find individual { "messages": [...] } objects using balanced brace matching
+    const objectPattern = /\{\s*"messages"\s*:\s*\[[\s\S]*?\]\s*\}/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = objectPattern.exec(text)) !== null) {
+      try {
+        const obj = JSON.parse(match[0]);
+        if (obj.messages && Array.isArray(obj.messages)) {
+          results.push(obj);
+        }
+      } catch {
+        // Individual object parse failed — skip it
+      }
+    }
+
+    return results;
   }
 }

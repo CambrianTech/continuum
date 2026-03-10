@@ -1,12 +1,52 @@
 /**
- * AdapterPackageTypes — Shared type definitions for adapter packaging
+ * AdapterPackageTypes — Shared type definitions for adapter manifests and packaging
  *
  * These types are environment-agnostic (no Node.js APIs).
  * The AdapterPackage class (server-only) implements operations on these types.
+ *
+ * Two manifest types for different stages:
+ * - AdapterManifest: ON-DISK format (JSON.parse output, loose strings)
+ * - AdapterPackageManifest: DISTRIBUTION format (strict UUIDs, typed enums)
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
+
+/**
+ * Adapter manifest — the on-disk metadata written by genome/train to each adapter directory.
+ *
+ * This is the canonical type for what manifest.json contains after JSON.parse().
+ * Uses loose strings for IDs and source because JSON has no UUID/enum types.
+ * AdapterStore reads these from disk; all adapter discovery flows through this type.
+ */
+export interface AdapterManifest {
+  id: string;
+  name: string;
+  traitType: string;
+  source: string;
+  baseModel: string;
+  rank: number;
+  sizeMB: number;
+  personaId: string;
+  personaName: string;
+  trainingMetadata?: {
+    epochs: number;
+    loss: number;
+    performance: number;
+    trainingDuration: number;
+    datasetHash?: string;
+    lossHistory?: number[];
+    trainRuntime?: number;
+    examplesProcessed?: number;
+    phenotypeScore?: number;
+    phenotypeImprovement?: number;
+  };
+  contentHash?: string;
+  createdAt: string;
+  version: number;
+  /** QLoRA quantization metadata — tracks base model quantization during training */
+  quantization?: QuantizationInfo;
+}
 
 /**
  * Files included in a .genome.tgz distribution archive (inference-essential only).

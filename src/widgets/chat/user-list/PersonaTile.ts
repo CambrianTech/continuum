@@ -401,6 +401,17 @@ export class PersonaTile extends LitElement {
   // === GENOME PANEL (always shown for AI types — matches old layout) ===
   // Contains: label + bars + diamond grid (same structure as before)
 
+  /**
+   * Compute bar color from maturity score.
+   * Gray (0–0.3) → amber (0.3–0.6) → cyan (0.6–0.8) → green (0.8–1.0)
+   */
+  private _maturityColor(maturity: number): string {
+    if (maturity >= 0.8) return 'var(--genome-green, #00ff88)';
+    if (maturity >= 0.6) return 'var(--genome-cyan, #00d4ff)';
+    if (maturity >= 0.3) return 'var(--genome-amber, #ffaa00)';
+    return 'var(--genome-gray, rgba(60, 80, 100, 0.5))';
+  }
+
   private _renderGenomePanel(): TemplateResult {
     // If we have real adapters, show those. Otherwise show 4 inactive placeholder bars.
     const MIN_BARS = 4;
@@ -412,12 +423,40 @@ export class PersonaTile extends LitElement {
         <div class="genome-bars">
           ${Array.from({ length: barCount }, (_, i) => {
             const layer = this._genomeLayers[i];
-            const isActive = layer?.hasWeights ?? false;
-            const title = layer
-              ? `${layer.name} (${layer.domain})${layer.hasWeights ? '' : ' — no weights'}`
-              : 'Empty slot';
+            const maturity = layer?.maturity ?? 0;
+            const heightPct = layer ? Math.max(15, Math.round(maturity * 100)) : 15;
+            const color = layer ? this._maturityColor(maturity) : '';
+
+            // Rich tooltip with training details
+            let title = 'Empty slot';
+            if (layer) {
+              const parts = [`${layer.name} (${layer.domain})`];
+              parts.push(`Maturity: ${Math.round(maturity * 100)}%`);
+              if (layer.trainingMetrics) {
+                const m = layer.trainingMetrics;
+                parts.push(`Loss: ${m.finalLoss.toFixed(3)}`);
+                parts.push(`Examples: ${m.examplesProcessed}`);
+                parts.push(`Epochs: ${m.epochs}`);
+                if (m.phenotypeScore != null) parts.push(`Phenotype: ${m.phenotypeScore.toFixed(1)}`);
+                if (m.phenotypeImprovement != null) parts.push(`Improvement: +${m.phenotypeImprovement.toFixed(1)}`);
+              }
+              if (!layer.hasWeights) parts.push('(no weights)');
+              title = parts.join('\n');
+            }
+
+            const barStyle = layer
+              ? `height: ${heightPct}%; --layer-maturity-color: ${color};`
+              : '';
+
+            const classes = layer
+              ? (maturity > 0 ? 'has-data' : 'inactive')
+              : 'inactive';
+            const training = this._learnActive ? ' training' : '';
+
             return html`
-              <div class="genome-layer ${isActive ? 'active' : 'inactive'}" title="${title}"></div>
+              <div class="genome-layer ${classes}${training}"
+                   style=${barStyle || nothing}
+                   title="${title}"></div>
             `;
           })}
         </div>

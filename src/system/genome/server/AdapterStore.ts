@@ -15,34 +15,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { LOCAL_MODELS } from '../../shared/Constants';
-import type { QuantizationInfo } from '../shared/AdapterPackageTypes';
+import type { AdapterManifest } from '../shared/AdapterPackageTypes';
 
-/**
- * Adapter manifest — the metadata written by genome/train to each adapter directory
- */
-export interface AdapterManifest {
-  id: string;
-  name: string;
-  traitType: string;
-  source: string;
-  baseModel: string;
-  rank: number;
-  sizeMB: number;
-  personaId: string;
-  personaName: string;
-  trainingMetadata?: {
-    epochs: number;
-    loss: number;
-    performance: number;
-    trainingDuration: number;
-    datasetHash?: string;
-  };
-  contentHash?: string;
-  createdAt: string;
-  version: number;
-  /** QLoRA quantization metadata — tracks base model quantization during training */
-  quantization?: QuantizationInfo;
-}
+// Re-export for consumers that imported from here
+export type { AdapterManifest } from '../shared/AdapterPackageTypes';
 
 /**
  * A discovered adapter on disk — manifest + validated path
@@ -212,6 +188,35 @@ export class AdapterStore {
       const domain = adapter.manifest.traitType;
       const existing = byDomain.get(domain);
 
+      if (!existing) {
+        byDomain.set(domain, adapter);
+      } else {
+        const existingTime = new Date(existing.manifest.createdAt).getTime();
+        const newTime = new Date(adapter.manifest.createdAt).getTime();
+        if (newTime > existingTime) {
+          byDomain.set(domain, adapter);
+        }
+      }
+    }
+
+    return byDomain;
+  }
+
+  /**
+   * Get latest compatible adapter per domain across ALL personas for a given model.
+   *
+   * Used when a persona has no persona-specific adapters but wants to use any
+   * compatible adapter. LoRA adapters are architecture-specific (model-bound),
+   * not persona-specific — a Helper AI adapter works on any Llama-3.2 inference.
+   */
+  static latestCompatibleByDomainForModel(inferenceModel: string): Map<string, DiscoveredAdapter> {
+    const all = AdapterStore.discoverAll()
+      .filter(a => a.hasWeights && AdapterStore.isCompatibleWithModel(a, inferenceModel));
+
+    const byDomain = new Map<string, DiscoveredAdapter>();
+    for (const adapter of all) {
+      const domain = adapter.manifest.traitType;
+      const existing = byDomain.get(domain);
       if (!existing) {
         byDomain.set(domain, adapter);
       } else {

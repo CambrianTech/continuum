@@ -78,7 +78,7 @@ impl SentinelModule {
                     .join("system")
                     .join("sentinels")
             }),
-            max_concurrent: 4,
+            max_concurrent: 6,
             bus: RwLock::new(None),
             registry: RwLock::new(None),
         }
@@ -93,6 +93,12 @@ impl SentinelModule {
     fn logs_dir(&self, handle: &str) -> PathBuf {
         self.logs_base_dir.read().join(handle)
     }
+
+    /// Minimum available system memory (bytes) required to start a new sentinel.
+    /// Below this threshold, the system refuses new sentinels to prevent OOM crashes.
+    /// 2GB headroom prevents macOS from running out of application memory when
+    /// Candle model loads, LoRA training, and LLM inference stack up.
+    const MIN_AVAILABLE_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
 
     /// Run a sentinel (async execution) — handles both shell commands and pipelines
     async fn run_sentinel(&self, params: Value) -> Result<CommandResult, String> {
@@ -110,6 +116,23 @@ impl SentinelModule {
                 "Maximum concurrent sentinels ({}) reached. Wait for completion or cancel existing.",
                 self.max_concurrent
             ));
+        }
+
+        // Check system memory pressure before starting a new sentinel.
+        // Candle model loads + LoRA training can easily exhaust RAM if unchecked.
+        if let Ok(mem) = crate::runtime::command_executor::execute_json("system/memory", Value::Null).await {
+            let available = mem.get("available_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(u64::MAX);
+            if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
+                let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
+                let threshold_gb = Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
+                return Err(format!(
+                    "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
+                     Cancel existing sentinels or wait for completion.",
+                    available_gb, threshold_gb
+                ));
+            }
         }
 
         // Parse params

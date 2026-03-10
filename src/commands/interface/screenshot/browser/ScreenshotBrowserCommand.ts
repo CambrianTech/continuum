@@ -353,11 +353,12 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         }
       );
 
-    } catch (error: any) {
-      console.error(`❌ BROWSER: Failed:`, error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`❌ BROWSER: Screenshot failed:`, msg);
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
-        error: new EnhancementError('screenshot-capture', error.message || 'Screenshot capture failed')
+        error: new EnhancementError('screenshot-capture', msg || 'Screenshot capture failed')
       });
     }
   }

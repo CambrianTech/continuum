@@ -1,0 +1,25 @@
+{
+  "name": "@jtag-commands/genome/adapter-backfill-metrics",
+  "version": "1.0.0",
+  "description": "Backfill training metrics for existing adapters from checkpoint data and manifests.",
+  "main": "server/GenomeAdapterBackfillMetricsServerCommand.ts",
+  "types": "shared/GenomeAdapterBackfillMetricsTypes.ts",
+  "scripts": {
+    "test": "echo \"No tests yet\"",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/adapter-backfill-metrics"
+  ],
+  "license": "MIT"
+}

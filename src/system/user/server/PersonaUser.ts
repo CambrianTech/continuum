@@ -1073,10 +1073,10 @@ export class PersonaUser extends AIUser {
       if (retryCount < maxRetries) {
         // Schedule retry with exponential backoff (2s, 4s, 8s, 16s, 32s)
         const delay = Math.pow(2, retryCount + 1) * 1000;
-        this.log.debug(`🧬 ${this.displayName}: AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
+        this.logger.enqueueLog('cognition.log', `🧬 AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
         setTimeout(() => this.wireGenomeToProvider(retryCount + 1, maxRetries), delay);
       } else {
-        this.log.warn(`⚠️ ${this.displayName}: Genome wiring failed after ${maxRetries} retries - running in stub mode`);
+        this.logger.enqueueLog('cognition.log', `⚠️ Genome wiring FAILED after ${maxRetries} retries — running in STUB MODE`);
       }
       return;
     }
@@ -1085,9 +1085,16 @@ export class PersonaUser extends AIUser {
     try {
       // Try to get CandleAdapter (native Rust inference with LoRA support)
       const candleAdapter = AIProviderDaemon.getAdapter('candle');
+      this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — candleAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
       if (candleAdapter) {
         this.memory.genome.setAIProvider(candleAdapter);
-        this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
+        this.logger.enqueueLog('cognition.log', `🧬 Genome wired to CandleAdapter (LoRA composition enabled)`);
+
+        // Auto-activate all registered adapters now that GPU loading is available.
+        // Adapters were discovered and registered at construction time but sat idle
+        // in availableAdapters. Now that CandleAdapter is ready, activate them so
+        // they're loaded into GPU memory and ready for inference.
+        this.activateRegisteredAdapters();
       } else {
         this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
       }
@@ -1096,6 +1103,51 @@ export class PersonaUser extends AIUser {
       this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider: ${errorMsg}`);
       // Non-fatal: genome will run in stub mode
     }
+  }
+
+  /**
+   * Activate all registered adapters that were discovered at startup.
+   *
+   * Called after wireGenomeToProvider succeeds — adapters were discovered from
+   * filesystem and registered in PersonaGenome constructor, but sat in
+   * availableAdapters (not loaded). Now that CandleAdapter is wired, activate
+   * each one to load it into GPU memory for inference.
+   */
+  private activateRegisteredAdapters(): void {
+    const genome = this.memory.genome;
+    const available = genome.getAllAdapters().filter(a => !a.isLoaded());
+
+    this.logger.enqueueLog('cognition.log', `🧬 activateRegisteredAdapters — ${available.length} available adapters`);
+    if (available.length === 0) return;
+
+    // Limit to most recently trained adapter to avoid loading 6GB+ at startup.
+    // Multiple adapters with session-specific trait types (e.g., "realclasseval-e7c234c4")
+    // are redundant at inference time — one adapter is enough to prove the system works.
+    // Future: semantic domain grouping will make this smarter.
+    const MAX_AUTO_ACTIVATE = 1;
+    const toActivate = available
+      .sort((a, b) => b.getState().lastUsed - a.getState().lastUsed)
+      .slice(0, MAX_AUTO_ACTIVATE);
+
+    this.log.info(`🧬 ${this.displayName}: Auto-activating ${toActivate.length}/${available.length} registered adapter(s)...`);
+
+    // Activate asynchronously — don't block startup
+    (async () => {
+      for (const adapter of toActivate) {
+        try {
+          this.logger.enqueueLog('cognition.log', `🧬 Activating adapter '${adapter.getName()}' (${adapter.getDomain()})...`);
+          await genome.activateSkill(adapter.getName());
+          this.logger.enqueueLog('cognition.log', `🧬 ✅ Activated adapter '${adapter.getName()}'`);
+        } catch (error) {
+          this.logger.enqueueLog('cognition.log', `🧬 ❌ Failed to activate adapter '${adapter.getName()}': ${error}`);
+        }
+      }
+
+      const active = genome.getActiveAdaptersForRequest();
+      this.logger.enqueueLog('cognition.log', `🧬 ${active.length} adapter(s) now active for inference`);
+    })().catch(err => {
+      this.logger.enqueueLog('cognition.log', `❌ Adapter activation failed: ${err}`);
+    });
   }
 
   /**

@@ -30,8 +30,8 @@ export interface ComposeLayerRef {
 export interface GenomeComposeParams extends CommandParams {
   /** Persona to compose layers for */
   personaId: UUID;
-  /** Layers to compose */
-  layers: ComposeLayerRef[];
+  /** Layers to compose — accepts ComposeLayerRef[] or bare string[] (layer IDs with weight=1.0) */
+  layers: (ComposeLayerRef | string)[];
   /** Base model these layers were trained on */
   baseModel: string;
   /** Name for the composed genome (default: auto-generated) */

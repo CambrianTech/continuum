@@ -23,7 +23,9 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { ProjectTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, type AcademyEventAction } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+
+const E = ACADEMY_EVENTS;
 
 /**
  * Build the project teacher sentinel pipeline.
@@ -59,7 +61,9 @@ export function buildProjectTeacherPipeline(config: ProjectTeacherPipelineConfig
     config: academyConfig,
   } = config;
 
-  const evt = (action: string) => academyEvent(sessionId, action as AcademyEventAction);
+  const evt = (action: string) => academyEvent(sessionId, action);
+  /** Iteration-scoped event: prevents watch from matching previous iteration's events */
+  const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
 
   const steps: PipelineStep[] = [
     // Step 0: Read project.json
@@ -88,7 +92,7 @@ export function buildProjectTeacherPipeline(config: ProjectTeacherPipelineConfig
     // The last line of step 1's output is the WORKDIR path
     {
       type: 'emit',
-      event: evt('project:setup:complete'),
+      event: evt(E.PROJECT_SETUP_COMPLETE),
       payload: {
         sessionId,
         workingDir: '{{steps.1.output}}',
@@ -98,7 +102,7 @@ export function buildProjectTeacherPipeline(config: ProjectTeacherPipelineConfig
     // Step 3: Emit curriculum:ready with milestones from project.json
     {
       type: 'emit',
-      event: evt('curriculum:ready'),
+      event: evt(E.CURRICULUM_READY),
       payload: {
         sessionId,
         milestones: '{{steps.0.output}}',
@@ -109,13 +113,13 @@ export function buildProjectTeacherPipeline(config: ProjectTeacherPipelineConfig
     {
       type: 'loop',
       count: config.milestones.length,
-      steps: buildMilestoneLoopSteps(sessionId, skill, personaName, projectDir, academyConfig, evt),
+      steps: buildMilestoneLoopSteps(sessionId, skill, personaName, projectDir, academyConfig, evt, iterEvt),
     },
 
     // Step 5: Emit session:complete
     {
       type: 'emit',
-      event: evt('session:complete'),
+      event: evt(E.SESSION_COMPLETE),
       payload: {
         sessionId,
         skill,
@@ -149,6 +153,7 @@ function buildMilestoneLoopSteps(
   projectDir: string,
   academyConfig: ProjectTeacherPipelineConfig['config'],
   evt: (action: string) => string,
+  iterEvt: (action: string) => string,
 ): PipelineStep[] {
   return [
     // loop.0: Read the milestone's test file
@@ -163,10 +168,10 @@ function buildMilestoneLoopSteps(
       workingDir: projectDir,
     },
 
-    // loop.1: Emit milestone:ready with the spec and test content
+    // loop.1: Emit milestone:ready with the spec and test content (iteration-scoped)
     {
       type: 'emit',
-      event: evt('milestone:ready'),
+      event: iterEvt(E.MILESTONE_READY),
       payload: {
         sessionId,
         milestoneIndex: '{{input.iteration}}',
@@ -174,10 +179,10 @@ function buildMilestoneLoopSteps(
       },
     },
 
-    // loop.2: Watch for student's COLD attempt (no pre-training for this milestone)
+    // loop.2: Watch for student's COLD attempt (iteration-scoped)
     {
       type: 'watch',
-      event: evt('milestone:attempted'),
+      event: iterEvt(E.MILESTONE_ATTEMPTED),
       timeoutSecs: 600,
     },
 
@@ -244,10 +249,10 @@ function buildMilestoneLoopSteps(
       },
     },
 
-    // loop.5: Emit dataset:ready for student to train
+    // loop.5: Emit dataset:ready for student to train (iteration-scoped)
     {
       type: 'emit',
-      event: evt('dataset:ready'),
+      event: iterEvt(E.DATASET_READY),
       payload: {
         sessionId,
         datasetPath: '{{loop.4.data.datasetPath}}',
@@ -257,17 +262,17 @@ function buildMilestoneLoopSteps(
       },
     },
 
-    // loop.6: Watch for student to finish training
+    // loop.6: Watch for student to finish training (iteration-scoped)
     {
       type: 'watch',
-      event: evt('training:complete'),
+      event: iterEvt(E.TRAINING_COMPLETE),
       timeoutSecs: 600,
     },
 
-    // loop.7: Emit milestone:retry with feedback and hints from analysis
+    // loop.7: Emit milestone:retry with feedback and hints from analysis (iteration-scoped)
     {
       type: 'emit',
-      event: evt('milestone:retry'),
+      event: iterEvt(E.MILESTONE_RETRY),
       payload: {
         sessionId,
         milestoneIndex: '{{input.iteration}}',
@@ -278,10 +283,10 @@ function buildMilestoneLoopSteps(
       },
     },
 
-    // loop.8: Watch for student's WARM attempt (with trained adapter + feedback)
+    // loop.8: Watch for student's WARM attempt (iteration-scoped)
     {
       type: 'watch',
-      event: evt('milestone:attempted'),
+      event: iterEvt(E.MILESTONE_ATTEMPTED),
       timeoutSecs: 600,
     },
 
@@ -325,7 +330,7 @@ function buildMilestoneLoopSteps(
       then: [
         {
           type: 'emit',
-          event: evt('milestone:passed'),
+          event: iterEvt(E.MILESTONE_PASSED),
           payload: {
             sessionId,
             milestoneIndex: '{{input.iteration}}',
@@ -340,7 +345,7 @@ function buildMilestoneLoopSteps(
         // Future: inner retry loop with more training rounds.
         {
           type: 'emit',
-          event: evt('session:failed'),
+          event: evt(E.SESSION_FAILED),
           payload: {
             sessionId,
             milestoneIndex: '{{input.iteration}}',

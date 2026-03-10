@@ -11,6 +11,7 @@ import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '@system/shared/Constants';
+import type { AcademySessionMode } from '@system/genome/shared/AcademyTypes';
 
 /**
  * Genome Academy Session Command Parameters
@@ -22,8 +23,10 @@ export interface GenomeAcademySessionParams extends CommandParams {
   personaName: string;
   /** Skill to teach (e.g., "typescript-generics", "ethical-reasoning") */
   skill: string;
-  /** Session mode: 'knowledge' for exam-based, 'coding' for test-suite-based, 'project' for multi-milestone (default: 'knowledge') */
-  mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
+  /** Session mode (default: 'knowledge') */
+  mode?: AcademySessionMode;
+  /** [recipe mode] Recipe uniqueId to train against (e.g., "general-chat", "academy-training") */
+  recipeId?: string;
   /** Base model for training (default: LOCAL_MODELS.DEFAULT) */
   baseModel?: string;
   /** Maximum attempts per topic before failure (default: 3) */
@@ -38,6 +41,12 @@ export interface GenomeAcademySessionParams extends CommandParams {
   questionsPerExam?: number;
   /** Number of training examples to synthesize per failed challenge (default: 10) */
   examplesPerTopic?: number;
+  /** Number of curriculum topics per session (default: 3) */
+  topicsPerSession?: number;
+  /** Training learning rate (default: 0.0001) */
+  learningRate?: number;
+  /** Training batch size (default: 4) */
+  batchSize?: number;
   /** Teacher LLM model */
   model?: string;
   /** Teacher LLM provider */
@@ -66,29 +75,7 @@ export interface GenomeAcademySessionParams extends CommandParams {
 export const createGenomeAcademySessionParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: {
-    personaId: UUID;
-    personaName: string;
-    skill: string;
-    mode?: 'knowledge' | 'coding' | 'project' | 'realclasseval';
-    baseModel?: string;
-    maxTopicAttempts?: number;
-    passingScore?: number;
-    epochs?: number;
-    rank?: number;
-    questionsPerExam?: number;
-    examplesPerTopic?: number;
-    model?: string;
-    provider?: string;
-    studentModel?: string;
-    studentProvider?: string;
-    challengeDir?: string;
-    sourceFile?: string;
-    testFile?: string;
-    testCommand?: string;
-    projectDir?: string;
-    datasetDir?: string;
-  }
+  data: Omit<GenomeAcademySessionParams, 'context' | 'sessionId' | 'userId'>
 ): GenomeAcademySessionParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
   mode: data.mode ?? 'knowledge',

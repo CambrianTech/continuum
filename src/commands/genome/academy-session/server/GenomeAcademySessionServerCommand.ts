@@ -17,8 +17,8 @@ import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../
 import { createGenomeAcademySessionResultFromParams } from '../shared/GenomeAcademySessionTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { AcademySessionEntity } from '@system/genome/entities/AcademySessionEntity';
-import { DEFAULT_ACADEMY_CONFIG } from '@system/genome/shared/AcademyTypes';
-import type { AcademyConfig, ProjectSpec } from '@system/genome/shared/AcademyTypes';
+import { DEFAULT_ACADEMY_CONFIG, ACADEMY_MODE_LABELS, ACADEMY_MODE_PREFIXES } from '@system/genome/shared/AcademyTypes';
+import type { AcademyConfig, AcademySessionMode, ProjectSpec } from '@system/genome/shared/AcademyTypes';
 import { buildTeacherPipeline } from '@system/sentinel/pipelines/TeacherPipeline';
 import { buildStudentPipeline } from '@system/sentinel/pipelines/StudentPipeline';
 import { buildCodingTeacherPipeline } from '@system/sentinel/pipelines/CodingTeacherPipeline';
@@ -27,6 +27,9 @@ import { buildProjectTeacherPipeline } from '@system/sentinel/pipelines/ProjectT
 import { buildProjectStudentPipeline } from '@system/sentinel/pipelines/ProjectStudentPipeline';
 import { buildRealClassEvalTeacherPipeline } from '@system/sentinel/pipelines/RealClassEvalTeacherPipeline';
 import { buildRealClassEvalStudentPipeline } from '@system/sentinel/pipelines/RealClassEvalStudentPipeline';
+import { buildRecipeTeacherPipeline } from '@system/sentinel/pipelines/RecipeTeacherPipeline';
+import { RecipeLoader } from '@system/recipes/server/RecipeLoader';
+import { AdapterStore } from '@system/genome/server/AdapterStore';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
@@ -79,6 +82,13 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       }
     }
 
+    // Recipe mode requires recipeId
+    if (mode === 'recipe') {
+      if (!params.recipeId) {
+        throw new ValidationError('recipeId', 'Required for recipe mode. UniqueId of the recipe to train against (e.g., "general-chat").');
+      }
+    }
+
     // RealClassEval mode: auto-acquire dataset if not provided or not yet imported
     if (mode === 'realclasseval') {
       params = await this.ensureRealClassEvalDataset(params);
@@ -93,6 +103,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.rank !== undefined && { rank: params.rank }),
       ...(params.questionsPerExam !== undefined && { questionsPerExam: params.questionsPerExam }),
       ...(params.examplesPerTopic !== undefined && { examplesPerTopic: params.examplesPerTopic }),
+      ...(params.topicsPerSession !== undefined && { topicsPerSession: params.topicsPerSession }),
+      ...(params.learningRate !== undefined && { learningRate: params.learningRate }),
+      ...(params.batchSize !== undefined && { batchSize: params.batchSize }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
       // Student defaults to same model/provider as teacher when not explicitly set.
@@ -145,7 +158,9 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
 
     // 2. Build pipelines based on mode
     let pipelineResult: { teacherPipeline: ReturnType<typeof buildTeacherPipeline>; studentPipeline: ReturnType<typeof buildStudentPipeline> };
-    if (mode === 'realclasseval') {
+    if (mode === 'recipe') {
+      pipelineResult = await this.buildRecipePipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
+    } else if (mode === 'realclasseval') {
       pipelineResult = this.buildRealClassEvalPipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
     } else if (mode === 'project') {
       pipelineResult = this.buildProjectPipelines(sessionId, personaId, personaName, skill, baseModel, config, params);
@@ -164,10 +179,10 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // Scale timeout: base 600s + 120s per challenge (initial + re-exam) + training buffer.
     // Post-benchmark training on N examples × E epochs × ~15s each can take significant time.
     const trainingBuffer = config.questionsPerExam * (config.epochs ?? 3) * 15;
-    const pipelineTimeout = Math.max(1800, 600 + config.questionsPerExam * 120 + trainingBuffer);
-    const modePrefixMap = { knowledge: '', coding: 'coding-', project: 'project-', realclasseval: 'realclasseval-' } as const;
-    const modePrefix = modePrefixMap[mode];
-    const modeLabel = mode === 'realclasseval' ? 'RealClassEval' : mode === 'project' ? 'Project' : mode === 'coding' ? 'Coding' : 'Knowledge';
+    const topicMultiplier = config.topicsPerSession ?? 3;
+    const pipelineTimeout = Math.max(1800, 600 + (config.questionsPerExam * 120 + trainingBuffer) * topicMultiplier);
+    const modePrefix = ACADEMY_MODE_PREFIXES[mode];
+    const modeLabel = ACADEMY_MODE_LABELS[mode];
     const teacherName = teacherPipeline.name ?? `academy-${modePrefix}teacher-${skill}`;
     const studentName = studentPipeline.name ?? `academy-${modePrefix}student-${skill}`;
 
@@ -185,6 +200,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       parentPersonaId: personaId,
       sentinelName: teacherName,
       timeout: pipelineTimeout,
+      userId: params.userId,
     });
 
     const teacherHandle = teacherResult.handle ?? '';
@@ -207,6 +223,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       parentPersonaId: personaId,
       sentinelName: studentName,
       timeout: pipelineTimeout,
+      userId: params.userId,
     });
 
     const studentHandle = studentResult.handle ?? '';
@@ -380,6 +397,60 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       personaName,
       baseModel,
       datasetDir,
+      config,
+    });
+
+    return { teacherPipeline, studentPipeline };
+  }
+
+  /**
+   * Build recipe-mode pipelines (recipe-driven gap training).
+   * Teacher reads recipe, analyzes genome gaps, designs targeted curriculum.
+   * Student uses the same knowledge-mode pipeline (train on synthesized data, take exams).
+   */
+  private async buildRecipePipelines(
+    sessionId: UUID,
+    personaId: UUID,
+    personaName: string,
+    skill: string,
+    baseModel: string,
+    config: AcademyConfig,
+    params: GenomeAcademySessionParams,
+  ) {
+    const recipeId = params.recipeId!;
+
+    // Load the recipe specification
+    const recipe = await RecipeLoader.getInstance().loadRecipe(recipeId);
+    if (!recipe) {
+      throw new ValidationError('recipeId', `Recipe not found: "${recipeId}". Check system/recipes/${recipeId}.json exists.`);
+    }
+
+    console.log(`   Recipe loaded: ${recipe.displayName} (${recipeId})`);
+
+    // Discover existing adapters for gap analysis — pass manifests directly
+    const discoveredAdapters = AdapterStore.discoverForPersona(personaId, personaName);
+    const adapterManifests = discoveredAdapters.map(a => a.manifest);
+
+    console.log(`   Genome: ${adapterManifests.length} existing adapters for gap analysis`);
+
+    const teacherPipeline = buildRecipeTeacherPipeline({
+      sessionId,
+      skill,
+      personaName,
+      personaId,
+      baseModel,
+      recipe,
+      existingAdapters: adapterManifests,
+      config,
+    });
+
+    // Student pipeline is identical to knowledge mode —
+    // it trains on synthesized data and proves mastery through exams
+    const studentPipeline = buildStudentPipeline({
+      sessionId,
+      personaId,
+      personaName,
+      baseModel,
       config,
     });
 

@@ -22,6 +22,8 @@ pub struct LlmStepParams<'a> {
     pub tools: Option<&'a Vec<String>>,
     pub agent_mode: Option<bool>,
     pub max_iterations: Option<u32>,
+    /// Active LoRA adapters to apply during inference (values are interpolated)
+    pub active_adapters: Option<&'a Vec<Value>>,
 }
 
 /// Execute an LLM step — routes to Rust ai/generate or TypeScript ai/agent
@@ -108,6 +110,22 @@ async fn execute_generate_mode(
     }
     if let Some(sys) = interpolated_system {
         ai_params["system_prompt"] = json!(sys);
+    }
+
+    // Interpolate and pass active LoRA adapters
+    if let Some(adapters) = params.active_adapters {
+        if !adapters.is_empty() {
+            let interpolated: Vec<Value> = adapters
+                .iter()
+                .map(|adapter| {
+                    // Interpolate string values within each adapter config
+                    let json_str = serde_json::to_string(adapter).unwrap_or_default();
+                    let interpolated_str = interpolation::interpolate(&json_str, ctx);
+                    serde_json::from_str(&interpolated_str).unwrap_or_else(|_| adapter.clone())
+                })
+                .collect();
+            ai_params["activeAdapters"] = json!(interpolated);
+        }
     }
 
     let (module, cmd) = pipeline_ctx

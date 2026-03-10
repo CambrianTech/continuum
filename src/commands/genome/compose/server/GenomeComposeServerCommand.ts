@@ -43,13 +43,12 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
     const shouldActivate = params.activate !== false; // default true
 
     // Normalize layers: accept both ComposeLayerRef[] and string[] (bare layer IDs)
-    const rawLayers = params.layers as unknown;
-    const layers: ComposeLayerRef[] = Array.isArray(rawLayers)
-      ? (rawLayers as unknown[]).map((entry, i) => {
+    const layers: ComposeLayerRef[] = Array.isArray(params.layers)
+      ? params.layers.map((entry, i) => {
           if (typeof entry === 'string') {
             return { layerId: entry as UUID, weight: 1.0, ordering: i };
           }
-          return entry as ComposeLayerRef;
+          return entry;
         })
       : [];
 

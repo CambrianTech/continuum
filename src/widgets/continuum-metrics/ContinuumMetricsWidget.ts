@@ -169,6 +169,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
   // AI metrics state
   @reactive() private _aiTimeSeries: AITimeSeriesPoint[] = [];
   @reactive() private _aiSummary = { requests: 0, tokens: 0, latency: 0, cost: 0 };
+  @reactive() private _fetchError: string | null = null;
 
   private _refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -240,6 +241,9 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
   // ── System chart ───────────────────────────────────────────────────────────
 
   private _renderSysChart(): TemplateResult {
+    if (this._fetchError) {
+      return html`<div class="empty-state">${this._fetchError}</div>`;
+    }
     if (!this._sysTimeSeries.length) {
       return html`<div class="empty-state">Collecting data...</div>`;
     }
@@ -275,6 +279,9 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
   // ── AI chart ───────────────────────────────────────────────────────────────
 
   private _renderAIChart(): TemplateResult {
+    if (this._fetchError) {
+      return html`<div class="empty-state">${this._fetchError}</div>`;
+    }
     if (!this._aiTimeSeries.length && this._aiSummary.requests === 0) {
       return html`<div class="empty-state">No AI data yet</div>`;
     }
@@ -357,12 +364,16 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
       });
 
       if (result?.success) {
+        this._fetchError = null;
         this._sysTimeSeries = result.timeSeries ?? [];
         this._sysCurrent = result.current ?? this._sysCurrent;
-        this.requestUpdate();
+      } else if (result?.error) {
+        this._fetchError = result.error.includes('IPC') ? 'Core process offline' : result.error;
       }
-    } catch {
-      // System metrics not yet available
+      this.requestUpdate();
+    } catch (e) {
+      this._fetchError = 'Metrics unavailable';
+      this.requestUpdate();
     }
   }
 
@@ -384,6 +395,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
       });
 
       if (result?.success && result.summary) {
+        this._fetchError = null;
         this._aiTimeSeries = result.timeSeries ?? [];
         this._aiSummary = {
           requests: result.summary.totalGenerations ?? 0,
@@ -391,10 +403,13 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
           latency: result.summary.avgResponseTime ?? 0,
           cost: result.summary.totalCost ?? 0,
         };
-        this.requestUpdate();
+      } else if (result?.error) {
+        this._fetchError = result.error.includes('IPC') ? 'Core process offline' : result.error;
       }
-    } catch {
-      // AI cost data not available yet
+      this.requestUpdate();
+    } catch (e) {
+      this._fetchError = 'AI metrics unavailable';
+      this.requestUpdate();
     }
   }
 }

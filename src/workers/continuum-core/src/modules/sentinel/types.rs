@@ -121,6 +121,13 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "maxIterations")]
         max_iterations: Option<u32>,
+        /// Active LoRA adapters to apply during inference.
+        /// Each entry: { name, path, domain?, scale? }
+        /// Values are interpolated, so pipeline steps can reference trained adapter paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "activeAdapters")]
+        #[ts(type = "Array<{ name: string; path: string; domain?: string; scale?: number }>")]
+        active_adapters: Option<Vec<serde_json::Value>>,
     },
 
     /// Route to any command (Rust or TypeScript) via CommandExecutor

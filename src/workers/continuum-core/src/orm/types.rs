@@ -10,6 +10,13 @@ use ts_rs::TS;
 /// UUID type (stored as string for cross-platform compatibility)
 pub type UUID = String;
 
+/// Metadata keys managed by the ORM — excluded from user data in create/update.
+/// Single source of truth: adding a metadata column? Add it here.
+/// Both camelCase (TypeScript) and snake_case (SQL) variants included.
+pub const METADATA_KEYS: &[&str] = &[
+    "id", "createdAt", "created_at", "updatedAt", "updated_at", "version",
+];
+
 /// Generic record data - JSON object with string keys
 pub type RecordData = serde_json::Map<String, Value>;
 
