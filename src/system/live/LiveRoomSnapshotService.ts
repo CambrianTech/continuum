@@ -68,11 +68,18 @@ export class LiveRoomSnapshotService {
    * RAGSources call this — they should never block on vision.
    */
   getCachedDescription(roomId: string): RoomSnapshot | null {
-    // DISABLED: Snapshot capture loop triggers voice/snapshot-room IPC every 30s,
-    // which calls compose_grid in Rust — allocating large image buffers (RGBA + JPEG
-    // for 14 participants) on spawn_blocking threads. These allocations accumulate
-    // and cause 1+ GB/min memory growth in the Rust process.
-    // TODO: Fix Rust-side memory retention, then re-enable.
+    this._lastReadAt.set(roomId, Date.now());
+
+    // Start capture loop if not running (fire-and-forget)
+    if (!this._intervalHandles.has(roomId)) {
+      this.startCaptureLoop(roomId);
+    }
+
+    const cached = this._cache.get(roomId);
+    if (cached && Date.now() - cached.capturedAt < CACHE_TTL_MS) {
+      return cached;
+    }
+
     return null;
   }
 

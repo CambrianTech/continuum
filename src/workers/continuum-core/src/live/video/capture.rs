@@ -82,11 +82,6 @@ impl VideoFrameCapture {
         identity: String,
         display_name: String,
     ) {
-        // DISABLED: Video capture tasks allocate large I420→RGBA→JPEG buffers
-        // on spawn_blocking threads. Investigating memory growth.
-        clog_info!("👁 Video capture DISABLED for '{}' (memory investigation)", &identity[..8.min(identity.len())]);
-        return;
-
         // Check if already capturing
         {
             let captures = self.active_captures.lock().await;
