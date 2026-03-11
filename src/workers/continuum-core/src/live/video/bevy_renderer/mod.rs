@@ -568,59 +568,91 @@ fn ensure_continuous_readback(
 // Setup Systems
 // ============================================================================
 
+/// Scene lighting rig — 3-point portrait lighting.
+///
+/// Designed for avatar portrait framing (face + upper body).
+/// All lights are on all avatar layers so every slot gets the same lighting.
+/// To add per-slot backgrounds/props, spawn them on that slot's RenderLayer.
+///
+/// 3-point setup:
+///   Key   — strong from upper-left, primary illumination
+///   Fill  — softer from lower-right, reduces harsh shadows
+///   Rim   — from behind, edge separation against dark backgrounds
+///   Ambient — low baseline so nothing is pure black
+fn spawn_scene_lighting(commands: &mut Commands) {
+    // Ambient — low baseline fill
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 800.0,
+        affects_lightmapped_meshes: false,
+    });
+
+    let all_layers: Vec<usize> = (1..=(MAX_AVATAR_SLOTS as usize)).collect();
+    let layers = RenderLayers::from_layers(&all_layers);
+
+    // Key light — upper-left, strong
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 25000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ,
+            -0.4,                            // 23° down
+            std::f32::consts::PI + 0.3,      // slightly left of camera
+            0.0,
+        )),
+        layers.clone(),
+        AvatarSceneLight,
+    ));
+
+    // Fill light — lower-right, softer
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 10000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ,
+            -0.1,                            // nearly level
+            std::f32::consts::PI - 0.4,      // from the right
+            0.0,
+        )),
+        layers.clone(),
+        AvatarSceneLight,
+    ));
+
+    // Rim light — from behind and above, edge separation
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 12000.0,
+            shadows_enabled: false,
+            color: Color::srgb(0.85, 0.9, 1.0), // slightly cool for contrast
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ,
+            -0.6,                            // 34° down from above
+            0.2,                             // from behind, slightly offset
+            0.0,
+        )),
+        layers,
+        AvatarSceneLight,
+    ));
+}
+
 fn setup_render_slots(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut registry: ResMut<SlotRegistry>,
     _frame_channels: Res<FrameChannels>,
 ) {
-    // Ambient light — set once at startup (no per-frame set_changed needed).
-    // Provides baseline fill so avatars aren't completely dark in shadow.
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 300.0,
-        affects_lightmapped_meshes: false,
-    });
-
-    // Two-point lighting rig — key + fill, both visible on all avatar layers.
-    // Key: bright from upper-left, fill: softer from lower-right to reduce harsh shadows.
-    {
-        let all_layers: Vec<usize> = (1..=(MAX_AVATAR_SLOTS as usize)).collect();
-
-        // Key light — upper-left, strong
-        commands.spawn((
-            DirectionalLight {
-                illuminance: 22000.0,
-                shadows_enabled: false,
-                ..default()
-            },
-            Transform::from_rotation(Quat::from_euler(
-                EulerRot::XYZ,
-                -0.4,           // 23° down
-                std::f32::consts::PI + 0.3, // slightly left
-                0.0,
-            )),
-            RenderLayers::from_layers(&all_layers),
-            AvatarSceneLight,
-        ));
-
-        // Fill light — lower-right, softer (prevents harsh shadows on face)
-        commands.spawn((
-            DirectionalLight {
-                illuminance: 8000.0,
-                shadows_enabled: false,
-                ..default()
-            },
-            Transform::from_rotation(Quat::from_euler(
-                EulerRot::XYZ,
-                -0.1,           // nearly level
-                std::f32::consts::PI - 0.4, // from the right
-                0.0,
-            )),
-            RenderLayers::from_layers(&all_layers),
-            AvatarSceneLight,
-        ));
-    }
+    // Scene lighting — shared across all avatar slots.
+    // Designed for portrait framing: face/upper-body centered.
+    // Add models/backgrounds per-slot by spawning on that slot's RenderLayer.
+    spawn_scene_lighting(&mut commands);
 
     for slot in 0..MAX_AVATAR_SLOTS {
         let layer = RenderLayers::layer((slot + 1) as usize);
