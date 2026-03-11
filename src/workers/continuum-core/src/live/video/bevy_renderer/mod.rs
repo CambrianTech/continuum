@@ -56,7 +56,7 @@ pub(crate) use scene::SlotRegistry;
 pub(crate) use types::{FrameNotifiers, SlotDimensions};
 
 use scene::{
-    AvatarObject, SceneObject,
+    AnimationConfig, AvatarObject, SceneObject,
     build_scene, room_color_from_identity, SceneConfig, SceneLight,
     LightRig, RoomConfig, select_scene_for_identity, scene_model_path,
 };
@@ -360,6 +360,7 @@ fn run_bevy_app(
         .insert_resource(CognitiveAnimState::default())
         .insert_resource(SlotDimensions::default())
         .insert_resource(SlotHealthStatus::default())
+        .insert_resource(SnapshotTracker::new())
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
         .insert_resource(SharedMemoryStats(memory_stats))
@@ -402,6 +403,7 @@ fn run_bevy_app(
             (
                 animation::manage_render_cadence,
                 ensure_continuous_readback,
+                request_snapshot_readback,
                 animation::discover_morph_targets,
                 animation::animate_idle,
                 animation::animate_speaking,
@@ -449,16 +451,8 @@ fn spawn_readback_entity_opt(
                   channels: Res<FrameChannels>,
                   notifiers: Res<FrameNotifiers>,
                   health: Res<SlotHealthStatus>,
+                  mut snapshots: ResMut<SnapshotTracker>,
                   slot_dims: Res<SlotDimensions>| {
-                // GPU bridge slots: Metal compute handles RGBA→NV12 on GPU.
-                // Skip ALL CPU work — no readback processing, no allocation, no IOSurface write.
-                #[cfg(target_os = "macos")]
-                {
-                    if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id) {
-                        return;
-                    }
-                }
-
                 let pixel_bytes: &[u8] = &event.data;
 
                 let (slot_w, slot_h) = slot_dims.dims
@@ -504,6 +498,21 @@ fn spawn_readback_entity_opt(
                     }
                 }
 
+                // Opportunistic snapshot: save profile pic from live frame.
+                // Time-based eligibility, global cooldown prevents bursts.
+                // PNG encode + disk write happens on a background thread.
+                if let Some(identity) = health.identities.get(&slot_id) {
+                    if snapshots.needs_capture(slot_id, identity) {
+                        snapshots.capture_background(
+                            slot_id,
+                            identity.clone(),
+                            slot_w,
+                            slot_h,
+                            pixel_bytes.to_vec(),
+                        );
+                    }
+                }
+
                 if let Some(tx) = channels.0.get(slot_id as usize) {
                     match tx.try_send(RgbaFrame {
                         width: slot_w,
@@ -538,28 +547,38 @@ fn ensure_continuous_readback(
     query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
     query_with_readback: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, With<Readback>)>,
     registry: Res<SlotRegistry>,
+    snapshots: Res<SnapshotTracker>,
     cameras: Query<&Camera>,
     mut commands: Commands,
 ) {
     // Remove Readback from bridge slots — if Readback was inserted before the bridge
     // was registered, it must be removed to prevent dual-writing (CPU ReadbackComplete
     // + GPU Metal compute both writing to the same IOSurface).
+    // EXCEPTION: keep Readback alive for one frame if this slot has a pending snapshot.
     for (entity, slot_id) in &query_with_readback {
         if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
-            commands.entity(entity).remove::<Readback>();
+            if snapshots.pending_readback_slot != Some(slot_id.0) {
+                commands.entity(entity).remove::<Readback>();
+            }
         }
     }
 
-    // Re-insert Readback for non-bridge slots that need continuous readback.
+    // Re-insert Readback for non-bridge slots that need continuous readback,
+    // OR for bridge slots that need a one-shot snapshot readback.
     for (entity, slot_id) in &query {
         if let Some(slot_data) = registry.slots.get(&slot_id.0) {
             if !slot_data.is_active() {
                 continue;
             }
-            // GPU bridge slots are handled by GpuConvertPlugin — no CPU readback.
-            if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
+
+            let is_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0);
+            let is_snapshot_target = snapshots.pending_readback_slot == Some(slot_id.0);
+
+            // GPU bridge slots only get Readback for snapshot capture.
+            if is_bridge && !is_snapshot_target {
                 continue;
             }
+
             if let Some(cam_entity) = slot_data.camera_entity {
                 if let Ok(camera) = cameras.get(cam_entity) {
                     if !camera.is_active {
@@ -570,6 +589,51 @@ fn ensure_continuous_readback(
             commands
                 .entity(entity)
                 .insert(Readback::texture(slot_data.render_target.clone()));
+        }
+    }
+}
+
+/// Periodically checks if any GPU bridge slot needs a snapshot.
+/// Requests a temporary one-frame Readback for exactly one slot at a time.
+/// ReadbackComplete observer captures the frame and clears the pending slot.
+/// Also cleans up stale loaded_at entries for unloaded slots.
+fn request_snapshot_readback(
+    mut snapshots: ResMut<SnapshotTracker>,
+    health: Res<SlotHealthStatus>,
+    registry: Res<SlotRegistry>,
+) {
+    // Clean up loaded_at for slots that are no longer active.
+    let stale: Vec<u8> = snapshots
+        .loaded_at
+        .keys()
+        .filter(|slot| {
+            registry
+                .slots
+                .get(slot)
+                .map(|s| !s.is_active())
+                .unwrap_or(true)
+        })
+        .copied()
+        .collect();
+    for slot in stale {
+        snapshots.mark_unloaded(slot);
+    }
+
+    // Already waiting for a readback — don't request another.
+    if snapshots.pending_readback_slot.is_some() {
+        return;
+    }
+
+    // Scan active bridge slots for the first one needing a snapshot.
+    for (&slot, _slot_data) in &registry.slots {
+        if !crate::live::avatar::publishers::gpu_bridge::has_bridge(slot) {
+            continue; // Non-bridge slots are handled by ReadbackComplete every frame.
+        }
+        if let Some(identity) = health.identities.get(&slot) {
+            if snapshots.needs_capture(slot, identity) {
+                snapshots.pending_readback_slot = Some(slot);
+                return;
+            }
         }
     }
 }
@@ -951,6 +1015,7 @@ fn process_commands(
                             Transform::default(),
                             layer.clone(),
                             AvatarSlotId(slot),
+                            AnimationConfig::portrait(slot),
                         ))
                         .id();
                     commands.entity(scene_root).add_child(avatar_entity);
@@ -969,6 +1034,7 @@ fn process_commands(
                             mut bone_registry: ResMut<BoneRegistry>,
                             mut slot_registry: ResMut<SlotRegistry>,
                             mut gpu_guards: ResMut<GpuGuards>,
+                            mut snapshots: ResMut<SnapshotTracker>,
                         | {
                             let root = event.entity;
                             let child_count = skeleton::count_descendants(root, &children_query);
@@ -982,6 +1048,9 @@ fn process_commands(
                                     avatar.state.model_loaded = true;
                                 }
                             }
+
+                            // Mark slot loaded for snapshot eligibility (time-based).
+                            snapshots.mark_loaded(slot_for_observer);
 
                             let model_bytes = std::fs::metadata(&model_path_for_observer)
                                 .map(|m| m.len())

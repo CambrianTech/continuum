@@ -14,11 +14,13 @@
 //!
 //! ## Module Structure
 //!
+//! - `animation` — AnimationConfig component + profiles (portrait, full-body, minimal)
 //! - `object` — SceneObject enum + variant structs
 //! - `avatar` — AvatarState, animation state types, morph targets, bones
 //! - `lighting` — LightRig configurations and spawn functions
 //! - `builder` — SceneConfig, build_scene(), marker components
 
+pub mod animation;
 mod avatar;
 mod builder;
 mod lighting;
@@ -26,6 +28,7 @@ mod object;
 pub mod room;
 mod slot;
 
+pub use animation::AnimationConfig;
 pub use avatar::*;
 pub use builder::*;
 pub use lighting::*;

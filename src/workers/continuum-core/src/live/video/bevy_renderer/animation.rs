@@ -1,11 +1,14 @@
 //! Animation systems — morph targets, blinking, breathing, speaking, gestures, eye gaze.
 //!
-//! All Bevy systems that animate avatar bones and morph targets.
-//! Gated by `has_active_slots` — zero work when no avatars are loaded.
+//! Bevy systems that apply animation to scene objects. All amplitudes and
+//! frequencies come from `AnimationConfig` components (see `scene/animation.rs`),
+//! NOT from inline constants. This keeps the systems generic — they work
+//! for any scene (webcam portrait, Sims-like world, cutscene, etc.).
 
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
+use super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
 use super::skeleton::{camera_z_for_head, REFERENCE_HEAD_Y};
 use super::types::*;
 use super::vrm;
@@ -315,6 +318,7 @@ pub(super) fn animate_speaking(
     bone_registry: Res<BoneRegistry>,
     mut speech_clips: ResMut<ActiveSpeechClips>,
     legacy_mouth: Res<LegacyMouthWeights>,
+    anim_configs: Query<(&AvatarSlotId, &AnimationConfig)>,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,
@@ -397,15 +401,19 @@ pub(super) fn animate_speaking(
             set_morph(w, layout.mouth_open_index, mouth_weight);
         }
 
-        // Head nod during speech
+        // Head nod during speech — amplitudes from AnimationConfig.
         let should_nod = has_clip || is_speaking;
+        let profile = anim_configs.iter()
+            .find(|(id, _)| id.0 == *slot)
+            .map(|(_, cfg)| &cfg.profile)
+            .unwrap_or(&PORTRAIT_PROFILE);
         if let Some(slot_bones) = bone_registry.slots.get(slot) {
             if let Some(ref head) = slot_bones.head {
                 if let Ok(mut transform) = transforms.get_mut(head.entity) {
                     if should_nod {
                         let t = now + *slot as f32 * 1.3;
-                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.035;
-                        let tilt = (t * 0.9).sin() * 0.02;
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * profile.speaking_nod_amplitude;
+                        let tilt = (t * 0.9).sin() * profile.speaking_tilt_amplitude;
                         let delta = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
                         transform.rotation = head.rest_rotation * delta;
                     } else {
@@ -545,12 +553,14 @@ pub(super) fn animate_blinking(
 // =============================================================================
 
 /// Idle gesture system — subtle upper-body micro-movements.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn animate_idle_gestures(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
     speaking_slots: Res<SpeakingSlots>,
     active_gestures: Res<ActiveGestures>,
+    anim_configs: Query<(&AvatarSlotId, &AnimationConfig)>,
     mut gesture_state: ResMut<IdleGestureState>,
     mut transforms: Query<&mut Transform>,
 ) {
@@ -607,13 +617,19 @@ pub(super) fn animate_idle_gestures(
             continue;
         }
 
+        let (profile, freq_var) = anim_configs.iter()
+            .find(|(id, _)| id.0 == *slot)
+            .map(|(_, cfg)| (&cfg.profile, cfg.freq_variation))
+            .unwrap_or((&PORTRAIT_PROFILE, 1.0));
+
         if let Some(ref neck) = slot_bones.neck {
             if let Ok(mut transform) = transforms.get_mut(neck.entity) {
-                let tilt_x = (t * 0.15).sin() * 0.03
-                    + (t * 0.23).cos() * 0.02
-                    + (t * 0.37).sin() * 0.01;
-                let tilt_z = (t * 0.12).cos() * 0.025 + (t * 0.31).sin() * 0.015;
-                let idle_turn = (t * 0.08).sin() * 0.02;
+                let tilt_x = (t * 0.15 * freq_var).sin() * profile.neck_tilt_x_amplitude
+                    + (t * 0.23 * freq_var).cos() * (profile.neck_tilt_x_amplitude * 0.67)
+                    + (t * 0.37 * freq_var).sin() * (profile.neck_tilt_x_amplitude * 0.33);
+                let tilt_z = (t * 0.12 * freq_var).cos() * profile.neck_tilt_z_amplitude
+                    + (t * 0.31 * freq_var).sin() * (profile.neck_tilt_z_amplitude * 0.67);
+                let idle_turn = (t * 0.08 * freq_var).sin() * profile.neck_turn_amplitude;
                 let turn_y = idle_turn + gesture.head_turn_current;
 
                 let delta = Quat::from_euler(EulerRot::XYZ, tilt_x, turn_y, tilt_z);
@@ -623,14 +639,15 @@ pub(super) fn animate_idle_gestures(
 
         if let Some(ref left_shoulder) = slot_bones.left_shoulder {
             if let Ok(mut transform) = transforms.get_mut(left_shoulder.entity) {
-                let shift = (t * 0.4).sin() * 0.002 + (t * 0.17).cos() * 0.001;
+                let shift = (t * 0.4).sin() * profile.shoulder_shift_amplitude
+                    + (t * 0.17).cos() * (profile.shoulder_shift_amplitude * 0.5);
                 transform.translation.y = left_shoulder.rest_translation.y + shift;
             }
         }
         if let Some(ref right_shoulder) = slot_bones.right_shoulder {
             if let Ok(mut transform) = transforms.get_mut(right_shoulder.entity) {
-                let shift =
-                    (t * 0.4 + std::f32::consts::PI).sin() * 0.002 + (t * 0.17 + 1.0).cos() * 0.001;
+                let shift = (t * 0.4 + std::f32::consts::PI).sin() * profile.shoulder_shift_amplitude
+                    + (t * 0.17 + 1.0).cos() * (profile.shoulder_shift_amplitude * 0.5);
                 transform.translation.y = right_shoulder.rest_translation.y + shift;
             }
         }
@@ -642,12 +659,22 @@ pub(super) fn animate_idle_gestures(
 // =============================================================================
 
 /// Subtle breathing animation — gentle spine/chest oscillation.
+/// Reads amplitudes from AnimationConfig on the avatar entity.
 pub(super) fn animate_breathing(
     time: Res<Time>,
     registry: Res<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
+    anim_configs: Query<(&AvatarSlotId, &AnimationConfig)>,
     mut transforms: Query<&mut Transform>,
 ) {
+    // Build slot → config lookup from entities with AnimationConfig.
+    let mut slot_configs: [Option<&AnimationConfig>; 16] = [None; 16];
+    for (id, cfg) in &anim_configs {
+        if (id.0 as usize) < 16 {
+            slot_configs[id.0 as usize] = Some(cfg);
+        }
+    }
+
     for (slot, slot_data) in &registry.slots {
         if !slot_data.is_active() {
             continue;
@@ -658,11 +685,18 @@ pub(super) fn animate_breathing(
             None => continue,
         };
 
+        let (profile, freq_var) = match slot_configs.get(*slot as usize).and_then(|c| *c) {
+            Some(cfg) => (&cfg.profile, cfg.freq_variation),
+            None => (&PORTRAIT_PROFILE, 1.0),
+        };
+
         if let Ok(mut transform) = transforms.get_mut(spine.entity) {
             let t = time.elapsed_secs() + *slot as f32 * 1.1;
-            let breath = (t * 0.8 * std::f32::consts::TAU).sin() * 0.005;
+            let breath = (t * profile.breathing_frequency * std::f32::consts::TAU).sin()
+                * profile.breathing_scale_amplitude;
             transform.scale.y = 1.0 + breath;
-            let sway = (t * 0.12).sin() * 0.012;
+            let sway = (t * profile.spine_sway_frequency * freq_var).sin()
+                * profile.spine_sway_amplitude;
             let delta = Quat::from_rotation_z(sway);
             transform.rotation = spine.rest_rotation * delta;
         }
@@ -848,6 +882,7 @@ pub(super) fn drive_cognitive_gestures(
 pub(super) fn animate_body_gestures(
     time: Res<Time>,
     bone_registry: Res<BoneRegistry>,
+    anim_configs: Query<(&AvatarSlotId, &AnimationConfig)>,
     mut active_gestures: ResMut<ActiveGestures>,
     mut transforms: Query<&mut Transform>,
 ) {
@@ -884,6 +919,11 @@ pub(super) fn animate_body_gestures(
             Some(b) => b,
             None => continue,
         };
+
+        let profile = anim_configs.iter()
+            .find(|(id, _)| id.0 == *slot)
+            .map(|(_, cfg)| &cfg.profile)
+            .unwrap_or(&PORTRAIT_PROFILE);
 
         let w = anim.weight;
         let t = now + *slot as f32 * 1.7;
@@ -927,7 +967,12 @@ pub(super) fn animate_body_gestures(
                 }
                 if let Some(ref head) = slot_bones.head {
                     if let Ok(mut transform) = transforms.get_mut(head.entity) {
-                        let tilt = Quat::from_euler(EulerRot::XYZ, 0.05 * w, 0.0, 0.08 * w);
+                        let tilt = Quat::from_euler(
+                            EulerRot::XYZ,
+                            profile.gesture_think_head_tilt * w,
+                            0.0,
+                            profile.gesture_think_head_roll * w,
+                        );
                         transform.rotation = head.rest_rotation * tilt;
                     }
                 }
@@ -935,7 +980,7 @@ pub(super) fn animate_body_gestures(
             Gesture::Nod => {
                 if let Some(ref head) = slot_bones.head {
                     if let Ok(mut transform) = transforms.get_mut(head.entity) {
-                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * 0.12 * w;
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * profile.gesture_nod_amplitude * w;
                         let delta = Quat::from_rotation_x(nod);
                         transform.rotation = head.rest_rotation * delta;
                     }
