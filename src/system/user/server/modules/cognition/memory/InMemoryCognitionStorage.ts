@@ -141,6 +141,12 @@ class InMemoryCognitionStorage {
     }
   }
 
+  // Max entries per persona per collection — prevents unbounded in-memory growth.
+  // These are ephemeral cognition buffers, not long-term storage. Oldest evicted first.
+  private static readonly MAX_EXPERIENCES_PER_PERSONA = 50;
+  private static readonly MAX_PLANS_PER_PERSONA = 20;
+  private static readonly MAX_LEARNINGS_PER_PERSONA = 100;
+
   // Experience operations
   getExperiences(personaId: UUID): ExperienceEntry[] {
     return this.experiences.get(personaId) || [];
@@ -149,6 +155,10 @@ class InMemoryCognitionStorage {
   addExperience(entry: ExperienceEntry): void {
     const exps = this.experiences.get(entry.personaId) || [];
     exps.push(entry);
+    // Evict oldest when over cap
+    if (exps.length > InMemoryCognitionStorage.MAX_EXPERIENCES_PER_PERSONA) {
+      exps.splice(0, exps.length - InMemoryCognitionStorage.MAX_EXPERIENCES_PER_PERSONA);
+    }
     this.experiences.set(entry.personaId, exps);
   }
 
@@ -160,6 +170,10 @@ class InMemoryCognitionStorage {
   addPlan(entry: PlanEntry): void {
     const p = this.plans.get(entry.personaId) || [];
     p.push(entry);
+    // Evict oldest when over cap
+    if (p.length > InMemoryCognitionStorage.MAX_PLANS_PER_PERSONA) {
+      p.splice(0, p.length - InMemoryCognitionStorage.MAX_PLANS_PER_PERSONA);
+    }
     this.plans.set(entry.personaId, p);
   }
 
@@ -179,6 +193,10 @@ class InMemoryCognitionStorage {
   addLearning(entry: LearningEntry): void {
     const l = this.learnings.get(entry.personaId) || [];
     l.push(entry);
+    // Evict oldest when over cap
+    if (l.length > InMemoryCognitionStorage.MAX_LEARNINGS_PER_PERSONA) {
+      l.splice(0, l.length - InMemoryCognitionStorage.MAX_LEARNINGS_PER_PERSONA);
+    }
     this.learnings.set(entry.personaId, l);
   }
 

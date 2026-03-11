@@ -358,6 +358,16 @@ export class RAGComposer {
         }
       }
 
+      // Cleanup stale entries — same logic as TypeScript source path
+      if (sharedSourceFlights.size > 30) {
+        const now = Date.now();
+        for (const [key, entry] of sharedSourceFlights) {
+          if (now - entry.createdAt > SHARED_SOURCE_TTL_MS) {
+            sharedSourceFlights.delete(key);
+          }
+        }
+      }
+
       return results;
 
     } catch (error: any) {
@@ -402,8 +412,8 @@ export class RAGComposer {
       const flight = this.doLoadTypeScriptSource(source, context, budget);
       sharedSourceFlights.set(cacheKey, { promise: flight, createdAt: Date.now() });
 
-      // Cleanup stale entries periodically (every 50 calls)
-      if (sharedSourceFlights.size > 50) {
+      // Cleanup stale entries periodically
+      if (sharedSourceFlights.size > 30) {
         const now = Date.now();
         for (const [key, entry] of sharedSourceFlights) {
           if (now - entry.createdAt > SHARED_SOURCE_TTL_MS) {

@@ -56,8 +56,32 @@ for pattern in "launch-active-example" "minimal-server" "launch-and-capture" "sm
   done < <(pgrep -f "$pattern" 2>/dev/null || true)
 done
 
+# 5b. Kill orphaned node/tsx processes from our project directory
+# When the server crashes, child processes survive and leak memory.
+# Match any node/tsx process whose command line includes our project path.
+PROJECT_PATH="$(cd "$PROJECT_DIR" && pwd)"
+for proc_pattern in "node.*$PROJECT_PATH" "tsx.*$PROJECT_PATH" "node.*continuum" "tsx.*continuum"; do
+  while IFS= read -r pid; do
+    if [ -n "$pid" ] && [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
+      cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 80)
+      echo -e "   Killing orphaned process (PID $pid): $cmd"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done < <(pgrep -f "$proc_pattern" 2>/dev/null || true)
+done
+
 # 6. Give processes 2 seconds to die
 sleep 2
+
+# 6b. Force kill any surviving node/tsx orphans from our project
+for proc_pattern in "node.*$PROJECT_PATH" "tsx.*$PROJECT_PATH" "node.*continuum" "tsx.*continuum"; do
+  while IFS= read -r pid; do
+    if [ -n "$pid" ] && [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
+      echo -e "   Force killing survivor (PID $pid)"
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done < <(pgrep -f "$proc_pattern" 2>/dev/null || true)
+done
 
 # 7. Force kill anything still on our ports
 for port in 9000 9001 7880; do

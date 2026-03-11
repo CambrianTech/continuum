@@ -19,6 +19,7 @@
  */
 
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 /**
  * Priority levels for operations
@@ -57,6 +58,11 @@ export class BackpressureService {
   private static cachedStats: QueueStats | null = null;
   private static cacheTimestamp: number = 0;
   private static readonly CACHE_TTL_MS = 100; // Refresh every 100ms (fast enough to adapt)
+
+  /** Rust memory gate state — cached to avoid IPC on every check */
+  private static memoryGateClosed: boolean = false;
+  private static memoryGateTimestamp: number = 0;
+  private static readonly MEMORY_GATE_TTL_MS = 2000; // Check every 2s (matches Rust poll interval)
 
   /**
    * Check if an operation should proceed based on current system load
@@ -98,12 +104,14 @@ export class BackpressureService {
   /**
    * Get current load level (0.0 to 1.0+)
    *
-   * Can be used for adaptive behavior beyond simple proceed/don't proceed:
-   * - Adjust batch sizes based on load
-   * - Delay operations proportional to load
-   * - Show load indicators in UI
+   * Combines Candle queue load with Rust memory pressure gate.
+   * When memory gate is closed, returns 2.0 (emergency) regardless of queue.
    */
   static getLoad(): number {
+    // Memory gate overrides everything — if Rust says we're OOM, stop.
+    if (this.isMemoryGateClosed()) {
+      return 2.0;
+    }
     const stats = this.getQueueStats();
     return stats?.load ?? 0;
   }
@@ -117,10 +125,11 @@ export class BackpressureService {
   }
 
   /**
-   * Check if system is under high load
-   * Convenience method for quick checks
+   * Check if system is under high load.
+   * True when Candle queue exceeds threshold OR Rust memory gate is closed.
    */
   static isHighLoad(): boolean {
+    if (this.isMemoryGateClosed()) return true;
     return this.getLoad() > LOAD_THRESHOLDS.normal;
   }
 
@@ -130,6 +139,37 @@ export class BackpressureService {
    */
   static isIdle(): boolean {
     return this.getLoad() < LOAD_THRESHOLDS.background;
+  }
+
+  /**
+   * Check Rust memory gate (cached, non-blocking).
+   * The gate closes when system memory pressure is critical for 6+ seconds.
+   * Uses fire-and-forget async refresh — never blocks the caller.
+   */
+  private static isMemoryGateClosed(): boolean {
+    const now = Date.now();
+
+    // Return cached value if fresh
+    if ((now - this.memoryGateTimestamp) < this.MEMORY_GATE_TTL_MS) {
+      return this.memoryGateClosed;
+    }
+
+    // Refresh in background (non-blocking) — stale cache is fine for 2s
+    this.memoryGateTimestamp = now; // Prevent concurrent refreshes
+    RustCoreIPCClient.getInstanceAsync()
+      .then(client => client.memoryGateStatus())
+      .then(status => {
+        this.memoryGateClosed = status.closed;
+        if (status.closed) {
+          console.log(`🚨 BackpressureService: Memory gate CLOSED (pressure=${(status.pressure * 100).toFixed(1)}%, RSS=${Math.round(status.rssBytes / 1024 / 1024)}MB)`);
+        }
+      })
+      .catch(() => {
+        // IPC unavailable — assume gate is open (fail-open)
+        this.memoryGateClosed = false;
+      });
+
+    return this.memoryGateClosed;
   }
 
   /**

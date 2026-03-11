@@ -73,6 +73,31 @@ use ts_rs::TS;
 use crate::{clog_info, clog_warn};
 
 // =============================================================================
+// Global Memory Gate — subsystems check before expensive allocations
+// =============================================================================
+
+/// Global atomic gate: true when pressure >= Critical for 3+ consecutive polls.
+/// Any subsystem can check this before allocating large buffers.
+static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Check if the memory gate is closed (critical pressure sustained).
+/// Subsystems should refuse new allocations when this returns true.
+pub fn is_memory_gate_closed() -> bool {
+    MEMORY_GATE_CLOSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Force-close the memory gate (for emergency use).
+pub fn close_memory_gate() {
+    MEMORY_GATE_CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Re-open the memory gate (pressure has eased).
+fn open_memory_gate() {
+    MEMORY_GATE_CLOSED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+// =============================================================================
 // Pressure Levels
 // =============================================================================
 
@@ -383,8 +408,10 @@ pub struct MemoryPressureMonitor {
     /// Atomic pressure (f64 bits) for lock-free reads
     current_pressure: Arc<AtomicU64>,
     /// Shared reference to reporters for on-demand budget queries.
-    /// The monitor loop also holds Arc clones via ReporterEntry.
-    reporters: Vec<Arc<dyn MemoryReporter>>,
+    /// Dynamically growable — reporters can be added after startup.
+    reporters: parking_lot::RwLock<Vec<Arc<dyn MemoryReporter>>>,
+    /// Channel to send new reporters to the monitor loop task.
+    reporter_tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn MemoryReporter>>,
 }
 
 impl MemoryPressureMonitor {
@@ -392,17 +419,20 @@ impl MemoryPressureMonitor {
     ///
     /// Returns a handle for subscribing to pressure changes and registering reporters.
     /// The monitor task runs until the process exits.
+    /// Reporters can be added later via `add_reporter()`.
     pub fn start(reporters: Vec<Arc<dyn MemoryReporter>>) -> Arc<Self> {
         let (tx, rx) = watch::channel(PressureSnapshot::default());
         let current_rss = Arc::new(AtomicU64::new(0));
         let current_pressure = Arc::new(AtomicU64::new(0));
+        let (reporter_tx, reporter_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let monitor = Arc::new(Self {
             tx,
             rx,
             current_rss: current_rss.clone(),
             current_pressure: current_pressure.clone(),
-            reporters: reporters.clone(),
+            reporters: parking_lot::RwLock::new(reporters.clone()),
+            reporter_tx,
         });
 
         let entries: Vec<ReporterEntry> = reporters
@@ -420,9 +450,17 @@ impl MemoryPressureMonitor {
             current_rss,
             current_pressure,
             entries,
+            reporter_rx,
         ));
 
         monitor
+    }
+
+    /// Dynamically add a reporter after startup.
+    /// The reporter will be picked up by the monitor loop on its next poll.
+    pub fn add_reporter(&self, reporter: Arc<dyn MemoryReporter>) {
+        self.reporters.write().push(reporter.clone());
+        let _ = self.reporter_tx.send(reporter);
     }
 
     /// Subscribe to pressure snapshot changes.
@@ -457,10 +495,11 @@ impl MemoryPressureMonitor {
     /// Phase 2: budgets will be adjusted by the allocator based on system pressure.
     pub fn budget_snapshot(&self) -> MemoryBudgetSnapshot {
         let pressure_snap = self.current();
-        let mut consumers = Vec::with_capacity(self.reporters.len());
+        let reporters = self.reporters.read();
+        let mut consumers = Vec::with_capacity(reporters.len());
         let mut warnings = Vec::new();
 
-        for reporter in &self.reporters {
+        for reporter in reporters.iter() {
             // Panic-safe: skip reporters that panic
             let budget_result = std::panic::catch_unwind(AssertUnwindSafe(|| reporter.budget()));
             let report_result = std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()));
@@ -537,6 +576,7 @@ impl MemoryPressureMonitor {
         rss_atomic: Arc<AtomicU64>,
         pressure_atomic: Arc<AtomicU64>,
         mut reporters: Vec<ReporterEntry>,
+        mut reporter_rx: tokio::sync::mpsc::UnboundedReceiver<Arc<dyn MemoryReporter>>,
     ) {
         use sysinfo::{ProcessesToUpdate, System};
 
@@ -555,6 +595,17 @@ impl MemoryPressureMonitor {
 
         loop {
             tokio::time::sleep(poll_interval).await;
+
+            // --- Drain new reporters (added via add_reporter()) ---
+            while let Ok(new_reporter) = reporter_rx.try_recv() {
+                let name = new_reporter.name();
+                reporters.push(ReporterEntry {
+                    reporter: new_reporter,
+                    consecutive_panics: 0,
+                    disabled: false,
+                });
+                clog_info!("🧠 Memory reporter '{}' registered dynamically (total: {})", name, reporters.len());
+            }
 
             // --- System memory ---
             sys.refresh_memory();
@@ -628,9 +679,34 @@ impl MemoryPressureMonitor {
                 }
             }
 
+            // --- Emergency brake: memory gate ---
+            // Close gate when critical for 3+ consecutive polls (6+ seconds).
+            // Re-open when pressure drops below critical.
+            if level == PressureLevel::Critical && consecutive_at_level >= 3 {
+                if !is_memory_gate_closed() {
+                    close_memory_gate();
+                    clog_warn!(
+                        "🚨 MEMORY GATE CLOSED — pressure critical for {}+ seconds. \
+                         Blocking new allocations.",
+                        consecutive_at_level * 2
+                    );
+                }
+            } else if level < PressureLevel::Critical && is_memory_gate_closed() {
+                open_memory_gate();
+                clog_info!("🧠 Memory gate re-opened — pressure eased to {}", level);
+            }
+
             // --- Notify reporters of pressure changes (with panic isolation) ---
-            // Only notify after sustained pressure (consecutive >= 2) to avoid reacting to spikes
-            if consecutive_at_level == 2 && level >= PressureLevel::Warning {
+            // First notification: after 2 consecutive polls at this level (hysteresis)
+            // Emergency mode: at critical, shed on EVERY poll (not just once)
+            let should_shed = match level {
+                PressureLevel::Critical => consecutive_at_level >= 2, // every poll once sustained
+                PressureLevel::High => consecutive_at_level == 2,    // once
+                PressureLevel::Warning => consecutive_at_level == 2, // once
+                PressureLevel::Normal => false,
+            };
+
+            if should_shed {
                 for entry in &reporters {
                     if entry.disabled || !entry.reporter.can_shed() {
                         continue;

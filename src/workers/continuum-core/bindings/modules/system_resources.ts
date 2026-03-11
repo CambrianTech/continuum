@@ -100,10 +100,17 @@ function mapProcessStats(ps: RustProcessStats): ProcessStatsInfo {
 // Mixin
 // ============================================================================
 
+export interface MemoryGateStatus {
+	closed: boolean;
+	pressure: number;
+	rssBytes: number;
+}
+
 export interface SystemResourceMixin {
 	systemCpu(): Promise<CpuStatsInfo>;
 	systemMemory(): Promise<MemoryStatsInfo>;
 	systemResources(options?: { includeProcesses?: boolean; topN?: number }): Promise<SystemResourceSnapshotInfo>;
+	memoryGateStatus(): Promise<MemoryGateStatus>;
 }
 
 export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -144,6 +151,24 @@ export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIP
 				processes: r.processes ? mapProcessStats(r.processes) : undefined,
 				timestampMs: Number(r.timestamp_ms),
 				uptimeSeconds: Number(r.uptime_seconds),
+			};
+		}
+
+		/**
+		 * Check if the memory gate is closed (critical pressure sustained).
+		 * TypeScript should check this before expensive operations (LLM calls, training, etc.)
+		 */
+		async memoryGateStatus(): Promise<MemoryGateStatus> {
+			const response = await this.request({ command: 'system/memory-gate' });
+			if (!response.success) {
+				// If IPC fails, assume gate is open (don't block everything)
+				return { closed: false, pressure: 0, rssBytes: 0 };
+			}
+			const r = response.result as { closed: boolean; pressure: number; rss_bytes: number };
+			return {
+				closed: r.closed,
+				pressure: r.pressure,
+				rssBytes: Number(r.rss_bytes),
 			};
 		}
 	};

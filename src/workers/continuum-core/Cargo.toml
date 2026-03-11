@@ -139,6 +139,11 @@ default = ["metal"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
+[lints.rust]
+# objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
+# Allow until we migrate to objc2.
+unexpected_cfgs = "allow"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests

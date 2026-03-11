@@ -21,6 +21,7 @@ import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { CallEntity, type CallParticipant } from '../../data/entities/CallEntity';
 import { LiveRoomSnapshotService, type RoomSnapshot } from '../../live/LiveRoomSnapshotService';
 import { Logger } from '../../core/logging/Logger';
+import * as fs from 'fs';
 
 const log = Logger.create('LiveRoomAwarenessSource', 'rag');
 
@@ -110,11 +111,20 @@ export class LiveRoomAwarenessSource implements RAGSource {
   }
 
   private buildArtifacts(snapshot: RoomSnapshot | null): RAGArtifact[] {
-    if (!snapshot?.base64) return [];
+    if (!snapshot?.snapshotPath) return [];
+
+    // Read base64 from disk lazily — NOT held in RAM between cycles
+    let base64: string;
+    try {
+      const buffer = fs.readFileSync(snapshot.snapshotPath);
+      base64 = buffer.toString('base64');
+    } catch {
+      return []; // File gone or unreadable
+    }
 
     return [{
       type: 'screenshot',
-      base64: snapshot.base64,
+      base64,
       content: snapshot.description,
       metadata: {
         source: 'live-room-snapshot',

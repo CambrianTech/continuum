@@ -101,6 +101,18 @@ impl ServiceModule for SystemResourceModule {
                 }
             }
 
+            "system/memory-gate" => {
+                // Check if the memory gate is closed (critical pressure sustained).
+                // TypeScript side should check this before expensive operations.
+                let closed = crate::system_resources::is_memory_gate_closed();
+                let json = serde_json::json!({
+                    "closed": closed,
+                    "pressure": self.pressure_monitor.as_ref().map(|pm| pm.pressure()).unwrap_or(0.0),
+                    "rss_bytes": self.pressure_monitor.as_ref().map(|pm| pm.rss_bytes()).unwrap_or(0),
+                });
+                Ok(CommandResult::Json(json))
+            }
+
             "system/memory-budget" => {
                 // Budget snapshot — per-consumer allocation vs actual usage.
                 // Human-visible dashboard: priority, budget, usage, headroom, warnings.
