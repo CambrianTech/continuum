@@ -54,6 +54,10 @@ pub struct CandleAdapter {
     model_guard: RwLock<Option<GpuAllocationGuard>>,
     /// RAII guards for per-adapter VRAM allocations
     adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>,
+    /// Pressure-aware inference gate: limits concurrent local inference based on
+    /// system memory pressure. Prevents 4 personas from all piling into
+    /// spawn_blocking simultaneously (40GB peak → controlled sequential).
+    inference_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl CandleAdapter {
@@ -76,6 +80,10 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
+            // Start with 2 permits: allows modest parallelism while preventing
+            // 4 simultaneous inferences from hitting 40GB peak.
+            // Dynamically reduced to 1 under pressure.
+            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -515,6 +523,33 @@ impl AIProviderAdapter for CandleAdapter {
             if let Some(mgr) = &self.gpu_manager {
                 mgr.eviction_registry.unregister(&format!("candle:model:{}", old_model_id));
             }
+        }
+
+        // ── Pressure-aware inference gate ──
+        // Check memory pressure BEFORE spawning expensive blocking work.
+        // This prevents 4 personas from piling into inference simultaneously
+        // and spiking RSS from 22GB to 40GB+.
+        if crate::system_resources::is_memory_gate_closed() {
+            return Err(format!(
+                "Memory pressure critical — refusing Candle inference for '{}'. \
+                 System will retry when pressure eases.",
+                model_id
+            ));
+        }
+
+        // Acquire semaphore permit — queues excess requests until a slot frees up.
+        // Capacity 2: allows modest overlap while preventing 4-way pile-up.
+        // Permit held until inference completes (RAII drop after spawn_blocking).
+        let wait_start = std::time::Instant::now();
+        let _permit = self.inference_semaphore.clone().acquire_owned().await
+            .map_err(|e| format!("Inference semaphore closed: {e}"))?;
+        let wait_ms = wait_start.elapsed().as_millis();
+        if wait_ms > 100 {
+            log.info(&format!(
+                "Inference gate: waited {}ms for permit (available: {}/2)",
+                wait_ms,
+                self.inference_semaphore.available_permits()
+            ));
         }
 
         // Run inference on blocking thread pool (lazy model loading on first call)

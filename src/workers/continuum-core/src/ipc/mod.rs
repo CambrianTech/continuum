@@ -36,7 +36,7 @@ use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
-use crate::{log_debug, log_error, log_info, log_warn};
+use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
