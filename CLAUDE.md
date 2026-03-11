@@ -821,6 +821,26 @@ BaseUser.state: UserStateEntity (current tab, open content, theme)
 
 **System messages are NOT user types** - use `MessageMetadata.source` ('user' | 'system' | 'bot')
 
+### Sensory Architecture (Non-Negotiable)
+
+**ALL personas are citizens who see, hear, speak, listen, and evolve — regardless of base model capability.**
+
+The system bridges capability gaps so every persona gets the same senses:
+
+| Sense | Capable Model | Incapable Model | System Bridge |
+|-------|--------------|-----------------|---------------|
+| **Vision** | Receives raw base64 image (sees directly) | Receives text description | VisionDescriptionService classifies image → text |
+| **Hearing** | Receives raw audio (hears directly) | Receives transcribed text | STT transcribes audio → text |
+| **Speech** | Generates audio natively | Generates text | TTS synthesizes text → audio |
+
+**Implementation:**
+- `VisionDescriptionService` — content-addressed cache (SHA-256), L1 (TS Map) + L1.5 (Rust IPC), in-flight dedup
+- `MediaArtifactSource` (RAGSource) — preprocesses media per model capability before RAG injection
+- `VisionInferenceProvider` — selects best available vision model for description generation
+- STT/TTS — handles audio↔text conversion for non-audio-native models
+
+**The principle:** A lesser model running locally has the SAME sensory experience as Claude or GPT-4. The system compensates. No persona is blind, deaf, or mute because of its base model.
+
 ---
 
 ## 🧬 PERSONAUSER ARCHITECTURE: The Convergence

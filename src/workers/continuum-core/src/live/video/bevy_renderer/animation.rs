@@ -6,7 +6,7 @@
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
-use super::skeleton::{camera_z_for_head, REFERENCE_CAMERA_Z};
+use super::skeleton::{camera_z_for_head, REFERENCE_HEAD_Y};
 use super::types::*;
 use super::vrm;
 use crate::clog_info;
@@ -259,45 +259,44 @@ fn set_morph(w: &mut [f32], idx: Option<usize>, val: f32) {
 // Camera / Idle
 // =============================================================================
 
-/// Idle animation — gentle camera sway + head-targeted framing.
+/// Idle animation — lock camera to head rest position (captured once).
+///
+/// On the first frame where the head bone's GlobalTransform is available,
+/// we capture the head world Y and lock the camera there. Subsequent frames
+/// skip the query entirely. This prevents breathing/sway animations from
+/// bobbing the camera (and thus the room background).
 pub(super) fn animate_idle(
-    time: Res<Time>,
-    registry: Res<SlotRegistry>,
+    mut registry: ResMut<SlotRegistry>,
     bone_registry: Res<BoneRegistry>,
     global_transforms: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform, With<AvatarSlotId>>,
 ) {
-    for (slot, slot_data) in &registry.slots {
+    for (slot, slot_data) in &mut registry.slots {
         let cam_entity = match slot_data.camera_entity {
             Some(e) => e,
             None => continue,
         };
-        if let Ok(mut transform) = transforms.get_mut(cam_entity) {
-            let t = time.elapsed_secs() + *slot as f32 * 0.7;
-            let sway_x = (t * 0.3).sin() * 0.02;
-            let sway_y = (t * 0.2).cos() * 0.01;
 
-            let (base_y, look_y, cam_z) = if let Some(slot_bones) = bone_registry.slots.get(slot) {
+        // One-time capture: lock camera to head rest position.
+        if slot_data.camera_head_y.is_none() {
+            if let Some(slot_bones) = bone_registry.slots.get(slot) {
                 if let Some(ref head) = slot_bones.head {
                     if let Ok(global) = global_transforms.get(head.entity) {
-                        let head_world_y = global.translation().y;
-                        let eye_y = head_world_y + 0.06;
-                        let z = camera_z_for_head(head_world_y);
-                        (eye_y + 0.02, eye_y, z)
-                    } else {
-                        (1.50, 1.47, REFERENCE_CAMERA_Z)
+                        slot_data.camera_head_y = Some(global.translation().y);
                     }
-                } else {
-                    (1.50, 1.47, REFERENCE_CAMERA_Z)
                 }
-            } else {
-                (1.50, 1.47, REFERENCE_CAMERA_Z)
-            };
+            }
+        }
 
-            transform.translation.x = sway_x;
-            transform.translation.y = base_y + sway_y;
+        if let Ok(mut transform) = transforms.get_mut(cam_entity) {
+            let head_y = slot_data.camera_head_y.unwrap_or(REFERENCE_HEAD_Y);
+            let eye_y = head_y + 0.06;
+            let cam_z = camera_z_for_head(head_y);
+
+            transform.translation.x = 0.0;
+            transform.translation.y = eye_y + 0.02;
             transform.translation.z = cam_z;
-            let look_target = Vec3::new(0.0, look_y, 0.0);
+            let look_target = Vec3::new(0.0, eye_y, 0.0);
             *transform = transform.looking_at(look_target, Vec3::Y);
         }
     }

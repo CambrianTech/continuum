@@ -33,6 +33,9 @@ pub struct RenderSlot {
     /// The slot's own low-res render target (640×360).
     pub default_render_target: Handle<Image>,
     pub dimensions: (u32, u32),
+    /// Locked head world-Y from skeleton discovery. Camera uses this instead
+    /// of the live head position so breathing/sway don't bob the camera.
+    pub camera_head_y: Option<f32>,
     /// All objects in this scene, keyed by a stable string ID.
     /// For avatars, the key is typically the persona identity.
     /// For props/environments, application-defined.
@@ -50,6 +53,7 @@ impl RenderSlot {
             slot_id,
             scene_root: None,
             camera_entity: None,
+            camera_head_y: None,
             readback_entity,
             render_target: render_target.clone(),
             default_render_target: render_target,
@@ -133,6 +137,7 @@ impl RenderSlot {
             commands.entity(root).despawn();
         }
         self.camera_entity = None;
+        self.camera_head_y = None;
         self.objects.clear();
     }
 }
