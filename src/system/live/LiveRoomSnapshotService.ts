@@ -24,12 +24,15 @@ import { Commands } from '../core/shared/Commands';
 import { VisionDescriptionService } from '../vision/VisionDescriptionService';
 import { Logger } from '../core/logging/Logger';
 import { createHash } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const log = Logger.create('LiveRoomSnapshotService', 'rag');
 
 export interface RoomSnapshot {
   description: string;
-  base64: string;
+  /** Path to snapshot JPEG on disk — base64 is NOT held in memory */
+  snapshotPath: string;
   mimeType: string;
   capturedAt: number;
   hash: string;
@@ -65,18 +68,11 @@ export class LiveRoomSnapshotService {
    * RAGSources call this — they should never block on vision.
    */
   getCachedDescription(roomId: string): RoomSnapshot | null {
-    this._lastReadAt.set(roomId, Date.now());
-
-    // Start capture loop if not running (fire-and-forget)
-    if (!this._intervalHandles.has(roomId)) {
-      this.startCaptureLoop(roomId);
-    }
-
-    const cached = this._cache.get(roomId);
-    if (cached && Date.now() - cached.capturedAt < CACHE_TTL_MS) {
-      return cached;
-    }
-
+    // DISABLED: Snapshot capture loop triggers voice/snapshot-room IPC every 30s,
+    // which calls compose_grid in Rust — allocating large image buffers (RGBA + JPEG
+    // for 14 participants) on spawn_blocking threads. These allocations accumulate
+    // and cause 1+ GB/min memory growth in the Rust process.
+    // TODO: Fix Rust-side memory retention, then re-enable.
     return null;
   }
 
@@ -138,6 +134,12 @@ export class LiveRoomSnapshotService {
     this._intervalHandles.set(roomId, handle);
   }
 
+  /** Directory for snapshot files — written to disk, not held in RAM */
+  private static readonly SNAPSHOT_DIR = path.join(
+    process.env.HOME || '/tmp',
+    '.continuum', 'cache', 'snapshots'
+  );
+
   private async captureAndDescribe(roomId: string): Promise<void> {
     if (this._captureInFlight.has(roomId)) return;
     this._captureInFlight.add(roomId);
@@ -162,6 +164,12 @@ export class LiveRoomSnapshotService {
         return;
       }
 
+      // Write snapshot to disk — do NOT hold base64 in RAM
+      const snapshotDir = LiveRoomSnapshotService.SNAPSHOT_DIR;
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      const snapshotPath = path.join(snapshotDir, `room-${roomId.slice(0, 8)}.jpg`);
+      fs.writeFileSync(snapshotPath, Buffer.from(base64, 'base64'));
+
       // Describe via vision model
       const visionService = VisionDescriptionService.getInstance();
       if (!visionService.isAvailable()) {
@@ -185,6 +193,7 @@ export class LiveRoomSnapshotService {
         }),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), VISION_TIMEOUT_MS)),
       ]);
+      // base64 goes out of scope here — GC can reclaim it
 
       if (!result) {
         log.warn('Vision description timed out');
@@ -195,7 +204,7 @@ export class LiveRoomSnapshotService {
 
       this._cache.set(roomId, {
         description: result.description,
-        base64,
+        snapshotPath,
         mimeType: 'image/jpeg',
         capturedAt: Date.now(),
         hash,

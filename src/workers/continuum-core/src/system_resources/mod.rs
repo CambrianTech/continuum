@@ -15,7 +15,8 @@ pub mod memory_pressure;
 pub mod monitor;
 
 pub use memory_pressure::{
-    MemoryPressureMonitor, MemoryReporter, ModuleMemoryReport, PressureLevel, PressureSnapshot,
+    MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec, MemoryPressureMonitor,
+    MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel, PressureSnapshot,
 };
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,

@@ -42,6 +42,14 @@ use std::sync::Arc;
 use crate::live::avatar::publishers::gpu_bridge;
 use crate::{clog_info, clog_warn};
 
+// Metal autorelease pool — drains autoreleased ObjC objects (command buffers, encoders).
+// Without this, autoreleased objects from `new_command_buffer()` accumulate on the thread
+// until the thread exits, leaking ~100MB/s at 14 slots × 15fps.
+extern "C" {
+    fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
+    fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
+}
+
 /// IOSurface FFI type alias
 type IOSurfaceRef = *mut std::ffi::c_void;
 
@@ -72,20 +80,21 @@ kernel void rgba_to_nv12(
     uint h = src.get_height();
     if (gid.x >= w || gid.y >= h) return;
 
+    // Read source RGBA pixel
     float4 rgba = src.read(gid);
-    float r = rgba.r * 255.0;
-    float g = rgba.g * 255.0;
-    float b = rgba.b * 255.0;
+    float r = rgba.r;
+    float g = rgba.g;
+    float b = rgba.b;
 
-    // BT.601 video range: Y = (66R + 129G + 25B + 128) >> 8 + 16
-    float y = ((66.0 * r + 129.0 * g + 25.0 * b + 128.0) / 256.0 + 16.0) / 255.0;
+    // BT.601 video range: Y [16/255, 235/255], UV [16/255, 240/255]
+    float y = 0.257 * r + 0.504 * g + 0.098 * b + 16.0 / 255.0;
     dst_y.write(float4(y, 0, 0, 1), gid);
 
-    // UV: only write for top-left pixel of each 2x2 block (4:2:0 subsampling)
+    // Subsample UV at half resolution (2x2 block → 1 UV sample)
     if ((gid.x & 1u) == 0u && (gid.y & 1u) == 0u) {
-        float u_val = ((-38.0 * r - 74.0 * g + 112.0 * b + 128.0) / 256.0 + 128.0) / 255.0;
-        float v_val = ((112.0 * r - 94.0 * g - 18.0 * b + 128.0) / 256.0 + 128.0) / 255.0;
-        dst_uv.write(float4(u_val, v_val, 0, 1), uint2(gid.x / 2, gid.y / 2));
+        float u = -0.148 * r - 0.291 * g + 0.439 * b + 128.0 / 255.0;
+        float v =  0.439 * r - 0.368 * g - 0.071 * b + 128.0 / 255.0;
+        dst_uv.write(float4(u, v, 0, 1), uint2(gid.x / 2, gid.y / 2));
     }
 }
 "#;
@@ -97,17 +106,17 @@ kernel void rgba_to_nv12(
 /// Compiled Metal compute pipeline for RGBA→NV12 conversion.
 ///
 /// Created once from the Metal device, reused for every frame.
+/// Does NOT own a command queue — uses wgpu's shared queue for GPU ordering.
 #[derive(Resource)]
 pub struct MetalGpuConverter {
     pipeline: ComputePipelineState,
-    command_queue: CommandQueue,
     device: MetalDevice,
     threadgroup_size: MTLSize,
     frame_count: std::sync::atomic::AtomicU64,
     created_at: std::time::Instant,
 }
 
-// SAFETY: Metal pipeline state and command queue are thread-safe kernel objects.
+// SAFETY: Metal pipeline state is a thread-safe kernel object.
 unsafe impl Send for MetalGpuConverter {}
 unsafe impl Sync for MetalGpuConverter {}
 
@@ -128,13 +137,10 @@ impl MetalGpuConverter {
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|e| format!("Failed to create compute pipeline: {}", e))?;
 
-        let command_queue = device.new_command_queue();
-
-        clog_info!("GPU RGBA→NV12 compute pipeline compiled");
+        clog_info!("GPU RGBA→NV12 compute pipeline compiled (shared wgpu queue)");
 
         Ok(Self {
             pipeline,
-            command_queue,
             device: device.to_owned(),
             threadgroup_size: MTLSize::new(16, 16, 1),
             frame_count: std::sync::atomic::AtomicU64::new(0),
@@ -144,11 +150,37 @@ impl MetalGpuConverter {
 
     /// Convert an RGBA texture to NV12 on the GPU and write to the slot's IOSurface.
     ///
+    /// Uses the provided command queue (wgpu's shared queue) to guarantee GPU
+    /// execution ordering — our compute runs AFTER Bevy's render pass on the
+    /// same queue. This eliminates the strobe bug from separate queue races.
+    ///
     /// # Safety
     /// `src_texture` must be a valid Metal texture with RGBA8 pixel format.
+    /// `command_queue` must be the wgpu shared Metal command queue.
+    #[allow(unexpected_cfgs)] // objc 0.2's msg_send! uses deprecated cargo-clippy cfg
     unsafe fn convert(
         &self,
         src_texture: &metal::TextureRef,
+        command_queue: &CommandQueue,
+        slot_id: u8,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        // Autorelease pool: Metal's new_command_buffer() returns an autoreleased object.
+        // Without explicit pool drain, these accumulate until thread exit = memory leak.
+        let pool = objc_autoreleasePoolPush();
+
+        let result = self.convert_inner(src_texture, command_queue, slot_id, width, height);
+
+        objc_autoreleasePoolPop(pool);
+        result
+    }
+
+    #[allow(unexpected_cfgs)]
+    unsafe fn convert_inner(
+        &self,
+        src_texture: &metal::TextureRef,
+        command_queue: &CommandQueue,
         slot_id: u8,
         width: u32,
         height: u32,
@@ -181,8 +213,10 @@ impl MetalGpuConverter {
             return false;
         }
 
-        // Create command buffer and compute encoder
-        let command_buffer = self.command_queue.new_command_buffer();
+        // Create command buffer on wgpu's SHARED queue — GPU ordering guaranteed.
+        // Bevy's render pass was submitted on this same queue, so our compute
+        // will execute AFTER it completes (Metal guarantees in-queue ordering).
+        let command_buffer = command_queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.pipeline);
@@ -232,6 +266,7 @@ impl MetalGpuConverter {
     ///
     /// Uses `[MTLDevice newTextureWithDescriptor:iosurface:plane:]` via Objective-C runtime
     /// (not wrapped by the `metal` crate). Returns raw objc pointer; caller must release.
+    #[allow(unexpected_cfgs)] // objc 0.2's msg_send! uses deprecated cargo-clippy cfg
     unsafe fn create_iosurface_texture(
         &self,
         iosurface: IOSurfaceRef,
@@ -338,6 +373,7 @@ struct ExtractedFrameNotifiers {
     notifiers: Vec<Arc<tokio::sync::Notify>>,
 }
 
+
 /// Extract GPU bridge slot data from the main world during ExtractSchedule.
 fn extract_gpu_bridge_data(
     mut extracted_slots: ResMut<ExtractedGpuBridgeSlots>,
@@ -387,7 +423,7 @@ fn init_metal_converter(mut commands: Commands, render_device: Res<RenderDevice>
                 clog_info!("Metal GPU RGBA→NV12 converter initialized");
             }
             Err(e) => {
-                clog_warn!("Failed to init Metal GPU converter: {} — falling back to CPU", e);
+                clog_warn!("Failed to init Metal GPU converter: {}", e);
             }
         }
     }
@@ -395,19 +431,45 @@ fn init_metal_converter(mut commands: Commands, render_device: Res<RenderDevice>
 
 /// Render-world system: dispatch Metal compute for each GPU bridge slot.
 ///
-/// Runs in RenderSystems::Cleanup, after the main render pass completes.
-/// Accesses the rendered texture via RenderAssets<GpuImage> and wgpu HAL.
+/// Reads the rendered texture directly via wgpu HAL and dispatches Metal compute
+/// to convert RGBA→NV12, writing to the slot's IOSurface for LiveKit consumption.
+///
+/// Uses wgpu's shared Metal command queue — Metal guarantees sequential execution
+/// within a queue, so our compute runs after Bevy's render pass completes.
 fn gpu_convert_system(
     converter: Res<MetalGpuConverter>,
+    render_queue: Res<bevy::render::renderer::RenderQueue>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     bridge_slots: Res<ExtractedGpuBridgeSlots>,
     slot_dims: Res<ExtractedSlotDimensions>,
     notifiers: Res<ExtractedFrameNotifiers>,
 ) {
+    if bridge_slots.slots.is_empty() {
+        return;
+    }
+
+    let wgpu_queue: &wgpu::Queue = &render_queue.0;
+    let shared_queue = unsafe {
+        match wgpu_queue.as_hal::<wgpu::hal::api::Metal>() {
+            Some(hal_queue) => hal_queue.as_raw().clone(),
+            None => {
+                clog_warn!("Metal HAL queue not available — GPU compute skipped");
+                return;
+            }
+        }
+    };
+    let queue_guard = shared_queue.lock();
+
+    let mut converted = 0u32;
+    let mut skipped = 0u32;
+
     for (slot_id, asset_id) in &bridge_slots.slots {
         let gpu_image = match gpu_images.get(*asset_id) {
             Some(img) => img,
-            None => continue, // Image not yet extracted to render world
+            None => {
+                skipped += 1;
+                continue;
+            }
         };
 
         let (width, height) = slot_dims
@@ -417,21 +479,38 @@ fn gpu_convert_system(
             .unwrap_or((super::bevy_renderer::AVATAR_WIDTH, super::bevy_renderer::AVATAR_HEIGHT));
 
         unsafe {
-            // Access the raw Metal texture via wgpu HAL
             let hal_texture = match gpu_image.texture.as_hal::<wgpu::hal::api::Metal>() {
                 Some(t) => t,
-                None => continue,
+                None => {
+                    skipped += 1;
+                    continue;
+                }
             };
 
             let mtl_texture = hal_texture.raw_handle();
 
-            // Dispatch GPU compute: RGBA texture → NV12 IOSurface
-            if converter.convert(mtl_texture, *slot_id, width, height) {
-                // Signal the video loop — frame arrival is the clock
+            if converter.convert(mtl_texture, &queue_guard, *slot_id, width, height) {
+                converted += 1;
                 if let Some(notify) = notifiers.notifiers.get(*slot_id as usize) {
                     notify.notify_one();
                 }
+            } else {
+                skipped += 1;
             }
+        }
+    }
+
+    // Log skip events — if skips correlate with strobe, the issue is in asset availability
+    if skipped > 0 {
+        let total = converter.frame_count.load(Ordering::Relaxed);
+        if total < 100 || total % 150 == 0 {
+            clog_warn!(
+                "GPU compute: frame {} — converted={}, skipped={} (of {} bridge slots)",
+                total,
+                converted,
+                skipped,
+                bridge_slots.slots.len()
+            );
         }
     }
 }

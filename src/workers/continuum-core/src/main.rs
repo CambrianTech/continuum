@@ -122,21 +122,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start memory pressure monitor — own task, non-blocking, crash-proof.
     // Polls every 2s, publishes via watch channel. Modules subscribe to react.
-    let reporters: Vec<Arc<dyn continuum_core::system_resources::MemoryReporter>> = {
-        let mut r: Vec<Arc<dyn continuum_core::system_resources::MemoryReporter>> = Vec::new();
-        // Bevy reporter — reads atomic stats from the renderer (if initialized)
-        if let Some(bevy) = continuum_core::live::video::bevy_renderer::try_get() {
-            r.push(Arc::new(
-                continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
-                    bevy.memory_stats.clone(),
-                    bevy.command_sender(),
-                ),
-            ));
+    // Start with empty reporters — Bevy might not be ready yet (race condition).
+    let pressure_monitor =
+        continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
+
+    // Delayed reporter registration: wait for Bevy to finish initializing,
+    // then register its memory reporter. Retries every 2s for up to 30s.
+    let pm_clone = pressure_monitor.clone();
+    tokio::spawn(async move {
+        for attempt in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(bevy) = continuum_core::live::video::bevy_renderer::try_get() {
+                let reporter = Arc::new(
+                    continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
+                        bevy.memory_stats.clone(),
+                        bevy.command_sender(),
+                    ),
+                );
+                pm_clone.add_reporter(reporter);
+                info!("🧠 Bevy memory reporter registered (attempt {})", attempt + 1);
+                return;
+            }
         }
-        r
-    };
-    let _pressure_monitor =
-        continuum_core::system_resources::MemoryPressureMonitor::start(reporters);
+        tracing::warn!("🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running");
+    });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     tokio::spawn(async {

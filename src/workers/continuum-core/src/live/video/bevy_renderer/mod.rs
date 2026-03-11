@@ -55,11 +55,8 @@ pub(crate) use types::{FrameNotifiers, SlotDimensions, SlotRegistry};
 
 use types::*;
 
-// GpuConvertPlugin DISABLED: Metal compute shader runs on a separate command queue
-// from Bevy/wgpu, with no GPU synchronization guarantee that the render pass has
-// completed before the compute shader reads the texture. This causes alternating
-// correct/stale frames (the strobe). The ReadbackComplete → try_write_bridge path
-// is correct and should be used until proper GPU sync is implemented.
+// GpuConvertPlugin runs in RenderSystems::Cleanup (AFTER render pass).
+// GPU bridge slots skip Readback entirely — zero CPU pixel work.
 
 /// Maximum number of concurrent avatar render slots.
 pub const MAX_AVATAR_SLOTS: u8 = 16;
@@ -376,6 +373,7 @@ fn run_bevy_app(
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / AVATAR_FPS,
         )))
+        .add_plugins(super::metal_gpu_convert::GpuConvertPlugin)
         .register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(
@@ -383,7 +381,7 @@ fn run_bevy_app(
             (
                 process_commands,
                 monitor_load_states,
-                touch_ambient_light,
+                // Ambient light set once in setup_render_slots (no per-frame touch needed).
                 update_memory_stats,
             ),
         )
@@ -422,10 +420,6 @@ fn run_bevy_app(
 // Readback
 // ============================================================================
 
-fn spawn_readback_entity(commands: &mut Commands, rt_handle: Handle<Image>, slot_id: u8) -> Entity {
-    spawn_readback_entity_opt(commands, rt_handle, slot_id, true)
-}
-
 fn spawn_readback_entity_opt(
     commands: &mut Commands,
     rt_handle: Handle<Image>,
@@ -448,6 +442,15 @@ fn spawn_readback_entity_opt(
                   notifiers: Res<FrameNotifiers>,
                   health: Res<SlotHealthStatus>,
                   slot_dims: Res<SlotDimensions>| {
+                // GPU bridge slots: Metal compute handles RGBA→NV12 on GPU.
+                // Skip ALL CPU work — no readback processing, no allocation, no IOSurface write.
+                #[cfg(target_os = "macos")]
+                {
+                    if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id) {
+                        return;
+                    }
+                }
+
                 let pixel_bytes: &[u8] = &event.data;
 
                 let (slot_w, slot_h) = slot_dims.dims
@@ -492,15 +495,6 @@ fn spawn_readback_entity_opt(
                         }
                     }
                 }
-                #[cfg(target_os = "macos")]
-                {
-                    if crate::live::avatar::publishers::gpu_bridge::try_write_bridge(slot_id, pixel_bytes) {
-                        if let Some(notify) = notifiers.0.get(slot_id as usize) {
-                            notify.notify_one();
-                        }
-                        return;
-                    }
-                }
 
                 if let Some(tx) = channels.0.get(slot_id as usize) {
                     match tx.try_send(RgbaFrame {
@@ -534,13 +528,28 @@ fn spawn_readback_entity_opt(
 #[allow(clippy::type_complexity)]
 fn ensure_continuous_readback(
     query: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, Without<Readback>)>,
+    query_with_readback: Query<(Entity, &AvatarSlotId), (With<ReadbackMarker>, With<Readback>)>,
     registry: Res<SlotRegistry>,
     cameras: Query<&Camera>,
     mut commands: Commands,
 ) {
+    // Remove Readback from bridge slots — if Readback was inserted before the bridge
+    // was registered, it must be removed to prevent dual-writing (CPU ReadbackComplete
+    // + GPU Metal compute both writing to the same IOSurface).
+    for (entity, slot_id) in &query_with_readback {
+        if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
+            commands.entity(entity).remove::<Readback>();
+        }
+    }
+
+    // Re-insert Readback for non-bridge slots that need continuous readback.
     for (entity, slot_id) in &query {
         if let Some(state) = registry.slots.get(&slot_id.0) {
             if !state.active || !state.model_loaded {
+                continue;
+            }
+            // GPU bridge slots are handled by GpuConvertPlugin — no CPU readback.
+            if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
                 continue;
             }
             if let Ok(camera) = cameras.get(state.camera_entity) {
@@ -565,24 +574,47 @@ fn setup_render_slots(
     mut registry: ResMut<SlotRegistry>,
     _frame_channels: Res<FrameChannels>,
 ) {
+    // Ambient light — set once at startup (no per-frame set_changed needed).
+    // Provides baseline fill so avatars aren't completely dark in shadow.
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 300.0,
         affects_lightmapped_meshes: false,
     });
 
+    // Two-point lighting rig — key + fill, both visible on all avatar layers.
+    // Key: bright from upper-left, fill: softer from lower-right to reduce harsh shadows.
     {
         let all_layers: Vec<usize> = (1..=(MAX_AVATAR_SLOTS as usize)).collect();
+
+        // Key light — upper-left, strong
         commands.spawn((
             DirectionalLight {
-                illuminance: 12000.0,
+                illuminance: 22000.0,
                 shadows_enabled: false,
                 ..default()
             },
             Transform::from_rotation(Quat::from_euler(
                 EulerRot::XYZ,
-                -0.4,
-                std::f32::consts::PI,
+                -0.4,           // 23° down
+                std::f32::consts::PI + 0.3, // slightly left
+                0.0,
+            )),
+            RenderLayers::from_layers(&all_layers),
+            AvatarSceneLight,
+        ));
+
+        // Fill light — lower-right, softer (prevents harsh shadows on face)
+        commands.spawn((
+            DirectionalLight {
+                illuminance: 8000.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_rotation(Quat::from_euler(
+                EulerRot::XYZ,
+                -0.1,           // nearly level
+                std::f32::consts::PI - 0.4, // from the right
                 0.0,
             )),
             RenderLayers::from_layers(&all_layers),
@@ -732,10 +764,6 @@ fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
         .slots
         .values()
         .any(|s| s.active && s.model_loaded)
-}
-
-fn touch_ambient_light(mut ambient: ResMut<GlobalAmbientLight>) {
-    ambient.set_changed();
 }
 
 fn update_memory_stats(
@@ -1200,8 +1228,11 @@ fn process_commands(
                         .insert(RenderTarget::Image(new_rt_handle.clone().into()));
 
                     commands.entity(state._readback_entity).despawn();
+                    // GPU bridge slots: spawn WITHOUT Readback — Metal compute handles frames.
+                    // Non-bridge slots: spawn WITH Readback for CPU readback path.
+                    let has_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot);
                     let new_readback =
-                        spawn_readback_entity(&mut commands, new_rt_handle.clone(), slot);
+                        spawn_readback_entity_opt(&mut commands, new_rt_handle.clone(), slot, !has_bridge);
 
                     state._readback_entity = new_readback;
                     state._render_target = new_rt_handle;

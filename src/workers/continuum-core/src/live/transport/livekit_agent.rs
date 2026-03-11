@@ -145,11 +145,6 @@ const AMBIENT_IDENTITY_PREFIX: &str = "ambient-";
 /// Events emitted by the agent for the VoiceModule to handle
 #[derive(Debug)]
 pub enum AgentEvent {
-    /// Full utterance detected (VAD sentence boundary)
-    Utterance {
-        speaker_id: String,
-        samples: Vec<i16>,
-    },
     /// Participant joined the room
     ParticipantJoined { identity: String, name: String },
     /// Participant left the room
@@ -396,25 +391,17 @@ impl LiveKitAgent {
                         participant,
                     } => {
                         let speaker_id = participant.identity().to_string();
-                        let meta = ParticipantMetadata::from_json(&participant.metadata());
+                        let _meta = ParticipantMetadata::from_json(&participant.metadata());
 
-                        // Only process audio from human participants
-                        let is_human = meta
-                            .as_ref()
-                            .map(|m| m.role == ParticipantRole::Human)
-                            .unwrap_or(true); // Unknown = probably human
-                        if !is_human {
-                            continue;
-                        }
-
-                        clog_info!("🎤 Agent subscribed to track from '{}'", speaker_id);
-
-                        if let RemoteTrack::Audio(audio_track) = track {
-                            let tx = event_tx_clone.clone();
-                            let sid = speaker_id.clone();
-                            tokio::spawn(async move {
-                                process_audio_stream_with_vad(audio_track, sid, tx).await;
-                            });
+                        // Speaking agents do NOT process audio — the STT listener
+                        // handles all transcription centrally (one per call).
+                        // Previously each of 14+ agents spawned its own VAD + NativeAudioStream
+                        // per human speaker = 14× redundant audio processing + memory.
+                        if let RemoteTrack::Audio(_) = &track {
+                            clog_info!(
+                                "🎤 Agent ignoring audio track from '{}' — STT listener handles transcription",
+                                speaker_id
+                            );
                         }
                     }
                     RoomEvent::ParticipantConnected(participant) => {
@@ -1039,79 +1026,6 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     });
 }
 
-/// Process incoming audio from a remote participant's track using ProductionVAD.
-/// Detects sentence boundaries and emits Utterance events for STT processing.
-///
-/// LiveKit sends 10ms frames (160 samples at 16kHz), but earshot WebRTC VAD
-/// requires minimum 240 samples. We accumulate to 480-sample (30ms) chunks.
-async fn process_audio_stream_with_vad(
-    audio_track: RemoteAudioTrack,
-    speaker_id: String,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-) {
-    use crate::live::audio::vad::ProductionVAD;
-    use livekit::webrtc::audio_stream::native::NativeAudioStream;
-    use tokio_stream::StreamExt;
-
-    let mut audio_stream = NativeAudioStream::new(
-        audio_track.rtc_track(),
-        AUDIO_SAMPLE_RATE as i32,
-        1, // mono
-    );
-
-    // Initialize ProductionVAD for proper sentence detection
-    let mut vad = ProductionVAD::new();
-    if let Err(e) = vad.initialize() {
-        clog_error!("🎤 Failed to initialize VAD for '{}': {}", speaker_id, e);
-        return;
-    }
-
-    clog_info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
-
-    // Frame accumulation: LiveKit sends 10ms (160 samples) frames.
-    // Silero VAD requires exactly 512 samples (32ms) at 16kHz — its LSTM was
-    // trained on this chunk size. Feeding 480 samples produces near-zero scores.
-    // WebRTC VAD (earshot) handles 512 via chunk-and-vote on 240-sample pieces.
-    const VAD_FRAME_SIZE: usize = crate::audio_constants::AUDIO_FRAME_SIZE; // 512
-    let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
-
-    while let Some(frame) = audio_stream.next().await {
-        let samples: &[i16] = frame.data.as_ref();
-
-        accum_buf.extend_from_slice(samples);
-        if accum_buf.len() < VAD_FRAME_SIZE {
-            continue;
-        }
-
-        // Drain accumulated buffer in VAD_FRAME_SIZE chunks
-        while accum_buf.len() >= VAD_FRAME_SIZE {
-            let vad_frame: Vec<i16> = accum_buf.drain(..VAD_FRAME_SIZE).collect();
-
-            match vad.process_frame(&vad_frame) {
-                Ok(Some(sentence_samples)) => {
-                    // Complete sentence detected by VAD — emit for STT
-                    clog_info!(
-                        "🎤 Sentence detected from '{}' ({} samples, {:.1}s)",
-                        speaker_id,
-                        sentence_samples.len(),
-                        sentence_samples.len() as f64 / AUDIO_SAMPLE_RATE as f64,
-                    );
-                    let _ = event_tx.send(AgentEvent::Utterance {
-                        speaker_id: speaker_id.clone(),
-                        samples: sentence_samples,
-                    });
-                }
-                Ok(None) => {} // Still buffering — VAD hasn't detected sentence end yet
-                Err(e) => {
-                    clog_warn!("🎤 VAD error for '{}': {}", speaker_id, e);
-                }
-            }
-        }
-    }
-
-    clog_info!("🎤 Audio stream ended for '{}'", speaker_id);
-}
-
 // =============================================================================
 // STT Listener — subscribe-only agent for VAD → STT → transcription
 // =============================================================================
@@ -1289,10 +1203,11 @@ async fn listen_and_transcribe(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
     let mut frame_count: u64 = 0;
 
-    // Frame accumulation buffer: LiveKit sends 10ms (160 samples) frames,
-    // but our VAD (earshot WebRTC) requires 240-sample minimum chunks.
-    // Accumulate to 480 samples (30ms) before feeding to VAD.
-    const VAD_FRAME_SIZE: usize = 480;
+    // Frame accumulation buffer: LiveKit sends 10ms (160 samples) frames.
+    // Silero VAD requires exactly 512 samples (32ms) at 16kHz — its LSTM was
+    // trained on this chunk size. Feeding 480 produces near-zero scores.
+    // Use the single source of truth from audio_constants.
+    const VAD_FRAME_SIZE: usize = crate::audio_constants::AUDIO_FRAME_SIZE;
     let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
 
     while let Some(frame) = audio_stream.next().await {

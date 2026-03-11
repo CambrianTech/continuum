@@ -36,7 +36,7 @@ use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
-use crate::{log_debug, log_error, log_info};
+use crate::{log_debug, log_error, log_info, log_warn};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -78,6 +78,109 @@ pub struct InboxMessageRequest {
 // See modules/cognition.rs for the parsing logic.
 
 // All commands route through ServiceModule implementations in src/modules/.
+
+// ============================================================================
+// Memory Diagnostics — track RSS per IPC command to find leaks
+// ============================================================================
+
+/// Get current process RSS in MB using macOS task_info API.
+/// Returns actual resident memory (not peak like getrusage ru_maxrss).
+#[cfg(target_os = "macos")]
+fn current_rss_mb() -> u64 {
+    #[repr(C)]
+    struct MachTaskBasicInfo {
+        virtual_size: u64,
+        resident_size: u64,
+        resident_size_max: u64,
+        user_time_seconds: u32,
+        user_time_microseconds: u32,
+        system_time_seconds: u32,
+        system_time_microseconds: u32,
+        policy: i32,
+        suspend_count: i32,
+    }
+
+    extern "C" {
+        fn mach_task_self() -> u32;
+        fn task_info(
+            target_task: u32,
+            flavor: u32,
+            task_info: *mut MachTaskBasicInfo,
+            task_info_count: *mut u32,
+        ) -> i32;
+    }
+
+    const MACH_TASK_BASIC_INFO: u32 = 20;
+
+    unsafe {
+        let mut info: MachTaskBasicInfo = std::mem::zeroed();
+        let mut count =
+            (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<u32>()) as u32;
+        let kr = task_info(
+            mach_task_self(),
+            MACH_TASK_BASIC_INFO,
+            &mut info,
+            &mut count,
+        );
+        if kr == 0 {
+            info.resident_size / (1024 * 1024)
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_rss_mb() -> u64 {
+    0 // No-op on non-macOS
+}
+
+/// Periodic RSS reporter — logs every 10s so we can see growth trends.
+/// Also tracks per-command cumulative deltas to identify the leaker.
+use std::sync::Mutex;
+use std::collections::HashMap;
+static COMMAND_MEMORY_DELTAS: once_cell::sync::Lazy<Mutex<HashMap<String, i64>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn log_command_rss_delta(command: &str, before_mb: u64, after_mb: u64) {
+    let delta = after_mb as i64 - before_mb as i64;
+    if delta > 0 {
+        // Accumulate per-command
+        if let Ok(mut map) = COMMAND_MEMORY_DELTAS.lock() {
+            *map.entry(command.to_string()).or_insert(0) += delta;
+        }
+    }
+    // Log commands with >2MB growth per call
+    if delta > 2 {
+        eprintln!(
+            "[MEMLEAK] RSS +{}MB after '{}' ({}MB → {}MB)",
+            delta, command, before_mb, after_mb
+        );
+    }
+}
+
+/// Dump accumulated memory deltas — call periodically to see which commands leak.
+fn dump_memory_report() {
+    let rss = current_rss_mb();
+    if let Ok(map) = COMMAND_MEMORY_DELTAS.lock() {
+        if map.is_empty() {
+            eprintln!("[MEMLEAK] RSS={}MB, no command deltas yet", rss);
+            return;
+        }
+        let mut entries: Vec<_> = map.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1));
+        let top: Vec<String> = entries
+            .iter()
+            .take(10)
+            .map(|(cmd, delta)| format!("{}:+{}MB", cmd, delta))
+            .collect();
+        eprintln!(
+            "[MEMLEAK] RSS={}MB | Top leakers: {}",
+            rss,
+            top.join(", ")
+        );
+    }
+}
 // See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,
 // models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
 
@@ -332,10 +435,10 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         let rt_handle = state.rt_handle.clone();
         rt_handle.spawn(async move {
             let handle_result = if let Some(ref cmd) = command {
-                // No timeout here — the CLI enforces per-command timeouts (10s-300s by category).
-                // Adding a blanket timeout here killed long-running commands like voice/speak-in-call
-                // (TTS + real-time audio streaming = 20-60s+) and ai/generate.
+                let rss_before = current_rss_mb();
                 let result = state.runtime.route_command(cmd, json_value.clone()).await;
+                let rss_after = current_rss_mb();
+                log_command_rss_delta(cmd, rss_before, rss_after);
 
                 match result {
                     Some(Ok(CommandResult::Json(value))) => {
@@ -841,6 +944,16 @@ pub fn start_server(
     ));
 
     log_info!("ipc", "server", "IPC server ready");
+
+    // Periodic memory leak reporter — logs RSS + top leakers every 10s
+    let mem_rt = state.rt_handle.clone();
+    mem_rt.spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            dump_memory_report();
+        }
+    });
 
     // Accept connections (event-driven - sleeps until connection)
     for stream in listener.incoming() {

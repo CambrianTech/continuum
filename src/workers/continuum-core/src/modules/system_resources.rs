@@ -101,6 +101,19 @@ impl ServiceModule for SystemResourceModule {
                 }
             }
 
+            "system/memory-budget" => {
+                // Budget snapshot — per-consumer allocation vs actual usage.
+                // Human-visible dashboard: priority, budget, usage, headroom, warnings.
+                if let Some(pm) = &self.pressure_monitor {
+                    let snapshot = pm.budget_snapshot();
+                    let json = serde_json::to_value(snapshot)
+                        .map_err(|e| format!("Failed to serialize budget: {e}"))?;
+                    Ok(CommandResult::Json(json))
+                } else {
+                    Err("Memory pressure monitor not initialized".to_string())
+                }
+            }
+
             _ => Err(format!("Unknown system command: {command}")),
         }
     }

@@ -13,7 +13,7 @@ use crate::live::video::bevy_renderer::{
     AvatarCommand, BevyMemoryStats, AVATAR_HEIGHT, AVATAR_WIDTH, MAX_AVATAR_SLOTS,
 };
 use crate::system_resources::memory_pressure::{
-    MemoryReporter, ModuleMemoryReport, PressureLevel,
+    MemoryBudgetSpec, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
 };
 
 /// Approximate bytes per loaded VRM model (meshes + textures + skeleton + morph targets).
@@ -39,6 +39,16 @@ impl BevyMemoryReporter {
 impl MemoryReporter for BevyMemoryReporter {
     fn name(&self) -> &'static str {
         "bevy"
+    }
+
+    fn budget(&self) -> MemoryBudgetSpec {
+        MemoryBudgetSpec {
+            name: "bevy".to_string(),
+            priority: MemoryPriority::Realtime, // Render loop is sacrosanct
+            min_bytes: 100 * 1024 * 1024,       // 100MB — Bevy overhead + 1-2 models minimum
+            preferred_bytes: 300 * 1024 * 1024,  // 300MB — 16 slots at 640x360 + all models
+            max_bytes: 500 * 1024 * 1024,        // 500MB — HD pool + all 16 loaded
+        }
     }
 
     fn report(&self) -> ModuleMemoryReport {
