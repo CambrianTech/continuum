@@ -23,6 +23,8 @@ import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 import { VoiceSessionTimeline } from './VoiceSessionTimeline';
+import { getRustVoiceOrchestrator } from './VoiceOrchestratorRustBridge';
+import { BackpressureService } from '../../core/services/BackpressureService';
 /**
  * Utterance event from voice transcription
  */
@@ -167,7 +169,8 @@ export class VoiceOrchestrator {
   }
 
   /**
-   * Unregister a voice session
+   * Unregister a voice session — cleans up TypeScript state AND tells Rust to
+   * drop all LiveKit agents, Room listeners, and session state for this call.
    */
   unregisterSession(sessionId: UUID): void {
     // Disconnect AI participants from both bridges
@@ -192,6 +195,12 @@ export class VoiceOrchestrator {
       session.timeline.clear();
       this.sessions.delete(sessionId);
     }
+
+    // Tell Rust to drop LiveKit agents, Room listeners, and session state.
+    // Fire-and-forget — TS cleanup above is already done.
+    getRustVoiceOrchestrator().endSession(sessionId).catch(err => {
+      console.error(`[VoiceOrchestrator] Rust session cleanup failed for ${sessionId}:`, err);
+    });
   }
 
   /**
@@ -226,8 +235,19 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Broadcast to ALL text-based AIs — each gets the utterance
-    for (const ai of textAIs) {
+    // Pressure-gated voice broadcast limiting
+    const pressure = BackpressureService.pressureLevel;
+    if (pressure === 'critical') return; // No broadcasts — let in-progress TTS finish
+
+    let broadcastTargets = textAIs;
+    if (pressure === 'high') {
+      broadcastTargets = textAIs.slice(0, 1);  // Only first AI
+    } else if (pressure === 'warning') {
+      broadcastTargets = textAIs.slice(0, 3);  // Max 3
+    }
+
+    // Broadcast to pressure-limited set of text-based AIs
+    for (const ai of broadcastTargets) {
       Events.emit('voice:transcription:directed', {
         sessionId: event.sessionId,
         speakerId: event.speakerId,

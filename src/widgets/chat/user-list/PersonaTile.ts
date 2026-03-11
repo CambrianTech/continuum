@@ -261,10 +261,11 @@ export class PersonaTile extends LitElement {
       });
       if (result.success) {
         this._genomeLayers = result.layers;
+      } else {
+        console.error(`[PersonaTile] genome/layers failed for ${this.displayName}:`, (result as any).error ?? 'unknown');
       }
-    } catch {
-      // Command not available in browser or other error — leave bars inactive
-      this._genomeLayers = [];
+    } catch (err) {
+      console.error(`[PersonaTile] genome/layers threw for ${this.displayName}:`, err);
     }
   }
 
@@ -405,26 +406,54 @@ export class PersonaTile extends LitElement {
    * Compute bar color from maturity score.
    * Gray (0–0.3) → amber (0.3–0.6) → cyan (0.6–0.8) → green (0.8–1.0)
    */
+  /**
+   * Continuous heatmap: deep blue (0.0) → teal → green → yellow → white-hot (1.0)
+   * Interpolates through 5 stops so every maturity value gets a distinct color.
+   */
   private _maturityColor(maturity: number): string {
-    if (maturity >= 0.8) return 'var(--genome-green, #00ff88)';
-    if (maturity >= 0.6) return 'var(--genome-cyan, #00d4ff)';
-    if (maturity >= 0.3) return 'var(--genome-amber, #ffaa00)';
-    return 'var(--genome-gray, rgba(60, 80, 100, 0.5))';
+    const stops: [number, number, number][] = [
+      [30,  60, 120],   // 0.0 — deep slate blue
+      [0,  160, 160],   // 0.25 — teal
+      [0,  210,  80],   // 0.5 — green
+      [255, 180,  0],   // 0.75 — amber/gold
+      [0,  255, 136],   // 1.0 — bright mint
+    ];
+    const t = Math.max(0, Math.min(1, maturity));
+    const segment = t * (stops.length - 1);
+    const i = Math.min(Math.floor(segment), stops.length - 2);
+    const frac = segment - i;
+    const r = Math.round(stops[i][0] + (stops[i + 1][0] - stops[i][0]) * frac);
+    const g = Math.round(stops[i][1] + (stops[i + 1][1] - stops[i][1]) * frac);
+    const b = Math.round(stops[i][2] + (stops[i + 1][2] - stops[i][2]) * frac);
+    return `rgb(${r}, ${g}, ${b})`;
   }
 
   private _renderGenomePanel(): TemplateResult {
-    // If we have real adapters, show those. Otherwise show 4 inactive placeholder bars.
-    const MIN_BARS = 4;
-    const barCount = Math.max(this._genomeLayers.length, MIN_BARS);
+    // Fixed 4 skill slots — like equipment slots in an RPG.
+    // Top adapters by maturity fill slots; empty slots shown as inactive.
+    const SLOT_COUNT = 4;
+
+    // Sort by maturity descending so best adapters fill first
+    const sortedLayers = [...this._genomeLayers]
+      .sort((a, b) => (b.maturity ?? 0) - (a.maturity ?? 0))
+      .slice(0, SLOT_COUNT);
+
+    const barCount = SLOT_COUNT;
+
+    const totalAdapters = this._genomeLayers.length;
+    const genomeTitle = totalAdapters > SLOT_COUNT
+      ? `GENOME (${totalAdapters} adapters, showing top ${SLOT_COUNT})`
+      : `GENOME (${totalAdapters} adapter${totalAdapters === 1 ? '' : 's'})`;
 
     return html`
-      <div class="genome-panel">
+      <div class="genome-panel" title="${genomeTitle}">
         <div class="genome-label">GENOME</div>
         <div class="genome-bars">
           ${Array.from({ length: barCount }, (_, i) => {
-            const layer = this._genomeLayers[i];
+            const layer = sortedLayers[i];
             const maturity = layer?.maturity ?? 0;
-            const heightPct = layer ? Math.max(15, Math.round(maturity * 100)) : 15;
+            // Continuous height: 25% floor → 100% ceiling, linear with maturity
+            const heightPct = layer ? Math.round(25 + maturity * 75) : 15;
             const color = layer ? this._maturityColor(maturity) : '';
 
             // Rich tooltip with training details

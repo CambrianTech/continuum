@@ -122,10 +122,19 @@ export class VoiceOrchestratorRustBridge {
 	}
 
 	/**
-	 * End a voice session
+	 * End a voice session — tells Rust to drop all agents, listeners, and state for this call.
+	 * Without this, LiveKitAgent instances and Room connections leak indefinitely.
 	 */
-	async endSession(_sessionId: UUID): Promise<void> {
-		// Session cleanup handled by Rust side
+	async endSession(sessionId: UUID): Promise<void> {
+		if (!this.connected) {
+			return;
+		}
+
+		try {
+			await this.client.voiceEndSession(sessionId);
+		} catch (err) {
+			console.error(`[VoiceOrchestratorRustBridge] Failed to end session ${sessionId}:`, err);
+		}
 	}
 }
 

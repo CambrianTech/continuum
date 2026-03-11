@@ -54,6 +54,10 @@ pub struct CandleAdapter {
     model_guard: RwLock<Option<GpuAllocationGuard>>,
     /// RAII guards for per-adapter VRAM allocations
     adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>,
+    /// Pressure-aware inference gate: limits concurrent local inference based on
+    /// system memory pressure. Prevents 4 personas from all piling into
+    /// spawn_blocking simultaneously (40GB peak → controlled sequential).
+    inference_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl CandleAdapter {
@@ -76,6 +80,10 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
+            // Serialize: 1 permit. Only one Candle inference at a time.
+            // Multiple concurrent inferences pile up KV caches + Metal state,
+            // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
+            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -338,6 +346,69 @@ impl Default for CandleAdapter {
     }
 }
 
+/// Inner inference function extracted for autorelease pool wrapping.
+/// All Metal/ObjC objects created here are released when the pool is popped.
+fn inference_inner(
+    backend_arc: Arc<RwLock<Option<BackendWrapper>>>,
+    gpu_mgr: Option<Arc<GpuMemoryManager>>,
+    use_quantized: bool,
+    resolved_model: &str,
+    prompt: &str,
+    max_tokens: usize,
+    temperature: f64,
+) -> Result<((String, usize), Option<GpuAllocationGuard>), String> {
+    let log = runtime::logger("candle");
+
+    let mut backend_guard = backend_arc.write();
+    let mut new_model_guard: Option<GpuAllocationGuard> = None;
+
+    // Lazy load: if model not loaded yet, load it now
+    if backend_guard.is_none() {
+        log.info(&format!("Loading model: {}", resolved_model));
+        let model: Box<dyn ModelBackend> = if use_quantized {
+            load_default_quantized()
+                .map_err(|e| format!("Failed to load quantized model: {e}"))?
+        } else {
+            load_model_by_id(resolved_model)
+                .map_err(|e| format!("Failed to load model '{}': {e}", resolved_model))?
+        };
+
+        // Track GPU allocation for model weights
+        let vram_bytes = model.estimated_vram_bytes();
+        log.info(&format!(
+            "Model loaded: arch={}, format={:?}, context_length={}, model_id={}, vram={:.0}MB",
+            model.architecture(), model.format(), model.context_length(), model.model_id(),
+            vram_bytes as f64 / (1024.0 * 1024.0)
+        ));
+
+        if let Some(mgr) = &gpu_mgr {
+            if vram_bytes > 0 {
+                match mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Interactive) {
+                    Ok(guard) => {
+                        mgr.eviction_registry.register(make_entry(
+                            &format!("candle:model:{}", model.model_id()),
+                            &format!("{} ({})", model.model_id(), model.architecture()),
+                            GpuPriority::Interactive,
+                            vram_bytes,
+                        ));
+                        new_model_guard = Some(guard);
+                    }
+                    Err(e) => {
+                        log.error(&format!("GPU CRITICAL: Cannot load model — {}", e));
+                        return Err(format!("GPU memory critical — cannot load model: {e}"));
+                    }
+                }
+            }
+        }
+
+        *backend_guard = Some(BackendWrapper(model));
+    }
+
+    let wrapper = backend_guard.as_mut().expect("just loaded");
+    let gen_result = backends::generate(&mut *wrapper.0, prompt, max_tokens, temperature);
+    gen_result.map(|r| (r, new_model_guard))
+}
+
 #[async_trait]
 impl AIProviderAdapter for CandleAdapter {
     fn provider_id(&self) -> &str {
@@ -454,58 +525,101 @@ impl AIProviderAdapter for CandleAdapter {
             }
         }
 
-        // Run inference on blocking thread pool (lazy model loading on first call)
-        let result = tokio::task::spawn_blocking(move || {
-            let log = runtime::logger("candle");
-
-            let mut backend_guard = backend_arc.write();
-            let mut new_model_guard: Option<GpuAllocationGuard> = None;
-
-            // Lazy load: if model not loaded yet, load it now
-            if backend_guard.is_none() {
-                log.info(&format!("Loading model: {}", resolved_model));
-                let model: Box<dyn ModelBackend> = if use_quantized {
-                    load_default_quantized()
-                        .map_err(|e| format!("Failed to load quantized model: {e}"))?
-                } else {
-                    load_model_by_id(&resolved_model)
-                        .map_err(|e| format!("Failed to load model '{}': {e}", resolved_model))?
-                };
-
-                // Track GPU allocation for model weights
-                let vram_bytes = model.estimated_vram_bytes();
-                log.info(&format!(
-                    "Model loaded: arch={}, format={:?}, context_length={}, model_id={}, vram={:.0}MB",
-                    model.architecture(), model.format(), model.context_length(), model.model_id(),
-                    vram_bytes as f64 / (1024.0 * 1024.0)
-                ));
-
-                if let Some(mgr) = &gpu_mgr {
-                    if vram_bytes > 0 {
-                        match mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Interactive) {
-                            Ok(guard) => {
-                                mgr.eviction_registry.register(make_entry(
-                                    &format!("candle:model:{}", model.model_id()),
-                                    &format!("{} ({})", model.model_id(), model.architecture()),
-                                    GpuPriority::Interactive,
-                                    vram_bytes,
-                                ));
-                                new_model_guard = Some(guard);
-                            }
-                            Err(e) => {
-                                log.error(&format!("GPU CRITICAL: Cannot load model — {}", e));
-                                return Err(format!("GPU memory critical — cannot load model: {e}"));
-                            }
-                        }
-                    }
+        // ── Pressure-aware inference gate ──
+        // Hard RSS ceiling: refuse if process is already using too much memory.
+        // This fires immediately — no sustained-pressure wait like the gate.
+        // 24GB ceiling: model weights (~6GB) + Whisper (~1.6GB) + working set (~16GB headroom)
+        const RSS_CEILING_BYTES: u64 = 24 * 1024 * 1024 * 1024;
+        let current_rss = {
+            // Reuse the same task_info approach from ipc/mod.rs
+            #[cfg(target_os = "macos")]
+            {
+                #[repr(C)]
+                struct MachTaskBasicInfo {
+                    virtual_size: u64,
+                    resident_size: u64,
+                    resident_size_max: u64,
+                    user_time_s: u32, user_time_us: u32,
+                    system_time_s: u32, system_time_us: u32,
+                    policy: i32,
+                    suspend_count: i32,
                 }
+                extern "C" {
+                    fn mach_task_self() -> u32;
+                    fn task_info(t: u32, f: u32, i: *mut MachTaskBasicInfo, c: *mut u32) -> i32;
+                }
+                unsafe {
+                    let mut info: MachTaskBasicInfo = std::mem::zeroed();
+                    let mut count = (std::mem::size_of::<MachTaskBasicInfo>() / 4) as u32;
+                    if task_info(mach_task_self(), 20, &mut info, &mut count) == 0 {
+                        info.resident_size
+                    } else { 0 }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            { 0u64 }
+        };
+        if current_rss > RSS_CEILING_BYTES {
+            let rss_gb = current_rss as f64 / (1024.0 * 1024.0 * 1024.0);
+            log.info(&format!(
+                "Inference REFUSED: RSS {:.1}GB exceeds {:.0}GB ceiling — deferring '{}'",
+                rss_gb, RSS_CEILING_BYTES as f64 / (1024.0 * 1024.0 * 1024.0), model_id
+            ));
+            return Err(format!(
+                "Memory too high ({:.1}GB) — deferring local inference. Cloud providers unaffected.",
+                rss_gb
+            ));
+        }
 
-                *backend_guard = Some(BackendWrapper(model));
+        // Memory gate: refuse if sustained critical pressure (>90% for 6s)
+        if crate::system_resources::is_memory_gate_closed() {
+            return Err(format!(
+                "Memory pressure critical — refusing Candle inference for '{}'.",
+                model_id
+            ));
+        }
+
+        // Serialize local inference: only 1 at a time.
+        // The RwLock on backend already serializes execution, but the semaphore
+        // prevents multiple personas from even QUEUING on spawn_blocking threads
+        // (each blocked thread holds stack + Metal state in memory).
+        let wait_start = std::time::Instant::now();
+        let _permit = self.inference_semaphore.clone().acquire_owned().await
+            .map_err(|e| format!("Inference semaphore closed: {e}"))?;
+        let wait_ms = wait_start.elapsed().as_millis();
+        if wait_ms > 100 {
+            log.info(&format!(
+                "Inference gate: waited {}ms for permit",
+                wait_ms
+            ));
+        }
+
+        // Run inference on blocking thread pool (lazy model loading on first call)
+        //
+        // CRITICAL: Wrapped in macOS autorelease pool.
+        // Candle's Metal backend creates hundreds of ObjC/Metal objects per inference
+        // (command buffers, compute pipeline states, MTLBuffer allocations).
+        // Without an autorelease pool on the spawn_blocking thread, these objects
+        // accumulate in the thread-local default pool and are never released,
+        // causing GB-scale memory growth per inference call.
+        let result = tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "macos")]
+            extern "C" {
+                fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
+                fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
             }
 
-            let wrapper = backend_guard.as_mut().expect("just loaded");
-            let gen_result = backends::generate(&mut *wrapper.0, &prompt, max_tokens, temperature);
-            gen_result.map(|r| (r, new_model_guard))
+            #[cfg(target_os = "macos")]
+            let pool = unsafe { objc_autoreleasePoolPush() };
+
+            let result = inference_inner(
+                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, temperature,
+            );
+
+            #[cfg(target_os = "macos")]
+            unsafe { objc_autoreleasePoolPop(pool); }
+
+            result
         })
         .await
         .map_err(|e| format!("Inference task panicked: {e}"))?;

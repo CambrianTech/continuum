@@ -220,7 +220,10 @@ impl AgentModule {
             )
             .await;
 
-            // Update final state
+            // Update final state, notify waiters, then remove from map.
+            // Keeping completed agents in the DashMap leaks memory — each holds
+            // full conversation history, tool call results, and file contents.
+            // With 14 personas doing constant tool calls, this is GB/hour.
             if let Some(entry) = agents.get(&handle) {
                 if let Ok(mut state) = entry.lock() {
                     state.completed_at = Some(Instant::now());
@@ -245,6 +248,10 @@ impl AgentModule {
 
             // Notify waiters
             completion_notify.notify_waiters();
+
+            // Remove completed agent from map — frees conversation history,
+            // tool results, and all accumulated state.
+            agents.remove(&handle);
         });
     }
 }

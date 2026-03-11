@@ -77,6 +77,17 @@ fn bevy_effective_dimensions(requested_w: u32, requested_h: u32) -> (u32, u32) {
 }
 
 // =============================================================================
+// Per-identity creation locks for get_or_create_agent / remove_agent.
+// MUST be a single module-level static — function-level statics are separate
+// instances per function, so remove_agent wouldn't clean up get_or_create_agent's entries.
+// =============================================================================
+
+#[allow(clippy::type_complexity)]
+static AGENT_CREATION_LOCKS: std::sync::Mutex<
+    Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::Mutex::new(None);
+
+// =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
 // Serialized as JSON in the LiveKit JWT token's metadata field.
 // Browser reads via participant.metadata (livekit-client JS SDK).
@@ -145,11 +156,6 @@ const AMBIENT_IDENTITY_PREFIX: &str = "ambient-";
 /// Events emitted by the agent for the VoiceModule to handle
 #[derive(Debug)]
 pub enum AgentEvent {
-    /// Full utterance detected (VAD sentence boundary)
-    Utterance {
-        speaker_id: String,
-        samples: Vec<i16>,
-    },
     /// Participant joined the room
     ParticipantJoined { identity: String, name: String },
     /// Participant left the room
@@ -396,25 +402,17 @@ impl LiveKitAgent {
                         participant,
                     } => {
                         let speaker_id = participant.identity().to_string();
-                        let meta = ParticipantMetadata::from_json(&participant.metadata());
+                        let _meta = ParticipantMetadata::from_json(&participant.metadata());
 
-                        // Only process audio from human participants
-                        let is_human = meta
-                            .as_ref()
-                            .map(|m| m.role == ParticipantRole::Human)
-                            .unwrap_or(true); // Unknown = probably human
-                        if !is_human {
-                            continue;
-                        }
-
-                        clog_info!("🎤 Agent subscribed to track from '{}'", speaker_id);
-
-                        if let RemoteTrack::Audio(audio_track) = track {
-                            let tx = event_tx_clone.clone();
-                            let sid = speaker_id.clone();
-                            tokio::spawn(async move {
-                                process_audio_stream_with_vad(audio_track, sid, tx).await;
-                            });
+                        // Speaking agents do NOT process audio — the STT listener
+                        // handles all transcription centrally (one per call).
+                        // Previously each of 14+ agents spawned its own VAD + NativeAudioStream
+                        // per human speaker = 14× redundant audio processing + memory.
+                        if let RemoteTrack::Audio(_) = &track {
+                            clog_info!(
+                                "🎤 Agent ignoring audio track from '{}' — STT listener handles transcription",
+                                speaker_id
+                            );
                         }
                     }
                     RoomEvent::ParticipantConnected(participant) => {
@@ -673,8 +671,9 @@ impl LiveKitAgent {
             .await
     }
 
-    /// Disconnect from the room.
-    pub async fn disconnect(self) {
+    /// Disconnect from the room. Takes `&self` so it can be called through Arc
+    /// without requiring sole ownership (which fails when video loop holds a clone).
+    pub async fn disconnect(&self) {
         clog_info!("🔊 LiveKitAgent '{}' disconnecting", self.identity);
         let _ = self.room.close().await;
     }
@@ -1039,79 +1038,6 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     });
 }
 
-/// Process incoming audio from a remote participant's track using ProductionVAD.
-/// Detects sentence boundaries and emits Utterance events for STT processing.
-///
-/// LiveKit sends 10ms frames (160 samples at 16kHz), but earshot WebRTC VAD
-/// requires minimum 240 samples. We accumulate to 480-sample (30ms) chunks.
-async fn process_audio_stream_with_vad(
-    audio_track: RemoteAudioTrack,
-    speaker_id: String,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-) {
-    use crate::live::audio::vad::ProductionVAD;
-    use livekit::webrtc::audio_stream::native::NativeAudioStream;
-    use tokio_stream::StreamExt;
-
-    let mut audio_stream = NativeAudioStream::new(
-        audio_track.rtc_track(),
-        AUDIO_SAMPLE_RATE as i32,
-        1, // mono
-    );
-
-    // Initialize ProductionVAD for proper sentence detection
-    let mut vad = ProductionVAD::new();
-    if let Err(e) = vad.initialize() {
-        clog_error!("🎤 Failed to initialize VAD for '{}': {}", speaker_id, e);
-        return;
-    }
-
-    clog_info!("🎤 VAD initialized for audio stream from '{}'", speaker_id);
-
-    // Frame accumulation: LiveKit sends 10ms (160 samples) frames.
-    // Silero VAD requires exactly 512 samples (32ms) at 16kHz — its LSTM was
-    // trained on this chunk size. Feeding 480 samples produces near-zero scores.
-    // WebRTC VAD (earshot) handles 512 via chunk-and-vote on 240-sample pieces.
-    const VAD_FRAME_SIZE: usize = crate::audio_constants::AUDIO_FRAME_SIZE; // 512
-    let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
-
-    while let Some(frame) = audio_stream.next().await {
-        let samples: &[i16] = frame.data.as_ref();
-
-        accum_buf.extend_from_slice(samples);
-        if accum_buf.len() < VAD_FRAME_SIZE {
-            continue;
-        }
-
-        // Drain accumulated buffer in VAD_FRAME_SIZE chunks
-        while accum_buf.len() >= VAD_FRAME_SIZE {
-            let vad_frame: Vec<i16> = accum_buf.drain(..VAD_FRAME_SIZE).collect();
-
-            match vad.process_frame(&vad_frame) {
-                Ok(Some(sentence_samples)) => {
-                    // Complete sentence detected by VAD — emit for STT
-                    clog_info!(
-                        "🎤 Sentence detected from '{}' ({} samples, {:.1}s)",
-                        speaker_id,
-                        sentence_samples.len(),
-                        sentence_samples.len() as f64 / AUDIO_SAMPLE_RATE as f64,
-                    );
-                    let _ = event_tx.send(AgentEvent::Utterance {
-                        speaker_id: speaker_id.clone(),
-                        samples: sentence_samples,
-                    });
-                }
-                Ok(None) => {} // Still buffering — VAD hasn't detected sentence end yet
-                Err(e) => {
-                    clog_warn!("🎤 VAD error for '{}': {}", speaker_id, e);
-                }
-            }
-        }
-    }
-
-    clog_info!("🎤 Audio stream ended for '{}'", speaker_id);
-}
-
 // =============================================================================
 // STT Listener — subscribe-only agent for VAD → STT → transcription
 // =============================================================================
@@ -1289,10 +1215,11 @@ async fn listen_and_transcribe(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
     let mut frame_count: u64 = 0;
 
-    // Frame accumulation buffer: LiveKit sends 10ms (160 samples) frames,
-    // but our VAD (earshot WebRTC) requires 240-sample minimum chunks.
-    // Accumulate to 480 samples (30ms) before feeding to VAD.
-    const VAD_FRAME_SIZE: usize = 480;
+    // Frame accumulation buffer: LiveKit sends 10ms (160 samples) frames.
+    // Silero VAD requires exactly 512 samples (32ms) at 16kHz — its LSTM was
+    // trained on this chunk size. Feeding 480 produces near-zero scores.
+    // Use the single source of truth from audio_constants.
+    const VAD_FRAME_SIZE: usize = crate::audio_constants::AUDIO_FRAME_SIZE;
     let mut accum_buf: Vec<i16> = Vec::with_capacity(VAD_FRAME_SIZE);
 
     while let Some(frame) = audio_stream.next().await {
@@ -1561,11 +1488,7 @@ impl LiveKitAgentManager {
         // then all call connect(), creating 3 agents and 3 video loops
         // that burn 3 Bevy render slots for the same identity.
         let creation_lock = {
-            #[allow(clippy::type_complexity)]
-            static CREATION_LOCKS: std::sync::Mutex<
-                Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
-            > = std::sync::Mutex::new(None);
-            let mut locks = CREATION_LOCKS.lock().unwrap();
+            let mut locks = AGENT_CREATION_LOCKS.lock().unwrap();
             let map = locks.get_or_insert_with(std::collections::HashMap::new);
             map.entry(key.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -1604,6 +1527,58 @@ impl LiveKitAgentManager {
         start_video_loop(agent.clone());
 
         Ok(agent)
+    }
+
+    /// Remove an agent when a persona leaves a call. Disconnects from LiveKit room
+    /// and drops the Arc, freeing WebRTC state and media buffers.
+    pub async fn remove_agent(&self, call_id: &str, user_id: &str) {
+        let key = (call_id.to_string(), user_id.to_string());
+        let removed = self.agents.write().await.remove(&key);
+        if let Some(agent) = removed {
+            clog_info!(
+                "🔊 LiveKitAgentManager: removing agent {} from call {}",
+                user_id,
+                call_id
+            );
+            // disconnect() takes &self, so it works through Arc without requiring
+            // sole ownership. Room close causes the video loop to exit on its next
+            // publish attempt (channel error), which then drops its Arc clone.
+            agent.disconnect().await;
+        }
+
+        // Clean up creation lock for this key
+        if let Ok(mut locks) = AGENT_CREATION_LOCKS.lock() {
+            if let Some(map) = locks.as_mut() {
+                map.remove(&key);
+            }
+        }
+    }
+
+    /// Remove all agents for a given call (call ended).
+    pub async fn remove_agents_for_call(&self, call_id: &str) {
+        let keys_to_remove: Vec<AgentKey> = {
+            let agents = self.agents.read().await;
+            agents
+                .keys()
+                .filter(|(cid, _)| cid == call_id)
+                .cloned()
+                .collect()
+        };
+        for (cid, uid) in keys_to_remove {
+            self.remove_agent(&cid, &uid).await;
+        }
+    }
+
+    /// Remove a listener room when a call ends.
+    pub async fn remove_listener(&self, call_id: &str) {
+        let removed = self.listeners.write().await.remove(call_id);
+        if let Some(room) = removed {
+            clog_info!(
+                "🔊 LiveKitAgentManager: removing listener for call {}",
+                call_id
+            );
+            let _ = room.close().await;
+        }
     }
 
     /// Synthesize TTS and inject into a call (replaces CallManager::speak_in_call).

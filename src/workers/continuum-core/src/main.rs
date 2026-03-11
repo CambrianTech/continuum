@@ -1,3 +1,19 @@
+// jemalloc: returns memory to OS aggressively instead of hoarding pages.
+// macOS system allocator fragments badly under Bevy's 15fps readback churn
+// (14 slots × 921KB per frame) — RSS grows to 30-40GB and never shrinks.
+// jemalloc's dirty page purging returns freed memory within seconds.
+//
+// MALLOC_CONF: dirty_decay_ms=1000 (purge freed pages after 1s instead of default 10s),
+// muzzy_decay_ms=2000 (return muzzy pages after 2s instead of default 10s).
+// On a 32GB machine with 15 bursty personas, the default 10s window accumulates
+// 3-5GB of "owned unmapped memory" that inflates RSS.
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "malloc_conf")]
+pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
+
 use continuum_core::live::transport::livekit_agent::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 /// Continuum Core Server - Unified Modular Rust Runtime
@@ -96,15 +112,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
 
+    // Start memory pressure monitor — own task, non-blocking, crash-proof.
+    // Polls every 2s, publishes via watch channel. Modules subscribe to react.
+    // Start with empty reporters — Bevy might not be ready yet (race condition).
+    // Created BEFORE IPC server so it can be wired into SystemResourceModule.
+    let pressure_monitor =
+        continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
+
     // Start IPC server in background thread FIRST (creates socket immediately)
     let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
+    let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,
             rt_handle,
             ipc_memory_manager,
+            ipc_pressure_monitor,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
         }
@@ -112,6 +137,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Give IPC server time to create socket (satisfies start-workers.sh check)
     std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Delayed reporter registration: wait for Bevy to finish initializing,
+    // then register its memory reporter. Retries every 2s for up to 30s.
+    let pm_clone = pressure_monitor.clone();
+    tokio::spawn(async move {
+        for attempt in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Some(bevy) = continuum_core::live::video::bevy_renderer::try_get() {
+                let reporter = Arc::new(
+                    continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
+                        bevy.memory_stats.clone(),
+                        bevy.command_sender(),
+                    ),
+                );
+                pm_clone.add_reporter(reporter);
+                info!("🧠 Bevy memory reporter registered (attempt {})", attempt + 1);
+                return;
+            }
+        }
+        tracing::warn!("🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running");
+    });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     tokio::spawn(async {

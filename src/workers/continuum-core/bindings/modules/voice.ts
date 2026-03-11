@@ -105,6 +105,7 @@ export interface ParticipantSnapshotResult {
 
 export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
+	voiceEndSession(sessionId: string): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
 	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
 	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string, displayName?: string, seq?: number): Promise<VoiceSynthesizeResult>;
@@ -140,6 +141,21 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to register session');
+			}
+		}
+
+		/**
+		 * End a voice session — disconnects all agents and listeners for this call.
+		 * MUST be called when a live call ends to prevent memory leaks.
+		 */
+		async voiceEndSession(sessionId: string): Promise<void> {
+			const response = await this.request({
+				command: 'voice/end-session',
+				session_id: sessionId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to end session');
 			}
 		}
 

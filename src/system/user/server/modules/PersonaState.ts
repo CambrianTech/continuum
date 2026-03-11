@@ -14,6 +14,7 @@ import type { SubsystemLogger } from './being/logging/SubsystemLogger';
 import { Events } from '../../../core/shared/Events';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { BackpressureService } from '../../../core/services/BackpressureService';
 
 /**
  * Persona internal state
@@ -213,6 +214,12 @@ export class PersonaStateManager {
     if (this.state.computeBudget < 0.5) {
       cadence *= 2; // Double cadence when low compute
     }
+
+    // Constrain by system memory pressure (stacks with compute budget)
+    const pressure = BackpressureService.pressureLevel;
+    if (pressure === 'critical') cadence *= 4;
+    else if (pressure === 'high') cadence *= 2;
+    else if (pressure === 'warning') cadence *= 1.5;
 
     return cadence;
   }

@@ -24,12 +24,15 @@ import { Commands } from '../core/shared/Commands';
 import { VisionDescriptionService } from '../vision/VisionDescriptionService';
 import { Logger } from '../core/logging/Logger';
 import { createHash } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const log = Logger.create('LiveRoomSnapshotService', 'rag');
 
 export interface RoomSnapshot {
   description: string;
-  base64: string;
+  /** Path to snapshot JPEG on disk — base64 is NOT held in memory */
+  snapshotPath: string;
   mimeType: string;
   capturedAt: number;
   hash: string;
@@ -138,6 +141,12 @@ export class LiveRoomSnapshotService {
     this._intervalHandles.set(roomId, handle);
   }
 
+  /** Directory for snapshot files — written to disk, not held in RAM */
+  private static readonly SNAPSHOT_DIR = path.join(
+    process.env.HOME || '/tmp',
+    '.continuum', 'cache', 'snapshots'
+  );
+
   private async captureAndDescribe(roomId: string): Promise<void> {
     if (this._captureInFlight.has(roomId)) return;
     this._captureInFlight.add(roomId);
@@ -162,6 +171,12 @@ export class LiveRoomSnapshotService {
         return;
       }
 
+      // Write snapshot to disk — do NOT hold base64 in RAM
+      const snapshotDir = LiveRoomSnapshotService.SNAPSHOT_DIR;
+      await fs.promises.mkdir(snapshotDir, { recursive: true });
+      const snapshotPath = path.join(snapshotDir, `room-${roomId.slice(0, 8)}.jpg`);
+      await fs.promises.writeFile(snapshotPath, Buffer.from(base64, 'base64'));
+
       // Describe via vision model
       const visionService = VisionDescriptionService.getInstance();
       if (!visionService.isAvailable()) {
@@ -185,6 +200,7 @@ export class LiveRoomSnapshotService {
         }),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), VISION_TIMEOUT_MS)),
       ]);
+      // base64 goes out of scope here — GC can reclaim it
 
       if (!result) {
         log.warn('Vision description timed out');
@@ -195,7 +211,7 @@ export class LiveRoomSnapshotService {
 
       this._cache.set(roomId, {
         description: result.description,
-        base64,
+        snapshotPath,
         mimeType: 'image/jpeg',
         capturedAt: Date.now(),
         hash,

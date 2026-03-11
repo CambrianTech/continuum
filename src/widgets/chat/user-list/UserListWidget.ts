@@ -169,8 +169,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     if (user.type === 'persona' || user.type === 'agent') {
       const provider = user.modelConfig?.provider || (user.personaConfig?.responseModel ? 'candle' : '');
       const model = user.modelConfig?.model || user.personaConfig?.responseModel || '';
-      if (provider && model) {
-        modelInfo = `${provider}/${model}`;
+      if (provider) {
+        modelInfo = model ? `${provider}/${model}` : provider;
         modelBadge = provider.substring(0, 8).toUpperCase();
       }
     }

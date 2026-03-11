@@ -149,13 +149,16 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
         }
     };
 
-    // Performance PRAGMAs — applied to every connection
+    // Performance PRAGMAs — applied to every connection.
+    // mmap_size=0: disabled. On macOS, mmap'd pages count toward RSS.
+    // With 20+ databases × 256MB mmap = 5GB+ RSS inflation under bursty load.
+    // SQLite page cache (cache_size) provides the same benefit without RSS bloat.
     let pragmas = "\
         PRAGMA journal_mode=WAL;\
         PRAGMA synchronous=NORMAL;\
         PRAGMA busy_timeout=5000;\
-        PRAGMA cache_size=-65536;\
-        PRAGMA mmap_size=268435456;\
+        PRAGMA cache_size=-8192;\
+        PRAGMA mmap_size=0;\
         PRAGMA temp_store=MEMORY;\
     ";
     if let Err(e) = conn.execute_batch(pragmas) {
@@ -165,11 +168,37 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
     clog_info!("SQLite {} worker ready", role);
 
     let mut query_count = 0u64;
+    let mut last_shrink_check = std::time::Instant::now();
 
     // Process commands until channel closes
     while let Some(cmd) = receiver.blocking_recv() {
         query_count += 1;
         let start = std::time::Instant::now();
+
+        // Adaptive memory management: every 10s, check memory pressure.
+        // Each subsystem responds to the pressure monitor's guidance:
+        //   Normal:   8MB cache per connection (reasonable for 20+ DBs)
+        //   Warning:  4MB cache
+        //   High:     2MB cache + shrink_memory
+        //   Critical: 2MB cache + shrink_memory (gate also blocks new inference)
+        if last_shrink_check.elapsed().as_secs() >= 10 {
+            last_shrink_check = std::time::Instant::now();
+            let level = crate::system_resources::MemoryPressureMonitor::current_level();
+            match level {
+                crate::system_resources::PressureLevel::Critical |
+                crate::system_resources::PressureLevel::High => {
+                    let _ = conn.execute_batch(
+                        "PRAGMA cache_size=-2048; PRAGMA shrink_memory;"
+                    );
+                }
+                crate::system_resources::PressureLevel::Warning => {
+                    let _ = conn.execute_batch("PRAGMA cache_size=-4096;");
+                }
+                crate::system_resources::PressureLevel::Normal => {
+                    let _ = conn.execute_batch("PRAGMA cache_size=-8192;");
+                }
+            }
+        }
 
         match cmd {
             SqliteCommand::Create { record, reply } => {

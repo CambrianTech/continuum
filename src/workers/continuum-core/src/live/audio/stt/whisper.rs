@@ -13,8 +13,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-/// Whisper model context (loaded once)
-static WHISPER_CTX: OnceCell<Arc<Mutex<WhisperContext>>> = OnceCell::new();
+/// Pre-allocated Whisper state (loaded once, reused for all transcriptions).
+///
+/// CRITICAL: WhisperState allocates ~407MB of compute buffers.
+/// Creating a new state per transcription causes RSS to spike by 407MB each time,
+/// and jemalloc doesn't return memory to the OS fast enough between drops.
+/// By pre-allocating ONE state at init time and reusing it, we avoid the spike.
+///
+/// WhisperState in whisper-rs 0.13+ holds an Arc<WhisperInnerContext> internally,
+/// so it's fully self-contained — no lifetime issues.
+struct WhisperRuntime {
+    state: whisper_rs::WhisperState,
+}
+
+static WHISPER_RT: OnceCell<Arc<Mutex<WhisperRuntime>>> = OnceCell::new();
 
 /// Whisper STT Adapter - local inference
 pub struct WhisperSTT {
@@ -120,9 +132,9 @@ impl WhisperSTT {
         PathBuf::from("models/whisper/ggml-large-v3-turbo.bin")
     }
 
-    /// Synchronous transcription (runs on blocking thread)
+    /// Synchronous transcription using pre-allocated state (runs on blocking thread)
     fn transcribe_sync(
-        ctx: &Arc<Mutex<WhisperContext>>,
+        rt: &Arc<Mutex<WhisperRuntime>>,
         mut samples: Vec<f32>,
         language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
@@ -154,7 +166,7 @@ impl WhisperSTT {
             );
         }
 
-        let ctx_guard = ctx.lock();
+        let mut rt_guard = rt.lock();
 
         // Configure parameters
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -176,17 +188,13 @@ impl WhisperSTT {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        // Create state and run inference
-        let mut state = ctx_guard
-            .create_state()
-            .map_err(|e| STTError::InferenceFailed(format!("Failed to create state: {e}")))?;
-
-        state
+        // Reuse pre-allocated state — no 407MB allocation per call
+        rt_guard.state
             .full(params, &samples)
             .map_err(|e| STTError::InferenceFailed(format!("Inference failed: {e}")))?;
 
-        // Extract results
-        let num_segments = state
+        // Extract results from pre-allocated state
+        let num_segments = rt_guard.state
             .full_n_segments()
             .map_err(|e| STTError::InferenceFailed(format!("Failed to get segments: {e}")))?;
 
@@ -194,16 +202,16 @@ impl WhisperSTT {
         let mut segments = Vec::new();
 
         for i in 0..num_segments {
-            let segment_text = state.full_get_segment_text(i).map_err(|e| {
+            let segment_text = rt_guard.state.full_get_segment_text(i).map_err(|e| {
                 STTError::InferenceFailed(format!("Failed to get segment {i}: {e}"))
             })?;
 
-            let start_ms = state
+            let start_ms = rt_guard.state
                 .full_get_segment_t0(i)
                 .map_err(|_| STTError::InferenceFailed("Failed to get segment start".into()))?
                 * 10;
 
-            let end_ms = state
+            let end_ms = rt_guard.state
                 .full_get_segment_t1(i)
                 .map_err(|_| STTError::InferenceFailed("Failed to get segment end".into()))?
                 * 10;
@@ -218,7 +226,7 @@ impl WhisperSTT {
         }
 
         // Detect language
-        let detected_lang = state
+        let detected_lang = rt_guard.state
             .full_lang_id_from_state()
             .map(|id| whisper_rs::get_lang_str(id).unwrap_or("en"))
             .unwrap_or("en")
@@ -250,11 +258,11 @@ impl SpeechToText for WhisperSTT {
     }
 
     fn is_initialized(&self) -> bool {
-        WHISPER_CTX.get().is_some()
+        WHISPER_RT.get().is_some()
     }
 
     async fn initialize(&self) -> Result<(), STTError> {
-        if WHISPER_CTX.get().is_some() {
+        if WHISPER_RT.get().is_some() {
             clog_info!("Whisper already initialized");
             return Ok(());
         }
@@ -277,11 +285,19 @@ impl SpeechToText for WhisperSTT {
         let ctx = WhisperContext::new_with_params(model_path.to_str().unwrap_or(""), params)
             .map_err(|e| STTError::ModelNotLoaded(e.to_string()))?;
 
-        WHISPER_CTX
-            .set(Arc::new(Mutex::new(ctx)))
-            .map_err(|_| STTError::ModelNotLoaded("Failed to set global context".into()))?;
+        // Create ONE state that holds an Arc to the context internally.
+        // This state is reused for all transcriptions — no 407MB allocation per call.
+        let state = ctx
+            .create_state()
+            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to create state: {e}")))?;
 
-        clog_info!("Whisper model loaded successfully");
+        let runtime = WhisperRuntime { state };
+
+        WHISPER_RT
+            .set(Arc::new(Mutex::new(runtime)))
+            .map_err(|_| STTError::ModelNotLoaded("Failed to set global runtime".into()))?;
+
+        clog_info!("Whisper model loaded with pre-allocated state (~407MB compute buffers, reused for all transcriptions)");
         Ok(())
     }
 
@@ -290,7 +306,15 @@ impl SpeechToText for WhisperSTT {
         samples: Vec<f32>,
         language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        let ctx = WHISPER_CTX
+        // Memory gate: refuse transcription when system is under critical pressure.
+        // Each whisper state allocates ~407MB — don't pile on when OOM is imminent.
+        if crate::system_resources::is_memory_gate_closed() {
+            return Err(STTError::InferenceFailed(
+                "Memory gate closed — skipping transcription to prevent OOM".into(),
+            ));
+        }
+
+        let rt = WHISPER_RT
             .get()
             .ok_or_else(|| {
                 STTError::ModelNotLoaded("Whisper not initialized. Call initialize() first.".into())
@@ -299,8 +323,8 @@ impl SpeechToText for WhisperSTT {
 
         let lang = language.map(|s| s.to_string());
 
-        // Run inference on blocking thread pool
-        tokio::task::spawn_blocking(move || Self::transcribe_sync(&ctx, samples, lang.as_deref()))
+        // Run inference on blocking thread pool — reuses pre-allocated state
+        tokio::task::spawn_blocking(move || Self::transcribe_sync(&rt, samples, lang.as_deref()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
     }

@@ -19,6 +19,9 @@
  */
 
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { PressureLevel } from '../../../shared/generated/system';
+import type { PressureSnapshotInfo } from '../../../workers/continuum-core/bindings/modules/system_resources';
 
 /**
  * Priority levels for operations
@@ -57,6 +60,12 @@ export class BackpressureService {
   private static cachedStats: QueueStats | null = null;
   private static cacheTimestamp: number = 0;
   private static readonly CACHE_TTL_MS = 100; // Refresh every 100ms (fast enough to adapt)
+
+  /** Graduated pressure state — cached to avoid IPC on every check */
+  private static _pressureLevel: PressureLevel = 'normal';
+  private static _pressureSnapshot: PressureSnapshotInfo | null = null;
+  private static pressureTimestamp: number = 0;
+  private static readonly PRESSURE_TTL_MS = 2000; // Check every 2s (matches Rust poll interval)
 
   /**
    * Check if an operation should proceed based on current system load
@@ -98,12 +107,14 @@ export class BackpressureService {
   /**
    * Get current load level (0.0 to 1.0+)
    *
-   * Can be used for adaptive behavior beyond simple proceed/don't proceed:
-   * - Adjust batch sizes based on load
-   * - Delay operations proportional to load
-   * - Show load indicators in UI
+   * Combines Candle queue load with Rust memory pressure gate.
+   * When memory gate is closed, returns 2.0 (emergency) regardless of queue.
    */
   static getLoad(): number {
+    // Memory gate overrides everything — if Rust says we're OOM, stop.
+    if (this.isMemoryGateClosed()) {
+      return 2.0;
+    }
     const stats = this.getQueueStats();
     return stats?.load ?? 0;
   }
@@ -117,10 +128,11 @@ export class BackpressureService {
   }
 
   /**
-   * Check if system is under high load
-   * Convenience method for quick checks
+   * Check if system is under high load.
+   * True when Candle queue exceeds threshold OR Rust memory gate is closed.
    */
   static isHighLoad(): boolean {
+    if (this.isMemoryGateClosed()) return true;
     return this.getLoad() > LOAD_THRESHOLDS.normal;
   }
 
@@ -130,6 +142,71 @@ export class BackpressureService {
    */
   static isIdle(): boolean {
     return this.getLoad() < LOAD_THRESHOLDS.background;
+  }
+
+  /**
+   * Current graduated pressure level from Rust (cached, non-blocking).
+   * Subsystems read this to self-manage under pressure.
+   */
+  static get pressureLevel(): PressureLevel {
+    this.refreshPressure();
+    return this._pressureLevel;
+  }
+
+  /**
+   * Full pressure snapshot (level, pressure ratio, RSS, consecutive count).
+   */
+  static get pressureSnapshot(): PressureSnapshotInfo {
+    this.refreshPressure();
+    return this._pressureSnapshot ?? { level: 'normal' as PressureLevel, pressure: 0, normalizedPressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+  }
+
+  /**
+   * Normalized pressure (0.0 - 1.0) where 0 = no concern, 1 = emergency.
+   * Maps the action zone (80-95% system memory) to a clean 0-1 range.
+   * Use this instead of raw pressure for proportional responses.
+   */
+  static get normalizedPressure(): number {
+    this.refreshPressure();
+    return this._pressureSnapshot?.normalizedPressure ?? 0;
+  }
+
+  /**
+   * Check Rust memory gate (derived from graduated pressure).
+   * The gate closes when system memory pressure is critical for 3+ consecutive polls.
+   */
+  private static isMemoryGateClosed(): boolean {
+    this.refreshPressure();
+    return this._pressureLevel === 'critical' && (this._pressureSnapshot?.consecutiveAtLevel ?? 0) >= 3;
+  }
+
+  /**
+   * Fire-and-forget pressure refresh — non-blocking, stale cache is fine for 2s.
+   */
+  private static refreshPressure(): void {
+    const now = Date.now();
+
+    if ((now - this.pressureTimestamp) < this.PRESSURE_TTL_MS) {
+      return;
+    }
+
+    // Prevent concurrent refreshes
+    this.pressureTimestamp = now;
+    RustCoreIPCClient.getInstanceAsync()
+      .then(client => client.pressureSnapshot())
+      .then(snapshot => {
+        const prev = this._pressureLevel;
+        this._pressureLevel = snapshot.level;
+        this._pressureSnapshot = snapshot;
+        if (snapshot.level !== 'normal' && snapshot.level !== prev) {
+          console.log(`🚦 BackpressureService: Pressure ${prev} → ${snapshot.level} (normalized=${snapshot.normalizedPressure.toFixed(2)}, raw=${(snapshot.pressure * 100).toFixed(1)}%, RSS=${Math.round(snapshot.rssBytes / 1024 / 1024)}MB, consecutive=${snapshot.consecutiveAtLevel})`);
+        }
+      })
+      .catch(() => {
+        // IPC unavailable — assume normal (fail-open)
+        this._pressureLevel = 'normal';
+        this._pressureSnapshot = null;
+      });
   }
 
   /**

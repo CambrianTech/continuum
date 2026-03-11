@@ -21,6 +21,7 @@ import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { CallEntity, type CallParticipant } from '../../data/entities/CallEntity';
 import { LiveRoomSnapshotService, type RoomSnapshot } from '../../live/LiveRoomSnapshotService';
 import { Logger } from '../../core/logging/Logger';
+import * as fs from 'fs';
 
 const log = Logger.create('LiveRoomAwarenessSource', 'rag');
 
@@ -63,7 +64,7 @@ export class LiveRoomAwarenessSource implements RAGSource {
     // Always include both: text description for text-only models,
     // raw screenshot artifact for vision models. PersonaResponseGenerator
     // decides which to use based on actual model capabilities.
-    const artifacts = this.buildArtifacts(snapshot);
+    const artifacts = await this.buildArtifacts(snapshot);
 
     const visualSection = snapshot
       ? `\nVisual: ${snapshot.description}`
@@ -109,12 +110,21 @@ export class LiveRoomAwarenessSource implements RAGSource {
     return lines.join('\n');
   }
 
-  private buildArtifacts(snapshot: RoomSnapshot | null): RAGArtifact[] {
-    if (!snapshot?.base64) return [];
+  private async buildArtifacts(snapshot: RoomSnapshot | null): Promise<RAGArtifact[]> {
+    if (!snapshot?.snapshotPath) return [];
+
+    // Read base64 from disk lazily — NOT held in RAM between cycles
+    let base64: string;
+    try {
+      const buffer = await fs.promises.readFile(snapshot.snapshotPath);
+      base64 = buffer.toString('base64');
+    } catch {
+      return []; // File gone or unreadable
+    }
 
     return [{
       type: 'screenshot',
-      base64: snapshot.base64,
+      base64,
       content: snapshot.description,
       metadata: {
         source: 'live-room-snapshot',

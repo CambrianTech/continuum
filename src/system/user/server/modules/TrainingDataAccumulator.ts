@@ -81,6 +81,9 @@ export class TrainingDataAccumulator {
   private readonly MIN_BATCH_SIZE = 10;
   private readonly MAX_BATCH_SIZE = 1000;
 
+  // Cap interaction index to prevent unbounded growth when training never triggers
+  private readonly MAX_INDEX_SIZE = 200;
+
   private log: (message: string) => void;
 
   constructor(
@@ -120,8 +123,18 @@ export class TrainingDataAccumulator {
     }
     this.domainBuffers.get(capture.domain)!.push(example);
 
-    // Index for feedback attachment
+    // Index for feedback attachment — evict oldest when over cap
     this.interactionIndex.set(exampleId, example);
+    if (this.interactionIndex.size > this.MAX_INDEX_SIZE) {
+      // Delete oldest entries (first inserted = first in iteration order)
+      const excess = this.interactionIndex.size - this.MAX_INDEX_SIZE;
+      let deleted = 0;
+      for (const key of this.interactionIndex.keys()) {
+        if (deleted >= excess) break;
+        this.interactionIndex.delete(key);
+        deleted++;
+      }
+    }
 
     const bufferSize = this.domainBuffers.get(capture.domain)!.length;
     this.log(`📝 ${this.displayName}: Captured ${capture.domain} example (buffer: ${bufferSize}/${this.getBatchThreshold(capture.domain)})`);

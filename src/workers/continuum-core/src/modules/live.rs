@@ -190,6 +190,34 @@ impl ServiceModule for VoiceModule {
                 ))
             }
 
+            "voice/end-session" => {
+                let _timer = TimingGuard::new("module", "voice_end_session");
+                let session_id = p.str("session_id")?;
+
+                log_info!(
+                    "module",
+                    "voice_end_session",
+                    "Ending session {} — cleaning up agents and listeners",
+                    &session_id[..8.min(session_id.len())]
+                );
+
+                // Remove all LiveKit agents for this call
+                self.state
+                    .livekit_manager
+                    .remove_agents_for_call(session_id)
+                    .await;
+
+                // Remove the STT listener room
+                self.state
+                    .livekit_manager
+                    .remove_listener(session_id)
+                    .await;
+
+                Ok(CommandResult::Json(
+                    serde_json::json!({ "ended": true, "session_id": session_id }),
+                ))
+            }
+
             "voice/on-utterance" => {
                 let _timer = TimingGuard::new("module", "voice_on_utterance");
                 let event: UtteranceEvent = p.json("event")?;

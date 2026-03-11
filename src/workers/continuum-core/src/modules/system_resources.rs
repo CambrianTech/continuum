@@ -8,19 +8,29 @@
 //! Follows the GpuModule pattern: stateless handler wrapping shared state.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::system_resources::SystemResourceMonitor;
+use crate::system_resources::{MemoryPressureMonitor, SystemResourceMonitor};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub struct SystemResourceModule {
     monitor: Arc<SystemResourceMonitor>,
+    pressure_monitor: OnceLock<Arc<MemoryPressureMonitor>>,
 }
 
 impl SystemResourceModule {
     pub fn new(monitor: Arc<SystemResourceMonitor>) -> Self {
-        Self { monitor }
+        Self {
+            monitor,
+            pressure_monitor: OnceLock::new(),
+        }
+    }
+
+    /// Set the memory pressure monitor reference.
+    /// Uses OnceLock so this can be called on &self (through Arc) after registration.
+    pub fn set_pressure_monitor(&self, pm: Arc<MemoryPressureMonitor>) {
+        let _ = self.pressure_monitor.set(pm);
     }
 }
 
@@ -77,6 +87,43 @@ impl ServiceModule for SystemResourceModule {
                 let json = serde_json::to_value(snapshot)
                     .map_err(|e| format!("Failed to serialize system resources: {e}"))?;
                 Ok(CommandResult::Json(json))
+            }
+
+            "system/pressure" => {
+                // Memory pressure snapshot from the autonomous monitor
+                if let Some(pm) = self.pressure_monitor.get() {
+                    let snapshot = pm.current();
+                    let json = serde_json::to_value(snapshot)
+                        .map_err(|e| format!("Failed to serialize pressure: {e}"))?;
+                    Ok(CommandResult::Json(json))
+                } else {
+                    Err("Memory pressure monitor not initialized".to_string())
+                }
+            }
+
+            "system/memory-gate" => {
+                // Check if the memory gate is closed (critical pressure sustained).
+                // TypeScript side should check this before expensive operations.
+                let closed = crate::system_resources::is_memory_gate_closed();
+                let json = serde_json::json!({
+                    "closed": closed,
+                    "pressure": self.pressure_monitor.get().map(|pm| pm.pressure()).unwrap_or(0.0),
+                    "rss_bytes": self.pressure_monitor.get().map(|pm| pm.rss_bytes()).unwrap_or(0),
+                });
+                Ok(CommandResult::Json(json))
+            }
+
+            "system/memory-budget" => {
+                // Budget snapshot — per-consumer allocation vs actual usage.
+                // Human-visible dashboard: priority, budget, usage, headroom, warnings.
+                if let Some(pm) = self.pressure_monitor.get() {
+                    let snapshot = pm.budget_snapshot();
+                    let json = serde_json::to_value(snapshot)
+                        .map_err(|e| format!("Failed to serialize budget: {e}"))?;
+                    Ok(CommandResult::Json(json))
+                } else {
+                    Err("Memory pressure monitor not initialized".to_string())
+                }
             }
 
             _ => Err(format!("Unknown system command: {command}")),

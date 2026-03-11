@@ -1,0 +1,969 @@
+//! MemoryPressureMonitor — Independent, non-blocking memory surveillance system.
+//!
+//! Runs on its own tokio task with its own interval. Cannot block or be blocked by
+//! any other system (IPC, Bevy, audio, inference). Crash-proof: panics in any
+//! reporter are caught and logged, never propagated.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────┐
+//! │          MemoryPressureMonitor (own task)        │
+//! │                                                 │
+//! │  poll_interval: 2s                              │
+//! │                                                 │
+//! │  ┌─────────────┐  ┌──────────────┐              │
+//! │  │ sysinfo RSS  │  │ Per-module   │              │
+//! │  │ swap, avail  │  │ reporters    │              │
+//! │  └─────────────┘  └──────────────┘              │
+//! │         │                 │                      │
+//! │         ▼                 ▼                      │
+//! │  ┌──────────────────────────────┐               │
+//! │  │   PressureSnapshot (atomic)  │               │
+//! │  │   - level: Normal/Warning/   │               │
+//! │  │     High/Critical            │               │
+//! │  │   - rss_bytes                │               │
+//! │  │   - available_bytes          │               │
+//! │  │   - pressure: 0.0-1.0       │               │
+//! │  │   - per_module breakdown    │               │
+//! │  └──────────────────────────────┘               │
+//! │         │                                       │
+//! │         ▼                                       │
+//! │  tokio::sync::watch → subscribers read freely   │
+//! └─────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Isolation Guarantees
+//!
+//! - Own tokio task: `tokio::spawn` with `catch_unwind` wrapping the entire future
+//! - No shared locks with Bevy, IPC, or audio systems
+//! - Each reporter called via `spawn_blocking` + 100ms timeout (catches hangs and panics)
+//! - Reporter panics/timeouts quarantine the reporter after 3 consecutive failures
+//! - Watch channel for consumers: readers never block the monitor
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! // Start the monitor (once, at server boot)
+//! let monitor = MemoryPressureMonitor::start();
+//!
+//! // Any system can subscribe to pressure changes
+//! let mut rx = monitor.subscribe();
+//! tokio::spawn(async move {
+//!     while rx.changed().await.is_ok() {
+//!         let snapshot = rx.borrow();
+//!         if snapshot.level >= PressureLevel::High {
+//!             // shed load
+//!         }
+//!     }
+//! });
+//!
+//! // Or poll current state (lock-free)
+//! let snapshot = monitor.current();
+//! ```
+
+use serde::Serialize;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch;
+use ts_rs::TS;
+
+use crate::{clog_info, clog_warn};
+
+// =============================================================================
+// Global Memory Gate — subsystems check before expensive allocations
+// =============================================================================
+
+/// Global atomic gate: true when pressure >= Critical for 3+ consecutive polls.
+/// Any subsystem can check this before allocating large buffers.
+static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Global atomic pressure level — updated every 2s by the monitor loop.
+/// Any subsystem can read this lock-free to make graduated decisions.
+static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0); // 0=Normal
+
+/// Check if the memory gate is closed (critical pressure sustained).
+/// Subsystems should refuse new allocations when this returns true.
+pub fn is_memory_gate_closed() -> bool {
+    MEMORY_GATE_CLOSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Force-close the memory gate (for emergency use).
+pub fn close_memory_gate() {
+    MEMORY_GATE_CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Re-open the memory gate (pressure has eased).
+fn open_memory_gate() {
+    MEMORY_GATE_CLOSED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+// =============================================================================
+// Pressure Levels
+// =============================================================================
+
+/// Memory pressure severity. Each level implies all lower levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/PressureLevel.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum PressureLevel {
+    /// < 80% system memory. Normal operation.
+    Normal,
+    /// 80-90% system memory. Log warnings. Non-critical caches should trim.
+    Warning,
+    /// 90-95% system memory. Deactivate idle avatar slots. Aggressive cache eviction.
+    High,
+    /// > 95% system memory. Emergency: stop non-essential subsystems, refuse new allocations.
+    Critical,
+}
+
+/// Threshold constants for pressure level boundaries.
+/// Below FLOOR = Normal (0.0 normalized), above CEILING = Critical (1.0 normalized).
+const PRESSURE_FLOOR: f64 = 0.80;
+const PRESSURE_CEILING: f64 = 0.95;
+
+impl PressureLevel {
+    fn from_pressure(pressure: f64) -> Self {
+        // Thresholds are SYSTEM-WIDE memory, not process-only.
+        // A 32GB machine with browser + Claude Code + Node typically sits at 70-80%.
+        // Old thresholds (60/80/90) kept the system permanently at warning/high,
+        // throttling all AI personas even when there was no actual danger.
+        if pressure >= 0.95 {
+            Self::Critical
+        } else if pressure >= 0.90 {
+            Self::High
+        } else if pressure >= 0.80 {
+            Self::Warning
+        } else {
+            Self::Normal
+        }
+    }
+
+    /// Normalize raw pressure (used/total) to 0.0-1.0 action range.
+    /// 0.0 = at or below floor (no concern), 1.0 = at or above ceiling (emergency).
+    /// Linear interpolation between PRESSURE_FLOOR and PRESSURE_CEILING.
+    fn normalize(pressure: f64) -> f64 {
+        ((pressure - PRESSURE_FLOOR) / (PRESSURE_CEILING - PRESSURE_FLOOR)).clamp(0.0, 1.0)
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Normal => 0,
+            Self::Warning => 1,
+            Self::High => 2,
+            Self::Critical => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Warning,
+            2 => Self::High,
+            3 => Self::Critical,
+            _ => Self::Normal,
+        }
+    }
+}
+
+impl std::fmt::Display for PressureLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Normal => write!(f, "normal"),
+            Self::Warning => write!(f, "warning"),
+            Self::High => write!(f, "high"),
+            Self::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+// =============================================================================
+// Per-Module Memory Report
+// =============================================================================
+
+/// A single module's self-reported memory usage.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/ModuleMemoryReport.ts")]
+pub struct ModuleMemoryReport {
+    /// Module name (e.g., "bevy", "embedding", "corpus", "agents")
+    pub name: String,
+    /// Estimated bytes currently held by this module
+    #[ts(type = "number")]
+    pub bytes: u64,
+    /// Human-readable breakdown (e.g., "14 slots × 921KB render targets")
+    pub detail: String,
+    /// Can this module shed load? (If true, it implements pressure response)
+    pub can_shed: bool,
+}
+
+// =============================================================================
+// Memory Budget (RAG-budgeter-style flexbox allocation)
+// =============================================================================
+
+/// Priority levels for system RAM consumers — mirrors GpuPriority for consistency.
+///
+/// Higher priority = higher pressure gate = harder to evict.
+/// Each consumer declares its priority when registering its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/MemoryPriority.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPriority {
+    /// Render loop, audio pipeline — only OOM stops it
+    Realtime,
+    /// User-facing inference, embeddings, active persona state
+    Interactive,
+    /// Caches, pre-computed data, idle resources
+    Background,
+    /// Training buffers, batch processing — yields first
+    Batch,
+}
+
+impl MemoryPriority {
+    /// Weight for budget allocation — higher weight = larger share of overflow.
+    /// Mirrors GpuPriority::eviction_weight pattern.
+    pub fn allocation_weight(self) -> f64 {
+        match self {
+            Self::Realtime => 10.0,
+            Self::Interactive => 7.0,
+            Self::Background => 3.0,
+            Self::Batch => 1.0,
+        }
+    }
+
+    /// Pressure threshold at which this priority starts shedding.
+    pub fn pressure_gate(self) -> f64 {
+        match self {
+            Self::Realtime => 0.95,
+            Self::Interactive => 0.80,
+            Self::Background => 0.60,
+            Self::Batch => 0.50,
+        }
+    }
+}
+
+/// A consumer's declared memory budget — analogous to RAGSourceBudget.
+///
+/// Each memory consumer registers one of these to declare:
+/// - What it needs at minimum to function (flex-basis)
+/// - What it would prefer if headroom allows (flex-grow target)
+/// - An absolute cap it should never exceed (flex-max)
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetSpec.ts")]
+pub struct MemoryBudgetSpec {
+    /// Consumer name (matches reporter name)
+    pub name: String,
+    /// Priority level for allocation and eviction ordering
+    pub priority: MemoryPriority,
+    /// Minimum bytes needed to function (flex-basis)
+    #[ts(type = "number")]
+    pub min_bytes: u64,
+    /// Preferred bytes for good performance
+    #[ts(type = "number")]
+    pub preferred_bytes: u64,
+    /// Absolute maximum bytes (flex-max / hard cap)
+    #[ts(type = "number")]
+    pub max_bytes: u64,
+}
+
+/// A consumer's budget allocation result — current state vs declared budget.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetAllocation.ts")]
+pub struct MemoryBudgetAllocation {
+    /// Consumer name
+    pub name: String,
+    /// Priority level
+    pub priority: MemoryPriority,
+    /// Allocated budget ceiling (bytes) — what the system allows
+    #[ts(type = "number")]
+    pub budget_bytes: u64,
+    /// Actual current usage (bytes) — from reporter
+    #[ts(type = "number")]
+    pub used_bytes: u64,
+    /// Utilization: used / budget (0.0 - 1.0+)
+    pub utilization: f64,
+    /// Headroom: budget - used (negative = over budget)
+    #[ts(type = "number")]
+    pub headroom_bytes: i64,
+    /// Human-readable detail from reporter
+    pub detail: String,
+    /// Can shed load under pressure
+    pub can_shed: bool,
+}
+
+/// Full budget snapshot — human-visible state of all memory consumers.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetSnapshot.ts")]
+pub struct MemoryBudgetSnapshot {
+    /// System-wide pressure level
+    pub level: PressureLevel,
+    /// System-wide pressure ratio (0.0-1.0)
+    pub pressure: f64,
+    /// Total physical RAM (bytes)
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// Available RAM (bytes)
+    #[ts(type = "number")]
+    pub available_bytes: u64,
+    /// Per-consumer allocations
+    pub consumers: Vec<MemoryBudgetAllocation>,
+    /// Total budget allocated across all consumers
+    #[ts(type = "number")]
+    pub total_budgeted_bytes: u64,
+    /// Total actual usage across all consumers
+    #[ts(type = "number")]
+    pub total_used_bytes: u64,
+    /// Warnings (e.g., consumers over budget, minimums not met)
+    pub warnings: Vec<String>,
+    /// Timestamp (ms since epoch)
+    #[ts(type = "number")]
+    pub timestamp_ms: u64,
+}
+
+// =============================================================================
+// Pressure Snapshot
+// =============================================================================
+
+/// Complete memory pressure snapshot — published via watch channel.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/system/PressureSnapshot.ts")]
+pub struct PressureSnapshot {
+    /// Current pressure level
+    pub level: PressureLevel,
+    /// Memory pressure ratio (0.0 - 1.0) = used / total
+    pub pressure: f64,
+    /// Normalized pressure (0.0 - 1.0) mapped to action zone.
+    /// 0.0 = at/below 80% (no concern), 1.0 = at/above 95% (emergency).
+    pub normalized_pressure: f64,
+    /// Process RSS in bytes
+    #[ts(type = "number")]
+    pub rss_bytes: u64,
+    /// Total physical RAM
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// Available RAM
+    #[ts(type = "number")]
+    pub available_bytes: u64,
+    /// Swap used in bytes
+    #[ts(type = "number")]
+    pub swap_used_bytes: u64,
+    /// Per-module memory breakdown (empty if no reporters registered)
+    pub modules: Vec<ModuleMemoryReport>,
+    /// Timestamp (ms since epoch)
+    #[ts(type = "number")]
+    pub timestamp_ms: u64,
+    /// Consecutive polls at this level (for hysteresis — don't react to single spikes)
+    pub consecutive_at_level: u32,
+}
+
+impl Default for PressureSnapshot {
+    fn default() -> Self {
+        Self {
+            level: PressureLevel::Normal,
+            pressure: 0.0,
+            normalized_pressure: 0.0,
+            rss_bytes: 0,
+            total_bytes: 0,
+            available_bytes: 0,
+            swap_used_bytes: 0,
+            modules: Vec::new(),
+            timestamp_ms: 0,
+            consecutive_at_level: 0,
+        }
+    }
+}
+
+// =============================================================================
+// Memory Reporter Trait
+// =============================================================================
+
+/// Trait for modules that can report their memory usage and respond to pressure.
+///
+/// Implementations MUST be fast (< 100ms) and MUST NOT block.
+/// Each reporter call runs on a blocking thread pool with a 100ms timeout.
+/// Panics are caught; reporters are quarantined after 3 consecutive failures.
+///
+/// ## Budget Declaration
+///
+/// Each reporter declares a `MemoryBudgetSpec` — its priority, min/max bounds,
+/// and preferred allocation. The monitor uses these to compute proportional
+/// budgets (like RAGBudgetManager's flexbox allocation for token budgets).
+///
+/// Phase 1 (now): monitoring and visibility — humans see budget vs actual usage.
+/// Phase 2 (future): automatic allocation algorithm distributes available RAM.
+pub trait MemoryReporter: Send + Sync {
+    /// Module name for reporting
+    fn name(&self) -> &'static str;
+
+    /// Declare this consumer's memory budget requirements.
+    /// Used for proportional allocation and pressure-based shedding decisions.
+    fn budget(&self) -> MemoryBudgetSpec;
+
+    /// Report current memory usage. Must be fast and non-blocking.
+    fn report(&self) -> ModuleMemoryReport;
+
+    /// Whether this reporter can shed load under pressure.
+    fn can_shed(&self) -> bool {
+        false
+    }
+
+    /// Respond to memory pressure. Called when pressure level changes.
+    /// The reporter should autonomously reduce its footprint.
+    ///
+    /// Examples:
+    /// - Bevy: deactivate idle avatar slots, reduce render resolution
+    /// - Embedding: unload model, clear cache
+    /// - Corpus: trim to minimum, evict stale entries aggressively
+    /// - Agents: stop spawning new agents
+    fn shed_load(&self, _level: PressureLevel) {
+        // Default: no-op. Override to implement pressure response.
+    }
+}
+
+// =============================================================================
+// Monitor
+// =============================================================================
+
+/// Reporter entry with fault tracking.
+struct ReporterEntry {
+    reporter: Arc<dyn MemoryReporter>,
+    consecutive_panics: u32,
+    /// Disabled after 3 consecutive panics — quarantined to prevent cascade
+    disabled: bool,
+}
+
+/// Independent memory pressure monitoring system.
+///
+/// Runs on its own tokio task. Polls system memory + registered reporters
+/// at a fixed interval. Publishes snapshots via watch channel.
+///
+/// Budget model (RAG-budgeter-inspired):
+/// - Each reporter declares priority + min/preferred/max bounds
+/// - `budget_snapshot()` computes allocation vs actual for human visibility
+/// - Future: automatic flexbox-style allocation algorithm
+pub struct MemoryPressureMonitor {
+    /// Watch channel for pressure snapshots. Readers never block the monitor.
+    tx: watch::Sender<PressureSnapshot>,
+    rx: watch::Receiver<PressureSnapshot>,
+    /// Atomic RSS for lock-free reads from any thread
+    current_rss: Arc<AtomicU64>,
+    /// Atomic pressure (f64 bits) for lock-free reads
+    current_pressure: Arc<AtomicU64>,
+    /// Shared reference to reporters for on-demand budget queries.
+    /// Dynamically growable — reporters can be added after startup.
+    reporters: parking_lot::RwLock<Vec<Arc<dyn MemoryReporter>>>,
+    /// Channel to send new reporters to the monitor loop task.
+    reporter_tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn MemoryReporter>>,
+}
+
+impl MemoryPressureMonitor {
+    /// Start the monitor on its own tokio task.
+    ///
+    /// Returns a handle for subscribing to pressure changes and registering reporters.
+    /// The monitor task runs until the process exits.
+    /// Reporters can be added later via `add_reporter()`.
+    pub fn start(reporters: Vec<Arc<dyn MemoryReporter>>) -> Arc<Self> {
+        let (tx, rx) = watch::channel(PressureSnapshot::default());
+        let current_rss = Arc::new(AtomicU64::new(0));
+        let current_pressure = Arc::new(AtomicU64::new(0));
+        let (reporter_tx, reporter_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let monitor = Arc::new(Self {
+            tx,
+            rx,
+            current_rss: current_rss.clone(),
+            current_pressure: current_pressure.clone(),
+            reporters: parking_lot::RwLock::new(reporters.clone()),
+            reporter_tx,
+        });
+
+        let entries: Vec<ReporterEntry> = reporters
+            .into_iter()
+            .map(|r| ReporterEntry {
+                reporter: r,
+                consecutive_panics: 0,
+                disabled: false,
+            })
+            .collect();
+
+        // Spawn the monitor loop on its own task.
+        // AssertUnwindSafe + catch_unwind wraps the entire future so that if
+        // run_loop panics from non-reporter code, we log and exit cleanly
+        // rather than poisoning the tokio runtime.
+        {
+            use futures::FutureExt;
+            let tx = monitor.tx.clone();
+            tokio::spawn(async move {
+                let result = AssertUnwindSafe(Self::run_loop(
+                    tx,
+                    current_rss,
+                    current_pressure,
+                    entries,
+                    reporter_rx,
+                ))
+                .catch_unwind()
+                .await;
+
+                if let Err(e) = result {
+                    clog_warn!(
+                        "🧠 MemoryPressureMonitor task panicked (monitor stopped): {:?}",
+                        e
+                    );
+                }
+            });
+        }
+
+        monitor
+    }
+
+    /// Get current pressure level — lock-free, callable from any thread.
+    /// Updated every 2s by the monitor loop. Subsystems use this to make
+    /// graduated decisions (cache sizes, inference concurrency, render quality).
+    pub fn current_level() -> PressureLevel {
+        PressureLevel::from_u8(
+            CURRENT_PRESSURE_LEVEL.load(std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
+    /// Dynamically add a reporter after startup.
+    /// The reporter will be picked up by the monitor loop on its next poll.
+    pub fn add_reporter(&self, reporter: Arc<dyn MemoryReporter>) {
+        self.reporters.write().push(reporter.clone());
+        let _ = self.reporter_tx.send(reporter);
+    }
+
+    /// Subscribe to pressure snapshot changes.
+    /// The receiver gets notified whenever a new snapshot is published.
+    pub fn subscribe(&self) -> watch::Receiver<PressureSnapshot> {
+        self.rx.clone()
+    }
+
+    /// Get current RSS (lock-free atomic read, any thread).
+    pub fn rss_bytes(&self) -> u64 {
+        self.current_rss.load(Ordering::Relaxed)
+    }
+
+    /// Get current pressure ratio (lock-free, any thread).
+    pub fn pressure(&self) -> f64 {
+        f64::from_bits(self.current_pressure.load(Ordering::Relaxed))
+    }
+
+    /// Get the latest snapshot (cheap clone from watch channel).
+    pub fn current(&self) -> PressureSnapshot {
+        self.rx.borrow().clone()
+    }
+
+    /// Compute budget snapshot — human-visible dashboard of all memory consumers.
+    ///
+    /// For each registered reporter:
+    /// - Queries its declared budget (priority, min/preferred/max)
+    /// - Queries its current usage
+    /// - Computes utilization, headroom, and over-budget warnings
+    ///
+    /// Phase 1: budgets are the reporter's self-declared specs (monitoring only).
+    /// Phase 2: budgets will be adjusted by the allocator based on system pressure.
+    pub fn budget_snapshot(&self) -> MemoryBudgetSnapshot {
+        let pressure_snap = self.current();
+        let reporters = self.reporters.read();
+        let mut consumers = Vec::with_capacity(reporters.len());
+        let mut warnings = Vec::new();
+
+        for reporter in reporters.iter() {
+            // Panic-safe: skip reporters that panic
+            let budget_result = std::panic::catch_unwind(AssertUnwindSafe(|| reporter.budget()));
+            let report_result = std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()));
+
+            let (budget, report) = match (budget_result, report_result) {
+                (Ok(b), Ok(r)) => (b, r),
+                _ => continue,
+            };
+
+            let used = report.bytes;
+            let budget_bytes = budget.preferred_bytes; // Phase 1: use preferred as ceiling
+            let utilization = if budget_bytes > 0 {
+                used as f64 / budget_bytes as f64
+            } else {
+                0.0
+            };
+            let headroom = budget_bytes as i64 - used as i64;
+
+            if used > budget.max_bytes {
+                warnings.push(format!(
+                    "{}: {}MB used > {}MB max (over budget by {}MB)",
+                    budget.name,
+                    used / (1024 * 1024),
+                    budget.max_bytes / (1024 * 1024),
+                    (used - budget.max_bytes) / (1024 * 1024),
+                ));
+            }
+
+            consumers.push(MemoryBudgetAllocation {
+                name: budget.name,
+                priority: budget.priority,
+                budget_bytes,
+                used_bytes: used,
+                utilization,
+                headroom_bytes: headroom,
+                detail: report.detail,
+                can_shed: report.can_shed,
+            });
+        }
+
+        // Sort by priority (highest first), then by utilization (most stressed first)
+        consumers.sort_by(|a, b| {
+            b.priority.cmp(&a.priority).then(
+                b.utilization
+                    .partial_cmp(&a.utilization)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+
+        let total_budgeted = consumers.iter().map(|c| c.budget_bytes).sum();
+        let total_used = consumers.iter().map(|c| c.used_bytes).sum();
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        MemoryBudgetSnapshot {
+            level: pressure_snap.level,
+            pressure: pressure_snap.pressure,
+            total_bytes: pressure_snap.total_bytes,
+            available_bytes: pressure_snap.available_bytes,
+            consumers,
+            total_budgeted_bytes: total_budgeted,
+            total_used_bytes: total_used,
+            warnings,
+            timestamp_ms: now_ms,
+        }
+    }
+
+    /// The monitor loop. Runs until process exit.
+    async fn run_loop(
+        tx: watch::Sender<PressureSnapshot>,
+        rss_atomic: Arc<AtomicU64>,
+        pressure_atomic: Arc<AtomicU64>,
+        mut reporters: Vec<ReporterEntry>,
+        mut reporter_rx: tokio::sync::mpsc::UnboundedReceiver<Arc<dyn MemoryReporter>>,
+    ) {
+        use sysinfo::{ProcessesToUpdate, System};
+
+        let mut sys = System::new();
+        let pid = sysinfo::get_current_pid().ok();
+        let poll_interval = Duration::from_secs(2);
+        let mut prev_level = PressureLevel::Normal;
+        let mut consecutive_at_level: u32 = 0;
+        let mut log_counter: u64 = 0;
+
+        clog_info!(
+            "🧠 MemoryPressureMonitor started (interval={:?}, reporters={})",
+            poll_interval,
+            reporters.len()
+        );
+
+        loop {
+            tokio::time::sleep(poll_interval).await;
+
+            // --- Drain new reporters (added via add_reporter()) ---
+            while let Ok(new_reporter) = reporter_rx.try_recv() {
+                let name = new_reporter.name();
+                reporters.push(ReporterEntry {
+                    reporter: new_reporter,
+                    consecutive_panics: 0,
+                    disabled: false,
+                });
+                clog_info!("🧠 Memory reporter '{}' registered dynamically (total: {})", name, reporters.len());
+            }
+
+            // --- System memory ---
+            sys.refresh_memory();
+            let total = sys.total_memory();
+            let available = sys.available_memory();
+            let used = total.saturating_sub(available);
+            let swap_used = sys.used_swap();
+
+            // --- Process RSS ---
+            let rss = if let Some(p) = pid {
+                sys.refresh_processes(ProcessesToUpdate::Some(&[p]), true);
+                sys.process(p).map(|p| p.memory()).unwrap_or(0)
+            } else {
+                0
+            };
+
+            // --- Pressure calculation ---
+            // Use system-wide pressure (not just our RSS) because other processes matter
+            let pressure = if total > 0 {
+                used as f64 / total as f64
+            } else {
+                0.0
+            };
+            let level = PressureLevel::from_pressure(pressure);
+
+            // Update atomics (lock-free reads from any thread)
+            rss_atomic.store(rss, Ordering::Relaxed);
+            pressure_atomic.store(pressure.to_bits(), Ordering::Relaxed);
+            CURRENT_PRESSURE_LEVEL.store(level.to_u8(), std::sync::atomic::Ordering::Relaxed);
+
+            // --- Hysteresis ---
+            if level == prev_level {
+                consecutive_at_level = consecutive_at_level.saturating_add(1);
+            } else {
+                consecutive_at_level = 1;
+                prev_level = level;
+            }
+
+            // --- Collect module reports (with panic isolation + timeout) ---
+            let reporter_timeout = Duration::from_millis(100);
+            let mut module_reports = Vec::with_capacity(reporters.len());
+            for entry in &mut reporters {
+                if entry.disabled {
+                    continue;
+                }
+
+                let reporter = entry.reporter.clone();
+                // Run each reporter on the blocking pool with a 100ms timeout.
+                // catch_unwind inside spawn_blocking catches panics; timeout
+                // catches reporters that block or hang.
+                let handle = tokio::task::spawn_blocking(move || {
+                    std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()))
+                });
+
+                match tokio::time::timeout(reporter_timeout, handle).await {
+                    Ok(Ok(Ok(report))) => {
+                        // spawn_blocking succeeded, no panic, got report
+                        entry.consecutive_panics = 0;
+                        module_reports.push(report);
+                    }
+                    Ok(Ok(Err(e))) => {
+                        // Reporter panicked
+                        entry.consecutive_panics += 1;
+                        let name = entry.reporter.name();
+                        clog_warn!(
+                            "🧠 MemoryReporter '{}' panicked ({}/3): {:?}",
+                            name,
+                            entry.consecutive_panics,
+                            e
+                        );
+                        if entry.consecutive_panics >= 3 {
+                            clog_warn!(
+                                "🧠 MemoryReporter '{}' quarantined after 3 panics",
+                                name
+                            );
+                            entry.disabled = true;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        // spawn_blocking JoinError (task cancelled or panicked at runtime level)
+                        let name = entry.reporter.name();
+                        clog_warn!(
+                            "🧠 MemoryReporter '{}' spawn_blocking failed: {:?}",
+                            name,
+                            e
+                        );
+                    }
+                    Err(_elapsed) => {
+                        // Timed out — reporter took longer than 100ms
+                        entry.consecutive_panics += 1;
+                        let name = entry.reporter.name();
+                        clog_warn!(
+                            "🧠 MemoryReporter '{}' timed out (>100ms) ({}/3)",
+                            name,
+                            entry.consecutive_panics,
+                        );
+                        if entry.consecutive_panics >= 3 {
+                            clog_warn!(
+                                "🧠 MemoryReporter '{}' quarantined after 3 failures",
+                                name
+                            );
+                            entry.disabled = true;
+                        }
+                    }
+                }
+            }
+
+            // --- Emergency brake: memory gate ---
+            // Close gate when critical for 3+ consecutive polls (6+ seconds).
+            // Re-open when pressure drops below critical.
+            if level == PressureLevel::Critical && consecutive_at_level >= 3 {
+                if !is_memory_gate_closed() {
+                    close_memory_gate();
+                    clog_warn!(
+                        "🚨 MEMORY GATE CLOSED — pressure critical for {}+ seconds. \
+                         Blocking new allocations.",
+                        consecutive_at_level * 2
+                    );
+                }
+            } else if level < PressureLevel::Critical && is_memory_gate_closed() {
+                open_memory_gate();
+                clog_info!("🧠 Memory gate re-opened — pressure eased to {}", level);
+            }
+
+            // --- Notify reporters of pressure changes (with panic isolation) ---
+            // First notification: after 2 consecutive polls at this level (hysteresis)
+            // Emergency mode: at critical, shed on EVERY poll (not just once)
+            let should_shed = match level {
+                PressureLevel::Critical => consecutive_at_level >= 2, // every poll once sustained
+                PressureLevel::High => consecutive_at_level == 2,    // once
+                PressureLevel::Warning => consecutive_at_level == 2, // once
+                PressureLevel::Normal => false,
+            };
+
+            if should_shed {
+                for entry in &reporters {
+                    if entry.disabled || !entry.reporter.can_shed() {
+                        continue;
+                    }
+                    let reporter = entry.reporter.clone();
+                    let shed_level = level;
+                    // Fire-and-forget, don't let a slow shedder block the monitor
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        reporter.shed_load(shed_level);
+                    }));
+                }
+            }
+
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            let snapshot = PressureSnapshot {
+                level,
+                pressure,
+                normalized_pressure: PressureLevel::normalize(pressure),
+                rss_bytes: rss,
+                total_bytes: total,
+                available_bytes: available,
+                swap_used_bytes: swap_used,
+                modules: module_reports,
+                timestamp_ms: now_ms,
+                consecutive_at_level,
+            };
+
+            // --- Periodic logging ---
+            log_counter += 1;
+            // Log every 15 polls (30s) at normal, every poll at high+
+            let should_log = match level {
+                PressureLevel::Normal => log_counter % 15 == 0,
+                PressureLevel::Warning => log_counter % 5 == 0,
+                PressureLevel::High | PressureLevel::Critical => true,
+            };
+
+            if should_log {
+                let rss_mb = rss / (1024 * 1024);
+                let avail_mb = available / (1024 * 1024);
+                let swap_mb = swap_used / (1024 * 1024);
+                let module_summary: String = snapshot
+                    .modules
+                    .iter()
+                    .map(|m| format!("{}={}MB", m.name, m.bytes / (1024 * 1024)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                clog_info!(
+                    "🧠 Memory: RSS={}MB avail={}MB swap={}MB pressure={:.1}% level={} [{}]",
+                    rss_mb,
+                    avail_mb,
+                    swap_mb,
+                    pressure * 100.0,
+                    level,
+                    if module_summary.is_empty() {
+                        "no reporters".to_string()
+                    } else {
+                        module_summary
+                    }
+                );
+            }
+
+            // Publish snapshot (never blocks — watch::Sender overwrites previous value)
+            let _ = tx.send(snapshot);
+        }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pressure_levels() {
+        // Thresholds: Normal < 0.80, Warning 0.80-0.90, High 0.90-0.95, Critical >= 0.95
+        assert_eq!(PressureLevel::from_pressure(0.3), PressureLevel::Normal);
+        assert_eq!(PressureLevel::from_pressure(0.79), PressureLevel::Normal);
+        assert_eq!(PressureLevel::from_pressure(0.80), PressureLevel::Warning);
+        assert_eq!(PressureLevel::from_pressure(0.85), PressureLevel::Warning);
+        assert_eq!(PressureLevel::from_pressure(0.90), PressureLevel::High);
+        assert_eq!(PressureLevel::from_pressure(0.93), PressureLevel::High);
+        assert_eq!(PressureLevel::from_pressure(0.95), PressureLevel::Critical);
+        assert_eq!(PressureLevel::from_pressure(0.99), PressureLevel::Critical);
+
+        // Normalized pressure: 0.80 → 0.0, 0.95 → 1.0, linear between
+        let eps = 1e-9;
+        assert!((PressureLevel::normalize(0.50) - 0.0).abs() < eps); // below floor → clamped 0
+        assert!((PressureLevel::normalize(0.80) - 0.0).abs() < eps); // at floor → 0.0
+        assert!((PressureLevel::normalize(0.875) - 0.5).abs() < eps); // midpoint → 0.5
+        assert!((PressureLevel::normalize(0.95) - 1.0).abs() < eps); // at ceiling → 1.0
+        assert!((PressureLevel::normalize(0.99) - 1.0).abs() < eps); // above ceiling → clamped 1
+    }
+
+    #[test]
+    fn test_memory_priority_ordering() {
+        // Higher priority = harder to evict = higher allocation weight
+        assert!(MemoryPriority::Realtime.allocation_weight() > MemoryPriority::Interactive.allocation_weight());
+        assert!(MemoryPriority::Interactive.allocation_weight() > MemoryPriority::Background.allocation_weight());
+        assert!(MemoryPriority::Background.allocation_weight() > MemoryPriority::Batch.allocation_weight());
+    }
+
+    #[test]
+    fn test_memory_priority_pressure_gates() {
+        // Lower priority sheds load at lower pressure
+        assert!(MemoryPriority::Batch.pressure_gate() < MemoryPriority::Background.pressure_gate());
+        assert!(MemoryPriority::Background.pressure_gate() < MemoryPriority::Interactive.pressure_gate());
+        assert!(MemoryPriority::Interactive.pressure_gate() < MemoryPriority::Realtime.pressure_gate());
+    }
+
+    #[test]
+    fn test_budget_allocation_utilization() {
+        let alloc = MemoryBudgetAllocation {
+            name: "test".to_string(),
+            priority: MemoryPriority::Interactive,
+            budget_bytes: 100 * 1024 * 1024, // 100MB
+            used_bytes: 75 * 1024 * 1024,    // 75MB
+            utilization: 0.75,
+            headroom_bytes: 25 * 1024 * 1024, // 25MB
+            detail: "test".to_string(),
+            can_shed: true,
+        };
+        assert_eq!(alloc.utilization, 0.75);
+        assert!(alloc.headroom_bytes > 0);
+    }
+
+    // ── ts-rs binding tests ─────────────────────────────────────────
+
+    #[test]
+    fn export_bindings_memory_priority() {
+        MemoryPriority::export_all(&ts_rs::Config::default()).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_memory_budget_spec() {
+        MemoryBudgetSpec::export_all(&ts_rs::Config::default()).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_memory_budget_allocation() {
+        MemoryBudgetAllocation::export_all(&ts_rs::Config::default()).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_memory_budget_snapshot() {
+        MemoryBudgetSnapshot::export_all(&ts_rs::Config::default()).unwrap();
+    }
+}

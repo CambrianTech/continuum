@@ -32,6 +32,13 @@ use super::shell_types::{
 };
 use crate::log_info;
 
+/// Maximum output lines retained per execution. Once exceeded, oldest lines
+/// are drained (cursor positions adjusted accordingly). 10K lines ≈ 1MB text.
+const MAX_OUTPUT_LINES_PER_EXECUTION: usize = 10_000;
+
+/// Maximum completed execution history entries per session.
+const MAX_HISTORY_ENTRIES: usize = 500;
+
 // ============================================================================
 // Execution State (shared between tokio task and IPC handler)
 // ============================================================================
@@ -281,6 +288,9 @@ impl ShellSession {
         timeout_ms: Option<u64>,
         rt_handle: &tokio::runtime::Handle,
     ) -> Result<String, String> {
+        // Auto-GC: move completed executions to history before starting new one
+        self.gc();
+
         let execution_id = Uuid::new_v4().to_string();
         let now_ms = now();
 
@@ -492,7 +502,7 @@ impl ShellSession {
     }
 
     /// Garbage-collect completed executions, moving them to history.
-    /// Call periodically to prevent unbounded memory growth.
+    /// Called automatically before each new execution.
     pub fn gc(&mut self) {
         let completed_ids: Vec<String> = self
             .executions
@@ -519,6 +529,12 @@ impl ShellSession {
                     });
                 }
             }
+        }
+
+        // Cap history to prevent unbounded growth
+        if self.history.len() > MAX_HISTORY_ENTRIES {
+            let drain_count = self.history.len() - MAX_HISTORY_ENTRIES;
+            self.history.drain(..drain_count);
         }
     }
 
@@ -725,11 +741,16 @@ async fn run_shell_command(
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(mut s) = state_out.lock() {
-                // If killed, stop reading
                 if s.status == ShellExecutionStatus::Killed {
                     break;
                 }
                 s.stdout_lines.push(line);
+                // Cap output: drain oldest lines, adjusting cursor
+                if s.stdout_lines.len() > MAX_OUTPUT_LINES_PER_EXECUTION {
+                    let drain = s.stdout_lines.len() - MAX_OUTPUT_LINES_PER_EXECUTION;
+                    s.stdout_lines.drain(..drain);
+                    s.stdout_cursor = s.stdout_cursor.saturating_sub(drain);
+                }
                 s.output_notify.notify_one();
             }
         }
@@ -745,6 +766,11 @@ async fn run_shell_command(
                     break;
                 }
                 s.stderr_lines.push(line);
+                if s.stderr_lines.len() > MAX_OUTPUT_LINES_PER_EXECUTION {
+                    let drain = s.stderr_lines.len() - MAX_OUTPUT_LINES_PER_EXECUTION;
+                    s.stderr_lines.drain(..drain);
+                    s.stderr_cursor = s.stderr_cursor.saturating_sub(drain);
+                }
                 s.output_notify.notify_one();
             }
         }

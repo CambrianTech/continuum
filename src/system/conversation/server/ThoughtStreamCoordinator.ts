@@ -24,6 +24,7 @@ import type {
 } from '../shared/ConversationCoordinationTypes';
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
 import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
+import { BackpressureService } from '../../core/services/BackpressureService';
 import { HeartbeatManager } from '../shared/SystemHeartbeat';
 import type { StageCompleteEvent } from '../shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../shared/CognitionEventTypes';
@@ -429,15 +430,28 @@ export class ThoughtStreamCoordinator extends EventEmitter {
 
   /**
    * Get probabilistic maxResponders (per-message, not fixed)
-   * - 70% chance: 1 responder (focused)
-   * - 25% chance: 2 responders (discussion)
-   * - 5% chance: 3 responders (lively debate)
+   * Pressure-aware: fewer responders under memory pressure
+   *
+   * Normal:   70/25/5% → 1/2/3 responders
+   * Warning:  85/15/0% → 1/2/0 responders
+   * High:     100%     → 1 responder only
+   * Critical: 0        → all rejected
    */
   private getProbabilisticMaxResponders(): number {
+    const pressure = BackpressureService.pressureLevel;
+
+    // Never return 0 — loaded models ARE the baseline memory, so pressure
+    // may never drop. Cadence multiplier (4x at critical) throttles instead.
+    if (pressure === 'critical' || pressure === 'high') return 1;
+
     const rand = Math.random();
-    if (rand < 0.70) return 1;  // 70% - focused
-    if (rand < 0.95) return 2;  // 25% - discussion
-    return 3;                    // 5% - lively
+    if (pressure === 'warning') {
+      return rand < 0.85 ? 1 : 2;
+    }
+    // Normal
+    if (rand < 0.70) return 1;
+    if (rand < 0.95) return 2;
+    return 3;
   }
 
   /**
