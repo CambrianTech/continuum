@@ -24,8 +24,10 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
+use bevy::scene::SceneInstanceReady;
 
 use crate::live::avatar::hash::{deterministic_index, deterministic_pick};
+use crate::live::video::bevy_renderer::skeleton;
 
 use super::builder::SceneMarker;
 
@@ -174,6 +176,8 @@ pub fn populate_rooms(
         };
 
         let scene_handle: Handle<Scene> = asset_server.load(&scene_path);
+        let layer_for_observer = config.layer.clone();
+        let scene_id_for_log = config.scene_id.clone();
         let env_entity = commands
             .spawn((
                 SceneRoot(scene_handle),
@@ -181,6 +185,29 @@ pub fn populate_rooms(
                 config.layer.clone(),
                 EnvironmentGeometry,
             ))
+            .observe(
+                move |
+                    event: On<SceneInstanceReady>,
+                    children_query: Query<&Children>,
+                    mut cmds: Commands,
+                | {
+                    let root = event.entity;
+                    // Propagate RenderLayers to all glTF children so the
+                    // scene camera and lights can see the room geometry.
+                    skeleton::propagate_render_layers(
+                        root,
+                        &layer_for_observer,
+                        &children_query,
+                        &mut cmds,
+                    );
+                    let count = skeleton::count_descendants(root, &children_query);
+                    crate::clog_info!(
+                        "🏠 Room '{}' ready: {} descendants, render layers propagated",
+                        scene_id_for_log,
+                        count
+                    );
+                },
+            )
             .id();
         commands.entity(scene_entity).add_child(env_entity);
 
