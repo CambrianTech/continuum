@@ -20,6 +20,8 @@
 
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { PressureLevel } from '../../../shared/generated/system';
+import type { PressureSnapshotInfo } from '../../../workers/continuum-core/bindings/modules/system_resources';
 
 /**
  * Priority levels for operations
@@ -59,10 +61,11 @@ export class BackpressureService {
   private static cacheTimestamp: number = 0;
   private static readonly CACHE_TTL_MS = 100; // Refresh every 100ms (fast enough to adapt)
 
-  /** Rust memory gate state — cached to avoid IPC on every check */
-  private static memoryGateClosed: boolean = false;
-  private static memoryGateTimestamp: number = 0;
-  private static readonly MEMORY_GATE_TTL_MS = 2000; // Check every 2s (matches Rust poll interval)
+  /** Graduated pressure state — cached to avoid IPC on every check */
+  private static _pressureLevel: PressureLevel = 'normal';
+  private static _pressureSnapshot: PressureSnapshotInfo | null = null;
+  private static pressureTimestamp: number = 0;
+  private static readonly PRESSURE_TTL_MS = 2000; // Check every 2s (matches Rust poll interval)
 
   /**
    * Check if an operation should proceed based on current system load
@@ -142,34 +145,58 @@ export class BackpressureService {
   }
 
   /**
-   * Check Rust memory gate (cached, non-blocking).
-   * The gate closes when system memory pressure is critical for 6+ seconds.
-   * Uses fire-and-forget async refresh — never blocks the caller.
+   * Current graduated pressure level from Rust (cached, non-blocking).
+   * Subsystems read this to self-manage under pressure.
+   */
+  static get pressureLevel(): PressureLevel {
+    this.refreshPressure();
+    return this._pressureLevel;
+  }
+
+  /**
+   * Full pressure snapshot (level, pressure ratio, RSS, consecutive count).
+   */
+  static get pressureSnapshot(): PressureSnapshotInfo {
+    this.refreshPressure();
+    return this._pressureSnapshot ?? { level: 'normal' as PressureLevel, pressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+  }
+
+  /**
+   * Check Rust memory gate (derived from graduated pressure).
+   * The gate closes when system memory pressure is critical for 3+ consecutive polls.
    */
   private static isMemoryGateClosed(): boolean {
+    this.refreshPressure();
+    return this._pressureLevel === 'critical' && (this._pressureSnapshot?.consecutiveAtLevel ?? 0) >= 3;
+  }
+
+  /**
+   * Fire-and-forget pressure refresh — non-blocking, stale cache is fine for 2s.
+   */
+  private static refreshPressure(): void {
     const now = Date.now();
 
-    // Return cached value if fresh
-    if ((now - this.memoryGateTimestamp) < this.MEMORY_GATE_TTL_MS) {
-      return this.memoryGateClosed;
+    if ((now - this.pressureTimestamp) < this.PRESSURE_TTL_MS) {
+      return;
     }
 
-    // Refresh in background (non-blocking) — stale cache is fine for 2s
-    this.memoryGateTimestamp = now; // Prevent concurrent refreshes
+    // Prevent concurrent refreshes
+    this.pressureTimestamp = now;
     RustCoreIPCClient.getInstanceAsync()
-      .then(client => client.memoryGateStatus())
-      .then(status => {
-        this.memoryGateClosed = status.closed;
-        if (status.closed) {
-          console.log(`🚨 BackpressureService: Memory gate CLOSED (pressure=${(status.pressure * 100).toFixed(1)}%, RSS=${Math.round(status.rssBytes / 1024 / 1024)}MB)`);
+      .then(client => client.pressureSnapshot())
+      .then(snapshot => {
+        const prev = this._pressureLevel;
+        this._pressureLevel = snapshot.level;
+        this._pressureSnapshot = snapshot;
+        if (snapshot.level !== 'normal' && snapshot.level !== prev) {
+          console.log(`🚦 BackpressureService: Pressure ${prev} → ${snapshot.level} (pressure=${(snapshot.pressure * 100).toFixed(1)}%, RSS=${Math.round(snapshot.rssBytes / 1024 / 1024)}MB, consecutive=${snapshot.consecutiveAtLevel})`);
         }
       })
       .catch(() => {
-        // IPC unavailable — assume gate is open (fail-open)
-        this.memoryGateClosed = false;
+        // IPC unavailable — assume normal (fail-open)
+        this._pressureLevel = 'normal';
+        this._pressureSnapshot = null;
       });
-
-    return this.memoryGateClosed;
   }
 
   /**

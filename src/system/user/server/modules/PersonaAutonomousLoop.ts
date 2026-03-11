@@ -25,6 +25,7 @@ import type { SelfTaskGenerator } from './SelfTaskGenerator';
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
+import { BackpressureService } from '../../../core/services/BackpressureService';
 
 /** Gap assessment runs every N service cycles (~25-50s during active operation) */
 const GAP_ASSESSMENT_INTERVAL = 50;
@@ -147,6 +148,14 @@ export class PersonaAutonomousLoop {
     const MAX_DRAIN = 20;
 
     while (itemsProcessed < MAX_DRAIN) {
+      // Pre-flight pressure check: yield if system is under high+ pressure.
+      // This prevents 15 personas * 20 items = 300 concurrent operations during bursts.
+      const pressure = BackpressureService.pressureLevel;
+      if (pressure === 'critical' || pressure === 'high') {
+        if (itemsProcessed > 0) break; // Already processed at least one — yield to let pressure drop
+        // First item: still process it so we don't starve completely
+      }
+
       const bridge = this.personaUser.rustCognitionBridge!;
       const result = await bridge.serviceCycleFull();
 

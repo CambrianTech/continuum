@@ -90,9 +90,8 @@ impl MemoryReporter for BevyMemoryReporter {
 
         match level {
             PressureLevel::High => {
-                // Downscale all non-speaking slots to half resolution
                 crate::clog_warn!(
-                    "🧠 Bevy shed_load(High): downscaling idle slots ({} loaded, {} speaking)",
+                    "🧠 Bevy shed_load(High): downscaling idle slots, idle_cadence=4 ({} loaded, {} speaking)",
                     loaded,
                     speaking,
                 );
@@ -103,16 +102,14 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: PRESSURE_HEIGHT,
                     });
                 }
+                self.stats.desired_idle_cadence.store(4, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Critical => {
-                // Unload all non-speaking avatars, downscale speaking ones
                 crate::clog_warn!(
-                    "🧠 Bevy shed_load(Critical): unloading idle slots ({} loaded, {} speaking)",
+                    "🧠 Bevy shed_load(Critical): unloading idle slots, idle_cadence=8 ({} loaded, {} speaking)",
                     loaded,
                     speaking,
                 );
-                // We can't know which specific slots are speaking from atomics alone,
-                // so resize all to minimum — the Bevy system handles slot state.
                 for slot in 0..MAX_AVATAR_SLOTS {
                     let _ = self.command_tx.send(AvatarCommand::Resize {
                         slot,
@@ -120,14 +117,14 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: PRESSURE_HEIGHT,
                     });
                 }
+                self.stats.desired_idle_cadence.store(8, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Warning => {
                 crate::clog_info!(
-                    "🧠 Bevy shed_load(Warning): monitoring ({} loaded, {} speaking)",
+                    "🧠 Bevy shed_load(Warning): idle_cadence=2 ({} loaded, {} speaking)",
                     loaded,
                     speaking,
                 );
-                // Restore normal resolution for all slots (pressure eased)
                 for slot in 0..MAX_AVATAR_SLOTS {
                     let _ = self.command_tx.send(AvatarCommand::Resize {
                         slot,
@@ -135,9 +132,9 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: AVATAR_HEIGHT,
                     });
                 }
+                self.stats.desired_idle_cadence.store(2, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Normal => {
-                // Restore normal resolution
                 for slot in 0..MAX_AVATAR_SLOTS {
                     let _ = self.command_tx.send(AvatarCommand::Resize {
                         slot,
@@ -145,6 +142,7 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: AVATAR_HEIGHT,
                     });
                 }
+                self.stats.desired_idle_cadence.store(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

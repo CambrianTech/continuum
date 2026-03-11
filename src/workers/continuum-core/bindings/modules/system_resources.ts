@@ -12,6 +12,8 @@ import type {
 	SystemResourceSnapshot as RustSnapshot,
 	TopProcess as RustTopProcess,
 	ProcessStats as RustProcessStats,
+	PressureSnapshot as RustPressureSnapshot,
+	PressureLevel,
 } from '../../../../shared/generated/system';
 
 // ============================================================================
@@ -106,11 +108,19 @@ export interface MemoryGateStatus {
 	rssBytes: number;
 }
 
+export interface PressureSnapshotInfo {
+	level: PressureLevel;
+	pressure: number;
+	rssBytes: number;
+	consecutiveAtLevel: number;
+}
+
 export interface SystemResourceMixin {
 	systemCpu(): Promise<CpuStatsInfo>;
 	systemMemory(): Promise<MemoryStatsInfo>;
 	systemResources(options?: { includeProcesses?: boolean; topN?: number }): Promise<SystemResourceSnapshotInfo>;
 	memoryGateStatus(): Promise<MemoryGateStatus>;
+	pressureSnapshot(): Promise<PressureSnapshotInfo>;
 }
 
 export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -169,6 +179,24 @@ export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIP
 				closed: r.closed,
 				pressure: r.pressure,
 				rssBytes: Number(r.rss_bytes),
+			};
+		}
+
+		/**
+		 * Get full pressure snapshot (graduated levels, not just binary gate).
+		 * Returns { level, pressure, rssBytes, consecutiveAtLevel }.
+		 */
+		async pressureSnapshot(): Promise<PressureSnapshotInfo> {
+			const response = await this.request({ command: 'system/pressure' });
+			if (!response.success) {
+				return { level: 'normal' as PressureLevel, pressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+			}
+			const r = response.result as RustPressureSnapshot;
+			return {
+				level: r.level,
+				pressure: r.pressure,
+				rssBytes: Number(r.rss_bytes),
+				consecutiveAtLevel: r.consecutive_at_level,
 			};
 		}
 	};

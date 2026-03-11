@@ -2,8 +2,17 @@
 // macOS system allocator fragments badly under Bevy's 15fps readback churn
 // (14 slots × 921KB per frame) — RSS grows to 30-40GB and never shrinks.
 // jemalloc's dirty page purging returns freed memory within seconds.
+//
+// MALLOC_CONF: dirty_decay_ms=1000 (purge freed pages after 1s instead of default 10s),
+// muzzy_decay_ms=2000 (return muzzy pages after 2s instead of default 10s).
+// On a 32GB machine with 15 bursty personas, the default 10s window accumulates
+// 3-5GB of "owned unmapped memory" that inflates RSS.
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "malloc_conf")]
+pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
 
 use continuum_core::live::transport::livekit_agent::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};

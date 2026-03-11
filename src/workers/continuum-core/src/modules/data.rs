@@ -27,7 +27,12 @@ use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+
+/// Max concurrent query operations. Limits peak heap from 15 personas × N queries
+/// all materializing result sets simultaneously. Without this, RSS spikes to 9GB+
+/// from concurrent JSON serialization of large result sets.
+const MAX_CONCURRENT_QUERIES: usize = 4;
 
 // ============================================================================
 // Vector Search Types and Cache
@@ -98,6 +103,10 @@ pub struct DataModule {
     active_migration: Mutex<Option<MigrationHandle>>,
     /// Pre-cutover connection string (for rollback)
     previous_connection: Mutex<Option<String>>,
+    /// Limits concurrent query/list operations to cap peak heap usage.
+    /// 15 personas firing queries simultaneously can spike RSS by several GB
+    /// from concurrent result set materialization + JSON serialization.
+    query_semaphore: Semaphore,
 }
 
 impl DataModule {
@@ -110,6 +119,7 @@ impl DataModule {
             context: RwLock::new(None),
             active_migration: Mutex::new(None),
             previous_connection: Mutex::new(None),
+            query_semaphore: Semaphore::new(MAX_CONCURRENT_QUERIES),
         }
     }
 
@@ -663,6 +673,10 @@ impl DataModule {
     }
 
     async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
+        // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
+        // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
+        let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
+
         use std::time::Instant;
         let start = Instant::now();
 
@@ -703,6 +717,8 @@ impl DataModule {
     }
 
     async fn handle_query_with_join(&self, params: Value) -> Result<CommandResult, String> {
+        let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
+
         let params: QueryWithJoinParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 

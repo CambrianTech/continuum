@@ -381,8 +381,8 @@ fn run_bevy_app(
             (
                 process_commands,
                 monitor_load_states,
-                // Ambient light set once in setup_render_slots (no per-frame touch needed).
                 update_memory_stats,
+                sync_idle_cadence,
             ),
         )
         .add_systems(
@@ -832,6 +832,16 @@ fn update_memory_stats(
     stats.0.speaking_slots.store(speaking, std::sync::atomic::Ordering::Relaxed);
     stats.0.render_target_bytes.store(rt_bytes, std::sync::atomic::Ordering::Relaxed);
     stats.0.pending_loads.store(pending_count as u32, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sync idle cadence from the shared atomic (written by MemoryReporter under pressure).
+/// Separate system to avoid pushing process_commands past Bevy's 16-param limit.
+fn sync_idle_cadence(stats: Res<SharedMemoryStats>, mut schedule: ResMut<RenderSchedule>) {
+    let desired = stats.0.desired_idle_cadence.load(std::sync::atomic::Ordering::Relaxed).max(1);
+    if schedule.idle_cadence != desired {
+        clog_info!("🎨 Idle cadence {} → {}", schedule.idle_cadence, desired);
+        schedule.idle_cadence = desired;
+    }
 }
 
 fn force_light_visibility(

@@ -130,6 +130,9 @@ pub struct BevyMemoryStats {
     pub render_target_bytes: std::sync::atomic::AtomicU64,
     /// Pending load entries count
     pub pending_loads: std::sync::atomic::AtomicU32,
+    /// Desired idle cadence — written by MemoryReporter, read by Bevy system.
+    /// Avoids command channel for this since process_commands is at param limit.
+    pub desired_idle_cadence: std::sync::atomic::AtomicU32,
 }
 
 impl BevyMemoryStats {
@@ -140,6 +143,7 @@ impl BevyMemoryStats {
             speaking_slots: std::sync::atomic::AtomicU8::new(0),
             render_target_bytes: std::sync::atomic::AtomicU64::new(0),
             pending_loads: std::sync::atomic::AtomicU32::new(0),
+            desired_idle_cadence: std::sync::atomic::AtomicU32::new(1),
         }
     }
 }
@@ -484,6 +488,7 @@ pub(super) struct GpuGuards {
 /// Bevy resource wrapping the shared atomic stats for cross-thread reporting.
 #[derive(Resource)]
 pub(super) struct SharedMemoryStats(pub Arc<BevyMemoryStats>);
+
 
 /// Cached set of currently-speaking slot IDs — computed once per frame,
 /// consumed by multiple animation systems (speaking, expression, idle gestures, eye gaze, cognitive).
