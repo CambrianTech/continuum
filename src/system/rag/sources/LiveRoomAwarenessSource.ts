@@ -64,7 +64,7 @@ export class LiveRoomAwarenessSource implements RAGSource {
     // Always include both: text description for text-only models,
     // raw screenshot artifact for vision models. PersonaResponseGenerator
     // decides which to use based on actual model capabilities.
-    const artifacts = this.buildArtifacts(snapshot);
+    const artifacts = await this.buildArtifacts(snapshot);
 
     const visualSection = snapshot
       ? `\nVisual: ${snapshot.description}`
@@ -110,13 +110,13 @@ export class LiveRoomAwarenessSource implements RAGSource {
     return lines.join('\n');
   }
 
-  private buildArtifacts(snapshot: RoomSnapshot | null): RAGArtifact[] {
+  private async buildArtifacts(snapshot: RoomSnapshot | null): Promise<RAGArtifact[]> {
     if (!snapshot?.snapshotPath) return [];
 
     // Read base64 from disk lazily — NOT held in RAM between cycles
     let base64: string;
     try {
-      const buffer = fs.readFileSync(snapshot.snapshotPath);
+      const buffer = await fs.promises.readFile(snapshot.snapshotPath);
       base64 = buffer.toString('base64');
     } catch {
       return []; // File gone or unreadable

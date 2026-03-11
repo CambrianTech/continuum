@@ -112,15 +112,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
 
+    // Start memory pressure monitor — own task, non-blocking, crash-proof.
+    // Polls every 2s, publishes via watch channel. Modules subscribe to react.
+    // Start with empty reporters — Bevy might not be ready yet (race condition).
+    // Created BEFORE IPC server so it can be wired into SystemResourceModule.
+    let pressure_monitor =
+        continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
+
     // Start IPC server in background thread FIRST (creates socket immediately)
     let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
+    let ipc_pressure_monitor = pressure_monitor.clone();
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
             &socket_path,
             ipc_livekit_manager,
             rt_handle,
             ipc_memory_manager,
+            ipc_pressure_monitor,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
         }
@@ -128,12 +137,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Give IPC server time to create socket (satisfies start-workers.sh check)
     std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Start memory pressure monitor — own task, non-blocking, crash-proof.
-    // Polls every 2s, publishes via watch channel. Modules subscribe to react.
-    // Start with empty reporters — Bevy might not be ready yet (race condition).
-    let pressure_monitor =
-        continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
 
     // Delayed reporter registration: wait for Bevy to finish initializing,
     // then register its memory reporter. Retries every 2s for up to 30s.

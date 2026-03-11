@@ -12,25 +12,25 @@ use crate::system_resources::{MemoryPressureMonitor, SystemResourceMonitor};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub struct SystemResourceModule {
     monitor: Arc<SystemResourceMonitor>,
-    pressure_monitor: Option<Arc<MemoryPressureMonitor>>,
+    pressure_monitor: OnceLock<Arc<MemoryPressureMonitor>>,
 }
 
 impl SystemResourceModule {
     pub fn new(monitor: Arc<SystemResourceMonitor>) -> Self {
         Self {
             monitor,
-            pressure_monitor: None,
+            pressure_monitor: OnceLock::new(),
         }
     }
 
     /// Set the memory pressure monitor reference.
-    /// Called after both are created in main.rs.
-    pub fn set_pressure_monitor(&mut self, pm: Arc<MemoryPressureMonitor>) {
-        self.pressure_monitor = Some(pm);
+    /// Uses OnceLock so this can be called on &self (through Arc) after registration.
+    pub fn set_pressure_monitor(&self, pm: Arc<MemoryPressureMonitor>) {
+        let _ = self.pressure_monitor.set(pm);
     }
 }
 
@@ -91,7 +91,7 @@ impl ServiceModule for SystemResourceModule {
 
             "system/pressure" => {
                 // Memory pressure snapshot from the autonomous monitor
-                if let Some(pm) = &self.pressure_monitor {
+                if let Some(pm) = self.pressure_monitor.get() {
                     let snapshot = pm.current();
                     let json = serde_json::to_value(snapshot)
                         .map_err(|e| format!("Failed to serialize pressure: {e}"))?;
@@ -107,8 +107,8 @@ impl ServiceModule for SystemResourceModule {
                 let closed = crate::system_resources::is_memory_gate_closed();
                 let json = serde_json::json!({
                     "closed": closed,
-                    "pressure": self.pressure_monitor.as_ref().map(|pm| pm.pressure()).unwrap_or(0.0),
-                    "rss_bytes": self.pressure_monitor.as_ref().map(|pm| pm.rss_bytes()).unwrap_or(0),
+                    "pressure": self.pressure_monitor.get().map(|pm| pm.pressure()).unwrap_or(0.0),
+                    "rss_bytes": self.pressure_monitor.get().map(|pm| pm.rss_bytes()).unwrap_or(0),
                 });
                 Ok(CommandResult::Json(json))
             }
@@ -116,7 +116,7 @@ impl ServiceModule for SystemResourceModule {
             "system/memory-budget" => {
                 // Budget snapshot — per-consumer allocation vs actual usage.
                 // Human-visible dashboard: priority, budget, usage, headroom, warnings.
-                if let Some(pm) = &self.pressure_monitor {
+                if let Some(pm) = self.pressure_monitor.get() {
                     let snapshot = pm.budget_snapshot();
                     let json = serde_json::to_value(snapshot)
                         .map_err(|e| format!("Failed to serialize budget: {e}"))?;
