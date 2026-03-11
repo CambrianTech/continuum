@@ -113,6 +113,9 @@ pub enum AvatarCommand {
     },
     /// Resize a slot's render target to new dimensions.
     Resize { slot: u8, width: u32, height: u32 },
+    /// Unload all loaded slots that are NOT currently speaking.
+    /// Used by memory pressure system at critical level to reclaim model memory.
+    UnloadIdle,
     /// Shut down the renderer gracefully.
     Shutdown,
 }

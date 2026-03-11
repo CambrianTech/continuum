@@ -105,11 +105,9 @@ impl MemoryReporter for BevyMemoryReporter {
                 self.stats.desired_idle_cadence.store(4, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Critical => {
-                crate::clog_warn!(
-                    "🧠 Bevy shed_load(Critical): unloading idle slots, idle_cadence=8 ({} loaded, {} speaking)",
-                    loaded,
-                    speaking,
-                );
+                // Resize to tiny + max idle cadence. Do NOT unload models here —
+                // reloading costs more memory temporarily and models are the baseline.
+                // UnloadIdle is available for explicit call-end cleanup.
                 for slot in 0..MAX_AVATAR_SLOTS {
                     let _ = self.command_tx.send(AvatarCommand::Resize {
                         slot,
@@ -117,6 +115,11 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: PRESSURE_HEIGHT,
                     });
                 }
+                crate::clog_warn!(
+                    "🧠 Bevy shed_load(Critical): tiny render + idle_cadence=8 ({} loaded, {} speaking)",
+                    loaded,
+                    speaking,
+                );
                 self.stats.desired_idle_cadence.store(8, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Warning => {

@@ -1294,6 +1294,34 @@ fn process_commands(
                     );
                 }
             }
+            AvatarCommand::UnloadIdle => {
+                // Unload all loaded, non-active slots (no model in use).
+                // Active speaking slots stay loaded; idle loaded slots get freed.
+                let loaded_slots: Vec<u8> = registry.slots.iter()
+                    .filter(|(_, s)| s.model_loaded && !s.active)
+                    .map(|(k, _)| *k)
+                    .collect();
+                for slot in &loaded_slots {
+                    if let Some(state) = registry.slots.get_mut(slot) {
+                        if let Some(entity) = state.scene_entity.take() {
+                            commands.entity(entity).despawn();
+                        }
+                        state.model_loaded = false;
+                        state.gltf_handle = None;
+                        state.model_path = None;
+                        if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
+                            camera.is_active = false;
+                        }
+                        gpu_guards.model_guards.remove(slot);
+                        emotion_state.slots.remove(slot);
+                        active_gestures.slots.remove(slot);
+                        cognitive_anim.slots.remove(slot);
+                    }
+                }
+                if !loaded_slots.is_empty() {
+                    clog_info!("🎨 UnloadIdle: freed {} idle model slots", loaded_slots.len());
+                }
+            }
             AvatarCommand::Shutdown => {
                 clog_info!("🎨 Bevy renderer shutting down");
                 return;
