@@ -111,23 +111,27 @@ fn open_memory_gate() {
 #[ts(export, export_to = "../../../shared/generated/system/PressureLevel.ts")]
 #[serde(rename_all = "snake_case")]
 pub enum PressureLevel {
-    /// < 60% used. Normal operation.
+    /// < 80% system memory. Normal operation.
     Normal,
-    /// 60-80% used. Log warnings. Non-critical caches should trim.
+    /// 80-90% system memory. Log warnings. Non-critical caches should trim.
     Warning,
-    /// 80-90% used. Deactivate idle avatar slots. Aggressive cache eviction.
+    /// 90-95% system memory. Deactivate idle avatar slots. Aggressive cache eviction.
     High,
-    /// > 90% used. Emergency: stop non-essential subsystems, refuse new allocations.
+    /// > 95% system memory. Emergency: stop non-essential subsystems, refuse new allocations.
     Critical,
 }
 
 impl PressureLevel {
     fn from_pressure(pressure: f64) -> Self {
-        if pressure >= 0.90 {
+        // Thresholds are SYSTEM-WIDE memory, not process-only.
+        // A 32GB machine with browser + Claude Code + Node typically sits at 70-80%.
+        // Old thresholds (60/80/90) kept the system permanently at warning/high,
+        // throttling all AI personas even when there was no actual danger.
+        if pressure >= 0.95 {
             Self::Critical
-        } else if pressure >= 0.80 {
+        } else if pressure >= 0.90 {
             Self::High
-        } else if pressure >= 0.60 {
+        } else if pressure >= 0.80 {
             Self::Warning
         } else {
             Self::Normal
