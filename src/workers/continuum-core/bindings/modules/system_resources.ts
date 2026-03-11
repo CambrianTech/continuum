@@ -110,7 +110,10 @@ export interface MemoryGateStatus {
 
 export interface PressureSnapshotInfo {
 	level: PressureLevel;
+	/** Raw pressure (0-1) = used/total system memory */
 	pressure: number;
+	/** Normalized pressure (0-1) mapped to action zone: 0=no concern, 1=emergency */
+	normalizedPressure: number;
 	rssBytes: number;
 	consecutiveAtLevel: number;
 }
@@ -189,12 +192,13 @@ export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIP
 		async pressureSnapshot(): Promise<PressureSnapshotInfo> {
 			const response = await this.request({ command: 'system/pressure' });
 			if (!response.success) {
-				return { level: 'normal' as PressureLevel, pressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+				return { level: 'normal' as PressureLevel, pressure: 0, normalizedPressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
 			}
 			const r = response.result as RustPressureSnapshot;
 			return {
 				level: r.level,
 				pressure: r.pressure,
+				normalizedPressure: r.normalized_pressure,
 				rssBytes: Number(r.rss_bytes),
 				consecutiveAtLevel: r.consecutive_at_level,
 			};

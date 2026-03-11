@@ -158,7 +158,17 @@ export class BackpressureService {
    */
   static get pressureSnapshot(): PressureSnapshotInfo {
     this.refreshPressure();
-    return this._pressureSnapshot ?? { level: 'normal' as PressureLevel, pressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+    return this._pressureSnapshot ?? { level: 'normal' as PressureLevel, pressure: 0, normalizedPressure: 0, rssBytes: 0, consecutiveAtLevel: 0 };
+  }
+
+  /**
+   * Normalized pressure (0.0 - 1.0) where 0 = no concern, 1 = emergency.
+   * Maps the action zone (80-95% system memory) to a clean 0-1 range.
+   * Use this instead of raw pressure for proportional responses.
+   */
+  static get normalizedPressure(): number {
+    this.refreshPressure();
+    return this._pressureSnapshot?.normalizedPressure ?? 0;
   }
 
   /**
@@ -189,7 +199,7 @@ export class BackpressureService {
         this._pressureLevel = snapshot.level;
         this._pressureSnapshot = snapshot;
         if (snapshot.level !== 'normal' && snapshot.level !== prev) {
-          console.log(`🚦 BackpressureService: Pressure ${prev} → ${snapshot.level} (pressure=${(snapshot.pressure * 100).toFixed(1)}%, RSS=${Math.round(snapshot.rssBytes / 1024 / 1024)}MB, consecutive=${snapshot.consecutiveAtLevel})`);
+          console.log(`🚦 BackpressureService: Pressure ${prev} → ${snapshot.level} (normalized=${snapshot.normalizedPressure.toFixed(2)}, raw=${(snapshot.pressure * 100).toFixed(1)}%, RSS=${Math.round(snapshot.rssBytes / 1024 / 1024)}MB, consecutive=${snapshot.consecutiveAtLevel})`);
         }
       })
       .catch(() => {

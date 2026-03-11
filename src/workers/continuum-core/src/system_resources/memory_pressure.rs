@@ -121,6 +121,11 @@ pub enum PressureLevel {
     Critical,
 }
 
+/// Threshold constants for pressure level boundaries.
+/// Below FLOOR = Normal (0.0 normalized), above CEILING = Critical (1.0 normalized).
+const PRESSURE_FLOOR: f64 = 0.80;
+const PRESSURE_CEILING: f64 = 0.95;
+
 impl PressureLevel {
     fn from_pressure(pressure: f64) -> Self {
         // Thresholds are SYSTEM-WIDE memory, not process-only.
@@ -136,6 +141,13 @@ impl PressureLevel {
         } else {
             Self::Normal
         }
+    }
+
+    /// Normalize raw pressure (used/total) to 0.0-1.0 action range.
+    /// 0.0 = at or below floor (no concern), 1.0 = at or above ceiling (emergency).
+    /// Linear interpolation between PRESSURE_FLOOR and PRESSURE_CEILING.
+    fn normalize(pressure: f64) -> f64 {
+        ((pressure - PRESSURE_FLOOR) / (PRESSURE_CEILING - PRESSURE_FLOOR)).clamp(0.0, 1.0)
     }
 
     fn to_u8(self) -> u8 {
@@ -322,6 +334,9 @@ pub struct PressureSnapshot {
     pub level: PressureLevel,
     /// Memory pressure ratio (0.0 - 1.0) = used / total
     pub pressure: f64,
+    /// Normalized pressure (0.0 - 1.0) mapped to action zone.
+    /// 0.0 = at/below 80% (no concern), 1.0 = at/above 95% (emergency).
+    pub normalized_pressure: f64,
     /// Process RSS in bytes
     #[ts(type = "number")]
     pub rss_bytes: u64,
@@ -348,6 +363,7 @@ impl Default for PressureSnapshot {
         Self {
             level: PressureLevel::Normal,
             pressure: 0.0,
+            normalized_pressure: 0.0,
             rss_bytes: 0,
             total_bytes: 0,
             available_bytes: 0,
@@ -817,6 +833,7 @@ impl MemoryPressureMonitor {
             let snapshot = PressureSnapshot {
                 level,
                 pressure,
+                normalized_pressure: PressureLevel::normalize(pressure),
                 rss_bytes: rss,
                 total_bytes: total,
                 available_bytes: available,
@@ -886,6 +903,14 @@ mod tests {
         assert_eq!(PressureLevel::from_pressure(0.93), PressureLevel::High);
         assert_eq!(PressureLevel::from_pressure(0.95), PressureLevel::Critical);
         assert_eq!(PressureLevel::from_pressure(0.99), PressureLevel::Critical);
+
+        // Normalized pressure: 0.80 → 0.0, 0.95 → 1.0, linear between
+        let eps = 1e-9;
+        assert!((PressureLevel::normalize(0.50) - 0.0).abs() < eps); // below floor → clamped 0
+        assert!((PressureLevel::normalize(0.80) - 0.0).abs() < eps); // at floor → 0.0
+        assert!((PressureLevel::normalize(0.875) - 0.5).abs() < eps); // midpoint → 0.5
+        assert!((PressureLevel::normalize(0.95) - 1.0).abs() < eps); // at ceiling → 1.0
+        assert!((PressureLevel::normalize(0.99) - 1.0).abs() < eps); // above ceiling → clamped 1
     }
 
     #[test]
