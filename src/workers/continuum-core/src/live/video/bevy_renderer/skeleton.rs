@@ -5,7 +5,8 @@
 
 use bevy::prelude::*;
 
-use super::types::{BoneInfo, BoneRegistry, SlotBones};
+use super::scene::{AvatarBones, BoneInfo};
+use super::types::BoneRegistry;
 use super::vrm;
 use crate::clog_info;
 use crate::clog_warn;
@@ -392,7 +393,7 @@ pub(super) fn discover_upper_body_bones(
 
     bone_registry.slots.insert(
         slot,
-        SlotBones {
+        AvatarBones {
             head,
             neck,
             spine,

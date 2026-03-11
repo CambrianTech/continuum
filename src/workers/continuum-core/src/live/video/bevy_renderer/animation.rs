@@ -35,16 +35,16 @@ pub(super) fn discover_morph_targets(
     children_query: Query<&Children>,
     mut morph_targets: ResMut<SlotMorphTargets>,
 ) {
-    for (slot, state) in &registry.slots {
-        if morph_targets.layouts.contains_key(slot) || !state.active {
+    for (slot, slot_data) in &registry.slots {
+        if morph_targets.layouts.contains_key(slot) || !slot_data.is_active() {
             continue;
         }
-        let scene_entity = match state.scene_entity {
+        let avatar_entity = match slot_data.primary_avatar().and_then(|a| a.entity) {
             Some(e) => e,
             None => continue,
         };
 
-        let morph_entity = match find_morph_entity(scene_entity, &children_query, &morph_query) {
+        let morph_entity = match find_morph_entity(avatar_entity, &children_query, &morph_query) {
             Some(e) => e,
             None => continue,
         };
@@ -78,7 +78,7 @@ pub(super) fn discover_morph_targets(
 
         if !mesh_names.is_empty() {
             discover_from_mesh_names(&mesh_names, &mut layout);
-        } else if let Some(model_path) = &state.model_path {
+        } else if let Some(model_path) = slot_data.primary_avatar().and_then(|a| a.state.model_path.as_deref()) {
             discover_from_vrm_extension(model_path, *slot, &mut layout);
         }
 
@@ -267,11 +267,12 @@ pub(super) fn animate_idle(
     global_transforms: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform, With<AvatarSlotId>>,
 ) {
-    for (slot, state) in &registry.slots {
-        if !state.active {
-            continue;
-        }
-        if let Ok(mut transform) = transforms.get_mut(state.camera_entity) {
+    for (slot, slot_data) in &registry.slots {
+        let cam_entity = match slot_data.camera_entity {
+            Some(e) => e,
+            None => continue,
+        };
+        if let Ok(mut transform) = transforms.get_mut(cam_entity) {
             let t = time.elapsed_secs() + *slot as f32 * 0.7;
             let sway_x = (t * 0.3).sin() * 0.02;
             let sway_y = (t * 0.2).cos() * 0.01;
@@ -333,9 +334,9 @@ pub(super) fn animate_speaking(
     for slot in &expired {
         speech_clips.clips.remove(slot);
         speech_clips.clips_auto_stopped += 1;
-        if let Some(state) = registry.slots.get(slot) {
-            if let Some(scene_entity) = state.scene_entity {
-                commands.entity(scene_entity).remove::<Speaking>();
+        if let Some(slot_data) = registry.slots.get(slot) {
+            if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
+                commands.entity(avatar_entity).remove::<Speaking>();
             }
         }
     }
@@ -556,8 +557,8 @@ pub(super) fn animate_idle_gestures(
 ) {
     let dt = time.delta_secs();
 
-    for (slot, state) in &registry.slots {
-        if !state.active {
+    for (slot, slot_data) in &registry.slots {
+        if !slot_data.is_active() {
             continue;
         }
 
@@ -648,8 +649,8 @@ pub(super) fn animate_breathing(
     bone_registry: Res<BoneRegistry>,
     mut transforms: Query<&mut Transform>,
 ) {
-    for (slot, state) in &registry.slots {
-        if !state.active {
+    for (slot, slot_data) in &registry.slots {
+        if !slot_data.is_active() {
             continue;
         }
 
@@ -685,8 +686,8 @@ pub(super) fn animate_eye_gaze(
 ) {
     let t = time.elapsed_secs();
 
-    for (slot, state) in &registry.slots {
-        if !state.active {
+    for (slot, slot_data) in &registry.slots {
+        if !slot_data.is_active() {
             continue;
         }
 
@@ -1035,15 +1036,19 @@ pub(super) fn manage_render_cadence(
     let frame = schedule.frame_count;
     let cadence = schedule.idle_cadence;
 
-    for (slot, state) in &registry.slots {
-        if !state.active || !state.model_loaded {
+    for (slot, slot_data) in &registry.slots {
+        if !slot_data.is_active() {
             continue;
         }
+        let cam_entity = match slot_data.camera_entity {
+            Some(e) => e,
+            None => continue,
+        };
 
         let is_speaking = speech_clips.clips.contains_key(slot);
         let should_render = is_speaking || (frame % cadence == (*slot as u32 % cadence));
 
-        if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
+        if let Ok(mut camera) = cameras.get_mut(cam_entity) {
             camera.is_active = should_render;
         }
     }

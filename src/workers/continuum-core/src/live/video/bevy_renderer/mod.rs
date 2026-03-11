@@ -23,6 +23,7 @@
 //! - `skeleton` — Bone discovery, T-pose fix, scene tree helpers
 
 mod animation;
+pub(crate) mod scene;
 mod skeleton;
 pub(crate) mod types;
 mod vrm;
@@ -51,8 +52,14 @@ pub use types::{
     AvatarCommand, BevyMemoryStats, Emotion, Gesture, SpeechAnimationClip,
 };
 // Re-export for metal_gpu_convert (crate-internal)
-pub(crate) use types::{FrameNotifiers, SlotDimensions, SlotRegistry};
+pub(crate) use scene::SlotRegistry;
+pub(crate) use types::{FrameNotifiers, SlotDimensions};
 
+use scene::{
+    AvatarObject, SceneObject,
+    build_scene, room_color_from_identity, SceneConfig, SceneLight,
+    LightRig,
+};
 use types::*;
 
 // GpuConvertPlugin runs in RenderSystems::Cleanup (AFTER render pass).
@@ -544,22 +551,24 @@ fn ensure_continuous_readback(
 
     // Re-insert Readback for non-bridge slots that need continuous readback.
     for (entity, slot_id) in &query {
-        if let Some(state) = registry.slots.get(&slot_id.0) {
-            if !state.active || !state.model_loaded {
+        if let Some(slot_data) = registry.slots.get(&slot_id.0) {
+            if !slot_data.is_active() {
                 continue;
             }
             // GPU bridge slots are handled by GpuConvertPlugin — no CPU readback.
             if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
                 continue;
             }
-            if let Ok(camera) = cameras.get(state.camera_entity) {
-                if !camera.is_active {
-                    continue;
+            if let Some(cam_entity) = slot_data.camera_entity {
+                if let Ok(camera) = cameras.get(cam_entity) {
+                    if !camera.is_active {
+                        continue;
+                    }
                 }
             }
             commands
                 .entity(entity)
-                .insert(Readback::texture(state._render_target.clone()));
+                .insert(Readback::texture(slot_data.render_target.clone()));
         }
     }
 }
@@ -568,95 +577,24 @@ fn ensure_continuous_readback(
 // Setup Systems
 // ============================================================================
 
-/// Scene lighting rig — 3-point portrait lighting.
-///
-/// Designed for avatar portrait framing (face + upper body).
-/// All lights are on all avatar layers so every slot gets the same lighting.
-/// To add per-slot backgrounds/props, spawn them on that slot's RenderLayer.
-///
-/// 3-point setup:
-///   Key   — strong from upper-left, primary illumination
-///   Fill  — softer from lower-right, reduces harsh shadows
-///   Rim   — from behind, edge separation against dark backgrounds
-///   Ambient — low baseline so nothing is pure black
-fn spawn_scene_lighting(commands: &mut Commands) {
-    // Ambient — low baseline fill
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 800.0,
-        affects_lightmapped_meshes: false,
-    });
-
-    let all_layers: Vec<usize> = (1..=(MAX_AVATAR_SLOTS as usize)).collect();
-    let layers = RenderLayers::from_layers(&all_layers);
-
-    // Key light — upper-left, strong
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 25000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -0.4,                            // 23° down
-            std::f32::consts::PI + 0.3,      // slightly left of camera
-            0.0,
-        )),
-        layers.clone(),
-        AvatarSceneLight,
-    ));
-
-    // Fill light — lower-right, softer
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 10000.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -0.1,                            // nearly level
-            std::f32::consts::PI - 0.4,      // from the right
-            0.0,
-        )),
-        layers.clone(),
-        AvatarSceneLight,
-    ));
-
-    // Rim light — from behind and above, edge separation
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12000.0,
-            shadows_enabled: false,
-            color: Color::srgb(0.85, 0.9, 1.0), // slightly cool for contrast
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -0.6,                            // 34° down from above
-            0.2,                             // from behind, slightly offset
-            0.0,
-        )),
-        layers,
-        AvatarSceneLight,
-    ));
-}
-
 fn setup_render_slots(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut registry: ResMut<SlotRegistry>,
     _frame_channels: Res<FrameChannels>,
 ) {
-    // Scene lighting — shared across all avatar slots.
-    // Designed for portrait framing: face/upper-body centered.
-    // Add models/backgrounds per-slot by spawning on that slot's RenderLayer.
-    spawn_scene_lighting(&mut commands);
+    // Ambient light — low baseline so nothing is pure black.
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 800.0,
+        affects_lightmapped_meshes: false,
+    });
+
+    // Global 3-point portrait lights — shared across all avatar scenes.
+    // Per-scene lights would exceed Bevy's 10 directional light limit.
+    scene::spawn_global_lights(&mut commands, MAX_AVATAR_SLOTS);
 
     for slot in 0..MAX_AVATAR_SLOTS {
-        let layer = RenderLayers::layer((slot + 1) as usize);
-
         let size = Extent3d {
             width: AVATAR_WIDTH,
             height: AVATAR_HEIGHT,
@@ -675,42 +613,12 @@ fn setup_render_slots(
             | TextureUsages::TEXTURE_BINDING;
         let rt_handle = images.add(rt_image);
 
-        let camera_entity = commands
-            .spawn((
-                Camera3d::default(),
-                Camera {
-                    order: slot as isize,
-                    clear_color: ClearColorConfig::Custom(Color::srgb(0.1, 0.1, 0.18)),
-                    is_active: false,
-                    ..default()
-                },
-                RenderTarget::Image(rt_handle.clone().into()),
-                bevy::core_pipeline::tonemapping::Tonemapping::None,
-                Msaa::Off,
-                Transform::from_xyz(0.0, skeleton::REFERENCE_HEAD_Y, skeleton::REFERENCE_CAMERA_Z)
-                    .looking_at(Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y - 0.02, 0.0), Vec3::Y),
-                layer.clone(),
-                AvatarSlotId(slot),
-            ))
-            .id();
-
-        let slot_id = slot;
         let readback_entity =
-            spawn_readback_entity_opt(&mut commands, rt_handle.clone(), slot_id, false);
+            spawn_readback_entity_opt(&mut commands, rt_handle.clone(), slot, false);
 
         registry.slots.insert(
             slot,
-            SlotState {
-                camera_entity,
-                _readback_entity: readback_entity,
-                scene_entity: None,
-                _render_target: rt_handle.clone(),
-                default_render_target: rt_handle,
-                active: false,
-                model_loaded: false,
-                gltf_handle: None,
-                model_path: None,
-            },
+            scene::RenderSlot::new(slot, readback_entity, rt_handle),
         );
     }
 
@@ -792,10 +700,7 @@ fn signal_ready(flag: Res<ReadyFlag>) {
 }
 
 fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
-    registry
-        .slots
-        .values()
-        .any(|s| s.active && s.model_loaded)
+    registry.slots.values().any(|s| s.is_active())
 }
 
 fn update_memory_stats(
@@ -809,11 +714,11 @@ fn update_memory_stats(
     let mut loaded = 0u8;
     let mut rt_bytes = 0u64;
 
-    for (slot_id, state) in &registry.slots {
-        if state.active {
+    for (slot_id, slot_data) in &registry.slots {
+        if slot_data.scene_root.is_some() {
             active += 1;
         }
-        if state.model_loaded {
+        if slot_data.is_active() {
             loaded += 1;
         }
         let (w, h) = slot_dims
@@ -845,7 +750,7 @@ fn sync_idle_cadence(stats: Res<SharedMemoryStats>, mut schedule: ResMut<RenderS
 }
 
 fn force_light_visibility(
-    mut lights: Query<&mut bevy::camera::visibility::ViewVisibility, With<AvatarSceneLight>>,
+    mut lights: Query<&mut bevy::camera::visibility::ViewVisibility, With<SceneLight>>,
 ) {
     for mut vis in &mut lights {
         vis.set_visible();
@@ -967,22 +872,40 @@ fn process_commands(
                 health.identities.insert(slot, identity.clone());
                 health.model_paths.insert(slot, model_path.clone());
 
-                if let Some(state) = registry.slots.get_mut(&slot) {
+                if let Some(slot_data) = registry.slots.get_mut(&slot) {
                     let layer = RenderLayers::layer((slot + 1) as usize);
 
-                    if let Some(old_entity) = state.scene_entity.take() {
-                        commands.entity(old_entity).despawn();
-                    }
+                    // Teardown any existing scene for this slot.
+                    slot_data.teardown(&mut commands);
                     gpu_guards.model_guards.remove(&slot);
 
-                    state.gltf_handle = None;
-                    state.model_path = Some(model_path.clone());
+                    // Build a new scene (root → camera + lights).
+                    let bg_color = room_color_from_identity(&identity);
+                    let config = SceneConfig {
+                        slot_id: slot,
+                        render_target: slot_data.render_target.clone(),
+                        background_color: bg_color,
+                        layer: layer.clone(),
+                        light_rig: LightRig::Portrait,
+                        camera_transform: None,
+                    };
+                    let (scene_root, camera_entity) = build_scene(&mut commands, &config);
+                    commands.entity(camera_entity).insert(AvatarSlotId(slot));
+                    slot_data.scene_root = Some(scene_root);
+                    slot_data.camera_entity = Some(camera_entity);
 
+                    // Create the avatar object.
                     let load_path = if model_path.ends_with(".vrm") {
                         model_path.replacen(".vrm", ".glb", 1)
                     } else {
                         model_path.clone()
                     };
+
+                    let mut avatar = AvatarObject::new(
+                        model_path.clone(),
+                        display_name.clone(),
+                        identity.clone(),
+                    );
 
                     let asset_path = format!("{}#Scene0", load_path);
                     let scene_handle: Handle<Scene> = asset_server.load(&asset_path);
@@ -1005,8 +928,10 @@ fn process_commands(
                         path: load_path.clone(),
                         logged_final: false,
                     });
-                    state.gltf_handle = Some(gltf_handle);
-                    let scene_entity = commands
+                    avatar.state.gltf_handle = Some(gltf_handle);
+
+                    // Spawn glTF scene as child of the scene root.
+                    let avatar_entity = commands
                         .spawn((
                             SceneRoot(scene_handle),
                             Transform::default(),
@@ -1014,11 +939,13 @@ fn process_commands(
                             AvatarSlotId(slot),
                         ))
                         .id();
+                    commands.entity(scene_root).add_child(avatar_entity);
 
                     let layer_for_observer = layer;
                     let slot_for_observer = slot;
                     let model_path_for_observer = load_path.clone();
-                    commands.entity(scene_entity).observe(
+                    let identity_for_observer = identity.clone();
+                    commands.entity(avatar_entity).observe(
                         move |
                             event: On<SceneInstanceReady>,
                             children_query: Query<&Children>,
@@ -1036,8 +963,10 @@ fn process_commands(
                             skeleton::fix_tpose_arms(root, &children_query, &names, &mut transforms);
                             skeleton::discover_upper_body_bones(root, slot_for_observer, &model_path_for_observer, &children_query, &names, &transforms, &mut bone_registry);
 
-                            if let Some(state) = slot_registry.slots.get_mut(&slot_for_observer) {
-                                state.model_loaded = true;
+                            if let Some(slot_data) = slot_registry.slots.get_mut(&slot_for_observer) {
+                                if let Some(avatar) = slot_data.avatar_mut(&identity_for_observer) {
+                                    avatar.state.model_loaded = true;
+                                }
                             }
 
                             let model_bytes = std::fs::metadata(&model_path_for_observer)
@@ -1062,14 +991,15 @@ fn process_commands(
                                 }
                             }
 
-                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated, readback enabled", slot_for_observer, root, child_count);
+                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants — render layers propagated", slot_for_observer, root, child_count);
                         }
                     );
 
-                    state.scene_entity = Some(scene_entity);
-                    state.active = true;
+                    avatar.entity = Some(avatar_entity);
+                    slot_data.add_object(identity, SceneObject::Avatar(avatar));
 
-                    if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
+                    // Activate camera.
+                    if let Ok(mut camera) = cameras.get_mut(camera_entity) {
                         camera.is_active = true;
                     }
 
@@ -1082,27 +1012,21 @@ fn process_commands(
                 }
             }
             AvatarCommand::Unload { slot } => {
-                if let Some(state) = registry.slots.get_mut(&slot) {
-                    if let Some(entity) = state.scene_entity.take() {
-                        commands.entity(entity).despawn();
+                if let Some(slot_data) = registry.slots.get_mut(&slot) {
+                    // Deactivate camera before teardown.
+                    if let Some(cam) = slot_data.camera_entity {
+                        if let Ok(mut camera) = cameras.get_mut(cam) {
+                            camera.is_active = false;
+                        }
                     }
-                    state.active = false;
-                    state.model_loaded = false;
-                    state.gltf_handle = None;
-                    state.model_path = None;
-                    if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
-                        camera.is_active = false;
-                    }
+                    // Return HD target to pool if assigned.
                     if let Some(hd_target) = hd_pool.assigned.remove(&slot) {
                         hd_pool.available.push(hd_target);
-                        commands
-                            .entity(state.camera_entity)
-                            .insert(RenderTarget::Image(
-                                state.default_render_target.clone().into(),
-                            ));
-                        state._render_target = state.default_render_target.clone();
+                        slot_data.render_target = slot_data.default_render_target.clone();
                         slot_dims.dims.insert(slot, (AVATAR_WIDTH, AVATAR_HEIGHT));
                     }
+                    // Teardown: despawn scene root recursively, clear objects.
+                    slot_data.teardown(&mut commands);
                     gpu_guards.model_guards.remove(&slot);
                     emotion_state.slots.remove(&slot);
                     active_gestures.slots.remove(&slot);
@@ -1111,12 +1035,12 @@ fn process_commands(
                 }
             }
             AvatarCommand::SetSpeaking { slot, speaking } => {
-                if let Some(state) = registry.slots.get(&slot) {
-                    if let Some(scene_entity) = state.scene_entity {
+                if let Some(slot_data) = registry.slots.get(&slot) {
+                    if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
                         if speaking {
-                            commands.entity(scene_entity).insert(Speaking);
+                            commands.entity(avatar_entity).insert(Speaking);
                         } else {
-                            commands.entity(scene_entity).remove::<Speaking>();
+                            commands.entity(avatar_entity).remove::<Speaking>();
                         }
                     }
                 }
@@ -1139,9 +1063,9 @@ fn process_commands(
                         start_time: time.elapsed_secs(),
                     },
                 );
-                if let Some(state) = registry.slots.get(&slot) {
-                    if let Some(scene_entity) = state.scene_entity {
-                        commands.entity(scene_entity).insert(Speaking);
+                if let Some(slot_data) = registry.slots.get(&slot) {
+                    if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
+                        commands.entity(avatar_entity).insert(Speaking);
                     }
                 }
                 speech_clips.clips_started += 1;
@@ -1156,9 +1080,9 @@ fn process_commands(
                         start_time: time.elapsed_secs(),
                     },
                 );
-                if let Some(state) = registry.slots.get(&slot) {
-                    if let Some(scene_entity) = state.scene_entity {
-                        commands.entity(scene_entity).insert(Speaking);
+                if let Some(slot_data) = registry.slots.get(&slot) {
+                    if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
+                        commands.entity(avatar_entity).insert(Speaking);
                     }
                 }
                 speech_clips.clips_started += 1;
@@ -1167,9 +1091,9 @@ fn process_commands(
                 if speech_clips.clips.remove(&slot).is_some() {
                     speech_clips.clips_interrupted += 1;
                 }
-                if let Some(state) = registry.slots.get(&slot) {
-                    if let Some(scene_entity) = state.scene_entity {
-                        commands.entity(scene_entity).remove::<Speaking>();
+                if let Some(slot_data) = registry.slots.get(&slot) {
+                    if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
+                        commands.entity(avatar_entity).remove::<Speaking>();
                     }
                 }
             }
@@ -1233,7 +1157,7 @@ fn process_commands(
                 width,
                 height,
             } => {
-                if let Some(state) = registry.slots.get_mut(&slot) {
+                if let Some(slot_data) = registry.slots.get_mut(&slot) {
                     let is_hd_request = width >= HD_WIDTH && height >= HD_HEIGHT;
                     let currently_hd = hd_pool.assigned.contains_key(&slot);
 
@@ -1258,26 +1182,28 @@ fn process_commands(
                                 slot, AVATAR_WIDTH, AVATAR_HEIGHT, hd_pool.available.len()
                             );
                         }
-                        state.default_render_target.clone()
+                        slot_data.default_render_target.clone()
                     } else if is_hd_request && currently_hd {
                         continue;
                     } else {
-                        state.default_render_target.clone()
+                        slot_data.default_render_target.clone()
                     };
 
-                    commands
-                        .entity(state.camera_entity)
-                        .insert(RenderTarget::Image(new_rt_handle.clone().into()));
+                    if let Some(cam) = slot_data.camera_entity {
+                        commands
+                            .entity(cam)
+                            .insert(RenderTarget::Image(new_rt_handle.clone().into()));
+                    }
 
-                    commands.entity(state._readback_entity).despawn();
+                    commands.entity(slot_data.readback_entity).despawn();
                     // GPU bridge slots: spawn WITHOUT Readback — Metal compute handles frames.
                     // Non-bridge slots: spawn WITH Readback for CPU readback path.
                     let has_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot);
                     let new_readback =
                         spawn_readback_entity_opt(&mut commands, new_rt_handle.clone(), slot, !has_bridge);
 
-                    state._readback_entity = new_readback;
-                    state._render_target = new_rt_handle;
+                    slot_data.readback_entity = new_readback;
+                    slot_data.render_target = new_rt_handle;
 
                     let (effective_w, effective_h) = if is_hd_request {
                         (HD_WIDTH, HD_HEIGHT)
@@ -1295,31 +1221,28 @@ fn process_commands(
                 }
             }
             AvatarCommand::UnloadIdle => {
-                // Unload all loaded, non-active slots (no model in use).
-                // Active speaking slots stay loaded; idle loaded slots get freed.
-                let loaded_slots: Vec<u8> = registry.slots.iter()
-                    .filter(|(_, s)| s.model_loaded && !s.active)
+                // Unload loaded, non-speaking slots to free GPU memory.
+                // Speaking slots stay loaded; idle loaded slots get freed.
+                let idle_slots: Vec<u8> = registry.slots.iter()
+                    .filter(|(_, s)| s.is_active() && !s.is_speaking())
                     .map(|(k, _)| *k)
                     .collect();
-                for slot in &loaded_slots {
-                    if let Some(state) = registry.slots.get_mut(slot) {
-                        if let Some(entity) = state.scene_entity.take() {
-                            commands.entity(entity).despawn();
+                for slot in &idle_slots {
+                    if let Some(slot_data) = registry.slots.get_mut(slot) {
+                        if let Some(cam) = slot_data.camera_entity {
+                            if let Ok(mut camera) = cameras.get_mut(cam) {
+                                camera.is_active = false;
+                            }
                         }
-                        state.model_loaded = false;
-                        state.gltf_handle = None;
-                        state.model_path = None;
-                        if let Ok(mut camera) = cameras.get_mut(state.camera_entity) {
-                            camera.is_active = false;
-                        }
+                        slot_data.teardown(&mut commands);
                         gpu_guards.model_guards.remove(slot);
                         emotion_state.slots.remove(slot);
                         active_gestures.slots.remove(slot);
                         cognitive_anim.slots.remove(slot);
                     }
                 }
-                if !loaded_slots.is_empty() {
-                    clog_info!("🎨 UnloadIdle: freed {} idle model slots", loaded_slots.len());
+                if !idle_slots.is_empty() {
+                    clog_info!("🎨 UnloadIdle: freed {} idle model slots", idle_slots.len());
                 }
             }
             AvatarCommand::Shutdown => {

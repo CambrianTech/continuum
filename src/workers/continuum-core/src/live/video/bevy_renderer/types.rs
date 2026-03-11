@@ -1,7 +1,9 @@
-//! Bevy renderer types — all components, resources, enums, and structs.
+//! Bevy renderer types — components, resources, enums, and structs.
 //!
-//! Centralized type definitions for the avatar rendering system.
-//! Other sub-modules import from here.
+//! Type definitions for the avatar rendering system.
+//! Scene graph types (SceneObject, AvatarState, etc.) live in the `scene` module.
+//! This module holds Bevy ECS Resources that wrap per-slot animation state,
+//! plus public API types (AvatarCommand, Emotion, Gesture).
 
 use bevy::asset::Handle;
 use bevy::gltf::Gltf;
@@ -12,6 +14,9 @@ use std::sync::Arc;
 
 use crate::gpu::memory_manager::GpuAllocationGuard;
 use crate::live::avatar::RgbaFrame;
+
+// Re-export scene types used by animation and skeleton modules.
+pub(super) use super::scene::{AvatarBones, MorphTargetLayout, SlotRegistry};
 
 // =============================================================================
 // Public Types (used by external modules)
@@ -74,7 +79,7 @@ pub enum AvatarCommand {
         slot: u8,
         model_path: String,
         display_name: String,
-        /// Persona identity (user_id) — used for procedural fallback color generation.
+        /// Persona identity (user_id) — used for procedural room color generation.
         identity: String,
     },
     /// Remove the model from a render slot.
@@ -134,7 +139,6 @@ pub struct BevyMemoryStats {
     /// Pending load entries count
     pub pending_loads: std::sync::atomic::AtomicU32,
     /// Desired idle cadence — written by MemoryReporter, read by Bevy system.
-    /// Avoids command channel for this since process_commands is at param limit.
     pub desired_idle_cadence: std::sync::atomic::AtomicU32,
 }
 
@@ -172,35 +176,9 @@ pub(crate) struct FrameNotifiers(pub Vec<Arc<tokio::sync::Notify>>);
 #[derive(Resource)]
 pub(super) struct ReadyFlag(pub Arc<std::sync::atomic::AtomicBool>);
 
-/// Tracks the state of each avatar render slot.
-#[derive(Resource)]
-pub(crate) struct SlotRegistry {
-    pub slots: HashMap<u8, SlotState>,
-}
-
-pub(crate) struct SlotState {
-    pub camera_entity: Entity,
-    pub _readback_entity: Entity,
-    pub scene_entity: Option<Entity>,
-    /// Currently active render target.
-    pub _render_target: Handle<Image>,
-    /// The slot's own low-res render target (640×360).
-    pub default_render_target: Handle<Image>,
-    pub active: bool,
-    /// True once SceneInstanceReady fires — model meshes are spawned.
-    pub model_loaded: bool,
-    /// Handle to the loaded Gltf asset — used for morph target name discovery.
-    pub gltf_handle: Option<Handle<Gltf>>,
-    /// Path to the model file — used for VRM extension parsing.
-    pub model_path: Option<String>,
-}
-
-impl SlotState {
-    /// Get the render target's AssetId for render-world lookups.
-    pub fn render_target_id(&self) -> bevy::asset::AssetId<Image> {
-        self._render_target.id()
-    }
-}
+// =============================================================================
+// ECS Marker Components
+// =============================================================================
 
 /// Component marking which avatar slot an entity belongs to.
 #[derive(Component, Clone, Copy)]
@@ -210,13 +188,13 @@ pub(super) struct AvatarSlotId(#[allow(dead_code)] pub u8);
 #[derive(Component)]
 pub(super) struct ReadbackMarker;
 
-/// Marker for the shared directional light so force_light_visibility can find it.
-#[derive(Component)]
-pub(super) struct AvatarSceneLight;
-
 /// Component marking an avatar that is currently speaking.
 #[derive(Component)]
 pub(super) struct Speaking;
+
+// =============================================================================
+// Operational Resources
+// =============================================================================
 
 /// Tracks slot metadata for health check logging.
 #[derive(Resource, Default)]
@@ -239,32 +217,14 @@ pub(super) struct PendingLoadEntry<T: bevy::asset::Asset> {
     pub logged_final: bool,
 }
 
+// =============================================================================
+// Animation State Resources (per-slot HashMaps)
+// =============================================================================
+
 /// Per-slot morph target layout discovered at scene load time.
 #[derive(Resource, Default)]
 pub(super) struct SlotMorphTargets {
     pub layouts: HashMap<u8, MorphTargetLayout>,
-}
-
-pub(super) struct MorphTargetLayout {
-    /// Entity that has the MorphWeights component (the face mesh)
-    pub mesh_entity: Entity,
-    /// Index of the "aa" / "A" mouth-open morph target
-    pub mouth_open_index: Option<usize>,
-    /// Index of blink morph target (both eyes)
-    pub blink_index: Option<usize>,
-    pub blink_left_index: Option<usize>,
-    pub blink_right_index: Option<usize>,
-    // VRM expression presets
-    pub happy_index: Option<usize>,
-    pub sad_index: Option<usize>,
-    pub angry_index: Option<usize>,
-    pub surprised_index: Option<usize>,
-    pub relaxed_index: Option<usize>,
-    // Eye gaze blend shapes
-    pub look_up: Option<usize>,
-    pub look_down: Option<usize>,
-    pub look_left: Option<usize>,
-    pub look_right: Option<usize>,
 }
 
 /// Per-slot blink animation state.
@@ -281,55 +241,7 @@ pub(super) struct SlotBlinkState {
 /// Per-slot bone registry — tracks discovered skeleton bones for animation.
 #[derive(Resource, Default)]
 pub(super) struct BoneRegistry {
-    pub slots: HashMap<u8, SlotBones>,
-}
-
-pub(super) struct SlotBones {
-    pub head: Option<BoneInfo>,
-    pub neck: Option<BoneInfo>,
-    pub spine: Option<BoneInfo>,
-    pub left_shoulder: Option<BoneInfo>,
-    pub right_shoulder: Option<BoneInfo>,
-    pub left_upper_arm: Option<BoneInfo>,
-    pub right_upper_arm: Option<BoneInfo>,
-    pub left_lower_arm: Option<BoneInfo>,
-    pub right_lower_arm: Option<BoneInfo>,
-    pub left_eye: Option<BoneInfo>,
-    pub right_eye: Option<BoneInfo>,
-    #[allow(dead_code)]
-    pub left_hand: Option<BoneInfo>,
-    #[allow(dead_code)]
-    pub right_hand: Option<BoneInfo>,
-    /// VRM lookAt configuration — eye rotation ranges for bone-based gaze.
-    pub look_at_config: Option<VrmLookAtConfig>,
-}
-
-pub(super) struct BoneInfo {
-    pub entity: Entity,
-    /// Actual local-space rest translation (from skeleton bind pose)
-    pub rest_translation: Vec3,
-    /// Actual local-space rest rotation (from skeleton bind pose)
-    pub rest_rotation: Quat,
-}
-
-/// VRM lookAt configuration for bone-based eye gaze.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct VrmLookAtConfig {
-    pub horizontal_inner_deg: f32,
-    pub horizontal_outer_deg: f32,
-    pub vertical_up_deg: f32,
-    pub vertical_down_deg: f32,
-}
-
-impl Default for VrmLookAtConfig {
-    fn default() -> Self {
-        Self {
-            horizontal_inner_deg: 8.0,
-            horizontal_outer_deg: 8.0,
-            vertical_up_deg: 10.0,
-            vertical_down_deg: 10.0,
-        }
-    }
+    pub slots: HashMap<u8, AvatarBones>,
 }
 
 /// Per-slot idle gesture animation state.
@@ -453,6 +365,10 @@ pub(super) struct SlotCognitiveState {
     pub time_since_reroll: f32,
 }
 
+// =============================================================================
+// Render Infrastructure
+// =============================================================================
+
 /// Render cadence — staggered camera activation for GPU load distribution.
 #[derive(Resource)]
 pub(super) struct RenderSchedule {
@@ -491,7 +407,6 @@ pub(super) struct GpuGuards {
 /// Bevy resource wrapping the shared atomic stats for cross-thread reporting.
 #[derive(Resource)]
 pub(super) struct SharedMemoryStats(pub Arc<BevyMemoryStats>);
-
 
 /// Cached set of currently-speaking slot IDs — computed once per frame,
 /// consumed by multiple animation systems (speaking, expression, idle gestures, eye gaze, cognitive).

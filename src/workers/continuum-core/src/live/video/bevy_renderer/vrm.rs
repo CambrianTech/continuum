@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::types::VrmLookAtConfig;
+use super::scene::VrmLookAtConfig;
 
 // =============================================================================
 // VRM Blend Shape Types

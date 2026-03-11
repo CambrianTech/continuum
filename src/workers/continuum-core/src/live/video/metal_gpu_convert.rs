@@ -386,11 +386,11 @@ fn extract_gpu_bridge_data(
     extracted_slots.slots.clear();
     extracted_dims.dims.clear();
 
-    for (slot, state) in &registry.slots {
-        if state.active && state.model_loaded && gpu_bridge::has_bridge(*slot) {
+    for (slot, slot_data) in &registry.slots {
+        if slot_data.is_active() && gpu_bridge::has_bridge(*slot) {
             extracted_slots
                 .slots
-                .push((*slot, state.render_target_id()));
+                .push((*slot, slot_data.render_target_id()));
             if let Some(&dims) = slot_dims.dims.get(slot) {
                 extracted_dims.dims.insert(*slot, dims);
             }
