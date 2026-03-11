@@ -80,10 +80,10 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
-            // Start with 2 permits: allows modest parallelism while preventing
-            // 4 simultaneous inferences from hitting 40GB peak.
-            // Dynamically reduced to 1 under pressure.
-            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(2)),
+            // Serialize: 1 permit. Only one Candle inference at a time.
+            // Multiple concurrent inferences pile up KV caches + Metal state,
+            // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
+            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -526,29 +526,71 @@ impl AIProviderAdapter for CandleAdapter {
         }
 
         // ── Pressure-aware inference gate ──
-        // Check memory pressure BEFORE spawning expensive blocking work.
-        // This prevents 4 personas from piling into inference simultaneously
-        // and spiking RSS from 22GB to 40GB+.
+        // Hard RSS ceiling: refuse if process is already using too much memory.
+        // This fires immediately — no sustained-pressure wait like the gate.
+        // 24GB ceiling: model weights (~6GB) + Whisper (~1.6GB) + working set (~16GB headroom)
+        const RSS_CEILING_BYTES: u64 = 24 * 1024 * 1024 * 1024;
+        let current_rss = {
+            // Reuse the same task_info approach from ipc/mod.rs
+            #[cfg(target_os = "macos")]
+            {
+                #[repr(C)]
+                struct MachTaskBasicInfo {
+                    virtual_size: u64,
+                    resident_size: u64,
+                    resident_size_max: u64,
+                    user_time_s: u32, user_time_us: u32,
+                    system_time_s: u32, system_time_us: u32,
+                    policy: i32,
+                    suspend_count: i32,
+                }
+                extern "C" {
+                    fn mach_task_self() -> u32;
+                    fn task_info(t: u32, f: u32, i: *mut MachTaskBasicInfo, c: *mut u32) -> i32;
+                }
+                unsafe {
+                    let mut info: MachTaskBasicInfo = std::mem::zeroed();
+                    let mut count = (std::mem::size_of::<MachTaskBasicInfo>() / 4) as u32;
+                    if task_info(mach_task_self(), 20, &mut info, &mut count) == 0 {
+                        info.resident_size
+                    } else { 0 }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            { 0u64 }
+        };
+        if current_rss > RSS_CEILING_BYTES {
+            let rss_gb = current_rss as f64 / (1024.0 * 1024.0 * 1024.0);
+            log.info(&format!(
+                "Inference REFUSED: RSS {:.1}GB exceeds {:.0}GB ceiling — deferring '{}'",
+                rss_gb, RSS_CEILING_BYTES as f64 / (1024.0 * 1024.0 * 1024.0), model_id
+            ));
+            return Err(format!(
+                "Memory too high ({:.1}GB) — deferring local inference. Cloud providers unaffected.",
+                rss_gb
+            ));
+        }
+
+        // Memory gate: refuse if sustained critical pressure (>90% for 6s)
         if crate::system_resources::is_memory_gate_closed() {
             return Err(format!(
-                "Memory pressure critical — refusing Candle inference for '{}'. \
-                 System will retry when pressure eases.",
+                "Memory pressure critical — refusing Candle inference for '{}'.",
                 model_id
             ));
         }
 
-        // Acquire semaphore permit — queues excess requests until a slot frees up.
-        // Capacity 2: allows modest overlap while preventing 4-way pile-up.
-        // Permit held until inference completes (RAII drop after spawn_blocking).
+        // Serialize local inference: only 1 at a time.
+        // The RwLock on backend already serializes execution, but the semaphore
+        // prevents multiple personas from even QUEUING on spawn_blocking threads
+        // (each blocked thread holds stack + Metal state in memory).
         let wait_start = std::time::Instant::now();
         let _permit = self.inference_semaphore.clone().acquire_owned().await
             .map_err(|e| format!("Inference semaphore closed: {e}"))?;
         let wait_ms = wait_start.elapsed().as_millis();
         if wait_ms > 100 {
             log.info(&format!(
-                "Inference gate: waited {}ms for permit (available: {}/2)",
-                wait_ms,
-                self.inference_semaphore.available_permits()
+                "Inference gate: waited {}ms for permit",
+                wait_ms
             ));
         }
 

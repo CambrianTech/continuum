@@ -81,6 +81,11 @@ use crate::{clog_info, clog_warn};
 static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Global atomic pressure level — updated every 2s by the monitor loop.
+/// Any subsystem can read this lock-free to make graduated decisions.
+static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0); // 0=Normal
+
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
 pub fn is_memory_gate_closed() -> bool {
@@ -126,6 +131,24 @@ impl PressureLevel {
             Self::Warning
         } else {
             Self::Normal
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Normal => 0,
+            Self::Warning => 1,
+            Self::High => 2,
+            Self::Critical => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Warning,
+            2 => Self::High,
+            3 => Self::Critical,
+            _ => Self::Normal,
         }
     }
 }
@@ -456,6 +479,15 @@ impl MemoryPressureMonitor {
         monitor
     }
 
+    /// Get current pressure level — lock-free, callable from any thread.
+    /// Updated every 2s by the monitor loop. Subsystems use this to make
+    /// graduated decisions (cache sizes, inference concurrency, render quality).
+    pub fn current_level() -> PressureLevel {
+        PressureLevel::from_u8(
+            CURRENT_PRESSURE_LEVEL.load(std::sync::atomic::Ordering::Relaxed)
+        )
+    }
+
     /// Dynamically add a reporter after startup.
     /// The reporter will be picked up by the monitor loop on its next poll.
     pub fn add_reporter(&self, reporter: Arc<dyn MemoryReporter>) {
@@ -634,6 +666,7 @@ impl MemoryPressureMonitor {
             // Update atomics (lock-free reads from any thread)
             rss_atomic.store(rss, Ordering::Relaxed);
             pressure_atomic.store(pressure.to_bits(), Ordering::Relaxed);
+            CURRENT_PRESSURE_LEVEL.store(level.to_u8(), std::sync::atomic::Ordering::Relaxed);
 
             // --- Hysteresis ---
             if level == prev_level {

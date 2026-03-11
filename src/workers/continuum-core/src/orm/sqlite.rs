@@ -165,11 +165,37 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
     clog_info!("SQLite {} worker ready", role);
 
     let mut query_count = 0u64;
+    let mut last_shrink_check = std::time::Instant::now();
 
     // Process commands until channel closes
     while let Some(cmd) = receiver.blocking_recv() {
         query_count += 1;
         let start = std::time::Instant::now();
+
+        // Adaptive memory management: every 10s, check memory pressure.
+        // Each subsystem responds to the pressure monitor's guidance:
+        //   Normal:   full cache (64MB) for performance
+        //   Warning:  reduced cache (16MB)
+        //   High:     minimal cache (2MB) + shrink_memory
+        //   Critical: minimal cache + shrink_memory (gate also blocks new inference)
+        if last_shrink_check.elapsed().as_secs() >= 10 {
+            last_shrink_check = std::time::Instant::now();
+            let level = crate::system_resources::MemoryPressureMonitor::current_level();
+            match level {
+                crate::system_resources::PressureLevel::Critical |
+                crate::system_resources::PressureLevel::High => {
+                    let _ = conn.execute_batch(
+                        "PRAGMA cache_size=-2048; PRAGMA shrink_memory;"
+                    );
+                }
+                crate::system_resources::PressureLevel::Warning => {
+                    let _ = conn.execute_batch("PRAGMA cache_size=-16384;");
+                }
+                crate::system_resources::PressureLevel::Normal => {
+                    let _ = conn.execute_batch("PRAGMA cache_size=-65536;");
+                }
+            }
+        }
 
         match cmd {
             SqliteCommand::Create { record, reply } => {
