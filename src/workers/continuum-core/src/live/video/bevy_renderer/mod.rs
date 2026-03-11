@@ -58,7 +58,7 @@ pub(crate) use types::{FrameNotifiers, SlotDimensions};
 use scene::{
     AvatarObject, SceneObject,
     build_scene, room_color_from_identity, SceneConfig, SceneLight,
-    LightRig, RoomConfig, RoomStyle,
+    LightRig, RoomConfig, select_scene_for_identity, scene_model_path,
 };
 use types::*;
 
@@ -893,13 +893,16 @@ fn process_commands(
                     let (scene_root, camera_entity) = build_scene(&mut commands, &config);
                     commands.entity(camera_entity).insert(AvatarSlotId(slot));
 
-                    // Attach room environment config — the populate_rooms system
-                    // will spawn geometry (procedural or asset-based) next frame.
+                    // Select room environment from scene catalog (deterministic from identity).
+                    // Same pattern as voice and avatar: identity hash → scene.
+                    let scene_entry = select_scene_for_identity(&identity);
+                    let asset_path = scene_model_path(scene_entry.filename)
+                        .to_string_lossy()
+                        .to_string();
                     commands.entity(scene_root).insert(RoomConfig {
-                        environment_asset: None, // TODO: per-persona glTF rooms
-                        style: RoomStyle::from_identity(&identity),
-                        base_color: bg_color,
+                        asset_path,
                         layer: layer.clone(),
+                        scene_id: scene_entry.id.to_string(),
                     });
 
                     slot_data.scene_root = Some(scene_root);

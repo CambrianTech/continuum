@@ -30,6 +30,5 @@ pub use avatar::*;
 pub use builder::*;
 pub use lighting::*;
 pub use object::*;
-pub use room::{RoomConfig, RoomStyle};
-// Also available from room module: EnvironmentGeometry, RoomPopulated (used as ECS components)
+pub use room::{RoomConfig, select_scene_for_identity, scene_model_path};
 pub use slot::*;
