@@ -23,10 +23,13 @@ mod avatar;
 mod builder;
 mod lighting;
 mod object;
+pub mod room;
 mod slot;
 
 pub use avatar::*;
 pub use builder::*;
 pub use lighting::*;
 pub use object::*;
+pub use room::{RoomConfig, RoomStyle};
+// Also available from room module: EnvironmentGeometry, RoomPopulated (used as ECS components)
 pub use slot::*;

@@ -58,7 +58,7 @@ pub(crate) use types::{FrameNotifiers, SlotDimensions};
 use scene::{
     AvatarObject, SceneObject,
     build_scene, room_color_from_identity, SceneConfig, SceneLight,
-    LightRig,
+    LightRig, RoomConfig, RoomStyle,
 };
 use types::*;
 
@@ -390,6 +390,7 @@ fn run_bevy_app(
                 monitor_load_states,
                 update_memory_stats,
                 sync_idle_cadence,
+                scene::room::populate_rooms,
             ),
         )
         .add_systems(
@@ -891,6 +892,16 @@ fn process_commands(
                     };
                     let (scene_root, camera_entity) = build_scene(&mut commands, &config);
                     commands.entity(camera_entity).insert(AvatarSlotId(slot));
+
+                    // Attach room environment config — the populate_rooms system
+                    // will spawn geometry (procedural or asset-based) next frame.
+                    commands.entity(scene_root).insert(RoomConfig {
+                        environment_asset: None, // TODO: per-persona glTF rooms
+                        style: RoomStyle::from_identity(&identity),
+                        base_color: bg_color,
+                        layer: layer.clone(),
+                    });
+
                     slot_data.scene_root = Some(scene_root);
                     slot_data.camera_entity = Some(camera_entity);
 
