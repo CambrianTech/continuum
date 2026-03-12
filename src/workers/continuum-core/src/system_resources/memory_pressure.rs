@@ -35,10 +35,10 @@
 //!
 //! ## Isolation Guarantees
 //!
-//! - Own tokio task: `tokio::spawn` with `catch_unwind` wrapper
+//! - Own tokio task: `tokio::spawn` with `catch_unwind` wrapping the entire future
 //! - No shared locks with Bevy, IPC, or audio systems
-//! - Reporters called with timeout: 100ms max per reporter
-//! - Reporter panics caught via `catch_unwind`, reporter disabled after 3 consecutive panics
+//! - Each reporter called via `spawn_blocking` + 100ms timeout (catches hangs and panics)
+//! - Reporter panics/timeouts quarantine the reporter after 3 consecutive failures
 //! - Watch channel for consumers: readers never block the monitor
 //!
 //! ## Usage
@@ -121,6 +121,11 @@ pub enum PressureLevel {
     Critical,
 }
 
+/// Threshold constants for pressure level boundaries.
+/// Below FLOOR = Normal (0.0 normalized), above CEILING = Critical (1.0 normalized).
+const PRESSURE_FLOOR: f64 = 0.80;
+const PRESSURE_CEILING: f64 = 0.95;
+
 impl PressureLevel {
     fn from_pressure(pressure: f64) -> Self {
         // Thresholds are SYSTEM-WIDE memory, not process-only.
@@ -136,6 +141,13 @@ impl PressureLevel {
         } else {
             Self::Normal
         }
+    }
+
+    /// Normalize raw pressure (used/total) to 0.0-1.0 action range.
+    /// 0.0 = at or below floor (no concern), 1.0 = at or above ceiling (emergency).
+    /// Linear interpolation between PRESSURE_FLOOR and PRESSURE_CEILING.
+    fn normalize(pressure: f64) -> f64 {
+        ((pressure - PRESSURE_FLOOR) / (PRESSURE_CEILING - PRESSURE_FLOOR)).clamp(0.0, 1.0)
     }
 
     fn to_u8(self) -> u8 {
@@ -322,6 +334,9 @@ pub struct PressureSnapshot {
     pub level: PressureLevel,
     /// Memory pressure ratio (0.0 - 1.0) = used / total
     pub pressure: f64,
+    /// Normalized pressure (0.0 - 1.0) mapped to action zone.
+    /// 0.0 = at/below 80% (no concern), 1.0 = at/above 95% (emergency).
+    pub normalized_pressure: f64,
     /// Process RSS in bytes
     #[ts(type = "number")]
     pub rss_bytes: u64,
@@ -348,6 +363,7 @@ impl Default for PressureSnapshot {
         Self {
             level: PressureLevel::Normal,
             pressure: 0.0,
+            normalized_pressure: 0.0,
             rss_bytes: 0,
             total_bytes: 0,
             available_bytes: 0,
@@ -366,7 +382,8 @@ impl Default for PressureSnapshot {
 /// Trait for modules that can report their memory usage and respond to pressure.
 ///
 /// Implementations MUST be fast (< 100ms) and MUST NOT block.
-/// The monitor calls these from its own task with a timeout guard.
+/// Each reporter call runs on a blocking thread pool with a 100ms timeout.
+/// Panics are caught; reporters are quarantined after 3 consecutive failures.
 ///
 /// ## Budget Declaration
 ///
@@ -471,14 +488,32 @@ impl MemoryPressureMonitor {
             })
             .collect();
 
-        // Spawn the monitor loop on its own task
-        tokio::spawn(Self::run_loop(
-            monitor.tx.clone(),
-            current_rss,
-            current_pressure,
-            entries,
-            reporter_rx,
-        ));
+        // Spawn the monitor loop on its own task.
+        // AssertUnwindSafe + catch_unwind wraps the entire future so that if
+        // run_loop panics from non-reporter code, we log and exit cleanly
+        // rather than poisoning the tokio runtime.
+        {
+            use futures::FutureExt;
+            let tx = monitor.tx.clone();
+            tokio::spawn(async move {
+                let result = AssertUnwindSafe(Self::run_loop(
+                    tx,
+                    current_rss,
+                    current_pressure,
+                    entries,
+                    reporter_rx,
+                ))
+                .catch_unwind()
+                .await;
+
+                if let Err(e) = result {
+                    clog_warn!(
+                        "🧠 MemoryPressureMonitor task panicked (monitor stopped): {:?}",
+                        e
+                    );
+                }
+            });
+        }
 
         monitor
     }
@@ -680,7 +715,8 @@ impl MemoryPressureMonitor {
                 prev_level = level;
             }
 
-            // --- Collect module reports (with panic isolation) ---
+            // --- Collect module reports (with panic isolation + timeout) ---
+            let reporter_timeout = Duration::from_millis(100);
             let mut module_reports = Vec::with_capacity(reporters.len());
             for entry in &mut reporters {
                 if entry.disabled {
@@ -688,15 +724,21 @@ impl MemoryPressureMonitor {
                 }
 
                 let reporter = entry.reporter.clone();
-                let result =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()));
+                // Run each reporter on the blocking pool with a 100ms timeout.
+                // catch_unwind inside spawn_blocking catches panics; timeout
+                // catches reporters that block or hang.
+                let handle = tokio::task::spawn_blocking(move || {
+                    std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()))
+                });
 
-                match result {
-                    Ok(report) => {
+                match tokio::time::timeout(reporter_timeout, handle).await {
+                    Ok(Ok(Ok(report))) => {
+                        // spawn_blocking succeeded, no panic, got report
                         entry.consecutive_panics = 0;
                         module_reports.push(report);
                     }
-                    Err(e) => {
+                    Ok(Ok(Err(e))) => {
+                        // Reporter panicked
                         entry.consecutive_panics += 1;
                         let name = entry.reporter.name();
                         clog_warn!(
@@ -708,6 +750,32 @@ impl MemoryPressureMonitor {
                         if entry.consecutive_panics >= 3 {
                             clog_warn!(
                                 "🧠 MemoryReporter '{}' quarantined after 3 panics",
+                                name
+                            );
+                            entry.disabled = true;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        // spawn_blocking JoinError (task cancelled or panicked at runtime level)
+                        let name = entry.reporter.name();
+                        clog_warn!(
+                            "🧠 MemoryReporter '{}' spawn_blocking failed: {:?}",
+                            name,
+                            e
+                        );
+                    }
+                    Err(_elapsed) => {
+                        // Timed out — reporter took longer than 100ms
+                        entry.consecutive_panics += 1;
+                        let name = entry.reporter.name();
+                        clog_warn!(
+                            "🧠 MemoryReporter '{}' timed out (>100ms) ({}/3)",
+                            name,
+                            entry.consecutive_panics,
+                        );
+                        if entry.consecutive_panics >= 3 {
+                            clog_warn!(
+                                "🧠 MemoryReporter '{}' quarantined after 3 failures",
                                 name
                             );
                             entry.disabled = true;
@@ -765,6 +833,7 @@ impl MemoryPressureMonitor {
             let snapshot = PressureSnapshot {
                 level,
                 pressure,
+                normalized_pressure: PressureLevel::normalize(pressure),
                 rss_bytes: rss,
                 total_bytes: total,
                 available_bytes: available,
@@ -825,10 +894,23 @@ mod tests {
 
     #[test]
     fn test_pressure_levels() {
+        // Thresholds: Normal < 0.80, Warning 0.80-0.90, High 0.90-0.95, Critical >= 0.95
         assert_eq!(PressureLevel::from_pressure(0.3), PressureLevel::Normal);
-        assert_eq!(PressureLevel::from_pressure(0.65), PressureLevel::Warning);
-        assert_eq!(PressureLevel::from_pressure(0.85), PressureLevel::High);
+        assert_eq!(PressureLevel::from_pressure(0.79), PressureLevel::Normal);
+        assert_eq!(PressureLevel::from_pressure(0.80), PressureLevel::Warning);
+        assert_eq!(PressureLevel::from_pressure(0.85), PressureLevel::Warning);
+        assert_eq!(PressureLevel::from_pressure(0.90), PressureLevel::High);
+        assert_eq!(PressureLevel::from_pressure(0.93), PressureLevel::High);
         assert_eq!(PressureLevel::from_pressure(0.95), PressureLevel::Critical);
+        assert_eq!(PressureLevel::from_pressure(0.99), PressureLevel::Critical);
+
+        // Normalized pressure: 0.80 → 0.0, 0.95 → 1.0, linear between
+        let eps = 1e-9;
+        assert!((PressureLevel::normalize(0.50) - 0.0).abs() < eps); // below floor → clamped 0
+        assert!((PressureLevel::normalize(0.80) - 0.0).abs() < eps); // at floor → 0.0
+        assert!((PressureLevel::normalize(0.875) - 0.5).abs() < eps); // midpoint → 0.5
+        assert!((PressureLevel::normalize(0.95) - 1.0).abs() < eps); // at ceiling → 1.0
+        assert!((PressureLevel::normalize(0.99) - 1.0).abs() < eps); // above ceiling → clamped 1
     }
 
     #[test]

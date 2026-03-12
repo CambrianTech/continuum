@@ -75,9 +75,11 @@ npm version patch --no-git-tag-version --silent 2>/dev/null || true
 # followed by parallel TS+VRM is actually FASTER than the broken parallel approach.
 echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 
-# Voice models download in parallel with cargo build (no cargo contention)
+# Voice models download + scene generation in parallel with cargo build
 (
   ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /'
+  # Generate scene environment GLBs (idempotent — skips existing)
+  npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /'
 ) &
 MODELS_PID=$!
 

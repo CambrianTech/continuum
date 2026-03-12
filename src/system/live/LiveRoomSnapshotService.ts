@@ -173,9 +173,9 @@ export class LiveRoomSnapshotService {
 
       // Write snapshot to disk — do NOT hold base64 in RAM
       const snapshotDir = LiveRoomSnapshotService.SNAPSHOT_DIR;
-      fs.mkdirSync(snapshotDir, { recursive: true });
+      await fs.promises.mkdir(snapshotDir, { recursive: true });
       const snapshotPath = path.join(snapshotDir, `room-${roomId.slice(0, 8)}.jpg`);
-      fs.writeFileSync(snapshotPath, Buffer.from(base64, 'base64'));
+      await fs.promises.writeFile(snapshotPath, Buffer.from(base64, 'base64'));
 
       // Describe via vision model
       const visionService = VisionDescriptionService.getInstance();

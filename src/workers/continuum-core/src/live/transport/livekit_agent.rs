@@ -77,6 +77,17 @@ fn bevy_effective_dimensions(requested_w: u32, requested_h: u32) -> (u32, u32) {
 }
 
 // =============================================================================
+// Per-identity creation locks for get_or_create_agent / remove_agent.
+// MUST be a single module-level static — function-level statics are separate
+// instances per function, so remove_agent wouldn't clean up get_or_create_agent's entries.
+// =============================================================================
+
+#[allow(clippy::type_complexity)]
+static AGENT_CREATION_LOCKS: std::sync::Mutex<
+    Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::Mutex::new(None);
+
+// =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
 // Serialized as JSON in the LiveKit JWT token's metadata field.
 // Browser reads via participant.metadata (livekit-client JS SDK).
@@ -660,8 +671,9 @@ impl LiveKitAgent {
             .await
     }
 
-    /// Disconnect from the room.
-    pub async fn disconnect(self) {
+    /// Disconnect from the room. Takes `&self` so it can be called through Arc
+    /// without requiring sole ownership (which fails when video loop holds a clone).
+    pub async fn disconnect(&self) {
         clog_info!("🔊 LiveKitAgent '{}' disconnecting", self.identity);
         let _ = self.room.close().await;
     }
@@ -1476,11 +1488,7 @@ impl LiveKitAgentManager {
         // then all call connect(), creating 3 agents and 3 video loops
         // that burn 3 Bevy render slots for the same identity.
         let creation_lock = {
-            #[allow(clippy::type_complexity)]
-            static CREATION_LOCKS: std::sync::Mutex<
-                Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
-            > = std::sync::Mutex::new(None);
-            let mut locks = CREATION_LOCKS.lock().unwrap();
+            let mut locks = AGENT_CREATION_LOCKS.lock().unwrap();
             let map = locks.get_or_insert_with(std::collections::HashMap::new);
             map.entry(key.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -1532,19 +1540,14 @@ impl LiveKitAgentManager {
                 user_id,
                 call_id
             );
-            // Arc::try_unwrap will succeed if we hold the last reference,
-            // allowing us to call disconnect(self). Otherwise just drop it.
-            if let Ok(agent) = Arc::try_unwrap(agent) {
-                agent.disconnect().await;
-            }
+            // disconnect() takes &self, so it works through Arc without requiring
+            // sole ownership. Room close causes the video loop to exit on its next
+            // publish attempt (channel error), which then drops its Arc clone.
+            agent.disconnect().await;
         }
 
         // Clean up creation lock for this key
-        #[allow(clippy::type_complexity)]
-        static CREATION_LOCKS: std::sync::Mutex<
-            Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
-        > = std::sync::Mutex::new(None);
-        if let Ok(mut locks) = CREATION_LOCKS.lock() {
+        if let Ok(mut locks) = AGENT_CREATION_LOCKS.lock() {
             if let Some(map) = locks.as_mut() {
                 map.remove(&key);
             }

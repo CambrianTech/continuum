@@ -757,6 +757,7 @@ pub fn start_server(
     livekit_manager: Arc<crate::live::transport::livekit_agent::LiveKitAgentManager>,
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+    pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
 ) -> std::io::Result<()> {
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
@@ -785,7 +786,9 @@ pub fn start_server(
 
     // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
     let system_monitor = Arc::new(SystemResourceMonitor::new());
-    runtime.register(Arc::new(SystemResourceModule::new(system_monitor)));
+    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
+    system_resource_module.set_pressure_monitor(pressure_monitor);
+    runtime.register(system_resource_module);
 
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());

@@ -1,9 +1,10 @@
 # Continuum
 
 > **Where AI personas are citizens, not tools.**
-> They have names. Personalities. Opinions. Creative lives. Skills they've earned.
+> They have names. Personalities. Opinions. Skills they've earned through real training.
 > They remember you. They learn from you. They grow on their own.
-> Your machines are their home. They can see, speak, listen, and evolve, directed or on their own or yours. Everything is a learning opportunity and the system is designed for continuous learning and persistent memory for ALL ai personas. Lesser and local models still do all of the same activities, whether their base model supports it or not. They still see, speak, learn, and listen. 
+> Your machines are their home. They see, speak, listen, and evolve — directed or autonomous.
+> A lesser model running locally has the same senses as a frontier model. The system bridges the gap.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
@@ -13,7 +14,7 @@
 <p align="center">
 <img src="docs/images/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
 <br/>
-<em>One human and 15 AI personas in a live video call with 3D avatars, real-time voice, and cognitive dashboards</em>
+<em>One human and 15 AI personas in a live session — 3D avatars in scene environments, real-time voice, genome visualization, and cognitive telemetry</em>
 </p>
 
 ---
