@@ -223,25 +223,41 @@ export class DevelopmentCodeSmellServerCommand extends CommandBase<DevelopmentCo
     scanDir: string,
     srcDir: string,
     pattern: string,
-    glob: string,
+    globPattern: string,
     excludes: string[]
   ): CodeSmellLocation[] {
-    const excludeArgs = excludes.map(e => `--glob='!${e}'`).join(' ');
-    const cmd = `rg -n --glob='${glob}' ${excludeArgs} '${pattern}' '${scanDir}' 2>/dev/null || true`;
-    try {
-      const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-      return output.trim().split('\n').filter(Boolean).map(line => {
-        const match = line.match(/^(.+?):(\d+):(.*)$/);
-        if (!match) return { file: line };
-        return {
-          file: path.relative(srcDir, match[1]),
-          line: parseInt(match[2], 10),
-          text: match[3].trim(),
-        };
-      });
-    } catch {
-      return [];
-    }
+    const regex = new RegExp(pattern);
+    const ext = globPattern.replace('*', '');
+    const locations: CodeSmellLocation[] = [];
+
+    const walk = (dir: string) => {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (excludes.includes(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name.endsWith(ext)) {
+          // Check if filename matches any exclude pattern (e.g. 'Types.ts')
+          if (excludes.some(ex => entry.name.endsWith(ex))) continue;
+          try {
+            const content = fs.readFileSync(full, 'utf-8');
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              if (regex.test(lines[i])) {
+                locations.push({
+                  file: path.relative(srcDir, full),
+                  line: i + 1,
+                  text: lines[i].trim(),
+                });
+              }
+            }
+          } catch { /* skip unreadable */ }
+        }
+      }
+    };
+    walk(scanDir);
+    return locations;
   }
 
   private autoFix(srcDir: string): number {
