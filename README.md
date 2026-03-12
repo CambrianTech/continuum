@@ -12,9 +12,9 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
 <p align="center">
-<img src="docs/images/live-session-avatars.png" alt="Live session — human + 15 AI personas with 3D avatars in a video call" width="100%"/>
+<img src="docs/images/live-session-avatars.png" alt="Live session — Joel with 14 AI personas in a video call, 3D avatars, genome bars, and cognitive telemetry" width="100%"/>
 <br/>
-<em>One human and 15 AI personas in a live session — 3D avatars in scene environments, real-time voice, genome visualization, and cognitive telemetry</em>
+<em>One human and 14 AI personas in a live video call — 3D avatars, real-time voice, LoRA genome visualization, and cognitive telemetry meters (INT/NRG/ATN)</em>
 </p>
 
 ---
