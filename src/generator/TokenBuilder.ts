@@ -208,18 +208,7 @@ export class TokenBuilder {
 
     return optionalParams
       .map(param => {
-        // Generate sensible defaults based on type
-        let defaultValue: string;
-        if (param.type === 'boolean') {
-          defaultValue = 'false';
-        } else if (param.type === 'number') {
-          defaultValue = '0';
-        } else if (param.type === 'string') {
-          defaultValue = "''";
-        } else {
-          defaultValue = 'undefined';
-        }
-
+        const defaultValue = this.defaultValueForType(param.type);
         return `  ${param.name}: data.${param.name} ?? ${defaultValue},`;
       })
       .join('\n');
@@ -256,20 +245,26 @@ export class TokenBuilder {
     return results
       .map(result => {
         // Generate sensible defaults based on type
-        let defaultValue: string;
-        if (result.type === 'boolean') {
-          defaultValue = 'false';
-        } else if (result.type === 'number') {
-          defaultValue = '0';
-        } else if (result.type === 'string') {
-          defaultValue = "''";
-        } else {
-          defaultValue = 'undefined';
-        }
-
+        const defaultValue = this.defaultValueForType(result.type);
         return `  ${result.name}: data.${result.name} ?? ${defaultValue},`;
       })
       .join('\n');
+  }
+
+  /**
+   * Get a sensible default value for a TypeScript type.
+   * Used by factory function generators to avoid `undefined` for required fields.
+   */
+  static defaultValueForType(type: string): string {
+    if (type === 'boolean') return 'false';
+    if (type === 'number') return '0';
+    if (type === 'string') return "''";
+    if (type === 'object') return '{}';
+    if (type.endsWith('[]') || type.startsWith('Array<')) return '[]';
+    if (type.startsWith('Record<')) return '{}';
+    if (type.startsWith("'") || type.includes(" | '")) return "'' as " + type;
+    // For complex types, use empty object cast — better than undefined
+    return '{} as ' + type;
   }
 
   /**

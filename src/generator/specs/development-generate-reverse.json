@@ -1,0 +1,47 @@
+{
+  "name": "development/generate/reverse",
+  "description": "Reverse-engineer a CommandSpec from an existing hand-written command. Reads the Types file, extracts params, results, command name, and description, then outputs a spec JSON that can be saved to generator/specs/ and used to regenerate the command under generator control.",
+  "params": [
+    {
+      "name": "commandDir",
+      "type": "string",
+      "description": "Path to the command directory (e.g., 'commands/ping', 'commands/data/create')"
+    },
+    {
+      "name": "save",
+      "type": "boolean",
+      "optional": true,
+      "description": "Save the generated spec directly to generator/specs/<name>.json instead of returning it"
+    }
+  ],
+  "results": [
+    {
+      "name": "spec",
+      "type": "object",
+      "description": "The reverse-engineered CommandSpec JSON"
+    },
+    {
+      "name": "savedTo",
+      "type": "string",
+      "description": "File path where spec was saved (only when save=true)"
+    },
+    {
+      "name": "warnings",
+      "type": "string[]",
+      "description": "Warnings about fields that need manual review (e.g., description guessed from comments)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Reverse-engineer the ping command",
+      "command": "./jtag development/generate/reverse --commandDir=commands/ping",
+      "expectedResult": "{ spec: { name: 'ping', params: [...], results: [...] }, warnings: ['description extracted from comment'] }"
+    },
+    {
+      "description": "Reverse-engineer and save to specs directory",
+      "command": "./jtag development/generate/reverse --commandDir=commands/data/create --save=true",
+      "expectedResult": "{ spec: { name: 'data/create', ... }, savedTo: 'generator/specs/data-create.json' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

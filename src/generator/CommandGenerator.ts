@@ -117,50 +117,6 @@ export class CommandGenerator extends ModuleGenerator<CommandSpec> {
   }
 }
 
-/**
- * Generate example CommandSpec JSON template
- */
-function generateExampleSpec(): CommandSpec {
-  return {
-    name: 'example/command',
-    description: 'Brief description of what this command does',
-    params: [
-      {
-        name: 'requiredParam',
-        type: 'string',
-        optional: false,
-        description: 'A required parameter'
-      },
-      {
-        name: 'optionalParam',
-        type: 'number',
-        optional: true,
-        description: 'An optional parameter'
-      }
-    ],
-    results: [
-      {
-        name: 'outputValue',
-        type: 'string',
-        description: 'The result value returned by the command'
-      },
-      {
-        name: 'timestamp',
-        type: 'number',
-        description: 'Unix timestamp of execution'
-      }
-    ],
-    examples: [
-      {
-        description: 'Example usage with required parameter',
-        command: './jtag example/command --requiredParam="value"',
-        expectedResult: '{ outputValue: "processed", timestamp: 1234567890 }'
-      }
-    ],
-    accessLevel: 'ai-safe'
-  };
-}
-
 // CLI execution - only runs when invoked directly as CommandGenerator, not when bundled
 // The __filename check ensures this doesn't run in bundled contexts
 const isDirectExecution = require.main === module &&
@@ -169,58 +125,82 @@ const isDirectExecution = require.main === module &&
   !process.argv[1]?.includes('cli.js');
 
 if (isDirectExecution) {
-  const args = process.argv.slice(2);
+  // Lazy imports for CLI-only dependencies (not needed when imported as library)
+  const { HelpFormatter } = require('./HelpFormatter');
+  const { CommandAuditor } = require('./CommandAuditor');
 
+  const args = process.argv.slice(2);
+  const rootPath = path.join(__dirname, '..');
+
+  // ── No arguments → short help ─────────────────────────────────
   if (args.length === 0) {
-    console.error('Usage: npx tsx CommandGenerator.ts <spec-file.json> [output-dir] [--force] [--backup]');
-    console.error('   or: npx tsx CommandGenerator.ts --test');
-    console.error('   or: npx tsx CommandGenerator.ts --template');
-    console.error('\nFlags:');
-    console.error('  --force   Overwrite existing command');
-    console.error('  --backup  Create backup before overwriting (requires --force)');
+    console.error(HelpFormatter.shortHelp());
     process.exit(1);
   }
 
-  const rootPath = path.join(__dirname, '..');
-  const generator = new CommandGenerator(rootPath);
+  const firstArg = args[0];
 
-  if (args[0] === '--template') {
-    // Template mode: output example JSON
-    const exampleSpec = generateExampleSpec();
-    console.log(JSON.stringify(exampleSpec, null, 2));
-    console.log('\n📝 Copy the JSON above, edit it, save to a file, then run:');
-    console.log('   npx tsx CommandGenerator.ts <your-spec-file.json>');
+  // ── --help or --help=<topic> ──────────────────────────────────
+  if (firstArg === '--help') {
+    console.log(HelpFormatter.fullHelp());
     process.exit(0);
-  } else if (args[0] === '--test') {
-    // Test mode: generate a sample command
+  }
+  if (firstArg.startsWith('--help=')) {
+    const topic = firstArg.split('=')[1];
+    console.log(HelpFormatter.topicHelp(topic));
+    process.exit(0);
+  }
+
+  // ── --template or --template=<type> ───────────────────────────
+  if (firstArg === '--template' || firstArg.startsWith('--template=')) {
+    const type = firstArg.includes('=') ? firstArg.split('=')[1] : 'standard';
+    const spec = HelpFormatter.templateSpec(type);
+    console.log(JSON.stringify(spec, null, 2));
+    console.log(`\n  Save to a file, then generate:`);
+    console.log(`  npx tsx generator/CommandGenerator.ts generator/specs/<name>.json`);
+    console.log(`\n  Template types: minimal, standard (default), rust-ipc, browser-only`);
+    process.exit(0);
+  }
+
+  // ── --audit ───────────────────────────────────────────────────
+  if (firstArg === '--audit') {
+    const auditor = new CommandAuditor(rootPath);
+    auditor.printAudit();
+    process.exit(0);
+  }
+
+  // ── --reverse <command-dir> ───────────────────────────────────
+  if (firstArg === '--reverse') {
+    const commandDir = args[1];
+    if (!commandDir) {
+      console.error('Usage: npx tsx generator/CommandGenerator.ts --reverse <command-dir>');
+      console.error('Example: npx tsx generator/CommandGenerator.ts --reverse commands/ping');
+      process.exit(1);
+    }
+    const auditor = new CommandAuditor(rootPath);
+    const spec = auditor.reverseEngineer(commandDir);
+    if (spec) {
+      console.log(JSON.stringify(spec, null, 2));
+      console.log(`\n  Save to generator/specs/<name>.json, then regenerate:`);
+      console.log(`  npx tsx generator/CommandGenerator.ts generator/specs/<name>.json --force`);
+    } else {
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // ── --test (smoke test) ───────────────────────────────────────
+  if (firstArg === '--test') {
     const testSpec: CommandSpec = {
       name: 'test/sample',
       description: 'Sample test command for generator testing',
       params: [
-        {
-          name: 'message',
-          type: 'string',
-          optional: false,
-          description: 'Message to process'
-        },
-        {
-          name: 'verbose',
-          type: 'boolean',
-          optional: true,
-          description: 'Enable verbose output'
-        }
+        { name: 'message', type: 'string', optional: false, description: 'Message to process' },
+        { name: 'verbose', type: 'boolean', optional: true, description: 'Enable verbose output' }
       ],
       results: [
-        {
-          name: 'processedMessage',
-          type: 'string',
-          description: 'The processed message'
-        },
-        {
-          name: 'timestamp',
-          type: 'number',
-          description: 'Unix timestamp of processing'
-        }
+        { name: 'processedMessage', type: 'string', description: 'The processed message' },
+        { name: 'timestamp', type: 'number', description: 'Unix timestamp of processing' }
       ],
       examples: [
         {
@@ -236,34 +216,43 @@ if (isDirectExecution) {
       accessLevel: 'ai-safe'
     };
 
-    console.log('🧪 Test Mode: Generating sample command...\n');
+    console.log('  Test Mode: Generating sample command...\n');
+    const generator = new CommandGenerator(rootPath);
     generator.generate(testSpec, '/tmp/generated-command-test');
-  } else {
-    // Normal mode: generate from spec file
-    const specFile = args[0];
-
-    // Parse flags and args
-    const flagArgs = args.filter(a => a.startsWith('--'));
-    const nonFlagArgs = args.filter(a => !a.startsWith('--'));
-
-    const options = {
-      force: flagArgs.includes('--force'),
-      backup: flagArgs.includes('--backup')
-    };
-
-    const outputDir = nonFlagArgs[1]; // Second non-flag arg is output dir
-
-    // Validate backup requires force
-    if (options.backup && !options.force) {
-      console.error('❌ ERROR: --backup requires --force');
-      process.exit(1);
-    }
-
-    const fs = require('fs');
-    const specJson = fs.readFileSync(specFile, 'utf-8');
-    const spec: CommandSpec = JSON.parse(specJson);
-    generator.generate(spec, outputDir, options);
+    process.exit(0);
   }
+
+  // ── Normal mode: generate from spec file ──────────────────────
+  const specFile = firstArg;
+
+  // Parse flags and positional args
+  const flagArgs = args.filter(a => a.startsWith('--'));
+  const nonFlagArgs = args.filter(a => !a.startsWith('--'));
+
+  const options = {
+    force: flagArgs.includes('--force'),
+    backup: flagArgs.includes('--backup')
+  };
+
+  const outputDir = nonFlagArgs[1]; // Second non-flag arg is output dir
+
+  // Validate backup requires force
+  if (options.backup && !options.force) {
+    console.error('  --backup requires --force');
+    process.exit(1);
+  }
+
+  const fs = require('fs');
+  if (!fs.existsSync(specFile)) {
+    console.error(`Spec file not found: ${specFile}`);
+    console.error(`\nRun --help for usage, or --template to generate a starter spec.`);
+    process.exit(1);
+  }
+
+  const specJson = fs.readFileSync(specFile, 'utf-8');
+  const spec: CommandSpec = JSON.parse(specJson);
+  const generator = new CommandGenerator(rootPath);
+  generator.generate(spec, outputDir, options);
 }
 
 export { CommandSpec };

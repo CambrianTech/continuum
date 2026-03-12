@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/development/generate/help",
+  "version": "1.0.0",
+  "description": "Display comprehensive generator documentation including spec reference, example specs, type reference, access levels, workflow guide, and audit information. This is the primary documentation entry point for AI agents learning to use the generator.",
+  "main": "server/DevelopmentGenerateHelpServerCommand.ts",
+  "types": "shared/DevelopmentGenerateHelpTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DevelopmentGenerateHelpIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "development/generate/help"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

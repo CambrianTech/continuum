@@ -9,6 +9,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GenerateParams, GenerateResult } from '../shared/GenerateTypes';
 import { createGenerateResultFromParams } from '../shared/GenerateTypes';
 import { CommandGenerator } from '@generator/CommandGenerator';
+import { HelpFormatter } from '@generator/HelpFormatter';
 import type { CommandSpec } from '@generator/CommandNaming';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -23,9 +24,10 @@ export class GenerateServerCommand extends CommandBase<GenerateParams, GenerateR
     try {
       console.log('🔧 SERVER: Executing Generate', params);
 
-      // If template mode, return example CommandSpec
+      // If template mode, return example CommandSpec from HelpFormatter
       if (params.template) {
-        const templateSpec = this.generateExampleSpec();
+        const templateType = ((params as unknown as Record<string, unknown>).templateType as string) || 'standard';
+        const templateSpec = HelpFormatter.templateSpec(templateType);
         return createGenerateResultFromParams(params, {
           success: true,
           templateSpec,
@@ -125,57 +127,4 @@ export class GenerateServerCommand extends CommandBase<GenerateParams, GenerateR
     }
   }
 
-  /**
-   * Generate example CommandSpec template
-   */
-  private generateExampleSpec(): CommandSpec {
-    return {
-      name: 'echo',
-      description: 'Echo back a message with timestamp and context information',
-      params: [
-        {
-          name: 'message',
-          type: 'string',
-          optional: false,
-          description: 'The message to echo back'
-        },
-        {
-          name: 'uppercase',
-          type: 'boolean',
-          optional: true,
-          description: 'Convert message to uppercase'
-        }
-      ],
-      results: [
-        {
-          name: 'echoedMessage',
-          type: 'string',
-          description: 'The echoed message (possibly transformed)'
-        },
-        {
-          name: 'timestamp',
-          type: 'number',
-          description: 'Unix timestamp when command executed'
-        },
-        {
-          name: 'sessionId',
-          type: 'string',
-          description: 'Session ID that executed the command'
-        }
-      ],
-      examples: [
-        {
-          description: 'Basic echo',
-          command: './jtag echo --message="Hello World"',
-          expectedResult: '{ echoedMessage: "Hello World", timestamp: 1733520000000, sessionId: "..." }'
-        },
-        {
-          description: 'Echo with uppercase transformation',
-          command: './jtag echo --message="Hello World" --uppercase=true',
-          expectedResult: '{ echoedMessage: "HELLO WORLD", timestamp: 1733520000000, sessionId: "..." }'
-        }
-      ],
-      accessLevel: 'ai-safe'
-    };
-  }
 }

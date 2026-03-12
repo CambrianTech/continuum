@@ -1,0 +1,47 @@
+{
+  "name": "development/generate/help",
+  "description": "Display comprehensive generator documentation including spec reference, example specs, type reference, access levels, workflow guide, and audit information. This is the primary documentation entry point for AI agents learning to use the generator.",
+  "params": [
+    {
+      "name": "topic",
+      "type": "'full' | 'spec' | 'types' | 'examples' | 'audit' | 'workflow'",
+      "optional": true,
+      "description": "Specific help topic. Omit for full documentation."
+    }
+  ],
+  "results": [
+    {
+      "name": "content",
+      "type": "string",
+      "description": "Formatted help text with spec reference, examples, and workflow guidance"
+    },
+    {
+      "name": "topic",
+      "type": "string",
+      "description": "The topic that was displayed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Full generator documentation",
+      "command": "./jtag development/generate/help",
+      "expectedResult": "{ content: '╔═══...374 lines of help...', topic: 'full' }"
+    },
+    {
+      "description": "Just the spec reference",
+      "command": "./jtag development/generate/help --topic=spec",
+      "expectedResult": "{ content: 'SPEC REFERENCE (CommandSpec):\\n...', topic: 'spec' }"
+    },
+    {
+      "description": "Example specs to copy from",
+      "command": "./jtag development/generate/help --topic=examples",
+      "expectedResult": "{ content: 'EXAMPLE SPECS:\\n...minimal, standard, rust-ipc, browser-only...', topic: 'examples' }"
+    },
+    {
+      "description": "Type reference for writing params/results",
+      "command": "./jtag development/generate/help --topic=types",
+      "expectedResult": "{ content: 'TYPE REFERENCE:\\n...string, number, boolean, string[]...', topic: 'types' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}
