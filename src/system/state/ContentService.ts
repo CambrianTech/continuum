@@ -26,6 +26,7 @@ import type { StateContentSwitchParams, StateContentSwitchResult } from '../../c
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import { getRecipeLayoutService } from '../recipes/browser/RecipeLayoutService';
 import { buildContentPath } from '../../widgets/main/shared/ContentTypeRegistry';
+import { ContentLifecycle } from './ContentLifecycle';
 
 import { ContentOpen } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { StateContentSwitch } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
@@ -184,43 +185,66 @@ class ContentServiceImpl {
 
   /**
    * Close a tab
+   *
+   * Lifecycle order (like iOS viewWillDisappear/viewDidDisappear):
+   *   1. willClose() — widgets save state, disconnect streams, notify server
+   *   2. Tab removed from state
+   *   3. didClose() — local cleanup, cache clearing
+   *   4. Persist to server
    */
   close(tabId: string): void {
     const wasCurrentItem = contentState.currentItemId === tabId;
     const closingItem = contentState.openItems.find(i => i.id === tabId);
+    if (!closingItem) return;
 
-    // 0. Notify widgets that this tab is being closed (not just deactivated)
-    if (closingItem) {
-      Events.emit('content:tab:closed', {
-        tabId,
-        contentType: closingItem.type,
-        entityId: closingItem.entityId
-      });
-    }
+    const entityId = closingItem.entityId;
 
-    // 1. Remove from contentState
-    contentState.removeItem(tabId as UUID);
+    // 0. Legacy event (for widgets not yet migrated to ContentLifecycle)
+    Events.emit('content:tab:closed', {
+      tabId,
+      contentType: closingItem.type,
+      entityId
+    });
 
-    // 2. If was current, switch to new current
-    const newCurrent = contentState.currentItem;
-    if (wasCurrentItem && newCurrent) {
-      const resolved = newCurrent.entityId && newCurrent.uniqueId && newCurrent.title ? {
-        id: newCurrent.entityId as UUID,
-        uniqueId: newCurrent.uniqueId,
-        displayName: newCurrent.title
-      } : undefined;
-      pageState.setContent(newCurrent.type, newCurrent.entityId, resolved);
-      this.updateUrl(newCurrent.type, newCurrent.uniqueId || newCurrent.entityId);
-    }
+    // 1. willClose — give widgets a chance to clean up BEFORE tab removal.
+    //    Fire-and-forget: don't block UI on slow cleanup (5s timeout per widget).
+    //    The lifecycle registry handles concurrency and error isolation.
+    const afterWillClose = () => {
+      // 2. Remove from contentState
+      contentState.removeItem(tabId as UUID);
 
-    // 3. Persist to server (background)
-    if (this.currentUserId) {
-      StateContentClose.execute({
-        userId: this.currentUserId,
-        contentItemId: tabId as UUID
-      }).catch(err => {
-        console.error('ContentService: Failed to persist close:', err);
-      });
+      // 3. didClose — synchronous local cleanup
+      if (entityId) {
+        ContentLifecycle.notifyDidClose(entityId);
+      }
+
+      // 4. If was current, switch to new current
+      const newCurrent = contentState.currentItem;
+      if (wasCurrentItem && newCurrent) {
+        const resolved = newCurrent.entityId && newCurrent.uniqueId && newCurrent.title ? {
+          id: newCurrent.entityId as UUID,
+          uniqueId: newCurrent.uniqueId,
+          displayName: newCurrent.title
+        } : undefined;
+        pageState.setContent(newCurrent.type, newCurrent.entityId, resolved);
+        this.updateUrl(newCurrent.type, newCurrent.uniqueId || newCurrent.entityId);
+      }
+
+      // 5. Persist to server (background)
+      if (this.currentUserId) {
+        StateContentClose.execute({
+          userId: this.currentUserId,
+          contentItemId: tabId as UUID
+        }).catch(err => {
+          console.error('ContentService: Failed to persist close:', err);
+        });
+      }
+    };
+
+    if (entityId && ContentLifecycle.hasParticipants(entityId)) {
+      ContentLifecycle.notifyWillClose(entityId).then(afterWillClose);
+    } else {
+      afterWillClose();
     }
   }
 

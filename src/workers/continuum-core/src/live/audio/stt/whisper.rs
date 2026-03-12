@@ -306,12 +306,11 @@ impl SpeechToText for WhisperSTT {
         samples: Vec<f32>,
         language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        // Memory gate: refuse transcription when system is under critical pressure.
-        // Each whisper state allocates ~407MB — don't pile on when OOM is imminent.
+        // Log pressure warning but proceed — refusing STT kills voice conversations.
+        // Whisper model is already loaded (~407MB) so transcription doesn't allocate
+        // significantly more. The model weights are resident regardless.
         if crate::system_resources::is_memory_gate_closed() {
-            return Err(STTError::InferenceFailed(
-                "Memory gate closed — skipping transcription to prevent OOM".into(),
-            ));
+            clog_warn!("⚠️ Whisper: proceeding with transcription under memory pressure");
         }
 
         let rt = WHISPER_RT
