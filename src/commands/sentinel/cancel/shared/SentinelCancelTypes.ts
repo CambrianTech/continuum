@@ -8,6 +8,8 @@
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 export interface SentinelCancelParams extends CommandParams {
   /** Specific handle to cancel */
@@ -33,3 +35,17 @@ export interface SentinelCancelResult extends CommandResult {
   totalCancelled: number;
   totalAttempted: number;
 }
+
+/**
+ * SentinelCancel — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelCancel } from '...shared/SentinelCancelTypes';
+ *   const result = await SentinelCancel.execute({ ... });
+ */
+export const SentinelCancel = {
+  execute(params: CommandInput<SentinelCancelParams>): Promise<SentinelCancelResult> {
+    return Commands.execute<SentinelCancelParams, SentinelCancelResult>('sentinel/cancel', params as Partial<SentinelCancelParams>);
+  },
+  commandName: 'sentinel/cancel' as const,
+} as const;

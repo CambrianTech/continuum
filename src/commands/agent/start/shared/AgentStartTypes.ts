@@ -9,6 +9,8 @@
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 export interface AgentStartParams extends CommandParams {
   /** The task for the agent to accomplish */
@@ -29,3 +31,17 @@ export interface AgentStartResult extends CommandResult {
   /** Error if failed */
   error?: string;
 }
+
+/**
+ * AgentStart — Type-safe command executor
+ *
+ * Usage:
+ *   import { AgentStart } from '...shared/AgentStartTypes';
+ *   const result = await AgentStart.execute({ ... });
+ */
+export const AgentStart = {
+  execute(params: CommandInput<AgentStartParams>): Promise<AgentStartResult> {
+    return Commands.execute<AgentStartParams, AgentStartResult>('agent/start', params as Partial<AgentStartParams>);
+  },
+  commandName: 'agent/start' as const,
+} as const;

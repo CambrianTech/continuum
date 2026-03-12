@@ -3,6 +3,8 @@
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Get the last N lines of a sentinel log stream, like Unix tail.
@@ -29,3 +31,17 @@ export interface SentinelLogsTailResult extends CommandResult {
   lineCount: number;
   error?: string;
 }
+
+/**
+ * SentinelLogsTail — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelLogsTail } from '...shared/SentinelLogsTailTypes';
+ *   const result = await SentinelLogsTail.execute({ ... });
+ */
+export const SentinelLogsTail = {
+  execute(params: CommandInput<SentinelLogsTailParams>): Promise<SentinelLogsTailResult> {
+    return Commands.execute<SentinelLogsTailParams, SentinelLogsTailResult>('sentinel/logs/tail', params as Partial<SentinelLogsTailParams>);
+  },
+  commandName: 'sentinel/logs/tail' as const,
+} as const;

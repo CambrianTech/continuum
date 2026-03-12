@@ -10,6 +10,8 @@
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 // ========== genome/activate ==========
 
@@ -194,3 +196,17 @@ export const createGenomeUnregisterResultFromParams = (
   unregistered: false,
   ...differences
 });
+
+/**
+ * Genome — Type-safe command executor
+ *
+ * Usage:
+ *   import { Genome } from '...shared/GenomeTypes';
+ *   const result = await Genome.execute({ ... });
+ */
+export const Genome = {
+  execute(params: CommandInput<GenomeActivateParams>): Promise<GenomeActivateResult> {
+    return Commands.execute<GenomeActivateParams, GenomeActivateResult>('genome', params as Partial<GenomeActivateParams>);
+  },
+  commandName: 'genome' as const,
+} as const;

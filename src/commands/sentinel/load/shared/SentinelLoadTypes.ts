@@ -4,6 +4,8 @@
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelEntity, SentinelExecutionResult } from '../../../../system/sentinel';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Load and optionally run a saved sentinel definition by ID.
@@ -41,3 +43,17 @@ export interface SentinelLoadResult extends CommandResult {
   /** Error message if failed */
   error?: string;
 }
+
+/**
+ * SentinelLoad — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelLoad } from '...shared/SentinelLoadTypes';
+ *   const result = await SentinelLoad.execute({ ... });
+ */
+export const SentinelLoad = {
+  execute(params: CommandInput<SentinelLoadParams>): Promise<SentinelLoadResult> {
+    return Commands.execute<SentinelLoadParams, SentinelLoadResult>('sentinel/load', params as Partial<SentinelLoadParams>);
+  },
+  commandName: 'sentinel/load' as const,
+} as const;

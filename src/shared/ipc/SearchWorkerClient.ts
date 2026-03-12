@@ -1,11 +1,12 @@
 /**
  * SearchWorkerClient - TypeScript client for SearchModule in continuum-core
  *
- * Uses Commands.execute() to call search/execute, search/list, etc.
+ * Uses typed command accessors to call search/execute, search/list, etc.
  * Migrated from standalone search worker to continuum-core.
  */
 
-import { Commands } from '../../system/core/shared/Commands';
+import { SearchList } from '@commands/search/list/shared/SearchListTypes';
+import { SearchExecute } from '@commands/search/execute/shared/SearchExecuteTypes';
 
 // ============================================================================
 // Types (matches continuum-core SearchModule)
@@ -44,8 +45,8 @@ export class SearchWorkerClient {
    * List available algorithms
    */
   async listAlgorithms(): Promise<string[]> {
-    const result = await Commands.execute('search/list', {}) as any;
-    return result.algorithms || ['bow', 'bm25'];
+    const result = await SearchList.execute({});
+    return (result as unknown as { algorithms?: string[] }).algorithms || ['bow', 'bm25'];
   }
 
   /**
@@ -57,17 +58,19 @@ export class SearchWorkerClient {
     corpus: string[],
     params?: Record<string, unknown>
   ): Promise<ScoredItem[]> {
-    const result = await Commands.execute('search/execute', {
+    const result = await SearchExecute.execute({
       algorithm,
       query,
       corpus,
       params
-    } as any) as unknown as SearchOutput;
+    });
+
+    const output = result as unknown as SearchOutput;
 
     // Return scored items sorted by rank
-    return result.ranked_indices.map((index) => ({
+    return output.ranked_indices.map((index) => ({
       index,
-      score: result.scores[index],
+      score: output.scores[index],
       content: corpus[index]
     }));
   }

@@ -30,6 +30,8 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Generic base parameters for all file operations
@@ -87,3 +89,17 @@ export abstract class FileCommand<
 
   abstract execute(params: TParams): Promise<TResult>;
 }
+
+/**
+ * File — Type-safe command executor
+ *
+ * Usage:
+ *   import { File } from '...shared/FileTypes';
+ *   const result = await File.execute({ ... });
+ */
+export const File = {
+  execute(params: CommandInput<FileParams>): Promise<FileResult> {
+    return Commands.execute<FileParams, FileResult>('file', params as Partial<FileParams>);
+  },
+  commandName: 'file' as const,
+} as const;

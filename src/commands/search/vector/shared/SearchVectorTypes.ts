@@ -4,6 +4,8 @@
  */
 
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 export interface SearchVectorParams extends CommandParams {
   queryVector: number[];
@@ -17,3 +19,17 @@ export interface SearchVectorResult extends CommandResult {
   scores: number[];
   rankedIndices: number[];
 }
+
+/**
+ * SearchVector — Type-safe command executor
+ *
+ * Usage:
+ *   import { SearchVector } from '...shared/SearchVectorTypes';
+ *   const result = await SearchVector.execute({ ... });
+ */
+export const SearchVector = {
+  execute(params: CommandInput<SearchVectorParams>): Promise<SearchVectorResult> {
+    return Commands.execute<SearchVectorParams, SearchVectorResult>('search/vector', params as Partial<SearchVectorParams>);
+  },
+  commandName: 'search/vector' as const,
+} as const;

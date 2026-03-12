@@ -8,6 +8,8 @@
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 export interface AgentStatusParams extends CommandParams {
   /** Agent handle from agent/start */
@@ -26,3 +28,17 @@ export interface AgentStatusResult extends CommandResult {
   /** Recent events/logs */
   events?: string[];
 }
+
+/**
+ * AgentStatus — Type-safe command executor
+ *
+ * Usage:
+ *   import { AgentStatus } from '...shared/AgentStatusTypes';
+ *   const result = await AgentStatus.execute({ ... });
+ */
+export const AgentStatus = {
+  execute(params: CommandInput<AgentStatusParams>): Promise<AgentStatusResult> {
+    return Commands.execute<AgentStatusParams, AgentStatusResult>('agent/status', params as Partial<AgentStatusParams>);
+  },
+  commandName: 'agent/status' as const,
+} as const;

@@ -21,6 +21,7 @@
  */
 
 import { Commands } from '../core/shared/Commands';
+import { VoiceSnapshotRoom } from '@commands/voice/snapshot-room/shared/VoiceSnapshotRoomTypes';
 import { VisionDescriptionService } from '../vision/VisionDescriptionService';
 import { Logger } from '../core/logging/Logger';
 import { createHash } from 'crypto';
@@ -238,11 +239,7 @@ export class LiveRoomSnapshotService {
    */
   private async captureFromRust(): Promise<string | null> {
     try {
-      const result = await Commands.execute('voice/snapshot-room', {}) as unknown as {
-        success: boolean;
-        base64?: string;
-        error?: string;
-      };
+      const result = await VoiceSnapshotRoom.execute({});
 
       if (!result.success || !result.base64) {
         log.debug(`Rust snapshot: ${result.error ?? 'no base64 data'}`);

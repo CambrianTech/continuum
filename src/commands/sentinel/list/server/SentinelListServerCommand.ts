@@ -7,9 +7,9 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import { Commands } from '../../../../system/core/shared/Commands';
 import type { SentinelListParams, SentinelListResult, SentinelSummary } from '../shared/SentinelListTypes';
 import type { SentinelEntity } from '../../../../system/sentinel';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
 
 const COLLECTION = 'sentinels';
 
@@ -23,7 +23,7 @@ export class SentinelListServerCommand extends CommandBase<SentinelListParams, S
     const limit = listParams.limit || 20;
 
     // Build filter
-    const filter: Record<string, any> = {};
+    const filter: Record<string, unknown> = {};
 
     if (listParams.type) {
       filter['definition.type'] = listParams.type;
@@ -42,12 +42,12 @@ export class SentinelListServerCommand extends CommandBase<SentinelListParams, S
     }
 
     try {
-      const result = await Commands.execute('data/list', {
+      const result = await DataList.execute({
         collection: COLLECTION,
         filter: Object.keys(filter).length > 0 ? filter : undefined,
         limit,
         orderBy: [{ field: 'updatedAt', direction: 'desc' }],
-      } as any) as any;
+      });
 
       if (!result.success) {
         return transformPayload(params, {
@@ -57,7 +57,7 @@ export class SentinelListServerCommand extends CommandBase<SentinelListParams, S
         });
       }
 
-      const entities = (result.items || result.data || []) as SentinelEntity[];
+      const entities = result.items as unknown as SentinelEntity[];
       const summaries: SentinelSummary[] = entities.map(entity => {
         const lastExecution = entity.executions[0];
         return {
@@ -79,9 +79,9 @@ export class SentinelListServerCommand extends CommandBase<SentinelListParams, S
       return transformPayload(params, {
         success: true,
         sentinels: summaries,
-        total: result.count || result.total || summaries.length,
+        total: result.count || summaries.length,
       });
-    } catch (error: any) {
+    } catch {
       return transformPayload(params, {
         success: false,
         sentinels: [],

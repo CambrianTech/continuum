@@ -24,6 +24,9 @@ import type {
 } from '../../../genome/fine-tuning/shared/FineTuningTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import { Commands } from '../../../core/shared/Commands';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
+import { AiAgent } from '@commands/ai/agent/shared/AiAgentTypes';
 import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -276,12 +279,12 @@ export class PersonaTaskExecutor {
         continue;
       }
       try {
-        await Commands.execute('data/create', {
+        await DataCreate.execute({
           dbHandle: memoryDbHandle,
           collection: COLLECTIONS.MEMORIES,
-          data: memory,
+          data: memory as unknown as Record<string, unknown>,
           suppressEvents: true,
-        } as any);
+        });
         created++;
         this.log(`💾 ${this.displayName}: Stored memory (importance=${score.toFixed(2)}): "${text.slice(0, 50)}..."`);
       } catch (error) {
@@ -715,11 +718,11 @@ export class PersonaTaskExecutor {
         ? `Review the code in this workspace. ${task.description}`
         : `Implement the following in this workspace. ${task.description}`;
 
-      await Commands.execute('ai/agent', {
+      await AiAgent.execute({
         prompt: agentPrompt,
         userId: this.personaId,
-        maxTurns: 10,
-      } as any);
+        maxIterations: 10,
+      });
       this.log(`💻 ${this.displayName}: Coding work completed, triggering build verification`);
     } catch (error) {
       this.log(`⚠️ ${this.displayName}: Coding agent error: ${error}`);
@@ -756,11 +759,11 @@ export class PersonaTaskExecutor {
     try {
       const fixPrompt = `The build failed with the following error. Fix it:\n\n${errorPreview}`;
 
-      await Commands.execute('ai/agent', {
+      await AiAgent.execute({
         prompt: fixPrompt,
         userId: this.personaId,
-        maxTurns: 5,
-      } as any);
+        maxIterations: 5,
+      });
       this.log(`💻 ${this.displayName}: Error fix applied, re-triggering build`);
     } catch (error) {
       this.log(`⚠️ ${this.displayName}: Fix agent error: ${error}`);
@@ -1141,25 +1144,25 @@ export class PersonaTaskExecutor {
     timestamp: any;
   }>> {
     try {
-      const filter: Record<string, any> = {
+      const filter: Record<string, unknown> = {
         personaId: this.personaId,
         type: 'sentinel',
       };
 
       const dbHandle = CognitionLogger.getDbHandle(this.personaId);
-      const result = await Commands.execute('data/list', {
+      const result = await DataList.execute({
         dbHandle,
         collection: 'memories',
         filter,
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: 10,
-      } as any) as any;
+      });
 
-      const memories = (result?.items ?? []) as Array<{
+      const memories = (result?.items ?? []) as unknown as Array<{
         content: string;
-        context: Record<string, any>;
+        context: Record<string, unknown>;
         importance: number;
-        timestamp: any;
+        timestamp: string;
         tags: string[];
       }>;
 
