@@ -61,7 +61,7 @@ export interface AIGenerateResult extends JTAGPayload {
   readonly preview?: boolean;
   readonly request?: TextGenerationRequest; // Exact request that would be sent
   readonly formatted?: string;              // Human-readable preview
-  readonly ragContext?: any;                // Full RAG context for debugging
+  readonly ragContext?: Record<string, unknown>; // Full RAG context for debugging (typed as RAGContext at runtime)
 
   readonly timestamp: string;
   readonly error?: string;

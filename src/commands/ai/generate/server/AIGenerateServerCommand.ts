@@ -13,6 +13,7 @@ import type { AIGenerateParams, AIGenerateResult } from '../shared/AIGenerateTyp
 import { paramsToRequest, responseToResult, createErrorResult, createAIGenerateResultFromParams } from '../shared/AIGenerateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
+import type { RAGContext } from '../../../../system/rag/shared/RAGTypes';
 import { ChatRAGBuilder } from '../../../../system/rag/builders/ChatRAGBuilder';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
@@ -33,7 +34,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
   async execute(params: AIGenerateParams): Promise<AIGenerateResult> {
     try {
       let request: TextGenerationRequest;
-      let ragContext: any = undefined;
+      let ragContext: RAGContext | undefined = undefined;
 
       // Mode selection: RAG context building OR direct messages
       if (params.roomId) {
@@ -147,7 +148,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           preview: true,
           request,
           formatted,
-          ragContext
+          ragContext: ragContext as unknown as Record<string, unknown>
         });
       }
 

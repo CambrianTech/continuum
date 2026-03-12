@@ -19,7 +19,7 @@ export interface HtmlInspectorResult extends CommandResult {
   error?: string;
   html: string;
   text: string;
-  structure: any;
+  structure: Record<string, unknown>;
   tagName?: string;
   className?: string;
   id?: string;

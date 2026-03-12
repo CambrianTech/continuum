@@ -12,6 +12,7 @@ import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
+import type { UniversalFilter } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';  // Only for getDescriptionFieldForCollection
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import { resolveDbHandle } from '../../../../daemons/data-daemon/shared/ORMConfig';
@@ -82,9 +83,11 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       let result;
 
       // Build queries
+      // CLI/JSON input arrives as Record<string, unknown>, cast to UniversalFilter at ORM boundary
+      const filter = params.filter as UniversalFilter | undefined;
       const countQuery = {
         collection,
-        filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
+        filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
 
       // Push column projection down to Rust when fields are specified —
@@ -95,7 +98,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
       const storageQuery = {
         collection,
-        filter: params.filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
+        filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
         sort: params.orderBy?.map(order => ({
           field: order.field,
           direction: order.direction

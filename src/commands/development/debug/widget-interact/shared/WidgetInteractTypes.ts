@@ -30,11 +30,11 @@ export interface WidgetInteractParams extends CommandParams {
 
   // For method calls
   methodName?: string;                      // Method to call on widget
-  methodArgs?: any[];                       // Arguments for method call
+  methodArgs?: unknown[];                    // Arguments for method call
 
   // For property setting
   propertyName?: string;                    // Property to set
-  propertyValue?: any;                      // Value to set
+  propertyValue?: unknown;                  // Value to set
 
   // Screenshots
   screenshotBefore?: boolean;               // Take screenshot before action
@@ -55,7 +55,7 @@ export interface WidgetInteractResult extends CommandResult {
   // Action results
   actionResult?: {
     executed: boolean;
-    returnValue?: any;
+    returnValue?: unknown;
     error?: string;
   };
 
