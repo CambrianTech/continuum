@@ -52,7 +52,42 @@ Each item is a self-contained feature branch. Priority order is the implementati
 
 **Approach**: File-by-file, starting with public APIs (JTAGClient, DataDaemon, Commands), then adapters, then widgets.
 
-### 1B. God Class Decomposition
+### 1B. Command Infrastructure — Single Source of Truth
+
+**The command generator creates correct patterns automatically.** Any command that bypasses the generator is a pattern violation waiting to be copied by contributors.
+
+**Current state**:
+- 273 commands have proper static accessors — good
+- **39 commands missing static accessors** (agent/*, sentinel/*, state/*, search/*, voice snapshots)
+- **266 commands hand-written** without generator specs (only 47 have specs)
+- **23 `any` casts** in command Types files
+- **5 raw `Commands.execute()` calls** with string literals + `as any` (SearchWorkerClient, DiagnosticsWidget, LogViewerWidget)
+- **52 uses of `object`/`Record<string, unknown>`/`unknown`** in command types
+
+**Priority targets** (most-used commands missing proper types):
+| Command Group | Issues | Impact |
+|---------------|--------|--------|
+| sentinel/* (8 commands) | No static accessors, `as any` casts throughout | High — sentinel is core infrastructure |
+| agent/* (4 commands) | No static accessors | High — agentic loop depends on these |
+| state/* (3 commands) | No static accessors | Medium — state management API |
+| search/* (4 commands) | No static accessors, untyped results | Medium — RAG depends on these |
+| data/* (create/read/update/query-next) | No static accessors | High — most-used commands in system |
+
+**Approach**:
+1. Create generator specs for the 39 missing-accessor commands
+2. Regenerate with `npx tsx generator/CommandGenerator.ts generator/specs/<name>.json`
+3. Replace all raw `Commands.execute('name', ...)` calls with typed `CommandName.execute()`
+4. Eliminate `any` from command Types files
+5. Replace `object`/`Record<string, unknown>` with proper interfaces
+
+**Enforcement** (prevent regression):
+- **Precommit hook or CI check**: Any new directory under `commands/` MUST have a matching spec in `generator/specs/`. Script scans `commands/*/` dirs, checks for corresponding `.json` spec. Fails if missing.
+- **Generator improvement**: Review and modernize the generator during this phase — ensure it produces the latest patterns (path aliases, proper generics, static accessor with `commandName` const).
+- **Lint rule**: Flag raw `Commands.execute('string-literal', ...)` calls — must use typed accessor.
+
+**Validation**: `grep -r "Commands.execute(" --include="*.ts" | grep -v "CommandName\."` should return zero results when done.
+
+### 1C. God Class Decomposition
 
 **Current**:
 | File | Lines | Should Be |
@@ -68,7 +103,7 @@ Each item is a self-contained feature branch. Priority order is the implementati
 
 **Approach**: Extract using the existing module pattern (PersonaUser already has `modules/`). Each extraction is a PR with tests proving behavior preservation.
 
-### 1C. Magic Number Consolidation
+### 1D. Magic Number Consolidation
 
 **Current**: Timing values scattered across 8+ files with no single source of truth.
 
@@ -80,7 +115,7 @@ Each item is a self-contained feature branch. Priority order is the implementati
 - Snapshot throttle (2000ms in PersonaState)
 - Diamond persist (2500ms in PersonaTile)
 
-### 1D. Rust Panic Safety
+### 1E. Rust Panic Safety
 
 **Current**: 21+ `.lock().unwrap()` sites, regex `.unwrap()` without lazy init.
 
@@ -91,7 +126,7 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | `.ok()` on file writes → warn log | sentinel/executor.rs (7 sites) | Silent failures become visible |
 | Duplicated error wrapping → `step_err!` macro | sentinel steps (~12 sites) | DRY |
 
-### 1E. Missing ts-rs Exports
+### 1F. Missing ts-rs Exports
 
 Types crossing Rust-TS boundary without `#[derive(TS)]`:
 - `RagComposeRequest` (modules/rag.rs)
@@ -263,10 +298,11 @@ Ask Helper AI "Why does PersonaUser have both inbox and coordinator?" and get a 
 ```
 P1: Architectural Integrity     ← Foundation for everything else
   ├── 1A: Type safety (any elimination)
-  ├── 1B: God class decomposition
-  ├── 1C: Magic number consolidation
-  ├── 1D: Rust panic safety
-  └── 1E: ts-rs exports
+  ├── 1B: Command infrastructure (single source of truth + generator enforcement)
+  ├── 1C: God class decomposition
+  ├── 1D: Magic number consolidation
+  ├── 1E: Rust panic safety
+  └── 1F: ts-rs exports
 
 P2: Pressure System              ← ~35 lines total, huge impact
   ├── 2A: ThoughtStream slots
