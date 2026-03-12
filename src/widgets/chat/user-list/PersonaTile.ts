@@ -4,7 +4,7 @@
  * Every visual element is backed by real data:
  *   Ring       → AI_DECISION_EVENTS (cognitive phase)
  *   Diamonds   → THINKING / SPEAKING / LEARNING / TOOLS activity
- *   Meters     → INT (intelligence) + NRG (energy) + QUE (inbox queue depth)
+ *   Meters     → INT (intelligence) + NRG (energy) + ATN (attention/focus)
  *   Genome bars→ Real LoRA adapters from AdapterStore via genome/layers
  *
  * EntityScroller caches the outer DOM node, but this component manages
@@ -53,7 +53,7 @@ export class PersonaTile extends LitElement {
   @reactive() private _learnActive: boolean = false;      // LEFT: captured training signal
 
   @reactive() private _energy: number = 1.0;
-  @reactive() private _inboxLoad: number = 0;
+  @reactive() private _attention: number = 1.0;
   @reactive() private _mood: string = 'idle';
   @reactive() private _genomeLayers: GenomeLayerInfo[] = [];
 
@@ -215,19 +215,23 @@ export class PersonaTile extends LitElement {
       })
     );
 
-    // ── State meters (energy, inbox, mood) ─────────────────────
+    // ── State meters (energy, attention, mood) ──────────────────
     this._unsubs.push(
       Events.subscribe('persona:state:snapshot', (data: {
-        personaId: string; energy: number;
-        inboxLoad: number; mood: string;
+        personaId: string; energy: number; attention: number;
+        mood: string;
       }) => {
         if (data.personaId === uid) {
           this._energy = data.energy;
-          this._inboxLoad = data.inboxLoad;
+          this._attention = data.attention;
           this._mood = data.mood;
         }
       })
     );
+
+    // Request current state immediately so we don't sit at defaults
+    // until the next periodic or activity-driven snapshot.
+    Events.emit('persona:state:request', { personaId: uid });
   }
 
   // === DIAMOND ACTIVATION WITH PERSIST ===
@@ -333,7 +337,7 @@ export class PersonaTile extends LitElement {
   // === METERS — Real-time persona telemetry ===
   //   INT: Intelligence level (model capability, static per persona)
   //   NRG: Energy (depletes with work, recovers with rest)
-  //   QUE: Inbox queue depth (how busy this persona is)
+  //   ATN: Attention/focus (degrades with fatigue when energy is low)
 
   /** Derive intelligence from provider/model when not explicitly set */
   private get _effectiveIntelligence(): number {
@@ -364,11 +368,9 @@ export class PersonaTile extends LitElement {
     const energyColor = this._energy >= 0.7 ? '#00ff88' :
                         this._energy >= 0.4 ? '#ffaa00' : '#ff6b6b';
 
-    // Queue: normalize to 0-1 (saturate at 20+ items)
-    const queueNorm = Math.min(1.0, this._inboxLoad / 20);
-    // Queue color inverts: empty = dim, full = hot
-    const queueColor = queueNorm >= 0.7 ? '#ff6b6b' :
-                       queueNorm >= 0.3 ? '#ffaa00' : 'rgba(0, 255, 200, 0.3)';
+    // Attention: 0-1 directly, degrades with fatigue when energy is low
+    const attnColor = this._attention >= 0.7 ? '#00d4ff' :
+                      this._attention >= 0.4 ? '#ffaa00' : '#ff6b6b';
 
     // Mood indicator
     const moodEmoji = this._mood === 'active' ? 'active' :
@@ -389,10 +391,10 @@ export class PersonaTile extends LitElement {
             <div class="meter-fill" style="width: ${this._energy * 100}%; background: ${energyColor};"></div>
           </div>
         </div>
-        <div class="meter" title="Queue: ${this._inboxLoad} items — messages waiting to process">
-          <span class="meter-label">QUE</span>
+        <div class="meter" title="Attention: ${Math.round(this._attention * 100)}% — focus level, degrades with fatigue">
+          <span class="meter-label">ATN</span>
           <div class="meter-track">
-            <div class="meter-fill" style="width: ${queueNorm * 100}%; background: ${queueColor};"></div>
+            <div class="meter-fill" style="width: ${this._attention * 100}%; background: ${attnColor};"></div>
           </div>
         </div>
       </div>

@@ -61,6 +61,8 @@ export class PersonaStateManager {
   private readonly logger?: SubsystemLogger;
   private _lastSnapshotTime = 0;
   private _snapshotPending = false;
+  private _periodicInterval: ReturnType<typeof setInterval> | null = null;
+  private _requestUnsub: (() => void) | null = null;
 
   constructor(personaName: string, config: Partial<StateConfig> = {}, personaId?: string) {
     this.personaName = personaName;
@@ -80,6 +82,23 @@ export class PersonaStateManager {
     };
 
     this.log(`State initialized (energy=${this.state.energy.toFixed(2)}, mood=${this.state.mood})`);
+
+    // Emit initial snapshot after a short delay so the browser widget
+    // gets state on page load even if the persona is idle.
+    setTimeout(() => this.emitSnapshotNow(), 2000);
+
+    // Periodic snapshot every 10s ensures browser always gets fresh state,
+    // even when persona is idle and no activity/rest events fire.
+    this._periodicInterval = setInterval(() => this.emitSnapshotNow(), 10_000);
+
+    // Listen for browser-side state requests (widget mount, page refresh).
+    // When a PersonaTile mounts it emits 'persona:state:request' — we respond
+    // with our current snapshot so the widget doesn't sit at defaults.
+    this._requestUnsub = Events.subscribe('persona:state:request', (data: { personaId?: string }) => {
+      if (!data.personaId || data.personaId === this.personaId) {
+        this.emitSnapshotNow();
+      }
+    });
   }
 
   /**
@@ -323,6 +342,20 @@ export class PersonaStateManager {
       Events.emit(ctx, 'persona:state:snapshot', payload);
     } else {
       Events.emit('persona:state:snapshot', payload);
+    }
+  }
+
+  /**
+   * Cleanup intervals and subscriptions (call if PersonaStateManager is ever disposed).
+   */
+  dispose(): void {
+    if (this._periodicInterval) {
+      clearInterval(this._periodicInterval);
+      this._periodicInterval = null;
+    }
+    if (this._requestUnsub) {
+      this._requestUnsub();
+      this._requestUnsub = null;
     }
   }
 

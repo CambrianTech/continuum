@@ -793,11 +793,11 @@ impl StorageAdapter for PostgresAdapter {
         let rows = match client.query(&sql, &[&id]).await {
             Ok(r) => r,
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format_pg_error(&e);
                 if msg.contains("does not exist") {
                     return StorageResult::err(format!("Record not found: {}", id));
                 }
-                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
+                return StorageResult::err(format!("Query failed: {}", msg));
             }
         };
 
@@ -852,11 +852,11 @@ impl StorageAdapter for PostgresAdapter {
         let rows = match client.query(&sql, &params_ref).await {
             Ok(r) => r,
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format_pg_error(&e);
                 if msg.contains("does not exist") {
                     return StorageResult::ok(Vec::new());
                 }
-                return StorageResult::err(format!("Query failed: {}", format_pg_error(&e)));
+                return StorageResult::err(format!("Query failed: {}", msg));
             }
         };
 
@@ -1020,11 +1020,11 @@ impl StorageAdapter for PostgresAdapter {
                 StorageResult::ok(count as usize)
             }
             Err(e) => {
-                let msg = e.to_string();
+                let msg = format_pg_error(&e);
                 if msg.contains("does not exist") {
                     return StorageResult::ok(0);
                 }
-                StorageResult::err(format!("Count failed: {}", format_pg_error(&e)))
+                StorageResult::err(format!("Count failed: {}", msg))
             }
         }
     }
