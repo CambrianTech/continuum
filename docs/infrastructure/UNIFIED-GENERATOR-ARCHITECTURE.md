@@ -489,6 +489,72 @@ AI coding isn't "generate code" — it's "generate specs, compile to code."
 
 ---
 
+## Cross-Project Portability: `./jtag generate`
+
+The generator is not just a build step — it's a **tool** callable via `./jtag`. This
+means AI agents (Claude Code, Codex, etc.) can invoke it as part of their workflow
+in any project that adopts it.
+
+### The Immediate Use Case: VHSM (iOS/Android Cryptography SDKs)
+
+Cambrian's VHSM project has iOS (Swift) and Android (Kotlin) SDKs. Today, adding a
+new crypto operation means hand-writing boilerplate in both languages — type definitions,
+API surface, serialization, error handling, tests. An AI agent writing this code has to
+understand both platform conventions and produce correct code in two languages.
+
+With the generator:
+```bash
+# AI agent generates a spec
+./jtag generate --spec=vhsm-encrypt.json --adapter=swift
+./jtag generate --spec=vhsm-encrypt.json --adapter=kotlin
+```
+
+One spec, two platforms, correct by construction.
+
+### Platform Adapters (Future)
+
+The adapter pattern extends naturally to any output language:
+
+| Adapter | Output | Use Case |
+|---------|--------|----------|
+| `SwiftAdapter` | Swift structs, protocols, async/await API | iOS SDKs |
+| `KotlinAdapter` | Kotlin data classes, coroutines, sealed classes | Android SDKs |
+| `CAdapter` | C headers + implementation stubs | Native libraries |
+| `PythonAdapter` | Pydantic models, FastAPI routes | ML/data services |
+| `ProtoAdapter` | Protobuf definitions + gRPC stubs | Cross-language IPC |
+
+Each adapter encodes that platform's idioms — Swift uses `Result<T, Error>` and
+`async throws`, Kotlin uses `sealed class` and `suspend fun`, Python uses type hints
+and decorators. The spec is language-agnostic; the adapter knows the target.
+
+### How AI Agents Use It
+
+```
+1. AI reads the project's generator config (adapters, conventions, paths)
+2. AI produces a CommandSpec JSON (30 lines, language-agnostic)
+3. AI calls: ./jtag generate --spec=my-feature.json
+4. Generator produces correct, typed, tested code in the target language(s)
+5. AI fills in the business logic (the only part that requires intelligence)
+```
+
+The AI never writes boilerplate. It never guesses at naming conventions. It never
+forgets to add a test file or update the type exports. The generator handles all of
+that — the AI focuses on what it's good at: understanding intent and writing logic.
+
+### Decoupling from Continuum
+
+For this to work across projects, the generator core must be:
+- **No Continuum-specific imports** in the core engine
+- **Project config file** (`.generator.json` or similar) defines paths, adapters, conventions
+- **Adapter registry** — projects register their adapters, generator discovers them
+- **Spec schema is universal** — same `CommandSpec` works for any project
+- **Published as standalone package** — `npm install @cambrian/generator` or similar
+
+The Continuum-specific adapters (`RustIPCAdapter`, `ServerOnlyAdapter`) become the
+reference implementations that other projects use as templates for their own.
+
+---
+
 ## References
 
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — P1B priority
