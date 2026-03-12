@@ -22,7 +22,8 @@
  * - Single source of truth (file system structure)
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
+import { writeIfChanged } from './core/writeIfChanged';
 import { join, relative } from 'path';
 import * as glob from 'glob';
 
@@ -169,9 +170,10 @@ class CommandConstantsGenerator {
     lines.push('export type CommandName = typeof COMMANDS[keyof typeof COMMANDS];');
     lines.push('');
 
-    writeFileSync(outputPath, lines.join('\n'));
-    console.log(`\n📝 Generated: ${relative(this.rootPath, outputPath)}`);
-    console.log(`   ${commands.length} command constants`);
+    const changed = writeIfChanged(outputPath, lines.join('\n'));
+    console.log(changed
+      ? `\n📝 Generated: ${relative(this.rootPath, outputPath)} (${commands.length} constants)`
+      : `\n⏭️  Unchanged: ${relative(this.rootPath, outputPath)} (${commands.length} constants)`);
   }
 }
 

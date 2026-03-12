@@ -5,8 +5,8 @@
  * Builds TypeScript registry files that import and export entry arrays.
  */
 
-import { writeFileSync } from 'fs';
 import { join, relative } from 'path';
+import { writeIfChanged } from './writeIfChanged';
 import type { EntryInfo } from './EntryExtractor';
 
 /**
@@ -54,10 +54,11 @@ export class RegistryBuilder {
       ? config.outputFile
       : join(this.rootPath, config.outputFile);
 
-    writeFileSync(fullOutputPath, content, 'utf8');
-
     const totalEntries = Array.from(entries.values()).reduce((sum, list) => sum + list.length, 0);
-    console.log(`✅ Generated ${config.outputFile} with ${totalEntries} entries`);
+    const changed = writeIfChanged(fullOutputPath, content);
+    console.log(changed
+      ? `✅ Generated ${config.outputFile} with ${totalEntries} entries`
+      : `⏭️  ${config.outputFile} unchanged (${totalEntries} entries)`);
   }
 
   /**

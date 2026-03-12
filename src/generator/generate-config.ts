@@ -7,7 +7,8 @@
  * Pattern: Same as generate-version.ts - bake configuration into source at build time
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
+import { writeIfChanged } from './core/writeIfChanged';
 import { join } from 'path';
 import * as dotenv from 'dotenv';
 
@@ -118,11 +119,11 @@ export const EXAMPLE_CONFIG = {
 export type ExampleDefinition = typeof EXAMPLE_CONFIG;
 `;
 
-  // Write to shared/config.ts
+  // Write to shared/config.ts (only if changed)
   const outputPath = join(rootDir, 'shared', 'config.ts');
-  writeFileSync(outputPath, content, 'utf-8');
+  const changed = writeIfChanged(outputPath, content);
 
-  console.log(`✅ Generated shared/config.ts`);
+  console.log(changed ? `✅ Generated shared/config.ts` : `⏭️  shared/config.ts unchanged`);
   console.log(`   HTTP_PORT: ${httpPort}`);
   console.log(`   WS_PORT: ${wsPort}`);
   console.log(`   ACTIVE_EXAMPLE: ${activeExample}`);
