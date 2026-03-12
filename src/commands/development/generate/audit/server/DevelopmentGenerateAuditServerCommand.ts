@@ -1,8 +1,11 @@
 /**
  * Development Generate Audit Command - Server Implementation
  *
- * Audit all commands for generator conformance. Scans every command directory
- * and reports spec coverage, accessor patterns, factory functions, and type safety.
+ * Audit modules for generator conformance. Supports all generator types
+ * via the GeneratorSDK: command, entity, daemon, widget.
+ *
+ * When --type is omitted, audits commands (backward-compatible).
+ * When --type=all, audits all types and produces a combined report.
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
@@ -10,6 +13,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DevelopmentGenerateAuditParams, DevelopmentGenerateAuditResult } from '../shared/DevelopmentGenerateAuditTypes';
 import { createDevelopmentGenerateAuditResultFromParams } from '../shared/DevelopmentGenerateAuditTypes';
 import { CommandAuditor } from '@generator/CommandAuditor';
+import { createGeneratorRegistry } from '@generator/GeneratorSDKFactory';
 
 export class DevelopmentGenerateAuditServerCommand extends CommandBase<DevelopmentGenerateAuditParams, DevelopmentGenerateAuditResult> {
 
@@ -18,6 +22,18 @@ export class DevelopmentGenerateAuditServerCommand extends CommandBase<Developme
   }
 
   async execute(params: DevelopmentGenerateAuditParams): Promise<DevelopmentGenerateAuditResult> {
+    const auditType = (params as unknown as Record<string, unknown>).type as string | undefined;
+
+    // If a non-command type is specified, use the SDK
+    if (auditType && auditType !== 'command') {
+      return this.executeSDKAudit(params, auditType);
+    }
+
+    // Default: command audit (backward-compatible)
+    return this.executeCommandAudit(params);
+  }
+
+  private executeCommandAudit(params: DevelopmentGenerateAuditParams): DevelopmentGenerateAuditResult {
     const auditor = new CommandAuditor(process.cwd());
     const summary = auditor.audit();
 
@@ -40,10 +56,8 @@ export class DevelopmentGenerateAuditServerCommand extends CommandBase<Developme
       }
     }
 
-    // Format-dependent: summary mode omits entries
     const includeEntries = params.format !== 'summary';
 
-    // Also print to console for CLI visibility
     if (params.format !== 'json') {
       auditor.printAudit();
     }
@@ -65,6 +79,69 @@ export class DevelopmentGenerateAuditServerCommand extends CommandBase<Developme
         anyCastCount: e.anyCastCount,
         issues: e.issues
       })) : []
+    });
+  }
+
+  private executeSDKAudit(params: DevelopmentGenerateAuditParams, auditType: string): DevelopmentGenerateAuditResult {
+    const registry = createGeneratorRegistry(process.cwd());
+
+    if (auditType === 'all') {
+      // Audit all types
+      const summaries = registry.auditAll();
+      if (params.format !== 'json') {
+        registry.printAuditReport(summaries);
+      }
+
+      // Aggregate totals for the result
+      let totalModules = 0;
+      let totalWithSpecs = 0;
+      let totalIssues = 0;
+
+      for (const summary of summaries.values()) {
+        totalModules += summary.total;
+        totalWithSpecs += summary.withSpecs;
+        totalIssues += summary.totalIssues;
+      }
+
+      return createDevelopmentGenerateAuditResultFromParams(params, {
+        success: true,
+        totalCommands: totalModules,
+        withSpecs: totalWithSpecs,
+        missingAccessors: 0,
+        missingFactories: 0,
+        totalAnyCasts: 0,
+        commandsWithAny: 0,
+        orphanedSpecs: [],
+        entries: [],
+      });
+    }
+
+    // Single type audit via SDK
+    const gen = registry.get(auditType);
+    const summary = gen.audit();
+
+    if (params.format !== 'json') {
+      const map = new Map([[auditType, summary]]);
+      registry.printAuditReport(map);
+    }
+
+    return createDevelopmentGenerateAuditResultFromParams(params, {
+      success: true,
+      totalCommands: summary.total,
+      withSpecs: summary.withSpecs,
+      missingAccessors: 0,
+      missingFactories: 0,
+      totalAnyCasts: 0,
+      commandsWithAny: 0,
+      orphanedSpecs: summary.orphanedSpecs,
+      entries: summary.entries.map(e => ({
+        commandName: e.name,
+        hasSpec: e.hasSpec,
+        hasStaticAccessor: e.checks['static-accessor'] ?? true,
+        hasFactoryFunctions: e.checks['factory-functions'] ?? true,
+        anyCastCount: e.checks['no-any-casts'] === false ? 1 : 0,
+        issues: e.issues,
+      })),
     });
   }
 }

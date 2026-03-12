@@ -245,5 +245,3 @@ if (require.main === module) {
     generator.generate(spec, undefined, options);
   }
 }
-
-export { WidgetSpec };
