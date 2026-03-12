@@ -108,6 +108,17 @@ pub trait SpeechToText: Send + Sync {
     fn set_param(&self, _name: &str, _value: &str) -> Result<(), STTError> {
         Ok(())
     }
+
+    /// Shut down the adapter, releasing loaded models and GPU allocations.
+    ///
+    /// In-flight inference that already cloned the model Arc continues safely.
+    /// Memory is freed when the last Arc drops.
+    /// Calling `initialize()` after `shutdown()` reloads models transparently.
+    ///
+    /// Default: no-op (adapters that don't hold heavy resources can skip this).
+    async fn shutdown(&self) -> Result<(), STTError> {
+        Ok(())
+    }
 }
 
 /// STT Registry - manages available adapters

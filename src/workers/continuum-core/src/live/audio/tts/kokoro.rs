@@ -14,7 +14,7 @@ use crate::gpu::tracker::GpuModelTracker;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray;
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use parking_lot::Mutex;
@@ -24,7 +24,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 /// Global Kokoro session + tokenizer
-static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
+static KOKORO_SESSION: ReloadableModel<Mutex<KokoroModel>> = ReloadableModel::new("Kokoro");
 
 /// GPU allocation tracking for the loaded Kokoro ONNX model.
 static KOKORO_GPU: GpuModelTracker = GpuModelTracker::new("Kokoro");
@@ -417,11 +417,11 @@ impl TextToSpeech for KokoroTTS {
     }
 
     fn is_initialized(&self) -> bool {
-        KOKORO_SESSION.get().is_some()
+        KOKORO_SESSION.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        if KOKORO_SESSION.get().is_some() {
+        if KOKORO_SESSION.is_loaded() {
             clog_info!("Kokoro already initialized");
             return Ok(());
         }
@@ -485,9 +485,7 @@ impl TextToSpeech for KokoroTTS {
             GpuPriority::Interactive,
         );
 
-        // OnceLock::set returns Err if already set by another thread — that's fine,
-        // it means a concurrent request already initialized the model.
-        let _ = KOKORO_SESSION.set(Arc::new(Mutex::new(model)));
+        let _ = KOKORO_SESSION.load_with(|| Ok::<_, TTSError>(Mutex::new(model)));
 
         clog_info!("Kokoro model loaded successfully");
         Ok(())
@@ -498,8 +496,7 @@ impl TextToSpeech for KokoroTTS {
 
         let session = KOKORO_SESSION
             .get()
-            .ok_or_else(|| TTSError::ModelNotLoaded("Kokoro not initialized".into()))?
-            .clone();
+            .ok_or_else(|| TTSError::ModelNotLoaded("Kokoro not initialized".into()))?;
 
         let text = text.to_string();
         let voice = voice.to_string();
@@ -507,6 +504,14 @@ impl TextToSpeech for KokoroTTS {
         tokio::task::spawn_blocking(move || Self::synthesize_sync(&session, &text, &voice, 1.0))
             .await
             .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if KOKORO_SESSION.unload() {
+            KOKORO_GPU.release();
+            clog_info!("Kokoro: Models unloaded (~82MB freed)");
+        }
+        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

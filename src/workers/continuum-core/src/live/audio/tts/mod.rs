@@ -200,6 +200,17 @@ pub trait TextToSpeech: Send + Sync {
     fn set_param(&self, _name: &str, _value: &str) -> Result<(), TTSError> {
         Ok(())
     }
+
+    /// Shut down the adapter, releasing loaded models and GPU allocations.
+    ///
+    /// In-flight inference that already cloned the model Arc continues safely.
+    /// Memory is freed when the last Arc drops.
+    /// Calling `initialize()` after `shutdown()` reloads models transparently.
+    ///
+    /// Default: no-op (adapters like Edge TTS that don't hold local models can skip this).
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        Ok(())
+    }
 }
 
 /// TTS Registry - manages available adapters

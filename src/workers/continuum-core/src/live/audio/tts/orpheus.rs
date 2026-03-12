@@ -29,14 +29,13 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use ndarray::Array2;
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor as OrtTensor, Value};
 use parking_lot::Mutex;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 // ─── Orpheus Token Constants ──────────────────────────────────────────────────
@@ -74,7 +73,7 @@ const VOICES: &[(&str, &str, &str)] = &[
 ];
 
 // ─── Global Model (Mutex because ModelWeights::forward needs &mut self) ──────
-static ORPHEUS_MODEL: OnceCell<Arc<Mutex<OrpheusModel>>> = OnceCell::new();
+static ORPHEUS_MODEL: ReloadableModel<Mutex<OrpheusModel>> = ReloadableModel::new("Orpheus");
 
 /// GPU allocation tracking — Orpheus has TWO models on GPU
 static ORPHEUS_LLM_GPU: GpuModelTracker = GpuModelTracker::new("Orpheus LLM");
@@ -499,11 +498,11 @@ impl TextToSpeech for OrpheusTts {
     }
 
     fn is_initialized(&self) -> bool {
-        ORPHEUS_MODEL.get().is_some()
+        ORPHEUS_MODEL.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        if ORPHEUS_MODEL.get().is_some() {
+        if ORPHEUS_MODEL.is_loaded() {
             clog_info!("Orpheus: Already initialized");
             return Ok(());
         }
@@ -595,8 +594,7 @@ impl TextToSpeech for OrpheusTts {
             audio_end_token_id,
         };
 
-        let _ = ORPHEUS_MODEL.set(Arc::new(Mutex::new(model)));
-        // OnceLock::set Err = another thread already initialized — that's fine
+        let _ = ORPHEUS_MODEL.load_with(|| Ok::<_, TTSError>(Mutex::new(model)));
 
         clog_info!("Orpheus: All models loaded successfully");
         Ok(())
@@ -610,8 +608,7 @@ impl TextToSpeech for OrpheusTts {
             .get()
             .ok_or_else(|| {
                 TTSError::ModelNotLoaded("Orpheus not initialized. Call initialize() first.".into())
-            })?
-            .clone();
+            })?;
 
         // Validate voice
         let voice = if VOICES.iter().any(|(id, _, _)| *id == voice) {
@@ -631,6 +628,15 @@ impl TextToSpeech for OrpheusTts {
         })
         .await
         .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if ORPHEUS_MODEL.unload() {
+            ORPHEUS_LLM_GPU.release();
+            ORPHEUS_SNAC_GPU.release();
+            clog_info!("Orpheus: Models unloaded (~2GB freed)");
+        }
+        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
