@@ -80,6 +80,10 @@ export class PersonaStateManager {
     };
 
     this.log(`State initialized (energy=${this.state.energy.toFixed(2)}, mood=${this.state.mood})`);
+
+    // Emit initial snapshot after a short delay so the browser widget
+    // gets state on page load even if the persona is idle.
+    setTimeout(() => this.emitSnapshotNow(), 2000);
   }
 
   /**

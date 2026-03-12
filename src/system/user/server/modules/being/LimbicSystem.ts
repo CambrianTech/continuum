@@ -104,14 +104,7 @@ export class LimbicSystem {
     const inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
     const discoveredAdapters = AdapterStore.latestCompatibleByDomain(personaUser.id, inferenceModel, personaUser.displayName);
 
-    // If no persona-specific adapters, discover ANY compatible adapter for this model.
-    // This enables cross-persona sharing: Local Assistant can use Helper AI's trained adapters
-    // as long as they're for the same base model architecture (LoRA is model-specific, not persona-specific).
-    const effectiveAdapters = discoveredAdapters.size > 0
-      ? discoveredAdapters
-      : AdapterStore.latestCompatibleByDomainForModel(inferenceModel);
-
-    const initialAdapters = Array.from(effectiveAdapters.values()).map(adapter => ({
+    const initialAdapters = Array.from(discoveredAdapters.values()).map(adapter => ({
       name: adapter.manifest.name,
       domain: adapter.manifest.traitType,
       path: adapter.dirPath,
@@ -123,10 +116,8 @@ export class LimbicSystem {
     const allAdapters = AdapterStore.discoverForPersona(personaUser.id, personaUser.displayName).filter(a => a.hasWeights);
     const incompatible = allAdapters.length - initialAdapters.length;
 
-    const isShared = discoveredAdapters.size === 0 && effectiveAdapters.size > 0;
     if (initialAdapters.length > 0) {
-      const source = isShared ? 'shared (cross-persona)' : 'persona-specific';
-      this.logger.info(`Discovered ${initialAdapters.length} ${source} adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+      this.logger.info(`Discovered ${initialAdapters.length} compatible adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
     }
     if (incompatible > 0) {
       this.logger.info(`Skipped ${incompatible} incompatible adapters (trained on different base model)`);

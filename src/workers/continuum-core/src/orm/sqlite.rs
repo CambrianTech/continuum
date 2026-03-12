@@ -283,6 +283,19 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
 
+/// Infer SQLite column type from a JSON value.
+fn infer_sqlite_type(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "INTEGER",
+        Value::Number(n) => {
+            if n.is_i64() { "INTEGER" } else { "REAL" }
+        }
+        Value::String(_) => "TEXT",
+        Value::Array(_) | Value::Object(_) => "TEXT", // JSON stored as text
+        Value::Null => "TEXT",                        // Default to TEXT for null
+    }
+}
+
 /// Ensure table exists by creating it dynamically from record data.
 /// This mimics TypeScript's auto-table-creation behavior.
 fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
@@ -300,19 +313,7 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
                 continue;
             }
             let col_name = naming::to_snake_case(key);
-            let col_type = match value {
-                Value::Bool(_) => "INTEGER",
-                Value::Number(n) => {
-                    if n.is_i64() {
-                        "INTEGER"
-                    } else {
-                        "REAL"
-                    }
-                }
-                Value::String(_) => "TEXT",
-                Value::Array(_) | Value::Object(_) => "TEXT", // JSON stored as text
-                Value::Null => "TEXT",                        // Default to TEXT for null
-            };
+            let col_type = infer_sqlite_type(value);
             columns.push(format!("{} {}", col_name, col_type));
         }
     }
@@ -326,6 +327,45 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
     if let Err(e) = conn.execute(&sql, []) {
         clog_error!("SQLite table creation error for '{}': {}", table, e);
     }
+}
+
+/// Schema evolution: add missing columns to an existing table.
+/// Called when INSERT/UPDATE fails with "has no column named X".
+/// Returns true if columns were added (caller should retry).
+fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
+    // Get existing columns
+    let existing: Vec<String> = match conn.prepare(&format!("PRAGMA table_info({})", table)) {
+        Ok(mut stmt) => {
+            stmt.query_map([], |row| row.get::<_, String>(1))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+        }
+        Err(_) => return false,
+    };
+
+    let mut added = 0;
+    if let Value::Object(obj) = data {
+        for (key, value) in obj {
+            if METADATA_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let col_name = naming::to_snake_case(key);
+            if !existing.iter().any(|c| c == &col_name) {
+                let col_type = infer_sqlite_type(value);
+                let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, col_name, col_type);
+                match conn.execute(&alter, []) {
+                    Ok(_) => {
+                        clog_info!("Schema evolution: added column {}.{} ({})", table, col_name, col_type);
+                        added += 1;
+                    }
+                    Err(e) => {
+                        clog_error!("Schema evolution failed for {}.{}: {}", table, col_name, e);
+                    }
+                }
+            }
+        }
+    }
+    added > 0
 }
 
 fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord> {
@@ -380,7 +420,29 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
             },
             ..record
         }),
-        Err(e) => StorageResult::err(format!("Insert failed: {}", e)),
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("has no column named") {
+                // Schema evolution: add missing columns and retry
+                if evolve_table_schema(conn, &table, &record.data) {
+                    match conn.execute(&sql, params.as_slice()) {
+                        Ok(_) => return StorageResult::ok(DataRecord {
+                            metadata: RecordMetadata {
+                                created_at: now.clone(),
+                                updated_at: now,
+                                version: 1,
+                                ..record.metadata
+                            },
+                            ..record
+                        }),
+                        Err(e2) => return StorageResult::err(
+                            format!("Insert failed after schema evolution: {}", e2)
+                        ),
+                    }
+                }
+            }
+            StorageResult::err(format!("Insert failed: {}", e))
+        }
     }
 }
 
@@ -511,7 +573,22 @@ fn do_update(
     match conn.execute(&sql, params_ref.as_slice()) {
         Ok(rows) if rows > 0 => do_read(conn, collection, id),
         Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-        Err(e) => StorageResult::err(format!("Update failed: {}", e)),
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("has no column named") {
+                let table = naming::to_table_name(collection);
+                if evolve_table_schema(conn, &table, &data) {
+                    match conn.execute(&sql, params_ref.as_slice()) {
+                        Ok(rows) if rows > 0 => return do_read(conn, collection, id),
+                        Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => return StorageResult::err(
+                            format!("Update failed after schema evolution: {}", e2)
+                        ),
+                    }
+                }
+            }
+            StorageResult::err(format!("Update failed: {}", e))
+        }
     }
 }
 
