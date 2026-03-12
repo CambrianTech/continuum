@@ -142,6 +142,8 @@ export const COMMANDS = {
   DEVELOPMENT_EXEC: 'development/exec',
   DEVELOPMENT_GENERATE: 'development/generate',
   DEVELOPMENT_GENERATE_AUDIT: 'development/generate/audit',
+  DEVELOPMENT_GENERATE_HELP: 'development/generate/help',
+  DEVELOPMENT_GENERATE_REVERSE: 'development/generate/reverse',
   DEVELOPMENT_PROPOSE_COMMAND: 'development/propose-command',
   DEVELOPMENT_SANDBOX_EXECUTE: 'development/sandbox-execute',
   DEVELOPMENT_SCHEMA_GENERATE: 'development/schema/generate',

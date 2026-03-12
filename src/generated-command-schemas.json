@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-12T02:22:44.152Z",
+  "generated": "2026-03-12T16:06:41.664Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5073,28 +5073,45 @@
       }
     },
     {
-      "name": "development/generate/audit",
-      "description": "Audit generated modules for issues and optionally fix them automatically.",
+      "name": "development/generate/reverse",
+      "description": "Reverse-engineer a CommandSpec from an existing hand-written command. Reads the Types file, extracts params, results, command name, and description, then outputs a spec JSON that can be saved to generator/specs/ and used to regenerate the command under generator control.",
       "params": {
-        "module": {
+        "commandDir": {
           "type": "string",
-          "required": false,
-          "description": "module parameter"
+          "required": true,
+          "description": "commandDir parameter"
         },
-        "type": {
-          "type": "string",
-          "required": false,
-          "description": "type parameter"
-        },
-        "fix": {
+        "save": {
           "type": "boolean",
           "required": false,
-          "description": "fix parameter"
-        },
-        "hibernateFailures": {
-          "type": "boolean",
+          "description": "save parameter"
+        }
+      }
+    },
+    {
+      "name": "development/generate/help",
+      "description": "Display comprehensive generator documentation including spec reference, example specs, type reference, access levels, workflow guide, and audit information. This is the primary documentation entry point for AI agents learning to use the generator.",
+      "params": {
+        "topic": {
+          "type": "string",
           "required": false,
-          "description": "hibernateFailures parameter"
+          "description": "topic parameter"
+        }
+      }
+    },
+    {
+      "name": "development/generate/audit",
+      "description": "Audit all commands for generator conformance. Scans every command directory and checks for: matching generator spec, static accessor (Name.execute pattern), factory functions, any casts in Types files. Reports conformance status and summary statistics.",
+      "params": {
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "filter": {
+          "type": "string",
+          "required": false,
+          "description": "filter parameter"
         }
       }
     },

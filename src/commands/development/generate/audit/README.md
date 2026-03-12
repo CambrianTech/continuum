@@ -1,158 +1,188 @@
-# generate/audit Command
+# Development Generate Audit Command
 
-Audit generated modules for issues and optionally fix them automatically.
+Audit all commands for generator conformance. Scans every command directory and checks for: matching generator spec, static accessor (Name.execute pattern), factory functions, any casts in Types files. Reports conformance status and summary statistics.
+
+## Table of Contents
+
+- [Usage](#usage)
+  - [CLI Usage](#cli-usage)
+  - [Tool Usage](#tool-usage)
+- [Parameters](#parameters)
+- [Result](#result)
+- [Examples](#examples)
+- [Testing](#testing)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+- [Getting Help](#getting-help)
+- [Access Level](#access-level)
+- [Implementation Notes](#implementation-notes)
 
 ## Usage
 
+### CLI Usage
+
+From the command line using the jtag CLI:
+
 ```bash
-# Audit specific module
-./jtag generate/audit --module="commands/hello"
+./jtag development/generate/audit [options]
+```
 
-# Audit all commands (recursively finds nested commands)
-./jtag generate/audit --type="command"
+### Tool Usage
 
-# Audit and auto-fix ALL commands (RECOMMENDED)
-./jtag generate/audit --type="command" --fix
+From Persona tools or programmatic access using `Commands.execute()`:
 
-# Audit specific nested command
-./jtag generate/audit --module="commands/chat/send" --fix
+```typescript
+import { Commands } from '@system/core/shared/Commands';
 
-# Audit widgets (future)
-./jtag generate/audit --type="widget" --fix
+const result = await Commands.execute('development/generate/audit', {
+  // your parameters here
+});
 ```
 
 ## Parameters
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `module` | string | No | Specific module path to audit (e.g., "commands/hello") |
-| `type` | string | No | Module type to audit all of ("command", "widget", "daemon") |
-| `fix` | boolean | No | Apply automatic fixes to fixable issues |
-| `hibernateFailures` | boolean | No | Hibernate modules that can't be fixed (future) |
-
-**Note**: Must specify either `module` or `type` (or both).
-
-## Audit Checks
-
-### 1. Linting
-- **Check**: Runs eslint on module files
-- **Fix**: Applies `eslint --fix` automatically
-
-### 2. Missing Files ✅ IMPLEMENTED
-- **Check**: Verifies all required files exist (README.md, package.json, .npmignore, test dirs)
-- **Fix**: Generates missing files from templates and schema
-
-### 3. Unused Code ✅ IMPLEMENTED
-- **Check**: Detects unused catch variables
-- **Fix**: Prefixes with underscore (needs improvement for reference updates)
-
-### 4. Package.json Validation ✅ IMPLEMENTED
-- **Check**: Verifies package.json matches spec (peerDependencies, naming, scripts)
-- **Fix**: Regenerates package.json with correct structure
-
-### 5. README Completeness ✅ IMPLEMENTED
-- **Check**: Verifies README has required sections (Usage, Parameters, Result, Examples, Testing)
-- **Fix**: Generates complete README from Types.ts schema, adds missing sections
-
-### 6. Test Coverage ✅ IMPLEMENTED
-- **Check**: Verifies unit and integration test directories exist
-- **Fix**: Creates test/unit and test/integration directories
-
-### 7. Outdated Patterns (Future)
-- **Check**: Detects deprecated patterns
-- **Fix**: Applies current best practices
-
-## Example Output
-
-```bash
-$ ./jtag generate/audit --module="commands/hello"
-
-🔍 Auditing commands/hello...
-
-✅ Linting: No issues
-✅ Files: All required files present
-✅ Patterns: Using current best practices
-✅ Package.json: Valid and up-to-date
-✅ README: Complete
-✅ Tests: Unit and integration tests present
-✅ Hibernation: No backup pollution detected
-
-📊 Summary:
-   0 errors, 0 warnings, 0 fixable
-
-$ ./jtag generate/audit --type="command"
-
-🔍 Auditing all command modules...
-
-🔍 Auditing commands/hello...
-✅ All checks passed
-
-🔍 Auditing commands/screenshot...
-❌ Linting: 3 errors (fixable)
-  ❌ no-unused-vars: 'context' is defined but never used
-     Location: commands/screenshot/server/ScreenshotServerCommand.ts:45
-
-📊 Summary:
-   3 errors, 0 warnings, 3 fixable
-
-Run with --fix to automatically fix issues:
-   ./jtag generate/audit --type="command" --fix
-```
-
-## Integration
-
-### With Generator
-After generating a command:
-```bash
-./jtag generate commands/my-command.spec.json
-./jtag generate/audit --module="commands/my-command"
-```
-
-### With Hibernation (Future)
-Before hibernating:
-```bash
-./jtag generate/audit --module="commands/old-feature" --fix
-./jtag module/hibernate --name="old-feature"
-```
-
-### In Precommit Hook (Future)
-```bash
-# Run audit on changed modules
-./jtag generate/audit --type="command" --fix
-```
-
-## Return Value
-
-```typescript
-{
-  success: boolean;
-  reports: AuditReport[];  // One per module audited
-  summary: {
-    modulesAudited: number;
-    totalErrors: number;
-    totalWarnings: number;
-    totalFixed: number;
-  };
-  error?: string;
-}
-```
-
-## Related Documentation
-
-- [AUDIT-SYSTEM-DESIGN.md](../../../generator/AUDIT-SYSTEM-DESIGN.md) - Full audit system design
-- [MODULE-HIBERNATION-SYSTEM.md](../../../generator/MODULE-HIBERNATION-SYSTEM.md) - Hibernation integration
-
+- **format** (optional): `'summary' | 'full' | 'json'` - Output format: 'summary' (counts only), 'full' (every command, default), 'json' (machine-readable)
+- **filter** (optional): `'missing-spec' | 'missing-accessor' | 'has-any' | 'conformant'` - Filter to specific issue type. Omit for all commands.
 
 ## Result
 
-TODO: Add result documentation
+Returns `DevelopmentGenerateAuditResult` with:
 
+Returns CommandResult with:
+- **totalCommands**: `number` - Total number of command directories found
+- **withSpecs**: `number` - Commands that have matching generator specs
+- **missingAccessors**: `number` - Commands missing the Name.execute() static accessor pattern
+- **missingFactories**: `number` - Commands missing createParams/createResult factory functions
+- **totalAnyCasts**: `number` - Total 'any' casts found across all command Types files
+- **commandsWithAny**: `number` - Number of commands containing 'any' casts
+- **orphanedSpecs**: `string[]` - Spec files with no matching command directory
+- **entries**: `Array<{ commandName: string; hasSpec: boolean; hasStaticAccessor: boolean; hasFactoryFunctions: boolean; anyCastCount: number; issues: string[] }>` - Per-command audit details (when format='full' or 'json')
 
 ## Examples
 
-TODO: Add examples documentation
+### Full audit of all commands
 
+```bash
+./jtag development/generate/audit
+```
+
+**Expected result:**
+{ totalCommands: 201, withSpecs: 32, missingAccessors: 41, totalAnyCasts: 14 }
+
+### Show only commands missing specs
+
+```bash
+./jtag development/generate/audit --filter=missing-spec
+```
+
+**Expected result:**
+{ entries: [{ commandName: 'agent/list', hasSpec: false, ... }, ...] }
+
+### Machine-readable JSON for CI/scripts
+
+```bash
+./jtag development/generate/audit --format=json
+```
+
+**Expected result:**
+{ totalCommands: 201, entries: [...] }
+
+### Quick summary counts only
+
+```bash
+./jtag development/generate/audit --format=summary
+```
+
+**Expected result:**
+{ totalCommands: 201, withSpecs: 32, missingAccessors: 41 }
+
+## Getting Help
+
+### Using the Help Tool
+
+Get detailed usage information for this command:
+
+**CLI:**
+```bash
+./jtag help development/generate/audit
+```
+
+**Tool:**
+```typescript
+// Use your help tool with command name 'development/generate/audit'
+```
+
+### Using the README Tool
+
+Access this README programmatically:
+
+**CLI:**
+```bash
+./jtag readme development/generate/audit
+```
+
+**Tool:**
+```typescript
+// Use your readme tool with command name 'development/generate/audit'
+```
 
 ## Testing
 
-TODO: Add testing documentation
+### Unit Tests
+
+Test command logic in isolation using mock dependencies:
+
+```bash
+# Run unit tests (no server required)
+npx tsx commands/Development Generate Audit/test/unit/DevelopmentGenerateAuditCommand.test.ts
+```
+
+**What's tested:**
+- Command structure and parameter validation
+- Mock command execution patterns
+- Required parameter validation (throws ValidationError)
+- Optional parameter handling (sensible defaults)
+- Performance requirements
+- Assertion utility helpers
+
+**TDD Workflow:**
+1. Write/modify unit test first (test-driven development)
+2. Run test, see it fail
+3. Implement feature
+4. Run test, see it pass
+5. Refactor if needed
+
+### Integration Tests
+
+Test command with real client connections and system integration:
+
+```bash
+# Prerequisites: Server must be running
+npm start  # Wait 90+ seconds for deployment
+
+# Run integration tests
+npx tsx commands/Development Generate Audit/test/integration/DevelopmentGenerateAuditIntegration.test.ts
+```
+
+**What's tested:**
+- Client connection to live system
+- Real command execution via WebSocket
+- ValidationError handling for missing params
+- Optional parameter defaults
+- Performance under load
+- Various parameter combinations
+
+**Best Practice:**
+Run unit tests frequently during development (fast feedback). Run integration tests before committing (verify system integration).
+
+## Access Level
+
+**ai-safe** - Safe for AI personas to call autonomously
+
+## Implementation Notes
+
+- **Shared Logic**: Core business logic in `shared/DevelopmentGenerateAuditTypes.ts`
+- **Browser**: Browser-specific implementation in `browser/DevelopmentGenerateAuditBrowserCommand.ts`
+- **Server**: Server-specific implementation in `server/DevelopmentGenerateAuditServerCommand.ts`
+- **Unit Tests**: Isolated testing in `test/unit/DevelopmentGenerateAuditCommand.test.ts`
+- **Integration Tests**: System testing in `test/integration/DevelopmentGenerateAuditIntegration.test.ts`

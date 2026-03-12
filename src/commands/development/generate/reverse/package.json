@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/development/generate/reverse",
+  "version": "1.0.0",
+  "description": "Reverse-engineer a CommandSpec from an existing hand-written command. Reads the Types file, extracts params, results, command name, and description, then outputs a spec JSON that can be saved to generator/specs/ and used to regenerate the command under generator control.",
+  "main": "server/DevelopmentGenerateReverseServerCommand.ts",
+  "types": "shared/DevelopmentGenerateReverseTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DevelopmentGenerateReverseIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "development/generate/reverse"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

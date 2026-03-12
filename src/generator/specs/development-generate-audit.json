@@ -1,0 +1,83 @@
+{
+  "name": "development/generate/audit",
+  "description": "Audit all commands for generator conformance. Scans every command directory and checks for: matching generator spec, static accessor (Name.execute pattern), factory functions, any casts in Types files. Reports conformance status and summary statistics.",
+  "params": [
+    {
+      "name": "format",
+      "type": "'summary' | 'full' | 'json'",
+      "optional": true,
+      "description": "Output format: 'summary' (counts only), 'full' (every command, default), 'json' (machine-readable)"
+    },
+    {
+      "name": "filter",
+      "type": "'missing-spec' | 'missing-accessor' | 'has-any' | 'conformant'",
+      "optional": true,
+      "description": "Filter to specific issue type. Omit for all commands."
+    }
+  ],
+  "results": [
+    {
+      "name": "totalCommands",
+      "type": "number",
+      "description": "Total number of command directories found"
+    },
+    {
+      "name": "withSpecs",
+      "type": "number",
+      "description": "Commands that have matching generator specs"
+    },
+    {
+      "name": "missingAccessors",
+      "type": "number",
+      "description": "Commands missing the Name.execute() static accessor pattern"
+    },
+    {
+      "name": "missingFactories",
+      "type": "number",
+      "description": "Commands missing createParams/createResult factory functions"
+    },
+    {
+      "name": "totalAnyCasts",
+      "type": "number",
+      "description": "Total 'any' casts found across all command Types files"
+    },
+    {
+      "name": "commandsWithAny",
+      "type": "number",
+      "description": "Number of commands containing 'any' casts"
+    },
+    {
+      "name": "orphanedSpecs",
+      "type": "string[]",
+      "description": "Spec files with no matching command directory"
+    },
+    {
+      "name": "entries",
+      "type": "Array<{ commandName: string; hasSpec: boolean; hasStaticAccessor: boolean; hasFactoryFunctions: boolean; anyCastCount: number; issues: string[] }>",
+      "description": "Per-command audit details (when format='full' or 'json')"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Full audit of all commands",
+      "command": "./jtag development/generate/audit",
+      "expectedResult": "{ totalCommands: 201, withSpecs: 32, missingAccessors: 41, totalAnyCasts: 14 }"
+    },
+    {
+      "description": "Show only commands missing specs",
+      "command": "./jtag development/generate/audit --filter=missing-spec",
+      "expectedResult": "{ entries: [{ commandName: 'agent/list', hasSpec: false, ... }, ...] }"
+    },
+    {
+      "description": "Machine-readable JSON for CI/scripts",
+      "command": "./jtag development/generate/audit --format=json",
+      "expectedResult": "{ totalCommands: 201, entries: [...] }"
+    },
+    {
+      "description": "Quick summary counts only",
+      "command": "./jtag development/generate/audit --format=summary",
+      "expectedResult": "{ totalCommands: 201, withSpecs: 32, missingAccessors: 41 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

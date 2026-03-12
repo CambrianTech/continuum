@@ -1,0 +1,69 @@
+{
+  "name": "development/generate",
+  "description": "Generate a new command from a CommandSpec JSON definition. Pass a spec file path, inline JSON, or request a template. The generator produces 8 files: Types (params, result, factories, static accessor), browser/server implementations, README, tests, package.json.",
+  "params": [
+    {
+      "name": "spec",
+      "type": "string | object",
+      "description": "CommandSpec as file path, inline JSON string, or object. Use --template to get a starter spec instead."
+    },
+    {
+      "name": "template",
+      "type": "boolean",
+      "optional": true,
+      "description": "Return an example CommandSpec template instead of generating"
+    },
+    {
+      "name": "templateType",
+      "type": "'minimal' | 'standard' | 'rust-ipc' | 'browser-only'",
+      "optional": true,
+      "description": "Type of template to return (default: 'standard')"
+    },
+    {
+      "name": "force",
+      "type": "boolean",
+      "optional": true,
+      "description": "Overwrite existing command directory if it exists"
+    }
+  ],
+  "results": [
+    {
+      "name": "filesCreated",
+      "type": "string[]",
+      "description": "Array of file paths that were created"
+    },
+    {
+      "name": "commandPath",
+      "type": "string",
+      "description": "Base directory path where command was generated"
+    },
+    {
+      "name": "templateSpec",
+      "type": "object",
+      "description": "Example CommandSpec template (only when template=true)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Generate from spec file",
+      "command": "./jtag development/generate --spec=generator/specs/my-command.json",
+      "expectedResult": "{ filesCreated: ['shared/MyCommandTypes.ts', ...], commandPath: 'commands/my/command' }"
+    },
+    {
+      "description": "Get a starter template",
+      "command": "./jtag development/generate --template=true",
+      "expectedResult": "{ templateSpec: { name: 'example/command', ... } }"
+    },
+    {
+      "description": "Get a minimal template",
+      "command": "./jtag development/generate --template=true --templateType=minimal",
+      "expectedResult": "{ templateSpec: { name: 'my/command', params: [], ... } }"
+    },
+    {
+      "description": "Generate from inline JSON",
+      "command": "./jtag development/generate --spec='{\"name\":\"my/cmd\",\"description\":\"Test\",\"params\":[],\"results\":[]}'",
+      "expectedResult": "{ filesCreated: [...], commandPath: 'commands/my/cmd' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

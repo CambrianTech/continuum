@@ -1,25 +1,35 @@
 {
-  "name": "@jtag-commands/generate-audit",
+  "name": "@jtag-commands/development/generate/audit",
   "version": "1.0.0",
-  "description": "Audit command modules for health checks and quality validation",
-  "main": "server/GenerateAuditServerCommand.js",
-  "types": "shared/GenerateAuditTypes.d.ts",
+  "description": "Audit all commands for generator conformance. Scans every command directory and checks for: matching generator spec, static accessor (Name.execute pattern), factory functions, any casts in Types files. Reports conformance status and summary statistics.",
+  "main": "server/DevelopmentGenerateAuditServerCommand.ts",
+  "types": "shared/DevelopmentGenerateAuditTypes.ts",
   "scripts": {
-    "test": "npx vitest test/",
-    "test:unit": "npx vitest test/unit/",
-    "test:integration": "npx vitest test/integration/",
-    "lint": "npx eslint . --ext .ts"
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DevelopmentGenerateAuditIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
   },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
   "keywords": [
     "jtag",
     "command",
-    "audit",
-    "quality",
-    "validation"
+    "development/generate/audit"
   ],
-  "author": "Joel",
   "license": "MIT",
-  "peerDependencies": {
-    "@jtag/core": "*"
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
   }
 }
