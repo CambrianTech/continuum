@@ -28,6 +28,7 @@ import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient
 import { LiveCallTracker } from './LiveCallTracker';
 import { ContentService } from '../../system/state/ContentService';
 import { contentState } from '../../system/state/ContentStateService';
+import { ContentLifecycle, type ContentLifecycleParticipant } from '../../system/state/ContentLifecycle';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
@@ -63,7 +64,7 @@ const DEFAULT_AI_SPEECH_DURATION_MS = 5000;
 const CAPTION_EXTEND_BUFFER_MS = 500;
 const TILE_RESOLUTION_DEBOUNCE_MS = 1000;
 
-export class LiveWidget extends ReactiveWidget {
+export class LiveWidget extends ReactiveWidget implements ContentLifecycleParticipant {
   // Session state
   @reactive() private sessionId: string | null = null;
   @reactive() private participants: Participant[] = [];
@@ -161,7 +162,6 @@ export class LiveWidget extends ReactiveWidget {
 
   // Reentrancy guard for handleJoin (async — prevents duplicate joins on rapid refresh)
   private _joining = false;
-  private _tabCloseUnsub: (() => void) | null = null;
 
   // Page unload handler (must be stored for removeEventListener)
   private _unloadHandler: (() => void) | null = null;
@@ -215,12 +215,8 @@ export class LiveWidget extends ReactiveWidget {
 
     this.visibilityObserver.observe(this);
 
-    // Leave call when our tab is closed (tab X button, ContentService.close)
-    this._tabCloseUnsub = Events.subscribe('content:tab:closed', (data: { contentType: string; entityId?: string }) => {
-      if (data.contentType === 'live' && data.entityId === this.entityId && this.isJoined) {
-        this.handleLeave();
-      }
-    });
+    // ContentLifecycle registration happens in onActivate/setEntityId
+    // when entityId is actually known (it's empty at connectedCallback time).
   }
 
   /** Save transcript scroll position before Lit re-renders */
@@ -290,19 +286,17 @@ export class LiveWidget extends ReactiveWidget {
       window.removeEventListener('beforeunload', this._unloadHandler);
       this._unloadHandler = null;
     }
-    this._tabCloseUnsub?.();
-    this._tabCloseUnsub = null;
 
-    // Fire live/leave before cleanup — best-effort, fire-and-forget.
-    // Cleanup disconnects LiveKit immediately; this notifies the server
-    // to update CallEntity and unregister VoiceOrchestrator if needed.
-    if (this.isJoined && this.sessionId) {
-      Commands.execute(COMMANDS.COLLABORATION_LIVE_LEAVE, {
-        sessionId: this.sessionId
-      }).catch(() => {});
+    // Unregister from content lifecycle
+    if (this.entityId) {
+      ContentLifecycle.unregister(this.entityId, this);
     }
 
-    this.cleanup();
+    // If still joined when DOM removes us (e.g. page navigation without tab close),
+    // do a best-effort cleanup. Normally willClose() already handled this.
+    if (this.isJoined) {
+      this.cleanup();
+    }
   }
 
   // ========================================
@@ -313,6 +307,11 @@ export class LiveWidget extends ReactiveWidget {
     this._tabActive = true; // Effective state recomputes — mic/speaker restore automatically
 
     if (entityId) {
+      // Unregister old entityId if switching
+      if (this.entityId) {
+        ContentLifecycle.unregister(this.entityId, this);
+      }
+
       const cleanEntityId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
       this.entityId = cleanEntityId;
 
@@ -320,6 +319,9 @@ export class LiveWidget extends ReactiveWidget {
       if (meta?.room?.id) {
         this.entityId = meta.room.id;
       }
+
+      // Register for content lifecycle now that entityId is known
+      ContentLifecycle.register(this.entityId, this);
 
       if (!this.isJoined) {
         console.log('LiveWidget: Auto-joining for entityId:', this.entityId);
@@ -333,7 +335,13 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   setEntityId(entityId: string): void {
+    if (this.entityId) {
+      ContentLifecycle.unregister(this.entityId, this);
+    }
     this.entityId = entityId;
+    if (entityId) {
+      ContentLifecycle.register(entityId, this);
+    }
   }
 
   // ========================================
@@ -612,17 +620,38 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
+  /**
+   * User clicked "leave" or "end call" — close the content tab.
+   * ContentService.close() → ContentLifecycle.willClose() → cleanup.
+   * ONE path. No duplication.
+   */
   private handleLeave(): void {
-    if (!this.sessionId) return;
+    const liveTab = contentState.findItem('live', this.entityId);
+    if (liveTab) {
+      ContentService.close(liveTab.id);
+    } else {
+      // Tab not found in contentState (edge case: direct join without tab).
+      // Call willClose directly so cleanup always happens.
+      this.willClose().catch(err => console.error('LiveWidget: willClose failed:', err));
+    }
+  }
+
+  /**
+   * ContentLifecycle hook — called BEFORE tab is removed.
+   * This is THE single cleanup path for leaving a call.
+   * Like iOS viewWillDisappear — save state, disconnect, notify server.
+   */
+  async willClose(): Promise<void> {
+    if (!this.isJoined || !this.sessionId) return;
     const sessionId = this.sessionId;
 
-    // 1. Disconnect audio immediately (non-blocking)
+    // 1. Disconnect audio/video immediately
     if (this.audioClient) {
       this.audioClient.leave();
       this.audioClient = null;
     }
 
-    // 2. Reset UI state immediately — responsive first
+    // 2. Reset UI state
     LiveCallTracker.leave(this.entityId);
     this.isJoined = false;
     this.sessionId = null;
@@ -633,16 +662,14 @@ export class LiveWidget extends ReactiveWidget {
     this.cleanup();
     this.requestUpdate();
 
-    // 3. Close the content tab immediately
-    const liveTab = contentState.findItem('live', this.entityId);
-    if (liveTab) {
-      ContentService.close(liveTab.id);
+    // 3. Notify server — await to ensure cleanup completes before tab removal
+    try {
+      await Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
+        sessionId
+      });
+    } catch (err) {
+      console.error('LiveWidget: leave notify failed:', err);
     }
-
-    // 4. Notify server in background — fire-and-forget
-    Commands.execute<LiveLeaveParams, LiveLeaveResult>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
-      sessionId
-    }).catch(err => console.error('LiveWidget: leave notify failed:', err));
   }
 
   // ========================================
