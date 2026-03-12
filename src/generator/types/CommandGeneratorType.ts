@@ -192,14 +192,18 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
       };
     }
 
-    // Fix: Missing or broken Types file (regenerate shared types)
-    if (!entry.checks['static-accessor'] || !entry.checks['factory-functions']) {
+    // Types file fixes are CONSERVATIVE:
+    // - Only create a new Types file if NONE exists (no shared/*.ts at all)
+    // - Never overwrite an existing Types file — it may have custom logic
+    // - Missing accessor/factory on existing files requires manual review
+    if (!entry.checks['has-types-file']) {
       try {
         const { TemplateLoader } = require('../TemplateLoader');
         const rendered = TemplateLoader.renderCommand(spec);
-        const className = spec.name.split('/').map((part: string) =>
-          part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
-        ).join('');
+        const className = spec.name
+          .split(/[\/\-_]/)
+          .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+          .join('');
 
         const typesPath = path.join(entry.path, 'shared', `${className}Types.ts`);
         const dir = path.dirname(typesPath);
@@ -207,16 +211,18 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
           fs.mkdirSync(dir, { recursive: true });
         }
         fs.writeFileSync(typesPath, rendered.sharedTypes, 'utf-8');
-
-        if (!entry.checks['static-accessor']) {
-          issuesFixed.push('Added static accessor pattern');
-        }
-        if (!entry.checks['factory-functions']) {
-          issuesFixed.push('Added factory functions');
-        }
-        filesModified.push(typesPath);
+        issuesFixed.push('Created missing Types file from spec');
+        filesCreated.push(typesPath);
       } catch (err) {
-        issuesRemaining.push(`Failed to fix Types: ${err instanceof Error ? err.message : String(err)}`);
+        issuesRemaining.push(`Failed to create Types: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      // Types file exists but missing accessor/factory — flag for manual review
+      if (!entry.checks['static-accessor']) {
+        issuesRemaining.push('Missing static accessor — add manually (existing Types has custom logic)');
+      }
+      if (!entry.checks['factory-functions']) {
+        issuesRemaining.push('Missing factory functions — add manually (existing Types has custom logic)');
       }
     }
 
@@ -239,9 +245,10 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
       try {
         const { TemplateLoader } = require('../TemplateLoader');
         const rendered = TemplateLoader.renderCommand(spec);
-        const className = spec.name.split('/').map((part: string) =>
-          part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
-        ).join('');
+        const className = spec.name
+          .split(/[\/\-_]/)
+          .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+          .join('');
         const browserPath = path.join(entry.path, 'browser', `${className}BrowserCommand.ts`);
         const dir = path.dirname(browserPath);
         if (!fs.existsSync(dir)) {
@@ -255,20 +262,14 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
       }
     }
 
-    // Remaining issues that can't be auto-fixed
+    // Any original issues not addressed by fixes or already in remaining
+    const handledKeywords = issuesFixed.concat(issuesRemaining).join(' ').toLowerCase();
     for (const issue of entry.issues) {
-      if (!issuesFixed.some(f => issue.toLowerCase().includes(f.toLowerCase().split(' ')[1]))) {
-        if (!issuesRemaining.includes(issue) && !issuesFixed.some(f => f.includes(issue))) {
-          // Check if this issue was already handled
-          const handled = issuesFixed.some(fixed =>
-            (issue.includes('accessor') && fixed.includes('accessor')) ||
-            (issue.includes('factory') && fixed.includes('factory')) ||
-            (issue.includes('README') && fixed.includes('README'))
-          );
-          if (!handled) {
-            issuesRemaining.push(issue);
-          }
-        }
+      const key = issue.toLowerCase();
+      const alreadyTracked = issuesFixed.some(f => f.toLowerCase().includes(key.split(' ')[0])) ||
+        issuesRemaining.includes(issue);
+      if (!alreadyTracked && !handledKeywords.includes(key.split(' ')[0])) {
+        issuesRemaining.push(issue);
       }
     }
 
