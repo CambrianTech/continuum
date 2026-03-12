@@ -1,5 +1,4 @@
 {
-  "generated": "2026-03-12T16:06:41.664Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5545,6 +5544,37 @@
       }
     },
     {
+      "name": "development/debug/content-types",
+      "description": "Debug command for inspecting and managing ContentType registry Helps debug content type configurations and widget mappings",
+      "params": {
+        "listAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "listAll parameter"
+        },
+        "showInactive": {
+          "type": "boolean",
+          "required": false,
+          "description": "showInactive parameter"
+        },
+        "contentType": {
+          "type": "string",
+          "required": false,
+          "description": "contentType parameter"
+        },
+        "validateConfig": {
+          "type": "boolean",
+          "required": false,
+          "description": "validateConfig parameter"
+        },
+        "seedDefaults": {
+          "type": "boolean",
+          "required": false,
+          "description": "seedDefaults parameter"
+        }
+      }
+    },
+    {
       "name": "development/debug/chat-send",
       "description": "Triggers chat widget to send a message for testing event flow",
       "params": {
@@ -5568,6 +5598,52 @@
           "type": "string",
           "required": false,
           "description": "testFile parameter"
+        }
+      }
+    },
+    {
+      "name": "development/debug/academy-sessions",
+      "description": "Debug command for inspecting and managing Academy training sessions Helps debug training progress, hyperparameters, and session metrics",
+      "params": {
+        "academySessionId": {
+          "type": "string",
+          "required": false,
+          "description": "academySessionId parameter"
+        },
+        "teacherId": {
+          "type": "string",
+          "required": false,
+          "description": "teacherId parameter"
+        },
+        "studentId": {
+          "type": "string",
+          "required": false,
+          "description": "studentId parameter"
+        },
+        "curriculum": {
+          "type": "string",
+          "required": false,
+          "description": "curriculum parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "showMetrics": {
+          "type": "boolean",
+          "required": false,
+          "description": "showMetrics parameter"
+        },
+        "showObjectives": {
+          "type": "boolean",
+          "required": false,
+          "description": "showObjectives parameter"
+        },
+        "exportFormat": {
+          "type": "string",
+          "required": false,
+          "description": "exportFormat parameter"
         }
       }
     },
@@ -5599,6 +5675,32 @@
           "type": "string",
           "required": false,
           "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "development/code-smell",
+      "description": "Detect code smells: raw Commands.execute, any casts, god classes, missing accessors, type violations. Uses Generator SDK audit + grep patterns.",
+      "params": {
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        },
+        "path": {
+          "type": "string",
+          "required": false,
+          "description": "path parameter"
+        },
+        "fix": {
+          "type": "boolean",
+          "required": false,
+          "description": "fix parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
         }
       }
     },
