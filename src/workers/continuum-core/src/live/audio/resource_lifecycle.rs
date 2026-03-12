@@ -141,13 +141,39 @@ impl AudioResourceLifecycle {
                     continue;
                 }
 
-                // Still zero sessions — shut down all audio models
+                // Still zero sessions — shut down all audio models + avatar renderer
                 clog_info!(
-                    "AudioResourceLifecycle: idle timeout expired with 0 sessions — shutting down audio models"
+                    "AudioResourceLifecycle: idle timeout expired with 0 sessions — shutting down audio models + avatars"
                 );
                 Self::shutdown_all_adapters().await;
+                Self::unload_avatar_models();
             }
         });
+    }
+
+    /// Unload avatar models from Bevy render slots and clear identity mappings.
+    ///
+    /// Called after idle timeout — all agents are long gone, safe to teardown.
+    /// Clears identity→slot map so next call gets fresh allocations.
+    fn unload_avatar_models() {
+        if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
+            let _ = bevy.command_sender().send(
+                crate::live::video::bevy_renderer::AvatarCommand::UnloadIdle,
+            );
+            // Clear identity→slot mappings so next call re-allocates + reloads.
+            // identity_to_slot_map() returns a clone — iterate and unregister each.
+            let identities: Vec<String> = bevy.identity_to_slot_map().keys().cloned().collect();
+            if !identities.is_empty() {
+                for identity in &identities {
+                    bevy.unregister_identity(identity);
+                }
+                clog_info!(
+                    "AudioResourceLifecycle: cleared {} identity→slot mappings",
+                    identities.len()
+                );
+            }
+            clog_info!("AudioResourceLifecycle: sent UnloadIdle to Bevy renderer");
+        }
     }
 
     /// Shut down all STT and TTS adapters to reclaim memory.

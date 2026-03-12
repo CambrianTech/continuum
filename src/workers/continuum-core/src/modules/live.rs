@@ -222,20 +222,11 @@ impl ServiceModule for VoiceModule {
                     .remove_listener(session_id)
                     .await;
 
-                // Unload avatar models from Bevy render slots — no call means
-                // no viewers. Models reload transparently on next call join.
-                if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
-                    let _ = bevy.command_sender().send(
-                        crate::live::video::bevy_renderer::AvatarCommand::UnloadIdle,
-                    );
-                    log_info!(
-                        "module",
-                        "voice_end_session",
-                        "Sent UnloadIdle to Bevy renderer"
-                    );
-                }
-
-                // Track session end for resource lifecycle (triggers idle timeout)
+                // Track session end for resource lifecycle (triggers idle timeout).
+                // Avatar models and audio adapters unload after the idle timeout
+                // (default 60s) — NOT immediately, because:
+                // 1. User might rejoin quickly (avoids expensive model reload)
+                // 2. LiveKit agents need time to tear down cleanly
                 self.state.resource_lifecycle.on_session_end();
 
                 Ok(CommandResult::Json(
