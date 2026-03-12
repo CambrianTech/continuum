@@ -11,6 +11,7 @@
 
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
+import { Ping } from '@commands/ping/shared/PingTypes';
 import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../system/data/entities/BaseEntity';
@@ -97,15 +98,15 @@ export class DiagnosticsWidget extends BasePanelWidget {
    */
   private async checkSystemHealth(): Promise<void> {
     try {
-      // Use ping command to check Rust worker connectivity
-      const pingResult = await Commands.execute('ping', {}) as any;
+      // Use typed ping accessor to check system health
+      const pingResult = await Ping.execute({});
 
-      if (pingResult?.success && pingResult?.services) {
-        // Check Rust worker (continuum-core)
-        this.systemHealth.rustWorkerStatus = pingResult.services.continuumCore ? 'operational' : 'offline';
+      if (pingResult?.success && pingResult?.server) {
+        // Rust worker + system ready from server health
+        this.systemHealth.rustWorkerStatus = pingResult.server.health.systemReady ? 'operational' : 'offline';
 
-        // Check memory services
-        this.systemHealth.memoryDbStatus = pingResult.services.database ? 'operational' : 'offline';
+        // Database inferred from system readiness
+        this.systemHealth.memoryDbStatus = pingResult.server.health.daemonsActive > 0 ? 'operational' : 'offline';
 
         // Hippocampus and RAG inferred from active personas
         const activePersonas = this.personas.filter(p => p.status === 'online').length;

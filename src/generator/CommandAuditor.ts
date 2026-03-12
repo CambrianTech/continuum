@@ -278,8 +278,10 @@ export class CommandAuditor {
       }
     }
 
-    // Check static accessor
-    const hasStaticAccessor = typesContent.includes('.execute(') && typesContent.includes('commandName:');
+    // Check static accessor — look for object literal with execute method + commandName
+    // Pattern: `export const X = { execute(...) { ... }, commandName: '...' } as const;`
+    const hasStaticAccessor = /export\s+const\s+\w+\s*=\s*\{[\s\S]*?execute\s*[<(]/.test(typesContent) &&
+      typesContent.includes('commandName:');
 
     // Check factory functions
     const hasFactoryFunctions = typesContent.includes('createPayload') || typesContent.includes('create') && typesContent.includes('Params');

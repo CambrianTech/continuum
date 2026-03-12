@@ -7,11 +7,11 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import { Commands } from '../../../../system/core/shared/Commands';
 import { v4 as uuid } from 'uuid';
 import type { SentinelSaveParams, SentinelSaveResult } from '../shared/SentinelSaveTypes';
 import type { SentinelDefinition, SentinelEntity } from '../../../../system/sentinel';
 import { validateDefinition, DEFAULT_ESCALATION_RULES } from '../../../../system/sentinel';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 
 const COLLECTION = 'sentinels';
 
@@ -74,10 +74,10 @@ export class SentinelSaveServerCommand extends CommandBase<SentinelSaveParams, S
       definition,
       executions: [],
       status: 'saved',
-      parentPersonaId: saveParams.parentPersonaId ?? (params as any).userId,
+      parentPersonaId: saveParams.parentPersonaId ?? saveParams.userId,
       createdAt: now,
       updatedAt: now,
-      createdBy: (params as any).userId,
+      createdBy: saveParams.userId,
       isTemplate: saveParams.isTemplate,
       tags: saveParams.tags,
       escalationRules: saveParams.escalationRules ?? DEFAULT_ESCALATION_RULES,
@@ -86,10 +86,10 @@ export class SentinelSaveServerCommand extends CommandBase<SentinelSaveParams, S
 
     // Save to database
     try {
-      await Commands.execute('data/create', {
+      await DataCreate.execute({
         collection: COLLECTION,
-        data: entity,
-      } as any);
+        data: entity as unknown as Record<string, unknown>,
+      });
 
       return transformPayload(params, {
         success: true,
@@ -97,10 +97,11 @@ export class SentinelSaveServerCommand extends CommandBase<SentinelSaveParams, S
         shortId: id.slice(0, 8),
         entity,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       return transformPayload(params, {
         success: false,
-        error: `Failed to save: ${error.message}`,
+        error: `Failed to save: ${message}`,
       });
     }
   }

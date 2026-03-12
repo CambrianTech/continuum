@@ -1,0 +1,70 @@
+{
+  "name": "development/code-smell",
+  "description": "Detect code smells: raw Commands.execute, any casts, god classes, missing accessors, type violations. Uses Generator SDK audit + grep patterns.",
+  "params": [
+    {
+      "name": "category",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by smell category: any-casts, raw-execute, god-class, missing-accessor, all (default: all)"
+    },
+    {
+      "name": "path",
+      "type": "string",
+      "optional": true,
+      "description": "Limit scan to a specific directory path relative to src/"
+    },
+    {
+      "name": "fix",
+      "type": "boolean",
+      "optional": true,
+      "description": "Auto-fix where possible (e.g. add missing static accessors)"
+    },
+    {
+      "name": "verbose",
+      "type": "boolean",
+      "optional": true,
+      "description": "Show individual file-level details instead of summary"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the scan completed"
+    },
+    {
+      "name": "totalSmells",
+      "type": "number",
+      "description": "Total code smells found"
+    },
+    {
+      "name": "categories",
+      "type": "object",
+      "description": "Smells grouped by category with counts and file locations"
+    },
+    {
+      "name": "summary",
+      "type": "string",
+      "description": "Human-readable summary"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Full scan",
+      "command": "./jtag development/code-smell",
+      "expectedResult": "Returns all code smells across the codebase"
+    },
+    {
+      "description": "Only any-casts",
+      "command": "./jtag development/code-smell --category=any-casts",
+      "expectedResult": "Returns only any-cast violations"
+    },
+    {
+      "description": "Scan and fix",
+      "command": "./jtag development/code-smell --fix",
+      "expectedResult": "Auto-fixes what it can (e.g. missing accessors)"
+    }
+  ],
+  "accessLevel": "internal"
+}

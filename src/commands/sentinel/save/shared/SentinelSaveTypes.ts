@@ -6,6 +6,8 @@
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelDefinition, SentinelEntity } from '../../../../system/sentinel';
 import type { EscalationRule } from '../../../../system/sentinel';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Save params - accepts either:
@@ -57,3 +59,17 @@ export interface SentinelSaveResult extends CommandResult {
   /** Error message if failed */
   error?: string;
 }
+
+/**
+ * SentinelSave — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelSave } from '...shared/SentinelSaveTypes';
+ *   const result = await SentinelSave.execute({ ... });
+ */
+export const SentinelSave = {
+  execute(params: CommandInput<SentinelSaveParams>): Promise<SentinelSaveResult> {
+    return Commands.execute<SentinelSaveParams, SentinelSaveResult>('sentinel/save', params as Partial<SentinelSaveParams>);
+  },
+  commandName: 'sentinel/save' as const,
+} as const;

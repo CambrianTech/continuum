@@ -4,10 +4,11 @@
  * Following the same pattern as FileTypes for consistency
  */
 
-import type { JTAGContext, CommandParams } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandResult, CommandInput } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
+import { Commands } from '@system/core/shared/Commands';
 
 /**
  * Base theme parameters interface
@@ -19,10 +20,8 @@ export interface ThemeParams extends CommandParams {
 /**
  * Base theme result interface
  */
-export interface ThemeResult {
+export interface ThemeResult extends CommandResult {
   readonly success: boolean;
-  readonly context: JTAGContext;
-  readonly sessionId: UUID;
   readonly timestamp: string;
   readonly error?: JTAGError;
 }
@@ -84,3 +83,13 @@ export function createThemeResult(
     ...(data.error && { error: data.error })
   };
 }
+
+/**
+ * Theme — Type-safe command executor
+ */
+export const Theme = {
+  execute(params: CommandInput<ThemeParams>): Promise<ThemeResult> {
+    return Commands.execute<ThemeParams, ThemeResult>('theme', params as Partial<ThemeParams>);
+  },
+  commandName: 'theme' as const,
+} as const;

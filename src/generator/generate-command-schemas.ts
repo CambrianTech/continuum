@@ -26,7 +26,8 @@
  * - Type-safe by design (can't get out of sync)
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { writeIfChanged } from './core/writeIfChanged';
 import { join, relative } from 'path';
 import * as glob from 'glob';
 
@@ -47,7 +48,6 @@ interface CommandSchema {
 }
 
 interface GeneratedSchemas {
-  generated: string;
   version: string;
   commands: CommandSchema[];
 }
@@ -135,7 +135,6 @@ class CommandSchemaGenerator {
     console.log(`✅ After deduplication: ${deduplicated.length} command schemas`);
 
     return {
-      generated: new Date().toISOString(),
       version: '1.0.0',
       commands: deduplicated
     };
@@ -607,11 +606,12 @@ function main() {
   const generator = new CommandSchemaGenerator(rootPath);
   const result = generator.generate();
 
-  // Write to output file
+  // Write to output file (only if changed)
   const outputPath = join(rootPath, 'generated-command-schemas.json');
-  writeFileSync(outputPath, JSON.stringify(result, null, 2), 'utf-8');
+  const content = JSON.stringify(result, null, 2);
+  const changed = writeIfChanged(outputPath, content);
 
-  console.log(`\n💾 Wrote schemas to: ${outputPath}`);
+  console.log(`\n${changed ? '💾 Wrote' : '⏭️  Unchanged:'} schemas: ${outputPath}`);
   console.log(`📊 Total commands: ${result.commands.length}`);
   console.log('✨ Done!\n');
 }

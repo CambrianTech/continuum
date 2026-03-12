@@ -3,6 +3,8 @@
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Read a log stream for a sentinel with optional offset and limit for pagination.
@@ -34,3 +36,17 @@ export interface SentinelLogsReadResult extends CommandResult {
   truncated: boolean;
   error?: string;
 }
+
+/**
+ * SentinelLogsRead — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelLogsRead } from '...shared/SentinelLogsReadTypes';
+ *   const result = await SentinelLogsRead.execute({ ... });
+ */
+export const SentinelLogsRead = {
+  execute(params: CommandInput<SentinelLogsReadParams>): Promise<SentinelLogsReadResult> {
+    return Commands.execute<SentinelLogsReadParams, SentinelLogsReadResult>('sentinel/logs/read', params as Partial<SentinelLogsReadParams>);
+  },
+  commandName: 'sentinel/logs/read' as const,
+} as const;

@@ -31,7 +31,7 @@ export interface SchemaField {
   index?: boolean;
   unique?: boolean;
   maxLength?: number;
-  default?: any;
+  default?: string | number | boolean | null;
   references?: string; // For foreign keys: 'User.userId'
 }
 
@@ -39,8 +39,8 @@ export interface SchemaField {
  * Example JSON objects for entity creation
  */
 export interface EntityExamples {
-  minimal: Record<string, any>; // Only required fields
-  complete: Record<string, any>; // All fields with realistic values
+  minimal: Record<string, unknown>; // Only required fields
+  complete: Record<string, unknown>; // All fields with realistic values
   description: string; // Explanation of the examples
 }
 

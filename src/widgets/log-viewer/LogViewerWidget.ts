@@ -15,6 +15,7 @@
 
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
+import { CodeRead } from '@commands/code/read/shared/CodeReadTypes';
 import { Events } from '../../system/core/shared/Events';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import type { LogLine, LogsReadResult } from '../../commands/logs/read/shared/LogsReadTypes';
@@ -111,7 +112,7 @@ export class LogViewerWidget extends BasePanelWidget {
     if (logPath.startsWith('file:')) {
       const filePath = logPath.slice(5); // strip "file:" prefix
       try {
-        const result = await Commands.execute('code/read', { filePath } as Record<string, unknown>) as { content?: string; filePath?: string; totalLines?: number };
+        const result = await CodeRead.execute({ filePath });
         if (result?.content) {
           const fileName = filePath.split('/').pop() || filePath;
           this.renderInlineContent(result.content, fileName);

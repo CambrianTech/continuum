@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/development/code-smell",
+  "version": "1.0.0",
+  "description": "Detect code smells: raw Commands.execute, any casts, god classes, missing accessors, type violations. Uses Generator SDK audit + grep patterns.",
+  "main": "server/DevelopmentCodeSmellServerCommand.ts",
+  "types": "shared/DevelopmentCodeSmellTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DevelopmentCodeSmellIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "development/code-smell"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

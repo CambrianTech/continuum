@@ -5,7 +5,7 @@
  * Following the established state command pattern for simple delegation
  */
 
-import type { JTAGPayload, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -30,7 +30,7 @@ export interface StateUpdateResult<T extends BaseEntity> extends JTAGPayload {
 }
 
 export function createStateUpdateResult<T extends BaseEntity>(
-  context: any,
+  context: JTAGContext,
   sessionId: string,
   overrides: Partial<StateUpdateResult<T>>
 ): StateUpdateResult<T> {

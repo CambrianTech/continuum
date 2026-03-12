@@ -64,8 +64,8 @@ if [ "$HOT_RESTART" = false ]; then
   bash scripts/system-stop.sh
 fi
 
-# Version bump (once, before builds — not inside prebuild where it triggers cascading rebuilds)
-npm version patch --no-git-tag-version --silent 2>/dev/null || true
+# Version bump removed from npm start — bumps belong in npm run pack (release builds only)
+# This was dirtying package.json + version.ts on every deploy, polluting git status
 
 # Phase 2: Build pipeline — Rust first (exclusive cargo access), then TS + VRM in parallel
 #

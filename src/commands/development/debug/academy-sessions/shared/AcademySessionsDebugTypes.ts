@@ -5,10 +5,12 @@
  * Helps debug training progress, hyperparameters, and session metrics
  */
 
+import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '@system/core/shared/Commands';
 
-export interface AcademySessionsDebugParams {
-  sessionId?: UUID;               // Inspect specific session
+export interface AcademySessionsDebugParams extends CommandParams {
+  academySessionId?: UUID;        // Inspect specific academy session
   teacherId?: UUID;               // Filter by teacher
   studentId?: UUID;               // Filter by student
   curriculum?: string;            // Filter by curriculum
@@ -38,7 +40,7 @@ export interface SessionSummary {
   };
 }
 
-export interface AcademySessionsDebugResult {
+export interface AcademySessionsDebugResult extends CommandResult {
   totalSessions: number;
   activeSessions: number;
   completedSessions: number;
@@ -64,3 +66,15 @@ export interface AcademySessionsDebugResult {
   };
   recommendations?: string[];
 }
+
+/**
+ * DevelopmentDebugAcademySessions — Type-safe command executor
+ */
+export const DevelopmentDebugAcademySessions = {
+  execute(params: CommandInput<AcademySessionsDebugParams>): Promise<AcademySessionsDebugResult> {
+    return Commands.execute<AcademySessionsDebugParams, AcademySessionsDebugResult>(
+      'development/debug/academy-sessions', params as Partial<AcademySessionsDebugParams>
+    );
+  },
+  commandName: 'development/debug/academy-sessions' as const,
+} as const;

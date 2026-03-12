@@ -8,9 +8,11 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import { Commands } from '../../../../system/core/shared/Commands';
 import type { SentinelLoadParams, SentinelLoadResult } from '../shared/SentinelLoadTypes';
 import type { SentinelEntity } from '../../../../system/sentinel';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
+import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
+import { SentinelRun } from '@commands/sentinel/run/shared/SentinelRunTypes';
 
 const COLLECTION = 'sentinels';
 
@@ -34,26 +36,26 @@ export class SentinelLoadServerCommand extends CommandBase<SentinelLoadParams, S
 
     try {
       // Try exact match first
-      let listResult = await Commands.execute('data/list', {
+      const listResult = await DataList.execute({
         collection: COLLECTION,
         limit: 1,
         filter: { id: loadParams.id },
-      } as any) as any;
+      });
 
-      let items = listResult.items || listResult.data || [];
+      const items = listResult.items as unknown as SentinelEntity[];
       if (listResult.success && items.length > 0) {
-        entity = items[0] as SentinelEntity;
+        entity = items[0];
       }
 
       // If not found and id looks like shortId, try partial match
       if (!entity && loadParams.id.length <= 8) {
-        listResult = await Commands.execute('data/list', {
+        const allResult = await DataList.execute({
           collection: COLLECTION,
           limit: 10,
-        } as any) as any;
+        });
 
-        items = listResult.items || listResult.data || [];
-        entity = items.find((e: SentinelEntity) => e.id.startsWith(loadParams.id));
+        const allItems = allResult.items as unknown as SentinelEntity[];
+        entity = allItems.find(e => e.id.startsWith(loadParams.id));
       }
     } catch {
       // Ignore
@@ -68,7 +70,7 @@ export class SentinelLoadServerCommand extends CommandBase<SentinelLoadParams, S
 
     // If run requested, execute the sentinel
     if (loadParams.run) {
-      const runParams: any = {
+      const runParams: Record<string, unknown> = {
         ...entity.definition,
         async: loadParams.async !== false,
       };
@@ -78,7 +80,7 @@ export class SentinelLoadServerCommand extends CommandBase<SentinelLoadParams, S
       }
 
       try {
-        const runResult = await Commands.execute('sentinel/run', runParams) as any;
+        const runResult = await SentinelRun.execute(runParams as Parameters<typeof SentinelRun.execute>[0]);
 
         // Record execution in entity
         if (runResult.handle) {
@@ -94,14 +96,14 @@ export class SentinelLoadServerCommand extends CommandBase<SentinelLoadParams, S
           entity.updatedAt = new Date().toISOString();
 
           // Update entity in database
-          await Commands.execute('data/update', {
+          await DataUpdate.execute({
             collection: COLLECTION,
             id: entity.id,
             data: {
               executions: entity.executions,
               updatedAt: entity.updatedAt,
             },
-          } as any);
+          });
 
           return transformPayload(params, {
             success: true,
@@ -110,11 +112,12 @@ export class SentinelLoadServerCommand extends CommandBase<SentinelLoadParams, S
             result: runResult.completed ? execution : undefined,
           });
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
         return transformPayload(params, {
           success: false,
           entity,
-          error: `Failed to run: ${error.message}`,
+          error: `Failed to run: ${message}`,
         });
       }
     }

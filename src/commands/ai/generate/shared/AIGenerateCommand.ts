@@ -34,7 +34,7 @@ export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AI
    * Shows EXACTLY what would be sent to LLM
    * Protected so server implementation can use it
    */
-  protected formatRequestPreview(request: TextGenerationRequest, ragContext?: any): string {
+  protected formatRequestPreview(request: TextGenerationRequest, ragContext?: { domain: string; contextId: string; identity: { name: string }; metadata: { messageCount: number; artifactCount: number; memoryCount: number } }): string {
     const lines: string[] = [];
 
     lines.push('');

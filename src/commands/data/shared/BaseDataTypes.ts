@@ -12,6 +12,7 @@ import { createPayload, transformPayload } from '../../../system/core/types/JTAG
 import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { Commands } from '@system/core/shared/Commands';
 
 /**
  * Base interface for all data command parameters
@@ -82,3 +83,17 @@ export const createBaseDataResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+
+/**
+ * Data — Type-safe command executor
+ *
+ * Usage:
+ *   import { Data } from '...shared/BaseDataTypes';
+ *   const result = await Data.execute({ ... });
+ */
+export const Data = {
+  execute(params: DataCommandInput<BaseDataParams>): Promise<BaseDataResult> {
+    return Commands.execute<BaseDataParams, BaseDataResult>('data', params as Partial<BaseDataParams>);
+  },
+  commandName: 'data' as const,
+} as const;

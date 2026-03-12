@@ -38,7 +38,7 @@ export interface DatabaseSyncData {
   items: Array<{
     id: string;
     name?: string;
-    content?: any;
+    content?: unknown;
     createdAt?: string;
   }>;
 }

@@ -3,8 +3,9 @@
  * Extracts version from package.json and generates shared/version.ts
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
+import { writeIfChanged } from './core/writeIfChanged';
 
 const packageJsonPath = join(process.cwd(), 'package.json');
 const outputPath = join(process.cwd(), 'shared', 'version.ts');
@@ -20,5 +21,7 @@ export const VERSION = '${pkg.version}';
 export const PACKAGE_NAME = '${pkg.name}';
 `;
 
-writeFileSync(outputPath, content, 'utf-8');
-console.log(`✅ Generated shared/version.ts with version ${pkg.version}`);
+const changed = writeIfChanged(outputPath, content);
+console.log(changed
+  ? `✅ Generated shared/version.ts with version ${pkg.version}`
+  : `⏭️  shared/version.ts unchanged (${pkg.version})`);

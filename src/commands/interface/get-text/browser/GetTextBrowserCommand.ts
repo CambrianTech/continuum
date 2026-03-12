@@ -49,7 +49,7 @@ export class GetTextBrowserCommand extends GetTextCommand {
           selector: params.selector,
           text: text,
           found: true,
-          shadowDOMData: shadowSearchResult
+          shadowDOMData: shadowSearchResult as unknown as Record<string, unknown>
         });
       }
       

@@ -5,7 +5,10 @@
  * Helps debug content type configurations and widget mappings
  */
 
-export interface ContentTypesDebugParams {
+import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
+
+export interface ContentTypesDebugParams extends CommandParams {
   listAll?: boolean;              // List all registered content types
   showInactive?: boolean;         // Include inactive content types
   contentType?: string;           // Inspect specific content type
@@ -29,7 +32,7 @@ export interface ContentTypeInfo {
   issues?: string[];            // Configuration validation issues
 }
 
-export interface ContentTypesDebugResult {
+export interface ContentTypesDebugResult extends CommandResult {
   totalTypes: number;
   activeTypes: number;
   inactiveTypes: number;
@@ -54,3 +57,15 @@ export interface ContentTypesDebugResult {
   }[];
   recommendations?: string[];
 }
+
+/**
+ * DevelopmentDebugContentTypes — Type-safe command executor
+ */
+export const DevelopmentDebugContentTypes = {
+  execute(params: CommandInput<ContentTypesDebugParams>): Promise<ContentTypesDebugResult> {
+    return Commands.execute<ContentTypesDebugParams, ContentTypesDebugResult>(
+      'development/debug/content-types', params as Partial<ContentTypesDebugParams>
+    );
+  },
+  commandName: 'development/debug/content-types' as const,
+} as const;

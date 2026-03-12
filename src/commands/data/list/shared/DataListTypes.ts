@@ -24,8 +24,8 @@ export interface DataListParams extends CommandParams {
   readonly collection: string;
   /** Maximum items to return */
   readonly limit?: number;
-  /** Filter criteria */
-  readonly filter?: Record<string, any>;
+  /** Filter criteria (field name → value or operator object) */
+  readonly filter?: Record<string, unknown>;  // Accepts UniversalFilter at runtime, typed loosely for CLI/JSON input
   /** Sort order */
   readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
   /** Convert raw data to domain objects */
@@ -33,7 +33,7 @@ export interface DataListParams extends CommandParams {
   /** Cursor for pagination */
   readonly cursor?: {
     readonly field: string;
-    readonly value: any;
+    readonly value: string | number | boolean | Date;
     readonly direction: 'before' | 'after';
   };
   /** Field projection - only return these fields (applied in TypeScript after fetch) */

@@ -4,6 +4,8 @@
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelDefinition } from '../../../../system/sentinel';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * List saved sentinel definitions from database with optional filters.
@@ -51,3 +53,17 @@ export interface SentinelListResult extends CommandResult {
   sentinels: SentinelSummary[];
   total: number;
 }
+
+/**
+ * SentinelList — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelList } from '...shared/SentinelListTypes';
+ *   const result = await SentinelList.execute({ ... });
+ */
+export const SentinelList = {
+  execute(params: CommandInput<SentinelListParams>): Promise<SentinelListResult> {
+    return Commands.execute<SentinelListParams, SentinelListResult>('sentinel/list', params as Partial<SentinelListParams>);
+  },
+  commandName: 'sentinel/list' as const,
+} as const;

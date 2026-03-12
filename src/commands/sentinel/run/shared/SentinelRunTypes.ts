@@ -7,6 +7,8 @@ import type { CommandParams, CommandResult } from '../../../../system/core/types
 import type { ModelCapacity, ModelProvider } from '../../../../system/sentinel/ModelProvider';
 
 import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
+import { Commands } from '@system/core/shared/Commands';
+import type { CommandInput } from '@system/core/types/JTAGTypes';
 
 /**
  * Sentinel types available
@@ -252,3 +254,17 @@ export interface SentinelStatusResult extends CommandResult {
   data?: SentinelRunResult['data'];
   error?: string;
 }
+
+/**
+ * SentinelRun — Type-safe command executor
+ *
+ * Usage:
+ *   import { SentinelRun } from '...shared/SentinelRunTypes';
+ *   const result = await SentinelRun.execute({ ... });
+ */
+export const SentinelRun = {
+  execute(params: CommandInput<SentinelRunParams>): Promise<SentinelRunResult> {
+    return Commands.execute<SentinelRunParams, SentinelRunResult>('sentinel/run', params as Partial<SentinelRunParams>);
+  },
+  commandName: 'sentinel/run' as const,
+} as const;
