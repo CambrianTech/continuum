@@ -55,10 +55,24 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
       });
     }
 
-    // 4. Save updated call
+    // 4. If a human left and no humans remain, end the call entirely.
+    // AIs don't leave on their own — without this, avatar renderers and
+    // LiveKit agents persist indefinitely, leaking GPU/memory.
+    if (user.type === 'human') {
+      const activeParticipants = call.getActiveParticipants();
+      const humansRemaining = await this.countHumansInCall(activeParticipants, params);
+      if (humansRemaining === 0 && activeParticipants.length > 0) {
+        console.log(`🧹 Last human left call ${call.id} — ending call for ${activeParticipants.length} remaining AI participants`);
+        for (const p of activeParticipants) {
+          call.removeParticipant(p.userId);
+        }
+      }
+    }
+
+    // 5. Save updated call
     await this.saveCall(call, params);
 
-    // 5. Emit leave event for other clients
+    // 6. Emit leave event for other clients
     Events.emit(`live:left:${call.id}`, {
       sessionId: call.id,
       userId: user.id
@@ -67,7 +81,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
     const remainingParticipants = call.getActiveParticipants().length;
     const callEnded = call.status === 'ended';
 
-    // 6. Unregister voice session if call ended
+    // 7. Unregister voice session if call ended
     if (callEnded) {
       try {
         getVoiceOrchestrator().unregisterSession(call.id);
@@ -129,6 +143,26 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
     }
 
     return null;
+  }
+
+  /**
+   * Count how many active participants are human (not AI)
+   */
+  private async countHumansInCall(participants: { userId: UUID }[], params: LiveLeaveParams): Promise<number> {
+    if (participants.length === 0) return 0;
+
+    const userIds = participants.map(p => p.userId);
+    const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
+      collection: UserEntity.collection,
+      filter: { id: { $in: userIds } },
+      limit: userIds.length,
+      context: params.context,
+      sessionId: params.sessionId
+    });
+
+    if (!result.success || !result.items) return 0;
+    return result.items.filter(u => u.type === 'human').length;
   }
 
   /**
