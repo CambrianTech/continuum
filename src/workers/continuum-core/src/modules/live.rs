@@ -988,6 +988,10 @@ impl ServiceModule for VoiceModule {
                     }
                 }
 
+                // Reset session counter — force-unload means we don't care about
+                // in-flight sessions. Models will reload on next call.
+                self.state.resource_lifecycle.reset_sessions();
+
                 log_info!(
                     "module",
                     "voice_resource_unload",

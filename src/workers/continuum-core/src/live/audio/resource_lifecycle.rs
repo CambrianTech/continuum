@@ -59,26 +59,58 @@ impl AudioResourceLifecycle {
     /// Called when a voice session ends.
     /// Notifies the idle watcher when the count reaches zero.
     pub fn on_session_end(&self) {
-        let prev = self.active_sessions.fetch_sub(1, Ordering::SeqCst);
-        let new_count = prev.saturating_sub(1);
-        clog_info!(
-            "AudioResourceLifecycle: session ended (active: {} → {})",
-            prev,
-            new_count
-        );
+        // CAS loop to prevent underflow (fetch_sub on 0 wraps to u32::MAX)
+        loop {
+            let current = self.active_sessions.load(Ordering::SeqCst);
+            if current == 0 {
+                clog_warn!(
+                    "AudioResourceLifecycle: on_session_end called with 0 active sessions (double-end?)"
+                );
+                return;
+            }
+            if self
+                .active_sessions
+                .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let new_count = current - 1;
+                clog_info!(
+                    "AudioResourceLifecycle: session ended (active: {} → {})",
+                    current,
+                    new_count
+                );
 
-        if new_count == 0 {
-            clog_info!(
-                "AudioResourceLifecycle: all sessions ended, idle timer starts ({}s)",
-                self.idle_timeout.as_secs()
-            );
-            self.idle_notify.notify_one();
+                if new_count == 0 {
+                    clog_info!(
+                        "AudioResourceLifecycle: all sessions ended, idle timer starts ({}s)",
+                        self.idle_timeout.as_secs()
+                    );
+                    self.idle_notify.notify_one();
+                }
+                return;
+            }
+            // CAS failed — another thread changed the value, retry
         }
     }
 
     /// Current number of active sessions.
     pub fn active_count(&self) -> u32 {
         self.active_sessions.load(Ordering::SeqCst)
+    }
+
+    /// Force-reset the session counter to zero.
+    ///
+    /// Used by `voice/resource-unload` when force-unloading models regardless
+    /// of session state. Does NOT trigger the idle watcher — the caller is
+    /// already unloading models directly.
+    pub fn reset_sessions(&self) {
+        let prev = self.active_sessions.swap(0, Ordering::SeqCst);
+        if prev > 0 {
+            clog_warn!(
+                "AudioResourceLifecycle: force-reset sessions ({} → 0)",
+                prev
+            );
+        }
     }
 
     /// Spawn the idle watcher as a background tokio task.
@@ -201,5 +233,17 @@ mod tests {
     fn test_custom_timeout() {
         let lifecycle = AudioResourceLifecycle::with_timeout(Duration::from_secs(120));
         assert_eq!(lifecycle.idle_timeout.as_secs(), 120);
+    }
+
+    #[test]
+    fn test_reset_sessions() {
+        let lifecycle = AudioResourceLifecycle::new();
+        lifecycle.on_session_start();
+        lifecycle.on_session_start();
+        lifecycle.on_session_start();
+        assert_eq!(lifecycle.active_count(), 3);
+
+        lifecycle.reset_sessions();
+        assert_eq!(lifecycle.active_count(), 0);
     }
 }
