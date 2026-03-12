@@ -53,6 +53,7 @@ import { PersonaPromptAssembler } from './PersonaPromptAssembler';
 import { PersonaResponseValidator } from './PersonaResponseValidator';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
+import { BackpressureService } from '../../../core/services/BackpressureService';
 import type { SocialSignals } from '../../../../shared/generated';
 /**
  * Response generation result
@@ -218,8 +219,15 @@ export class PersonaResponseGenerator {
       const pipelineTiming: Record<string, number> = {};
 
       // 🔧 SUB-PHASE 3.1: Build RAG context (or use pre-built from evaluator)
+      //
+      // PRESSURE-AWARE: Under high/critical memory pressure, build minimal RAG
+      // to avoid wasting compute on context that may sit in a long queue.
+      // The RAG system summarizes conversation history, so a slower cadence
+      // with less context still produces coherent responses.
       const phase31Start = Date.now();
       let fullRAGContext: RAGContext;
+      const pressure = BackpressureService.pressureLevel;
+      const isUnderPressure = pressure === 'high' || pressure === 'critical';
 
       if (preBuiltRagContext) {
         // OPTIMIZATION: Evaluator already built full RAG context — reuse it, skip redundant build
@@ -227,22 +235,26 @@ export class PersonaResponseGenerator {
         pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
         this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
       } else {
-        // Fallback: Build RAG context from scratch (for code paths that don't go through evaluator)
-        this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
+        // Build RAG context — reduced under pressure to save compute
         const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
         const voiceSessionId = originalMessage.voiceSessionId;
+        if (isUnderPressure) {
+          this.log(`📉 ${this.personaName}: [PHASE 3.1] Memory pressure=${pressure} — building minimal RAG context`);
+        } else {
+          this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
+        }
         fullRAGContext = await ragBuilder.buildContext(
           originalMessage.roomId,
           this.personaId,
           {
             modelId: this.modelConfig.model,
-            maxTokens: this.modelConfig.maxTokens,
-            maxMemories: 5,
-            includeArtifacts: true,
-            includeMemories: true,
+            maxTokens: isUnderPressure ? Math.min(this.modelConfig.maxTokens, 512) : this.modelConfig.maxTokens,
+            maxMemories: isUnderPressure ? 1 : 5,
+            includeArtifacts: !isUnderPressure,
+            includeMemories: !isUnderPressure,
             voiceSessionId,
             provider: this.modelConfig.provider,
-            toolCapability: getToolCapability(this.modelConfig.provider, this.modelConfig),
+            toolCapability: isUnderPressure ? 'none' : getToolCapability(this.modelConfig.provider, this.modelConfig),
             currentMessage: {
               role: 'user',
               content: originalMessage.content.text,
@@ -252,7 +264,7 @@ export class PersonaResponseGenerator {
           }
         );
         pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
-        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
+        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms${isUnderPressure ? ', minimal mode' : ''})`);
       }
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM (delegated to PersonaPromptAssembler)

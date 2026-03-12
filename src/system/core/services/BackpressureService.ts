@@ -107,16 +107,17 @@ export class BackpressureService {
   /**
    * Get current load level (0.0 to 1.0+)
    *
-   * Combines Candle queue load with Rust memory pressure gate.
-   * When memory gate is closed, returns 2.0 (emergency) regardless of queue.
+   * Combines Candle queue load with Rust memory pressure.
+   * Memory pressure adds to load proportionally (never returns emergency 2.0).
+   * Local inference must never be refused — the semaphore queue is the throttle.
    */
   static getLoad(): number {
-    // Memory gate overrides everything — if Rust says we're OOM, stop.
-    if (this.isMemoryGateClosed()) {
-      return 2.0;
-    }
     const stats = this.getQueueStats();
-    return stats?.load ?? 0;
+    const queueLoad = stats?.load ?? 0;
+    // Add pressure contribution (0-0.5) so high pressure increases load
+    // but never crosses the critical threshold alone
+    const pressureContribution = this.normalizedPressure * 0.5;
+    return queueLoad + pressureContribution;
   }
 
   /**
@@ -129,10 +130,9 @@ export class BackpressureService {
 
   /**
    * Check if system is under high load.
-   * True when Candle queue exceeds threshold OR Rust memory gate is closed.
+   * True when combined load (queue + pressure) exceeds normal threshold.
    */
   static isHighLoad(): boolean {
-    if (this.isMemoryGateClosed()) return true;
     return this.getLoad() > LOAD_THRESHOLDS.normal;
   }
 

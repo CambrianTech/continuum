@@ -476,7 +476,7 @@ impl AIProviderAdapter for CandleAdapter {
         ));
 
         let prompt = build_prompt_from_messages(&request.messages);
-        let max_tokens = request.max_tokens.unwrap_or(1024) as usize;
+        let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
         let temperature = request.temperature.unwrap_or(0.7) as f64;
 
         // Apply LoRA adapters if requested
@@ -525,58 +525,30 @@ impl AIProviderAdapter for CandleAdapter {
             }
         }
 
-        // ── Pressure-aware inference gate ──
-        // Hard RSS ceiling: refuse if process is already using too much memory.
-        // This fires immediately — no sustained-pressure wait like the gate.
-        // 24GB ceiling: model weights (~6GB) + Whisper (~1.6GB) + working set (~16GB headroom)
-        const RSS_CEILING_BYTES: u64 = 24 * 1024 * 1024 * 1024;
-        let current_rss = {
-            // Reuse the same task_info approach from ipc/mod.rs
-            #[cfg(target_os = "macos")]
-            {
-                #[repr(C)]
-                struct MachTaskBasicInfo {
-                    virtual_size: u64,
-                    resident_size: u64,
-                    resident_size_max: u64,
-                    user_time_s: u32, user_time_us: u32,
-                    system_time_s: u32, system_time_us: u32,
-                    policy: i32,
-                    suspend_count: i32,
-                }
-                extern "C" {
-                    fn mach_task_self() -> u32;
-                    fn task_info(t: u32, f: u32, i: *mut MachTaskBasicInfo, c: *mut u32) -> i32;
-                }
-                unsafe {
-                    let mut info: MachTaskBasicInfo = std::mem::zeroed();
-                    let mut count = (std::mem::size_of::<MachTaskBasicInfo>() / 4) as u32;
-                    if task_info(mach_task_self(), 20, &mut info, &mut count) == 0 {
-                        info.resident_size
-                    } else { 0 }
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            { 0u64 }
-        };
-        if current_rss > RSS_CEILING_BYTES {
-            let rss_gb = current_rss as f64 / (1024.0 * 1024.0 * 1024.0);
+        // ── Pressure-aware inference: log but NEVER refuse ──
+        // Local inference is the platform's lifeline. Users without API keys
+        // depend entirely on Candle. The semaphore serializes to 1 concurrent
+        // inference which naturally bounds memory. Refusing under pressure
+        // cripples the entire system for local-only users.
+        //
+        // Under memory pressure we log a warning (for diagnostics) and reduce
+        // max_tokens to lower peak memory, but we always proceed through the
+        // semaphore queue. The queue itself is the throttle — requests wait
+        // their turn, they are never refused.
+        let under_pressure = crate::system_resources::is_memory_gate_closed();
+        if under_pressure {
             log.info(&format!(
-                "Inference REFUSED: RSS {:.1}GB exceeds {:.0}GB ceiling — deferring '{}'",
-                rss_gb, RSS_CEILING_BYTES as f64 / (1024.0 * 1024.0 * 1024.0), model_id
-            ));
-            return Err(format!(
-                "Memory too high ({:.1}GB) — deferring local inference. Cloud providers unaffected.",
-                rss_gb
-            ));
-        }
-
-        // Memory gate: refuse if sustained critical pressure (>90% for 6s)
-        if crate::system_resources::is_memory_gate_closed() {
-            return Err(format!(
-                "Memory pressure critical — refusing Candle inference for '{}'.",
+                "⚠️ Memory pressure high — queuing inference for '{}' (will proceed when semaphore available)",
                 model_id
             ));
+            // Reduce max_tokens under pressure to lower peak memory per inference
+            if max_tokens > 256 {
+                log.info(&format!(
+                    "📉 Reducing max_tokens {} → 256 under memory pressure",
+                    max_tokens
+                ));
+                max_tokens = 256;
+            }
         }
 
         // Serialize local inference: only 1 at a time.
