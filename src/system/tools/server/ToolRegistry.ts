@@ -676,7 +676,7 @@ export class ToolRegistry {
     // Only UNEXPECTED exceptions (system crashes) should bubble up as exceptions
 
     // Parse JSON parameters if needed
-    const parsedParams: Record<string, any> = {};
+    const parsedParams: Record<string, string | number | boolean | object> = {};
     const toolDef = this.getTool(toolName)!;
 
     for (const [key, value] of Object.entries(parameters)) {
@@ -702,7 +702,7 @@ export class ToolRegistry {
     // Pass sessionId explicitly to override auto-injected value (AI's own sessionId for sandboxing)
     // Pass context explicitly if provided (PersonaUser's enriched context with callerType)
     // This enables caller-adaptive command output (e.g., PersonaUsers receive media field in screenshot results)
-    const commandParams: Record<string, any> = {
+    const commandParams: Record<string, string | number | boolean | object | undefined> = {
       sessionId,  // Pass AI's sessionId for proper attribution
       contextId,  // Some commands may use this (will be ignored if not needed)
       ...parsedParams
@@ -774,36 +774,40 @@ export class ToolRegistry {
   /**
    * Format tool execution result for AI consumption
    */
-  private formatToolResult(toolName: string, result: any): string {
+  private formatToolResult(toolName: string, result: CommandResult): string {
+    // Cast to record for dynamic property access — command results have heterogeneous shapes
+    const r = result as unknown as Record<string, unknown>;
+
     // Handle specific command patterns
-    if (toolName === 'list' && result.commands) {
-      return result.commands
-        .map((cmd: any) => `${cmd.name} - ${cmd.description}`)
+    if (toolName === 'list' && r.commands) {
+      const commands = r.commands as Array<{ name: string; description: string }>;
+      return commands
+        .map((cmd) => `${cmd.name} - ${cmd.description}`)
         .join('\n');
     }
 
-    if (toolName.startsWith(DATA_COMMANDS.LIST) && result.items) {
-      return `Collection: ${result.collection || 'unknown'}\nCount: ${result.count || result.items.length}\n\nResults:\n${JSON.stringify(result.items, null, 2)}`;
+    if (toolName.startsWith(DATA_COMMANDS.LIST) && r.items) {
+      return `Collection: ${r.collection || 'unknown'}\nCount: ${r.count || (r.items as unknown[]).length}\n\nResults:\n${JSON.stringify(r.items, null, 2)}`;
     }
 
-    if (toolName.startsWith(DATA_COMMANDS.READ) && result.data) {
-      return `Collection: ${result.collection || 'unknown'}\nID: ${result.id || 'unknown'}\n\nData:\n${JSON.stringify(result.data, null, 2)}`;
+    if (toolName.startsWith(DATA_COMMANDS.READ) && r.data) {
+      return `Collection: ${r.collection || 'unknown'}\nID: ${r.id || 'unknown'}\n\nData:\n${JSON.stringify(r.data, null, 2)}`;
     }
 
-    if (toolName === 'code/read' && result.content) {
-      const lineRange = result.startLine && result.endLine
-        ? ` (lines ${result.startLine}-${result.endLine})`
+    if (toolName === 'code/read' && r.content) {
+      const lineRange = r.startLine && r.endLine
+        ? ` (lines ${r.startLine}-${r.endLine})`
         : '';
-      return `Path: ${result.path || 'unknown'}${lineRange}\n\n${result.content}`;
+      return `Path: ${r.path || 'unknown'}${lineRange}\n\n${r.content}`;
     }
 
-    if (toolName === 'collaboration/chat/export' && result.markdown) {
-      return `Exported ${result.messageCount || 0} messages:\n\n${result.markdown}`;
+    if (toolName === 'collaboration/chat/export' && r.markdown) {
+      return `Exported ${r.messageCount || 0} messages:\n\n${r.markdown}`;
     }
 
     // Generic fallback - JSON stringify the result
     // But strip out 'context' field which is internal plumbing, not useful to AIs
-    const { context: _, sessionId: __, ...cleanResult } = result;
+    const { context: _, sessionId: __, ...cleanResult } = r;
     return JSON.stringify(cleanResult, null, 2);
   }
 

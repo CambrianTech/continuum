@@ -62,7 +62,7 @@ export interface GetConfigParams {
 
 export interface SystemConfig {
   [section: string]: {
-    [key: string]: any;
+    [key: string]: unknown;
   };
 }
 
@@ -76,13 +76,13 @@ export interface GetConfigResult {
 export interface SetConfigParams {
   section: string;
   key: string;
-  value: any;
+  value: unknown;
   persist?: boolean;
 }
 
 export interface SetConfigResult {
   success: boolean;
-  previousValue?: any;
+  previousValue?: unknown;
   error?: string;
 }
 
@@ -113,7 +113,7 @@ export interface ListProcessesResult {
 
 export interface StartServiceParams {
   serviceName: string;
-  config?: Record<string, any>;
+  config?: Record<string, unknown>;
   waitForReady?: boolean;
 }
 
@@ -171,7 +171,7 @@ export interface LogEntry {
   level: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   service: string;
   message: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface GetLogsResult {
@@ -188,7 +188,7 @@ export interface SystemEvent {
   type: 'service_started' | 'service_stopped' | 'service_error' | 'config_changed' | 'health_alert' | 'connection_lost' | 'connection_restored';
   service?: string;
   timestamp: string;
-  data: any;
+  data: Record<string, unknown>;
   severity: 'low' | 'medium' | 'high' | 'critical';
 }
 

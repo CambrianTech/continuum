@@ -86,7 +86,7 @@ export interface IStateProvider<T extends object> {
  */
 export function createStateProvider<T extends object>(
   initialState: T,
-  parent?: IStateProvider<any>,
+  parent?: IStateProvider<object>,
   options: { debug?: boolean; name?: string } = {}
 ): IStateProvider<T> {
   const { debug = false, name = 'StateProvider' } = options;
@@ -191,7 +191,7 @@ export function createStateProvider<T extends object>(
     createChild<C extends object>(childDefaults: C): IStateProvider<T & C> {
       return createStateProvider<T & C>(
         { ...provider.state, ...childDefaults } as T & C,
-        provider as IStateProvider<any>,
+        provider as IStateProvider<object>,
         { debug, name: `${name}.child` }
       );
     },
@@ -244,14 +244,14 @@ export function useState<T>(initialValue: T): [() => T, (value: T) => void] {
 /**
  * Create an effect that runs when signals change (like useEffect)
  */
-export function useEffect(callback: () => void | Dispose, deps?: ReadonlySignal<any>[]): Dispose {
+export function useEffect(callback: () => void | Dispose, deps?: ReadonlySignal<unknown>[]): Dispose {
   if (!deps || deps.length === 0) {
     // Run once on mount
     const cleanup = callback();
     return () => { if (cleanup) cleanup(); };
   }
 
-  let prevValues: any[] | undefined;
+  let prevValues: unknown[] | undefined;
   let cleanup: Dispose | void;
 
   return effect(() => {
@@ -274,7 +274,7 @@ export function useEffect(callback: () => void | Dispose, deps?: ReadonlySignal<
 /**
  * Create a memoized value (like useMemo)
  */
-export function useMemo<T>(compute: () => T, deps: ReadonlySignal<any>[]): ReadonlySignal<T> {
+export function useMemo<T>(compute: () => T, deps: ReadonlySignal<unknown>[]): ReadonlySignal<T> {
   return computed(() => {
     // Touch all deps to track them
     deps.forEach(d => d.value);

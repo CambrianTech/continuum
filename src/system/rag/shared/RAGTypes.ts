@@ -237,6 +237,9 @@ export interface RAGBuildOptions {
   // Tool capability for tool-aware RAG sources
   toolCapability?: 'native' | 'xml' | 'none';  // Provider's tool calling capability
 
+  // Recipe-highlighted tools (passed through to ToolDefinitionsSource for prioritization)
+  recipeTools?: RecipeToolDeclaration[];
+
   /**
    * Override recipe for RAG source activation.
    *

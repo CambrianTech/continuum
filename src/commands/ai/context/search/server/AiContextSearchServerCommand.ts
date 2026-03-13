@@ -15,6 +15,8 @@ import type { AiContextSearchParams, AiContextSearchResult, ContextSearchItem, C
 import { createAiContextSearchResultFromParams } from '../shared/AiContextSearchTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '@commands/data/vector-search/shared/VectorSearchCommandTypes';
+import type { VectorSearchResult } from '@daemons/data-daemon/shared/VectorSearchTypes';
+import type { RecordData } from '@daemons/data-daemon/shared/DataStorageAdapter';
 
 import { VectorSearch } from '../../../../data/vector-search/shared/VectorSearchCommandTypes';
 import { isPerPersonaCollection } from '@daemons/data-daemon/shared/ORMConfig';
@@ -109,7 +111,7 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
   ): Promise<ContextSearchItem[]> {
     try {
       // Build filter
-      const filter: Record<string, any> = {};
+      const filter: Record<string, unknown> = {};
 
       if (options.personaId) {
         filter.personaId = options.personaId;
@@ -154,7 +156,7 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
       }
 
       // Map to ContextSearchItem
-      return result.results.map((r: any) => this.mapToContextItem(r, collection));
+      return result.results.map(r => this.mapToContextItem(r, collection));
 
     } catch (error) {
       console.warn(`Context search failed for ${collection}: ${error}`);
@@ -167,7 +169,7 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
    * Uses common patterns: content, text, content.text, description, name
    */
   private mapToContextItem(
-    result: { data: any; score: number },
+    result: VectorSearchResult<RecordData>,
     collection: CollectionName
   ): ContextSearchItem {
     const data = result.data;
@@ -183,31 +185,32 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
       : content;
 
     return {
-      id: data.id,
+      id: String(data.id ?? result.id),
       collection,
       content: truncatedContent,
       score: result.score,
-      timestamp: data.timestamp || data.createdAt || new Date().toISOString(),
+      timestamp: String(data.timestamp || data.createdAt || new Date().toISOString()),
       source,
-      metadata: data.metadata || data
+      metadata: (data.metadata as Record<string, unknown> | undefined) ?? data
     };
   }
 
   /**
    * Extract text content from entity - tries common field patterns
    */
-  private extractContent(data: any): string {
+  private extractContent(data: RecordData): string {
     // Try common content field patterns
-    if (data.content?.text) return data.content.text;
-    if (typeof data.content === 'string') return data.content;
-    if (data.text) return data.text;
-    if (data.description) return data.description;
-    if (data.message) return data.message;
-    if (data.body) return data.body;
-    if (data.name) return data.name;
-    if (data.title) return data.title;
+    const content = data.content;
+    if (content && typeof content === 'object' && 'text' in content) return String((content as Record<string, unknown>).text);
+    if (typeof content === 'string') return content;
+    if (typeof data.text === 'string') return data.text;
+    if (typeof data.description === 'string') return data.description;
+    if (typeof data.message === 'string') return data.message;
+    if (typeof data.body === 'string') return data.body;
+    if (typeof data.name === 'string') return data.name;
+    if (typeof data.title === 'string') return data.title;
 
-    // Fallback: stringify first few fields
+    // Stringify first few fields
     const keys = Object.keys(data).filter(k => !['id', 'createdAt', 'updatedAt', 'version', 'metadata'].includes(k));
     const preview = keys.slice(0, 3).map(k => `${k}: ${String(data[k]).slice(0, 50)}`).join(', ');
     return preview || '[No content]';
@@ -216,15 +219,14 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
   /**
    * Extract source/context info from entity
    */
-  private extractSource(data: any, collection: CollectionName): string {
+  private extractSource(data: RecordData, collection: CollectionName): string {
     // Try common source field patterns
-    if (data.roomId) return `Room: ${data.roomId.slice(0, 8)}`;
-    if (data.contextId) return `Context: ${data.contextId.slice(0, 8)}`;
-    if (data.contextName) return data.contextName;
-    if (data.type) return `${collection}: ${data.type}`;
-    if (data.category) return `${collection}: ${data.category}`;
+    if (typeof data.roomId === 'string') return `Room: ${data.roomId.slice(0, 8)}`;
+    if (typeof data.contextId === 'string') return `Context: ${data.contextId.slice(0, 8)}`;
+    if (typeof data.contextName === 'string') return data.contextName;
+    if (typeof data.type === 'string') return `${collection}: ${data.type}`;
+    if (typeof data.category === 'string') return `${collection}: ${data.category}`;
 
-    // Fallback: just use collection name
     return collection;
   }
 }

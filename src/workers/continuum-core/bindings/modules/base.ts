@@ -27,9 +27,10 @@ export function getContinuumCoreSocketPath(): string {
 	return resolveSocketPath(SOCKETS.CONTINUUM_CORE);
 }
 
-/** JSON response from IPC */
+/** JSON response from IPC — result is untyped at the wire boundary (JSON.parse output) */
 export interface IPCJsonResponse {
 	success: boolean;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- true wire boundary: raw JSON.parse result
 	result?: any;
 	error?: string;
 	requestId?: number;
@@ -192,7 +193,7 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	/**
 	 * Send a request and wait for full response (including optional binary data).
 	 */
-	async requestFull(command: any, timeoutMs?: number): Promise<IPCResponse> {
+	async requestFull(command: Record<string, unknown>, timeoutMs?: number): Promise<IPCResponse> {
 		await this._ensureConnected();
 
 		const requestId = this._nextRequestId++;
@@ -231,7 +232,7 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	/**
 	 * Send a request and wait for JSON response (ignores binary payload).
 	 */
-	async request(command: any): Promise<IPCJsonResponse> {
+	async request(command: Record<string, unknown>): Promise<IPCJsonResponse> {
 		const { response } = await this.requestFull(command);
 		return response;
 	}
@@ -239,7 +240,7 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	/**
 	 * Execute any Rust command by name.
 	 */
-	async execute<T = any>(commandName: string, params: Record<string, any> = {}): Promise<{ success: boolean; data?: T; error?: string }> {
+	async execute<T = unknown>(commandName: string, params: Record<string, unknown> = {}): Promise<{ success: boolean; data?: T; error?: string }> {
 		const response = await this.request({
 			command: commandName,
 			...params,
