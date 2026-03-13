@@ -2,27 +2,34 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/live/UtteranceEvent.ts")]
 pub struct UtteranceEvent {
+    #[ts(type = "string")]
     pub session_id: Uuid,
+    #[ts(type = "string")]
     pub speaker_id: Uuid,
     pub speaker_name: String,
     pub speaker_type: SpeakerType,
     pub transcript: String,
     pub confidence: f32,
+    #[ts(type = "number")]
     pub timestamp: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../shared/generated/live/SpeakerType.ts")]
 pub enum SpeakerType {
     Human,
     Persona,
     Agent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/live/VoiceParticipant.ts")]
 pub struct VoiceParticipant {
+    #[ts(type = "string")]
     pub user_id: Uuid,
     pub display_name: String,
     pub participant_type: SpeakerType,
