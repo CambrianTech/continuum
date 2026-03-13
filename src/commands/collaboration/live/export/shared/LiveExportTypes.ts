@@ -11,6 +11,10 @@
 
 import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface LiveExportParams extends CommandParams {
   /** Number of utterances to export (default: 20) */
@@ -56,3 +60,37 @@ export const LiveExport = {
   },
   commandName: 'collaboration/live/export' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationLiveExportParams
+ */
+export const createCollaborationLiveExportParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LiveExportParams, 'context' | 'sessionId' | 'userId'>
+): LiveExportParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationLiveExportResult with defaults
+ */
+export const createCollaborationLiveExportResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LiveExportResult, 'context' | 'sessionId' | 'userId'>
+): LiveExportResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/live/export-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationLiveExportResultFromParams = (
+  params: LiveExportParams,
+  differences: Omit<LiveExportResult, 'context' | 'sessionId' | 'userId'>
+): LiveExportResult => transformPayload(params, differences);
+

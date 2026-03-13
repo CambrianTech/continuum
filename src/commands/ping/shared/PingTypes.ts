@@ -1,5 +1,9 @@
 import type { CommandParams, CommandResult, CommandInput } from '../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface PingParams extends CommandParams {
   server?: ServerEnvironmentInfo;
@@ -80,3 +84,37 @@ export const Ping = {
   },
   commandName: 'ping' as const,
 } as const;
+
+/**
+ * Factory function for creating PingParams
+ */
+export const createPingParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<PingParams, 'context' | 'sessionId' | 'userId'>
+): PingParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating PingResult with defaults
+ */
+export const createPingResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<PingResult, 'context' | 'sessionId' | 'userId'>
+): PingResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ping-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createPingResultFromParams = (
+  params: PingParams,
+  differences: Omit<PingResult, 'context' | 'sessionId' | 'userId'>
+): PingResult => transformPayload(params, differences);
+

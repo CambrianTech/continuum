@@ -11,6 +11,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface ContinuumSetParams extends CommandParams {
   /** Emoji to display in/near the Continuum dot */
@@ -77,3 +81,37 @@ export const ContinuumSet = {
   },
   commandName: 'continuum/set' as const,
 } as const;
+
+/**
+ * Factory function for creating ContinuumSetParams
+ */
+export const createContinuumSetParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ContinuumSetParams, 'context' | 'sessionId' | 'userId'>
+): ContinuumSetParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating ContinuumSetResult with defaults
+ */
+export const createContinuumSetResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ContinuumSetResult, 'context' | 'sessionId' | 'userId'>
+): ContinuumSetResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart continuum/set-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createContinuumSetResultFromParams = (
+  params: ContinuumSetParams,
+  differences: Omit<ContinuumSetResult, 'context' | 'sessionId' | 'userId'>
+): ContinuumSetResult => transformPayload(params, differences);
+

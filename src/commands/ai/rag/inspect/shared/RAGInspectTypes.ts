@@ -9,6 +9,9 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../../s
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { RAGContext } from '../../../../../system/rag/shared/RAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Inspect the RAG context that would be built for a given persona in a specific room, including decision-point analysis and learning mode diagnostics.
@@ -131,3 +134,37 @@ export const RAGInspect = {
   },
   commandName: 'ai/rag/inspect' as const,
 } as const;
+
+/**
+ * Factory function for creating AiRagInspectParams
+ */
+export const createAiRagInspectParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RAGInspectParams, 'context' | 'sessionId' | 'userId'>
+): RAGInspectParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiRagInspectResult with defaults
+ */
+export const createAiRagInspectResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RAGInspectResult, 'context' | 'sessionId' | 'userId'>
+): RAGInspectResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/rag/inspect-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiRagInspectResultFromParams = (
+  params: RAGInspectParams,
+  differences: Omit<RAGInspectResult, 'context' | 'sessionId' | 'userId'>
+): RAGInspectResult => transformPayload(params, differences);
+

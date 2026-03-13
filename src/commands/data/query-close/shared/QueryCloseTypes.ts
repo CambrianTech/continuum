@@ -9,6 +9,9 @@ import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '.
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface DataQueryCloseParams extends CommandParams {
   readonly queryHandle: UUID;
@@ -36,3 +39,37 @@ export const DataQueryClose = {
   },
   commandName: 'data/query-close' as const,
 } as const;
+
+/**
+ * Factory function for creating DataQueryCloseParams
+ */
+export const createDataQueryCloseParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DataQueryCloseParams, 'context' | 'sessionId' | 'userId'>
+): DataQueryCloseParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating DataQueryCloseResult with defaults
+ */
+export const createDataQueryCloseResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DataQueryCloseResult, 'context' | 'sessionId' | 'userId'>
+): DataQueryCloseResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart data/query-close-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createDataQueryCloseResultFromParams = (
+  params: DataQueryCloseParams,
+  differences: Omit<DataQueryCloseResult, 'context' | 'sessionId' | 'userId'>
+): DataQueryCloseResult => transformPayload(params, differences);
+

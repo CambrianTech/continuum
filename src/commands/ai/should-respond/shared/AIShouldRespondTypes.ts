@@ -11,6 +11,9 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../syst
 import type { RAGContext } from '../../../../system/rag/shared/RAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Response detection strategy
@@ -123,3 +126,37 @@ export const AIShouldRespond = {
   },
   commandName: 'ai/should-respond' as const,
 } as const;
+
+/**
+ * Factory function for creating AiShouldRespondParams
+ */
+export const createAiShouldRespondParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIShouldRespondParams, 'context' | 'sessionId' | 'userId'>
+): AIShouldRespondParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiShouldRespondResult with defaults
+ */
+export const createAiShouldRespondResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIShouldRespondResult, 'context' | 'sessionId' | 'userId'>
+): AIShouldRespondResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/should-respond-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiShouldRespondResultFromParams = (
+  params: AIShouldRespondParams,
+  differences: Omit<AIShouldRespondResult, 'context' | 'sessionId' | 'userId'>
+): AIShouldRespondResult => transformPayload(params, differences);
+

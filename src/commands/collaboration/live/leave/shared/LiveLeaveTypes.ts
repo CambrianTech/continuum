@@ -8,6 +8,9 @@
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface LiveLeaveParams extends CommandParams {
   /**
@@ -40,3 +43,37 @@ export const LiveLeave = {
   },
   commandName: 'collaboration/live/leave' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationLiveLeaveParams
+ */
+export const createCollaborationLiveLeaveParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LiveLeaveParams, 'context' | 'sessionId' | 'userId'>
+): LiveLeaveParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationLiveLeaveResult with defaults
+ */
+export const createCollaborationLiveLeaveResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LiveLeaveResult, 'context' | 'sessionId' | 'userId'>
+): LiveLeaveResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/live/leave-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationLiveLeaveResultFromParams = (
+  params: LiveLeaveParams,
+  differences: Omit<LiveLeaveResult, 'context' | 'sessionId' | 'userId'>
+): LiveLeaveResult => transformPayload(params, differences);
+

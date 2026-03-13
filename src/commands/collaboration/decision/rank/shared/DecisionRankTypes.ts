@@ -1,6 +1,9 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /** Submit a ranked-choice vote on a decision proposal, using Condorcet pairwise comparison to determine the winner. */
 export interface DecisionRankParams extends CommandParams {
@@ -34,3 +37,37 @@ export const DecisionRank = {
   },
   commandName: 'collaboration/decision/rank' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationDecisionRankParams
+ */
+export const createCollaborationDecisionRankParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DecisionRankParams, 'context' | 'sessionId' | 'userId'>
+): DecisionRankParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationDecisionRankResult with defaults
+ */
+export const createCollaborationDecisionRankResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DecisionRankResult, 'context' | 'sessionId' | 'userId'>
+): DecisionRankResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/decision/rank-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationDecisionRankResultFromParams = (
+  params: DecisionRankParams,
+  differences: Omit<DecisionRankResult, 'context' | 'sessionId' | 'userId'>
+): DecisionRankResult => transformPayload(params, differences);
+

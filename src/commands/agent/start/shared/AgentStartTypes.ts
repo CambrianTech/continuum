@@ -11,6 +11,10 @@
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface AgentStartParams extends CommandParams {
   /** The task for the agent to accomplish */
@@ -45,3 +49,37 @@ export const AgentStart = {
   },
   commandName: 'agent/start' as const,
 } as const;
+
+/**
+ * Factory function for creating AgentStartParams
+ */
+export const createAgentStartParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AgentStartParams, 'context' | 'sessionId' | 'userId'>
+): AgentStartParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AgentStartResult with defaults
+ */
+export const createAgentStartResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AgentStartResult, 'context' | 'sessionId' | 'userId'>
+): AgentStartResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart agent/start-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAgentStartResultFromParams = (
+  params: AgentStartParams,
+  differences: Omit<AgentStartResult, 'context' | 'sessionId' | 'userId'>
+): AgentStartResult => transformPayload(params, differences);
+

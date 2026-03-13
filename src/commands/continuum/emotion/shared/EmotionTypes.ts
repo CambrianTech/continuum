@@ -1,5 +1,9 @@
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /** Display an emoji reaction with an optional color glow on the Continuum interface. */
 export interface EmotionParams extends CommandParams {
@@ -31,3 +35,37 @@ export const Emotion = {
   },
   commandName: 'continuum/emotion' as const,
 } as const;
+
+/**
+ * Factory function for creating ContinuumEmotionParams
+ */
+export const createContinuumEmotionParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<EmotionParams, 'context' | 'sessionId' | 'userId'>
+): EmotionParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating ContinuumEmotionResult with defaults
+ */
+export const createContinuumEmotionResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<EmotionResult, 'context' | 'sessionId' | 'userId'>
+): EmotionResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart continuum/emotion-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createContinuumEmotionResultFromParams = (
+  params: EmotionParams,
+  differences: Omit<EmotionResult, 'context' | 'sessionId' | 'userId'>
+): EmotionResult => transformPayload(params, differences);
+

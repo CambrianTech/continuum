@@ -8,6 +8,10 @@
 import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { ModelCapabilities, ModelInfo } from '../../list/shared/ModelListTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Find the best available AI model matching a set of capability requirements, with optional fallback to the closest match.
@@ -50,3 +54,37 @@ export const ModelFind = {
   },
   commandName: 'ai/model/find' as const,
 } as const;
+
+/**
+ * Factory function for creating AiModelFindParams
+ */
+export const createAiModelFindParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ModelFindParams, 'context' | 'sessionId' | 'userId'>
+): ModelFindParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiModelFindResult with defaults
+ */
+export const createAiModelFindResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ModelFindResult, 'context' | 'sessionId' | 'userId'>
+): ModelFindResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/model/find-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiModelFindResultFromParams = (
+  params: ModelFindParams,
+  differences: Omit<ModelFindResult, 'context' | 'sessionId' | 'userId'>
+): ModelFindResult => transformPayload(params, differences);
+

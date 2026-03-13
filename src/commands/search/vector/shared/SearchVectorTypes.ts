@@ -6,6 +6,10 @@
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface SearchVectorParams extends CommandParams {
   queryVector: number[];
@@ -33,3 +37,37 @@ export const SearchVector = {
   },
   commandName: 'search/vector' as const,
 } as const;
+
+/**
+ * Factory function for creating SearchVectorParams
+ */
+export const createSearchVectorParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SearchVectorParams, 'context' | 'sessionId' | 'userId'>
+): SearchVectorParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SearchVectorResult with defaults
+ */
+export const createSearchVectorResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SearchVectorResult, 'context' | 'sessionId' | 'userId'>
+): SearchVectorResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart search/vector-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSearchVectorResultFromParams = (
+  params: SearchVectorParams,
+  differences: Omit<SearchVectorResult, 'context' | 'sessionId' | 'userId'>
+): SearchVectorResult => transformPayload(params, differences);
+

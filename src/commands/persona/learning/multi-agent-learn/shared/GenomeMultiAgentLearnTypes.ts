@@ -8,6 +8,9 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Outcome of collaborative activity
@@ -182,3 +185,37 @@ export const GenomeMultiAgentLearn = {
   },
   commandName: 'persona/learning/multi-agent-learn' as const,
 } as const;
+
+/**
+ * Factory function for creating PersonaLearningMultiAgentLearnParams
+ */
+export const createPersonaLearningMultiAgentLearnParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeMultiAgentLearnParams, 'context' | 'sessionId' | 'userId'>
+): GenomeMultiAgentLearnParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating PersonaLearningMultiAgentLearnResult with defaults
+ */
+export const createPersonaLearningMultiAgentLearnResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeMultiAgentLearnResult, 'context' | 'sessionId' | 'userId'>
+): GenomeMultiAgentLearnResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart persona/learning/multi-agent-learn-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createPersonaLearningMultiAgentLearnResultFromParams = (
+  params: GenomeMultiAgentLearnParams,
+  differences: Omit<GenomeMultiAgentLearnResult, 'context' | 'sessionId' | 'userId'>
+): GenomeMultiAgentLearnResult => transformPayload(params, differences);
+

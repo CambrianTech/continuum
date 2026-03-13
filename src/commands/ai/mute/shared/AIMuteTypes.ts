@@ -16,6 +16,9 @@
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Parameters for muting/unmuting an AI
@@ -98,3 +101,37 @@ export const AIMute = {
   },
   commandName: 'ai/mute' as const,
 } as const;
+
+/**
+ * Factory function for creating AiMuteParams
+ */
+export const createAiMuteParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIMuteParams, 'context' | 'sessionId' | 'userId'>
+): AIMuteParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiMuteResult with defaults
+ */
+export const createAiMuteResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIMuteResult, 'context' | 'sessionId' | 'userId'>
+): AIMuteResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/mute-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiMuteResultFromParams = (
+  params: AIMuteParams,
+  differences: Omit<AIMuteResult, 'context' | 'sessionId' | 'userId'>
+): AIMuteResult => transformPayload(params, differences);
+

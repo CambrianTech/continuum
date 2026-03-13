@@ -10,6 +10,10 @@
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface SentinelCancelParams extends CommandParams {
   /** Specific handle to cancel */
@@ -49,3 +53,37 @@ export const SentinelCancel = {
   },
   commandName: 'sentinel/cancel' as const,
 } as const;
+
+/**
+ * Factory function for creating SentinelCancelParams
+ */
+export const createSentinelCancelParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelCancelParams, 'context' | 'sessionId' | 'userId'>
+): SentinelCancelParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SentinelCancelResult with defaults
+ */
+export const createSentinelCancelResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelCancelResult, 'context' | 'sessionId' | 'userId'>
+): SentinelCancelResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart sentinel/cancel-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSentinelCancelResultFromParams = (
+  params: SentinelCancelParams,
+  differences: Omit<SentinelCancelResult, 'context' | 'sessionId' | 'userId'>
+): SentinelCancelResult => transformPayload(params, differences);
+

@@ -6,6 +6,10 @@ import type { CommandParams, CommandResult } from '../../../../system/core/types
 import type { SentinelEntity, SentinelExecutionResult } from '../../../../system/sentinel';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Load and optionally run a saved sentinel definition by ID.
@@ -57,3 +61,37 @@ export const SentinelLoad = {
   },
   commandName: 'sentinel/load' as const,
 } as const;
+
+/**
+ * Factory function for creating SentinelLoadParams
+ */
+export const createSentinelLoadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelLoadParams, 'context' | 'sessionId' | 'userId'>
+): SentinelLoadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SentinelLoadResult with defaults
+ */
+export const createSentinelLoadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelLoadResult, 'context' | 'sessionId' | 'userId'>
+): SentinelLoadResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart sentinel/load-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSentinelLoadResultFromParams = (
+  params: SentinelLoadParams,
+  differences: Omit<SentinelLoadResult, 'context' | 'sessionId' | 'userId'>
+): SentinelLoadResult => transformPayload(params, differences);
+

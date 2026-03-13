@@ -6,6 +6,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface DaemonsParams extends CommandParams {
   // Optional filters
@@ -40,3 +44,37 @@ export const Daemons = {
   },
   commandName: 'system/daemons' as const,
 } as const;
+
+/**
+ * Factory function for creating SystemDaemonsParams
+ */
+export const createSystemDaemonsParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DaemonsParams, 'context' | 'sessionId' | 'userId'>
+): DaemonsParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SystemDaemonsResult with defaults
+ */
+export const createSystemDaemonsResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DaemonsResult, 'context' | 'sessionId' | 'userId'>
+): DaemonsResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart system/daemons-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSystemDaemonsResultFromParams = (
+  params: DaemonsParams,
+  differences: Omit<DaemonsResult, 'context' | 'sessionId' | 'userId'>
+): DaemonsResult => transformPayload(params, differences);
+

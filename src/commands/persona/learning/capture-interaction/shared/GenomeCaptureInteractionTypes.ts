@@ -8,6 +8,9 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Captures an AI persona's input/output pair during task execution, accumulating training examples in-memory for batch LoRA micro-tuning within a specified learning domain.
@@ -93,3 +96,37 @@ export const GenomeCaptureInteraction = {
   },
   commandName: 'persona/learning/capture-interaction' as const,
 } as const;
+
+/**
+ * Factory function for creating PersonaLearningCaptureInteractionParams
+ */
+export const createPersonaLearningCaptureInteractionParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeCaptureInteractionParams, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureInteractionParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating PersonaLearningCaptureInteractionResult with defaults
+ */
+export const createPersonaLearningCaptureInteractionResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeCaptureInteractionResult, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureInteractionResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart persona/learning/capture-interaction-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createPersonaLearningCaptureInteractionResultFromParams = (
+  params: GenomeCaptureInteractionParams,
+  differences: Omit<GenomeCaptureInteractionResult, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureInteractionResult => transformPayload(params, differences);
+

@@ -20,6 +20,8 @@ import type { GenerateOptions } from '../ModuleGenerator';
 import { CommandGenerator } from '../CommandGenerator';
 import { CommandAuditor } from '../CommandAuditor';
 import { HelpFormatter } from '../HelpFormatter';
+import { TypesFilePatcher } from '../core/TypesFilePatcher';
+import { extractTypeInfo, generateFactoryPatches, generateAccessorPatches } from '../core/CommandFixerStrategies';
 
 export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
   readonly typeName = 'command';
@@ -86,12 +88,14 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
 
       // Determine fixable issues
       const fixableIssues: string[] = [];
-      if (!e.hasStaticAccessor && e.hasTypesFile && e.hasSpec) {
-        fixableIssues.push('Missing static accessor (can regenerate Types from spec)');
+      // Surgical patches (accessor/factory) work with just the Types file — no spec needed
+      if (!e.hasStaticAccessor && e.hasTypesFile) {
+        fixableIssues.push('Missing static accessor (can inject into existing Types)');
       }
-      if (!e.hasFactoryFunctions && e.hasTypesFile && e.hasSpec) {
-        fixableIssues.push('Missing factory functions (can regenerate Types from spec)');
+      if (!e.hasFactoryFunctions && e.hasTypesFile) {
+        fixableIssues.push('Missing factory functions (can inject into existing Types)');
       }
+      // Creating files from scratch requires a spec
       if (!e.hasReadme && e.hasSpec) {
         fixableIssues.push('Missing README (can generate from spec)');
       }
@@ -167,36 +171,68 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
     const issuesFixed: string[] = [];
     const issuesRemaining: string[] = [];
 
-    // Can only fix if we have a spec to regenerate from
-    if (!entry.hasSpec || !entry.specPath) {
-      return {
-        name: entry.name,
-        filesModified,
-        filesCreated,
-        issuesFixed,
-        issuesRemaining: entry.issues,
-      };
+    // ── Surgical patches (no spec required) ────────────────────────
+    // When a Types file exists but is missing accessor/factory, we can
+    // extract type info directly from the file and inject code.
+
+    if (entry.checks['has-types-file'] &&
+        (!entry.checks['static-accessor'] || !entry.checks['factory-functions'])) {
+      const sharedDir = path.join(entry.path, 'shared');
+      const typesFiles = fs.readdirSync(sharedDir).filter((f: string) => f.endsWith('Types.ts'));
+
+      if (typesFiles.length > 0) {
+        const typesPath = path.join(sharedDir, typesFiles[0]);
+        const typesContent = fs.readFileSync(typesPath, 'utf-8');
+        const typeInfo = extractTypeInfo(typesContent, entry.name);
+
+        if (typeInfo) {
+          const patches: import('../core/TypesFilePatcher').PatchOperation[] = [];
+
+          if (!entry.checks['factory-functions']) {
+            patches.push(...generateFactoryPatches(typeInfo, typesContent));
+          }
+          if (!entry.checks['static-accessor']) {
+            patches.push(...generateAccessorPatches(typeInfo, typesContent));
+          }
+
+          if (patches.length > 0) {
+            const patchResult = TypesFilePatcher.patchFile(typesPath, patches);
+
+            if (patchResult.applied.length > 0) {
+              filesModified.push(typesPath);
+              for (const applied of patchResult.applied) {
+                issuesFixed.push(applied);
+              }
+            }
+            for (const error of patchResult.errors) {
+              issuesRemaining.push(error);
+            }
+          }
+        } else {
+          if (!entry.checks['static-accessor']) {
+            issuesRemaining.push('Missing static accessor — non-standard Types file, add manually');
+          }
+          if (!entry.checks['factory-functions']) {
+            issuesRemaining.push('Missing factory functions — non-standard Types file, add manually');
+          }
+        }
+      }
     }
 
-    // Load the spec
-    let spec: CommandSpec;
-    try {
-      spec = JSON.parse(fs.readFileSync(entry.specPath, 'utf-8'));
-    } catch {
-      return {
-        name: entry.name,
-        filesModified,
-        filesCreated,
-        issuesFixed,
-        issuesRemaining: [`Failed to load spec: ${entry.specPath}`],
-      };
+    // ── Spec-dependent fixes ───────────────────────────────────────
+    // Creating files from scratch requires a spec to generate from.
+
+    let spec: CommandSpec | undefined;
+    if (entry.hasSpec && entry.specPath) {
+      try {
+        spec = JSON.parse(fs.readFileSync(entry.specPath, 'utf-8'));
+      } catch {
+        issuesRemaining.push(`Failed to load spec: ${entry.specPath}`);
+      }
     }
 
-    // Types file fixes are CONSERVATIVE:
-    // - Only create a new Types file if NONE exists (no shared/*.ts at all)
-    // - Never overwrite an existing Types file — it may have custom logic
-    // - Missing accessor/factory on existing files requires manual review
-    if (!entry.checks['has-types-file']) {
+    // Create Types file from spec if none exists
+    if (!entry.checks['has-types-file'] && spec) {
       try {
         const { TemplateLoader } = require('../TemplateLoader');
         const rendered = TemplateLoader.renderCommand(spec);
@@ -216,18 +252,10 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
       } catch (err) {
         issuesRemaining.push(`Failed to create Types: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } else {
-      // Types file exists but missing accessor/factory — flag for manual review
-      if (!entry.checks['static-accessor']) {
-        issuesRemaining.push('Missing static accessor — add manually (existing Types has custom logic)');
-      }
-      if (!entry.checks['factory-functions']) {
-        issuesRemaining.push('Missing factory functions — add manually (existing Types has custom logic)');
-      }
     }
 
-    // Fix: Missing README
-    if (!entry.checks['has-readme']) {
+    // Generate README from spec
+    if (!entry.checks['has-readme'] && spec) {
       try {
         const { TemplateLoader } = require('../TemplateLoader');
         const rendered = TemplateLoader.renderCommand(spec);
@@ -240,8 +268,8 @@ export class CommandGeneratorType implements IGeneratorType<CommandSpec> {
       }
     }
 
-    // Fix: Missing browser command
-    if (!entry.checks['has-browser']) {
+    // Generate browser command from spec
+    if (!entry.checks['has-browser'] && spec) {
       try {
         const { TemplateLoader } = require('../TemplateLoader');
         const rendered = TemplateLoader.renderCommand(spec);

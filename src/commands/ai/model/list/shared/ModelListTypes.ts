@@ -7,6 +7,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Model capability constraints (like camera position, resolution)
@@ -101,3 +105,37 @@ export const ModelList = {
   },
   commandName: 'ai/model/list' as const,
 } as const;
+
+/**
+ * Factory function for creating AiModelListParams
+ */
+export const createAiModelListParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ModelListParams, 'context' | 'sessionId' | 'userId'>
+): ModelListParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiModelListResult with defaults
+ */
+export const createAiModelListResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ModelListResult, 'context' | 'sessionId' | 'userId'>
+): ModelListResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/model/list-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiModelListResultFromParams = (
+  params: ModelListParams,
+  differences: Omit<ModelListResult, 'context' | 'sessionId' | 'userId'>
+): ModelListResult => transformPayload(params, differences);
+

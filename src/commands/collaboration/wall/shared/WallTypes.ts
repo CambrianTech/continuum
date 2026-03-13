@@ -11,6 +11,9 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { isUUID } from '@system/routing/RoutingService';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Parameters for writing to a room wall
@@ -346,3 +349,37 @@ export const WallDiff = {
   },
   commandName: 'collaboration/wall/diff' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationWallParams
+ */
+export const createCollaborationWallParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<WallWriteParams, 'context' | 'sessionId' | 'userId'>
+): WallWriteParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationWallResult with defaults
+ */
+export const createCollaborationWallResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<WallWriteResult, 'context' | 'sessionId' | 'userId'>
+): WallWriteResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/wall-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationWallResultFromParams = (
+  params: WallWriteParams,
+  differences: Omit<WallWriteResult, 'context' | 'sessionId' | 'userId'>
+): WallWriteResult => transformPayload(params, differences);
+
