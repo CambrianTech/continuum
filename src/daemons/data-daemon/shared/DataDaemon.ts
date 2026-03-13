@@ -52,13 +52,26 @@ import type { OpenPaginatedQueryParams, PaginatedQueryHandle, PaginatedQueryPage
 // Removed complex decorator dependency - using simple field validation instead
 
 /**
+ * Optional vector search methods that some storage adapters may support.
+ * Used for runtime capability checking on the adapter.
+ */
+interface VectorCapableAdapter extends DataStorageAdapter {
+  vectorSearch?(options: import('./VectorSearchTypes').VectorSearchOptions): Promise<StorageResult<import('./VectorSearchTypes').VectorSearchResponse>>;
+  generateEmbedding?(request: import('./VectorSearchTypes').GenerateEmbeddingRequest): Promise<StorageResult<import('./VectorSearchTypes').GenerateEmbeddingResponse>>;
+  indexVector?(request: import('./VectorSearchTypes').IndexVectorRequest): Promise<StorageResult<boolean>>;
+  backfillVectors?(request: import('./VectorSearchTypes').BackfillVectorsRequest, onProgress?: (progress: import('./VectorSearchTypes').BackfillVectorsProgress) => void): Promise<StorageResult<import('./VectorSearchTypes').BackfillVectorsProgress>>;
+  getVectorIndexStats?(collection: string): Promise<StorageResult<import('./VectorSearchTypes').VectorIndexStats>>;
+  getVectorSearchCapabilities?(): Promise<import('./VectorSearchTypes').VectorSearchCapabilities | null>;
+}
+
+/**
  * Storage Strategy Configuration
  */
 export interface StorageStrategyConfig {
   readonly strategy: 'sql' | 'nosql' | 'file' | 'memory' | 'network' | 'hybrid';
   readonly backend: string; // 'postgres', 'sqlite', 'mongodb', 'redis', 'json', etc.
   readonly namespace: string;
-  readonly options?: Record<string, any>;
+  readonly options?: Record<string, unknown>;
   readonly features?: {
     readonly enableTransactions?: boolean;
     readonly enableIndexing?: boolean;
@@ -145,6 +158,14 @@ export class DataDaemon {
   }
 
   /**
+   * Static accessor for the underlying storage adapter (used by vector search static methods)
+   */
+  private static get defaultAdapter(): DataStorageAdapter {
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.adapter;
+  }
+
+  /**
    * Static version - get adapter for collection using sharedInstance
    */
   private static getAdapterForCollectionStatic(collection: string): DataStorageAdapter {
@@ -179,7 +200,7 @@ export class DataDaemon {
     if (this.isInitialized) return;
     
     const adapterConfig: StorageAdapterConfig = {
-      type: this.config.backend as any,
+      type: this.config.backend as StorageAdapterConfig['type'],
       namespace: this.config.namespace,
       options: {
         ...this.config.options,
@@ -297,7 +318,7 @@ export class DataDaemon {
    * SQLite stores timestamps as strings, but domain expects Date objects
    */
   private deserializeEntity<T extends BaseEntity>(entity: T): T {
-    const deserialized: any = { ...entity };
+    const deserialized = { ...entity } as Record<string, unknown>;
 
     // Convert timestamp fields from string to Date
     if ('timestamp' in deserialized && typeof deserialized.timestamp === 'string') {
@@ -463,7 +484,7 @@ export class DataDaemon {
   async batch(
     operations: StorageOperation[],
     context: DataOperationContext
-  ): Promise<StorageResult<any[]>> {
+  ): Promise<StorageResult<unknown[]>> {
     await this.ensureInitialized();
     const result = await this.adapter.batch(operations);
 
@@ -595,7 +616,7 @@ export class DataDaemon {
   /**
    * Validate operation parameters
    */
-  private validateOperation(collection: string, data: any, context: DataOperationContext): StorageResult<any> {
+  private validateOperation(collection: string, data: unknown, context: DataOperationContext): StorageResult<unknown> {
     if (!collection || collection.trim() === '') {
       return {
         success: false,
@@ -863,10 +884,10 @@ export class DataDaemon {
     const hasMore = items.length === state.pageSize && (state.currentPage + 1) * state.pageSize < state.totalCount;
 
     // Update cursor from last item - keep native type for storage adapter
-    let nextCursor: any;
+    let nextCursor: unknown;
     if (items.length > 0) {
-      const lastItem = items[items.length - 1];
-      nextCursor = (lastItem as any)[paginationConfig.cursorField];
+      const lastItem = items[items.length - 1] as Record<string, unknown>;
+      nextCursor = lastItem[paginationConfig.cursorField];
       // Don't convert to string - let storage adapter handle native comparison
     }
 
@@ -1142,7 +1163,7 @@ export class DataDaemon {
   /**
    * Batch operations with automatic context injection - CLEAN INTERFACE
    */
-  static async batch(operations: StorageOperation[]): Promise<StorageResult<any[]>> {
+  static async batch(operations: StorageOperation[]): Promise<StorageResult<unknown[]>> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
@@ -1255,7 +1276,7 @@ export class DataDaemon {
     await DataDaemon.sharedInstance.ensureSchema(options.collection);
 
     // Check if adapter supports vector search
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.vectorSearch) {
       return {
         success: false,
@@ -1263,7 +1284,7 @@ export class DataDaemon {
       };
     }
 
-    return await adapter.vectorSearch(options);
+    return await adapter.vectorSearch(options) as StorageResult<import('./VectorSearchTypes').VectorSearchResponse<T>>;
   }
 
   /**
@@ -1283,7 +1304,7 @@ export class DataDaemon {
     }
 
     // Check if adapter supports embedding generation
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.generateEmbedding) {
       return {
         success: false,
@@ -1312,7 +1333,7 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.indexVector) {
       return {
         success: false,
@@ -1343,7 +1364,7 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.backfillVectors) {
       return {
         success: false,
@@ -1367,7 +1388,7 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.getVectorIndexStats) {
       return {
         success: false,
@@ -1386,7 +1407,7 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
     if (!adapter.getVectorSearchCapabilities) {
       return null;
     }
