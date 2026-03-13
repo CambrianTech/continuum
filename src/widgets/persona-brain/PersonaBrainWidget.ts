@@ -43,13 +43,17 @@ import { ALL_PANEL_STYLES } from '../shared/styles';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { LogsConfig } from '../../commands/logs/config/shared/LogsConfigTypes';
 import { LogsList } from '../../commands/logs/list/shared/LogsListTypes';
-import { AIStatus } from '../../commands/ai/status/shared/AIStatusTypes';
+import { AIStatus, type PersonaHealth } from '../../commands/ai/status/shared/AIStatusTypes';
 interface PersonaData {
   id: UUID;
   uniqueId: string;
   displayName: string;
   status: 'online' | 'offline' | 'idle';
   type: string;
+  // Populated from ai/status after load
+  provider?: string;
+  model?: string;
+  health?: string;
 }
 
 interface ModuleStats {
@@ -66,7 +70,7 @@ interface ActivityEvent {
   module: string;
   message: string;
   severity?: 'info' | 'warn' | 'error';
-  details?: any;
+  details?: Record<string, unknown>;
 }
 
 interface Issue {
@@ -75,7 +79,7 @@ interface Issue {
   type: 'error' | 'warning';
   message: string;
   timestamp: Date;
-  details?: any;
+  details?: Record<string, unknown>;
 }
 
 interface LoggingConfigState {
@@ -124,7 +128,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
     // Get persona ID from content item (check both attribute formats)
     this.personaId = this.getAttribute('entity-id') ||
                      this.getAttribute('data-entity-id') ||
-                     (this as any).entityId ||
+                     (this as HTMLElement).dataset.entityId ||
                      'helper'; // Default for testing
 
     await this.loadPersonaData();
@@ -267,7 +271,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
     try {
       const result = await LogsConfig.execute({
         persona: this.personaId
-      } as any) as any;
+      });
 
       if (result.success && result.personaConfig) {
         this.loggingConfig = {
@@ -288,7 +292,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
     try {
       const result = await LogsList.execute({
         personaUniqueId: this.personaId
-      } as any) as any;
+      });
 
       this.availableLogs.clear();
       if (result.success && result.logs) {
@@ -312,7 +316,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
       const result = await LogsConfig.execute({
         persona: this.personaId,
         action: enabled ? 'enable' : 'disable'
-      } as any) as any;
+      });
 
       if (result.success && result.personaConfig) {
         this.loggingConfig = {
@@ -344,7 +348,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
         persona: this.personaId,
         action: isEnabled ? 'disable' : 'enable',
         category
-      } as any) as any;
+      });
 
       if (result.success && result.personaConfig) {
         this.loggingConfig = {
@@ -397,28 +401,26 @@ export class PersonaBrainWidget extends ReactiveWidget {
       // These stats come from the persona's server-side state instead.
       const [aiStatusResult] = await Promise.all([
         // 1. Get AI status (model, provider, health)
-        AIStatus.execute({} as any) as Promise<any>,
+        AIStatus.execute({}),
       ]);
-      const memoryCountResult: any = null;
-      const toolLogsResult: any = null;
 
       // Parse AI status
-      let aiStatus: any = null;
+      let aiStatus: PersonaHealth | undefined;
       if (aiStatusResult?.success && aiStatusResult.personas) {
         aiStatus = aiStatusResult.personas.find(
-          (p: any) => p.userId === this.persona?.id || p.uniqueId === this.personaId
+          (p) => p.userId === this.persona?.id || p.uniqueId === this.personaId
         );
       }
 
-      // Calculate memory stats
-      const memoryCount = memoryCountResult?.count || 0;
+      // Calculate memory stats (server-side only — no per-persona DB from browser)
+      const memoryCount = 0;
       const ltmSizeKB = memoryCount * 0.5; // Rough estimate: ~0.5KB per memory
       const ltmSize = ltmSizeKB > 1024
         ? `${(ltmSizeKB / 1024).toFixed(1)} MB`
         : `${ltmSizeKB.toFixed(0)} KB`;
 
-      // Tool execution stats
-      const toolCount = toolLogsResult?.count || 0;
+      // Tool execution stats (server-side only)
+      const toolCount = 0;
 
       // Update module stats with real data
       this.moduleStats = {
@@ -446,10 +448,10 @@ export class PersonaBrainWidget extends ReactiveWidget {
       };
 
       // Store additional persona info
-      if (aiStatus) {
-        (this.persona as any).provider = aiStatus.provider;
-        (this.persona as any).model = aiStatus.model;
-        (this.persona as any).health = aiStatus.status;
+      if (aiStatus && this.persona) {
+        this.persona.provider = aiStatus.provider;
+        this.persona.model = aiStatus.model;
+        this.persona.health = aiStatus.status;
       }
 
     } catch (error) {
@@ -469,7 +471,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
         type: 'error',
         message: 'Failed to load module stats',
         timestamp: new Date(),
-        details: error
+        details: { error: String(error) }
       });
     }
   }
@@ -844,15 +846,15 @@ export class PersonaBrainWidget extends ReactiveWidget {
         <!-- Status readout (bottom left) -->
         <g class="hud-readout" transform="translate(20, 450)">
           <text x="0" y="20" class="readout-label">SYS.STATUS</text>
-          <text x="0" y="40" class="readout-value">${((this.persona as any)?.health || this.persona?.status || 'OFFLINE').toUpperCase()}</text>
+          <text x="0" y="40" class="readout-value">${(this.persona?.health || this.persona?.status || 'OFFLINE').toUpperCase()}</text>
           <text x="0" y="70" class="readout-label">PROVIDER</text>
-          <text x="0" y="90" class="readout-value">${((this.persona as any)?.provider || 'N/A').toUpperCase()}</text>
+          <text x="0" y="90" class="readout-value">${(this.persona?.provider || 'N/A').toUpperCase()}</text>
         </g>
 
         <!-- Data readout (bottom right) -->
         <g class="hud-readout" transform="translate(680, 450)">
           <text x="0" y="20" class="readout-label">MODEL</text>
-          <text x="0" y="40" class="readout-value">${this.truncateModel((this.persona as any)?.model || 'N/A')}</text>
+          <text x="0" y="40" class="readout-value">${this.truncateModel(this.persona?.model || 'N/A')}</text>
           <text x="0" y="70" class="readout-label">MEMORIES</text>
           <text x="0" y="90" class="readout-value">${this.moduleStats.hippocampus.memoryCount.toLocaleString()}</text>
         </g>
@@ -861,7 +863,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
   }
 
   private getModuleClass(module: string): string {
-    const status = (this.moduleStats as any)[module]?.status || 'idle';
+    const status = this.moduleStats[module as keyof ModuleStats]?.status || 'idle';
     const selected = this.selectedModule === module ? 'selected' : '';
     return `status-${status} ${selected}`;
   }
@@ -894,7 +896,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
   private renderModuleDetails(): string {
     const module = this.selectedModule;
     if (!module) return '';
-    const stats = (this.moduleStats as any)[module];
+    const stats = this.moduleStats[module as keyof ModuleStats];
     // Map module name to log type (motorCortex -> motor-cortex)
     const logTypeMap: Record<string, string> = {
       prefrontal: 'prefrontal',
@@ -930,47 +932,57 @@ export class PersonaBrainWidget extends ReactiveWidget {
     `;
   }
 
-  private renderModuleSpecificStats(module: string, stats: any): string {
+  private renderModuleSpecificStats(module: string, stats: ModuleStats[keyof ModuleStats]): string {
     switch (module) {
-      case 'hippocampus':
+      case 'hippocampus': {
+        const s = stats as ModuleStats['hippocampus'];
         return `
           <div class="stat-row">
             <span class="stat-label">Memories</span>
-            <span class="stat-value">${stats?.memoryCount || 0}</span>
+            <span class="stat-value">${s?.memoryCount || 0}</span>
           </div>
           <div class="stat-row">
             <span class="stat-label">LTM Size</span>
-            <span class="stat-value">${stats?.ltmSize || 'N/A'}</span>
+            <span class="stat-value">${s?.ltmSize || 'N/A'}</span>
           </div>
         `;
-      case 'prefrontal':
+      }
+      case 'prefrontal': {
+        const s = stats as ModuleStats['prefrontal'];
         return `
           <div class="stat-row">
             <span class="stat-label">Last Activity</span>
-            <span class="stat-value">${stats?.lastActivity || 'None'}</span>
+            <span class="stat-value">${s?.lastActivity || 'None'}</span>
           </div>
         `;
-      case 'limbic':
+      }
+      case 'limbic': {
+        const s = stats as ModuleStats['limbic'];
         return `
           <div class="stat-row">
             <span class="stat-label">Current Mood</span>
-            <span class="stat-value">${stats?.mood || 'neutral'}</span>
+            <span class="stat-value">${s?.mood || 'neutral'}</span>
           </div>
         `;
-      case 'motorCortex':
+      }
+      case 'motorCortex': {
+        const s = stats as ModuleStats['motorCortex'];
         return `
           <div class="stat-row">
             <span class="stat-label">Tools Available</span>
-            <span class="stat-value">${stats?.toolsAvailable || 0}</span>
+            <span class="stat-value">${s?.toolsAvailable || 0}</span>
           </div>
         `;
-      case 'cns':
+      }
+      case 'cns': {
+        const s = stats as ModuleStats['cns'];
         return `
           <div class="stat-row">
             <span class="stat-label">Active Connections</span>
-            <span class="stat-value">${stats?.connections || 0}</span>
+            <span class="stat-value">${s?.connections || 0}</span>
           </div>
         `;
+      }
       default:
         return '';
     }
