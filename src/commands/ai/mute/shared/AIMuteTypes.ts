@@ -105,7 +105,7 @@ export const AIMute = {
 /**
  * Factory function for creating AiMuteParams
  */
-export const createAIMuteParams = (
+export const createAiMuteParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIMuteParams, 'context' | 'sessionId' | 'userId'>
@@ -117,7 +117,7 @@ export const createAIMuteParams = (
 /**
  * Factory function for creating AiMuteResult with defaults
  */
-export const createAIMuteResult = (
+export const createAiMuteResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIMuteResult, 'context' | 'sessionId' | 'userId'>
@@ -130,7 +130,7 @@ export const createAIMuteResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAIMuteResultFromParams = (
+export const createAiMuteResultFromParams = (
   params: AIMuteParams,
   differences: Omit<AIMuteResult, 'context' | 'sessionId' | 'userId'>
 ): AIMuteResult => transformPayload(params, differences);

@@ -75,7 +75,7 @@ export const RAGLoad = {
 /**
  * Factory function for creating RagLoadParams
  */
-export const createRAGLoadParams = (
+export const createRagLoadParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGLoadParams, 'context' | 'sessionId' | 'userId'>
@@ -87,7 +87,7 @@ export const createRAGLoadParams = (
 /**
  * Factory function for creating RagLoadResult with defaults
  */
-export const createRAGLoadResult = (
+export const createRagLoadResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGLoadResult, 'context' | 'sessionId' | 'userId'>
@@ -100,7 +100,7 @@ export const createRAGLoadResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createRAGLoadResultFromParams = (
+export const createRagLoadResultFromParams = (
   params: RAGLoadParams,
   differences: Omit<RAGLoadResult, 'context' | 'sessionId' | 'userId'>
 ): RAGLoadResult => transformPayload(params, differences);

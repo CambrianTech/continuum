@@ -93,16 +93,11 @@ export function extractTypeInfo(content: string, commandName: string): Extracted
   // Extract fields from Result interface
   const resultFields = extractInterfaceFields(content, resultName);
 
-  // Derive className from existing accessor, Params name, or filename — NOT command path
-  // This avoids "CollaborationDecisionPropose" when the file uses "DecisionPropose"
-  let className: string;
-  const existingAccessor = content.match(/export\s+const\s+(\w+)\s*=\s*\{[\s\S]*?commandName:/);
-  if (existingAccessor) {
-    className = existingAccessor[1];
-  } else {
-    // Fall back to Params name minus "Params" suffix
-    className = paramsName.replace(/Params$/, '');
-  }
+  // Build class name from command name: "agent/list" → "AgentList"
+  const className = commandName
+    .split(/[\/\-_]/)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
 
   return {
     paramsName,
@@ -384,3 +379,16 @@ export const ${info.className} = {
   return ops;
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+function getDefaultForType(type: string): string {
+  const trimmed = type.trim();
+  if (trimmed === 'string') return "''";
+  if (trimmed === 'number') return '0';
+  if (trimmed === 'boolean') return 'false';
+  if (trimmed.endsWith('[]') || trimmed.startsWith('Array<')) return '[]';
+  if (trimmed === 'object' || trimmed.startsWith('{')) return '{}';
+  if (trimmed.startsWith('Record<')) return '{}';
+  // For union types, optional types, etc. — use empty string as safe default
+  return "'' as never";
+}

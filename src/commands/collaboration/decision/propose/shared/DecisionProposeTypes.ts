@@ -73,7 +73,7 @@ export const DecisionPropose = {
 /**
  * Factory function for creating CollaborationDecisionProposeParams
  */
-export const createDecisionProposeParams = (
+export const createCollaborationDecisionProposeParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DecisionProposeParams, 'context' | 'sessionId' | 'userId'>
@@ -85,7 +85,7 @@ export const createDecisionProposeParams = (
 /**
  * Factory function for creating CollaborationDecisionProposeResult with defaults
  */
-export const createDecisionProposeResult = (
+export const createCollaborationDecisionProposeResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DecisionProposeResult, 'context' | 'sessionId' | 'userId'>
@@ -98,7 +98,7 @@ export const createDecisionProposeResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDecisionProposeResultFromParams = (
+export const createCollaborationDecisionProposeResultFromParams = (
   params: DecisionProposeParams,
   differences: Omit<DecisionProposeResult, 'context' | 'sessionId' | 'userId'>
 ): DecisionProposeResult => transformPayload(params, differences);

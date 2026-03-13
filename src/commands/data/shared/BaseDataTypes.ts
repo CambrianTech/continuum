@@ -48,7 +48,7 @@ export type DataBackend = 'server' | 'local';
 /**
  * Factory function for creating base data params
  */
-export const createDataParams = (
+export const createBaseDataParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<BaseDataParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
@@ -75,7 +75,7 @@ export type DataCommandInput<T extends BaseDataParams> =
 /**
  * Transform params to result with proper timestamp
  */
-export const createDataResultFromParams = (
+export const createBaseDataResultFromParams = (
   params: BaseDataParams,
   differences: Omit<Partial<BaseDataResult>, 'context' | 'sessionId'>
 ): BaseDataResult => transformPayload(params, {

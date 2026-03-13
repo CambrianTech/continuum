@@ -130,7 +130,7 @@ export const AIShouldRespond = {
 /**
  * Factory function for creating AiShouldRespondParams
  */
-export const createAIShouldRespondParams = (
+export const createAiShouldRespondParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIShouldRespondParams, 'context' | 'sessionId' | 'userId'>
@@ -142,7 +142,7 @@ export const createAIShouldRespondParams = (
 /**
  * Factory function for creating AiShouldRespondResult with defaults
  */
-export const createAIShouldRespondResult = (
+export const createAiShouldRespondResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIShouldRespondResult, 'context' | 'sessionId' | 'userId'>
@@ -155,7 +155,7 @@ export const createAIShouldRespondResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAIShouldRespondResultFromParams = (
+export const createAiShouldRespondResultFromParams = (
   params: AIShouldRespondParams,
   differences: Omit<AIShouldRespondResult, 'context' | 'sessionId' | 'userId'>
 ): AIShouldRespondResult => transformPayload(params, differences);

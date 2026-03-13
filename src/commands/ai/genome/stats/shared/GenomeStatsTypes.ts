@@ -313,7 +313,7 @@ export const GenomeStats = {
 /**
  * Factory function for creating AiGenomeStatsParams
  */
-export const createGenomeStatsParams = (
+export const createAiGenomeStatsParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeStatsParams, 'context' | 'sessionId' | 'userId'>
@@ -325,7 +325,7 @@ export const createGenomeStatsParams = (
 /**
  * Factory function for creating AiGenomeStatsResult with defaults
  */
-export const createGenomeStatsResult = (
+export const createAiGenomeStatsResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeStatsResult, 'context' | 'sessionId' | 'userId'>
@@ -338,7 +338,7 @@ export const createGenomeStatsResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createGenomeStatsResultFromParams = (
+export const createAiGenomeStatsResultFromParams = (
   params: GenomeStatsParams,
   differences: Omit<GenomeStatsResult, 'context' | 'sessionId' | 'userId'>
 ): GenomeStatsResult => transformPayload(params, differences);

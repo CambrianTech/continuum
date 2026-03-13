@@ -48,7 +48,7 @@ export const ActivityUserPresent = {
 /**
  * Factory function for creating CollaborationActivityUserPresentParams
  */
-export const createActivityUserPresentParams = (
+export const createCollaborationActivityUserPresentParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityUserPresentParams, 'context' | 'sessionId' | 'userId'>
@@ -60,7 +60,7 @@ export const createActivityUserPresentParams = (
 /**
  * Factory function for creating CollaborationActivityUserPresentResult with defaults
  */
-export const createActivityUserPresentResult = (
+export const createCollaborationActivityUserPresentResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityUserPresentResult, 'context' | 'sessionId' | 'userId'>
@@ -73,7 +73,7 @@ export const createActivityUserPresentResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createActivityUserPresentResultFromParams = (
+export const createCollaborationActivityUserPresentResultFromParams = (
   params: ActivityUserPresentParams,
   differences: Omit<ActivityUserPresentResult, 'context' | 'sessionId' | 'userId'>
 ): ActivityUserPresentResult => transformPayload(params, differences);

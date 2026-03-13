@@ -51,7 +51,7 @@ export const AIProvidersStatus = {
 /**
  * Factory function for creating AiProvidersStatusParams
  */
-export const createAIProvidersStatusParams = (
+export const createAiProvidersStatusParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIProvidersStatusParams, 'context' | 'sessionId' | 'userId'>
@@ -63,7 +63,7 @@ export const createAIProvidersStatusParams = (
 /**
  * Factory function for creating AiProvidersStatusResult with defaults
  */
-export const createAIProvidersStatusResult = (
+export const createAiProvidersStatusResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIProvidersStatusResult, 'context' | 'sessionId' | 'userId'>
@@ -76,7 +76,7 @@ export const createAIProvidersStatusResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAIProvidersStatusResultFromParams = (
+export const createAiProvidersStatusResultFromParams = (
   params: AIProvidersStatusParams,
   differences: Omit<AIProvidersStatusResult, 'context' | 'sessionId' | 'userId'>
 ): AIProvidersStatusResult => transformPayload(params, differences);

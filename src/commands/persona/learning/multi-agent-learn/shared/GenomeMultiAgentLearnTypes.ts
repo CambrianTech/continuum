@@ -189,7 +189,7 @@ export const GenomeMultiAgentLearn = {
 /**
  * Factory function for creating PersonaLearningMultiAgentLearnParams
  */
-export const createGenomeMultiAgentLearnParams = (
+export const createPersonaLearningMultiAgentLearnParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeMultiAgentLearnParams, 'context' | 'sessionId' | 'userId'>
@@ -201,7 +201,7 @@ export const createGenomeMultiAgentLearnParams = (
 /**
  * Factory function for creating PersonaLearningMultiAgentLearnResult with defaults
  */
-export const createGenomeMultiAgentLearnResult = (
+export const createPersonaLearningMultiAgentLearnResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeMultiAgentLearnResult, 'context' | 'sessionId' | 'userId'>
@@ -214,7 +214,7 @@ export const createGenomeMultiAgentLearnResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createGenomeMultiAgentLearnResultFromParams = (
+export const createPersonaLearningMultiAgentLearnResultFromParams = (
   params: GenomeMultiAgentLearnParams,
   differences: Omit<GenomeMultiAgentLearnResult, 'context' | 'sessionId' | 'userId'>
 ): GenomeMultiAgentLearnResult => transformPayload(params, differences);

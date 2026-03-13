@@ -80,7 +80,7 @@ export const AIValidateResponse = {
 /**
  * Factory function for creating AiValidateResponseParams
  */
-export const createAIValidateResponseParams = (
+export const createAiValidateResponseParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIValidateResponseParams, 'context' | 'sessionId' | 'userId'>
@@ -92,7 +92,7 @@ export const createAIValidateResponseParams = (
 /**
  * Factory function for creating AiValidateResponseResult with defaults
  */
-export const createAIValidateResponseResult = (
+export const createAiValidateResponseResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIValidateResponseResult, 'context' | 'sessionId' | 'userId'>
@@ -105,7 +105,7 @@ export const createAIValidateResponseResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAIValidateResponseResultFromParams = (
+export const createAiValidateResponseResultFromParams = (
   params: AIValidateResponseParams,
   differences: Omit<AIValidateResponseResult, 'context' | 'sessionId' | 'userId'>
 ): AIValidateResponseResult => transformPayload(params, differences);

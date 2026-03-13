@@ -52,7 +52,7 @@ export const DocsList = {
 /**
  * Factory function for creating UtilitiesDocsListParams
  */
-export const createDocsListParams = (
+export const createUtilitiesDocsListParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsListParams, 'context' | 'sessionId' | 'userId'>
@@ -64,7 +64,7 @@ export const createDocsListParams = (
 /**
  * Factory function for creating UtilitiesDocsListResult with defaults
  */
-export const createDocsListResult = (
+export const createUtilitiesDocsListResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsListResult, 'context' | 'sessionId' | 'userId'>
@@ -77,7 +77,7 @@ export const createDocsListResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDocsListResultFromParams = (
+export const createUtilitiesDocsListResultFromParams = (
   params: DocsListParams,
   differences: Omit<DocsListResult, 'context' | 'sessionId' | 'userId'>
 ): DocsListResult => transformPayload(params, differences);

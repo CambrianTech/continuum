@@ -74,7 +74,7 @@ export const EmbeddingGenerate = {
 /**
  * Factory function for creating AiEmbeddingGenerateParams
  */
-export const createEmbeddingGenerateParams = (
+export const createAiEmbeddingGenerateParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<EmbeddingGenerateParams, 'context' | 'sessionId' | 'userId'>
@@ -86,7 +86,7 @@ export const createEmbeddingGenerateParams = (
 /**
  * Factory function for creating AiEmbeddingGenerateResult with defaults
  */
-export const createEmbeddingGenerateResult = (
+export const createAiEmbeddingGenerateResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<EmbeddingGenerateResult, 'context' | 'sessionId' | 'userId'>
@@ -99,7 +99,7 @@ export const createEmbeddingGenerateResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createEmbeddingGenerateResultFromParams = (
+export const createAiEmbeddingGenerateResultFromParams = (
   params: EmbeddingGenerateParams,
   differences: Omit<EmbeddingGenerateResult, 'context' | 'sessionId' | 'userId'>
 ): EmbeddingGenerateResult => transformPayload(params, differences);

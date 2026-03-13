@@ -41,7 +41,7 @@ export const DecisionRank = {
 /**
  * Factory function for creating CollaborationDecisionRankParams
  */
-export const createDecisionRankParams = (
+export const createCollaborationDecisionRankParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DecisionRankParams, 'context' | 'sessionId' | 'userId'>
@@ -53,7 +53,7 @@ export const createDecisionRankParams = (
 /**
  * Factory function for creating CollaborationDecisionRankResult with defaults
  */
-export const createDecisionRankResult = (
+export const createCollaborationDecisionRankResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DecisionRankResult, 'context' | 'sessionId' | 'userId'>
@@ -66,7 +66,7 @@ export const createDecisionRankResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDecisionRankResultFromParams = (
+export const createCollaborationDecisionRankResultFromParams = (
   params: DecisionRankParams,
   differences: Omit<DecisionRankResult, 'context' | 'sessionId' | 'userId'>
 ): DecisionRankResult => transformPayload(params, differences);

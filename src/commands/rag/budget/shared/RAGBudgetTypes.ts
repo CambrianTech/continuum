@@ -66,7 +66,7 @@ export const RAGBudget = {
 /**
  * Factory function for creating RagBudgetParams
  */
-export const createRAGBudgetParams = (
+export const createRagBudgetParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGBudgetParams, 'context' | 'sessionId' | 'userId'>
@@ -78,7 +78,7 @@ export const createRAGBudgetParams = (
 /**
  * Factory function for creating RagBudgetResult with defaults
  */
-export const createRAGBudgetResult = (
+export const createRagBudgetResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGBudgetResult, 'context' | 'sessionId' | 'userId'>
@@ -91,7 +91,7 @@ export const createRAGBudgetResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createRAGBudgetResultFromParams = (
+export const createRagBudgetResultFromParams = (
   params: RAGBudgetParams,
   differences: Omit<RAGBudgetResult, 'context' | 'sessionId' | 'userId'>
 ): RAGBudgetResult => transformPayload(params, differences);

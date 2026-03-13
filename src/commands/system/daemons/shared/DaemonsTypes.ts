@@ -48,7 +48,7 @@ export const Daemons = {
 /**
  * Factory function for creating SystemDaemonsParams
  */
-export const createDaemonsParams = (
+export const createSystemDaemonsParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DaemonsParams, 'context' | 'sessionId' | 'userId'>
@@ -60,7 +60,7 @@ export const createDaemonsParams = (
 /**
  * Factory function for creating SystemDaemonsResult with defaults
  */
-export const createDaemonsResult = (
+export const createSystemDaemonsResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DaemonsResult, 'context' | 'sessionId' | 'userId'>
@@ -73,7 +73,7 @@ export const createDaemonsResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDaemonsResultFromParams = (
+export const createSystemDaemonsResultFromParams = (
   params: DaemonsParams,
   differences: Omit<DaemonsResult, 'context' | 'sessionId' | 'userId'>
 ): DaemonsResult => transformPayload(params, differences);

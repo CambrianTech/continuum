@@ -121,7 +121,7 @@ export const RagQueryOpen = {
 /**
  * Factory function for creating AiRagQueryOpenParams
  */
-export const createRagQueryOpenParams = (
+export const createAiRagQueryOpenParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryOpenParams, 'context' | 'sessionId' | 'userId'>
@@ -133,7 +133,7 @@ export const createRagQueryOpenParams = (
 /**
  * Factory function for creating AiRagQueryOpenResult with defaults
  */
-export const createRagQueryOpenResult = (
+export const createAiRagQueryOpenResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryOpenResult, 'context' | 'sessionId' | 'userId'>
@@ -146,7 +146,7 @@ export const createRagQueryOpenResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createRagQueryOpenResultFromParams = (
+export const createAiRagQueryOpenResultFromParams = (
   params: RagQueryOpenParams,
   differences: Omit<RagQueryOpenResult, 'context' | 'sessionId' | 'userId'>
 ): RagQueryOpenResult => transformPayload(params, differences);

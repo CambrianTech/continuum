@@ -190,7 +190,7 @@ export const ShellExecute = {
 /**
  * Factory function for creating DevelopmentShellExecuteParams
  */
-export const createShellExecuteParams = (
+export const createDevelopmentShellExecuteParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ShellExecuteParams, 'context' | 'sessionId' | 'userId'>
@@ -202,7 +202,7 @@ export const createShellExecuteParams = (
 /**
  * Factory function for creating DevelopmentShellExecuteResult with defaults
  */
-export const createShellExecuteResult = (
+export const createDevelopmentShellExecuteResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ShellExecuteResult, 'context' | 'sessionId' | 'userId'>
@@ -215,7 +215,7 @@ export const createShellExecuteResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createShellExecuteResultFromParams = (
+export const createDevelopmentShellExecuteResultFromParams = (
   params: ShellExecuteParams,
   differences: Omit<ShellExecuteResult, 'context' | 'sessionId' | 'userId'>
 ): ShellExecuteResult => transformPayload(params, differences);
