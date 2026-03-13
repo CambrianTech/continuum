@@ -7,19 +7,30 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { type JTAGContext, type JTAGEnvironment } from '@system/core/types/JTAGTypes';
-import type { 
-  ExecCommandParams, 
-  ExecCommandResult, 
+import type {
+  ExecCommandParams,
+  ExecCommandResult,
   ExecTransportPayload,
   ExecError,
   ExecErrorType,
   BrowserExecutionInfo,
   ServerExecutionInfo,
   ExecRuntimeEnvironment,
-  SupportedLanguage
+  SupportedLanguage,
+  JTAGClientAccess,
+  ContinuumClientAccess,
+  DOMManipulatorAccess,
+  FileSystemAccess
 } from './ExecTypes';
 
 import { ExecTransportEncoder, ExecNetworkSafety } from './ExecTransportUtils';
+import type { ExecPermissions } from './ExecTypes';
+
+/** Error with additional script context from enhanceExecutionError */
+interface EnhancedExecError extends Error {
+  scriptLineNumber?: number;
+  scriptSource?: string;
+}
 
 /**
  * Base ExecCommand implementation - extends JTAG CommandBase for proper registration
@@ -76,7 +87,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
       // console.debug(`🔄 ExecCommand: Local environment: ${this.getLocalEnvironment()}`);
       
       // 5. Execute in appropriate context
-      let executionResult: any;
+      let executionResult: unknown;
       
       if (actualEnvironment === this.getLocalEnvironment()) {
         // Execute locally
@@ -101,7 +112,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   /**
    * Execute script in local context (browser or server)
    */
-  protected async executeLocally(payload: ExecTransportPayload): Promise<any> {
+  protected async executeLocally(payload: ExecTransportPayload): Promise<unknown> {
     // 1. Decode payload
     const { sourceCode, parameters, language, permissions } = ExecTransportEncoder.decodeFromTransport(payload);
     
@@ -124,7 +135,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   /**
    * Execute script in remote context (cross-context or P2P mesh)
    */
-  protected async executeRemotely(payload: ExecTransportPayload, targetEnvironment: JTAGEnvironment): Promise<any> {
+  protected async executeRemotely(payload: ExecTransportPayload, targetEnvironment: JTAGEnvironment): Promise<unknown> {
     // This will be implemented by specific router integration
     // For now, throw an error to indicate remote execution is not yet implemented
     throw new Error(`Remote execution to ${targetEnvironment} not yet implemented`);
@@ -134,8 +145,8 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
    * Create runtime environment with all necessary globals
    */
   protected async createRuntimeEnvironment(
-    parameters: Record<string, any>, 
-    permissions: any
+    parameters: Record<string, unknown>,
+    permissions: ExecPermissions
   ): Promise<ExecRuntimeEnvironment> {
     return {
       // JTAG system access
@@ -162,7 +173,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
     language: SupportedLanguage, 
     runtime: ExecRuntimeEnvironment,
     timeout: number
-  ): Promise<any> {
+  ): Promise<unknown> {
     // Wrap execution in timeout
     return await Promise.race([
       this.executeWithRuntime(sourceCode, language, runtime),
@@ -177,7 +188,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
     sourceCode: string, 
     language: SupportedLanguage, 
     runtime: ExecRuntimeEnvironment
-  ): Promise<any> {
+  ): Promise<unknown> {
     try {
       // Capture console output
       const originalConsole = console.log;
@@ -187,7 +198,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
         originalConsole(...args); // Still log to actual console
       };
       
-      let result: any;
+      let result: unknown;
       
       if (language === 'typescript') {
         // For TypeScript, we need to compile first
@@ -215,7 +226,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   /**
    * Execute JavaScript code with runtime environment
    */
-  protected async executeJavaScript(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<any> {
+  protected async executeJavaScript(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<unknown> {
     // Create function with runtime as parameters
     const wrappedCode = `
       (async function(jtag, continuum, params, dom, fs, utils) {
@@ -234,7 +245,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   /**
    * Execute TypeScript code (compile first, then execute)
    */
-  protected async executeTypeScript(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<any> {
+  protected async executeTypeScript(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<unknown> {
     // For now, treat TypeScript as JavaScript (basic transpilation)
     // In a full implementation, we'd use the TypeScript compiler API
     // console.debug('⚠️ ExecCommand: TypeScript execution using JavaScript fallback (full TS compilation not yet implemented)');
@@ -244,7 +255,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   /**
    * Execute Python code (future implementation)
    */
-  protected async executePython(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<any> {
+  protected async executePython(sourceCode: string, runtime: ExecRuntimeEnvironment): Promise<unknown> {
     throw new Error('Python execution not yet implemented');
   }
   
@@ -262,11 +273,11 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
       lineNumber = parseInt(lineMatch[1]) - 3; // Account for wrapper function
     }
     
-    const enhancedError = new Error(`Script execution failed: ${error.message}`);
+    const enhancedError = new Error(`Script execution failed: ${error.message}`) as EnhancedExecError;
     enhancedError.stack = error.stack;
-    (enhancedError as any).scriptLineNumber = lineNumber;
-    (enhancedError as any).scriptSource = sourceCode;
-    
+    enhancedError.scriptLineNumber = lineNumber;
+    enhancedError.scriptSource = sourceCode;
+
     return enhancedError;
   }
   
@@ -285,7 +296,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
    * Create success result with comprehensive information
    */
   protected createSuccessResult(
-    result: any, 
+    result: unknown,
     environment: JTAGEnvironment, 
     language: SupportedLanguage,
     sessionId: string,
@@ -314,24 +325,25 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
     message: string, 
     originalError?: Error,
     sessionId?: string,
-    context?: any
+    context?: JTAGContext
   ): ExecCommandResult {
     const execError: ExecError = {
       type: errorType,
       message,
       stack: originalError?.stack,
     };
-    
+
     // Add enhanced error information
-    if (originalError && (originalError as any).scriptLineNumber) {
-      execError.line = (originalError as any).scriptLineNumber;
+    const enhanced = originalError as EnhancedExecError | undefined;
+    if (enhanced?.scriptLineNumber) {
+      execError.line = enhanced.scriptLineNumber;
     }
     
     return {
       success: false,
       error: execError,
       sessionId: sessionId || 'unknown',
-      context: context || { uuid: 'unknown', environment: this.getLocalEnvironment() },
+      context: context || { uuid: 'unknown' as string, environment: this.getLocalEnvironment() } as JTAGContext,
       executionTime: Date.now() - this.startTime,
       environment: this.getLocalEnvironment(),
       language: 'javascript', // Default when we can't determine
@@ -346,10 +358,10 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
   abstract getLocalEnvironment(): JTAGEnvironment;
   abstract resolveExecutionEnvironment(requested: JTAGEnvironment | 'auto' | 'both'): Promise<JTAGEnvironment>;
   abstract resolveSourceCode(sourceCode: string, originalType: string): Promise<string>;
-  abstract createJTAGAccess(permissions: any): Promise<any>;
-  abstract createContinuumAccess(permissions: any): Promise<any>;
-  abstract createDOMAccess(permissions: any): Promise<any>;
-  abstract createFileSystemAccess(permissions: any): Promise<any>;
+  abstract createJTAGAccess(permissions: ExecPermissions): Promise<JTAGClientAccess>;
+  abstract createContinuumAccess(permissions: ExecPermissions): Promise<ContinuumClientAccess | undefined>;
+  abstract createDOMAccess(permissions: ExecPermissions): Promise<DOMManipulatorAccess | undefined>;
+  abstract createFileSystemAccess(permissions: ExecPermissions): Promise<FileSystemAccess | undefined>;
   abstract getBrowserInfo(): BrowserExecutionInfo | undefined;
   abstract getServerInfo(): ServerExecutionInfo | undefined;
   
@@ -363,7 +375,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
       uuid: () => this.generateCorrelationId(),
       base64Encode: (str: string) => Buffer.from(str).toString('base64'),
       base64Decode: (str: string) => Buffer.from(str, 'base64').toString('utf8'),
-      safeStringify: (obj: any) => {
+      safeStringify: (obj: unknown) => {
         try {
           return JSON.stringify(obj, null, 2);
         } catch (error) {
@@ -417,7 +429,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
         break;
         
       default:
-        errors.push(`Unknown code input type: ${(params.code as any).type}`);
+        errors.push(`Unknown code input type: ${(params.code as { type: string }).type}`);
     }
     
     // Validate timeout
