@@ -22,6 +22,7 @@ export type { VectorSearchHit } from './data-daemon';
 export type { VectorSearchResult } from './data-daemon';
 export * from './gpu';
 export * from './ipc';
+export * from './live';
 export * from './logger';
 // orm: explicit exports (has duplicate types)
 export type { BackfillVectorsProgress } from './orm';

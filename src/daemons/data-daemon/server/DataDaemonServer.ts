@@ -11,7 +11,7 @@ import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonBase';
 import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } from '../shared/DataDaemon';
 import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
-import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
+import type { DataRecord, StorageQuery, StorageResult, RecordData, CollectionStats, StorageOperation } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
@@ -268,9 +268,9 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle create operation using DataDaemon
    */
-  protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
+  protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>> {
     const context = this.createDataContext('data-daemon-server');
-    const entity = await this.dataDaemon.create(payload.collection!, payload.data, context);
+    const entity = await this.dataDaemon.create(payload.collection!, payload.data as BaseEntity, context);
 
     // Event emission handled by DataDaemon layer via universal Events system
     // await this.emitCrudEvent('created', payload.collection!, entity);
@@ -294,7 +294,7 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle read operation using DataDaemon
    */
-  protected async handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
+  protected async handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>> {
     const context = this.createDataContext('data-daemon-server');
     return await this.dataDaemon.read(payload.collection!, payload.id!, context);
   }
@@ -302,7 +302,7 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle query operation using DataDaemon
    */
-  protected async handleQuery(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>[]>> {
+  protected async handleQuery(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>[]>> {
     const context = this.createDataContext('data-daemon-server');
     return await this.dataDaemon.query(payload.query!, context);
   }
@@ -310,9 +310,9 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle update operation using DataDaemon
    */
-  protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
+  protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>> {
     const context = this.createDataContext('data-daemon-server');
-    const entity = await this.dataDaemon.update(payload.collection!, payload.id!, payload.data, context);
+    const entity = await this.dataDaemon.update(payload.collection!, payload.id!, payload.data as Partial<BaseEntity>, context);
 
     // Event emission handled by DataDaemon layer via universal Events system
     // await this.emitCrudEvent('updated', payload.collection!, entity);
@@ -364,7 +364,7 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle get stats operation using DataDaemon
    */
-  protected async handleGetStats(payload: DataOperationPayload): Promise<StorageResult<any>> {
+  protected async handleGetStats(payload: DataOperationPayload): Promise<StorageResult<CollectionStats>> {
     const context = this.createDataContext('data-daemon-server');
     return await this.dataDaemon.getCollectionStats(payload.collection!, context);
   }
@@ -372,9 +372,9 @@ export class DataDaemonServer extends DataDaemonBase {
   /**
    * Handle batch operations using DataDaemon
    */
-  protected async handleBatch(payload: DataOperationPayload): Promise<StorageResult<any[]>> {
+  protected async handleBatch(payload: DataOperationPayload): Promise<StorageResult<unknown[]>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.batch(payload.operations!, context);
+    return await this.dataDaemon.batch(payload.operations! as StorageOperation[], context);
   }
   
   /**

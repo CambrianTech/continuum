@@ -12,7 +12,7 @@ import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { createBaseResponse } from '../../../system/core/types/ResponseTypes';
-import type { DataRecord, StorageQuery, StorageResult } from './DataStorageAdapter';
+import type { DataRecord, StorageQuery, StorageResult, RecordData, CollectionStats } from './DataStorageAdapter';
 import { type DataOperationContext } from './DataDaemon';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
@@ -23,9 +23,9 @@ export interface DataOperationPayload extends JTAGPayload {
   readonly operation: 'create' | 'read' | 'query' | 'update' | 'delete' | 'list_collections' | 'get_stats' | 'batch';
   readonly collection?: string;
   readonly id?: UUID;
-  readonly data?: any;
+  readonly data?: unknown;
   readonly query?: StorageQuery;
-  readonly operations?: any[];
+  readonly operations?: unknown[];
 }
 
 export const createDataOperationPayload = (
@@ -61,7 +61,7 @@ export abstract class DataDaemonBase extends DaemonBase {
     const payload = message.payload as DataOperationPayload;
     
     try {
-      let result: StorageResult<any>;
+      let result: StorageResult<unknown>;
       
       switch (payload.operation) {
         case 'create':
@@ -100,9 +100,10 @@ export abstract class DataDaemonBase extends DaemonBase {
         ...result
       });
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return createBaseResponse(false, this.context, payload.sessionId, {
-        error: `Data daemon error: ${error.message}`
+        error: `Data daemon error: ${err.message}`
       });
     }
   }
@@ -110,14 +111,14 @@ export abstract class DataDaemonBase extends DaemonBase {
   /**
    * Abstract data operation handlers - implemented by browser/server
    */
-  protected abstract handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>>;
-  protected abstract handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>>;
-  protected abstract handleQuery(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>[]>>;
-  protected abstract handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>>;
+  protected abstract handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>>;
+  protected abstract handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>>;
+  protected abstract handleQuery(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>[]>>;
+  protected abstract handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>>;
   protected abstract handleDelete(payload: DataOperationPayload): Promise<StorageResult<boolean>>;
   protected abstract handleListCollections(payload: DataOperationPayload): Promise<StorageResult<string[]>>;
-  protected abstract handleGetStats(payload: DataOperationPayload): Promise<StorageResult<any>>;
-  protected abstract handleBatch(payload: DataOperationPayload): Promise<StorageResult<any[]>>;
+  protected abstract handleGetStats(payload: DataOperationPayload): Promise<StorageResult<CollectionStats>>;
+  protected abstract handleBatch(payload: DataOperationPayload): Promise<StorageResult<unknown[]>>;
   
   /**
    * Create data operation context
