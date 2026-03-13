@@ -47,18 +47,8 @@ type EntityConstructor = (new (...args: unknown[]) => BaseEntity) & typeof BaseE
 
 // Removed complex decorator dependency - using simple field validation instead
 
-/**
- * Optional vector search methods that some storage adapters may support.
- * Used for runtime capability checking on the adapter.
- */
-interface VectorCapableAdapter extends DataStorageAdapter {
-  vectorSearch?(options: import('./VectorSearchTypes').VectorSearchOptions): Promise<StorageResult<import('./VectorSearchTypes').VectorSearchResponse>>;
-  generateEmbedding?(request: import('./VectorSearchTypes').GenerateEmbeddingRequest): Promise<StorageResult<import('./VectorSearchTypes').GenerateEmbeddingResponse>>;
-  indexVector?(request: import('./VectorSearchTypes').IndexVectorRequest): Promise<StorageResult<boolean>>;
-  backfillVectors?(request: import('./VectorSearchTypes').BackfillVectorsRequest, onProgress?: (progress: import('./VectorSearchTypes').BackfillVectorsProgress) => void): Promise<StorageResult<import('./VectorSearchTypes').BackfillVectorsProgress>>;
-  getVectorIndexStats?(collection: string): Promise<StorageResult<import('./VectorSearchTypes').VectorIndexStats>>;
-  getVectorSearchCapabilities?(): Promise<import('./VectorSearchTypes').VectorSearchCapabilities | null>;
-}
+// Import vector operations (extracted from this file)
+import { DataVectorOperations } from './DataVectorOperations';
 
 /**
  * Storage Strategy Configuration
@@ -112,6 +102,11 @@ export class DataDaemon {
   private isInitialized: boolean = false;
   private paginatedQueryManager: PaginatedQueryManager;
   private schemaManager: DataSchemaManager = new DataSchemaManager();
+  private vectorOps: DataVectorOperations = new DataVectorOperations(
+    () => this.adapter,
+    (collection) => this.getAdapterForCollection(collection),
+    this.schemaManager,
+  );
 
   // Per-collection adapter registry - allows different storage backends per collection
   // Example: logging_config uses JSON file, users uses SQLite
@@ -1095,168 +1090,48 @@ export class DataDaemon {
   }
 
   // =============================================
-  // VECTOR SEARCH INTERFACE
+  // VECTOR SEARCH INTERFACE (delegated to DataVectorOperations)
   // =============================================
 
-  /**
-   * Perform vector similarity search - CLEAN INTERFACE
-   *
-   * @example
-   * const results = await DataDaemon.vectorSearch<MemoryData>({
-   *   collection: 'memories',
-   *   queryText: 'user prefers detailed explanations',
-   *   k: 10,
-   *   similarityThreshold: 0.7
-   * });
-   */
   static async vectorSearch<T extends RecordData>(
     options: import('./VectorSearchTypes').VectorSearchOptions
   ): Promise<StorageResult<import('./VectorSearchTypes').VectorSearchResponse<T>>> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    // Ensure schema before vector search
-    await DataDaemon.sharedInstance.schemaManager.ensureSchema(options.collection, DataDaemon.sharedInstance.getAdapterForCollection(options.collection));
-
-    // Check if adapter supports vector search
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.vectorSearch) {
-      return {
-        success: false,
-        error: 'Current storage adapter does not support vector search'
-      };
-    }
-
-    return await adapter.vectorSearch(options) as StorageResult<import('./VectorSearchTypes').VectorSearchResponse<T>>;
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.vectorSearch<T>(options);
   }
 
-  /**
-   * Generate embedding for text - CLEAN INTERFACE
-   *
-   * @example
-   * const result = await DataDaemon.generateEmbedding({
-   *   text: 'We should use TypeScript for type safety',
-   *   model: { name: 'all-minilm', dimensions: 384, provider: 'fastembed' }
-   * });
-   */
   static async generateEmbedding(
     request: import('./VectorSearchTypes').GenerateEmbeddingRequest
   ): Promise<StorageResult<import('./VectorSearchTypes').GenerateEmbeddingResponse>> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    // Check if adapter supports embedding generation
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.generateEmbedding) {
-      return {
-        success: false,
-        error: 'Current storage adapter does not support embedding generation'
-      };
-    }
-
-    return await adapter.generateEmbedding(request);
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.generateEmbedding(request);
   }
 
-  /**
-   * Index vector for a record - CLEAN INTERFACE
-   *
-   * @example
-   * const result = await DataDaemon.indexVector({
-   *   collection: 'memories',
-   *   id: memoryId,
-   *   embedding: [0.123, -0.456, 0.789, ...],
-   *   metadata: { embeddingModel: 'all-minilm', generatedAt: new Date().toISOString() }
-   * });
-   */
   static async indexVector(
     request: import('./VectorSearchTypes').IndexVectorRequest
   ): Promise<StorageResult<boolean>> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.indexVector) {
-      return {
-        success: false,
-        error: 'Current storage adapter does not support vector indexing'
-      };
-    }
-
-    return await adapter.indexVector(request);
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.indexVector(request);
   }
 
-  /**
-   * Backfill vectors for existing records - CLEAN INTERFACE
-   *
-   * @example
-   * const result = await DataDaemon.backfillVectors({
-   *   collection: 'memories',
-   *   textField: 'content',
-   *   batchSize: 100
-   * }, (progress) => {
-   *   console.log(`Processed ${progress.processed}/${progress.total} records`);
-   * });
-   */
   static async backfillVectors(
     request: import('./VectorSearchTypes').BackfillVectorsRequest,
     onProgress?: (progress: import('./VectorSearchTypes').BackfillVectorsProgress) => void
   ): Promise<StorageResult<import('./VectorSearchTypes').BackfillVectorsProgress>> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.backfillVectors) {
-      return {
-        success: false,
-        error: 'Current storage adapter does not support vector backfilling'
-      };
-    }
-
-    return await adapter.backfillVectors(request, onProgress);
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.backfillVectors(request, onProgress);
   }
 
-  /**
-   * Get vector index statistics - CLEAN INTERFACE
-   *
-   * @example
-   * const stats = await DataDaemon.getVectorIndexStats('memories');
-   */
   static async getVectorIndexStats(
     collection: string
   ): Promise<StorageResult<import('./VectorSearchTypes').VectorIndexStats>> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.getVectorIndexStats) {
-      return {
-        success: false,
-        error: 'Current storage adapter does not support vector index stats'
-      };
-    }
-
-    return await adapter.getVectorIndexStats(collection);
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.getVectorIndexStats(collection);
   }
 
-  /**
-   * Get vector search capabilities - CLEAN INTERFACE
-   */
   static async getVectorSearchCapabilities(): Promise<import('./VectorSearchTypes').VectorSearchCapabilities | null> {
-    if (!DataDaemon.sharedInstance) {
-      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
-    }
-
-    const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
-    if (!adapter.getVectorSearchCapabilities) {
-      return null;
-    }
-
-    return await adapter.getVectorSearchCapabilities();
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.vectorOps.getVectorSearchCapabilities();
   }
 }
 
