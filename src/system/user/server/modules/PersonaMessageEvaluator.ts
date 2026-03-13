@@ -454,6 +454,34 @@ export class PersonaMessageEvaluator {
         model: gatingResult.model
       });
 
+      // PHASE 5C: Log SILENT decision to coordination database
+      // No RAG context (skipped for performance on SILENT path), but coordination
+      // snapshot + ambient state still valuable for coherence analysis.
+      CoordinationDecisionLogger.logDecision({
+        actorId: this.personaUser.id,
+        actorName: this.personaUser.displayName,
+        actorType: 'ai-persona',
+        triggerEventId: messageEntity.id,
+        ragContext: {
+          identity: { systemPrompt: '', bio: this.personaUser.entity?.bio ?? '', role: this.personaUser.displayName },
+          conversationHistory: [],
+          metadata: { timestamp: Date.now(), tokenCount: 0, contextWindow: 0 }
+        },
+        action: 'SILENT',
+        confidence: gatingResult.confidence,
+        reasoning: gatingResult.reason,
+        modelUsed: gatingResult.model,
+        modelProvider: this.personaUser.modelConfig.provider,
+        responseTime: Date.now() - gatingStart,
+        sessionId: DataDaemon.jtagContext!.uuid,
+        contextId: messageEntity.roomId,
+        tags: [
+          senderIsHuman ? 'human-sender' : 'ai-sender',
+          isMentioned ? 'mentioned' : 'not-mentioned',
+          'gating-silent'
+        ]
+      }).catch(err => this.log(`⚠️ Failed to log SILENT decision: ${err}`));
+
       // Emit DECIDED_SILENT event (fire-and-forget — UI indicator)
       if (this.personaUser.client) {
         Events.emit<AIDecidedSilentEventData>(
@@ -592,6 +620,16 @@ export class PersonaMessageEvaluator {
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
       });
+
+      // PHASE 5C: Log post-inference SILENT with full RAG context (already built)
+      CoordinationDecisionLogger.logDecision({
+        ...decisionContext,
+        action: 'SILENT',
+        reasoning: `Post-inference: ${postInferenceResult.reason}`,
+        responseTime: Date.now() - postInferenceStart,
+        tags: [...(decisionContext.tags ?? []), 'post-inference-block']
+      }).catch(err => this.log(`⚠️ Failed to log post-inference SILENT decision: ${err}`));
+
       return;
     }
 

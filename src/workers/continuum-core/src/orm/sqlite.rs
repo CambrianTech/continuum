@@ -422,7 +422,7 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
         }),
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("has no column named") {
+            if err_msg.contains("has no column named") || err_msg.contains("no such column") {
                 // Schema evolution: add missing columns and retry
                 if evolve_table_schema(conn, &table, &record.data) {
                     match conn.execute(&sql, params.as_slice()) {
@@ -575,7 +575,7 @@ fn do_update(
         Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("has no column named") {
+            if err_msg.contains("has no column named") || err_msg.contains("no such column") {
                 let table = naming::to_table_name(collection);
                 if evolve_table_schema(conn, &table, &data) {
                     match conn.execute(&sql, params_ref.as_slice()) {
