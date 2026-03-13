@@ -353,7 +353,6 @@ export class PersonaTile extends LitElement {
     if (badge.includes('groq')) return 75;
     if (badge.includes('alibaba') || badge.includes('qwen')) return 72;
     if (badge.includes('candle')) return 45;  // Local small models
-    if (badge.includes('ollama')) return 50;
     return 60;  // Unknown provider
   }
 

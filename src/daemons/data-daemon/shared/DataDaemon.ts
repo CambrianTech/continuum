@@ -23,23 +23,10 @@ import type {
   CollectionStats,
   StorageOperation,
   RecordData,
-  CollectionSchema,
-  SchemaField,
-  SchemaFieldType,
-  SchemaIndex
 } from './DataStorageAdapter';
 
-// Import entity registry for proper entity instantiation during validation
-import { getRegisteredEntity, ENTITY_REGISTRY } from '../server/EntityRegistry';
-
-// Import field metadata for schema extraction (daemon extracts, adapter uses)
-import {
-  getFieldMetadata,
-  hasFieldMetadata,
-  getCompositeIndexes,
-  type FieldMetadata,
-  type FieldType
-} from '../../../system/data/decorators/FieldDecorators';
+// Import entity registry for proper entity instantiation during pagination
+import { getRegisteredEntity } from '../server/EntityRegistry';
 
 // Import universal events for automatic event emission
 import { Events } from '../../../system/core/shared/Events';
@@ -48,6 +35,15 @@ import { getDataEventName, DATA_EVENTS } from '../../../system/core/shared/Event
 // Import paginated query management
 import { PaginatedQueryManager } from './PaginatedQuery';
 import type { OpenPaginatedQueryParams, PaginatedQueryHandle, PaginatedQueryPage } from './PaginatedQuery';
+
+// Import schema manager (extracted from this file)
+import { DataSchemaManager } from './DataSchemaManager';
+export type { SchemaValidationResult } from './DataSchemaManager';
+
+/**
+ * Entity Constructor Type with BaseEntity static methods
+ */
+type EntityConstructor = (new (...args: unknown[]) => BaseEntity) & typeof BaseEntity;
 
 // Removed complex decorator dependency - using simple field validation instead
 
@@ -92,18 +88,6 @@ export interface DataOperationContext {
   readonly consistency?: 'eventual' | 'strong' | 'session';
 }
 
-/**
- * Entity Constructor Type with BaseEntity static methods
- */
-type EntityConstructor = (new (...args: unknown[]) => BaseEntity) & typeof BaseEntity;
-
-/**
- * Schema Validation Result
- */
-export interface SchemaValidationResult {
-  success: boolean;
-  errors?: string[];
-}
 
 /**
  * Universal Data Daemon - Storage Strategy Abstraction
@@ -127,9 +111,7 @@ export class DataDaemon {
   private config: StorageStrategyConfig;
   private isInitialized: boolean = false;
   private paginatedQueryManager: PaginatedQueryManager;
-
-  // Track which collections have had their schema ensured (generic caching at daemon level)
-  private ensuredSchemas: Set<string> = new Set();
+  private schemaManager: DataSchemaManager = new DataSchemaManager();
 
   // Per-collection adapter registry - allows different storage backends per collection
   // Example: logging_config uses JSON file, users uses SQLite
@@ -229,7 +211,7 @@ export class DataDaemon {
 
     // Ensure schema exists via default adapter (DDL).
     // Custom adapters (Rust) handle DML only — schema creation stays in TypeScript.
-    await this.ensureSchema(collection);
+    await this.schemaManager.ensureSchema(collection, this.getAdapterForCollection(collection));
 
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
@@ -242,7 +224,7 @@ export class DataDaemon {
     const completeData = { ...data, id: entityId };
 
     // Schema validation using entity registry and BaseEntity factory method - PROPER ARCHITECTURE
-    const schemaResult = this.validateSchema(collection, completeData);
+    const schemaResult = this.schemaManager.validateEntity(collection, completeData);
     if (!schemaResult.success) {
       const errorMessages = schemaResult.errors?.join(', ') || 'Schema validation failed';
       throw new Error(`Entity validation failed: ${errorMessages}`);
@@ -295,7 +277,7 @@ export class DataDaemon {
     const adapter = this.getAdapterForCollection(collection);
 
     // Ensure schema exists via default adapter (DDL).
-    await this.ensureSchema(collection);
+    await this.schemaManager.ensureSchema(collection, this.getAdapterForCollection(collection));
 
     const result = await adapter.read<T>(collection, id);
 
@@ -347,7 +329,7 @@ export class DataDaemon {
     const adapter = this.getAdapterForCollection(query.collection);
 
     // Ensure schema exists via default adapter (DDL).
-    await this.ensureSchema(query.collection);
+    await this.schemaManager.ensureSchema(query.collection, this.getAdapterForCollection(query.collection));
 
     const result = await adapter.query<T>(query);
 
@@ -381,7 +363,7 @@ export class DataDaemon {
     const adapter = this.getAdapterForCollection(collection);
 
     // Ensure schema exists via default adapter (DDL).
-    await this.ensureSchema(collection);
+    await this.schemaManager.ensureSchema(collection, this.getAdapterForCollection(collection));
 
     // Read existing entity to merge with partial update
     // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
@@ -396,7 +378,7 @@ export class DataDaemon {
     const mergedData = { ...existingEntity, ...data };
 
     // Validate the merged data before persisting
-    const validationResult = this.validateSchema(collection, mergedData as Record<string, unknown>);
+    const validationResult = this.schemaManager.validateEntity(collection, mergedData as Record<string, unknown>);
     if (!validationResult.success) {
       const errors = validationResult.errors?.join(', ') ?? 'Unknown validation error';
       console.error(`❌ DataDaemon: Update validation failed for ${collection}/${id}:`, errors);
@@ -437,7 +419,7 @@ export class DataDaemon {
     const adapter = this.getAdapterForCollection(collection);
 
     // Ensure schema exists via default adapter (DDL).
-    await this.ensureSchema(collection);
+    await this.schemaManager.ensureSchema(collection, this.getAdapterForCollection(collection));
 
     // Read entity before deletion for event emission
     const readResult = await adapter.read(collection, id);
@@ -648,141 +630,6 @@ export class DataDaemon {
     return { success: true, data: null };
   }
 
-  /**
-   * Map decorator FieldType to adapter SchemaFieldType
-   *
-   * ARCHITECTURE: This translation happens in the daemon (which knows entities)
-   * so the adapter doesn't need to know about decorator types.
-   */
-  private mapFieldTypeToSchemaType(fieldType: FieldType): SchemaFieldType {
-    switch (fieldType) {
-      case 'primary':
-      case 'foreign_key':
-        return 'uuid';
-      case 'date':
-        return 'date';
-      case 'text':
-      case 'enum':
-        return 'string';
-      case 'json':
-        return 'json';
-      case 'number':
-        return 'number';
-      case 'boolean':
-        return 'boolean';
-      default:
-        return 'string';
-    }
-  }
-
-  /**
-   * Extract CollectionSchema from entity decorators
-   *
-   * ARCHITECTURE: Daemon knows entities and their decorators.
-   * It extracts schema and passes it to the adapter in a generic format.
-   * Adapter doesn't need to know about ENTITY_REGISTRY or decorators.
-   */
-  private extractCollectionSchema(collection: string): CollectionSchema | undefined {
-    const entityClass = ENTITY_REGISTRY.get(collection) as EntityConstructor | undefined;
-    if (!entityClass || !hasFieldMetadata(entityClass)) {
-      // No entity registered or no field metadata - return undefined
-      // Adapter will use fallback behavior for unregistered collections
-      return undefined;
-    }
-
-    // Extract field metadata
-    const fieldMetadata = getFieldMetadata(entityClass);
-    const fields: SchemaField[] = [];
-
-    for (const [fieldName, metadata] of fieldMetadata) {
-      fields.push({
-        name: fieldName,
-        type: this.mapFieldTypeToSchemaType(metadata.fieldType),
-        indexed: metadata.options?.index,
-        unique: metadata.options?.unique,
-        nullable: metadata.options?.nullable,
-        maxLength: metadata.options?.maxLength
-      });
-    }
-
-    // Extract composite indexes
-    const compositeIndexes = getCompositeIndexes(entityClass);
-    const indexes: SchemaIndex[] = compositeIndexes.map(idx => ({
-      name: idx.name,
-      fields: idx.fields,
-      unique: idx.unique
-    }));
-
-    return {
-      collection,
-      fields,
-      indexes: indexes.length > 0 ? indexes : undefined
-    };
-  }
-
-  /**
-   * Ensure collection schema exists (orchestrated by daemon, implemented by adapter)
-   *
-   * This is the SINGLE point where schema creation is orchestrated.
-   * - Extracts schema from entity decorators (daemon's job - knows entities)
-   * - Caches which collections are ensured (generic across all adapters)
-   * - Passes schema to adapter.ensureSchema() for implementation
-   * - Adapter decides how to create schema (SQL table, Mongo collection, etc.)
-   */
-  private async ensureSchema(collection: string): Promise<void> {
-    // Check cache first (generic caching at daemon level)
-    if (this.ensuredSchemas.has(collection)) {
-      return; // Already ensured this session
-    }
-
-    // Extract schema from entity decorators (daemon knows entities, adapter doesn't)
-    const schema = this.extractCollectionSchema(collection);
-
-    // Delegate to adapter with schema (adapter knows how to implement in native format)
-    const result = await this.adapter.ensureSchema(collection, schema);
-    if (!result.success) {
-      throw new Error(`Failed to ensure schema for ${collection}: ${result.error}`);
-    }
-
-    // Cache success (generic - works for any adapter type)
-    this.ensuredSchemas.add(collection);
-  }
-
-  /**
-   * Validate entity data - generic validation using BaseEntity.validate()
-   * ARCHITECTURE: Data daemon only knows BaseEntity, never specific entity types
-   * Uses entity registry to create proper instances for validation
-   *
-   * NOTE: If no entity is registered, validation is SKIPPED (allows custom collections)
-   * This matches SqliteStorageAdapter behavior which handles unregistered collections
-   */
-  private validateSchema<T extends BaseEntity>(collection: string, data: Record<string, unknown>): SchemaValidationResult {
-    // Get entity class from registry - works generically with ANY registered entity type
-    const EntityClass = getRegisteredEntity(collection) as EntityConstructor;
-    if (!EntityClass) {
-      // No entity registered - skip validation (custom collection manages its own schema)
-      // This allows collections like "memories" that use direct SQL schema creation
-      console.log(`⚠️ DataDaemon: No entity registered for "${collection}" - skipping validation (custom collection)`);
-      return { success: true };
-    }
-
-    // Create proper entity instance using BaseEntity factory method
-    const entityResult = EntityClass.create(data);
-    if (!entityResult.success || !entityResult.entity) {
-      console.error(`❌ DataDaemon: Entity creation failed for "${collection}":`, entityResult.error);
-      return { success: false, errors: [entityResult.error || 'Entity creation failed'] };
-    }
-
-    // Call the entity's validation method to enforce validation rules
-    const validationResult = entityResult.entity.validate();
-    if (!validationResult.success) {
-      console.error(`❌ DataDaemon: Entity validation failed for "${collection}":`, validationResult.error);
-      return { success: false, errors: [validationResult.error || 'Validation failed'] };
-    }
-
-    return { success: true };
-  }
-
   // =============================================
   // PAGINATED QUERY INTERFACE
   // =============================================
@@ -935,10 +782,7 @@ export class DataDaemon {
     if (!DataDaemon.sharedInstance) {
       throw new Error('DataDaemon not initialized');
     }
-    const schema = DataDaemon.sharedInstance.extractCollectionSchema(collection);
-    if (schema) {
-      await adapter.ensureSchema(collection, schema);
-    }
+    await DataDaemon.sharedInstance.schemaManager.ensureAdapterSchema(adapter, collection);
   }
 
   /**
@@ -1007,7 +851,7 @@ export class DataDaemon {
     }
 
     // Ensure schema before counting (same as query() path)
-    await DataDaemon.sharedInstance.ensureSchema(query.collection);
+    await DataDaemon.sharedInstance.schemaManager.ensureSchema(query.collection, DataDaemon.sharedInstance.getAdapterForCollection(query.collection));
 
     return await DataDaemon.sharedInstance.adapter.count(query);
   }
@@ -1040,8 +884,8 @@ export class DataDaemon {
     // Ensure schema for main collection and all joined collections (parallel)
     const instance = DataDaemon.sharedInstance;
     await Promise.all([
-      instance.ensureSchema(query.collection),
-      ...(query.joins?.map(j => instance.ensureSchema(j.collection)) ?? []),
+      instance.schemaManager.ensureSchema(query.collection, instance.getAdapterForCollection(query.collection)),
+      ...(query.joins?.map(j => instance.schemaManager.ensureSchema(j.collection, instance.getAdapterForCollection(j.collection))) ?? []),
     ]);
 
     return await DataDaemon.sharedInstance.adapter.queryWithJoin<T>(query);
@@ -1273,7 +1117,7 @@ export class DataDaemon {
     }
 
     // Ensure schema before vector search
-    await DataDaemon.sharedInstance.ensureSchema(options.collection);
+    await DataDaemon.sharedInstance.schemaManager.ensureSchema(options.collection, DataDaemon.sharedInstance.getAdapterForCollection(options.collection));
 
     // Check if adapter supports vector search
     const adapter = DataDaemon.defaultAdapter as VectorCapableAdapter;
