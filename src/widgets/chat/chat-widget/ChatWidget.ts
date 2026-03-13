@@ -30,6 +30,7 @@ import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { TextMessageAdapter } from '../adapters/TextMessageAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
+import { MentionAutocomplete } from '../message-input/MentionAutocomplete';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { TypingIndicator } from './TypingIndicator';
 import { PRESENCE_EVENTS } from '@system/core/shared/EventConstants';
@@ -117,6 +118,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private typingIndicator: TypingIndicator;
   private _typingDebounce?: ReturnType<typeof setTimeout>;
   private _isTyping: boolean = false;
+  private _mentionAutocomplete?: MentionAutocomplete;
   private pendingAttachments: MediaItem[] = [];
   private isSending: boolean = false;
   private positronUnsubscribe?: () => void;
@@ -893,6 +895,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       clearTimeout(this.headerUpdateTimeout);
       this.headerUpdateTimeout = undefined;
     }
+
+    // Clean up mention autocomplete
+    this._mentionAutocomplete?.destroy();
+    this._mentionAutocomplete = undefined;
 
     // Detach event delegator to clean up the single listener
     this.eventDelegator.detach();
@@ -1778,7 +1784,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     sendButton?.addEventListener('click', () => this.sendMessage());
 
     // Send on Enter key (Shift+Enter for newline)
+    // Skip send when @mention autocomplete is active (it handles Enter/Tab)
     this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (this._mentionAutocomplete?.active) return; // autocomplete handles it
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
@@ -1795,6 +1803,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.messageInput.addEventListener('blur', () => {
       this.emitTypingStop();
     });
+
+    // @mention autocomplete — filters pre-loaded roomMembers, zero server hops
+    if (this.shadowRoot) {
+      this._mentionAutocomplete = new MentionAutocomplete(
+        this.shadowRoot,
+        this.messageInput,
+        () => this.roomMembers,
+      );
+    }
 
     // Initial resize
     this.autoGrowTextarea();

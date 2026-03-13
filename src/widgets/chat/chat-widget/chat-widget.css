@@ -284,6 +284,7 @@
 }
 
 .input-container {
+  position: relative; /* Anchor for mention autocomplete dropdown */
   padding: var(--spacing-lg, 16px);
   border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
   display: flex;

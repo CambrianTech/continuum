@@ -137,72 +137,51 @@ Types crossing Rust-TS boundary without `#[derive(TS)]`:
 
 ---
 
-## Priority 2: Pressure System Completion (Phases 1, 3)
+## Priority 2: Pressure System Completion (Phases 1, 3) — COMPLETE
 
-**Why second**: Memory pressure awareness is half-built. Persona cadence responds to pressure (done), but chat flooding and voice broadcasting don't. Under load, 14 personas all try to respond and broadcast simultaneously.
+**Status**: Completed in PR #304 (pressure-aware inference + content lifecycle).
 
-### 2A. ThoughtStream Pressure-Aware Slots
+### 2A. ThoughtStream Pressure-Aware Slots — DONE
 
-**File**: `system/conversation/server/ThoughtStreamCoordinator.ts`
-**Change**: `getProbabilisticMaxResponders()` reads `BackpressureService.pressureLevel`
+`getProbabilisticMaxResponders()` in `ThoughtStreamCoordinator.ts:440` reads `BackpressureService.pressureLevel` with graduated response counts (Normal: 1/2/3, Warning: 1/2, High/Critical: 1).
 
-| Pressure | Max Responders |
-|----------|---------------|
-| Normal | 1 (70%), 2 (25%), 3 (5%) |
-| Warning | 1 (85%), 2 (15%) |
-| High | 1 only |
-| Critical | 0 (all rejected) |
+### 2B. Voice Broadcast Gating — DONE
 
-**~20 lines of code**. Highest impact change in the pressure system.
-
-### 2B. Voice Broadcast Gating
-
-**File**: `system/voice/server/VoiceOrchestrator.ts`
-**Change**: After `textAIs` filter, limit broadcast targets by pressure level.
-
-| Pressure | Broadcast Targets |
-|----------|------------------|
-| Normal | All text AIs |
-| Warning | Max 3 |
-| High | Max 1 |
-| Critical | None (let in-progress TTS finish) |
-
-**~15 lines of code**. Closes the biggest gap — voice has ZERO pressure awareness today.
+`onUtterance()` in `VoiceOrchestrator.ts:239` gates broadcast targets by pressure level (Normal: all, Warning: max 3, High: max 1, Critical: none).
 
 ---
 
-## Priority 3: Coordination Decision Logging (Phase 5C)
+## Priority 3: Coordination Decision Logging (Phase 5C) — COMPLETE
 
-**Why third**: Answers "why is general chat incoherent" — full decision context for every respond/silent choice. 90% done, just needs final wiring.
+**Status**: All 5 wiring steps done.
 
 ### What's Done
 - CoordinationDecisionEntity (630 lines) — complete
 - CoordinationDecisionLogger (200+ lines) — complete
 - EntityRegistry integration — complete
 - PersonaUser import — complete
-
-### What's Left (5 steps)
-1. Modify `evaluateShouldRespond()` return type to include `filteredRagContext`
-2. Return RAG context from the method
-3. Add helper to convert RAG context format
-4. Log SILENT decisions with full context
-5. Log RESPOND decisions with full context
-
-**Details**: `docs/planning/PHASE-5C-STATUS.md`
+- `evaluateShouldRespond()` returns `GatingResult` discriminated union with `filteredRagContext` — complete
+- `buildCoordinationRAGContext()` helper converts pipeline → decision format — complete
+- RESPOND decisions: logged in `PersonaResponseGenerator.ts:830` with full response content after generation
+- SILENT decisions (LLM gating): logged in `PersonaMessageEvaluator.ts:462` with minimal context + coordination snapshot
+- Post-inference SILENT: logged in `PersonaMessageEvaluator.ts:626` with full RAG context (was already built)
+- Early gate SILENT (rate limit, response cap): file-based only (mechanical, high-volume, low coherence value)
 
 ---
 
-## Priority 4: Scene Lifecycle (Bug Fix)
+## Priority 4: Scene Lifecycle (Bug Fix) — MOSTLY COMPLETE
 
-**Issue**: Scenes don't unload when hanging up a live call. `AvatarCommand::UnloadIdle` fires (call_server.rs:679) but Bevy isn't cleaning up.
+**Status**: Core fix in PR #305 (resource lifecycle cleanup).
 
-**Investigation needed**:
-- Is the command reaching the Bevy command consumer?
-- Is `try_get()` returning the Bevy instance?
-- Are slots actually marked as idle when call ends?
-- Does the render loop need to tick for teardown to execute?
+### What's Fixed
+- Video loop shutdown: `LiveKitAgent.disconnect()` sends watch channel signal, video loops exit immediately
+- Slot pool recovery: `reset_slot_pool()` reclaims zombie-held Bevy slots after idle timeout
+- Identity mapping cleanup: `unload_avatar_models()` clears identity→slot map on idle timeout
+- Model unloading: STT/TTS adapters unload after 60s idle (ReloadableModel + shutdown() trait)
 
-**Impact**: GPU memory leak — scenes accumulate across calls.
+### Remaining Investigation
+- Verify `AvatarCommand::UnloadIdle` actually tears down Bevy scenes (ECS entities, loaded meshes)
+- Bevy render loop must tick for commands to process — confirmed it does (idle_cadence gating disabled for this reason)
 
 ---
 
@@ -304,13 +283,13 @@ P1: Architectural Integrity     ← Foundation for everything else
   ├── 1E: Rust panic safety
   └── 1F: ts-rs exports
 
-P2: Pressure System              ← ~35 lines total, huge impact
-  ├── 2A: ThoughtStream slots
-  └── 2B: Voice broadcast gating
+P2: Pressure System              ← COMPLETE (PR #304)
+  ├── 2A: ThoughtStream slots    ✓
+  └── 2B: Voice broadcast gating ✓
 
-P3: Decision Logging (5C)        ← 90% done, just wiring
+P3: Decision Logging (5C)        ← COMPLETE (PR #305 + current)
 
-P4: Scene Lifecycle Bug           ← GPU memory leak
+P4: Scene Lifecycle Bug           ← MOSTLY COMPLETE (PR #305)
 
 P5: RAG Codebase Indexing         ← Makes AI team useful
 
