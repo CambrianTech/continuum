@@ -4,14 +4,15 @@
  */
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+import { jtagWindow } from '../../../system/core/types/GlobalAugmentations';
+const verbose = () => jtagWindow?.JTAG_VERBOSE === true;
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity, type MediaItem, type MediaType } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
-import type { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
+import type { UserStateEntity, ContentItem } from '../../../system/data/entities/UserStateEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
@@ -33,7 +34,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { MentionAutocomplete } from '../message-input/MentionAutocomplete';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { TypingIndicator } from './TypingIndicator';
-import { PRESENCE_EVENTS } from '@system/core/shared/EventConstants';
+import { PRESENCE_EVENTS, type TypingEventPayload } from '@system/core/shared/EventConstants';
 import {
   AI_DECISION_EVENTS,
   AIDecisionEventData,
@@ -266,8 +267,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Use this instead of Events.subscribe() directly to prevent memory leaks.
    * Captures the unsubscribe function returned by Events.subscribe().
    */
-  private subscribeWithCleanup(eventName: string, handler: (data: any) => void): void {
-    const unsubscribe = Events.subscribe(eventName, handler);
+  private subscribeWithCleanup<T = unknown>(eventName: string, handler: (data: T) => void): void {
+    const unsubscribe = Events.subscribe<T>(eventName, handler);
     if (unsubscribe && typeof unsubscribe === 'function') {
       this._eventUnsubscribers.push(unsubscribe);
     }
@@ -789,10 +790,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     });
 
     // Typing indicator events
-    this.subscribeWithCleanup(PRESENCE_EVENTS.TYPING_START, (data) => {
+    this.subscribeWithCleanup<TypingEventPayload>(PRESENCE_EVENTS.TYPING_START, (data) => {
       this.typingIndicator.onTypingStart(data);
     });
-    this.subscribeWithCleanup(PRESENCE_EVENTS.TYPING_STOP, (data) => {
+    this.subscribeWithCleanup<TypingEventPayload>(PRESENCE_EVENTS.TYPING_STOP, (data) => {
       this.typingIndicator.onTypingStop(data);
     });
   }
@@ -1140,7 +1141,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const openItems = userState.contentState?.openItems || [];
 
       // Find the current content item
-      const currentItem = openItems.find((item: any) => item.id === currentItemId);
+      const currentItem = openItems.find((item: ContentItem) => item.id === currentItemId);
       if (!currentItem) {
         verbose() && console.log('📨 ChatWidget: No current content item, using default General room');
         return;

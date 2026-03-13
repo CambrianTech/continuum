@@ -16,10 +16,63 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
 
-// Lazy-loaded proto to avoid module-level side effects
-let _voiceProto: any = null;
+// gRPC response interfaces (mirror proto wire format)
+interface GrpcPingResponse {
+  message?: string;
+  adapter_count?: number;
+}
 
-function getVoiceProto(): any {
+interface GrpcSynthesizeResponse {
+  audio: string; // base64
+  sample_rate?: number;
+  duration_ms?: number;
+  adapter?: string;
+}
+
+interface GrpcStreamChunk {
+  audio: string; // base64
+  is_last?: boolean;
+}
+
+interface GrpcTranscribeResponse {
+  text?: string;
+  language?: string;
+  confidence?: number;
+  segments?: GrpcSegment[];
+}
+
+interface GrpcSegment {
+  word?: string;
+  start?: number;
+  end?: number;
+  confidence?: number;
+}
+
+interface GrpcAdapterEntry {
+  name?: string;
+  loaded?: boolean;
+  voice_count?: number;
+}
+
+interface GrpcListAdaptersResponse {
+  adapters?: GrpcAdapterEntry[];
+}
+
+/** Typed gRPC service client matching voice.proto */
+interface VoiceGrpcService {
+  Ping(req: Record<string, never>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcPingResponse) => void): void;
+  Synthesize(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcSynthesizeResponse) => void): void;
+  SynthesizeStream(req: Record<string, unknown>): AsyncIterable<GrpcStreamChunk>;
+  Transcribe(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcTranscribeResponse) => void): void;
+  ListAdapters(req: Record<string, never>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcListAdaptersResponse) => void): void;
+}
+
+type ServiceConstructor = new (address: string, credentials: grpc.ChannelCredentials) => VoiceGrpcService;
+
+// Lazy-loaded proto to avoid module-level side effects
+let _voiceProto: grpc.GrpcObject | null = null;
+
+function getVoiceProto(): grpc.GrpcObject {
   if (!_voiceProto) {
     const PROTO_PATH = path.join(__dirname, '../../../workers/streaming-core/proto/voice.proto');
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
@@ -83,7 +136,7 @@ export interface STTSegment {
 // ----- Client -----
 
 export class VoiceGrpcClient {
-  private client: any;
+  private client: VoiceGrpcService | null = null;
   private static instance: VoiceGrpcClient | null = null;
   private connected: boolean = false;
 
@@ -102,7 +155,8 @@ export class VoiceGrpcClient {
     if (!this.client) {
       try {
         const proto = getVoiceProto();
-        const VoiceService = (proto as any).voice?.VoiceService;
+        const voicePkg = proto.voice as grpc.GrpcObject | undefined;
+        const VoiceService = voicePkg?.VoiceService as ServiceConstructor | undefined;
         if (!VoiceService) {
           throw new Error('VoiceService not found in proto. Worker may not be running.');
         }
@@ -125,7 +179,7 @@ export class VoiceGrpcClient {
     this.ensureClient();
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + 5000);
-      this.client.Ping({}, { deadline }, (err: any, response: any) => {
+      this.client!.Ping({} as Record<string, never>, { deadline }, (err: Error | null, response: GrpcPingResponse) => {
         if (err) {
           this.connected = false;
           reject(new Error(`Voice worker ping failed: ${err.message}`));
@@ -146,7 +200,7 @@ export class VoiceGrpcClient {
     this.ensureClient();
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + 60000); // 60s timeout for TTS
-      this.client.Synthesize(
+      this.client!.Synthesize(
         {
           text: request.text,
           voice: request.voice || '',
@@ -155,7 +209,7 @@ export class VoiceGrpcClient {
           sample_rate: request.sampleRate || 24000,
         },
         { deadline },
-        (err: any, response: any) => {
+        (err: Error | null, response: GrpcSynthesizeResponse) => {
           if (err) {
             reject(new Error(`TTS synthesis failed: ${err.message}`));
           } else {
@@ -177,7 +231,7 @@ export class VoiceGrpcClient {
    */
   async *synthesizeStream(request: TTSSynthesizeRequest): AsyncGenerator<TTSStreamChunk> {
     this.ensureClient();
-    const stream = this.client.SynthesizeStream({
+    const stream = this.client!.SynthesizeStream({
       text: request.text,
       voice: request.voice || '',
       adapter: request.adapter || 'kokoro',
@@ -202,7 +256,7 @@ export class VoiceGrpcClient {
     this.ensureClient();
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + 30000); // 30s timeout for STT
-      this.client.Transcribe(
+      this.client!.Transcribe(
         {
           audio: request.audio.toString('base64'),
           sample_rate: request.sampleRate || 16000,
@@ -210,7 +264,7 @@ export class VoiceGrpcClient {
           model: request.model || 'base',
         },
         { deadline },
-        (err: any, response: any) => {
+        (err: Error | null, response: GrpcTranscribeResponse) => {
           if (err) {
             reject(new Error(`STT transcription failed: ${err.message}`));
           } else {
@@ -218,7 +272,7 @@ export class VoiceGrpcClient {
               text: response.text || '',
               language: response.language || 'en',
               confidence: response.confidence || 0,
-              segments: (response.segments || []).map((s: any) => ({
+              segments: (response.segments || []).map((s: GrpcSegment) => ({
                 word: s.word || '',
                 start: s.start || 0,
                 end: s.end || 0,
@@ -238,12 +292,12 @@ export class VoiceGrpcClient {
     this.ensureClient();
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + 5000);
-      this.client.ListAdapters({}, { deadline }, (err: any, response: any) => {
+      this.client!.ListAdapters({} as Record<string, never>, { deadline }, (err: Error | null, response: GrpcListAdaptersResponse) => {
         if (err) {
           reject(new Error(`Failed to list adapters: ${err.message}`));
         } else {
           resolve(
-            (response.adapters || []).map((a: any) => ({
+            (response.adapters || []).map((a: GrpcAdapterEntry) => ({
               name: a.name || '',
               loaded: a.loaded || false,
               voiceCount: a.voice_count || 0,
@@ -266,7 +320,7 @@ export class VoiceGrpcClient {
    */
   close(): void {
     if (this.client) {
-      grpc.closeClient(this.client);
+      grpc.closeClient(this.client as unknown as grpc.Client);
       this.client = null;
       this.connected = false;
     }

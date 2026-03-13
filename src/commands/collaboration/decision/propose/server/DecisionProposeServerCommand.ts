@@ -106,17 +106,17 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
     const tagSet = new Set(tags);
 
     // Score proposals by tag overlap + recency
-    const scored = result.items.map((proposal: any) => {
+    const scored = result.items.map((proposal: DecisionProposalEntity) => {
       const proposalTags = proposal.tags || [];
       const overlap = proposalTags.filter((t: string) => tagSet.has(t)).length;
 
       // Age penalty: proposals older than 30 days get reduced score
-      const ageInDays = (now - proposal.createdAt) / (1000 * 60 * 60 * 24);
+      const ageInDays = (now - proposal.createdAt.getTime()) / (1000 * 60 * 60 * 24);
       const recencyBonus = ageInDays < 30 ? 0.5 : 0;
 
       const score = overlap + recencyBonus;
 
-      return { id: proposal.id, score, overlap, createdAt: proposal.createdAt };
+      return { id: proposal.id, score, overlap, createdAt: proposal.createdAt.getTime() };
     });
 
     // Return top 3 most related (must have at least 1 tag overlap)
@@ -156,11 +156,11 @@ async function getUsersInScope(scope: string): Promise<UserEntity[]> {
     // Filter based on scope
     switch (scope) {
       case 'all':
-        return allUsers.filter((u: any) => u.type !== 'human'); // All AIs
+        return allUsers.filter((u: UserEntity) => u.type !== 'human'); // All AIs
 
       case 'code-experts':
         // Look for personas with 'code', 'dev', 'engineer' in name/bio
-        return allUsers.filter((u: any) => {
+        return allUsers.filter((u: UserEntity) => {
           const text = (u.displayName + ' ' + (u.bio || '')).toLowerCase();
           return u.type !== 'human' && (
             text.includes('code') ||
@@ -172,7 +172,7 @@ async function getUsersInScope(scope: string): Promise<UserEntity[]> {
 
       case 'user-facing-ais':
         // Look for personas with 'chat', 'assistant', 'helper' in name
-        return allUsers.filter((u: any) => {
+        return allUsers.filter((u: UserEntity) => {
           const text = (u.displayName + ' ' + (u.bio || '')).toLowerCase();
           return u.type !== 'human' && (
             text.includes('chat') ||
@@ -184,18 +184,18 @@ async function getUsersInScope(scope: string): Promise<UserEntity[]> {
 
       case 'local-models':
         // Personas running on local inference (Candle)
-        return allUsers.filter((u: any) => {
+        return allUsers.filter((u: UserEntity) => {
           return u.type === 'persona';
         });
 
       case 'external-apis':
         // Agent users (Claude, GPT, etc.)
-        return allUsers.filter((u: any) => {
+        return allUsers.filter((u: UserEntity) => {
           return u.type === 'agent';
         });
 
       default:
-        return allUsers.filter((u: any) => u.type !== 'human');
+        return allUsers.filter((u: UserEntity) => u.type !== 'human');
     }
   } catch (error) {
     console.error('Error getting users in scope:', error);
@@ -404,11 +404,11 @@ Proposal ID: ${proposalId}`;
       notifiedCount: usersInScope.length,
       relatedProposals
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error in decision/propose:', error);
     return transformPayload(params, {
       success: false,
-      error: error.message || 'Unknown error'
+      error: error instanceof Error ? error.message : String(error)
     });
   }
   }

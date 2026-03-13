@@ -17,7 +17,7 @@
 import { Events } from '../core/shared/Events';
 import { Commands } from '../core/shared/Commands';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
-import type { SentinelTrigger, PipelineSentinelDefinition } from './SentinelDefinition';
+import type { SentinelTrigger, PipelineSentinelDefinition, SentinelDefinition } from './SentinelDefinition';
 import type { SentinelEntity } from './SentinelDefinition';
 import type { PipelineSentinelParams, SentinelRunResult } from '../../commands/sentinel/run/shared/SentinelRunTypes';
 
@@ -53,7 +53,7 @@ export async function initializeSentinelTriggers(): Promise<void> {
   await loadExistingTriggers();
 
   // Listen for new sentinel saves
-  Events.subscribe('data:sentinels:created', async (payload: any) => {
+  Events.subscribe('data:sentinels:created', async (payload: unknown) => {
     const entity = payload as SentinelEntity;
     if (entity?.definition && hasTrigger(entity.definition)) {
       registerTrigger(entity);
@@ -61,7 +61,7 @@ export async function initializeSentinelTriggers(): Promise<void> {
   });
 
   // Listen for sentinel updates (trigger might have been added/changed)
-  Events.subscribe('data:sentinels:updated', async (payload: any) => {
+  Events.subscribe('data:sentinels:updated', async (payload: unknown) => {
     const entity = payload as SentinelEntity;
     if (!entity?.id) return;
 
@@ -75,9 +75,10 @@ export async function initializeSentinelTriggers(): Promise<void> {
   });
 
   // Listen for sentinel deletions
-  Events.subscribe('data:sentinels:deleted', async (payload: any) => {
-    if (payload?.id) {
-      unregisterTrigger(payload.id);
+  Events.subscribe('data:sentinels:deleted', async (payload: unknown) => {
+    const entity = payload as SentinelEntity;
+    if (entity?.id) {
+      unregisterTrigger(entity.id);
     }
   });
 
@@ -110,7 +111,8 @@ async function loadExistingTriggers(): Promise<void> {
 /**
  * Check if a definition has a non-manual trigger
  */
-function hasTrigger(definition: any): boolean {
+function hasTrigger(definition: SentinelDefinition): definition is PipelineSentinelDefinition {
+  if (definition.type !== 'pipeline') return false;
   const trigger = (definition as PipelineSentinelDefinition).trigger;
   return !!trigger && trigger.type !== 'manual';
 }
@@ -157,7 +159,7 @@ function registerEventTrigger(
   registration: TriggerRegistration,
   trigger: Extract<SentinelTrigger, { type: 'event' }>,
 ): void {
-  const handler = (payload: any) => {
+  const handler = (payload: unknown) => {
     // Check concurrent execution guard
     if (registration.isRunning && !trigger.allowConcurrent) {
       return;
@@ -245,7 +247,7 @@ export function parseCronSchedule(schedule: string): number | null {
  */
 async function executeSentinel(
   registration: TriggerRegistration,
-  triggerPayload?: any,
+  _triggerPayload?: unknown,
 ): Promise<void> {
   registration.isRunning = true;
 

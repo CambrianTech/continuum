@@ -8,6 +8,7 @@
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataSchemaParams, DataSchemaResult, EntitySchema, SchemaField, EntityExamples, EntitySQL, ValidationResult } from '../shared/DataSchemaTypes';
 import { createDataSchemaResultFromParams } from '../shared/DataSchemaTypes';
@@ -35,7 +36,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
         return createDataSchemaResultFromParams(params, {
           success: true,
           collections,
-        } as any);
+        } as Partial<DataSchemaResult>);
       }
 
       console.log(`🔍 DataSchema: Getting schema for collection "${params.collection}"`);
@@ -179,8 +180,8 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
    * Generate example JSON objects for entity creation
    */
   private generateEntityExamples(fields: SchemaField[], collection: string): EntityExamples {
-    const minimal: Record<string, any> = {};
-    const complete: Record<string, any> = {};
+    const minimal: Record<string, unknown> = {};
+    const complete: Record<string, unknown> = {};
 
     // Process each field to create examples
     for (const field of fields) {
@@ -205,7 +206,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   /**
    * Generate realistic example value based on field type and constraints
    */
-  private getExampleValue(field: SchemaField): any {
+  private getExampleValue(field: SchemaField): unknown {
     switch (field.fieldType) {
       case 'primary':
         return `${field.fieldName}_${Date.now()}`;
@@ -402,12 +403,12 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   /**
    * Get sample data from a collection for schema inference
    */
-  private async getSampleData(collection: string): Promise<Record<string, any>[]> {
+  private async getSampleData(collection: string): Promise<Record<string, unknown>[]> {
     try {
       // Create a mock data list params for the internal command call
       const listParams = {
         context: this.context,
-        sessionId: '00000000-0000-0000-0000-000000000000' as any,
+        sessionId: '00000000-0000-0000-0000-000000000000' as UUID,
         collection,
         limit: 5 // Get 5 sample records for analysis
       };
@@ -425,9 +426,9 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   /**
    * Analyze data structure to infer field types
    */
-  private analyzeDataStructure(sampleData: Record<string, any>[]): SchemaField[] {
+  private analyzeDataStructure(sampleData: Record<string, unknown>[]): SchemaField[] {
     const fieldTypes = new Map<string, Set<string>>();
-    const fieldExamples = new Map<string, any[]>();
+    const fieldExamples = new Map<string, unknown[]>();
 
     // Analyze all records to find field patterns
     for (const record of sampleData) {
@@ -480,7 +481,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   /**
    * Infer the type of a field value
    */
-  private inferFieldType(value: any): string {
+  private inferFieldType(value: unknown): string {
     if (value === null || value === undefined) {
       return 'text'; // Default for null values
     }
@@ -550,12 +551,12 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   private generateInferredExamples(
     fields: SchemaField[],
     collection: string,
-    sampleData: Record<string, any>[]
+    sampleData: Record<string, unknown>[]
   ): EntityExamples {
     const actualExample = sampleData[0] || {};
 
-    const minimal: Record<string, any> = {};
-    const complete: Record<string, any> = {};
+    const minimal: Record<string, unknown> = {};
+    const complete: Record<string, unknown> = {};
 
     for (const field of fields) {
       const actualValue = actualExample[field.fieldName];
@@ -642,9 +643,9 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
    */
   private validateFieldValue(
     fieldName: string,
-    value: any,
+    value: unknown,
     field: SchemaField
-  ): { valid: boolean; value?: any; errors: string[] } {
+  ): { valid: boolean; value?: unknown; errors: string[] } {
     const errors: string[] = [];
 
     // Check null/undefined

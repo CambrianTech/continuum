@@ -10,16 +10,26 @@
  * via CodeDaemon.createWorkspace(), and returns a handle + path.
  */
 
-import { Commands } from '../../core/shared/Commands';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { Logger } from '../../core/logging/Logger';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { stringToUUID, type UUID } from '../../core/types/CrossPlatformUUID';
+import { GitWorkspaceInit } from '../../../commands/workspace/git/workspace/init/shared/GitWorkspaceInitTypes';
+import { GitWorkspaceClean } from '../../../commands/workspace/git/workspace/clean/shared/GitWorkspaceCleanTypes';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const log = Logger.create('WorkspaceStrategy', 'code');
+
+/** Extract error message from execSync failures (which attach stderr as a Buffer) */
+function extractExecError(e: unknown): string {
+  if (e && typeof e === 'object' && 'stderr' in e) {
+    const stderr = (e as { stderr?: Buffer }).stderr;
+    if (Buffer.isBuffer(stderr)) return stderr.toString();
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 // ────────────────────────────────────────────────────────────
 // Types
@@ -163,7 +173,7 @@ export class WorkspaceStrategy {
     log.info(`Creating worktree workspace for persona ${config.personaId} — paths: ${config.sparsePaths.join(', ')}`);
 
     // Call the existing workspace/git/workspace/init command
-    const initResult = await Commands.execute<any, any>('workspace/git/workspace/init', {
+    const initResult = await GitWorkspaceInit.execute({
       personaId: config.personaId,
       branch: `ai/${slug}`,
       paths: config.sparsePaths,
@@ -173,8 +183,8 @@ export class WorkspaceStrategy {
       throw new Error(`WorkspaceStrategy: worktree creation failed: ${initResult?.error?.message ?? 'Unknown error'}`);
     }
 
-    const workspaceDir = initResult.workspacePath as string;
-    const branch = initResult.branch as string;
+    const workspaceDir = initResult.workspacePath;
+    const branch = initResult.branch;
 
     // Register with Rust backend — worktree is write location, main repo is read-only.
     // Worktrees with sparse checkout only contain the specified paths, not the full codebase.
@@ -271,14 +281,14 @@ export class WorkspaceStrategy {
       try {
         // Try creating with new branch from HEAD
         execSync(`git worktree add -b "${branchName}" "${worktreeDir}" HEAD`, gitOpts);
-      } catch (e: any) {
-        const errMsg = e.stderr?.toString() ?? e.message ?? '';
+      } catch (e: unknown) {
+        const errMsg = extractExecError(e);
         if (errMsg.includes('already exists')) {
           // Branch exists but worktree dir was cleaned — checkout existing branch
           try {
             execSync(`git worktree add "${worktreeDir}" "${branchName}"`, gitOpts);
-          } catch (e2: any) {
-            const errMsg2 = e2.stderr?.toString() ?? e2.message ?? '';
+          } catch (e2: unknown) {
+            const errMsg2 = extractExecError(e2);
             if (errMsg2.includes('already checked out')) {
               log.warn(`Branch ${branchName} checked out elsewhere — forcing worktree creation`);
               execSync(`git worktree add --force "${worktreeDir}" "${branchName}"`, gitOpts);
@@ -305,10 +315,10 @@ export class WorkspaceStrategy {
       execSync('git config --worktree extensions.worktreeConfig true', wtOpts);
       execSync(`git config --worktree user.name "${userName}"`, wtOpts);
       execSync(`git config --worktree user.email "${userEmail}"`, wtOpts);
-    } catch (configErr: any) {
+    } catch (configErr: unknown) {
       // Older git may not support --worktree; fall back to environment-based identity
       // which is safer than polluting the main repo's config
-      log.warn(`Could not set worktree-specific config: ${configErr.message}. Commits will use GIT_AUTHOR_* env vars.`);
+      log.warn(`Could not set worktree-specific config: ${configErr instanceof Error ? configErr.message : String(configErr)}. Commits will use GIT_AUTHOR_* env vars.`);
     }
 
     // Register with Rust CodeDaemon — worktree is the write location, JTAG root is read-only.
@@ -344,7 +354,7 @@ export class WorkspaceStrategy {
     }
 
     try {
-      await Commands.execute<any, any>('workspace/git/workspace/clean', {
+      await GitWorkspaceClean.execute({
         force: options?.force ?? false,
         deleteBranch: options?.deleteBranch ?? false,
       });

@@ -16,6 +16,42 @@ import { PersonaUser, type PersonaUserData } from '../../domain/user/PersonaUser
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 import type { DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
 
+/** Result type from repository operations */
+interface RepositoryResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/** Minimal interface for seeding — matches the methods actually called */
+interface HumanRepositorySeeder {
+  createHuman(displayName: string, sessionId: string, context: DataOperationContext): Promise<RepositoryResult>;
+}
+
+interface AgentRepositorySeeder {
+  createAgent(
+    displayName: string,
+    sessionId: string,
+    config: { specialization: string; toolAccess: string[]; automationLevel: string; maxConcurrentTasks: number },
+    modelConfig: unknown,
+    context: DataOperationContext
+  ): Promise<RepositoryResult>;
+}
+
+interface PersonaRepositorySeeder {
+  createPersona(
+    displayName: string,
+    sessionId: string,
+    config: { personaStyle: string; contextualMemory: boolean; adaptivePersonality: boolean; emotionalIntelligence: number; conversationalDepth: number },
+    modelConfig: unknown,
+    context: DataOperationContext
+  ): Promise<RepositoryResult>;
+}
+
+interface UserRepositorySeeder {
+  findByType(type: string, context: DataOperationContext, subType?: string): Promise<RepositoryResult & { data?: unknown[] }>;
+}
+
 export interface SeedDataStructure {
   version: string;
   lastUpdated: string;
@@ -25,8 +61,8 @@ export interface SeedDataStructure {
     agents: AgentUserData[];
     personas: PersonaUserData[];
   };
-  rooms: any[];
-  messages: any[];
+  rooms: Record<string, unknown>[];
+  messages: Record<string, unknown>[];
 }
 
 export class RepositoryDataSeeder {
@@ -77,8 +113,8 @@ export class RepositoryDataSeeder {
 
       console.log('✅ Data cleared using UserRepository');
 
-    } catch (error: any) {
-      console.error('❌ FATAL: Failed to clear data via UserRepository:', error.message);
+    } catch (error: unknown) {
+      console.error('❌ FATAL: Failed to clear data via UserRepository:', (error instanceof Error ? error.message : String(error)));
       throw error;
     }
   }
@@ -109,8 +145,8 @@ export class RepositoryDataSeeder {
 
       console.log('✅ ALL DATA SEEDED - UserRepository ORM integration complete');
 
-    } catch (error: any) {
-      console.error('❌ FATAL: Failed to seed data via UserRepository:', error.message);
+    } catch (error: unknown) {
+      console.error('❌ FATAL: Failed to seed data via UserRepository:', (error instanceof Error ? error.message : String(error)));
       throw error;
     }
   }
@@ -118,7 +154,7 @@ export class RepositoryDataSeeder {
   /**
    * Seed human users
    */
-  private async seedHumans(humanRepository: any): Promise<void> {
+  private async seedHumans(humanRepository: HumanRepositorySeeder): Promise<void> {
     console.log(`👥 Seeding ${this.seedData.users.humans.length} human users...`);
 
     for (const humanData of this.seedData.users.humans) {
@@ -139,8 +175,8 @@ export class RepositoryDataSeeder {
           throw new Error(`Failed to create human: ${result.error}`);
         }
 
-      } catch (error: any) {
-        console.error(`❌ Failed to create human user ${humanData.displayName}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ Failed to create human user ${humanData.displayName}:`, (error instanceof Error ? error.message : String(error)));
         throw error;
       }
     }
@@ -151,7 +187,7 @@ export class RepositoryDataSeeder {
   /**
    * Seed agent users
    */
-  private async seedAgents(agentRepository: any): Promise<void> {
+  private async seedAgents(agentRepository: AgentRepositorySeeder): Promise<void> {
     console.log(`🤖 Seeding ${this.seedData.users.agents.length} agent users...`);
 
     for (const agentData of this.seedData.users.agents) {
@@ -179,8 +215,8 @@ export class RepositoryDataSeeder {
           throw new Error(`Failed to create agent: ${result.error}`);
         }
 
-      } catch (error: any) {
-        console.error(`❌ Failed to create agent user ${agentData.displayName}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ Failed to create agent user ${agentData.displayName}:`, (error instanceof Error ? error.message : String(error)));
         throw error;
       }
     }
@@ -191,7 +227,7 @@ export class RepositoryDataSeeder {
   /**
    * Seed persona users
    */
-  private async seedPersonas(personaRepository: any): Promise<void> {
+  private async seedPersonas(personaRepository: PersonaRepositorySeeder): Promise<void> {
     console.log(`🎭 Seeding ${this.seedData.users.personas.length} persona users...`);
 
     for (const personaData of this.seedData.users.personas) {
@@ -220,8 +256,8 @@ export class RepositoryDataSeeder {
           throw new Error(`Failed to create persona: ${result.error}`);
         }
 
-      } catch (error: any) {
-        console.error(`❌ Failed to create persona user ${personaData.displayName}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ Failed to create persona user ${personaData.displayName}:`, (error instanceof Error ? error.message : String(error)));
         throw error;
       }
     }
@@ -263,8 +299,8 @@ export class RepositoryDataSeeder {
 
       console.log(`✅ ALL DATA VERIFIED - ${totalActual} users created successfully`);
 
-    } catch (error: any) {
-      console.error('❌ FATAL: Data verification failed:', error.message);
+    } catch (error: unknown) {
+      console.error('❌ FATAL: Data verification failed:', (error instanceof Error ? error.message : String(error)));
       throw error;
     }
   }
@@ -288,8 +324,8 @@ export class RepositoryDataSeeder {
       console.log(`🎭 Personas: ${this.seedData.users.personas.length}`);
       console.log('✅ All users created via proper domain objects');
 
-    } catch (error: any) {
-      console.error('❌ FATAL: UserRepository reset and seed failed:', error.message);
+    } catch (error: unknown) {
+      console.error('❌ FATAL: UserRepository reset and seed failed:', (error instanceof Error ? error.message : String(error)));
       throw error;
     }
   }

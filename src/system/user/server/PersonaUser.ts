@@ -480,10 +480,10 @@ export class PersonaUser extends AIUser {
 
     // NEUROANATOMY Phase 1: Initialize Limbic System FIRST (memory, learning, identity, emotion)
     // Limbic wraps memory/genome/learning systems - must be initialized before anything that uses getters
-    this.limbic = new LimbicSystem(this as any as PersonaUserForLimbic);
+    this.limbic = new LimbicSystem(this as PersonaUserForLimbic);
 
     // NEUROANATOMY Phase 2: Initialize Prefrontal Cortex (cognition, evaluation, planning)
-    this.prefrontal = new PrefrontalCortex(this as any as PersonaUserForPrefrontal);
+    this.prefrontal = new PrefrontalCortex(this as PersonaUserForPrefrontal);
 
     // NEUROANATOMY Phase 3: Initialize Motor Cortex (action, execution, output)
     // Note: Motor cortex creates toolExecutor, toolRegistry, and responseGenerator internally
@@ -530,7 +530,7 @@ export class PersonaUser extends AIUser {
 
     // RUST COGNITION: Fast-path decision engine via IPC
     // Logs to: .continuum/personas/{uniqueId}/logs/rust-cognition.log
-    this._rustCognition = new RustCognitionBridge(this as any as PersonaUserForRustCognition);
+    this._rustCognition = new RustCognitionBridge(this as PersonaUserForRustCognition);
 
     // UNIFIED CONSCIOUSNESS: Cross-context awareness (no severance!)
     // Sits above limbic/prefrontal, provides global timeline and peripheral awareness
@@ -546,7 +546,7 @@ export class PersonaUser extends AIUser {
       }
     );
     // Register with GlobalAwarenessSource so RAG can access consciousness
-    registerConsciousness(this.id, this._consciousness);
+    registerConsciousness(this.id);
     // Wire Rust bridge into consciousness for timeline event corpus coherence
     if (this._rustCognition) {
       this._consciousness.setRustBridge(this._rustCognition);
@@ -556,7 +556,7 @@ export class PersonaUser extends AIUser {
     this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 
     // Logger for cognition.log (used by task executor and other modules)
-    const cognitionLogger = (message: string, ...args: any[]) => {
+    const cognitionLogger = (message: string, ..._args: unknown[]) => {
       this.logger.enqueueLog('cognition.log', message);
     };
     // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
@@ -604,7 +604,22 @@ export class PersonaUser extends AIUser {
       // Wire training outcome recording — closes the meta-learning loop.
       // When training completes, record pre/post fitness so GapDetector learns
       // which training strategies actually improve performance.
-      const unsubTraining = Events.subscribe('genome:training:complete', (payload: any) => {
+      const unsubTraining = Events.subscribe('genome:training:complete', (payload: {
+        handle: string;
+        personaId: UUID;
+        personaName: string;
+        traitType?: string;
+        adapterPath?: string;
+        layerId?: string;
+        sentinelHandle?: string;
+        metrics?: {
+          finalLoss?: number;
+          preFitness?: number;
+          trainingTime?: number;
+          examplesProcessed?: number;
+          epochs?: number;
+        };
+      }) => {
         if (payload.personaId !== this.id) return;
         const domain = payload.traitType ?? 'unknown';
         const preFitness = payload.metrics?.preFitness ?? 0;
@@ -749,7 +764,7 @@ export class PersonaUser extends AIUser {
               priority: a.getPriority(),
             }));
             if (adapters.length > 0) {
-              await this._rustCognition!.syncAdapters(adapters as any);
+              await this._rustCognition!.syncAdapters(adapters);
               this.log.info(`🦀 ${this.displayName}: ${adapters.length} adapters synced to Rust for model selection`);
             }
             this.memory!.genome.setRustBridge(this._rustCognition!);
@@ -1495,7 +1510,7 @@ export class PersonaUser extends AIUser {
    * Build CoordinationDecision RAGContext from ChatRAGBuilder output
    * Converts domain-specific RAG format to universal decision logging format
    */
-  private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
+  private buildCoordinationRAGContext(filteredRagContext: PipelineRAGContext): RAGContext {
     const systemPrompt = filteredRagContext.identity?.systemPrompt ??
                          `You are ${this.displayName}. ${this.entity?.bio ?? ''}`;
 
@@ -1505,13 +1520,21 @@ export class PersonaUser extends AIUser {
         bio: this.entity?.bio ?? '',
         role: this.displayName
       },
-      conversationHistory: (filteredRagContext.conversationHistory ?? []).map((msg: any) => ({
+      conversationHistory: (filteredRagContext.conversationHistory ?? []).map((msg) => ({
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp ?? Date.now()
       })),
-      artifacts: filteredRagContext.artifacts ?? [],
-      privateMemories: filteredRagContext.privateMemories ?? [],
+      artifacts: (filteredRagContext.artifacts ?? []).map(a => ({
+        type: a.type as 'image' | 'file' | 'code',
+        name: a.type,
+        content: a.content ?? a.base64 ?? '',
+      })),
+      privateMemories: (filteredRagContext.privateMemories ?? []).map(m => ({
+        type: m.type,
+        content: m.content,
+        relevance: m.relevanceScore,
+      })),
       metadata: {
         timestamp: Date.now(),
         tokenCount: filteredRagContext.metadata?.messageCount ??
@@ -2095,7 +2118,7 @@ export class PersonaUser extends AIUser {
       content: string;
       timestamp?: number;
     }>;
-    filteredRagContext?: any;
+    filteredRagContext?: PipelineRAGContext;
   }> {
     return await this.messageEvaluator.evaluateShouldRespond(message, senderIsHuman, isMentioned);
   }

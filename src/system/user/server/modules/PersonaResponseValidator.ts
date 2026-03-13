@@ -26,15 +26,15 @@ export interface ValidationResult {
   confidence: number;
   reason: string;
   /** Raw Rust validation result for detailed gate inspection */
-  raw: any;
+  raw: Record<string, unknown>;
 }
 
 export class PersonaResponseValidator {
   private _rustBridge: RustCognitionBridge | null = null;
   private personaName: string;
-  private log: (message: string, ...args: any[]) => void;
+  private log: (message: string, ...args: unknown[]) => void;
 
-  constructor(personaName: string, log: (message: string, ...args: any[]) => void) {
+  constructor(personaName: string, log: (message: string, ...args: unknown[]) => void) {
     this.personaName = personaName;
     this.log = log;
   }

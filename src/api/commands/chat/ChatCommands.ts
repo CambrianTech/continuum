@@ -14,7 +14,7 @@ export interface MessageContent {
     type: 'file' | 'image' | 'link';
     url: string;
     name: string;
-    metadata?: Record<string, any>;
+    metadata?: Record<string, unknown>;
   }[];
   formatting?: {
     markdown: boolean;
@@ -32,7 +32,7 @@ export interface SendMessageParams {
   sender: BaseUser;
   replyToId?: string;
   mentions?: string[]; // user IDs
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ChatMessage {
@@ -50,7 +50,7 @@ export interface ChatMessage {
     count: number;
   }[];
   status: 'sending' | 'sent' | 'delivered' | 'failed';
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface SendMessageResult {
@@ -68,7 +68,7 @@ export interface CreateRoomParams {
   maxUsers?: number;
   creator: BaseUser;
   initialUsers?: BaseUser[];
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ChatRoom {
@@ -89,7 +89,7 @@ export interface ChatRoom {
   };
   createdAt: string;
   updatedAt: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface CreateRoomResult {
@@ -196,7 +196,7 @@ export interface ChatEvent {
   type: 'message' | 'user_joined' | 'user_left' | 'room_created' | 'room_updated' | 'typing' | 'presence';
   roomId?: string;
   userId?: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: string;
 }
 

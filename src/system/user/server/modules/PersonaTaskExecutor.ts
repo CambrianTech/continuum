@@ -261,7 +261,7 @@ export class PersonaTaskExecutor {
           senderId: msg.senderId,
           senderName: msg.senderName,
           senderType: msg.senderType,
-          messageId: (msg as any).id || recordId
+          messageId: msg.id || recordId
         },
         timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
         importance: score,
@@ -1139,9 +1139,9 @@ export class PersonaTaskExecutor {
    */
   async recallSentinelPatterns(sentinelName?: string): Promise<Array<{
     content: string;
-    context: Record<string, any>;
+    context: Record<string, unknown>;
     importance: number;
-    timestamp: any;
+    timestamp: Date | string;
   }>> {
     try {
       const filter: Record<string, unknown> = {

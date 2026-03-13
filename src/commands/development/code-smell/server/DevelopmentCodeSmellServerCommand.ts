@@ -23,6 +23,7 @@ import type {
   CodeSmellLocation
 } from '../shared/DevelopmentCodeSmellTypes';
 import { createDevelopmentCodeSmellResultFromParams } from '../shared/DevelopmentCodeSmellTypes';
+import type { AuditEntry, AuditSummary } from '@generator/CommandAuditor';
 
 const GOD_CLASS_THRESHOLD = 500;
 
@@ -163,11 +164,11 @@ export class DevelopmentCodeSmellServerCommand extends CommandBase<DevelopmentCo
     try {
       const { CommandAuditor } = require(path.join(srcDir, 'generator', 'CommandAuditor'));
       const auditor = new CommandAuditor(srcDir);
-      const audit = auditor.audit();
-      const missing = audit.entries.filter((e: { hasStaticAccessor: boolean; hasTypesFile: boolean }) =>
+      const audit: AuditSummary = auditor.audit();
+      const missing = audit.entries.filter((e: AuditEntry) =>
         !e.hasStaticAccessor && e.hasTypesFile
       );
-      const locations: CodeSmellLocation[] = missing.map((e: { commandName: string; dirPath: string }) => ({
+      const locations: CodeSmellLocation[] = missing.map((e: AuditEntry) => ({
         file: path.relative(srcDir, e.dirPath),
         text: `${e.commandName} — missing static accessor`,
       }));
@@ -193,9 +194,9 @@ export class DevelopmentCodeSmellServerCommand extends CommandBase<DevelopmentCo
     try {
       const { CommandAuditor } = require(path.join(srcDir, 'generator', 'CommandAuditor'));
       const auditor = new CommandAuditor(srcDir);
-      const audit = auditor.audit();
-      const missing = audit.entries.filter((e: { hasTypesFile: boolean }) => !e.hasTypesFile);
-      const locations: CodeSmellLocation[] = missing.map((e: { commandName: string; dirPath: string }) => ({
+      const audit: AuditSummary = auditor.audit();
+      const missing = audit.entries.filter((e: AuditEntry) => !e.hasTypesFile);
+      const locations: CodeSmellLocation[] = missing.map((e: AuditEntry) => ({
         file: path.relative(srcDir, e.dirPath),
         text: `${e.commandName} — no Types file`,
       }));

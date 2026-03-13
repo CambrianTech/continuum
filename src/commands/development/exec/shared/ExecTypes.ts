@@ -13,7 +13,7 @@ export interface ExecCommandParams extends CommandParams {
   code: CodeInput;                              // REQUIRED - discriminated union for all input types
   targetEnvironment?: JTAGEnvironment | 'auto' | 'both';  // Where to execute (defaults to context.environment)
   timeout?: number;                             // Max execution time in milliseconds
-  parameters?: Record<string, any>;             // Parameters passed to script as 'params' global
+  parameters?: Record<string, unknown>;           // Parameters passed to script as 'params' global
   
   // Security permissions
   allowNetworkRequests?: boolean;               // Allow fetch, XMLHttpRequest, etc.
@@ -22,7 +22,7 @@ export interface ExecCommandParams extends CommandParams {
   allowJTAGCommandAccess?: boolean;            // Allow calling other JTAG commands (default: true)
   
   // Cross-environment routing properties (added by browser execution)
-  result?: any;                                 // Result from browser execution
+  result?: unknown;                               // Result from browser execution
   executedAt?: number;                         // Timestamp of execution
   executedIn?: 'browser' | 'server';          // Environment where execution happened
 }
@@ -57,7 +57,7 @@ export interface Base64CodeInput {
 export interface TemplateCodeInput {
   type: 'template';
   name: string;                                 // Template name from template registry
-  variables?: Record<string, any>;              // Template variable substitution
+  variables?: Record<string, unknown>;            // Template variable substitution
 }
 
 export type SupportedLanguage = 'typescript' | 'javascript' | 'python';
@@ -68,7 +68,7 @@ export type SupportedLanguage = 'typescript' | 'javascript' | 'python';
  */
 export interface ExecCommandResult extends CommandResult {
   success: boolean;
-  result?: any;                                 // Script return value (JSON-serializable)
+  result?: unknown;                               // Script return value (JSON-serializable)
   
   // Execution metadata
   executionTime: number;                        // Milliseconds taken to execute
@@ -133,7 +133,7 @@ export function createExecErrorResult(
 
 // Helper function to create consistent success results
 export function createExecSuccessResult(
-  result: any,
+  result: unknown,
   environment: 'browser' | 'server',
   params: ExecCommandParams,
   executionTime: number
@@ -228,7 +228,7 @@ export interface ExecRuntimeEnvironment {
   continuum?: ContinuumClientAccess;           // Continuum integration (if available)
   
   // Script parameters
-  params: Record<string, any>;                 // Parameters from ExecCommandParams
+  params: Record<string, unknown>;               // Parameters from ExecCommandParams
   
   // Context-specific APIs
   dom?: DOMManipulatorAccess;                  // Browser-only DOM access
@@ -244,16 +244,16 @@ export interface ExecRuntimeEnvironment {
  */
 export interface JTAGClientAccess {
   commands: {
-    screenshot: (filename?: string) => Promise<any>;
-    log: (level: string, message: string, data?: any) => Promise<any>;
+    screenshot: (filename?: string) => Promise<unknown>;
+    log: (level: string, message: string, data?: unknown) => Promise<unknown>;
     exec: (params: ExecCommandParams) => Promise<ExecCommandResult>; // Self-referential!
   };
 }
 
 export interface ContinuumClientAccess {
   commands: {
-    processData: (params: any) => Promise<any>;
-    getData: () => Promise<any>;
+    processData: (params: unknown) => Promise<unknown>;
+    getData: () => Promise<unknown>;
     // Add more as needed
   };
 }
@@ -279,7 +279,7 @@ export interface ExecUtilities {
   uuid: () => string;
   base64Encode: (str: string) => string;
   base64Decode: (str: string) => string;
-  safeStringify: (obj: any) => string;         // JSON.stringify with error handling
+  safeStringify: (obj: unknown) => string;       // JSON.stringify with error handling
 }
 
 /**
@@ -299,14 +299,14 @@ export interface ExecTemplateVariable {
   type: 'string' | 'number' | 'boolean' | 'object';
   required: boolean;
   description: string;
-  defaultValue?: any;
+  defaultValue?: unknown;
 }
 
 export interface ExecTemplateExample {
   name: string;
   description: string;
-  variables: Record<string, any>;
-  expectedResult: any;
+  variables: Record<string, unknown>;
+  expectedResult: unknown;
 }
 
 /**

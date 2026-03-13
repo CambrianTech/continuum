@@ -130,7 +130,7 @@ export interface InteractiveComponent {
   readonly componentType: 'poll' | 'button' | 'select' | 'modal' | 'form' | 'custom';
   readonly title?: string;
   readonly description?: string;
-  readonly configuration: Record<string, any>; // Component-specific config
+  readonly configuration: Record<string, unknown>; // Component-specific config
   readonly permissions?: {
     readonly allowedUsers?: ReadonlyArray<string>;
     readonly allowedRoles?: ReadonlyArray<string>;
@@ -146,7 +146,7 @@ export interface InteractiveComponent {
  */
 export interface SystemMessageContent {
   readonly systemType: 'user_joined' | 'user_left' | 'room_created' | 'settings_changed' | 'error' | 'notification';
-  readonly systemData: Record<string, any>;
+  readonly systemData: Record<string, unknown>;
   readonly iconUrl?: string;
   readonly actionable?: boolean; // Can users interact with this system message
   readonly priority: 'low' | 'normal' | 'high' | 'urgent';
@@ -164,7 +164,7 @@ export interface BaseChatMessagePayload {
     readonly editedAt: string;
     readonly editedBy: string;
     readonly reason?: string;
-    readonly previousContent?: any;
+    readonly previousContent?: string;
   }>;
   
   // Threading support
@@ -296,7 +296,7 @@ export interface CustomChatMessagePayload extends BaseChatMessagePayload {
   readonly contentType: 'custom';
   readonly content: string; // Fallback text content
   readonly customType: string; // Application-specific type identifier
-  readonly customData: Record<string, any>; // Application-specific data
+  readonly customData: Record<string, unknown>; // Application-specific data
 }
 
 /**
@@ -419,7 +419,7 @@ export const ChatMessagePayloadFactory = {
     messageId: string, 
     content: string, 
     systemType: SystemMessageContent['systemType'], 
-    systemData: Record<string, any>,
+    systemData: Record<string, unknown>,
     priority: SystemMessageContent['priority'] = 'normal',
     timestamp?: string
   ): SystemChatMessagePayload => ({
@@ -438,7 +438,7 @@ export const ChatMessagePayloadFactory = {
     messageId: string, 
     content: string, 
     customType: string, 
-    customData: Record<string, any>, 
+    customData: Record<string, unknown>,
     timestamp?: string
   ): CustomChatMessagePayload => ({
     contentType: 'custom',

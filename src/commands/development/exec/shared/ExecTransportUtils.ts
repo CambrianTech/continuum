@@ -121,7 +121,7 @@ export class ExecTransportEncoder {
 
       default:
         const exhaustive: never = code;
-        throw new Error(`Unknown code input type: ${(exhaustive as any).type}`);
+        throw new Error(`Unknown code input type: ${(exhaustive as { type: string }).type}`);
     }
   }
 
@@ -241,7 +241,7 @@ export class ExecResultTransporter {
   /**
    * Encode exec result for safe transport back to caller
    */
-  static encodeResult(result: any): string {
+  static encodeResult(result: unknown): string {
     try {
       // Handle circular references and non-serializable objects
       const safeResult = this.makeSafeForSerialization(result);
@@ -253,7 +253,7 @@ export class ExecResultTransporter {
         error: 'Result could not be serialized',
         originalError: error instanceof Error ? error.message : String(error),
         resultType: typeof result,
-        resultConstructor: result?.constructor?.name || 'unknown'
+        resultConstructor: (result != null && typeof result === 'object' && result.constructor?.name) || 'unknown'
       };
       const jsonFallback = JSON.stringify(fallback);
       return ExecTransportEncoder['safeEncode'](jsonFallback);
@@ -263,7 +263,7 @@ export class ExecResultTransporter {
   /**
    * Decode exec result from transport back to usable form
    */
-  static decodeResult(encodedResult: string): any {
+  static decodeResult(encodedResult: string): unknown {
     try {
       const jsonResult = ExecTransportEncoder['safeDecode'](encodedResult);
       return JSON.parse(jsonResult);
@@ -279,7 +279,7 @@ export class ExecResultTransporter {
   /**
    * Make object safe for JSON serialization by handling problematic values
    */
-  private static makeSafeForSerialization(obj: any, visited = new WeakSet()): any {
+  private static makeSafeForSerialization(obj: unknown, visited = new WeakSet<object>()): unknown {
     // Handle primitive types
     if (obj === null || obj === undefined) return obj;
     if (typeof obj !== 'object') return obj;
@@ -324,11 +324,12 @@ export class ExecResultTransporter {
     }
     
     // Handle regular objects
-    const safeObj: any = {};
-    for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
+    const record = obj as Record<string, unknown>;
+    const safeObj: Record<string, unknown> = {};
+    for (const key in record) {
+      if (Object.prototype.hasOwnProperty.call(record, key)) {
         try {
-          safeObj[key] = this.makeSafeForSerialization(obj[key], visited);
+          safeObj[key] = this.makeSafeForSerialization(record[key], visited);
         } catch (error) {
           safeObj[key] = `[Unserializable: ${error instanceof Error ? error.message : String(error)}]`;
         }

@@ -15,10 +15,11 @@ export class WidgetEventServiceBrowser extends WidgetEventService {
   private _domInterestCleanups: Array<() => void> = [];
 
   // Override DOM event coordination for browser environment
-  emitCustomEvent(eventName: string, detail: any): void {
+  emitCustomEvent(eventName: string, detail: unknown): void {
+    const detailObj = (detail && typeof detail === 'object') ? detail as Record<string, unknown> : { value: detail };
     const customEvent = new CustomEvent(eventName, {
       detail: {
-        ...detail,
+        ...detailObj,
         source: this.context?.widgetId || 'unknown',
         timestamp: new Date().toISOString()
       },

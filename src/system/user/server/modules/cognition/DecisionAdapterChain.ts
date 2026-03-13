@@ -24,9 +24,9 @@ import type { AdapterDecision, DecisionContextMetadata } from '../../../../data/
 
 export class DecisionAdapterChain {
   private adapters: IDecisionAdapter[] = [];
-  private log: (message: string, ...args: any[]) => void;
+  private log: (message: string, ...args: unknown[]) => void;
 
-  constructor(logger?: (message: string, ...args: any[]) => void) {
+  constructor(logger?: (message: string, ...args: unknown[]) => void) {
     // Default to console.log if no logger provided (for tests)
     this.log = logger || console.log.bind(console);
 
@@ -78,7 +78,8 @@ export class DecisionAdapterChain {
 
       // Extract contextId from trigger event (domain-specific)
       // For chat: roomId, for other domains: appropriate context identifier
-      const contextId = (context.triggerEvent as any).roomId || (context.triggerEvent as any).contextId || context.personaId;
+      const triggerEvent = context.triggerEvent as BaseEntity & { roomId?: string; contextId?: string };
+      const contextId = triggerEvent.roomId || triggerEvent.contextId || context.personaId;
 
       if (decision !== null) {
         this.log(`   ✅ ${adapter.name} handled decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (confidence: ${decision.confidence.toFixed(2)})`);

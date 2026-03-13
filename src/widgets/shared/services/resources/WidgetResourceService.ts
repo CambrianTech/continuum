@@ -92,6 +92,48 @@ export interface PreloadResult {
   error?: string;
 }
 
+/** Internal params shape for file command stub */
+interface FileCommandParams {
+  filepath: string;
+  content?: string;
+  createDirectories?: boolean;
+  encoding?: string;
+}
+
+/** Internal result shape for file command stub */
+interface FileCommandResult {
+  success: boolean;
+  filepath?: string;
+  content?: string;
+  bytesRead?: number;
+  bytesWritten?: number;
+  exists?: boolean;
+  error?: string;
+}
+
+/** Internal params shape for screenshot command stub */
+interface ScreenshotCommandParams {
+  filename?: string;
+  format?: string;
+  quality?: number;
+  querySelector?: string;
+  fullPage?: boolean;
+  viewport?: { width: number; height: number };
+}
+
+/** Internal result shape for screenshot command stub */
+interface ScreenshotCommandResult {
+  success: boolean;
+  filepath?: string;
+  filename?: string;
+  base64?: string;
+  width?: number;
+  height?: number;
+  format?: string;
+  fileSize?: number;
+  error?: string;
+}
+
 // Resource service implementation
 export class WidgetResourceService implements IWidgetResourceService {
   public readonly serviceName = 'WidgetResourceService';
@@ -366,10 +408,10 @@ export class WidgetResourceService implements IWidgetResourceService {
     }
   }
 
-  private async executeFileCommand(command: string, params: any): Promise<any> {
+  private async executeFileCommand(_command: string, params: FileCommandParams): Promise<FileCommandResult> {
     // This will be replaced with proper JTAG client injection
-    console.debug(`📁 WidgetResourceService: Executing file command '${command}'`);
-    
+    console.debug(`📁 WidgetResourceService: Executing file command '${_command}'`);
+
     // Simulate JTAG file operations for now
     return {
       success: true,
@@ -381,10 +423,10 @@ export class WidgetResourceService implements IWidgetResourceService {
     };
   }
 
-  private async executeScreenshotCommand(command: string, params: any): Promise<any> {
+  private async executeScreenshotCommand(_command: string, params: ScreenshotCommandParams): Promise<ScreenshotCommandResult> {
     // This will be replaced with proper JTAG client injection
-    console.debug(`📸 WidgetResourceService: Executing screenshot command '${command}'`);
-    
+    console.debug(`📸 WidgetResourceService: Executing screenshot command '${_command}'`);
+
     // Simulate JTAG screenshot operations for now
     return {
       success: true,

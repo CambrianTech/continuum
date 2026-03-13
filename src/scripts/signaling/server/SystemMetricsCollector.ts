@@ -75,13 +75,13 @@ export class SystemMetricsCollector {
       // Determine overall health
       metrics.systemHealth = this.calculateSystemHealth(metrics);
       
-    } catch (error: any) {
-      console.warn('⚠️ Error collecting metrics:', error.message);
+    } catch (error: unknown) {
+      console.warn('⚠️ Error collecting metrics:', error instanceof Error ? error.message : String(error));
       metrics.systemHealth = 'error';
       metrics.bootstrapComplete = false;
       metrics.commandCount = 0;
       metrics.portsActive = [];
-      metrics.errors = [error.message];
+      metrics.errors = [error instanceof Error ? error.message : String(error)];
     }
 
     return metrics as SystemReadySignal;
@@ -442,8 +442,8 @@ export class SystemMetricsCollector {
           }
         }
       }
-    } catch (error: any) {
-      errors.push(`System error check failed: ${error.message}`);
+    } catch (error: unknown) {
+      errors.push(`System error check failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     
     return errors;

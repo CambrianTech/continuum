@@ -22,7 +22,7 @@ export interface HealthPayload extends JTAGPayload {
     latency?: number;
     uptime?: number;
     connectionCount?: number;
-    [key: string]: any;
+    [key: string]: number | undefined;
   };
 }
 
@@ -71,9 +71,10 @@ export abstract class HealthDaemon extends DaemonBase {
           console.warn(`⚠️ ${this.toString()}: Unknown health message type: ${healthPayload.type}`);
           return createHealthErrorResponse('Unknown health message type', healthPayload.context, healthPayload.sessionId);
       }
-    } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Error processing health message:`, error.message);
-      return createHealthErrorResponse(error.message, healthPayload.context, healthPayload.sessionId);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ ${this.toString()}: Error processing health message:`, errorMessage);
+      return createHealthErrorResponse(errorMessage, healthPayload.context, healthPayload.sessionId);
     }
   }
 
@@ -127,14 +128,24 @@ export abstract class HealthDaemon extends DaemonBase {
   /**
    * Get memory usage - cross-platform compatible  
    */
-  private getMemoryUsage(): any {
+  private getMemoryUsage(): { used: number; total: number } {
     if (typeof process !== 'undefined' && process.memoryUsage) {
-      return process.memoryUsage();
+      const usage = process.memoryUsage();
+      return {
+        used: usage.heapUsed,
+        total: usage.heapTotal
+      };
     }
     // Browser fallback - return performance memory if available
-    if (typeof performance !== 'undefined' && (performance as any).memory) {
-      return (performance as any).memory;
+    if (typeof performance !== 'undefined' && 'memory' in performance) {
+      const mem = (performance as Performance & { memory?: { usedJSHeapSize: number; totalJSHeapSize: number } }).memory;
+      if (mem) {
+        return {
+          used: mem.usedJSHeapSize,
+          total: mem.totalJSHeapSize
+        };
+      }
     }
-    return {};
+    return { used: 0, total: 0 };
   }
 }

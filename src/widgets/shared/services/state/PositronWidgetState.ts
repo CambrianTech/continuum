@@ -32,7 +32,8 @@ import { Events } from '@system/core/shared/Events';
 import { WidgetStateDebug } from '../../../../commands/development/debug/widget-state/shared/WidgetStateDebugTypes';
 import { SessionGetId } from '../../../../commands/session/get-id/shared/SessionGetIdTypes';
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+import { jtagWindow } from '@system/core/types/GlobalAugmentations';
+const verbose = () => typeof window !== 'undefined' && jtagWindow?.JTAG_VERBOSE === true;
 
 /**
  * Widget context - what's currently displayed in the center
@@ -212,14 +213,13 @@ class PositronWidgetStateService {
 
     try {
       verbose() && console.log('🧠 PositronWidgetState: Bridging context to server...');
-      const { Commands } = await import('../../../../system/core/shared/Commands');
       const sessionId = await this.getSessionId();
 
       verbose() && console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
       const result = await WidgetStateDebug.execute({
         setContext: this.currentContext,
         contextSessionId: sessionId
-      } as any);
+      });
 
       verbose() && console.log('🧠 PositronWidgetState: Bridge result:', result);
     } catch (error) {
@@ -232,9 +232,8 @@ class PositronWidgetStateService {
    */
   private async getSessionId(): Promise<string> {
     try {
-      const { Commands } = await import('../../../../system/core/shared/Commands');
-      const result = await SessionGetId.execute({} as any) as any;
-      return result?.sessionId || 'unknown';
+      const result = await SessionGetId.execute({});
+      return result.sessionId || 'unknown';
     } catch {
       return 'unknown';
     }

@@ -22,6 +22,30 @@
  */
 
 /**
+ * Interface for content view widgets managed by MainWidget's widget cache.
+ * Widgets implement the hooks they need; all are optional.
+ *
+ * onActivate/onDeactivate mirror iOS viewDidAppear/viewDidDisappear.
+ * setEntityId is a simpler alternative when the widget only needs the entity ID.
+ */
+export interface ContentViewWidget extends HTMLElement {
+  onActivate?(entityId?: string, metadata?: Record<string, unknown>): void | Promise<void>;
+  onDeactivate?(): void;
+  setEntityId?(entityId: string): void;
+}
+
+/**
+ * Type guard: does this HTMLElement implement any ContentViewWidget methods?
+ */
+export function isContentViewWidget(el: HTMLElement): el is ContentViewWidget {
+  return (
+    ('onActivate' in el && typeof (el as ContentViewWidget).onActivate === 'function') ||
+    ('onDeactivate' in el && typeof (el as ContentViewWidget).onDeactivate === 'function') ||
+    ('setEntityId' in el && typeof (el as ContentViewWidget).setEntityId === 'function')
+  );
+}
+
+/**
  * Interface for widgets that participate in content lifecycle.
  * Widgets implement the hooks they need; all are optional.
  */

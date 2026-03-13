@@ -49,19 +49,19 @@ type DatabaseResult = DatabaseStoreResult | DatabaseRetrieveResult | DatabaseRet
 // Data service interface - what widgets consume
 export interface IWidgetDataService extends IWidgetService {
   // Data storage operations
-  storeData(key: string, value: any, options?: DataStoreOptions): Promise<void>;
-  getData(key: string, defaultValue?: any): Promise<any>;
+  storeData(key: string, value: unknown, options?: DataStoreOptions): Promise<void>;
+  getData(key: string, defaultValue?: unknown): Promise<unknown>;
   deleteData(key: string): Promise<boolean>;
   hasData(key: string): Promise<boolean>;
   
   // State persistence
-  saveState(state: Record<string, any>): Promise<void>;
-  loadState(): Promise<Record<string, any>>;
+  saveState(state: Record<string, unknown>): Promise<void>;
+  loadState(): Promise<Record<string, unknown>>;
   clearState(): Promise<void>;
   
   // Cache operations
-  setCacheData(key: string, value: any, ttl?: number): Promise<void>;
-  getCacheData(key: string): Promise<any>;
+  setCacheData(key: string, value: unknown, ttl?: number): Promise<void>;
+  getCacheData(key: string): Promise<unknown>;
   clearCache(): Promise<void>;
   
   // No generic command execution - use specific typed methods
@@ -81,8 +81,8 @@ export class WidgetDataService implements IWidgetDataService {
   public readonly serviceVersion = '1.0.0';
   
   private context?: WidgetServiceContext;
-  private memoryStore = new Map<string, any>();
-  private cacheStore = new Map<string, { value: any; expires: number }>();
+  private memoryStore = new Map<string, unknown>();
+  private cacheStore = new Map<string, { value: unknown; expires: number; }>();
   private stateKey = '';
 
   async initialize(context: WidgetServiceContext): Promise<void> {
@@ -104,7 +104,7 @@ export class WidgetDataService implements IWidgetDataService {
   }
 
   // Data storage operations
-  async storeData(key: string, value: any, options: DataStoreOptions = {}): Promise<void> {
+  async storeData(key: string, value: unknown, options: DataStoreOptions = {}): Promise<void> {
     const fullKey = this.buildKey(key);
     
     try {
@@ -133,7 +133,7 @@ export class WidgetDataService implements IWidgetDataService {
     }
   }
 
-  async getData(key: string, defaultValue?: any): Promise<any> {
+  async getData(key: string, defaultValue?: unknown): Promise<unknown> {
     const fullKey = this.buildKey(key);
     
     try {
@@ -215,7 +215,7 @@ export class WidgetDataService implements IWidgetDataService {
   }
 
   // State persistence operations
-  async saveState(state: Record<string, any>): Promise<void> {
+  async saveState(state: Record<string, unknown>): Promise<void> {
     try {
       await this.executeDatabaseStore({
         key: this.stateKey,
@@ -229,7 +229,7 @@ export class WidgetDataService implements IWidgetDataService {
     }
   }
 
-  async loadState(): Promise<Record<string, any>> {
+  async loadState(): Promise<Record<string, unknown>> {
     try {
       const result = await this.executeDatabaseRetrieve({
         key: this.stateKey
@@ -261,13 +261,13 @@ export class WidgetDataService implements IWidgetDataService {
   }
 
   // Cache operations
-  async setCacheData(key: string, value: any, ttl: number = 300000): Promise<void> {
+  async setCacheData(key: string, value: unknown, ttl: number = 300000): Promise<void> {
     const expires = Date.now() + ttl;
     this.cacheStore.set(key, { value, expires });
     console.debug(`💾 WidgetDataService: Cached data for key '${key}' (TTL: ${ttl}ms)`);
   }
 
-  async getCacheData(key: string): Promise<any> {
+  async getCacheData(key: string): Promise<unknown> {
     const entry = this.cacheStore.get(key);
     if (!entry) {
       return undefined;
@@ -339,7 +339,7 @@ export class WidgetDataService implements IWidgetDataService {
   }
   
   private async saveCurrentMemoryAsState(): Promise<void> {
-    const state: Record<string, any> = {};
+    const state: Record<string, unknown> = {};
     this.memoryStore.forEach((value, key) => {
       state[key] = value;
     });

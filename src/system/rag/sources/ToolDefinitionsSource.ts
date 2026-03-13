@@ -20,6 +20,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { NativeToolSpec } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import { PersonaToolRegistry } from '../../user/server/modules/PersonaToolRegistry';
 import {
   getPrimaryAdapter,
@@ -307,15 +308,15 @@ When assigned a task: USE sentinel/coding-agent for complex work.`;
    * them from the context's recipeTools if threaded through.
    */
   private getRecipeToolNames(context: RAGSourceContext): Set<string> {
-    // Recipe tools may be available on the context options
-    const recipeTools = (context.options as any)?.recipeTools;
-    if (!recipeTools || !Array.isArray(recipeTools)) {
+    // Recipe tools are on the build options (typed as RecipeToolDeclaration[])
+    const recipeTools: RecipeToolDeclaration[] | undefined = context.options.recipeTools;
+    if (!recipeTools || recipeTools.length === 0) {
       return new Set();
     }
     return new Set(
       recipeTools
-        .filter((t: any) => t.enabledFor?.includes('ai'))
-        .map((t: any) => t.name)
+        .filter((t) => t.enabledFor?.includes('ai'))
+        .map((t) => t.name)
     );
   }
 
@@ -329,15 +330,16 @@ When assigned a task: USE sentinel/coding-agent for complex work.`;
     for (const spec of specs) {
       // ~30 chars JSON overhead per tool + name + description + rough schema size
       chars += 30 + (spec.name?.length || 0) + (spec.description?.length || 0);
-      if ((spec as any).input_schema) {
-        const schema = (spec as any).input_schema;
+      if (spec.input_schema) {
+        const schema = spec.input_schema;
         // Properties contribute ~50 chars each (key + type + description)
         const props = schema.properties;
         if (props) {
           const propKeys = Object.keys(props);
           for (const key of propKeys) {
-            const prop = props[key];
-            chars += 50 + key.length + (prop?.description?.length || 0);
+            const prop = props[key] as Record<string, unknown> | undefined;
+            const desc = typeof prop?.description === 'string' ? prop.description : '';
+            chars += 50 + key.length + desc.length;
           }
         }
       }

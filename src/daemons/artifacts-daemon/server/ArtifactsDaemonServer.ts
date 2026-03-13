@@ -14,6 +14,17 @@ import { Logger, type ComponentLogger } from '../../../system/core/logging/Logge
 import { SystemPaths, GlobalPaths } from '../../../system/core/config/SystemPaths';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
+/** Node.js filesystem error with errno code */
+interface FsError extends Error {
+  code?: string;
+}
+
+/** Narrow unknown to FsError (Node.js fs always throws NodeJS.ErrnoException) */
+function toFsError(error: unknown): FsError {
+  if (error instanceof Error) return error as FsError;
+  return new Error(String(error)) as FsError;
+}
+
 /**
  * Server Artifacts Daemon - Real filesystem operations
  */
@@ -89,8 +100,9 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         bytesProcessed: Buffer.byteLength(content.toString(), encoding)
       };
 
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = toFsError(error);
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: undefined,
@@ -100,7 +112,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
 
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -151,10 +163,10 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         bytesProcessed: bytesWritten
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: toFsError(error).message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -189,10 +201,10 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         bytesProcessed: bytesWritten
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: toFsError(error).message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -212,10 +224,10 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         fullPath
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: toFsError(error).message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -241,18 +253,19 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         fullPath
       };
       
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = toFsError(error);
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: [],
           fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
-      
+
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -279,18 +292,19 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         fullPath
       };
       
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = toFsError(error);
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: undefined,
           fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
-      
+
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -316,8 +330,9 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         fullPath
       };
 
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = toFsError(error);
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: false, // File didn't exist
@@ -327,7 +342,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
 
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
@@ -343,8 +358,8 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       let content: string;
       try {
         content = await fs.readFile(configPath, 'utf-8');
-      } catch (error: any) {
-        if (error.code === 'ENOENT') {
+      } catch (error: unknown) {
+        if (toFsError(error).code === 'ENOENT') {
           return {
             success: true,
             data: { loaded: 0, message: 'No config.env found', path: configPath }
@@ -379,10 +394,10 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         data: { loaded, variables, path: configPath }
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: `Failed to load environment: ${error.message}`
+        error: `Failed to load environment: ${toFsError(error).message}`
       };
     }
   }

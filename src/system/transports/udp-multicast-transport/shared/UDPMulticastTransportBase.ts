@@ -111,8 +111,9 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
       // Announce this node to the network
       await this.announceNode();
       
-    } catch (error: any) {
-      console.error('❌ P2P Transport: Failed to initialize:', error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('P2P Transport: Failed to initialize:', message);
       throw error;
     }
   }
@@ -156,8 +157,9 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
       
       return this.createResult(false);
       
-    } catch (error: any) {
-      console.error('❌ P2P Transport: Send failed:', error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('P2P Transport: Send failed:', message);
       return this.createResult(false);
     }
   }
@@ -226,15 +228,16 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
       this.updateStats('rx', messageBuffer.length);
       
       if (message.magic === PROTOCOL_MAGIC.DISCOVERY) {
-        console.log(`🔍 P2P Discovery: Processing discovery message type ${(message.payload as any).type}`);
+        console.log(`P2P Discovery: Processing discovery message type ${(message.payload as DiscoveryMessage).type}`);
         this.handleDiscoveryMessage(message.payload as DiscoveryMessage);
       } else if (message.magic === PROTOCOL_MAGIC.P2P_MESSAGE) {
         console.log(`📬 P2P Message: Processing P2P command message`);
         this.handleP2PMessage(message.payload as P2PMessage);
       }
       
-    } catch (error: any) {
-      console.warn(`⚠️ P2P Transport: Failed to process message from ${remoteInfo.address}:${remoteInfo.port}:`, error.message);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.warn(`P2P Transport: Failed to process message from ${remoteInfo.address}:${remoteInfo.port}:`, errMsg);
     }
   }
 
@@ -245,8 +248,9 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
     this.discoveryInterval = setInterval(async () => {
       try {
         await this.announceNode();
-      } catch (error: any) {
-        console.warn('⚠️ P2P Discovery: Announcement failed:', error.message);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('P2P Discovery: Announcement failed:', message);
       }
     }, this.config.discoveryInterval);
   }
@@ -258,8 +262,9 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
     this.heartbeatInterval = setInterval(async () => {
       try {
         await this.sendHeartbeat();
-      } catch (error: any) {
-        console.warn('⚠️ P2P Heartbeat: Failed:', error.message);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('P2P Heartbeat: Failed:', message);
       }
     }, this.config.heartbeatInterval);
   }
@@ -532,7 +537,7 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
   /**
    * Emit transport events using eventSystem (following WebSocket pattern)
    */
-  protected emitTransportEvent(eventType: keyof typeof TRANSPORT_EVENTS, data: any): void {
+  protected emitTransportEvent(eventType: keyof typeof TRANSPORT_EVENTS, data: Record<string, unknown>): void {
     if (this.eventSystem) {
       this.eventSystem.emit(TRANSPORT_EVENTS[eventType], {
         transportType: 'udp-multicast' as const,

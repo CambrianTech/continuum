@@ -155,7 +155,7 @@ export class PersonaResponseGenerator {
   /**
    * Log to persona's cognition.log file
    */
-  private log(message: string, ...args: any[]): void {
+  private log(message: string, ...args: unknown[]): void {
     const timestamp = new Date().toISOString();
     const formattedArgs = args.length > 0
       ? ' ' + args.map(a =>
@@ -291,7 +291,7 @@ export class PersonaResponseGenerator {
       // DON'T artificially truncate - that's robotic and cuts off mid-sentence
       // Natural turn-taking should be handled by arbiter coordination, not hard limits
       // Removed aggressive 100-token limit - now uses 800 tokens (~60 seconds of speech)
-      const responseStyle = (fullRAGContext.metadata as any)?.responseStyle;
+      const responseStyle = (fullRAGContext.metadata as Record<string, unknown>).responseStyle as { voiceMode?: boolean } | undefined;
       const isVoiceMode = responseStyle?.voiceMode || originalMessage.sourceModality === 'voice';
       if (isVoiceMode) {
         // Voice mode: Use generous limit for natural speech (800 tokens ≈ 600 words ≈ 60 seconds)
@@ -371,7 +371,7 @@ export class PersonaResponseGenerator {
       // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
       const toolMeta = fullRAGContext.metadata?.toolDefinitions;
       if (toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0) {
-        request.tools = toolMeta.nativeToolSpecs as any;
+        request.tools = toolMeta.nativeToolSpecs as NativeToolSpec[];
         request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
         this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
       }

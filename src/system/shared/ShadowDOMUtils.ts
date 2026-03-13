@@ -7,12 +7,25 @@
  * 
  * PURE TYPESCRIPT - No eval() or inline code generation
  */
-import { jtagWindow } from '../core/types/GlobalAugmentations';
+import { jtagWindow, type JTAGWindowProperties } from '../core/types/GlobalAugmentations';
+
+/**
+ * A custom element with dynamic properties (jtagClient, state, etc.).
+ * Used instead of `as any` when accessing runtime-assigned widget properties.
+ */
+interface CustomWidgetElement extends Element {
+  jtagClient?: {
+    commands?: Record<string, unknown>;
+    events?: Record<string, unknown>;
+  };
+  state?: unknown;
+  [key: string]: unknown;
+}
 
 export interface ShadowDOMSearchResult {
   found: boolean;
   elements: ShadowDOMElement[];
-  mainDocumentMatches?: any[];
+  mainDocumentMatches?: Element[];
   totalShadowRoots: number;
   searchPath: string;
   options?: ShadowDOMQueryOptions;
@@ -94,7 +107,7 @@ export interface WidgetInteractionResult {
   shadowRoot: ShadowRoot | null;
   interactiveElements: Element[];
   eventListeners: string[];
-  jtagConnection: any;
+  jtagConnection: JTAGWindowProperties['jtag'] | JTAGWindowProperties['widgetDaemon'] | null;
   renderingState: {
     isVisible: boolean;
     hasContent: boolean;
@@ -195,40 +208,45 @@ export function inspectWidgetInteractions(selector: string): WidgetInteractionRe
  * Test widget method accessibility - check if widget has working methods
  */
 export function testWidgetMethodAccessibility(selector: string): {
-  widgetInstance: any;
+  widgetInstance: CustomWidgetElement | null;
   availableMethods: string[];
   jtagMethods: string[];
   errors: string[];
 } {
   console.log(`🧪 ShadowDOMUtils: Testing widget method accessibility for: ${selector}`);
-  
-  const result = {
+
+  const result: {
+    widgetInstance: CustomWidgetElement | null;
+    availableMethods: string[];
+    jtagMethods: string[];
+    errors: string[];
+  } = {
     widgetInstance: null,
-    availableMethods: [] as string[],
-    jtagMethods: [] as string[],
-    errors: [] as string[]
+    availableMethods: [],
+    jtagMethods: [],
+    errors: []
   };
-  
+
   try {
     // Find widget element
-    const widgetElement = document.querySelector(selector) as any;
+    const widgetElement = document.querySelector(selector) as CustomWidgetElement | null;
     if (!widgetElement) {
       result.errors.push(`Widget element not found: ${selector}`);
       return result;
     }
-    
+
     result.widgetInstance = widgetElement;
-    
+
     // Get available methods on widget
-    const proto = Object.getPrototypeOf(widgetElement);
+    const proto = Object.getPrototypeOf(widgetElement) as Record<string, unknown> | null;
     if (proto) {
       result.availableMethods = Object.getOwnPropertyNames(proto)
         .filter(name => typeof widgetElement[name] === 'function' && !name.startsWith('_'))
         .filter(name => !['constructor', 'connectedCallback', 'disconnectedCallback'].includes(name));
     }
-    
+
     console.log(`📋 ShadowDOMUtils: Available widget methods:`, result.availableMethods);
-    
+
     // Check JTAG methods
     if (widgetElement.jtagClient?.commands) {
       result.jtagMethods = Object.keys(widgetElement.jtagClient.commands);
@@ -236,19 +254,20 @@ export function testWidgetMethodAccessibility(selector: string): {
     } else {
       result.errors.push('Widget has no jtagClient.commands');
     }
-    
+
     // Test basic widget state
     if (widgetElement.state) {
       console.log(`📊 ShadowDOMUtils: Widget state:`, widgetElement.state);
     } else {
       result.errors.push('Widget has no state property');
     }
-    
-  } catch (error) {
-    result.errors.push(`Error testing widget: ${error}`);
+
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    result.errors.push(`Error testing widget: ${message}`);
     console.error(`❌ ShadowDOMUtils: Widget test error:`, error);
   }
-  
+
   return result;
 }
 
@@ -318,8 +337,9 @@ export function getAllWidgets(): Array<{
     
     // Check if element is a widget (contains hyphen, typical for custom elements)
     if (element.tagName.includes('-')) {
+      const widgetEl = element as CustomWidgetElement;
       const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(element))
-        .filter(name => typeof (element as any)[name] === 'function')
+        .filter(name => typeof widgetEl[name] === 'function')
         .filter(name => !['constructor', 'connectedCallback', 'disconnectedCallback'].includes(name));
       
       widgets.push({
@@ -369,23 +389,24 @@ export function testWidgetMethods(widgetName: string, methodsToTest: string[]): 
     return { widget: null, results };
   }
   
+  const widgetEl = widget as CustomWidgetElement;
   for (const methodName of methodsToTest) {
     try {
-      const method = (widget as any)[methodName];
+      const method = widgetEl[methodName];
       const exists = typeof method === 'function';
-      
+
       results[methodName] = {
         exists,
         executable: exists,
       };
-      
+
       console.log(`${exists ? '✅' : '❌'} ShadowDOMUtils: Method ${methodName} ${exists ? 'exists' : 'missing'} on ${widgetName}`);
-      
-    } catch (error) {
+
+    } catch (error: unknown) {
       results[methodName] = {
         exists: false,
         executable: false,
-        error: String(error)
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }
@@ -400,11 +421,11 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
   success: boolean;
   connectionMethod: string;
   error?: string;
-  client?: any;
+  client?: unknown;
 }> {
   console.log(`🔌 ShadowDOMUtils: Forcing JTAG connection for widget: ${selector}`);
-  
-  const widgetElement = document.querySelector(selector) as any;
+
+  const widgetElement = document.querySelector(selector) as CustomWidgetElement | null;
   if (!widgetElement) {
     return {
       success: false,
@@ -412,7 +433,7 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
       error: 'Widget element not found'
     };
   }
-  
+
   // Try different connection methods
   try {
     // Method 1: window.jtag.connect()
@@ -420,7 +441,7 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
       console.log(`🔄 ShadowDOMUtils: Trying window.jtag.connect()`);
       const jtagSystem = await jtagWindow.jtag.connect() as Record<string, unknown> | undefined;
       if (jtagSystem?.client) {
-        widgetElement.jtagClient = jtagSystem.client;
+        widgetElement.jtagClient = jtagSystem.client as CustomWidgetElement['jtagClient'];
         return {
           success: true,
           connectionMethod: 'window.jtag.connect',
@@ -435,8 +456,8 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
       const daemon = jtagWindow.widgetDaemon;
       if (daemon.router) {
         widgetElement.jtagClient = {
-          commands: daemon.router.commands || {},
-          events: daemon.router.events || { on: () => {}, off: () => {}, emit: () => {} }
+          commands: (daemon.router.commands || {}) as Record<string, unknown>,
+          events: (daemon.router.events || { on: () => {}, off: () => {}, emit: () => {} }) as Record<string, unknown>
         };
         return {
           success: true,
@@ -449,28 +470,29 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
     // Method 3: Manual JTAG client creation
     console.log(`🔄 ShadowDOMUtils: Trying manual JTAG client creation`);
     if (jtagWindow?.JTAGClientFactory) {
-      const factory = jtagWindow.JTAGClientFactory.getInstance() as Record<string, Function>;
+      const factory = jtagWindow.JTAGClientFactory.getInstance() as Record<string, (...args: unknown[]) => Promise<unknown>>;
       const connection = await factory.createClient({ timeout: 10000 }) as Record<string, unknown>;
-      widgetElement.jtagClient = connection.client;
+      widgetElement.jtagClient = connection.client as CustomWidgetElement['jtagClient'];
       return {
         success: true,
         connectionMethod: 'JTAGClientFactory',
         client: connection.client
       };
     }
-    
+
     return {
       success: false,
       connectionMethod: 'none',
       error: 'No valid connection methods available'
     };
-    
-  } catch (error) {
+
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     console.error(`❌ ShadowDOMUtils: Connection attempt failed:`, error);
     return {
       success: false,
       connectionMethod: 'error',
-      error: String(error)
+      error: message
     };
   }
 }

@@ -10,7 +10,9 @@ import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessag
 import type { ChatContentType } from '../shared/ChatMessagePayload';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+import type { JTAGWindowProperties } from '../../../system/core/types/GlobalAugmentations';
+
+const verbose = () => typeof window !== 'undefined' && (window as Window & JTAGWindowProperties).JTAG_VERBOSE === true;
 
 export interface AdapterRenderOptions {
   readonly enableIntersectionObserver?: boolean;
@@ -23,15 +25,15 @@ export interface AdapterRenderOptions {
 export interface AdapterLifecycleHooks {
   onContentReady?: () => void;
   onContentError?: (error: Error) => void;
-  onUserInteraction?: (interaction: string, data: any) => void;
-  onAIEdit?: (editData: any) => void; // Future: AI editing capability
+  onUserInteraction?: (interaction: string, data: Record<string, unknown>) => void;
+  onAIEdit?: (editData: Record<string, unknown>) => void; // Future: AI editing capability
 }
 
 /**
  * Abstract base for all message content adapters
  * Follows React/Next.js component patterns with strong typing
  */
-export abstract class AbstractMessageAdapter<TContentData = any> {
+export abstract class AbstractMessageAdapter<TContentData = unknown> {
   protected readonly contentType: ChatContentType;
   protected readonly options: AdapterRenderOptions;
   protected readonly hooks: AdapterLifecycleHooks;
@@ -232,14 +234,14 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
    * Future: AI editing capabilities
    * Each adapter can define what AI can edit about its content
    */
-  protected getAIEditableFields(): Record<string, any> {
+  protected getAIEditableFields(): Record<string, string> {
     return {}; // Override in subclasses
   }
 
   /**
    * Future: Handle AI-driven content editing
    */
-  async handleAIEdit(editInstructions: any): Promise<void> {
+  async handleAIEdit(editInstructions: Record<string, unknown>): Promise<void> {
     if (!this.options.aiEditingEnabled) return;
 
     verbose() && console.log(`🤖 AI editing ${this.contentType}:`, editInstructions);

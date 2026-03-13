@@ -25,16 +25,23 @@ const DEFAULT_SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
 /** Response from Rust worker */
 interface RustResponse {
   status: 'ok' | 'error' | 'pong';
-  data?: any;
+  data?: Record<string, unknown>;
   message?: string;
   uptime_seconds?: number;
+}
+
+/** Wire format for vector search data from Rust (camelCase from serde) */
+interface RustVectorSearchData {
+  corpusSize: number;
+  count: number;
+  results: RustVectorSearchResult[];
 }
 
 /** Vector search result from Rust */
 export interface RustVectorSearchResult {
   id: string;
   score: number;
-  data?: Record<string, any>;
+  data?: Record<string, unknown>;
 }
 
 /** Vector search response from Rust */
@@ -68,7 +75,7 @@ export class RustVectorSearchClient {
 
   // Serialized request queue (one at a time over persistent connection)
   private requestQueue: Array<{
-    request: Record<string, any>;
+    request: Record<string, unknown>;
     timeout: number;
     resolve: (value: RustResponse) => void;
     reject: (error: Error) => void;
@@ -118,7 +125,8 @@ export class RustVectorSearchClient {
     const response = await this.sendRequest({ command: 'ping' });
     // continuum-core returns 'ok' status with data
     if (response.status === 'ok' || response.status === 'pong') {
-      return { uptime_seconds: response.uptime_seconds || response.data?.uptime_seconds || 0 };
+      const uptime = (response.uptime_seconds || response.data?.uptime_seconds || 0) as number;
+      return { uptime_seconds: uptime };
     }
     throw new Error(response.message || 'Ping failed');
   }
@@ -162,7 +170,7 @@ export class RustVectorSearchClient {
     }
 
     const duration = Date.now() - startTime;
-    const data = response.data;
+    const data = response.data as unknown as RustVectorSearchData;
     log.debug(`Vector search: ${data.count}/${data.corpusSize} results in ${duration}ms`);
 
     // Map response to expected format (camelCase from Rust)
@@ -348,7 +356,7 @@ export class RustVectorSearchClient {
    * Uses serialized request queue over persistent connection.
    * Connection is reused across requests - eliminates connection setup overhead.
    */
-  private async sendRequest(request: Record<string, any>, timeout: number = 30000): Promise<RustResponse> {
+  private async sendRequest(request: Record<string, unknown>, timeout: number = 30000): Promise<RustResponse> {
     return new Promise((resolve, reject) => {
       this.requestQueue.push({ request, timeout, resolve, reject });
       this.processQueue();

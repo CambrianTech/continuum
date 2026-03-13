@@ -21,7 +21,7 @@ import type { ProcessableMessage } from './QueueItemTypes';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { PersonaTrainingSignalExtractor } from './PersonaTrainingSignalExtractor';
 import { PersonaMessageGate } from './PersonaMessageGate';
-import type { Task } from './cognition/reasoning/types';
+import type { Task, PlanStep } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { getToolCapability } from './ToolFormatAdapter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
@@ -115,7 +115,7 @@ export class PersonaMessageEvaluator {
   /**
    * Log to persona's cognition.log file
    */
-  private log(message: string, ...args: any[]): void {
+  private log(message: string, ...args: unknown[]): void {
     const timestamp = new Date().toISOString();
     const formattedArgs = args.length > 0
       ? ' ' + args.map(a =>
@@ -214,7 +214,7 @@ export class PersonaMessageEvaluator {
     const plan = await this.personaUser.planFormulator.formulatePlan(task);
     evalTiming['plan_formulate'] = Date.now() - t0;
     this.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal} (${evalTiming['plan_formulate']}ms)`);
-    this.log(`   Steps: ${plan.steps.map((s: any) => s.action).join(' → ')}`);
+    this.log(`   Steps: ${plan.steps.map((s: PlanStep) => s.action).join(' → ')}`);
 
     // LOG: Plan formulation (fire-and-forget — no longer blocks pipeline)
     t0 = Date.now();
@@ -320,7 +320,7 @@ export class PersonaMessageEvaluator {
         this.personaUser.id,
         plan.id,
         'completed',
-        plan.steps.map((s: any) => ({
+        plan.steps.map((s: PlanStep) => ({
           stepNumber: s.stepNumber,
           action: s.action,
           expectedOutcome: s.expectedOutcome,
@@ -330,15 +330,17 @@ export class PersonaMessageEvaluator {
         }))
       );
       evalTiming['plan_completion_log'] = Date.now() - t0;
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.log(`❌ ${this.personaUser.displayName}: COGNITION - Plan execution failed:`, error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Store error in WorkingMemory
       await this.personaUser.workingMemory.store({
         domain: 'chat',
         contextId: messageEntity.roomId,
         thoughtType: 'observation',
-        thoughtContent: `Error during response: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        thoughtContent: `Error during response: ${errorMessage}`,
         importance: 0.8, // High importance for errors
         shareable: false
       });
@@ -348,14 +350,14 @@ export class PersonaMessageEvaluator {
         this.personaUser.id,
         plan.id,
         'failed',
-        plan.steps.map((s: any) => ({
+        plan.steps.map((s: PlanStep) => ({
           stepNumber: s.stepNumber,
           action: s.action,
           expectedOutcome: s.expectedOutcome,
           completed: s.completed,
           completedAt: s.completedAt,
           result: s.result,
-          error: error instanceof Error ? error.message : 'Unknown error'
+          error: errorMessage
         }))
       );
     } finally {
@@ -881,7 +883,7 @@ export class PersonaMessageEvaluator {
         socialSignals,
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.log(`❌ ${this.personaUser.displayName}: Should-respond evaluation failed:`, error);
 
       const durationMs = Date.now() - startTime;

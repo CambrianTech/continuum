@@ -12,7 +12,7 @@
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
-import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
+import { ChatMessageEntity, type MediaItem } from '../../data/entities/ChatMessageEntity';
 import { Events } from '../../core/shared/Events';
 import { Logger } from '../../core/logging/Logger';
 
@@ -172,7 +172,7 @@ export class ConversationHistorySource implements RAGSource {
     if (ConversationHistorySource._eventSubscribed) return;
     ConversationHistorySource._eventSubscribed = true;
 
-    Events.subscribe(`data:${ChatMessageEntity.collection}:created`, (entity: any) => {
+    Events.subscribe(`data:${ChatMessageEntity.collection}:created`, (entity: unknown) => {
       const msg = entity as ChatMessageEntity;
       if (!msg.roomId) return;
 
@@ -199,8 +199,9 @@ export class ConversationHistorySource implements RAGSource {
   private static stripMediaBase64(msg: MessageWithSender): MessageWithSender {
     if (!msg.content?.media || msg.content.media.length === 0) return msg;
     // Mutate in place — these are cached copies, not originals
-    msg.content.media = msg.content.media.map((item: any) => {
-      const { base64, data, ...rest } = item;
+    msg.content.media = msg.content.media.map((item: MediaItem) => {
+      // Strip base64 payload. 'data' may exist on wire-format items not in MediaItem interface.
+      const { base64, ...rest } = item;
       return rest;
     });
     return msg;
@@ -305,7 +306,7 @@ export class ConversationHistorySource implements RAGSource {
         const text = msg.content?.text || '';
         const toolName = detectBareToolCall(text);
         if (toolName && msg.senderId !== context.personaId) {
-          const senderName = (msg as any).sender?.displayName || msg.senderName || 'Someone';
+          const senderName = msg.sender?.displayName || msg.senderName || 'Someone';
           msg.content = { ...msg.content, text: `[${senderName} used ${toolName}]` };
           sanitizedCount++;
         }
@@ -338,7 +339,7 @@ export class ConversationHistorySource implements RAGSource {
         const role = isOwnMessage ? 'assistant' as const : 'user' as const;
 
         // Get sender name from JOIN result or fallback
-        const senderName = (msg as any).sender?.displayName || msg.senderName || 'Unknown';
+        const senderName = msg.sender?.displayName || msg.senderName || 'Unknown';
 
         // Convert timestamp to number (milliseconds)
         let timestampMs: number | undefined;
@@ -497,9 +498,10 @@ export class ConversationHistorySource implements RAGSource {
           personaId: context.personaId
         }
       };
-    } catch (error: any) {
-      log.error(`Failed to load conversation history: ${error.message}`);
-      return this.emptySection(startTime, error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(`Failed to load conversation history: ${message}`);
+      return this.emptySection(startTime, message);
     }
   }
 
@@ -525,9 +527,10 @@ export class ConversationHistorySource implements RAGSource {
       if (result.success && result.data && result.data.length > 0) {
         return result.data.map((record: { data: MessageWithSender }) => record.data);
       }
-    } catch (joinError: any) {
+    } catch (joinError: unknown) {
       // queryWithJoin not supported - fall back to regular query
-      log.debug(`queryWithJoin not available (${joinError.message}), using regular query`);
+      const joinMessage = joinError instanceof Error ? joinError.message : String(joinError);
+      log.debug(`queryWithJoin not available (${joinMessage}), using regular query`);
 
       const result = await ORM.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,

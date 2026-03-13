@@ -14,6 +14,35 @@ import type {
 } from '../shared/WidgetEventsDebugTypes';
 import { createWidgetEventsDebugResult } from '../shared/WidgetEventsDebugTypes';
 
+/** Represents a widget element in the shadow DOM with optional event infrastructure */
+interface WidgetElement extends HTMLElement {
+  eventEmitter?: Map<string, Function[]>;
+  dispatcherEventTypes?: Set<string>;
+}
+
+/** Debug log accumulator passed through analysis methods */
+interface DebugLog {
+  logs: string[];
+  warnings: string[];
+  errors: string[];
+}
+
+/** Event connectivity test results */
+interface ConnectivityResult {
+  serverEventsWorking: boolean;
+  domEventsWorking: boolean;
+  dispatcherWorking: boolean;
+}
+
+/** Event system analysis result */
+interface EventSystemInfo {
+  hasEventEmitter: boolean;
+  eventEmitterSize: number;
+  eventTypes: string[];
+  dispatcherTypes: string[];
+  domListeners: string[];
+}
+
 export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDebugParams, WidgetEventsDebugResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -73,21 +102,22 @@ export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDeb
       });
 
     } catch (error) {
-      debugging.errors.push(`❌ Widget events debug failed: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      debugging.errors.push(`Widget events debug failed: ${message}`);
       throw error;
     }
   }
 
-  private findWidget(selector: string): any {
+  private findWidget(selector: string): WidgetElement | null {
     // Handle shadow DOM navigation for widgets
     if (selector === 'chat-widget') {
       const continuumWidget = document.querySelector('continuum-widget');
       const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
-      return mainWidget?.shadowRoot?.querySelector('chat-widget');
+      return (mainWidget?.shadowRoot?.querySelector('chat-widget') as WidgetElement | null) ?? null;
     }
     
     // Default to direct selector
-    return document.querySelector(selector);
+    return document.querySelector(selector) as WidgetElement | null;
   }
 
   private getWidgetPath(selector: string): string {
@@ -97,19 +127,22 @@ export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDeb
     return selector;
   }
 
-  private getWidgetMethods(widget: any): string[] {
-    return Object.getOwnPropertyNames(Object.getPrototypeOf(widget))
-      .filter(name => typeof widget[name] === 'function')
+  private getWidgetMethods(widget: WidgetElement): string[] {
+    const proto = Object.getPrototypeOf(widget) as Record<string, unknown>;
+    return Object.getOwnPropertyNames(proto)
+      .filter(name => typeof (widget as unknown as Record<string, unknown>)[name] === 'function')
       .sort();
   }
 
-  private analyzeEventSystem(widget: any, debugging: any): any {
-    const hasEventEmitter = widget.eventEmitter instanceof Map;
-    const eventEmitterSize = hasEventEmitter ? widget.eventEmitter.size : 0;
-    const eventTypes = hasEventEmitter ? Array.from(widget.eventEmitter.keys()).sort() : [];
-    
-    const hasDispatcherTypes = widget.dispatcherEventTypes instanceof Set;
-    const dispatcherTypes = hasDispatcherTypes ? Array.from(widget.dispatcherEventTypes).sort() : [];
+  private analyzeEventSystem(widget: WidgetElement, debugging: DebugLog): EventSystemInfo {
+    const emitter = widget.eventEmitter;
+    const hasEventEmitter = emitter instanceof Map;
+    const eventEmitterSize = hasEventEmitter ? emitter.size : 0;
+    const eventTypes = hasEventEmitter ? Array.from(emitter.keys()).sort() : [];
+
+    const dispatchers = widget.dispatcherEventTypes;
+    const hasDispatcherTypes = dispatchers instanceof Set;
+    const dispatcherTypes = hasDispatcherTypes ? Array.from(dispatchers).sort() : [];
     
     debugging.logs.push(`📡 EventEmitter: ${hasEventEmitter ? 'YES' : 'NO'} (${eventEmitterSize} events)`);
     debugging.logs.push(`🔗 Dispatchers: ${dispatcherTypes.length} active`);
@@ -123,7 +156,7 @@ export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDeb
     };
   }
 
-  private analyzeEventHandlers(widget: any, debugging: any): EventHandlerInfo[] {
+  private analyzeEventHandlers(widget: WidgetElement, debugging: DebugLog): EventHandlerInfo[] {
     const handlers: EventHandlerInfo[] = [];
     
     if (widget.eventEmitter instanceof Map) {
@@ -144,7 +177,7 @@ export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDeb
     return handlers.sort((a, b) => a.eventName.localeCompare(b.eventName));
   }
 
-  private async testConnectivity(widget: any, params: WidgetEventsDebugParams, debugging: any): Promise<any> {
+  private async testConnectivity(widget: WidgetElement, params: WidgetEventsDebugParams, debugging: DebugLog): Promise<ConnectivityResult> {
     debugging.logs.push('🧪 Testing event connectivity...');
     
     // Basic connectivity tests
@@ -159,24 +192,24 @@ export class WidgetEventsDebugBrowserCommand extends CommandBase<WidgetEventsDeb
     };
   }
 
-  private testServerEventConnectivity(widget: any, debugging: any): boolean {
+  private testServerEventConnectivity(widget: WidgetElement, debugging: DebugLog): boolean {
     // Check if widget has the necessary infrastructure for server events
     const hasEventEmitter = widget.eventEmitter instanceof Map;
-    const hasDispatchers = widget.dispatcherEventTypes instanceof Set;
-    const hasActiveDispatchers = hasDispatchers && widget.dispatcherEventTypes.size > 0;
+    const dispatchers = widget.dispatcherEventTypes;
+    const hasActiveDispatchers = dispatchers instanceof Set && dispatchers.size > 0;
     
     debugging.logs.push(`🔍 Server event infrastructure: ${hasActiveDispatchers ? 'READY' : 'MISSING'}`);
     
     return hasEventEmitter && hasActiveDispatchers;
   }
 
-  private testDOMEventConnectivity(widget: any, debugging: any): boolean {
+  private testDOMEventConnectivity(widget: WidgetElement, debugging: DebugLog): boolean {
     // Basic DOM connectivity test
     debugging.logs.push('🔍 DOM event connectivity: AVAILABLE');
     return true;
   }
 
-  private testDispatcherConnectivity(widget: any, debugging: any): boolean {
+  private testDispatcherConnectivity(widget: WidgetElement, debugging: DebugLog): boolean {
     // Check if event dispatcher infrastructure is working
     const hasDispatcherTypes = widget.dispatcherEventTypes instanceof Set;
     debugging.logs.push(`🔍 Event dispatcher: ${hasDispatcherTypes ? 'ACTIVE' : 'INACTIVE'}`);

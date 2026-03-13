@@ -33,6 +33,18 @@ import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 /**
+ * Minimal logger interface for BaseUser.
+ * Shared-layer compatible (no server imports).
+ * Structurally compatible with ComponentLogger from the logging system.
+ */
+export interface UserLogger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
+/**
  * BaseUser abstract class
  * Every connected client has a User object with entity and state
  */
@@ -56,7 +68,7 @@ export abstract class BaseUser {
   /** Cached room data from loadMyRooms — avoids re-querying rooms table */
   protected _allRoomsCache: Map<UUID, RoomEntity> = new Map();
 
-  private _log?: any;
+  private _log?: UserLogger;
 
   /**
    * Get logger instance for this user
@@ -64,7 +76,7 @@ export abstract class BaseUser {
    * Browser environment: No-op logger (logs nothing)
    * Respects LoggingConfig for per-persona filtering
    */
-  get log(): any {
+  get log(): UserLogger {
     if (!this._log) {
       try {
         // Server environment - dynamic imports
@@ -87,28 +99,28 @@ export abstract class BaseUser {
 
         // Create config-aware wrapper that checks LoggingConfig before each call
         this._log = {
-          debug: (...args: any[]) => {
+          debug: (message: string, ...args: unknown[]) => {
             if (LoggingConfig.isEnabled(uniqueId, 'user')) {
-              underlyingLogger.debug(...args);
+              underlyingLogger.debug(message, ...args);
             }
           },
-          info: (...args: any[]) => {
+          info: (message: string, ...args: unknown[]) => {
             if (LoggingConfig.isEnabled(uniqueId, 'user')) {
-              underlyingLogger.info(...args);
+              underlyingLogger.info(message, ...args);
             }
           },
-          warn: (...args: any[]) => {
+          warn: (message: string, ...args: unknown[]) => {
             if (LoggingConfig.isEnabled(uniqueId, 'user')) {
-              underlyingLogger.warn(...args);
+              underlyingLogger.warn(message, ...args);
             }
           },
-          error: (...args: any[]) => {
+          error: (message: string, ...args: unknown[]) => {
             if (LoggingConfig.isEnabled(uniqueId, 'user')) {
-              underlyingLogger.error(...args);
+              underlyingLogger.error(message, ...args);
             }
           }
         };
-      } catch (error) {
+      } catch {
         // Browser environment - no-op logger
         this._log = {
           debug: () => {},

@@ -10,8 +10,9 @@
  * Overload: Events.emit(context, eventName, data) for explicit context
  */
 
-import type { JTAGContext } from '../types/JTAGTypes';
+import type { JTAGContext, JTAGContextConfig } from '../types/JTAGTypes';
 import { JTAGMessageFactory } from '../types/JTAGTypes';
+import type { JTAGConfig } from '../../shared/SecureConfigTypes';
 import { JTAG_ENDPOINTS } from '../router/shared/JTAGEndpoints';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import type { EventBridgePayload } from '../../events/shared/EventSystemTypes';
@@ -108,8 +109,8 @@ export class Events {
             context = {
               uuid: generateUUID(),
               environment: 'browser' as const,
-              config: {} as any,
-              getConfig: () => ({} as any)
+              config: {} as JTAGConfig,
+              getConfig: () => ({ type: 'client', config: {} } as JTAGContextConfig)
             };
           }
         } else {
@@ -119,8 +120,8 @@ export class Events {
           context = {
             uuid: generateUUID(),
             environment: 'server' as const,
-            config: {} as any,
-            getConfig: () => ({} as any)
+            config: {} as JTAGConfig,
+            getConfig: () => ({ type: 'server', config: {} } as JTAGContextConfig)
           };
         }
 
@@ -324,7 +325,7 @@ export class Events {
         this.elegantSubscriptions.set(subscriptionId, {
           pattern: parsedPattern,
           filter,
-          listener,
+          listener: listener as (data: unknown) => void,
           originalPattern: patternOrEventName
         });
 
@@ -355,7 +356,7 @@ export class Events {
 
         this.wildcardSubscriptions.set(subscriptionId, {
           pattern,
-          listener,
+          listener: listener as (data: unknown) => void,
           eventName: patternOrEventName
         });
 
@@ -399,7 +400,7 @@ export class Events {
 
         this.exactMatchSubscriptions.set(subscriptionId, {
           eventName: patternOrEventName,
-          listener,
+          listener: listener as (data: unknown) => void,
           filter
         });
 
@@ -416,21 +417,19 @@ export class Events {
     }
   }
 
-  // Storage for wildcard subscriptions
-  private static wildcardSubscriptions?: Map<string, { pattern: RegExp; listener: (data: any) => void; eventName: string }>;
+  /** Type-erased event listener for generic storage (listeners lose their T parameter when stored) */
+  private static wildcardSubscriptions?: Map<string, { pattern: RegExp; listener: (data: unknown) => void; eventName: string }>;
 
-  // Storage for elegant subscriptions
   private static elegantSubscriptions?: Map<string, {
     pattern: import('../../events/shared/ElegantSubscriptionParser').SubscriptionPattern;
     filter?: SubscriptionFilter;
-    listener: (data: any) => void;
+    listener: (data: unknown) => void;
     originalPattern: string;
   }>;
 
-  // Storage for exact-match server subscriptions
   private static exactMatchSubscriptions?: Map<string, {
     eventName: string;
-    listener: (data: any) => void;
+    listener: (data: unknown) => void;
     filter?: SubscriptionFilter;
   }>;
 
@@ -438,7 +437,7 @@ export class Events {
    * Check if any pattern subscriptions match the emitted event
    * Made public so EventsDaemonBrowser can trigger subscriptions for EventBridge events
    */
-  public static checkWildcardSubscriptions(eventName: string, eventData: any): void {
+  public static checkWildcardSubscriptions(eventName: string, eventData: unknown): void {
     let totalMatchCount = 0;
 
     // Check wildcard subscriptions

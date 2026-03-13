@@ -34,6 +34,17 @@ export interface SlowCommand {
 	queue_ms: number;
 }
 
+/** Wire-boundary type: Rust sends u64 as bigint, we convert to JS number */
+interface RawModuleMetrics {
+	moduleName: string;
+	totalCommands: bigint | number;
+	avgTimeMs: bigint | number;
+	slowCommandCount: bigint | number;
+	p50Ms: bigint | number;
+	p95Ms: bigint | number;
+	p99Ms: bigint | number;
+}
+
 // ============================================================================
 // Mixin
 // ============================================================================
@@ -45,6 +56,7 @@ export interface RuntimeMixin {
 	runtimeMetricsSlow(): Promise<{ slow_commands: SlowCommand[]; count: number; threshold_ms: number }>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mixin constructor constraint requires any[]
 export function RuntimeMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
 	return class extends Base implements RuntimeMixin {
 		/**
@@ -64,9 +76,9 @@ export function RuntimeMixin<T extends new (...args: any[]) => RustCoreIPCClient
 			if (!response.success) throw new Error(response.error || 'Failed to get runtime metrics');
 
 			// Convert bigint fields to number (ts-rs exports u64 as bigint)
-			const result = response.result as { modules: any[]; count: number };
+			const result = response.result as { modules: RawModuleMetrics[]; count: number };
 			return {
-				modules: result.modules.map((m: any) => ({
+				modules: result.modules.map((m) => ({
 					moduleName: m.moduleName,
 					totalCommands: Number(m.totalCommands),
 					avgTimeMs: Number(m.avgTimeMs),
@@ -90,7 +102,7 @@ export function RuntimeMixin<T extends new (...args: any[]) => RustCoreIPCClient
 			if (!response.success) throw new Error(response.error || `Failed to get metrics for module: ${moduleName}`);
 
 			// Convert bigint fields to number
-			const m = response.result as any;
+			const m = response.result as RawModuleMetrics;
 			return {
 				moduleName: m.moduleName,
 				totalCommands: Number(m.totalCommands),

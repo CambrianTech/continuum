@@ -12,11 +12,48 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
 
+// gRPC response types (mirrors inference.proto wire format)
+interface GrpcPingResponse { message: string; timestamp: string }
+interface GrpcSuccessResponse { success: boolean; error?: string }
+interface GrpcLoadResponse extends GrpcSuccessResponse { load_time_ms: string }
+interface GrpcGenerateProgress { tokens_generated: number; tokens_total: number }
+interface GrpcGenerateComplete { text: string; tokens: number; duration_ms: number }
+interface GrpcGenerateResponse { progress?: GrpcGenerateProgress; complete?: GrpcGenerateComplete }
+interface GrpcModelEntry { model_id: string; loaded: boolean; memory_bytes: string; dtype: string }
+interface GrpcAdapterEntry { adapter_id: string; path: string; scale: number; active: boolean }
+interface GrpcAdapterMetadata { base_model: string; rank: number; alpha: number; target_modules: string[]; peft_type: string }
+interface GrpcDownloadResponse extends GrpcSuccessResponse {
+  download_time_ms: string; adapter_id: string; local_path: string; metadata?: GrpcAdapterMetadata;
+}
+interface GrpcGenomeResponse extends GrpcSuccessResponse {
+  apply_time_ms: string; adapters_applied: number; layers_merged: number;
+}
+interface GrpcStatusResponse {
+  healthy: boolean; current_model: string; memory_used_bytes: string; memory_total_bytes: string;
+  requests_pending: number; requests_completed: number; active_adapters: string[];
+}
+
+// gRPC client interface (dynamically loaded from proto)
+interface InferenceGrpcService {
+  ping(req: Record<string, never>, cb: (err: Error | null, res: GrpcPingResponse) => void): void;
+  generate(req: Record<string, unknown>, opts: { deadline: Date }): grpc.ClientReadableStream<GrpcGenerateResponse>;
+  loadModel(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcLoadResponse) => void): void;
+  unloadModel(req: Record<string, never>, cb: (err: Error | null, res: GrpcSuccessResponse) => void): void;
+  listModels(req: Record<string, never>, cb: (err: Error | null, res: { models: GrpcModelEntry[] }) => void): void;
+  loadAdapter(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcLoadResponse) => void): void;
+  unloadAdapter(req: Record<string, unknown>, cb: (err: Error | null, res: GrpcSuccessResponse) => void): void;
+  listAdapters(req: Record<string, never>, cb: (err: Error | null, res: { adapters: GrpcAdapterEntry[] }) => void): void;
+  downloadAdapter(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcDownloadResponse) => void): void;
+  applyGenome(req: Record<string, unknown>, opts: { deadline: Date }, cb: (err: Error | null, res: GrpcGenomeResponse) => void): void;
+  status(req: Record<string, never>, cb: (err: Error | null, res: GrpcStatusResponse) => void): void;
+  close(): void;
+}
+
 // Lazy-loaded proto to avoid module-level side effects
 // (Required for CLI bundling - proto path breaks when bundled)
-let _inferenceProto: any = null;
+let _inferenceProto: grpc.GrpcObject | null = null;
 
-function getInferenceProto(): any {
+function getInferenceProto(): grpc.GrpcObject {
   if (!_inferenceProto) {
     const PROTO_PATH = path.join(__dirname, '../../../workers/inference-grpc/proto/inference.proto');
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
@@ -94,12 +131,13 @@ export interface ServerStatus {
  * JavaScript just sends requests to gRPC. Rust handles the queue.
  */
 export class InferenceGrpcClient {
-  private client: any;
+  private client: InferenceGrpcService;
   private static instance: InferenceGrpcClient | null = null;
 
   constructor(address: string = '127.0.0.1:50051') {
     const inferenceProto = getInferenceProto();
-    this.client = new inferenceProto.inference.Inference(
+    const ServiceConstructor = (inferenceProto.inference as grpc.GrpcObject).Inference as unknown as new (addr: string, creds: grpc.ChannelCredentials) => InferenceGrpcService;
+    this.client = new ServiceConstructor(
       address,
       grpc.credentials.createInsecure()
     );
@@ -118,7 +156,7 @@ export class InferenceGrpcClient {
    */
   async ping(): Promise<{ message: string; timestamp: number }> {
     return new Promise((resolve, reject) => {
-      this.client.ping({}, (err: Error | null, response: any) => {
+      this.client.ping({}, (err: Error | null, response: GrpcPingResponse) => {
         if (err) {
           reject(err);
         } else {
@@ -183,7 +221,7 @@ export class InferenceGrpcClient {
         });
       }
 
-      call.on('data', (response: any) => {
+      call.on('data', (response: GrpcGenerateResponse) => {
         if (response.progress) {
           options?.onProgress?.({
             tokensGenerated: response.progress.tokens_generated,
@@ -293,7 +331,7 @@ export class InferenceGrpcClient {
   async loadModel(modelId: string, dtype?: string): Promise<{ success: boolean; error?: string; loadTimeMs: number }> {
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + 300000); // 5 minutes for model loading
-      this.client.loadModel({ model_id: modelId, dtype: dtype || '' }, { deadline }, (err: Error | null, response: any) => {
+      this.client.loadModel({ model_id: modelId, dtype: dtype || '' }, { deadline }, (err: Error | null, response: GrpcLoadResponse) => {
         if (err) {
           reject(err);
         } else {
@@ -312,7 +350,7 @@ export class InferenceGrpcClient {
    */
   async unloadModel(): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve, reject) => {
-      this.client.unloadModel({}, (err: Error | null, response: any) => {
+      this.client.unloadModel({}, (err: Error | null, response: GrpcSuccessResponse) => {
         if (err) {
           reject(err);
         } else {
@@ -330,11 +368,11 @@ export class InferenceGrpcClient {
    */
   async listModels(): Promise<ModelInfo[]> {
     return new Promise((resolve, reject) => {
-      this.client.listModels({}, (err: Error | null, response: any) => {
+      this.client.listModels({}, (err: Error | null, response: { models: GrpcModelEntry[] }) => {
         if (err) {
           reject(err);
         } else {
-          resolve((response.models || []).map((m: any) => ({
+          resolve((response.models || []).map((m) => ({
             modelId: m.model_id,
             loaded: m.loaded,
             memoryBytes: Number(m.memory_bytes),
@@ -375,7 +413,7 @@ export class InferenceGrpcClient {
           merge: options?.merge ?? false,
         },
         { deadline },
-        (err: Error | null, response: any) => {
+        (err: Error | null, response: GrpcLoadResponse) => {
           if (err) {
             reject(err);
           } else {
@@ -395,7 +433,7 @@ export class InferenceGrpcClient {
    */
   async unloadAdapter(adapterId: string): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve, reject) => {
-      this.client.unloadAdapter({ adapter_id: adapterId }, (err: Error | null, response: any) => {
+      this.client.unloadAdapter({ adapter_id: adapterId }, (err: Error | null, response: GrpcSuccessResponse) => {
         if (err) {
           reject(err);
         } else {
@@ -413,11 +451,11 @@ export class InferenceGrpcClient {
    */
   async listAdapters(): Promise<AdapterInfo[]> {
     return new Promise((resolve, reject) => {
-      this.client.listAdapters({}, (err: Error | null, response: any) => {
+      this.client.listAdapters({}, (err: Error | null, response: { adapters: GrpcAdapterEntry[] }) => {
         if (err) {
           reject(err);
         } else {
-          resolve((response.adapters || []).map((a: any) => ({
+          resolve((response.adapters || []).map((a) => ({
             adapterId: a.adapter_id,
             path: a.path,
             scale: a.scale,
@@ -454,7 +492,7 @@ export class InferenceGrpcClient {
           scale: options?.scale ?? 0,
         },
         { deadline },
-        (err: Error | null, response: any) => {
+        (err: Error | null, response: GrpcDownloadResponse) => {
           if (err) {
             reject(err);
           } else {
@@ -506,7 +544,7 @@ export class InferenceGrpcClient {
         scale: a.scale,
       }));
 
-      this.client.applyGenome({ adapters: entries }, { deadline }, (err: Error | null, response: any) => {
+      this.client.applyGenome({ adapters: entries }, { deadline }, (err: Error | null, response: GrpcGenomeResponse) => {
         if (err) {
           reject(err);
         } else {
@@ -531,7 +569,7 @@ export class InferenceGrpcClient {
    */
   async status(): Promise<ServerStatus> {
     return new Promise((resolve, reject) => {
-      this.client.status({}, (err: Error | null, response: any) => {
+      this.client.status({}, (err: Error | null, response: GrpcStatusResponse) => {
         if (err) {
           reject(err);
         } else {

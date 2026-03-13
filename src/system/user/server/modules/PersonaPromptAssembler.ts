@@ -15,7 +15,7 @@ import type { ContentPart, ChatMessage } from '../../../../daemons/ai-provider-d
 import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { hasMediaMetadata } from '../../../rag/shared/RAGTypes';
-import type { RAGContext } from '../../../rag/shared/RAGTypes';
+import type { RAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
 import type { ProcessableMessage } from './QueueItemTypes';
 import type { SocialSignals } from '../../../../shared/generated';
 
@@ -24,12 +24,12 @@ export type LLMMessage = { role: 'system' | 'user' | 'assistant'; content: strin
 export class PersonaPromptAssembler {
   private personaName: string;
   private modelConfig: ModelConfig;
-  private log: (message: string, ...args: any[]) => void;
+  private log: (message: string, ...args: unknown[]) => void;
 
   constructor(
     personaName: string,
     modelConfig: ModelConfig,
-    log: (message: string, ...args: any[]) => void,
+    log: (message: string, ...args: unknown[]) => void,
   ) {
     this.personaName = personaName;
     this.modelConfig = modelConfig;
@@ -144,7 +144,6 @@ export class PersonaPromptAssembler {
   }
 
   private buildArtifactMaps(ragContext: RAGContext) {
-    type RAGArtifact = typeof ragContext.artifacts[number];
     const artifactsByMessageId = new Map<string, RAGArtifact[]>();
     const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
 
@@ -171,7 +170,7 @@ export class PersonaPromptAssembler {
   private addConversationHistory(
     messages: LLMMessage[],
     ragContext: RAGContext,
-    artifactsByTimestampName: Map<string, any[]>,
+    artifactsByTimestampName: Map<string, RAGArtifact[]>,
   ): void {
     if (ragContext.conversationHistory.length === 0) return;
 
@@ -214,7 +213,7 @@ export class PersonaPromptAssembler {
     messages: LLMMessage[],
     msg: { role: 'system' | 'user' | 'assistant'; name?: string },
     formattedContent: string,
-    artifacts: any[],
+    artifacts: RAGArtifact[],
   ): void {
     const hasVision = this.hasVisionCapability;
 
@@ -317,7 +316,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     ragContext: RAGContext,
     originalMessage: ProcessableMessage,
   ): void {
-    const hasVoiceRAGContext = ragContext.metadata && (ragContext.metadata as any).responseStyle?.voiceMode;
+    const hasVoiceRAGContext = ragContext.metadata && (ragContext.metadata as Record<string, unknown>).responseStyle != null && ((ragContext.metadata as Record<string, unknown>).responseStyle as { voiceMode?: boolean }).voiceMode;
     if (originalMessage.sourceModality === 'voice' && !hasVoiceRAGContext) {
       messages.push({
         role: 'system',

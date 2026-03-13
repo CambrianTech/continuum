@@ -17,6 +17,8 @@ import { generateUUID, type UUID } from '../../types/CrossPlatformUUID';
 import type { JTAGEnvironment } from '../../types/JTAGTypes';
 import type { ITransportFactory } from '../../../transports/shared/ITransportFactory';
 import type { TransportConfig, TransportProtocol, JTAGTransport } from '../../../transports/shared/TransportTypes';
+import type { EventsInterface } from '../../../events/shared/JTAGEventSystem';
+import type { ITransportHandler } from '../../../transports/shared/ITransportHandler';
 import {
   type IConnectionBroker,
   type ConnectionParams,
@@ -352,8 +354,8 @@ export class ConnectionBroker implements IConnectionBroker {
     params: ConnectionParams,
     startTime: number,
     retryAttempts: number,
-    eventSystem: any, // TODO: Replace with proper EventsInterface type
-    handler: any // TODO: Replace with proper ITransportHandler type
+    eventSystem: EventsInterface,
+    handler: ITransportHandler
   ): Promise<ConnectionResult> {
     console.log(`🔗 ConnectionBroker: Creating client connection to existing server`);
 
@@ -492,8 +494,8 @@ export class ConnectionBroker implements IConnectionBroker {
   private async createTransportToServer(
     server: ServerRegistryEntry, 
     params: ConnectionParams,
-    eventSystem: any, // TODO: Replace with proper EventsInterface type
-    handler: any // TODO: Replace with proper ITransportHandler type
+    eventSystem: EventsInterface,
+    handler: ITransportHandler
   ): Promise<JTAGTransport> {
     // Create properly typed TransportConfig with all required fields
     const transportConfig: TransportConfig = {

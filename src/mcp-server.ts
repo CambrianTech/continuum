@@ -29,6 +29,43 @@ import {
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
+
+// =============================================================================
+// COMMAND SCHEMA TYPES - Shape of generated-command-schemas.json entries
+// =============================================================================
+
+/** Parameter definition from command schema JSON */
+interface CommandParamDef {
+  type?: string;
+  description?: string;
+  required?: boolean;
+}
+
+/** Command entry from generated-command-schemas.json */
+interface CommandSchema {
+  name: string;
+  description?: string;
+  params?: Record<string, CommandParamDef>;
+}
+
+/** Top-level schema file shape */
+interface CommandSchemaFile {
+  commands: CommandSchema[];
+}
+
+/** Result object from command execution (common fields for image extraction) */
+interface CommandResultObject {
+  filepath?: string;
+  path?: string;
+  imagePath?: string;
+  screenshotPath?: string;
+  file?: string;
+  filename?: string;
+  commandResult?: CommandResultObject;
+  context?: unknown;
+  sessionId?: unknown;
+  [key: string]: unknown;
+}
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
@@ -198,7 +235,7 @@ async function resizeAndEncodeImage(filepath: string): Promise<{ data: string; m
  * Extract image filepath from result object
  * Looks for common patterns: filepath, path, imagePath, filename (if it's absolute)
  */
-function extractImagePath(result: any): string | null {
+function extractImagePath(result: CommandResultObject): string | null {
   if (!result || typeof result !== 'object') return null;
 
   // Common field names for image paths
@@ -230,15 +267,15 @@ const instanceConfig = loadInstanceConfigForContext();
 
 // Load command schemas
 const schemasPath = path.join(__dirname, 'generated-command-schemas.json');
-const schemas = JSON.parse(fs.readFileSync(schemasPath, 'utf-8'));
+const schemas: CommandSchemaFile = JSON.parse(fs.readFileSync(schemasPath, 'utf-8'));
 
 // Convert JTAG command schema to MCP tool schema
-function commandToTool(command: any): Tool {
-  const properties: Record<string, any> = {};
+function commandToTool(command: CommandSchema): Tool {
+  const properties: Record<string, { type: string; description: string }> = {};
   const required: string[] = [];
 
   for (const [paramName, paramDef] of Object.entries(command.params || {})) {
-    const def = paramDef as any;
+    const def = paramDef as CommandParamDef;
 
     // Map JTAG types to JSON Schema types
     let jsonType = 'string';
@@ -452,7 +489,7 @@ function getToolHelp(toolName: string): {
   // Normalize tool name (accept both / and _ formats)
   const normalizedName = toolName.replace(/_/g, '/').replace(/^jtag\//, '').replace(/^mcp__jtag__/, '');
 
-  const command = schemas.commands.find((c: any) =>
+  const command = schemas.commands.find((c: CommandSchema) =>
     c.name === normalizedName ||
     c.name.replace(/\//g, '_') === normalizedName
   );
@@ -462,7 +499,7 @@ function getToolHelp(toolName: string): {
   const params: Array<{ name: string; type: string; required: boolean; description: string }> = [];
 
   for (const [paramName, paramDef] of Object.entries(command.params || {})) {
-    const def = paramDef as any;
+    const def = paramDef as CommandParamDef;
     params.push({
       name: paramName,
       type: def.type || 'string',
@@ -474,7 +511,7 @@ function getToolHelp(toolName: string): {
   // Generate example based on params
   let example: string | undefined;
   if (params.length > 0) {
-    const exampleParams: Record<string, any> = {};
+    const exampleParams: Record<string, string | number | boolean> = {};
     for (const p of params.filter(p => p.required).slice(0, 3)) {
       if (p.type === 'string') exampleParams[p.name] = `"example_${p.name}"`;
       else if (p.type === 'number') exampleParams[p.name] = 10;
@@ -503,7 +540,7 @@ function searchTools(query: string, category?: string, limit: number = 10): Arra
   const queryLower = query.toLowerCase();
 
   // Helper to search a set of commands
-  const searchCommandSet = (commands: any[]): Array<{ name: string; description: string; category: string; score: number }> => {
+  const searchCommandSet = (commands: CommandSchema[]): Array<{ name: string; description: string; category: string; score: number }> => {
     const results: Array<{ name: string; description: string; category: string; score: number }> = [];
 
     for (const command of commands) {
@@ -538,7 +575,7 @@ function searchTools(query: string, category?: string, limit: number = 10): Arra
   // First, try with category filter if provided
   if (category) {
     const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
-    const filteredCommands = schemas.commands.filter((c: any) => {
+    const filteredCommands = schemas.commands.filter((c: CommandSchema) => {
       const nameLower = c.name.toLowerCase();
       return nameLower.startsWith(categoryPrefix) || nameLower === category;
     });
@@ -631,9 +668,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 // Shared client for command execution
-let sharedClient: any = null;
+let sharedClient: JTAGClientServer | null = null;
 
-async function getClient() {
+async function getClient(): Promise<JTAGClientServer> {
   if (sharedClient) return sharedClient;
 
   const clientOptions: JTAGClientConnectOptions = {
@@ -758,16 +795,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const client = await getClient();
 
     // Execute JTAG command
-    const result = await (client as any).commands[commandName](args || {});
+    const result = await client.commands[commandName](args || {});
 
     // Clean up result (remove context/sessionId wrapper)
-    let cleanResult = result;
+    let cleanResult = result as CommandResultObject;
     while (cleanResult && typeof cleanResult === 'object' && 'commandResult' in cleanResult) {
-      cleanResult = cleanResult.commandResult;
+      cleanResult = cleanResult.commandResult as CommandResultObject;
     }
     if (cleanResult && typeof cleanResult === 'object') {
       const { context, sessionId, ...actualResult } = cleanResult;
-      cleanResult = actualResult;
+      cleanResult = actualResult as CommandResultObject;
     }
 
     // Check if result contains an image - resize and return inline as base64

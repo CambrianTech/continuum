@@ -16,6 +16,23 @@ import { globalSessionContext, SYSTEM_SCOPES } from '../../../system/core/types/
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import type { CommandErrorResponse, CommandSuccessResponse } from './CommandResponseTypes';
 
+/**
+ * Shape of the global JTAG client injected at window.jtag.
+ * Minimal interface for command execution — no global Window augmentation.
+ */
+interface JTAGGlobalClient {
+  commands: Record<string, (params?: Record<string, unknown>) => Promise<{ commandResult: unknown }>>;
+}
+
+/**
+ * Helper to access window.jtag in browser context with type safety.
+ * Returns null if not available (e.g., during SSR or before injection).
+ */
+function getWindowJTAG(): JTAGGlobalClient | null {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (typeof window === 'undefined') return null;
+  return (window as unknown as { jtag?: JTAGGlobalClient }).jtag ?? null;
+}
 
 export abstract class CommandDaemon extends DaemonBase {
   public readonly subpath: string = 'commands';
@@ -59,17 +76,17 @@ export abstract class CommandDaemon extends DaemonBase {
   /**
    * Execute command - LITERAL COPY of BaseWidget.executeCommand method signature and behavior
    */
-  public async executeCommand<T>(command: string, params?: Record<string, any>): Promise<T> {
+  public async executeCommand<T>(command: string, params?: Record<string, unknown>): Promise<T> {
     try {
-      // Wait for JTAG system to be ready  
+      // Wait for JTAG system to be ready
       await this.waitForSystemReady();
-      
+
       // Get the JTAG client from window
-      const jtagClient = (window as any).jtag;
+      const jtagClient = getWindowJTAG();
       if (!jtagClient?.commands) {
         throw new Error('JTAG client not available even after system ready event');
       }
-      
+
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await jtagClient.commands[command](params);
 
@@ -84,10 +101,11 @@ export abstract class CommandDaemon extends DaemonBase {
   /**
    * Commands interface - EXACT copy of BaseWidget.executeCommand pattern
    */
-  get commandsInterface(): Record<string, <T>(command: string, params?: Record<string, any>) => Promise<T>> {
-    return new Proxy({}, {
-      get: (target, commandName: string) => {
-        return async <T>(command: string, params?: Record<string, any>): Promise<T> => {
+  get commandsInterface(): Record<string, <T>(command: string, params?: Record<string, unknown>) => Promise<T>> {
+    type CommandFn = <T>(command: string, params?: Record<string, unknown>) => Promise<T>;
+    return new Proxy({} as Record<string, CommandFn>, {
+      get: (_target: Record<string, CommandFn>, _commandName: string) => {
+        return async <T>(command: string, params?: Record<string, unknown>): Promise<T> => {
           return await this.executeCommand<T>(command, params);
         };
       }
@@ -207,22 +225,22 @@ export abstract class CommandDaemon extends DaemonBase {
   private async waitForSystemReady(): Promise<void> {
     return new Promise((resolve) => {
       // Check if system is already ready
-      const jtagClient = (window as any).jtag;
-      if (jtagClient && jtagClient.commands) {
+      const jtagClient = getWindowJTAG();
+      if (jtagClient?.commands) {
         resolve();
         return;
       }
-      
+
       // Simple polling - check every 100ms for window.jtag
       const checkReady = () => {
-        const jtag = (window as any).jtag;
-        if (jtag && jtag.commands) {
+        const jtag = getWindowJTAG();
+        if (jtag?.commands) {
           resolve();
         } else {
           setTimeout(checkReady, 100);
         }
       };
-      
+
       checkReady();
     });
   }

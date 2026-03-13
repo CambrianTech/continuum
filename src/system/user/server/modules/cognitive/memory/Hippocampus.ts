@@ -24,7 +24,7 @@ import type { DataListParams, DataListResult } from '../../../../../../commands/
 import type { BaseEntity } from '../../../../../data/entities/BaseEntity';
 import type { DataCreateParams, DataCreateResult } from '../../../../../../commands/data/create/shared/DataCreateTypes';
 import type { DbHandle } from '../../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
-import { generateUUID } from '../../../../../core/types/CrossPlatformUUID';
+import { generateUUID, type UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../data/domains/CoreTypes';
 import type {
   MemoryEntity,
@@ -39,6 +39,7 @@ import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapte
 import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
 import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
+import type { UniversalFilter } from '../../../../../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
@@ -138,7 +139,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
     // Initialize consolidation adapter (default: semantic compression)
     // Pass persona directly - adapter uses persona.generateText() for synthesis (same code path as chat)
-    const hippocampusLogger = (message: string, ...args: any[]) => {
+    const hippocampusLogger = (message: string) => {
       this.persona.logger.enqueueLog('hippocampus.log', message);
     };
     this.consolidationAdapter = adapter || new SemanticCompressionAdapter(
@@ -283,7 +284,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       // Build metadata filter for pre-filtering (reduces search space)
       // Note: No personaId filter - each persona has their own database file
       // This fixes orphaned memories when personas get new UUIDs on reseed
-      const filter: Record<string, any> = {};
+      const filter: UniversalFilter = {};
 
       if (params.types) {
         filter.type = { $in: params.types };
@@ -352,7 +353,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       // Build filter
       // Note: No personaId filter - each persona has their own database file
       // This fixes orphaned memories when personas get new UUIDs on reseed
-      const filter: Record<string, any> = {};
+      const filter: UniversalFilter = {};
 
       if (params.types) {
         filter.type = { $in: params.types };
@@ -491,12 +492,12 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       for (const memory of memories) {
         try {
-          const result = await DataCreate.execute<any>({
+          const result = await DataCreate.execute({
             dbHandle: this._memoryDbHandle,
             collection: 'memories',
-            data: memory,
+            data: memory as unknown as Record<string, unknown>,
             suppressEvents: true,
-          } as any);
+          });
 
           if (result.success) {
             // Track original thought IDs for removal from working memory
@@ -556,7 +557,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // Remove ONLY successfully consolidated thoughts from working memory
       if (consolidatedIds.length > 0) {
-        await this.persona.prefrontal?.workingMemory.clearBatch(consolidatedIds as any);
+        await this.persona.prefrontal?.workingMemory.clearBatch(consolidatedIds as UUID[]);
         this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
 
         // Invalidate L1 memory cache so next RAG build picks up new memories via L2

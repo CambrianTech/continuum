@@ -9,7 +9,16 @@ import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessag
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+import type { JTAGWindowProperties } from '../../../system/core/types/GlobalAugmentations';
+
+const verbose = () => typeof window !== 'undefined' && (window as Window & JTAGWindowProperties).JTAG_VERBOSE === true;
+
+interface URLCardMetadata {
+  readonly title: string;
+  readonly description: string;
+  readonly siteName: string;
+  readonly imageUrl?: string;
+}
 
 interface URLCardData {
   readonly url: string;
@@ -172,7 +181,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   /**
    * Generate mock metadata for demo purposes
    */
-  private generateMockMetadata(url: string): any {
+  private generateMockMetadata(url: string): URLCardMetadata {
     const domain = new URL(url).hostname;
     return {
       title: `Interesting content from ${domain}`,
@@ -185,7 +194,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   /**
    * Update card with fetched metadata
    */
-  private updateCardWithMetadata(element: HTMLElement, metadata: any): void {
+  private updateCardWithMetadata(element: HTMLElement, metadata: URLCardMetadata): void {
     const titleEl = element.querySelector('.url-title');
     const descEl = element.querySelector('.url-description');
     const siteNameEl = element.querySelector('.site-name');
@@ -364,7 +373,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   /**
    * AI-editable fields for URL cards
    */
-  protected getAIEditableFields(): Record<string, any> {
+  protected getAIEditableFields(): Record<string, string> {
     return {
       title: 'string',
       description: 'string',
@@ -377,7 +386,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   /**
    * Handle AI editing of URL card content
    */
-  async handleAIEdit(editInstructions: any): Promise<void> {
+  async handleAIEdit(editInstructions: Record<string, unknown>): Promise<void> {
     verbose() && console.log('🤖 AI editing URL card:', editInstructions);
 
     // Future: AI can:

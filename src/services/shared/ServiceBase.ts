@@ -18,8 +18,8 @@ export interface IServiceTransport {
     context?: JTAGContext
   ): Promise<TResult>;
   
-  subscribeToEvents(eventType: string, handler: (data: any) => void): void;
-  unsubscribeFromEvents(eventType: string, handler: (data: any) => void): void;
+  subscribeToEvents(eventType: string, handler: (data: unknown) => void): void;
+  unsubscribeFromEvents(eventType: string, handler: (data: unknown) => void): void;
 }
 
 /**
@@ -63,14 +63,14 @@ export abstract class ServiceBase {
   /**
    * Subscribe to events through transport system
    */
-  protected subscribeToEvents(eventType: string, handler: (data: any) => void): void {
+  protected subscribeToEvents(eventType: string, handler: (data: unknown) => void): void {
     this.transport.subscribeToEvents(eventType, handler);
   }
 
   /**
    * Unsubscribe from events
    */
-  protected unsubscribeFromEvents(eventType: string, handler: (data: any) => void): void {
+  protected unsubscribeFromEvents(eventType: string, handler: (data: unknown) => void): void {
     this.transport.unsubscribeFromEvents(eventType, handler);
   }
 }
@@ -87,7 +87,7 @@ export interface IServiceRegistry {
  * Simple service registry implementation
  */
 export class ServiceRegistry implements IServiceRegistry {
-  private services = new Map<string, any>();
+  private services = new Map<string, unknown>();
 
   get<T>(serviceName: string): T | null {
     return this.services.get(serviceName) || null;

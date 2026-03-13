@@ -18,6 +18,7 @@ import RoomDataSeed from './RoomDataSeed';
 import ActivityDataSeed from './ActivityDataSeed';
 import { SystemIdentity } from './SystemIdentity';
 import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 // Rust-like branded types for strict typing
 export type CollectionName = string & { readonly __brand: 'CollectionName' };
@@ -73,8 +74,8 @@ export class DataSeeder {
                 { encoding: 'utf-8', cwd: process.cwd() }
               );
               console.log(`🗑️ Deleted ${item.id} from ${collection}`);
-            } catch (error: any) {
-              console.warn(`⚠️ Failed to delete ${item.id}: ${error.message}`);
+            } catch (error: unknown) {
+              console.warn(`⚠️ Failed to delete ${item.id}: ${(error instanceof Error ? error.message : String(error))}`);
             }
           }
         } else {
@@ -83,8 +84,8 @@ export class DataSeeder {
         
         console.log(`✅ Cleared collection: ${collection}`);
         
-      } catch (error: any) {
-        console.error(`❌ FATAL: Failed to clear collection ${collection}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Failed to clear collection ${collection}:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -133,8 +134,8 @@ export class DataSeeder {
         
         console.log(`👤 Created user: ${user.name} (${user.userType})`);
         
-      } catch (error: any) {
-        console.error(`❌ FATAL: Failed to create user ${user.name}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Failed to create user ${user.name}:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -146,12 +147,12 @@ export class DataSeeder {
    * Seed initial chat rooms using RoomDataSeed
    * Returns map of uniqueId -> roomId for message seeding
    */
-  private static async seedChatRooms(): Promise<Map<string, string>> {
+  private static async seedChatRooms(): Promise<Map<string, UUID>> {
     console.log('🏠 Seeding chat rooms...');
 
     const identity = SystemIdentity.getIdentity();
-    const roomData = RoomDataSeed.generateSeedRooms(identity.userId as any);
-    const roomIdMap = new Map<string, string>();
+    const roomData = RoomDataSeed.generateSeedRooms(identity.userId as UUID);
+    const roomIdMap = new Map<string, UUID>();
 
     for (const room of roomData.rooms) {
       try {
@@ -166,12 +167,12 @@ export class DataSeeder {
         // Parse result to get created room ID
         const resultData = JSON.parse(result.split('COMMAND RESULT:')[1].split('============================================================')[0].trim());
         if (resultData.success && resultData.data?.id) {
-          roomIdMap.set(validatedRoom.uniqueId, resultData.data.id);
+          roomIdMap.set(validatedRoom.uniqueId, resultData.data.id as UUID);
           console.log(`🏠 Created room: ${room.displayName} (${room.members.length} members, ID: ${resultData.data.id})`);
         }
 
-      } catch (error: any) {
-        console.error(`❌ FATAL: Failed to create room ${room.name}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Failed to create room ${room.name}:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -188,7 +189,7 @@ export class DataSeeder {
     console.log('🎨 Seeding collaborative activities...');
 
     const identity = SystemIdentity.getIdentity();
-    const activityData = ActivityDataSeed.generateSeedActivities(identity.userId as any);
+    const activityData = ActivityDataSeed.generateSeedActivities(identity.userId as UUID);
 
     for (const activity of activityData.activities) {
       try {
@@ -206,8 +207,8 @@ export class DataSeeder {
           console.log(`🎨 Created activity: ${activity.displayName} (${activity.participants.length} participants, ID: ${resultData.data.id})`);
         }
 
-      } catch (error: any) {
-        console.error(`❌ FATAL: Failed to create activity ${activity.uniqueId}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Failed to create activity ${activity.uniqueId}:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -218,11 +219,11 @@ export class DataSeeder {
   /**
    * Seed initial welcome messages using RoomDataSeed
    */
-  private static async seedInitialMessages(roomIdMap: Map<string, string>): Promise<void> {
+  private static async seedInitialMessages(roomIdMap: Map<string, UUID>): Promise<void> {
     console.log('💬 Seeding initial messages...');
 
     const identity = SystemIdentity.getIdentity();
-    const messages = RoomDataSeed.generateSeedMessages(roomIdMap, identity.userId as any, identity.displayName);
+    const messages = RoomDataSeed.generateSeedMessages(roomIdMap, identity.userId as UUID, identity.displayName);
 
     for (const message of messages) {
       try {
@@ -236,8 +237,8 @@ export class DataSeeder {
 
         console.log(`💬 Created message: ${message.content.text.slice(0, 50)}...`);
 
-      } catch (error: any) {
-        console.error(`❌ FATAL: Failed to create message:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Failed to create message:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -279,8 +280,8 @@ export class DataSeeder {
         }
         // Messages are optional - no welcome messages required
         
-      } catch (error: any) {
-        console.error(`❌ FATAL: Verification failed for ${collection}:`, error.message);
+      } catch (error: unknown) {
+        console.error(`❌ FATAL: Verification failed for ${collection}:`, (error instanceof Error ? error.message : String(error)));
         throw error; // Crash and burn - no fallbacks
       }
     }
@@ -307,8 +308,8 @@ export class DataSeeder {
       console.log('🎨 Activities: canvas-main, browser-main (collaborative content)');
       console.log('✅ All data verified and ready for development');
       
-    } catch (error: any) {
-      console.error('❌ FATAL: Reset and seed failed:', error.message);
+    } catch (error: unknown) {
+      console.error('❌ FATAL: Reset and seed failed:', (error instanceof Error ? error.message : String(error)));
       console.error('🚨 System may be in inconsistent state - manual cleanup required');
       throw error; // Crash and burn - no fallbacks
     }

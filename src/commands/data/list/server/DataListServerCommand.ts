@@ -59,18 +59,26 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
       // Normalize orderBy — AIs often pass a string, single object, or JSON string instead of an array
-      if (params.orderBy != null && !Array.isArray(params.orderBy)) {
-        const raw = params.orderBy as any;
-        if (typeof raw === 'string') {
-          // "asc" / "desc" → default sort on createdAt
-          const dir = raw.toLowerCase() === 'asc' ? 'asc' as const : 'desc' as const;
-          (params as any).orderBy = [{ field: 'createdAt', direction: dir }];
-        } else if (typeof raw === 'object' && raw.field) {
-          // Single object → wrap in array
-          (params as any).orderBy = [raw];
+      // Wire boundary: CLI/JSON input may not match the typed array shape
+      type OrderByEntry = { field: string; direction: 'asc' | 'desc' };
+      let normalizedOrderBy: OrderByEntry[] | undefined;
+      if (params.orderBy != null) {
+        if (Array.isArray(params.orderBy)) {
+          normalizedOrderBy = params.orderBy;
         } else {
-          // Unrecognizable → drop it
-          (params as any).orderBy = undefined;
+          // Runtime wire input: could be string or single object despite typed as array
+          const raw: unknown = params.orderBy;
+          if (typeof raw === 'string') {
+            // "asc" / "desc" → default sort on createdAt
+            const dir = raw.toLowerCase() === 'asc' ? 'asc' as const : 'desc' as const;
+            normalizedOrderBy = [{ field: 'createdAt', direction: dir }];
+          } else if (typeof raw === 'object' && raw !== null && 'field' in raw) {
+            // Single object → wrap in array
+            normalizedOrderBy = [raw as OrderByEntry];
+          } else {
+            // Unrecognizable → drop it
+            normalizedOrderBy = undefined;
+          }
         }
       }
 
@@ -99,7 +107,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       const storageQuery = {
         collection,
         filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
-        sort: params.orderBy?.map(order => ({
+        sort: normalizedOrderBy?.map(order => ({
           field: order.field,
           direction: order.direction
         })),
@@ -156,7 +164,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
           const projected: Partial<T> = { id: record.id } as Partial<T>;
           for (const field of fieldsToProject) {
             if (field in fullEntity) {
-              (projected as any)[field] = (fullEntity as any)[field];
+              (projected as Record<string, unknown>)[field] = (fullEntity as Record<string, unknown>)[field];
             }
           }
           return projected as T;
