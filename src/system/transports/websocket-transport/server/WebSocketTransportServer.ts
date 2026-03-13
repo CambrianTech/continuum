@@ -9,10 +9,16 @@ import { WebSocketTransportClient, type WebSocketConfig } from '../shared/WebSoc
 import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
+import { isJTAGMessage } from '../shared/JTAGWebSocketTypes';
 import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
 import { WebSocketResponseRouter } from './WebSocketResponseRouter';
+
+/** Internal socket properties exposed by ws library but not in public types */
+interface WSWebSocketInternal {
+  _socket?: { remoteAddress?: string; remotePort?: number };
+}
 
 // Verbose logging helper for server
 const verbose = () => process.env.JTAG_VERBOSE === '1';
@@ -107,41 +113,48 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
         // Emit CONNECTED event using shared method
         this.emitTransportEvent('CONNECTED', {
           clientId,
-          remoteAddress: (ws as any)._socket?.remoteAddress
+          remoteAddress: (ws as unknown as WSWebSocketInternal)._socket?.remoteAddress
         });
         
         ws.on('message', (data) => {
           try {
-            const message = this.parseWebSocketMessage(data);
-            
+            const parsed = this.parseWebSocketMessage(data);
+
             // Handle session handshake messages
-            if (this.isSessionHandshake(message)) {
-              this.handleSessionHandshake(message);
-              if (this.sessionHandshakeHandler) {
-                this.sessionHandshakeHandler(message.payload?.sessionId);
+            if (this.isSessionHandshake(parsed)) {
+              if (isJTAGMessage(parsed)) {
+                this.handleSessionHandshake(parsed);
+                if (this.sessionHandshakeHandler) {
+                  const payload = parsed.payload as unknown as Record<string, unknown> | undefined;
+                  this.sessionHandshakeHandler(payload?.sessionId as UUID);
+                }
               }
               return; // Don't forward handshake messages to regular handlers
             }
-            
-            // Removed verbose per-message logging to prevent console buffer overflow
-            // when browser sends high-frequency updates (1000+ msgs can crash system)
-            
+
+            // Validate as JTAGMessage before processing
+            if (!isJTAGMessage(parsed)) {
+              console.warn(`${this.name}: Received non-JTAG message, ignoring`);
+              return;
+            }
+
             // Register correlation for request messages so we can route responses back
-            if (JTAGMessageTypes.isRequest(message)) {
-              const correlationId = (message as any).correlationId;
+            if (JTAGMessageTypes.isRequest(parsed)) {
+              const correlationId = parsed.correlationId;
               if (correlationId) {
                 this.responseRouter.registerCorrelation(correlationId, clientId);
               }
             }
-            
+
             // Forward to registered message handlers (router handles all processing)
             for (const handler of this.messageHandlers) {
-              handler(message);
+              handler(parsed);
             }
-            
+
             // Base class handler not needed - messageHandlers include router which does all processing
-          } catch (error) {
-            this.handleWebSocketError(error as Error, 'message processing');
+          } catch (error: unknown) {
+            const wrapped = error instanceof Error ? error : new Error(String(error));
+            this.handleWebSocketError(wrapped, 'message processing');
           }
         });
         

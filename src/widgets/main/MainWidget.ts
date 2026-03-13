@@ -17,10 +17,8 @@ import {
   type CSSResultGroup
 } from '../shared/ReactiveWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
-import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
-import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
@@ -30,6 +28,8 @@ import { RoutingService } from '../../system/routing/RoutingService';
 import { pageState } from '../../system/state/PageStateService';
 import { contentState } from '../../system/state/ContentStateService';
 import { ContentService } from '../../system/state/ContentService';
+import { isContentViewWidget } from '../../system/state/ContentLifecycle';
+import { ActivityUserPresent } from '../../commands/collaboration/activity/user-present/shared/ActivityUserPresentTypes';
 import { styles as MAIN_STYLES } from './public/main-panel.styles';
 
 export class MainWidget extends ReactiveWidget {
@@ -71,7 +71,7 @@ export class MainWidget extends ReactiveWidget {
     // Initialize Positron content state adapter
     const offMainThread = (fn: () => void, timeout = 500) => {
       if ('requestIdleCallback' in window) {
-        (window as any).requestIdleCallback(fn, { timeout });
+        window.requestIdleCallback(fn, { timeout });
       } else {
         setTimeout(fn, 0);
       }
@@ -195,7 +195,7 @@ export class MainWidget extends ReactiveWidget {
       }
     }
     if (userId) {
-      ContentService.setUserId(userId as UUID);
+      ContentService.setUserId(userId);
     } else {
       console.warn('⚠️ MainWidget: userState not loaded, content will not persist to database');
     }
@@ -265,8 +265,8 @@ export class MainWidget extends ReactiveWidget {
     this.widgetCache.forEach((widget, tag) => {
       if (widget.style.display !== 'none') {
         widget.style.display = 'none';
-        if ('onDeactivate' in widget && typeof (widget as any).onDeactivate === 'function') {
-          (widget as any).onDeactivate();
+        if (isContentViewWidget(widget) && widget.onDeactivate) {
+          widget.onDeactivate();
         }
         this.log(`Deactivated ${tag}`);
       }
@@ -297,10 +297,12 @@ export class MainWidget extends ReactiveWidget {
     const contentItem = contentState.findItem(contentType, entityId);
     const metadata = contentItem?.metadata;
 
-    if ('onActivate' in widget && typeof (widget as any).onActivate === 'function') {
-      (widget as any).onActivate(entityId, metadata);
-    } else if ('setEntityId' in widget && typeof (widget as any).setEntityId === 'function') {
-      (widget as any).setEntityId(entityId);
+    if (isContentViewWidget(widget)) {
+      if (widget.onActivate) {
+        widget.onActivate(entityId, metadata);
+      } else if (widget.setEntityId && entityId) {
+        widget.setEntityId(entityId);
+      }
     } else {
       if (entityId) {
         widget.setAttribute('entity-id', entityId);
@@ -382,10 +384,10 @@ export class MainWidget extends ReactiveWidget {
           const present = !document.hidden;
 
           try {
-            await Commands.execute(COMMANDS.COLLABORATION_ACTIVITY_USER_PRESENT, {
-              activityId: roomId,
+            await ActivityUserPresent.execute({
+              activityId: roomId as UUID,
               present
-            } as any);
+            });
             this.log(`User ${present ? 'present' : 'left'} in room ${roomId}`);
           } catch (error) {
             const isDisconnected = error instanceof Error &&
@@ -507,7 +509,7 @@ export class MainWidget extends ReactiveWidget {
         this.log(`Navigate to live: ${data.entityType}/${data.entityId}`);
         const userId = this.userState?.userId;
         if (userId) {
-          ContentService.setUserId(userId as UUID);
+          ContentService.setUserId(userId);
         }
         ContentService.open('live', data.entityId, {
           title: data.displayName || 'Live Call',
@@ -557,7 +559,7 @@ export class MainWidget extends ReactiveWidget {
     }
 
     // Ensure ContentService has the userId
-    ContentService.setUserId(userId as UUID);
+    ContentService.setUserId(userId);
 
     // Check for existing tab of this type
     const existingTab = contentState.findItem(contentType, undefined);

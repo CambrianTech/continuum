@@ -47,7 +47,7 @@ export class ComponentLogger {
     return LogLevelRegistry.instance.shouldLog(this.component, level, category);
   }
 
-  private formatMessage(level: string, emoji: string, message: string, ...args: any[]): void {
+  private formatMessage(level: string, emoji: string, message: string, ...args: unknown[]): void {
     const levelEnum = LogLevel[level.toUpperCase() as keyof typeof LogLevel];
     if (!this.shouldLog(levelEnum)) {
       return;
@@ -84,7 +84,7 @@ export class ComponentLogger {
     }
   }
 
-  private sendToWorker(level: WorkerLogLevel, message: string, args: any[], _timestamp: string): void {
+  private sendToWorker(level: WorkerLogLevel, message: string, args: unknown[], _timestamp: string): void {
     if (!this.parentLogger || !this.logFilePath) {
       return;
     }
@@ -131,26 +131,26 @@ export class ComponentLogger {
     }
   }
 
-  debug(message: string, ...args: any[]): void {
+  debug(message: string, ...args: unknown[]): void {
     this.formatMessage('debug', '🔍', message, ...args);
   }
 
-  info(message: string, ...args: any[]): void {
+  info(message: string, ...args: unknown[]): void {
     this.formatMessage('info', 'ℹ️', message, ...args);
   }
 
-  warn(message: string, ...args: any[]): void {
+  warn(message: string, ...args: unknown[]): void {
     this.formatMessage('warn', '⚠️', message, ...args);
   }
 
-  error(message: string, ...args: any[]): void {
+  error(message: string, ...args: unknown[]): void {
     this.formatMessage('error', '❌', message, ...args);
   }
 
   /**
    * Conditional debug logging - only executes expensive operations if debug is enabled
    */
-  debugIf(messageFn: () => [string, ...any[]]): void {
+  debugIf(messageFn: () => [string, ...unknown[]]): void {
     if (this.shouldLog(LogLevel.DEBUG)) {
       const [message, ...args] = messageFn();
       this.debug(message, ...args);

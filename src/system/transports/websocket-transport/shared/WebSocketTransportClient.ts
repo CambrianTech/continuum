@@ -23,6 +23,23 @@ import type {
 import { JTAG_WEBSOCKET_READY_STATE, JTAG_WEBSOCKET_EVENTS } from './WebSocketInterface';
 import { isJTAGSessionHandshake, isJTAGMessage } from './JTAGWebSocketTypes';
 import { Events } from '../../../core/shared/Events';
+import type { TransportEventData } from '../../shared/TransportEvents';
+
+/**
+ * Session handshake message shape — a lightweight pre-auth message
+ * sent before full JTAGMessage routing is available.
+ */
+export interface SessionHandshakeMessage {
+  messageType: 'event';
+  endpoint: 'session/handshake';
+  payload: {
+    sessionId: UUID;
+    timestamp: string;
+  };
+}
+
+/** Messages that can be sent over WebSocket (full JTAG messages or handshakes) */
+type WebSocketOutgoingMessage = JTAGMessage | SessionHandshakeMessage;
 
 // Verbose logging helper (works in both browser and server)
 const verbose = () => {
@@ -52,7 +69,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected reconnectTimeout?: ReturnType<typeof setTimeout>;
   protected manualDisconnect = false;
   protected isReconnecting = false;
-  protected messageQueue: any[] = [];
+  protected messageQueue: WebSocketOutgoingMessage[] = [];
   protected lastErrorLog = 0;
   protected hasEmittedDisconnectError = false; // Track if we've already emitted ERROR for being disconnected
 
@@ -112,22 +129,31 @@ export abstract class WebSocketTransportClient extends TransportBase {
     // Message received - consistent addEventListener pattern
     socket.addEventListener('message', (event: JTAGWebSocketMessageEvent) => {
       try {
-        const message = this.parseWebSocketMessage(event.data);
-        
+        const parsed = this.parseWebSocketMessage(event.data);
+
         // Handle session handshake messages
-        if (this.isSessionHandshake(message)) {
-          this.handleSessionHandshake(message);
+        if (this.isSessionHandshake(parsed)) {
+          if (isJTAGMessage(parsed)) {
+            this.handleSessionHandshake(parsed);
+          }
           return;
         }
-        
+
+        // Validate as JTAGMessage before forwarding
+        if (!isJTAGMessage(parsed)) {
+          console.warn(`${this.name}: Received non-JTAG message, ignoring:`, parsed);
+          return;
+        }
+
         // Forward regular messages to handler
         if (this.messageHandler) {
-          this.messageHandler(message);
+          this.messageHandler(parsed);
         } else {
-          console.warn(`${this.name}: Received message but no handler set:`, message);
+          console.warn(`${this.name}: Received message but no handler set:`, parsed);
         }
-      } catch (error) {
-        this.handleWebSocketError(error as Error, 'message parsing');
+      } catch (error: unknown) {
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        this.handleWebSocketError(wrapped, 'message parsing');
       }
     });
 
@@ -212,8 +238,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Create session handshake message - simplified for transport layer
    */
-  protected createSessionHandshake(): any {
-    // Simplified handshake - will be properly structured when JTAG message factory is available
+  protected createSessionHandshake(): SessionHandshakeMessage {
     return {
       messageType: 'event',
       endpoint: 'session/handshake',
@@ -234,15 +259,15 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Handle session handshake message - can be overridden by implementations
    */
-  protected handleSessionHandshake(message: any): void {
-    const payload = message.payload as Record<string, unknown> | undefined;
+  protected handleSessionHandshake(message: JTAGMessage): void {
+    const payload = message.payload as unknown as Record<string, unknown> | undefined;
     verbose() && console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${payload?.sessionId}`);
   }
 
   /**
    * Send message through WebSocket with error handling - handles both regular messages and handshakes
    */
-  protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: any): void {
+  protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: WebSocketOutgoingMessage): void {
     if (!socket || socket.readyState !== JTAG_WEBSOCKET_READY_STATE.OPEN) {
       // During reconnection, queue messages instead of throwing errors
       if (this.isReconnecting) {
@@ -266,7 +291,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   /**
    * Parse incoming WebSocket message with cross-platform compatibility
    */
-  protected parseWebSocketMessage(data: unknown): any {
+  protected parseWebSocketMessage(data: unknown): unknown {
     try {
       let messageStr: string;
       
@@ -279,9 +304,9 @@ export abstract class WebSocketTransportClient extends TransportBase {
       } else if (typeof Buffer !== 'undefined' && data instanceof Buffer) {
         // Node.js environment - convert Buffer to string
         messageStr = data.toString();
-      } else if (data && typeof data.toString === 'function') {
+      } else if (data && typeof (data as { toString?: unknown }).toString === 'function') {
         // Fallback - try toString method
-        messageStr = data.toString();
+        messageStr = String(data);
       } else {
         throw new Error(`Unsupported message data type: ${typeof data}`);
       }
@@ -297,7 +322,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Emit transport events with consistent format
    * Emits to BOTH router's eventSystem AND global Events for widget access
    */
-  protected emitTransportEvent(eventType: keyof typeof TRANSPORT_EVENTS, data: any): void {
+  protected emitTransportEvent(eventType: keyof typeof TRANSPORT_EVENTS, data: Record<string, unknown>): void {
     const eventName = TRANSPORT_EVENTS[eventType];
     const eventSystemType = this.eventSystem?.constructor?.name || 'undefined';
     const eventData = {
@@ -430,9 +455,10 @@ export abstract class WebSocketTransportClient extends TransportBase {
     try {
       this.sendWebSocketMessage(this.socket, message);
       return this.createResult(true);
-    } catch (error) {
-      this.handleWebSocketError(error as Error, 'message send');
-      throw error;
+    } catch (error: unknown) {
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      this.handleWebSocketError(wrapped, 'message send');
+      throw wrapped;
     }
   }
 
