@@ -246,7 +246,7 @@ export class PersonaTimeline {
             collection: TimelineEventEntity.collection,
             data: entity,
             suppressEvents: true,
-          } as any);
+          });
           migrated++;
         } catch (err) {
           failed++;
@@ -258,11 +258,11 @@ export class PersonaTimeline {
 
       // Rename old file to .migrated
       await fsPromises.rename(this.legacyJsonPath, this.legacyJsonPath + '.migrated');
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
+    } catch (err: unknown) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
         this.log.debug('No legacy timeline.json found');
       } else {
-        this.log.warn(`Legacy migration check failed: ${err}`);
+        this.log.warn(`Legacy migration check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -352,7 +352,7 @@ export class PersonaTimeline {
       collection: TimelineEventEntity.collection,
       data: entity,
       suppressEvents: true,
-    } as any);
+    });
 
     if (!result.success) {
       throw new Error(`Failed to store timeline event: ${result.error}`);
@@ -425,8 +425,8 @@ export class PersonaTimeline {
   ): Promise<ContextualEvent[]> {
     await this.ensureInitialized();
 
-    // Build filter
-    const filter: Record<string, any> = {
+    // Build filter — uses MongoDB-style query operators supported by ORM
+    const filter: Record<string, unknown> = {
       personaId: this.personaId,
       contextId: { $ne: currentContextId }  // Exclude current context
     };
@@ -702,7 +702,7 @@ export class PersonaTimeline {
         id: eventId,
         data: { embedding },
         suppressEvents: true,
-      } as any);
+      });
     } catch (err) {
       this.log.warn(`Failed to update embedding for event ${eventId}: ${err}`);
     }
@@ -735,7 +735,7 @@ export class PersonaTimeline {
       await this.ensureInitialized();
 
       // Use vector search via Commands.execute
-      const filter: Record<string, any> = {
+      const filter: Record<string, unknown> = {
         personaId: this.personaId,
         contextId: { $ne: currentContextId }
       };
@@ -762,14 +762,13 @@ export class PersonaTimeline {
         });
       }
 
-      const events = result.results.map((r: any) => {
-        const entity = r.data as TimelineEventEntity;
+      const events = result.results.map((r) => {
+        const entity = r.data as unknown as TimelineEventEntity;
         const event = this.entityToEvent(entity);
-        const score = r.score || r.similarity || 0;
         return {
           event,
           sourceContextName: event.contextName,
-          relevanceReason: `Semantically similar (${(score * 100).toFixed(0)}% match)`
+          relevanceReason: `Semantically similar (${(r.score * 100).toFixed(0)}% match)`
         };
       });
 

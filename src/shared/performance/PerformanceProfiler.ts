@@ -15,7 +15,7 @@ export interface TimingResult {
     after: number;
     delta: number;
   };
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface PerformanceMetrics {
@@ -35,7 +35,7 @@ export class PerformanceProfiler {
   /**
    * Start timing a method/operation
    */
-  startTimer(name: string, metadata?: Record<string, any>): void {
+  startTimer(name: string, metadata?: Record<string, unknown>): void {
     const startTime = performance.now();
     const startMemory = this.getMemoryUsage();
     
@@ -58,7 +58,7 @@ export class PerformanceProfiler {
   /**
    * End timing and record result
    */
-  endTimer(name: string, additionalMetadata?: Record<string, any>): TimingResult | null {
+  endTimer(name: string, additionalMetadata?: Record<string, unknown>): TimingResult | null {
     const active = this.activeTimers.get(name);
     if (!active) {
       console.warn(`⚠️ PerformanceProfiler: No active timer found for '${name}'`);
@@ -94,7 +94,7 @@ export class PerformanceProfiler {
   /**
    * Time a synchronous function
    */
-  timeSync<T>(name: string, fn: () => T, metadata?: Record<string, any>): { result: T; timing: TimingResult } {
+  timeSync<T>(name: string, fn: () => T, metadata?: Record<string, unknown>): { result: T; timing: TimingResult } {
     this.startTimer(name, metadata);
     const result = fn();
     const timing = this.endTimer(name)!;
@@ -104,7 +104,7 @@ export class PerformanceProfiler {
   /**
    * Time an async function
    */
-  async timeAsync<T>(name: string, fn: () => Promise<T>, metadata?: Record<string, any>): Promise<{ result: T; timing: TimingResult }> {
+  async timeAsync<T>(name: string, fn: () => Promise<T>, metadata?: Record<string, unknown>): Promise<{ result: T; timing: TimingResult }> {
     this.startTimer(name, metadata);
     const result = await fn();
     const timing = this.endTimer(name)!;
@@ -262,14 +262,14 @@ export class PerformanceProfiler {
    * Create a decorator for automatic method timing
    */
   static createTimingDecorator(profiler: PerformanceProfiler) {
-    return function timeMethod(target: any, propertyName: string, descriptor: PropertyDescriptor) {
-      const method = descriptor.value;
-      
-      descriptor.value = function (...args: any[]) {
+    return function timeMethod(target: { constructor: { name: string } }, propertyName: string, descriptor: PropertyDescriptor) {
+      const method = descriptor.value as (...args: unknown[]) => unknown;
+
+      descriptor.value = function (this: unknown, ...args: unknown[]) {
         const methodName = `${target.constructor.name}.${propertyName}`;
-        
+
         if (method.constructor.name === 'AsyncFunction') {
-          return profiler.timeAsync(methodName, () => method.apply(this, args));
+          return profiler.timeAsync(methodName, () => method.apply(this, args) as Promise<unknown>);
         } else {
           return profiler.timeSync(methodName, () => method.apply(this, args));
         }

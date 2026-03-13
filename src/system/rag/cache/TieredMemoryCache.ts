@@ -33,6 +33,42 @@
 
 import type { PersonaMemory } from '../shared/RAGTypes';
 
+/** Wire format for a single memory from Rust IPC recall */
+interface RustRecallMemory {
+  readonly id: string;
+  readonly memory_type: string;
+  readonly content: string;
+  readonly timestamp: string;
+  readonly relevance_score?: number;
+  readonly importance?: number;
+}
+
+/** Wire format for layer timing from Rust IPC recall */
+interface RustLayerTiming {
+  readonly layer: string;
+  readonly results_found: number;
+}
+
+/** Wire format for Rust multi-layer recall response */
+interface RustRecallResponse {
+  readonly memories: readonly RustRecallMemory[];
+  readonly total_candidates?: number;
+  readonly recall_time_ms?: number;
+  readonly layer_timings?: readonly RustLayerTiming[];
+}
+
+/** Minimal interface for PersonaUser's cognition bridge access */
+interface HasRustCognitionBridge {
+  readonly rustCognitionBridge: {
+    memoryMultiLayerRecall(params: {
+      query_text: string | null;
+      room_id: string;
+      max_results: number;
+      layers: null;
+    }): Promise<RustRecallResponse>;
+  } | null;
+}
+
 /**
  * Recall request context — what we're trying to remember
  */
@@ -147,6 +183,12 @@ export class L1InMemoryAdapter implements MemoryRecallAdapter {
     });
   }
 
+  /** Get cached memories for a persona (returns empty array if no entry) */
+  getMemories(personaId: string): PersonaMemory[] {
+    const entry = this.cache.get(this.key(personaId));
+    return entry ? entry.memories : [];
+  }
+
   /** Invalidate cache for a persona (e.g., after new memory consolidation) */
   invalidate(personaId: string): void {
     this.cache.delete(this.key(personaId));
@@ -185,7 +227,9 @@ export class L2RustRecallAdapter implements MemoryRecallAdapter {
         return { memories: [], tier: 'L2', latencyMs: performance.now() - startTime };
       }
 
-      const bridge = (personaUser as any).rustCognitionBridge;
+      const bridge = ('rustCognitionBridge' in personaUser)
+        ? (personaUser as HasRustCognitionBridge).rustCognitionBridge
+        : null;
       if (!bridge) {
         return { memories: [], tier: 'L2', latencyMs: performance.now() - startTime };
       }
@@ -198,12 +242,12 @@ export class L2RustRecallAdapter implements MemoryRecallAdapter {
         layers: null, // All layers
       });
 
-      const memories: PersonaMemory[] = result.memories.map((mem: any) => ({
+      const memories: PersonaMemory[] = result.memories.map((mem: RustRecallMemory) => ({
         id: mem.id,
         type: this.mapMemoryType(mem.memory_type),
         content: mem.content,
         timestamp: new Date(mem.timestamp),
-        relevanceScore: mem.relevance_score ?? mem.importance,
+        relevanceScore: mem.relevance_score ?? mem.importance ?? 0,
       }));
 
       const latencyMs = performance.now() - startTime;
@@ -215,15 +259,15 @@ export class L2RustRecallAdapter implements MemoryRecallAdapter {
         metadata: {
           totalCandidates: result.total_candidates,
           rustRecallMs: result.recall_time_ms,
-          layers: result.layer_timings?.map((l: any) => `${l.layer}(${l.results_found})`).join(', '),
+          layers: result.layer_timings?.map((l: RustLayerTiming) => `${l.layer}(${l.results_found})`).join(', '),
         }
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         memories: [],
         tier: 'L2',
         latencyMs: performance.now() - startTime,
-        metadata: { error: error.message }
+        metadata: { error: error instanceof Error ? error.message : String(error) }
       };
     }
   }
@@ -369,8 +413,9 @@ export class TieredMemoryCache {
           this.l1.populate(request.personaId, result.memories, request.queryText);
           this.log(`L2 background refresh: ${result.memories.length} memories in ${result.latencyMs.toFixed(1)}ms for ${request.personaId.slice(0, 8)}`);
         }
-      } catch (error: any) {
-        this.log(`L2 background refresh failed for ${request.personaId.slice(0, 8)}: ${error.message}`);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(`L2 background refresh failed for ${request.personaId.slice(0, 8)}: ${message}`);
       } finally {
         this.refreshing.delete(key);
       }
@@ -393,7 +438,7 @@ export class TieredMemoryCache {
         if (result.memories.length > 0) {
           // Merge L3 results into L1 (append, don't replace)
           const existing = this.l1.hasEntry(request.personaId)
-            ? (this.l1 as any).cache.get(request.personaId)?.memories || []
+            ? this.l1.getMemories(request.personaId)
             : [];
 
           // Deduplicate by ID
@@ -409,8 +454,9 @@ export class TieredMemoryCache {
             this.log(`L3 deep recall: +${newMemories.length} memories from ${adapter.name} for ${request.personaId.slice(0, 8)}`);
           }
         }
-      }).catch(error => {
-        this.log(`L3 ${adapter.name} failed: ${error.message}`);
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(`L3 ${adapter.name} failed: ${message}`);
       });
     }
   }
