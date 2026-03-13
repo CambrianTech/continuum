@@ -38,6 +38,30 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   // and 'auto' backend returns cached data without ever hitting the server.
   protected override get loadBackend(): 'server' { return 'server'; }
 
+  // Rooms (channels) first, DMs second — within each group, most recent first.
+  // Discord/Slack both separate channels from DMs in the sidebar.
+  // Done client-side because the DB can't sort by type+recency in one query.
+  protected override get orderBy() {
+    return [{ field: 'lastMessageAt', direction: 'desc' as const }];
+  }
+
+  protected override getLoadFunction(): import('../../shared/EntityScroller').LoadFn<RoomEntity> {
+    const baseFn = super.getLoadFunction();
+    return async (cursor, limit) => {
+      const result = await baseFn(cursor, limit);
+      const sorted = [...result.items].sort((a, b) => {
+        const aIsDM = this.isDM(a) ? 1 : 0;
+        const bIsDM = this.isDM(b) ? 1 : 0;
+        if (aIsDM !== bIsDM) return aIsDM - bIsDM; // rooms first
+        // Within group: most recent activity first
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+      });
+      return { ...result, items: sorted };
+    };
+  }
+
   @reactive() private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID;
   @reactive() private activeFilter: RoomFilter = 'all';
   @reactive() private userCache = new Map<string, UserEntity>();

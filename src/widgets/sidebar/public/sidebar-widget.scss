@@ -22,9 +22,9 @@
   flex-shrink: 0;
 }
 
-// Dynamic widgets - smaller flex, let persistent widgets take priority
+// Dynamic widgets (rooms list) — ~1/3 of remaining space
 .widget-slot--dynamic {
-  flex: 0.3;
+  flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -36,9 +36,9 @@
   }
 }
 
-// Last persistent slot should flex to fill remaining space
+// Last persistent slot (user list) — ~2/3 of remaining space
 .widget-slot--persistent:last-child {
-  flex: 1;
+  flex: 2;
   display: flex;
   flex-direction: column;
   overflow: hidden;
