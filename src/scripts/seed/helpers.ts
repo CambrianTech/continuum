@@ -12,12 +12,25 @@ import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
 const execAsync = promisify(exec);
 
+/** Child process exec error — has stdout/stderr from the failed command */
+interface ExecError extends Error {
+  stdout?: string;
+  stderr?: string;
+  code?: number;
+}
+
+/** Narrow unknown catch to ExecError (child_process always throws ExecException) */
+function toExecError(error: unknown): ExecError {
+  if (error instanceof Error) return error as ExecError;
+  return new Error(String(error)) as ExecError;
+}
+
 /**
  * Create a record via JTAG ${DATA_COMMANDS.CREATE} command with proper shell escaping
  */
 export async function createRecord(
   collection: string,
-  data: any,
+  data: Record<string, unknown>,
   id: string,
   displayName?: string,
   userId?: string
@@ -37,17 +50,18 @@ export async function createRecord(
       console.error(`Response: ${result.stdout}`);
       return false;
     }
-  } catch (error: any) {
-    const hasSuccess = error.stdout && error.stdout.includes('"success": true');
+  } catch (error: unknown) {
+    const err = toExecError(error);
+    const hasSuccess = err.stdout && err.stdout.includes('"success": true');
 
     if (hasSuccess) {
       console.log(`✅ Created ${collection}: ${displayName || id}`);
       return true;
     } else {
       console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
-      console.error(`   Error: ${error.message}`);
-      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
-      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
+      console.error(`   Error: ${err.message}`);
+      if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}...`);
+      if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}...`);
       return false;
     }
   }
@@ -58,7 +72,7 @@ export async function createRecord(
  */
 export async function createStateRecord(
   collection: string,
-  data: any,
+  data: Record<string, unknown>,
   id: string,
   userId?: string,
   displayName?: string
@@ -78,17 +92,18 @@ export async function createStateRecord(
       console.error(`Response: ${result.stdout}`);
       return false;
     }
-  } catch (error: any) {
-    const hasSuccess = error.stdout && error.stdout.includes('\"success\": true');
+  } catch (error: unknown) {
+    const err = toExecError(error);
+    const hasSuccess = err.stdout && err.stdout.includes('\"success\": true');
 
     if (hasSuccess) {
       console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
       return true;
     } else {
       console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
-      console.error(`   Error: ${error.message}`);
-      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
-      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
+      console.error(`   Error: ${err.message}`);
+      if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}...`);
+      if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}...`);
       return false;
     }
   }
@@ -118,8 +133,8 @@ export async function updatePersonaProfile(
       console.error(`  ❌ Failed to update persona bio: ${result.error || 'Unknown error'}`);
       return false;
     }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update persona bio: ${error.message}`);
+  } catch (error: unknown) {
+    console.error(`  ❌ Failed to update persona bio: ${toExecError(error).message}`);
     return false;
   }
 
@@ -173,12 +188,13 @@ export async function updatePersonaProfile(
       console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
       return true;
     }
-  } catch (error: any) {
-    if (error.stdout?.includes('"success"')) {
+  } catch (error: unknown) {
+    const err = toExecError(error);
+    if (err.stdout?.includes('"success"')) {
       console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
       return true;
     }
-    console.error(`  ⚠️ Failed to create profile entity: ${error.message}`);
+    console.error(`  ⚠️ Failed to create profile entity: ${err.message}`);
   }
 
   return true;
@@ -187,8 +203,7 @@ export async function updatePersonaProfile(
 /**
  * Update persona configuration for intelligent resource management
  */
-export async function updatePersonaConfig(userId: string, config: any): Promise<boolean> {
-  const configArg = JSON.stringify(config).replace(/'/g, `'"'"'`);
+export async function updatePersonaConfig(userId: string, config: Record<string, unknown>): Promise<boolean> {
   const updateData = { personaConfig: config };
   const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
   const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
@@ -204,8 +219,8 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
       console.error(`  ❌ Failed to update persona config: ${result.error || 'Unknown error'}`);
       return false;
     }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update persona config: ${error.message}`);
+  } catch (error: unknown) {
+    console.error(`  ❌ Failed to update persona config: ${toExecError(error).message}`);
     return false;
   }
 }
@@ -233,8 +248,8 @@ export async function updateUserModelConfig(
       console.error(`  ❌ Failed to update modelConfig: ${result.error || 'Unknown error'}`);
       return false;
     }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update modelConfig: ${error.message}`);
+  } catch (error: unknown) {
+    console.error(`  ❌ Failed to update modelConfig: ${toExecError(error).message}`);
     return false;
   }
 }
@@ -262,8 +277,8 @@ export async function updateUserMetadata(
       console.error(`  ❌ Failed to update metadata: ${result.error || 'Unknown error'}`);
       return false;
     }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update metadata: ${error.message}`);
+  } catch (error: unknown) {
+    console.error(`  ❌ Failed to update metadata: ${toExecError(error).message}`);
     return false;
   }
 }
@@ -294,22 +309,23 @@ export async function createUserViaCommand(
       console.error(`❌ Failed to create user ${displayName}: ${response.error || 'Unknown error'}`);
       return null;
     }
-  } catch (error: any) {
-    if (error.stdout) {
+  } catch (error: unknown) {
+    const err = toExecError(error);
+    if (err.stdout) {
       try {
-        const response: UserCreateResult = JSON.parse(error.stdout);
+        const response: UserCreateResult = JSON.parse(err.stdout);
         if (response.success && response.user) {
           console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
           return response.user;
         }
-      } catch (parseError) {
+      } catch {
         // Fall through
       }
     }
 
-    console.error(`❌ Failed to create user ${displayName}: ${error.message}`);
-    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
-    if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}`);
+    console.error(`❌ Failed to create user ${displayName}: ${err.message}`);
+    if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}`);
+    if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}`);
     return null;
   }
 }
@@ -330,9 +346,10 @@ export async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity |
       console.log(`⚠️ User with uniqueId ${uniqueId} not found in database`);
       return null;
     }
-  } catch (error: any) {
-    console.error(`❌ Failed to load user with uniqueId ${uniqueId}: ${error.message}`);
-    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
+  } catch (error: unknown) {
+    const err = toExecError(error);
+    console.error(`❌ Failed to load user with uniqueId ${uniqueId}: ${err.message}`);
+    if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}`);
     return null;
   }
 }
@@ -340,7 +357,7 @@ export async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity |
 /**
  * Seed multiple records of the same type
  */
-export async function seedRecords<T extends { id: string; displayName?: string }>(
+export async function seedRecords<T extends Record<string, unknown> & { id: string; displayName?: string }>(
   collection: string,
   records: T[],
   getDisplayName?: (record: T) => string,

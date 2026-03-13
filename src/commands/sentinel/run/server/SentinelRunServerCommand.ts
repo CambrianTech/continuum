@@ -11,9 +11,10 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
+import type { PipelineSentinelParams, SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
+import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { Pipeline } from '../../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep, SentinelRunParams as SentinelIPCParams } from '../../../../workers/continuum-core/bindings/modules/sentinel';
 
 export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, SentinelRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -21,15 +22,23 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
   }
 
   async execute(params: JTAGPayload): Promise<SentinelRunResult> {
-    // Parse definition
-    let definition: any;
+    // Cast once at wire boundary — params arrives as JTAGPayload from CLI/IPC
+    const runParams = params as JTAGPayload & PipelineSentinelParams & { steps?: PipelineSentinelDefinition['steps'] };
 
-    if ((params as any).definition) {
-      definition = typeof (params as any).definition === 'string'
-        ? JSON.parse((params as any).definition)
-        : (params as any).definition;
-    } else if ((params as any).steps) {
-      definition = { steps: (params as any).steps };
+    // Parse definition — raw JSON may include Rust-side fields (timeoutSecs, inputs)
+    type PipelineDefinitionJSON = PipelineSentinelDefinition & {
+      timeoutSecs?: number;
+      timeout_secs?: number;
+      inputs?: Record<string, unknown>;
+    };
+    let definition: PipelineDefinitionJSON;
+
+    if (runParams.definition) {
+      definition = typeof runParams.definition === 'string'
+        ? JSON.parse(runParams.definition) as PipelineDefinitionJSON
+        : runParams.definition as PipelineDefinitionJSON;
+    } else if (runParams.steps) {
+      definition = { type: 'pipeline', name: 'unnamed', steps: runParams.steps } as PipelineDefinitionJSON;
     } else {
       return transformPayload(params, {
         success: false,
@@ -38,49 +47,39 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
       });
     }
 
-    const workingDir = (params as any).workingDir || process.cwd();
-    const asyncMode = (params as SentinelRunParams).async !== false;
+    const workingDir = runParams.workingDir || process.cwd();
+    const asyncMode = runParams.async !== false;
 
-    const timeoutSecs = (params as SentinelRunParams).timeout
+    const timeoutSecs = runParams.timeout
       || definition.timeoutSecs
       || definition.timeout_secs;
 
     const pipeline: Pipeline = {
       name: definition.name || 'unnamed',
-      steps: definition.steps,
+      steps: definition.steps as PipelineStep[],
       workingDir,
       timeoutSecs,
       inputs: definition.inputs || {},
     };
 
-    const runParams = params as SentinelRunParams;
     const rustClient = RustCoreIPCClient.getInstance();
 
-    // Build Rust params — escalation metadata travels with the sentinel
-    const sentinelRunParams: Record<string, unknown> = {
+    // Build Rust IPC params — escalation metadata travels with the sentinel
+    const ipcParams: SentinelIPCParams = {
       type: 'pipeline',
       command: 'pipeline',
-      args: [] as string[],
+      args: [],
       workingDir,
       env: { PIPELINE_JSON: JSON.stringify(pipeline) },
       timeout: timeoutSecs,
+      parentPersonaId: runParams.parentPersonaId,
+      entityId: runParams.entityId,
+      sentinelName: runParams.sentinelName ?? (pipeline.name !== 'unnamed' ? pipeline.name : undefined),
     };
-
-    // Pass escalation metadata to Rust — it owns the lifecycle and will
-    // push to sentinel/escalate on completion. No TS-side tracking needed.
-    if (runParams.parentPersonaId) {
-      sentinelRunParams.parentPersonaId = runParams.parentPersonaId;
-    }
-    if (runParams.entityId) {
-      sentinelRunParams.entityId = runParams.entityId;
-    }
-    if (runParams.sentinelName || pipeline.name !== 'unnamed') {
-      sentinelRunParams.sentinelName = runParams.sentinelName ?? pipeline.name;
-    }
 
     try {
       if (asyncMode) {
-        const result = await rustClient.sentinelRun(sentinelRunParams as any);
+        const result = await rustClient.sentinelRun(ipcParams);
 
         return transformPayload(params, {
           success: true,
@@ -88,7 +87,7 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
           completed: false,
         });
       } else {
-        const result = await rustClient.sentinelExecute(sentinelRunParams as any);
+        const result = await rustClient.sentinelExecute(ipcParams);
 
         let stepResults: unknown[] | undefined;
         if (result.output) {
@@ -117,11 +116,12 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
           },
         });
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       return transformPayload(params, {
         success: false,
         completed: true,
-        error: error.message,
+        error: message,
       });
     }
   }
