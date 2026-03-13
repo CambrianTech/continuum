@@ -25,6 +25,11 @@ import { ThemeRegistry } from '../shared/themes/ThemeTypes';
 import { positronicBridge } from '../../system/state/PositronicBridge';
 import { styles as CONTINUUM_STYLES } from './public/continuum-widget.styles';
 
+/** Minimal interface for PanelResizer element methods we invoke */
+interface PanelResizerElement extends Element {
+  expand(): void;
+}
+
 import { FileLoad } from '../../commands/file/load/shared/FileLoadTypes';
 export class ContinuumWidget extends ReactiveWidget {
   // Static styles using compiled SCSS
@@ -80,7 +85,7 @@ export class ContinuumWidget extends ReactiveWidget {
     try {
       positronicBridge.initialize();
       // Expose on window for debugging
-      (window as any).positronicBridge = positronicBridge;
+      (window as Window & { positronicBridge?: typeof positronicBridge }).positronicBridge = positronicBridge;
       this.log('PositronicBridge initialized successfully');
     } catch (error) {
       console.error('🌐 ContinuumWidget: PositronicBridge initialization failed:', error);
@@ -122,13 +127,13 @@ export class ContinuumWidget extends ReactiveWidget {
   // === EVENT HANDLERS ===
 
   private handleLeftExpand = (): void => {
-    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="left"]') as any;
-    resizer?.expand?.();
+    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="left"]') as PanelResizerElement | null;
+    resizer?.expand();
   };
 
   private handleRightExpand = (): void => {
-    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="right"]') as any;
-    resizer?.expand?.();
+    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="right"]') as PanelResizerElement | null;
+    resizer?.expand();
   };
 
   // === THEME LOADING ===

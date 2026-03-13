@@ -14,6 +14,8 @@
 import { ReactiveWidget, html, css, reactive, type TemplateResult } from '../shared/ReactiveWidget';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import { UserEntity } from '@system/data/entities/UserEntity';
 
 // ────────────────────────────────────────────────────────────
 // Types (mirror server-side shell types for browser use)
@@ -35,6 +37,13 @@ interface ClassifiedLine {
   classification: 'error' | 'warning' | 'info' | 'success' | 'verbose' | 'raw';
   timestamp: number;
 }
+
+/**
+ * Shell command params extend CommandParams with extra fields.
+ * We use `as CommandParams` casts at call sites because executeCommand's
+ * Omit<P, 'userId'> signature strips userId, but shell commands repurpose
+ * it as target persona rather than calling user.
+ */
 
 interface ShellStatusResult extends CommandResult {
   success: boolean;
@@ -311,14 +320,14 @@ export class TerminalWidget extends ReactiveWidget {
   private async pollShellStatus(): Promise<void> {
     try {
       // Get list of all users (personas) that may have shell sessions
-      const usersResult = await this.executeCommand<CommandParams, CommandResult & { items?: any[] }>('data/list', {
+      const usersResult = await this.executeCommand<DataListParams, DataListResult<UserEntity>>('data/list', {
         collection: 'users',
         filter: { type: 'ai' },
         limit: 50,
         dbHandle: 'default',
-      } as any);
+      });
 
-      if (!usersResult?.items?.length) {
+      if (!usersResult.items?.length) {
         this.statusInfo = 'No AI personas active';
         return;
       }
@@ -328,9 +337,9 @@ export class TerminalWidget extends ReactiveWidget {
       // Check shell status for each persona
       for (const user of usersResult.items) {
         try {
-          const status = await this.executeCommand<CommandParams, ShellStatusResult>(
+          const status = await this.executeCommand<CommandParams & Record<string, unknown>, ShellStatusResult>(
             'code/shell/status',
-            { userId: user.id } as any,
+            { userId: user.id },
           );
           if (status?.success) {
             activePersonas.push(user.displayName || user.uniqueId);
@@ -360,9 +369,9 @@ export class TerminalWidget extends ReactiveWidget {
 
     try {
       while (!this._watchAbort.signal.aborted) {
-        const result = await this.executeCommand<CommandParams, ShellWatchResult>(
+        const result = await this.executeCommand<CommandParams & Record<string, unknown>, ShellWatchResult>(
           'code/shell/watch',
-          { executionId, userId: personaId } as any,
+          { executionId, userId: personaId },
         );
 
         if (!result?.success) break;
@@ -414,9 +423,9 @@ export class TerminalWidget extends ReactiveWidget {
     if (!exec || exec.status !== 'running') return;
 
     try {
-      await this.executeCommand<CommandParams, CommandResult>(
+      await this.executeCommand<CommandParams & Record<string, unknown>, CommandResult>(
         'code/shell/kill',
-        { executionId: exec.executionId, userId: exec.personaId } as any,
+        { executionId: exec.executionId, userId: exec.personaId },
       );
       exec.status = 'killed';
       this.stopWatching();

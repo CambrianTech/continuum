@@ -113,8 +113,8 @@ class AutonomousDevToolkit {
         } else {
           console.log(`✅ ${point.name}: OK`);
         }
-      } catch (error: any) {
-        console.log(`⚠️ ${point.name}: Check failed - ${error.message}`);
+      } catch (error: unknown) {
+        console.log(`⚠️ ${point.name}: Check failed - ${error instanceof Error ? error.message : String(error)}`);
         issues.push(point);
       }
     }
@@ -139,8 +139,8 @@ class AutonomousDevToolkit {
       try {
         await issue.fix();
         console.log(`✅ Fixed: ${issue.name}`);
-      } catch (error: any) {
-        console.log(`❌ Fix failed: ${issue.name} - ${error.message}`);
+      } catch (error: unknown) {
+        console.log(`❌ Fix failed: ${issue.name} - ${error instanceof Error ? error.message : String(error)}`);
       }
       console.log('');
     }
@@ -181,8 +181,8 @@ class AutonomousDevToolkit {
     try {
       await execAsync('./jtag interface/screenshot --filename=iteration-current.png');
       console.log('✅ Screenshot saved: iteration-current.png');
-    } catch (error: any) {
-      console.log('⚠️ Screenshot failed:', error.message);
+    } catch (error: unknown) {
+      console.log('⚠️ Screenshot failed:', error instanceof Error ? error.message : String(error));
     }
 
     // 3. Test core functionality
@@ -190,8 +190,8 @@ class AutonomousDevToolkit {
     try {
       await execAsync('./jtag ping');
       console.log('✅ Core functionality working');
-    } catch (error: any) {
-      console.log('❌ Core functionality broken:', error.message);
+    } catch (error: unknown) {
+      console.log('❌ Core functionality broken:', error instanceof Error ? error.message : String(error));
       await this.runDiagnostics();
     }
 

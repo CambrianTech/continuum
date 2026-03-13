@@ -166,7 +166,7 @@ export abstract class BaseWidget extends HTMLElement {
    * Enable with: window.JTAG_VERBOSE = true
    */
   protected verbose(): boolean {
-    return typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    return typeof window !== 'undefined' && (window as WindowWithJTAG & { JTAG_VERBOSE?: boolean }).JTAG_VERBOSE === true;
   }
 
   /**
@@ -303,7 +303,7 @@ export abstract class BaseWidget extends HTMLElement {
 
       // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
       // Plain objects from WebSocket have { entity: { id: ... } }, not .id getter
-      const userId = currentUser.id ?? (currentUser as any).entity?.id;
+      const userId = currentUser.id ?? (currentUser as unknown as { entity?: { id?: string } }).entity?.id;
 
       if (!userId) {
         console.warn('⚠️ BaseWidget: User has no id (neither getter nor entity.id)');
@@ -688,27 +688,31 @@ export abstract class BaseWidget extends HTMLElement {
   ): Promise<R> {
     try {
       // FIXED: Use window.jtag directly like other parts of the system
-      const client = (window as any).jtag;
+      // Wire boundary: window.jtag commands proxy accepts enriched params at runtime
+      const client = (window as WindowWithJTAG).jtag as { commands?: Record<string, (params: CommandParams) => Promise<CommandResponse>> } | undefined;
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
 
       // Auto-inject context and sessionId if not already provided
-      let finalParams = params || {} as P;
-      if (!('context' in finalParams) || !('sessionId' in finalParams)) {
+      let partialParams = params || {} as P;
+      let enrichedParams: P;
+      if (!('context' in partialParams) || !('sessionId' in partialParams)) {
         const jtagClient = await JTAGClient.sharedInstance;
-        finalParams = {
+        enrichedParams = {
           context: jtagClient.context,
           sessionId: jtagClient.sessionId,
-          ...finalParams
+          ...partialParams
         } as P;
+      } else {
+        enrichedParams = partialParams as P;
       }
 
       //DO NOT, UNDER ANY CIRCUMSTANCE CHANGE LINES BELOW THIS COMMENT in this method: this fucking means you claude.
 
 
       // Execute command through the global JTAG system - gets wrapped response
-      const wrappedResult = await client.commands[command](finalParams) as CommandResponse;
+      const wrappedResult = await client.commands[command](enrichedParams) as CommandResponse;
 
       if (!wrappedResult.success) {
         const commandError = wrappedResult as CommandErrorResponse;

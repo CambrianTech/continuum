@@ -20,13 +20,13 @@ export interface ChannelEnqueueResult {
 }
 
 export interface ChannelDequeueResult {
-	item: any | null;
+	item: ChannelEnqueueRequest | null;
 	has_more: boolean;
 }
 
 export interface ChannelServiceCycleResult {
 	should_process: boolean;
-	item: any | null;
+	item: ChannelEnqueueRequest | null;
 	channel: ActivityDomain | null;
 	wait_ms: number;
 	stats: ChannelRegistryStatus;
@@ -49,6 +49,7 @@ export interface ChannelMixin {
 	channelClear(personaId: string): Promise<void>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mixin constructor constraint requires any[]
 export function ChannelMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
 	return class extends Base implements ChannelMixin {
 		/**

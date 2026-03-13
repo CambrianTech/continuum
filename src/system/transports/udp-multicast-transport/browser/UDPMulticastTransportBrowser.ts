@@ -53,8 +53,8 @@ export class UDPMulticastTransportBrowser extends UDPMulticastTransportBase {
         try {
           const messageBuffer = this.stringToBuffer(event.data);
           this.handleIncomingUDPMessage(messageBuffer, { address: 'signalling', port: 0 });
-        } catch (error: any) {
-          console.warn('⚠️ Browser P2P: Failed to process signalling message:', error.message);
+        } catch (error: unknown) {
+          console.warn('⚠️ Browser P2P: Failed to process signalling message:', error instanceof Error ? error.message : String(error));
         }
       };
     });
@@ -128,8 +128,8 @@ export class UDPMulticastTransportBrowser extends UDPMulticastTransportBase {
       try {
         const messageBuffer = this.stringToBuffer(event.data);
         this.handleIncomingUDPMessage(messageBuffer, { address: peerId, port: 0 });
-      } catch (error: any) {
-        console.warn(`⚠️ Browser P2P: DataChannel message error from ${peerId}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`⚠️ Browser P2P: DataChannel message error from ${peerId}:`, error instanceof Error ? error.message : String(error));
       }
     };
     
@@ -177,8 +177,8 @@ export class UDPMulticastTransportBrowser extends UDPMulticastTransportBase {
           peer.dataChannel.close();
         }
         peer.peerConnection.close();
-      } catch (error: any) {
-        console.warn(`⚠️ Browser P2P: Peer cleanup warning for ${peerId}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`⚠️ Browser P2P: Peer cleanup warning for ${peerId}:`, error instanceof Error ? error.message : String(error));
       }
     }
     this.peerConnections.clear();
@@ -187,8 +187,8 @@ export class UDPMulticastTransportBrowser extends UDPMulticastTransportBase {
     if (this.webSocketFallback) {
       try {
         this.webSocketFallback.close();
-      } catch (error: any) {
-        console.warn('⚠️ Browser P2P: Signalling cleanup warning:', error.message);
+      } catch (error: unknown) {
+        console.warn('⚠️ Browser P2P: Signalling cleanup warning:', error instanceof Error ? error.message : String(error));
       }
       this.webSocketFallback = undefined;
     }

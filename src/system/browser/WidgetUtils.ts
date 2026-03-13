@@ -326,7 +326,7 @@ export function getAllWidgets(): Array<{
     // Check if element is a widget (contains hyphen, typical for custom elements)
     if (element.tagName.includes('-')) {
       const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(element))
-        .filter(name => typeof (element as any)[name] === 'function')
+        .filter(name => typeof (element as unknown as Record<string, unknown>)[name] === 'function')
         .filter(name => !['constructor', 'connectedCallback', 'disconnectedCallback'].includes(name));
       
       widgets.push({
@@ -378,7 +378,7 @@ export function testWidgetMethods(widgetName: string, methodsToTest: string[]): 
   
   for (const methodName of methodsToTest) {
     try {
-      const method = (widget as any)[methodName];
+      const method = (widget as unknown as Record<string, unknown>)[methodName];
       const exists = typeof method === 'function';
       
       results[methodName] = {
@@ -407,11 +407,11 @@ export async function forceWidgetJTAGConnection(selector: string): Promise<{
   success: boolean;
   connectionMethod: string;
   error?: string;
-  client?: any;
+  client?: unknown;
 }> {
   console.log(`🔌 ShadowDOMUtils: Forcing JTAG connection for widget: ${selector}`);
-  
-  const widgetElement = document.querySelector(selector) as any;
+
+  const widgetElement = document.querySelector(selector) as (Element & Record<string, unknown>) | null;
   if (!widgetElement) {
     return {
       success: false,

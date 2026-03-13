@@ -32,7 +32,8 @@ import { UserGetMe } from '../../commands/user/get-me/shared/UserGetMeTypes';
 import { CanvasStrokeList } from '../../commands/canvas/stroke/list/shared/CanvasStrokeListTypes';
 import { CanvasStrokeAdd } from '../../commands/canvas/stroke/add/shared/CanvasStrokeAddTypes';
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+import { jtagWindow } from '../../system/core/types/GlobalAugmentations';
+const verbose = () => typeof window !== 'undefined' && jtagWindow?.JTAG_VERBOSE === true;
 
 /**
  * Result from user/get-me command
@@ -69,6 +70,18 @@ export const DRAWING_CANVAS_EVENTS = {
   CANVAS_CAPTURED: 'canvas:captured',
   AI_DRAW_REQUEST: 'canvas:ai:draw',
 } as const;
+
+/** Data shape for AI draw requests */
+interface AIDrawRequest {
+  tool?: DrawingTool;
+  startX: number;
+  startY: number;
+  endX?: number;
+  endY?: number;
+  color?: string;
+  size?: number;
+  personaName?: string;
+}
 
 export class DrawingCanvasWidget extends BaseWidget {
   private canvas: HTMLCanvasElement | null = null;
@@ -149,7 +162,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     await this.loadUserInfo();
 
     // Subscribe to AI draw requests
-    this.aiDrawUnsubscribe = Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
+    this.aiDrawUnsubscribe = Events.subscribe<AIDrawRequest>(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data) => {
       this.handleAIDrawRequest(data);
     });
 
@@ -589,12 +602,12 @@ export class DrawingCanvasWidget extends BaseWidget {
       this.canvas.addEventListener('touchstart', (e) => {
         e.preventDefault();
         const touch = e.touches[0];
-        this.startDrawing(touch as any);
+        this.startDrawing(touch);
       });
       this.canvas.addEventListener('touchmove', (e) => {
         e.preventDefault();
         const touch = e.touches[0];
-        this.draw(touch as any);
+        this.draw(touch);
       });
       this.canvas.addEventListener('touchend', () => this.stopDrawing());
     }
@@ -918,16 +931,7 @@ export class DrawingCanvasWidget extends BaseWidget {
   /**
    * Handle AI draw request (from positron/cursor or direct command)
    */
-  private handleAIDrawRequest(data: {
-    tool?: DrawingTool;
-    startX: number;
-    startY: number;
-    endX?: number;
-    endY?: number;
-    color?: string;
-    size?: number;
-    personaName?: string;
-  }): void {
+  private handleAIDrawRequest(data: AIDrawRequest): void {
     if (!this.ctx) return;
 
     const { tool = 'brush', startX, startY, endX, endY, color, size, personaName } = data;

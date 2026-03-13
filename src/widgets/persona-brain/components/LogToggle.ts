@@ -78,7 +78,7 @@ export class LogToggle {
       const result = await LogsConfig.execute({
         persona: this.personaId,
         action: newEnabled ? 'enable' : 'disable'
-      } as any) as any;
+      });
 
       if (result.success && result.personaConfig) {
         this.onStateChange({
@@ -109,7 +109,7 @@ export class LogToggle {
         persona: this.personaId,
         action: isEnabled ? 'disable' : 'enable',
         category: this.category
-      } as any) as any;
+      });
 
       if (result.success && result.personaConfig) {
         this.onStateChange({
