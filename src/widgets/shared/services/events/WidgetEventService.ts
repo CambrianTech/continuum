@@ -15,23 +15,23 @@ import type { IWidgetService, WidgetServiceContext } from '../WidgetServiceRegis
 // Event service interface - what widgets consume
 export interface IWidgetEventService extends IWidgetService {
   // Event broadcasting
-  broadcastEvent(eventType: string, data: any, options?: BroadcastOptions): Promise<void>;
-  
+  broadcastEvent(eventType: string, data: unknown, options?: BroadcastOptions): Promise<void>;
+
   // Event listening
   addEventListener(eventType: string, handler: EventHandler): void;
   removeEventListener(eventType: string, handler: EventHandler): void;
-  
+
   // Router operations (WebSocket, cross-widget)
-  sendToRouter(operation: string, data: any): Promise<any>;
+  sendToRouter(operation: string, data: unknown): Promise<unknown>;
   subscribeToRoute(route: string, handler: RouteHandler): void;
   unsubscribeFromRoute(route: string, handler: RouteHandler): void;
-  
+
   // Widget-to-widget communication
-  sendToWidget(widgetId: string, message: any): Promise<void>;
-  sendToAllWidgets(message: any): Promise<void>;
-  
+  sendToWidget(widgetId: string, message: unknown): Promise<void>;
+  sendToAllWidgets(message: unknown): Promise<void>;
+
   // Custom event coordination
-  emitCustomEvent(eventName: string, detail: any): void;
+  emitCustomEvent(eventName: string, detail: unknown): void;
   subscribeToCustomEvents(eventName: string, handler: CustomEventHandler): void;
 }
 
@@ -43,8 +43,8 @@ export interface BroadcastOptions {
   timeout?: number;                         // Broadcast timeout
 }
 
-export type EventHandler = (eventType: string, data: any) => void;
-export type RouteHandler = (route: string, data: any) => void;  
+export type EventHandler = (eventType: string, data: unknown) => void;
+export type RouteHandler = (route: string, data: unknown) => void;
 export type CustomEventHandler = (event: CustomEvent) => void;
 
 // Event coordination implementation
@@ -72,7 +72,7 @@ export class WidgetEventService implements IWidgetEventService {
   }
 
   // Event broadcasting operations
-  async broadcastEvent(eventType: string, data: any, options: BroadcastOptions = {}): Promise<void> {
+  async broadcastEvent(eventType: string, data: unknown, options: BroadcastOptions = {}): Promise<void> {
     try {
       const broadcastData = {
         eventType,
@@ -133,7 +133,7 @@ export class WidgetEventService implements IWidgetEventService {
   }
 
   // Router operations (adapter for JTAG router system)
-  async sendToRouter(operation: string, data: any): Promise<any> {
+  async sendToRouter(operation: string, data: unknown): Promise<unknown> {
     try {
       // This is the adapter layer - it will connect to actual JTAG router
       console.debug(`🔄 WidgetEventService: Router operation '${operation}'`);
@@ -175,7 +175,7 @@ export class WidgetEventService implements IWidgetEventService {
   }
 
   // Widget-to-widget communication
-  async sendToWidget(widgetId: string, message: any): Promise<void> {
+  async sendToWidget(widgetId: string, message: unknown): Promise<void> {
     try {
       const widgetMessage = {
         targetWidgetId: widgetId,
@@ -192,7 +192,7 @@ export class WidgetEventService implements IWidgetEventService {
     }
   }
 
-  async sendToAllWidgets(message: any): Promise<void> {
+  async sendToAllWidgets(message: unknown): Promise<void> {
     try {
       const broadcastMessage = {
         sourceWidgetId: this.context?.widgetId || 'unknown',
@@ -209,13 +209,14 @@ export class WidgetEventService implements IWidgetEventService {
   }
 
   // Custom event coordination - environment agnostic in base class
-  emitCustomEvent(eventName: string, detail: any): void {
+  emitCustomEvent(eventName: string, detail: unknown): void {
     // Base implementation only handles local handlers
     // Environment-specific implementations will override this
+    const detailObj = (detail && typeof detail === 'object') ? detail as Record<string, unknown> : { value: detail };
     const event = {
       type: eventName,
       detail: {
-        ...detail,
+        ...detailObj,
         source: this.context?.widgetId || 'unknown',
         timestamp: new Date().toISOString()
       }
@@ -235,7 +236,7 @@ export class WidgetEventService implements IWidgetEventService {
   }
 
   // Protected helper methods for extension
-  protected emitLocalEvent(eventType: string, data: any): void {
+  protected emitLocalEvent(eventType: string, data: unknown): void {
     const handlers = this.eventHandlers.get(eventType);
     if (handlers) {
       handlers.forEach(handler => {

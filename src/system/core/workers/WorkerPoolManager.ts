@@ -12,7 +12,7 @@ import { performance } from 'perf_hooks';
 import { globalProfiler } from '../../../shared/performance/PerformanceProfiler';
 import type { JTAGContext } from '../types/JTAGTypes';
 
-export interface WorkerTask<T = any> {
+export interface WorkerTask<T = unknown> {
   id: string;
   type: 'worker-thread' | 'child-process';
   operation: string;
@@ -21,7 +21,7 @@ export interface WorkerTask<T = any> {
   priority?: 'low' | 'normal' | 'high' | 'critical';
 }
 
-export interface WorkerResult<T = any> {
+export interface WorkerResult<T = unknown> {
   taskId: string;
   success: boolean;
   result?: T;
@@ -93,8 +93,9 @@ export class WorkerPoolManager {
         worker.on('error', (error) => this.handleWorkerError(error, `worker-${i}`));
         this.workerPool.push(worker);
         console.log(`✅ WorkerPoolManager: Created worker thread ${i}`);
-      } catch (error: any) {
-        console.warn(`⚠️ WorkerPoolManager: Failed to create worker ${i}: ${error.message}`);
+      } catch (error: unknown) {
+        const err = error as Error;
+        console.warn(`⚠️ WorkerPoolManager: Failed to create worker ${i}: ${err.message}`);
       }
     }
     
@@ -146,7 +147,7 @@ export class WorkerPoolManager {
   /**
    * Execute mesh formation operations in parallel
    */
-  async executeMeshFormation(nodes: any[], options: any = {}): Promise<WorkerResult> {
+  async executeMeshFormation(nodes: unknown[], options: Record<string, unknown> = {}): Promise<WorkerResult> {
     console.log(`🌐 WorkerPoolManager: Starting parallel mesh formation for ${nodes.length} nodes`);
     
     // Determine optimal parallelization strategy
@@ -198,12 +199,13 @@ export class WorkerPoolManager {
       this.updateMetrics(combinedResult);
       return combinedResult;
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (this.config.enableProfiling) {
         globalProfiler.endTimer('mesh-formation-parallel');
       }
-      
-      console.error('❌ WorkerPoolManager: Mesh formation failed:', error.message);
+
+      const err = error as Error;
+      console.error('❌ WorkerPoolManager: Mesh formation failed:', err.message);
       throw error;
     }
   }
@@ -211,7 +213,7 @@ export class WorkerPoolManager {
   /**
    * Execute screenshot processing in parallel (crop calculations, image optimization)
    */
-  async executeScreenshotProcessing(screenshots: any[]): Promise<WorkerResult> {
+  async executeScreenshotProcessing(screenshots: unknown[]): Promise<WorkerResult> {
     console.log(`📸 WorkerPoolManager: Processing ${screenshots.length} screenshots in parallel`);
     
     // Use child processes for image processing (more memory-safe)
@@ -253,7 +255,7 @@ export class WorkerPoolManager {
       this.updateMetrics(combinedResult);
       return combinedResult;
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (this.config.enableProfiling) {
         globalProfiler.endTimer('screenshot-processing-parallel');
       }
@@ -264,7 +266,7 @@ export class WorkerPoolManager {
   /**
    * Benchmark serial vs parallel execution to determine when parallelization helps
    */
-  async benchmarkParallelization(operation: string, testData: any[]): Promise<{
+  async benchmarkParallelization(operation: string, testData: unknown[]): Promise<{
     serial: { time: number; success: boolean };
     parallel: { time: number; success: boolean; speedup: number };
     recommendation: 'serial' | 'parallel';
@@ -421,7 +423,7 @@ export class WorkerPoolManager {
     return chunks;
   }
   
-  private async executeSerialOperation(operation: string, data: any): Promise<void> {
+  private async executeSerialOperation(operation: string, data: unknown): Promise<void> {
     // Simulate serial execution for benchmarking
     await new Promise(resolve => setTimeout(resolve, Math.random() * 10 + 5));
   }
