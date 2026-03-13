@@ -75,8 +75,8 @@ export class PersonaIdentitySource implements RAGSource {
           log.info(`Pre-warmed identity cache with ${result.data.length} personas`);
         }
         PersonaIdentitySource._preWarmed = true;
-      } catch (error: any) {
-        log.warn(`Failed to pre-warm identity cache: ${error.message}`);
+      } catch (error: unknown) {
+        log.warn(`Failed to pre-warm identity cache: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         PersonaIdentitySource._preWarmPromise = null;
       }
@@ -143,9 +143,10 @@ export class PersonaIdentitySource implements RAGSource {
           personaRole: identity.role
         }
       };
-    } catch (error: any) {
-      log.error(`Failed to load persona identity: ${error.message}`);
-      return this.defaultSection(startTime, error.message);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log.error(`Failed to load persona identity: ${errorMsg}`);
+      return this.defaultSection(startTime, errorMsg);
     }
   }
 
@@ -313,8 +314,8 @@ LIMITS:
           PersonaIdentitySource._roomCache.set(roomId, { entity: room, cachedAt: Date.now() });
         }
         return room;
-      } catch (error: any) {
-        log.warn(`Failed to load room ${roomId}: ${error.message}`);
+      } catch (error: unknown) {
+        log.warn(`Failed to load room ${roomId}: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
     })();
@@ -355,8 +356,8 @@ LIMITS:
             PersonaIdentitySource._userNameCache.set(member.userId, user.displayName);
             return user.displayName;
           }
-        } catch (error: any) {
-          log.warn(`Failed to load member ${member.userId}: ${error.message}`);
+        } catch (error: unknown) {
+          log.warn(`Failed to load member ${member.userId}: ${error instanceof Error ? error.message : String(error)}`);
         }
         return null;
       })

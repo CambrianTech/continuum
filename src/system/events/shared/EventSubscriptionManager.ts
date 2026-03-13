@@ -16,40 +16,43 @@ import { ElegantSubscriptionParser, type SubscriptionFilter, type SubscriptionPa
 /**
  * Subscription handler function type
  */
-export type EventHandler<T = any> = (data: T) => void;
+export type EventHandler<T = unknown> = (data: T) => void;
 
 /**
  * Unsubscribe function returned by on()
  */
 export type UnsubscribeFunction = () => void;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Type erasure boundary: handlers are stored generically and called with unknown data
+type ErasedHandler = (data: any) => void;
+
 /**
- * Internal subscription record
+ * Internal subscription record (type-erased for storage)
  */
-interface Subscription<T = any> {
+interface Subscription {
   id: string;
-  handler: EventHandler<T>;
+  handler: ErasedHandler;
   eventName: string;
 }
 
 /**
- * Wildcard subscription record
+ * Wildcard subscription record (type-erased for storage)
  */
-interface WildcardSubscription<T = any> {
+interface WildcardSubscription {
   id: string;
   pattern: RegExp;
-  handler: EventHandler<T>;
+  handler: ErasedHandler;
   originalPattern: string;
 }
 
 /**
- * Elegant subscription record
+ * Elegant subscription record (type-erased for storage)
  */
-interface ElegantSubscription<T = any> {
+interface ElegantSubscription {
   id: string;
   pattern: SubscriptionPattern;
   filter?: SubscriptionFilter;
-  handler: EventHandler<T>;
+  handler: ErasedHandler;
   originalPattern: string;
 }
 
@@ -82,7 +85,7 @@ export class EventSubscriptionManager {
    *   console.log(event.action, event.entity);
    * });
    */
-  public on<T = any>(
+  public on<T = unknown>(
     patternOrEventName: string,
     handler: EventHandler<T>,
     filter?: SubscriptionFilter
@@ -208,7 +211,7 @@ export class EventSubscriptionManager {
   /**
    * Unsubscribe from specific event (removes all handlers or specific handler)
    */
-  public off(eventName: string, handler?: EventHandler): void {
+  public off(eventName: string, handler?: ErasedHandler): void {
     if (!handler) {
       // Remove all subscriptions for this event
       this.subscriptions.delete(eventName);
@@ -234,7 +237,7 @@ export class EventSubscriptionManager {
    * @param eventName - Event name being triggered
    * @param data - Event data
    */
-  public trigger(eventName: string, data: any): void {
+  public trigger(eventName: string, data: unknown): void {
     // 1. Exact match subscriptions
     const exactSubs = this.subscriptions.get(eventName);
     if (exactSubs && exactSubs.size > 0) {

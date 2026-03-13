@@ -546,7 +546,7 @@ export class PersonaUser extends AIUser {
       }
     );
     // Register with GlobalAwarenessSource so RAG can access consciousness
-    registerConsciousness(this.id, this._consciousness);
+    registerConsciousness(this.id);
     // Wire Rust bridge into consciousness for timeline event corpus coherence
     if (this._rustCognition) {
       this._consciousness.setRustBridge(this._rustCognition);

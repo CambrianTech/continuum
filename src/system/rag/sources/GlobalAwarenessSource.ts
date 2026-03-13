@@ -23,7 +23,8 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
-import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
+import type { RagSourceRequest, RagSourceResult, ConsciousnessSourceMetadata } from '../../../shared/generated/rag';
+import type { PersonaUser } from '../../user/server/PersonaUser';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('GlobalAwarenessSource', 'rag');
@@ -39,7 +40,7 @@ const initializedPersonas = new Set<string>();
  * Register a persona as having consciousness initialized.
  * Called during PersonaUser startup after memory/init succeeds.
  */
-export function registerConsciousness(personaId: string, _consciousness?: any): void {
+export function registerConsciousness(personaId: string): void {
   initializedPersonas.add(personaId);
   log.debug(`Registered consciousness for persona ${personaId}`);
 }
@@ -88,8 +89,7 @@ export class GlobalAwarenessSource implements RAGSource {
    */
   getBatchRequest(context: RAGSourceContext, allocatedBudget: number): RagSourceRequest | null {
     // Detect voice mode — skip expensive semantic search for faster response
-    const voiceSessionId = (context.options as any)?.voiceSessionId;
-    const isVoiceMode = !!voiceSessionId;
+    const isVoiceMode = !!context.options.voiceSessionId;
 
     const currentMessage = context.options.currentMessage?.content;
 
@@ -118,8 +118,8 @@ export class GlobalAwarenessSource implements RAGSource {
       return this.createEmptySection(loadTimeMs);
     }
 
-    // Extract metadata from the result
-    const metadata = result.metadata as any || {};
+    // Extract metadata — narrow to consciousness variant of the discriminated union
+    const metadata = result.metadata as ConsciousnessSourceMetadata;
 
     return {
       sourceName: this.name,
@@ -127,11 +127,11 @@ export class GlobalAwarenessSource implements RAGSource {
       loadTimeMs,
       systemPromptSection: formattedPrompt,
       metadata: {
-        crossContextEventCount: metadata.cross_context_event_count,
-        activeIntentionCount: metadata.active_intention_count,
+        crossContextEventCount: metadata.cross_context_count,
+        activeIntentionCount: metadata.intention_count,
         hasPeripheralActivity: metadata.has_peripheral_activity,
         wasInterrupted: metadata.temporal?.was_interrupted,
-        lastActiveContext: metadata.temporal?.last_active_context_name,
+        lastActiveContext: metadata.temporal?.last_active_context,
         rustBuildMs: metadata.build_time_ms
       }
     };
@@ -161,15 +161,15 @@ export class GlobalAwarenessSource implements RAGSource {
       }
 
       // Access the Rust cognition bridge (nullable getter — no throw)
-      const bridge = (personaUser as any).rustCognitionBridge;
+      // PersonaUser exposes this as a public getter; BaseUser doesn't have it
+      const bridge = (personaUser as PersonaUser).rustCognitionBridge;
       if (!bridge) {
         log.debug('Rust cognition bridge not available, skipping awareness');
         return this.createEmptySection(performance.now() - startTime);
       }
 
       // Detect voice mode — skip expensive semantic search for faster response
-      const voiceSessionId = (context.options as any)?.voiceSessionId;
-      const isVoiceMode = !!voiceSessionId;
+      const isVoiceMode = !!context.options.voiceSessionId;
 
       const currentMessage = context.options.currentMessage?.content;
 
@@ -209,9 +209,10 @@ export class GlobalAwarenessSource implements RAGSource {
         }
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
       // Negative-cache "No memory corpus" errors with exponential backoff
-      if (error.message?.includes('No memory corpus')) {
+      if (errorMsg.includes('No memory corpus')) {
         const prev = GlobalAwarenessSource._corpusBackoff.get(context.personaId);
         const nextTtl = Math.min(
           (prev?.ttlMs ?? GlobalAwarenessSource.BACKOFF_MIN_MS) * 2,
@@ -220,9 +221,9 @@ export class GlobalAwarenessSource implements RAGSource {
         GlobalAwarenessSource._corpusBackoff.set(context.personaId, { failedAt: Date.now(), ttlMs: nextTtl });
         log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, backoff ${nextTtl}ms`);
       } else {
-        log.error(`Failed to load global awareness: ${error.message}`);
+        log.error(`Failed to load global awareness: ${errorMsg}`);
       }
-      return this.createErrorSection(performance.now() - startTime, error.message);
+      return this.createErrorSection(performance.now() - startTime, errorMsg);
     }
   }
 

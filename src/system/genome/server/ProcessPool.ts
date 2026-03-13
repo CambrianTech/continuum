@@ -19,6 +19,42 @@ import { EventEmitter } from 'events';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 /**
+ * IPC message types for worker communication
+ */
+interface WorkerReadyMessage {
+  type: 'ready';
+}
+
+interface WorkerLogMessage {
+  type: 'log';
+  message: string;
+}
+
+interface WorkerResultMessage {
+  type: 'result';
+  output: string;
+}
+
+interface WorkerErrorMessage {
+  type: 'error';
+  error: string;
+}
+
+type WorkerMessage = WorkerReadyMessage | WorkerLogMessage | WorkerResultMessage | WorkerErrorMessage;
+
+/**
+ * Inference request parameters
+ */
+export interface InferenceRequest {
+  prompt: string;
+  provider: string; // 'candle', 'claude', 'openai', etc.
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  config?: Record<string, unknown>;
+}
+
+/**
  * Process state machine
  */
 export type ProcessState =
@@ -300,14 +336,7 @@ export class ProcessPool extends EventEmitter {
    * Execute inference request through process pool
    * Generic method that works with any AI provider adapter
    */
-  async executeInference(request: {
-    prompt: string;
-    provider: string; // 'candle', 'claude', 'openai', etc.
-    model: string;
-    temperature?: number;
-    maxTokens?: number;
-    config?: Record<string, any>;
-  }): Promise<string> {
+  async executeInference(request: InferenceRequest): Promise<string> {
 
     // Get or spawn an idle process
     let managedProcess: ManagedProcess | null | undefined = Array.from(this.processes.values()).find(
@@ -359,14 +388,7 @@ export class ProcessPool extends EventEmitter {
    */
   private sendInferenceRequest(
     managedProcess: ManagedProcess,
-    request: {
-      prompt: string;
-      provider: string;
-      model: string;
-      temperature?: number;
-      maxTokens?: number;
-      config?: Record<string, any>;
-    }
+    request: InferenceRequest
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -374,7 +396,7 @@ export class ProcessPool extends EventEmitter {
       }, this.config.processTimeoutMs);
 
       // Listen for response
-      const messageHandler = (message: any) => {
+      const messageHandler = (message: WorkerMessage) => {
         if (message.type === 'result') {
           clearTimeout(timeout);
           managedProcess.process.off('message', messageHandler);
@@ -460,7 +482,7 @@ export class ProcessPool extends EventEmitter {
       });
     }
 
-    childProcess.on('message', (message: any) => {
+    childProcess.on('message', (message: WorkerMessage) => {
       // Log ALL messages from worker for debugging
       if (message.type === 'log') {
         console.log(`[Worker ${id}] ${message.message}`);
@@ -505,7 +527,7 @@ export class ProcessPool extends EventEmitter {
         reject(new Error('Process ready timeout'));
       }, this.config.processTimeoutMs);
 
-      const messageHandler = (message: any) => {
+      const messageHandler = (message: WorkerMessage) => {
         if (message.type === 'ready') {
           clearTimeout(timeout);
           managedProcess.process.off('message', messageHandler);

@@ -15,7 +15,7 @@ export interface Permission {
 export interface UserCapability {
   name: string;
   enabled: boolean;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 // Base user interface - all users implement this
@@ -26,7 +26,7 @@ export interface BaseUser {
   isAuthenticated: boolean;
   permissions: Permission[];
   capabilities: UserCapability[];
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   lastActiveAt: string;
 }
@@ -41,7 +41,7 @@ export interface HumanUser extends BaseUser {
   profile: {
     avatar?: string;
     displayName?: string;
-    preferences: Record<string, any>;
+    preferences: Record<string, unknown>;
   };
 }
 
@@ -52,7 +52,7 @@ export interface AIConfig {
   provider?: 'anthropic' | 'openai' | 'deepseek' | 'local';
   apiKey?: string;
   baseUrl?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 // Abstract AI user base class
@@ -63,7 +63,7 @@ export abstract class AIUser implements BaseUser {
   public readonly isAuthenticated: boolean = true;
   public readonly createdAt: string;
   public lastActiveAt: string;
-  public readonly metadata: Record<string, any>;
+  public readonly metadata: Record<string, unknown>;
 
   constructor(config: AIConfig, userType: UserType) {
     this.id = crypto.randomUUID();
@@ -132,7 +132,7 @@ export interface PersonaConfig extends AIConfig {
   lora?: {
     adapter: string;
     weights: string;
-    genomic?: Record<string, any>;
+    genomic?: Record<string, unknown>;
   };
 }
 
@@ -256,7 +256,7 @@ export function createHumanUser(config: {
   email: string;
   avatar?: string;
   displayName?: string;
-  preferences?: Record<string, any>;
+  preferences?: Record<string, unknown>;
 }): HumanUser {
   return {
     id: crypto.randomUUID(),
