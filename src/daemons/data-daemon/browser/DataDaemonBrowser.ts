@@ -13,6 +13,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonBase';
 import type { DataRecord, StorageResult, RecordData, CollectionStats } from '../shared/DataStorageAdapter';
+import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { OfflineStorageAdapter } from './OfflineStorageAdapter';
 
 import type { JTAGWindowProperties } from '../../../system/core/types/GlobalAugmentations';
@@ -35,9 +36,9 @@ export class DataDaemonBrowser extends DataDaemonBase {
   }
 
   protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>> {
-    const data = payload.data as { id?: UUID; [key: string]: unknown } | undefined;
-    if (this.offlineAdapter && payload.collection && data?.id) {
-      return await this.offlineAdapter.create(payload.collection, data as { id: UUID; [key: string]: unknown }, payload.sessionId) as StorageResult<DataRecord<RecordData>>;
+    const entity = payload.data as BaseEntity | undefined;
+    if (this.offlineAdapter && payload.collection && entity?.id) {
+      return await this.offlineAdapter.create(payload.collection, entity, payload.sessionId) as StorageResult<DataRecord<RecordData>>;
     }
     return await this.router.routeToServer<StorageResult<DataRecord<RecordData>>>('data', payload, payload.sessionId);
   }
@@ -58,7 +59,7 @@ export class DataDaemonBrowser extends DataDaemonBase {
 
   protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<RecordData>>> {
     if (this.offlineAdapter && payload.collection && payload.id) {
-      return await this.offlineAdapter.update(payload.collection, payload.id, payload.data as Record<string, unknown>, payload.sessionId) as StorageResult<DataRecord<RecordData>>;
+      return await this.offlineAdapter.update(payload.collection, payload.id, payload.data as Partial<BaseEntity>, payload.sessionId) as StorageResult<DataRecord<RecordData>>;
     }
     return await this.router.routeToServer<StorageResult<DataRecord<RecordData>>>('data', payload, payload.sessionId);
   }

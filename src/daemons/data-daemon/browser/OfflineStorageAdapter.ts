@@ -19,6 +19,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { StorageResult, StorageQuery } from '../shared/DataStorageAdapter';
+import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { createDataOperationPayload, type DataOperationPayload } from '../shared/DataDaemonBase';
 import { Events } from '../../../system/core/shared/Events';
 import { LocalStorageDataBackend } from './LocalStorageDataBackend';
@@ -46,7 +47,7 @@ export class OfflineStorageAdapter {
   private isSyncing: boolean = false;
 
   // Debounce user_states updates to prevent main thread blocking
-  private pendingUserStateUpdates: Map<UUID, { id: UUID; [key: string]: unknown }> = new Map();
+  private pendingUserStateUpdates: Map<UUID, Partial<BaseEntity>> = new Map();
   private userStateUpdateScheduled = false;
   private static readonly USER_STATE_DEBOUNCE_MS = 100;
 
@@ -95,8 +96,9 @@ export class OfflineStorageAdapter {
       });
 
       if (serverResult.success && serverResult.data) {
-        // Cache the result locally
-        await LocalStorageDataBackend.create(collection, serverResult.data as any);
+        // Cache the result locally — server returns entity data
+        const entity = serverResult.data as BaseEntity;
+        await LocalStorageDataBackend.create(collection, entity);
       }
 
       return serverResult;
@@ -113,9 +115,9 @@ export class OfflineStorageAdapter {
    * 2. Queue for server sync
    * 3. Attempt immediate sync if online
    */
-  async create(collection: string, entity: { id: UUID; [key: string]: unknown }, sessionId: UUID): Promise<StorageResult<unknown>> {
+  async create(collection: string, entity: BaseEntity, sessionId: UUID): Promise<StorageResult<unknown>> {
     // 1. Write to localStorage immediately
-    const localResult = await LocalStorageDataBackend.create(collection, entity as any);
+    const localResult = await LocalStorageDataBackend.create(collection, entity);
     if (!localResult.success) {
       // localStorage write failed - still try server
       console.warn('OfflineStorageAdapter: Local create failed:', localResult.error);
@@ -144,12 +146,12 @@ export class OfflineStorageAdapter {
    * 2. Queue for server sync
    * 3. Attempt immediate sync if online
    */
-  async update(collection: string, id: UUID, data: Record<string, unknown>, sessionId: UUID): Promise<StorageResult<unknown>> {
+  async update(collection: string, id: UUID, data: Partial<BaseEntity>, sessionId: UUID): Promise<StorageResult<unknown>> {
     // 1. Update localStorage immediately
-    const localResult = await LocalStorageDataBackend.update(collection, id, data as any);
+    const localResult = await LocalStorageDataBackend.update(collection, id, data);
     if (!localResult.success) {
       // Entity doesn't exist locally yet - try to create it
-      const createResult = await LocalStorageDataBackend.create(collection, { id, ...data } as any);
+      const createResult = await LocalStorageDataBackend.create(collection, { id, ...data } as BaseEntity);
       if (!createResult.success) {
         console.warn('OfflineStorageAdapter: Local update/create failed:', createResult.error);
       }
@@ -217,13 +219,13 @@ export class OfflineStorageAdapter {
       }) as StorageResult<unknown[]>;
 
       if (serverResult.success && Array.isArray(serverResult.data)) {
-        // Cache all results locally
-        for (const entity of serverResult.data) {
-          if (entity && typeof entity === 'object' && 'id' in entity) {
-            // Only create if not already cached
-            const existing = await LocalStorageDataBackend.read(collection, (entity as any).id);
+        // Cache all results locally — server returns entity arrays
+        for (const item of serverResult.data) {
+          const entity = item as BaseEntity;
+          if (entity?.id) {
+            const existing = await LocalStorageDataBackend.read(collection, entity.id);
             if (!existing.success) {
-              await LocalStorageDataBackend.create(collection, entity as any);
+              await LocalStorageDataBackend.create(collection, entity);
             }
           }
         }
@@ -330,23 +332,23 @@ export class OfflineStorageAdapter {
    */
   private subscribeToServerEvents(): void {
     // user_states uses IndexedDB (async, non-blocking) instead of localStorage
-    Events.subscribe('data:user_states:updated', async (data: { id: UUID; [key: string]: unknown }) => {
+    Events.subscribe('data:user_states:updated', async (data: BaseEntity) => {
       if (data && data.id) {
         // IndexedDB is async - doesn't block main thread
-        await IndexedDBBackend.update('user_states', data.id, data as any);
+        await IndexedDBBackend.update('user_states', data.id, data);
       }
     });
 
-    Events.subscribe('data:user_states:deleted', async (data: { id: UUID }) => {
+    Events.subscribe('data:user_states:deleted', async (data: BaseEntity) => {
       if (data && data.id) {
         await IndexedDBBackend.delete('user_states', data.id);
       }
     });
 
-    Events.subscribe('data:user_states:created', async (data: { id: UUID; [key: string]: unknown }) => {
+    Events.subscribe('data:user_states:created', async (data: BaseEntity) => {
       if (data && data.id) {
         // IndexedDB is async - doesn't block main thread
-        await IndexedDBBackend.create('user_states', data as any);
+        await IndexedDBBackend.create('user_states', data);
       }
     });
   }
@@ -372,12 +374,12 @@ export class OfflineStorageAdapter {
       // Use requestIdleCallback if available for non-blocking localStorage writes
       const flushFn = async () => {
         for (const [id, data] of updates) {
-          await LocalStorageDataBackend.update('user_states', id, data as any);
+          await LocalStorageDataBackend.update('user_states', id, data);
         }
       };
 
       if ('requestIdleCallback' in window) {
-        (window as any).requestIdleCallback(flushFn, { timeout: 500 });
+        window.requestIdleCallback(flushFn, { timeout: 500 });
       } else {
         // Fallback: use microtask to at least batch
         queueMicrotask(flushFn);
