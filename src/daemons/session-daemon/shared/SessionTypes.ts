@@ -70,7 +70,7 @@ export interface AuthContext {
 /**
  * Enhanced connection context with client type and identity separation
  */
-export interface EnhancedConnectionContext {
+export interface EnhancedConnectionContext extends JTAGConnectionContextInput {
   /** Client type - WHERE the connection comes from */
   clientType: ClientType;
   /** Identity - WHO the session belongs to */

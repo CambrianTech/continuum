@@ -70,6 +70,10 @@
 import { generateUUID, type UUID} from '../../types/CrossPlatformUUID';
 import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment, CommandParams, CommandResult } from '../../types/JTAGTypes';
+import type { JTAGRouter } from '../../router/shared/JTAGRouter';
+import type { EventEmitOptions } from '../../shared/Events';
+import type { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { ParticipantProfile } from '../../detection/AgentDetectionPlugin';
 import type { CommandResponse, CommandSuccessResponse, CommandErrorResponse } from '../../../../daemons/command-daemon/shared/CommandResponseTypes';
 import { JTAGMessageFactory, JTAGMessageTypes, isJTAGResponseMessage } from '../../types/JTAGTypes';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
@@ -128,12 +132,12 @@ export interface JTAGConnectionContextInput {
     type: string;
     version?: string;
     confidence: number;
-    metadata?: any;
+    metadata?: Record<string, unknown>;
     plugin: string;
     detected: boolean;
   };
   adapterType?: string;
-  capabilities?: any;
+  capabilities?: ParticipantProfile;
   outputPreferences?: {
     format: string;
     supportsColors: boolean;
@@ -151,8 +155,9 @@ export interface JTAGConnectionContextInput {
     timestamp: string;
   };
 
-  // Additional context fields
-  [key: string]: any;
+  // Additional context fields from detection plugins (AgentConnectionContext, JTAGConnectionContext)
+  // These fields flow through from agent detection and are consumed by session creation.
+  [key: string]: unknown;
 }
 
 /**
@@ -173,7 +178,7 @@ export interface JTAGClientConnectionResult {
  * ISSUE 5 FIXED: Simplified interface without over-typing generics
  */
 export interface JTAGConnection {
-  executeCommand(commandName: string, params: any): Promise<any>;
+  executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload>;
   getCommandsInterface(): CommandsInterface;
   readonly sessionId: UUID;
   readonly context: JTAGContext;
@@ -272,12 +277,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Provide router access for scoped event system
    * Works with both local and remote connections
    */
-  protected getRouter(): any {
+  protected getRouter(): JTAGRouter | null {
     // For local connections, get router from system instance
+    // JTAGSystem.router is protected, so we access via getRouter() which is also protected.
+    // Since JTAGClient holds a JTAGSystem reference (not inheritance), we use the
+    // protected-access bridge pattern: cast to expose the protected getRouter method.
     if (this.systemInstance) {
-      return (this.systemInstance as any).router;
+      return (this.systemInstance as unknown as { getRouter(): JTAGRouter }).getRouter();
     }
-    
+
     // For remote connections, events are handled via transport
     // Return null - scoped events will fall back to basic event manager
     return null;
@@ -1027,10 +1035,10 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         emit: async <T>(
           eventName: string,
           data: T,
-          options?: { scope?: any; scopeId?: string; sessionId?: string }
+          options?: EventEmitOptions
         ): Promise<{ success: boolean; error?: string }> => {
           const { Events } = await import('../../shared/Events');
-          return await Events.emit(eventName, data, options as any || {});
+          return await Events.emit(eventName, data, options || {});
         },
 
         /**
@@ -1119,13 +1127,14 @@ export class LocalConnection implements JTAGConnection {
     this.sessionId = sessionId;
   }
 
-  async executeCommand(commandName: string, params: any): Promise<any> {
+  async executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload> {
     // Direct call to local system - zero transport overhead
     const commandFn = this.localSystem.commands[commandName];
     if (!commandFn) {
       throw new Error(`Command '${commandName}' not available in local system`);
     }
-    return await commandFn(params);
+    // commands proxy accepts CommandParams; JTAGPayload at wire boundary narrows here
+    return await commandFn(params as CommandParams) as JTAGPayload;
   }
 
   getCommandsInterface(): CommandsInterface {
@@ -1158,7 +1167,7 @@ export class RemoteConnection implements JTAGConnection {
     this.context = client.context;
   }
 
-  async executeCommand(commandName: string, params: any): Promise<any> {
+  async executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload> {
     // Create strongly-typed request message
     // Use client_ prefix for external client detection
     const correlationId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
@@ -1201,7 +1210,10 @@ export class RemoteConnection implements JTAGConnection {
       };
       
       // Store as CommandBase-like object (simplified for remote)
-      map.set(name, commandFn as any); // TODO: Create proper CommandBase proxy
+      // Remote commands are functions proxying through transport, not real CommandBase instances.
+      // This cast is a wire boundary: the CommandsInterface Map expects CommandBase but remote
+      // connections provide function proxies. TODO: Create proper CommandBase proxy adapter.
+      map.set(name, commandFn as unknown as CommandBase<CommandParams, CommandResult>);
     }
     
     return map;

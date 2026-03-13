@@ -65,8 +65,13 @@ const createSessionErrorResponse = (
   });
 };
 
+/** Extended session metadata with server-only fields (device tracking) */
+interface ServerSessionMetadata extends SessionMetadata {
+  deviceId?: string;
+}
+
 export class SessionDaemonServer extends SessionDaemon {
-  private sessions: SessionMetadata[] = []; // In-memory active sessions for server
+  private sessions: ServerSessionMetadata[] = []; // In-memory active sessions for server
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
   private readonly BROWSER_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours for browser sessions
 
@@ -194,8 +199,11 @@ export class SessionDaemonServer extends SessionDaemon {
     // Subscribe to user creation events — upgrade anonymous sessions when seeded owner arrives.
     // Race condition: browser connects before seeding → anonymous session. When seeding creates
     // the real human owner, upgrade all anonymous browser sessions to use them.
-    Events.subscribe('data:users:created', (payload: any) => {
-      const entity = payload?.entity || payload;
+    Events.subscribe('data:users:created', (payload: unknown) => {
+      // DataDaemon emits the raw entity; guard both shapes defensively
+      const entity = (payload && typeof payload === 'object' && 'entity' in payload)
+        ? (payload as { entity: UserEntity }).entity
+        : payload as UserEntity | undefined;
       if (entity?.type === 'human' && entity?.uniqueId && !entity.uniqueId.startsWith('anon-')) {
         this.upgradeAnonymousSessions().catch(error => {
           this.log.error(`Failed to upgrade anonymous sessions:`, error);
@@ -237,7 +245,7 @@ export class SessionDaemonServer extends SessionDaemon {
     let upgraded = 0;
     for (const session of this.sessions) {
       if (!session.user) continue;
-      const entity = (session.user as any).entity;
+      const entity = session.user?.entity;
       if (entity?.type === 'human' && entity?.uniqueId?.startsWith('anon-')) {
         session.userId = seededOwner.id;
         session.user = seededOwner;
@@ -413,7 +421,7 @@ export class SessionDaemonServer extends SessionDaemon {
     private async findUserByDeviceId(deviceId: string): Promise<BaseUser | null> {
       // Look for existing session with this deviceId
       const existingSession = this.sessions.find(s =>
-        (s as any).deviceId === deviceId
+        s.deviceId === deviceId
       );
 
       if (existingSession) {
@@ -450,7 +458,7 @@ export class SessionDaemonServer extends SessionDaemon {
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
       // Validate userId is not the string "undefined" (indicates serialization bug upstream)
-      if (!userId || userId === 'undefined' || (userId as any) === undefined) {
+      if (!userId || userId === 'undefined') {
         this.log.error(`getUserById called with invalid userId: ${userId}`);
         this.log.error(`Stack trace:`, new Error().stack);
         throw new Error(`Invalid userId: ${userId} - this indicates a bug in session creation or identity resolution`);
@@ -470,10 +478,10 @@ export class SessionDaemonServer extends SessionDaemon {
 
       // Ensure IDs are present (Rust adapter may not include them)
       if (!userEntity.id) {
-        (userEntity as any).id = userId;
+        userEntity.id = userId;
       }
       if (!userState.id) {
-        (userState as any).id = userId;
+        userState.id = userId;
       }
 
       // Create appropriate User subclass based on type
@@ -610,7 +618,7 @@ export class SessionDaemonServer extends SessionDaemon {
               const existingSession = this.sessions.find(s =>
                 s.isShared &&
                 s.isActive &&
-                (s as any).deviceId === deviceId  // Session stores deviceId
+                s.deviceId === deviceId  // Session stores deviceId
               );
 
               if (existingSession) {
@@ -855,7 +863,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const enhancedCtx = params.connectionContext as EnhancedConnectionContext | undefined;
       const deviceId = enhancedCtx?.identity?.deviceId;
 
-      const newSession: SessionMetadata & { deviceId?: string } = {
+      const newSession: ServerSessionMetadata = {
         sourceContext: enrichedContext, // Use enriched context with callerType
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,

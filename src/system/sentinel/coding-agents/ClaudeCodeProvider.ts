@@ -18,6 +18,18 @@ import type {
   CodingAgentResult,
   CodingAgentToolCall,
 } from './CodingAgentProvider';
+import type {
+  Options as SDKOptions,
+  SDKMessage,
+  SDKSystemMessage,
+  SDKAssistantMessage,
+  SDKUserMessage,
+  SDKResultMessage,
+  SDKResultSuccess,
+  SpawnedProcess,
+  SpawnOptions,
+  PermissionMode,
+} from '@anthropic-ai/claude-agent-sdk';
 
 export class ClaudeCodeProvider implements CodingAgentProvider {
   readonly providerId = 'claude-code';
@@ -62,7 +74,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
     process.env.PATH = ensuredPath;
 
     // Build SDK options
-    const options: Record<string, unknown> = {
+    const options: Partial<SDKOptions> = {
       cwd: config.cwd,
       maxTurns: config.maxTurns,
       maxBudgetUsd: config.maxBudgetUsd,
@@ -90,10 +102,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       // In daemon contexts (nohup), PATH is minimal and spawn('node', ...) fails
       // with ENOENT. Using process.execPath gives the absolute path to the running
       // node binary, completely bypassing PATH resolution.
-      spawnClaudeCodeProcess: (spawnOpts: {
-        command: string; args: string[]; cwd?: string;
-        env: Record<string, string | undefined>; signal: AbortSignal;
-      }) => {
+      spawnClaudeCodeProcess: (spawnOpts: SpawnOptions): SpawnedProcess => {
         const command = spawnOpts.command === 'node'
           ? process.execPath
           : spawnOpts.command;
@@ -109,15 +118,18 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
         proc.stderr?.on('data', (chunk: Buffer) => {
           console.error(`[ClaudeCodeProvider] proc.stderr: ${chunk.toString().substring(0, 500)}`);
         });
+        // Wire ChildProcess event methods to the SpawnedProcess interface.
+        // ChildProcess.on/once/off are more general (support many events), but the SDK
+        // only needs 'exit' and 'error' — the SpawnedProcess interface is satisfied.
         return {
-          stdin: proc.stdin,
-          stdout: proc.stdout,
+          stdin: proc.stdin!,
+          stdout: proc.stdout!,
           get killed() { return proc.killed; },
           get exitCode() { return proc.exitCode; },
           kill: (signal: NodeJS.Signals) => proc.kill(signal),
-          on: proc.on.bind(proc) as any,
-          once: proc.once.bind(proc) as any,
-          off: proc.off.bind(proc) as any,
+          on: proc.on.bind(proc) as SpawnedProcess['on'],
+          once: proc.once.bind(proc) as SpawnedProcess['once'],
+          off: proc.off.bind(proc) as SpawnedProcess['off'],
         };
       },
     };
@@ -152,7 +164,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
     // We catch this and check if we already have a valid result.
     const conversation = query({
       prompt: config.prompt,
-      options: options as any,
+      options: options as SDKOptions,
     });
 
     try {
@@ -160,8 +172,9 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       switch (message.type) {
         case 'system': {
           if (message.subtype === 'init') {
-            sessionId = message.session_id;
-            model = (message as any).model || model;
+            const initMsg = message as SDKSystemMessage;
+            sessionId = initMsg.session_id;
+            model = initMsg.model || model;
             onProgress?.({
               type: 'status',
               message: `Session initialized: ${sessionId}`,
@@ -172,13 +185,13 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
         }
 
         case 'assistant': {
-          const assistantMsg = message as any;
+          const assistantMsg = message as SDKAssistantMessage;
           sessionId = assistantMsg.session_id || sessionId;
 
           // Extract text content and tool use from the message
           const content = assistantMsg.message?.content;
           if (Array.isArray(content)) {
-            let textParts: string[] = [];
+            const textParts: string[] = [];
 
             for (const block of content) {
               if (block.type === 'text') {
@@ -222,7 +235,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
 
         case 'user': {
           // Tool results come back as user messages
-          const userMsg = message as any;
+          const userMsg = message as SDKUserMessage;
           if (userMsg.tool_use_result !== undefined && toolCalls.length > 0) {
             const lastTool = toolCalls[toolCalls.length - 1];
             const resultStr = typeof userMsg.tool_use_result === 'string'
@@ -242,7 +255,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
         }
 
         case 'result': {
-          const result = message as any;
+          const result = message as SDKResultMessage;
           sessionId = result.session_id || sessionId;
           numTurns = result.num_turns || 0;
           totalCostUsd = result.total_cost_usd || 0;
@@ -252,17 +265,18 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
             resultText = result.result || '';
           } else {
             isError = true;
-            errorMessage = result.errors?.join('; ') || `Agent ended with: ${result.subtype}`;
-            resultText = errorMessage ?? '';
+            const errorResult = result as Exclude<SDKResultMessage, SDKResultSuccess>;
+            errorMessage = errorResult.errors?.join('; ') || `Agent ended with: ${result.subtype}`;
+            resultText = errorMessage;
           }
           break;
         }
       }
     }
-    } catch (iterError: any) {
+    } catch (iterError: unknown) {
       // The SDK throws when the process exits with non-zero code, even after
       // yielding a successful result. If we captured a result, use it.
-      const msg = iterError?.message || String(iterError);
+      const msg = iterError instanceof Error ? iterError.message : String(iterError);
       if (resultText && !isError) {
         // We have a successful result — the exit code mismatch is harmless
         console.log(`[ClaudeCodeProvider] Process exit error after successful result (ignoring): ${msg}`);
@@ -299,7 +313,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
     };
   }
 
-  private mapPermissionMode(mode?: string): string {
+  private mapPermissionMode(mode?: string): PermissionMode {
     switch (mode) {
       case 'acceptEdits': return 'acceptEdits';
       case 'bypassPermissions': return 'bypassPermissions';

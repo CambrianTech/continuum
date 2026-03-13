@@ -57,7 +57,7 @@ export interface DaemonQueueConfig {
 export interface DaemonEntry {
   name: string;
   className: string;
-  daemonClass: new (...args: any[]) => DaemonBase;
+  daemonClass: new (context: JTAGContext, router: JTAGRouter) => DaemonBase;
 }
 
 /**
@@ -66,10 +66,10 @@ export interface DaemonEntry {
  * Server overrides this with proper file-based Logger in server-side constructors
  */
 interface DaemonLogger {
-  info(message: string, ...args: any[]): void;
-  warn(message: string, ...args: any[]): void;
-  error(message: string, ...args: any[]): void;
-  debug(message: string, ...args: any[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+  debug(message: string, ...args: unknown[]): void;
 }
 
 export abstract class DaemonBase extends JTAGModule implements MessageSubscriber {
@@ -579,8 +579,9 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
       // Use require to avoid top-level import (DaemonBase is shared code)
       const { Events } = require('../../../system/core/shared/Events');
 
-      const unsub = Events.subscribe('system:ready', async (payload: any) => {
-        if (payload?.daemon === daemonName) {
+      const unsub = Events.subscribe('system:ready', async (payload: unknown) => {
+        const data = payload as { daemon?: string } | undefined;
+        if (data?.daemon === daemonName) {
           this.log.info(`📡 ${this.toString()}: ${daemonName} is ready`);
           try {
             await callback();
