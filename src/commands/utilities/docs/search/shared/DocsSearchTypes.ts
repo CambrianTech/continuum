@@ -39,7 +39,7 @@ export const DocsSearch = {
 /**
  * Factory function for creating UtilitiesDocsSearchParams
  */
-export const createUtilitiesDocsSearchParams = (
+export const createDocsSearchParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsSearchParams, 'context' | 'sessionId' | 'userId'>
@@ -51,7 +51,7 @@ export const createUtilitiesDocsSearchParams = (
 /**
  * Factory function for creating UtilitiesDocsSearchResult with defaults
  */
-export const createUtilitiesDocsSearchResult = (
+export const createDocsSearchResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsSearchResult, 'context' | 'sessionId' | 'userId'>
@@ -64,7 +64,7 @@ export const createUtilitiesDocsSearchResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createUtilitiesDocsSearchResultFromParams = (
+export const createDocsSearchResultFromParams = (
   params: DocsSearchParams,
   differences: Omit<DocsSearchResult, 'context' | 'sessionId' | 'userId'>
 ): DocsSearchResult => transformPayload(params, differences);

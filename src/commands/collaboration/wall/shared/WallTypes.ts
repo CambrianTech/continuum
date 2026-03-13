@@ -353,7 +353,7 @@ export const WallDiff = {
 /**
  * Factory function for creating CollaborationWallParams
  */
-export const createCollaborationWallParams = (
+export const createWallWriteParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<WallWriteParams, 'context' | 'sessionId' | 'userId'>
@@ -365,7 +365,7 @@ export const createCollaborationWallParams = (
 /**
  * Factory function for creating CollaborationWallResult with defaults
  */
-export const createCollaborationWallResult = (
+export const createWallWriteResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<WallWriteResult, 'context' | 'sessionId' | 'userId'>
@@ -378,7 +378,7 @@ export const createCollaborationWallResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationWallResultFromParams = (
+export const createWallWriteResultFromParams = (
   params: WallWriteParams,
   differences: Omit<WallWriteResult, 'context' | 'sessionId' | 'userId'>
 ): WallWriteResult => transformPayload(params, differences);

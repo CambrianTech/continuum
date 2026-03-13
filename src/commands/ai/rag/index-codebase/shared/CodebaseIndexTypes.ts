@@ -99,7 +99,7 @@ export const CodebaseIndex = {
 /**
  * Factory function for creating AiRagIndexCodebaseParams
  */
-export const createAiRagIndexCodebaseParams = (
+export const createCodebaseIndexParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<CodebaseIndexParams, 'context' | 'sessionId' | 'userId'>
@@ -111,7 +111,7 @@ export const createAiRagIndexCodebaseParams = (
 /**
  * Factory function for creating AiRagIndexCodebaseResult with defaults
  */
-export const createAiRagIndexCodebaseResult = (
+export const createCodebaseIndexResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<CodebaseIndexResult, 'context' | 'sessionId' | 'userId'>
@@ -124,7 +124,7 @@ export const createAiRagIndexCodebaseResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiRagIndexCodebaseResultFromParams = (
+export const createCodebaseIndexResultFromParams = (
   params: CodebaseIndexParams,
   differences: Omit<CodebaseIndexResult, 'context' | 'sessionId' | 'userId'>
 ): CodebaseIndexResult => transformPayload(params, differences);

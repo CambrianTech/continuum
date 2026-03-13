@@ -47,7 +47,7 @@ export const LiveLeave = {
 /**
  * Factory function for creating CollaborationLiveLeaveParams
  */
-export const createCollaborationLiveLeaveParams = (
+export const createLiveLeaveParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveLeaveParams, 'context' | 'sessionId' | 'userId'>
@@ -59,7 +59,7 @@ export const createCollaborationLiveLeaveParams = (
 /**
  * Factory function for creating CollaborationLiveLeaveResult with defaults
  */
-export const createCollaborationLiveLeaveResult = (
+export const createLiveLeaveResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveLeaveResult, 'context' | 'sessionId' | 'userId'>
@@ -72,7 +72,7 @@ export const createCollaborationLiveLeaveResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationLiveLeaveResultFromParams = (
+export const createLiveLeaveResultFromParams = (
   params: LiveLeaveParams,
   differences: Omit<LiveLeaveResult, 'context' | 'sessionId' | 'userId'>
 ): LiveLeaveResult => transformPayload(params, differences);

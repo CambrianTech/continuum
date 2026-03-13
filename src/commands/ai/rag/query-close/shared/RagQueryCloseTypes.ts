@@ -45,7 +45,7 @@ export const RagQueryClose = {
 /**
  * Factory function for creating AiRagQueryCloseParams
  */
-export const createAiRagQueryCloseParams = (
+export const createRagQueryCloseParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryCloseParams, 'context' | 'sessionId' | 'userId'>
@@ -57,7 +57,7 @@ export const createAiRagQueryCloseParams = (
 /**
  * Factory function for creating AiRagQueryCloseResult with defaults
  */
-export const createAiRagQueryCloseResult = (
+export const createRagQueryCloseResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryCloseResult, 'context' | 'sessionId' | 'userId'>
@@ -70,7 +70,7 @@ export const createAiRagQueryCloseResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiRagQueryCloseResultFromParams = (
+export const createRagQueryCloseResultFromParams = (
   params: RagQueryCloseParams,
   differences: Omit<RagQueryCloseResult, 'context' | 'sessionId' | 'userId'>
 ): RagQueryCloseResult => transformPayload(params, differences);

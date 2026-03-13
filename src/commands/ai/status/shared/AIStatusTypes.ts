@@ -101,7 +101,7 @@ export const AIStatus = {
 /**
  * Factory function for creating AiStatusParams
  */
-export const createAiStatusParams = (
+export const createAIStatusParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIStatusParams, 'context' | 'sessionId' | 'userId'>
@@ -113,7 +113,7 @@ export const createAiStatusParams = (
 /**
  * Factory function for creating AiStatusResult with defaults
  */
-export const createAiStatusResult = (
+export const createAIStatusResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AIStatusResult, 'context' | 'sessionId' | 'userId'>
@@ -126,7 +126,7 @@ export const createAiStatusResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiStatusResultFromParams = (
+export const createAIStatusResultFromParams = (
   params: AIStatusParams,
   differences: Omit<AIStatusResult, 'context' | 'sessionId' | 'userId'>
 ): AIStatusResult => transformPayload(params, differences);

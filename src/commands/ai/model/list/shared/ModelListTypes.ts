@@ -109,7 +109,7 @@ export const ModelList = {
 /**
  * Factory function for creating AiModelListParams
  */
-export const createAiModelListParams = (
+export const createModelListParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ModelListParams, 'context' | 'sessionId' | 'userId'>
@@ -121,7 +121,7 @@ export const createAiModelListParams = (
 /**
  * Factory function for creating AiModelListResult with defaults
  */
-export const createAiModelListResult = (
+export const createModelListResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ModelListResult, 'context' | 'sessionId' | 'userId'>
@@ -134,7 +134,7 @@ export const createAiModelListResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiModelListResultFromParams = (
+export const createModelListResultFromParams = (
   params: ModelListParams,
   differences: Omit<ModelListResult, 'context' | 'sessionId' | 'userId'>
 ): ModelListResult => transformPayload(params, differences);

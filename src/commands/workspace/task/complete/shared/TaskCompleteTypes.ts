@@ -81,7 +81,7 @@ export const TaskComplete = {
 /**
  * Factory function for creating WorkspaceTaskCompleteParams
  */
-export const createWorkspaceTaskCompleteParams = (
+export const createTaskCompleteParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<TaskCompleteParams, 'context' | 'sessionId' | 'userId'>
@@ -93,7 +93,7 @@ export const createWorkspaceTaskCompleteParams = (
 /**
  * Factory function for creating WorkspaceTaskCompleteResult with defaults
  */
-export const createWorkspaceTaskCompleteResult = (
+export const createTaskCompleteResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<TaskCompleteResult, 'context' | 'sessionId' | 'userId'>
@@ -106,7 +106,7 @@ export const createWorkspaceTaskCompleteResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createWorkspaceTaskCompleteResultFromParams = (
+export const createTaskCompleteResultFromParams = (
   params: TaskCompleteParams,
   differences: Omit<TaskCompleteResult, 'context' | 'sessionId' | 'userId'>
 ): TaskCompleteResult => transformPayload(params, differences);

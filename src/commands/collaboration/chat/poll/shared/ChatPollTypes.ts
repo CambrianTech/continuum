@@ -63,7 +63,7 @@ export const ChatPoll = {
 /**
  * Factory function for creating CollaborationChatPollParams
  */
-export const createCollaborationChatPollParams = (
+export const createChatPollParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ChatPollParams, 'context' | 'sessionId' | 'userId'>
@@ -75,7 +75,7 @@ export const createCollaborationChatPollParams = (
 /**
  * Factory function for creating CollaborationChatPollResult with defaults
  */
-export const createCollaborationChatPollResult = (
+export const createChatPollResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ChatPollResult, 'context' | 'sessionId' | 'userId'>
@@ -88,7 +88,7 @@ export const createCollaborationChatPollResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationChatPollResultFromParams = (
+export const createChatPollResultFromParams = (
   params: ChatPollParams,
   differences: Omit<ChatPollResult, 'context' | 'sessionId' | 'userId'>
 ): ChatPollResult => transformPayload(params, differences);

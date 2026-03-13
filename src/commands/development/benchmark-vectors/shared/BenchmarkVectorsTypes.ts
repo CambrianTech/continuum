@@ -77,7 +77,7 @@ export const BenchmarkVectors = {
 /**
  * Factory function for creating DevelopmentBenchmarkVectorsParams
  */
-export const createDevelopmentBenchmarkVectorsParams = (
+export const createBenchmarkVectorsParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<BenchmarkVectorsParams, 'context' | 'sessionId' | 'userId'>
@@ -89,7 +89,7 @@ export const createDevelopmentBenchmarkVectorsParams = (
 /**
  * Factory function for creating DevelopmentBenchmarkVectorsResult with defaults
  */
-export const createDevelopmentBenchmarkVectorsResult = (
+export const createBenchmarkVectorsResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<BenchmarkVectorsResult, 'context' | 'sessionId' | 'userId'>
@@ -102,7 +102,7 @@ export const createDevelopmentBenchmarkVectorsResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDevelopmentBenchmarkVectorsResultFromParams = (
+export const createBenchmarkVectorsResultFromParams = (
   params: BenchmarkVectorsParams,
   differences: Omit<BenchmarkVectorsResult, 'context' | 'sessionId' | 'userId'>
 ): BenchmarkVectorsResult => transformPayload(params, differences);

@@ -173,7 +173,7 @@ export const AICost = {
 /**
  * Factory function for creating AiCostParams
  */
-export const createAiCostParams = (
+export const createAICostParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AICostParams, 'context' | 'sessionId' | 'userId'>
@@ -185,7 +185,7 @@ export const createAiCostParams = (
 /**
  * Factory function for creating AiCostResult with defaults
  */
-export const createAiCostResult = (
+export const createAICostResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<AICostResult, 'context' | 'sessionId' | 'userId'>
@@ -198,7 +198,7 @@ export const createAiCostResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiCostResultFromParams = (
+export const createAICostResultFromParams = (
   params: AICostParams,
   differences: Omit<AICostResult, 'context' | 'sessionId' | 'userId'>
 ): AICostResult => transformPayload(params, differences);

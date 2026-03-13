@@ -81,7 +81,7 @@ export const ActivityUpdate = {
 /**
  * Factory function for creating CollaborationActivityUpdateParams
  */
-export const createCollaborationActivityUpdateParams = (
+export const createActivityUpdateParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityUpdateParams, 'context' | 'sessionId' | 'userId'>
@@ -93,7 +93,7 @@ export const createCollaborationActivityUpdateParams = (
 /**
  * Factory function for creating CollaborationActivityUpdateResult with defaults
  */
-export const createCollaborationActivityUpdateResult = (
+export const createActivityUpdateResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityUpdateResult, 'context' | 'sessionId' | 'userId'>
@@ -106,7 +106,7 @@ export const createCollaborationActivityUpdateResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationActivityUpdateResultFromParams = (
+export const createActivityUpdateResultFromParams = (
   params: ActivityUpdateParams,
   differences: Omit<ActivityUpdateResult, 'context' | 'sessionId' | 'userId'>
 ): ActivityUpdateResult => transformPayload(params, differences);

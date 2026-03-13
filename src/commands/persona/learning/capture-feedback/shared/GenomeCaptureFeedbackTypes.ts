@@ -137,7 +137,7 @@ export const GenomeCaptureFeedback = {
 /**
  * Factory function for creating PersonaLearningCaptureFeedbackParams
  */
-export const createPersonaLearningCaptureFeedbackParams = (
+export const createGenomeCaptureFeedbackParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeCaptureFeedbackParams, 'context' | 'sessionId' | 'userId'>
@@ -149,7 +149,7 @@ export const createPersonaLearningCaptureFeedbackParams = (
 /**
  * Factory function for creating PersonaLearningCaptureFeedbackResult with defaults
  */
-export const createPersonaLearningCaptureFeedbackResult = (
+export const createGenomeCaptureFeedbackResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeCaptureFeedbackResult, 'context' | 'sessionId' | 'userId'>
@@ -162,7 +162,7 @@ export const createPersonaLearningCaptureFeedbackResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createPersonaLearningCaptureFeedbackResultFromParams = (
+export const createGenomeCaptureFeedbackResultFromParams = (
   params: GenomeCaptureFeedbackParams,
   differences: Omit<GenomeCaptureFeedbackResult, 'context' | 'sessionId' | 'userId'>
 ): GenomeCaptureFeedbackResult => transformPayload(params, differences);

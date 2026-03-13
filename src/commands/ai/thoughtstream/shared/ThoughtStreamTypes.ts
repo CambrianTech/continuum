@@ -156,7 +156,7 @@ export const ThoughtStream = {
 /**
  * Factory function for creating AiThoughtstreamParams
  */
-export const createAiThoughtstreamParams = (
+export const createThoughtStreamParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ThoughtStreamParams, 'context' | 'sessionId' | 'userId'>
@@ -168,7 +168,7 @@ export const createAiThoughtstreamParams = (
 /**
  * Factory function for creating AiThoughtstreamResult with defaults
  */
-export const createAiThoughtstreamResult = (
+export const createThoughtStreamResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ThoughtStreamResult, 'context' | 'sessionId' | 'userId'>
@@ -181,7 +181,7 @@ export const createAiThoughtstreamResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiThoughtstreamResultFromParams = (
+export const createThoughtStreamResultFromParams = (
   params: ThoughtStreamParams,
   differences: Omit<ThoughtStreamResult, 'context' | 'sessionId' | 'userId'>
 ): ThoughtStreamResult => transformPayload(params, differences);

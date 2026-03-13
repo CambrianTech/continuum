@@ -12,7 +12,7 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { BaseDataParams, BaseDataResult, DataCommandInput } from '../../shared/BaseDataTypes';
-import { createBaseDataParams } from '../../shared/BaseDataTypes';
+import { createDataParams } from '../../shared/BaseDataTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { MediaItem } from '../../../../system/data/entities/ChatMessageEntity';
 
@@ -34,7 +34,7 @@ export const createDataReadParams = (
   sessionId: UUID,
   data: Omit<DataReadParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): DataReadParams => {
-  const baseParams = createBaseDataParams(context, sessionId, {
+  const baseParams = createDataParams(context, sessionId, {
     collection: data.collection,
     backend: data.backend,
     dbHandle: data.dbHandle

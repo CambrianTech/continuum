@@ -48,7 +48,7 @@ export const DocsRead = {
 /**
  * Factory function for creating UtilitiesDocsReadParams
  */
-export const createUtilitiesDocsReadParams = (
+export const createDocsReadParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsReadParams, 'context' | 'sessionId' | 'userId'>
@@ -60,7 +60,7 @@ export const createUtilitiesDocsReadParams = (
 /**
  * Factory function for creating UtilitiesDocsReadResult with defaults
  */
-export const createUtilitiesDocsReadResult = (
+export const createDocsReadResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<DocsReadResult, 'context' | 'sessionId' | 'userId'>
@@ -73,7 +73,7 @@ export const createUtilitiesDocsReadResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createUtilitiesDocsReadResultFromParams = (
+export const createDocsReadResultFromParams = (
   params: DocsReadParams,
   differences: Omit<DocsReadResult, 'context' | 'sessionId' | 'userId'>
 ): DocsReadResult => transformPayload(params, differences);

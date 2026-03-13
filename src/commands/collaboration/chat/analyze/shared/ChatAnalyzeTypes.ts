@@ -72,7 +72,7 @@ export const ChatAnalyze = {
 /**
  * Factory function for creating CollaborationChatAnalyzeParams
  */
-export const createCollaborationChatAnalyzeParams = (
+export const createChatAnalyzeParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ChatAnalyzeParams, 'context' | 'sessionId' | 'userId'>
@@ -84,7 +84,7 @@ export const createCollaborationChatAnalyzeParams = (
 /**
  * Factory function for creating CollaborationChatAnalyzeResult with defaults
  */
-export const createCollaborationChatAnalyzeResult = (
+export const createChatAnalyzeResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ChatAnalyzeResult, 'context' | 'sessionId' | 'userId'>
@@ -97,7 +97,7 @@ export const createCollaborationChatAnalyzeResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationChatAnalyzeResultFromParams = (
+export const createChatAnalyzeResultFromParams = (
   params: ChatAnalyzeParams,
   differences: Omit<ChatAnalyzeResult, 'context' | 'sessionId' | 'userId'>
 ): ChatAnalyzeResult => transformPayload(params, differences);

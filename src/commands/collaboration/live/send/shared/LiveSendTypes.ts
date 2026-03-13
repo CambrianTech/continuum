@@ -60,7 +60,7 @@ export const LiveSend = {
 /**
  * Factory function for creating CollaborationLiveSendParams
  */
-export const createCollaborationLiveSendParams = (
+export const createLiveSendParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveSendParams, 'context' | 'sessionId' | 'userId'>
@@ -72,7 +72,7 @@ export const createCollaborationLiveSendParams = (
 /**
  * Factory function for creating CollaborationLiveSendResult with defaults
  */
-export const createCollaborationLiveSendResult = (
+export const createLiveSendResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveSendResult, 'context' | 'sessionId' | 'userId'>
@@ -85,7 +85,7 @@ export const createCollaborationLiveSendResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationLiveSendResultFromParams = (
+export const createLiveSendResultFromParams = (
   params: LiveSendParams,
   differences: Omit<LiveSendResult, 'context' | 'sessionId' | 'userId'>
 ): LiveSendResult => transformPayload(params, differences);

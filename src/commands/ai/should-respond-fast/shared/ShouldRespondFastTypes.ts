@@ -173,7 +173,7 @@ export const ShouldRespondFast = {
 /**
  * Factory function for creating AiShouldRespondFastParams
  */
-export const createAiShouldRespondFastParams = (
+export const createShouldRespondFastParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ShouldRespondFastParams, 'context' | 'sessionId' | 'userId'>
@@ -185,7 +185,7 @@ export const createAiShouldRespondFastParams = (
 /**
  * Factory function for creating AiShouldRespondFastResult with defaults
  */
-export const createAiShouldRespondFastResult = (
+export const createShouldRespondFastResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ShouldRespondFastResult, 'context' | 'sessionId' | 'userId'>
@@ -198,7 +198,7 @@ export const createAiShouldRespondFastResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiShouldRespondFastResultFromParams = (
+export const createShouldRespondFastResultFromParams = (
   params: ShouldRespondFastParams,
   differences: Omit<ShouldRespondFastResult, 'context' | 'sessionId' | 'userId'>
 ): ShouldRespondFastResult => transformPayload(params, differences);

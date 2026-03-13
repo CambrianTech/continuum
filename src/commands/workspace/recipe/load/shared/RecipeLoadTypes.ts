@@ -47,7 +47,7 @@ export const RecipeLoad = {
 /**
  * Factory function for creating WorkspaceRecipeLoadParams
  */
-export const createWorkspaceRecipeLoadParams = (
+export const createRecipeLoadParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RecipeLoadParams, 'context' | 'sessionId' | 'userId'>
@@ -59,7 +59,7 @@ export const createWorkspaceRecipeLoadParams = (
 /**
  * Factory function for creating WorkspaceRecipeLoadResult with defaults
  */
-export const createWorkspaceRecipeLoadResult = (
+export const createRecipeLoadResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RecipeLoadResult, 'context' | 'sessionId' | 'userId'>
@@ -72,7 +72,7 @@ export const createWorkspaceRecipeLoadResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createWorkspaceRecipeLoadResultFromParams = (
+export const createRecipeLoadResultFromParams = (
   params: RecipeLoadParams,
   differences: Omit<RecipeLoadResult, 'context' | 'sessionId' | 'userId'>
 ): RecipeLoadResult => transformPayload(params, differences);

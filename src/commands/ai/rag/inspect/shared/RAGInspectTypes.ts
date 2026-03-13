@@ -138,7 +138,7 @@ export const RAGInspect = {
 /**
  * Factory function for creating AiRagInspectParams
  */
-export const createAiRagInspectParams = (
+export const createRAGInspectParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGInspectParams, 'context' | 'sessionId' | 'userId'>
@@ -150,7 +150,7 @@ export const createAiRagInspectParams = (
 /**
  * Factory function for creating AiRagInspectResult with defaults
  */
-export const createAiRagInspectResult = (
+export const createRAGInspectResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RAGInspectResult, 'context' | 'sessionId' | 'userId'>
@@ -163,7 +163,7 @@ export const createAiRagInspectResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiRagInspectResultFromParams = (
+export const createRAGInspectResultFromParams = (
   params: RAGInspectParams,
   differences: Omit<RAGInspectResult, 'context' | 'sessionId' | 'userId'>
 ): RAGInspectResult => transformPayload(params, differences);

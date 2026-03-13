@@ -58,7 +58,7 @@ export const ModelFind = {
 /**
  * Factory function for creating AiModelFindParams
  */
-export const createAiModelFindParams = (
+export const createModelFindParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ModelFindParams, 'context' | 'sessionId' | 'userId'>
@@ -70,7 +70,7 @@ export const createAiModelFindParams = (
 /**
  * Factory function for creating AiModelFindResult with defaults
  */
-export const createAiModelFindResult = (
+export const createModelFindResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ModelFindResult, 'context' | 'sessionId' | 'userId'>
@@ -83,7 +83,7 @@ export const createAiModelFindResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiModelFindResultFromParams = (
+export const createModelFindResultFromParams = (
   params: ModelFindParams,
   differences: Omit<ModelFindResult, 'context' | 'sessionId' | 'userId'>
 ): ModelFindResult => transformPayload(params, differences);

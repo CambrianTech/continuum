@@ -56,7 +56,7 @@ export const ActivityJoin = {
 /**
  * Factory function for creating CollaborationActivityJoinParams
  */
-export const createCollaborationActivityJoinParams = (
+export const createActivityJoinParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityJoinParams, 'context' | 'sessionId' | 'userId'>
@@ -68,7 +68,7 @@ export const createCollaborationActivityJoinParams = (
 /**
  * Factory function for creating CollaborationActivityJoinResult with defaults
  */
-export const createCollaborationActivityJoinResult = (
+export const createActivityJoinResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ActivityJoinResult, 'context' | 'sessionId' | 'userId'>
@@ -81,7 +81,7 @@ export const createCollaborationActivityJoinResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationActivityJoinResultFromParams = (
+export const createActivityJoinResultFromParams = (
   params: ActivityJoinParams,
   differences: Omit<ActivityJoinResult, 'context' | 'sessionId' | 'userId'>
 ): ActivityJoinResult => transformPayload(params, differences);

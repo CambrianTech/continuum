@@ -100,7 +100,7 @@ export const GenomeCaptureInteraction = {
 /**
  * Factory function for creating PersonaLearningCaptureInteractionParams
  */
-export const createPersonaLearningCaptureInteractionParams = (
+export const createGenomeCaptureInteractionParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeCaptureInteractionParams, 'context' | 'sessionId' | 'userId'>
@@ -112,7 +112,7 @@ export const createPersonaLearningCaptureInteractionParams = (
 /**
  * Factory function for creating PersonaLearningCaptureInteractionResult with defaults
  */
-export const createPersonaLearningCaptureInteractionResult = (
+export const createGenomeCaptureInteractionResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<GenomeCaptureInteractionResult, 'context' | 'sessionId' | 'userId'>
@@ -125,7 +125,7 @@ export const createPersonaLearningCaptureInteractionResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createPersonaLearningCaptureInteractionResultFromParams = (
+export const createGenomeCaptureInteractionResultFromParams = (
   params: GenomeCaptureInteractionParams,
   differences: Omit<GenomeCaptureInteractionResult, 'context' | 'sessionId' | 'userId'>
 ): GenomeCaptureInteractionResult => transformPayload(params, differences);

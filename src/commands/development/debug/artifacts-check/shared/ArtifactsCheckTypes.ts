@@ -47,7 +47,7 @@ export const ArtifactsCheck = {
 /**
  * Factory function for creating DevelopmentDebugArtifactsCheckParams
  */
-export const createDevelopmentDebugArtifactsCheckParams = (
+export const createArtifactsCheckParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ArtifactsCheckParams, 'context' | 'sessionId' | 'userId'>
@@ -59,7 +59,7 @@ export const createDevelopmentDebugArtifactsCheckParams = (
 /**
  * Factory function for creating DevelopmentDebugArtifactsCheckResult with defaults
  */
-export const createDevelopmentDebugArtifactsCheckResult = (
+export const createArtifactsCheckResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<ArtifactsCheckResult, 'context' | 'sessionId' | 'userId'>
@@ -72,7 +72,7 @@ export const createDevelopmentDebugArtifactsCheckResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDevelopmentDebugArtifactsCheckResultFromParams = (
+export const createArtifactsCheckResultFromParams = (
   params: ArtifactsCheckParams,
   differences: Omit<ArtifactsCheckResult, 'context' | 'sessionId' | 'userId'>
 ): ArtifactsCheckResult => transformPayload(params, differences);

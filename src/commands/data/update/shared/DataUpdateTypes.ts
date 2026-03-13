@@ -9,7 +9,7 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { BaseDataParams, BaseDataResult, DataCommandInput } from '../../shared/BaseDataTypes';
-import { createBaseDataParams } from '../../shared/BaseDataTypes';
+import { createDataParams } from '../../shared/BaseDataTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 /** Data update command parameters */
@@ -45,7 +45,7 @@ export const createDataUpdateParams = (
   sessionId: UUID,
   data: Omit<DataUpdateParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): DataUpdateParams => {
-  const baseParams = createBaseDataParams(context, sessionId, {
+  const baseParams = createDataParams(context, sessionId, {
     collection: data.collection,
     backend: data.backend,
     dbHandle: data.dbHandle

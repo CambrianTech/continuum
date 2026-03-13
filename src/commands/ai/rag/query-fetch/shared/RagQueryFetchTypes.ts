@@ -108,7 +108,7 @@ export const RagQueryFetch = {
 /**
  * Factory function for creating AiRagQueryFetchParams
  */
-export const createAiRagQueryFetchParams = (
+export const createRagQueryFetchParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryFetchParams, 'context' | 'sessionId' | 'userId'>
@@ -120,7 +120,7 @@ export const createAiRagQueryFetchParams = (
 /**
  * Factory function for creating AiRagQueryFetchResult with defaults
  */
-export const createAiRagQueryFetchResult = (
+export const createRagQueryFetchResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<RagQueryFetchResult, 'context' | 'sessionId' | 'userId'>
@@ -133,7 +133,7 @@ export const createAiRagQueryFetchResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createAiRagQueryFetchResultFromParams = (
+export const createRagQueryFetchResultFromParams = (
   params: RagQueryFetchParams,
   differences: Omit<RagQueryFetchResult, 'context' | 'sessionId' | 'userId'>
 ): RagQueryFetchResult => transformPayload(params, differences);

@@ -64,7 +64,7 @@ export const LiveExport = {
 /**
  * Factory function for creating CollaborationLiveExportParams
  */
-export const createCollaborationLiveExportParams = (
+export const createLiveExportParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveExportParams, 'context' | 'sessionId' | 'userId'>
@@ -76,7 +76,7 @@ export const createCollaborationLiveExportParams = (
 /**
  * Factory function for creating CollaborationLiveExportResult with defaults
  */
-export const createCollaborationLiveExportResult = (
+export const createLiveExportResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<LiveExportResult, 'context' | 'sessionId' | 'userId'>
@@ -89,7 +89,7 @@ export const createCollaborationLiveExportResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createCollaborationLiveExportResultFromParams = (
+export const createLiveExportResultFromParams = (
   params: LiveExportParams,
   differences: Omit<LiveExportResult, 'context' | 'sessionId' | 'userId'>
 ): LiveExportResult => transformPayload(params, differences);

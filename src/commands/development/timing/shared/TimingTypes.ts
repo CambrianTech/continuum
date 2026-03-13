@@ -142,7 +142,7 @@ export const Timing = {
 /**
  * Factory function for creating DevelopmentTimingParams
  */
-export const createDevelopmentTimingParams = (
+export const createTimingParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<TimingParams, 'context' | 'sessionId' | 'userId'>
@@ -154,7 +154,7 @@ export const createDevelopmentTimingParams = (
 /**
  * Factory function for creating DevelopmentTimingResult with defaults
  */
-export const createDevelopmentTimingResult = (
+export const createTimingResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<TimingResult, 'context' | 'sessionId' | 'userId'>
@@ -167,7 +167,7 @@ export const createDevelopmentTimingResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createDevelopmentTimingResultFromParams = (
+export const createTimingResultFromParams = (
   params: TimingParams,
   differences: Omit<TimingResult, 'context' | 'sessionId' | 'userId'>
 ): TimingResult => transformPayload(params, differences);

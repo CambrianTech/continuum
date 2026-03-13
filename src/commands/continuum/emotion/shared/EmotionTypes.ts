@@ -39,7 +39,7 @@ export const Emotion = {
 /**
  * Factory function for creating ContinuumEmotionParams
  */
-export const createContinuumEmotionParams = (
+export const createEmotionParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<EmotionParams, 'context' | 'sessionId' | 'userId'>
@@ -51,7 +51,7 @@ export const createContinuumEmotionParams = (
 /**
  * Factory function for creating ContinuumEmotionResult with defaults
  */
-export const createContinuumEmotionResult = (
+export const createEmotionResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: Omit<EmotionResult, 'context' | 'sessionId' | 'userId'>
@@ -64,7 +64,7 @@ export const createContinuumEmotionResult = (
  * Auto-inherits context and sessionId from params
  * Must provide all required result fields
  */
-export const createContinuumEmotionResultFromParams = (
+export const createEmotionResultFromParams = (
   params: EmotionParams,
   differences: Omit<EmotionResult, 'context' | 'sessionId' | 'userId'>
 ): EmotionResult => transformPayload(params, differences);
