@@ -202,6 +202,11 @@ pub struct LiveKitAgent {
     /// The event handler sends new (width, height) when the tier changes;
     /// the video loop receives and calls publisher.resize().
     resolution_rx: tokio::sync::watch::Receiver<(u32, u32)>,
+    /// Shutdown signal — sent by disconnect() to terminate the video loop.
+    /// Without this, video loops are immortal: try_publish only fails when the
+    /// Bevy frame channel closes (sender dropped), which never happens because
+    /// Bevy runs independently. room.close() does NOT affect the frame channel.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl LiveKitAgent {
@@ -456,6 +461,7 @@ impl LiveKitAgent {
             }
         });
 
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let agent = Self {
             room,
             audio_source,
@@ -467,6 +473,7 @@ impl LiveKitAgent {
             display_name: persona_name.to_string(),
             voice_name: std::sync::Mutex::new(None),
             resolution_rx,
+            shutdown_tx,
         };
 
         Ok((agent, event_rx))
@@ -675,6 +682,9 @@ impl LiveKitAgent {
     /// without requiring sole ownership (which fails when video loop holds a clone).
     pub async fn disconnect(&self) {
         clog_info!("🔊 LiveKitAgent '{}' disconnecting", self.identity);
+        // Signal video loop to exit. Without this, video loops run forever because
+        // try_publish only checks the Bevy frame channel (always alive), not the room.
+        let _ = self.shutdown_tx.send(true);
         let _ = self.room.close().await;
     }
 
@@ -853,6 +863,7 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
     };
 
     let agent_clone = agent.clone();
+    let mut shutdown_rx = agent.shutdown_tx.subscribe();
     tokio::spawn(async move {
         let agent = agent_clone;
         let voice = agent.voice_name();
@@ -992,6 +1003,15 @@ fn start_video_loop(agent: Arc<LiveKitAgent>) {
             tokio::select! {
                 _ = frame_notify.notified() => {}
                 _ = tokio::time::sleep(std::time::Duration::from_millis(VIDEO_LOOP_TIMEOUT_MS)) => {}
+                _ = shutdown_rx.changed() => {
+                    clog_info!(
+                        "📹 Video loop shutdown signal for '{}' ({} frames, {:.0}s)",
+                        agent.identity,
+                        frames_published,
+                        loop_started.elapsed().as_secs_f64()
+                    );
+                    break;
+                }
             }
 
             // Check for resolution changes from the hysteresis logic.

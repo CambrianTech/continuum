@@ -154,14 +154,13 @@ impl AudioResourceLifecycle {
     /// Unload avatar models from Bevy render slots and clear identity mappings.
     ///
     /// Called after idle timeout — all agents are long gone, safe to teardown.
-    /// Clears identity→slot map so next call gets fresh allocations.
+    /// Clears identity→slot map, resets slot pool, and tears down Bevy scenes.
     fn unload_avatar_models() {
         if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
             let _ = bevy.command_sender().send(
                 crate::live::video::bevy_renderer::AvatarCommand::UnloadIdle,
             );
             // Clear identity→slot mappings so next call re-allocates + reloads.
-            // identity_to_slot_map() returns a clone — iterate and unregister each.
             let identities: Vec<String> = bevy.identity_to_slot_map().keys().cloned().collect();
             if !identities.is_empty() {
                 for identity in &identities {
@@ -174,6 +173,10 @@ impl AudioResourceLifecycle {
             }
             clog_info!("AudioResourceLifecycle: sent UnloadIdle to Bevy renderer");
         }
+        // Reset slot pool to full capacity. If any video loop tasks didn't exit
+        // cleanly (e.g., disconnect signal lost), their held slots are reclaimed.
+        // Safe because active_sessions == 0 — no call is using any slots.
+        crate::live::avatar::reset_slot_pool();
     }
 
     /// Shut down all STT and TTS adapters to reclaim memory.
