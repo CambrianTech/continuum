@@ -86,10 +86,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: record
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -108,8 +109,9 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: record
       };
       
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: undefined
@@ -118,7 +120,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
       
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -169,8 +171,8 @@ export class FileStorageAdapter extends DataStorageAdapter {
           }
         };
         
-      } catch (dirError: any) {
-        if (dirError.code === 'ENOENT') {
+      } catch (dirError: unknown) {
+        if ((dirError as NodeJS.ErrnoException).code === 'ENOENT') {
           // Collection doesn't exist
           return {
             success: true,
@@ -181,10 +183,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
         throw dirError;
       }
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -223,10 +226,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
       const createResult = await this.create(updated);
       return createResult;
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -244,8 +248,9 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: true
       };
       
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: false // File didn't exist
@@ -254,7 +259,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
       
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -274,8 +279,9 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: collections
       };
       
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === 'ENOENT') {
         return {
           success: true,
           data: []
@@ -284,7 +290,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
       
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -321,10 +327,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: stats
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -333,7 +340,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
    * Batch operations - Sequential file operations
    */
   async batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>> {
-    const results: any[] = [];
+    const results: unknown[] = [];
     
     try {
       for (const op of operations) {
@@ -380,10 +387,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: results
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         data: results
       };
     }
@@ -418,11 +426,12 @@ export class FileStorageAdapter extends DataStorageAdapter {
         data: true
       };
 
-    } catch (error: any) {
-      console.error('❌ FileStorage: Error clearing data:', error.message);
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      console.error('❌ FileStorage: Error clearing data:', err.message);
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -449,8 +458,8 @@ export class FileStorageAdapter extends DataStorageAdapter {
           data: true
         };
 
-      } catch (dirError: any) {
-        if (dirError.code === 'ENOENT') {
+      } catch (dirError: unknown) {
+        if ((dirError as NodeJS.ErrnoException).code === 'ENOENT') {
           // Collection doesn't exist, nothing to truncate
           console.log(`ℹ️ FileStorage: Collection '${collection}' doesn't exist, skipping truncate`);
           return {
@@ -461,11 +470,12 @@ export class FileStorageAdapter extends DataStorageAdapter {
         throw dirError;
       }
 
-    } catch (error: any) {
-      console.error(`❌ FileStorage: Error truncating collection '${collection}':`, error.message);
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      console.error(`❌ FileStorage: Error truncating collection '${collection}':`, err.message);
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -500,12 +510,12 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Check if record matches query filters
    */
-  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
+  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, unknown>): boolean {
     if (!filters) return true;
-    
+
     for (const [key, value] of Object.entries(filters)) {
       // Support nested property access with dot notation
-      const recordValue = this.getNestedProperty(record, key);
+      const recordValue = this.getNestedProperty(record as unknown as Record<string, unknown>, key);
       
       if (recordValue !== value) {
         return false;
@@ -518,8 +528,9 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Get nested property value using dot notation
    */
-  private getNestedProperty(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => current?.[key], obj);
+  private getNestedProperty(obj: Record<string, unknown>, path: string): unknown {
+    return path.split('.').reduce<unknown>((current, key) =>
+      (current && typeof current === 'object') ? (current as Record<string, unknown>)[key] : undefined, obj);
   }
   
   /**
@@ -575,11 +586,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
     sortFields: { field: string; direction: 'asc' | 'desc' }[]
   ): number {
     for (const sort of sortFields) {
-      const aValue = this.getNestedProperty(a, sort.field);
-      const bValue = this.getNestedProperty(b, sort.field);
+      const aValue = this.getNestedProperty(a as unknown as Record<string, unknown>, sort.field);
+      const bValue = this.getNestedProperty(b as unknown as Record<string, unknown>, sort.field);
 
-      if (aValue < bValue) return sort.direction === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sort.direction === 'asc' ? 1 : -1;
+      if ((aValue as string | number) < (bValue as string | number)) return sort.direction === 'asc' ? -1 : 1;
+      if ((aValue as string | number) > (bValue as string | number)) return sort.direction === 'asc' ? 1 : -1;
     }
 
     return 0;
