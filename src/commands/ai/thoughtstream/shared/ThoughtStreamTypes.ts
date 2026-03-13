@@ -5,8 +5,11 @@
  * Shows thought broadcasts, rankings, and final decisions
  */
 
-import type { CommandParams, JTAGContext, UUID, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, UUID, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface ThoughtStreamParams extends CommandParams {
   messageId?: string;                  // Specific message to inspect
@@ -88,9 +91,7 @@ export interface ThoughtStreamDecision {
   };
 }
 
-export interface ThoughtStreamResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface ThoughtStreamResult extends CommandResult {
   success: boolean;
   error?: string;
 
@@ -151,3 +152,37 @@ export const ThoughtStream = {
   },
   commandName: 'ai/thoughtstream' as const,
 } as const;
+
+/**
+ * Factory function for creating AiThoughtstreamParams
+ */
+export const createAiThoughtstreamParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ThoughtStreamParams, 'context' | 'sessionId' | 'userId'>
+): ThoughtStreamParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiThoughtstreamResult with defaults
+ */
+export const createAiThoughtstreamResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ThoughtStreamResult, 'context' | 'sessionId' | 'userId'>
+): ThoughtStreamResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/thoughtstream-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiThoughtstreamResultFromParams = (
+  params: ThoughtStreamParams,
+  differences: Omit<ThoughtStreamResult, 'context' | 'sessionId' | 'userId'>
+): ThoughtStreamResult => transformPayload(params, differences);
+

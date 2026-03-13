@@ -6,9 +6,12 @@
  * See TimingServerCommand.ts for details.
  */
 
-import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Individual timing record from Rust worker
@@ -97,9 +100,7 @@ export interface RequestTypeStats {
 /**
  * Full timing analysis result
  */
-export interface TimingResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface TimingResult extends CommandResult {
   success: boolean;
   error?: string;
 
@@ -137,3 +138,37 @@ export const Timing = {
   },
   commandName: 'development/timing' as const,
 } as const;
+
+/**
+ * Factory function for creating DevelopmentTimingParams
+ */
+export const createDevelopmentTimingParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<TimingParams, 'context' | 'sessionId' | 'userId'>
+): TimingParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating DevelopmentTimingResult with defaults
+ */
+export const createDevelopmentTimingResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<TimingResult, 'context' | 'sessionId' | 'userId'>
+): TimingResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart development/timing-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createDevelopmentTimingResultFromParams = (
+  params: TimingParams,
+  differences: Omit<TimingResult, 'context' | 'sessionId' | 'userId'>
+): TimingResult => transformPayload(params, differences);
+

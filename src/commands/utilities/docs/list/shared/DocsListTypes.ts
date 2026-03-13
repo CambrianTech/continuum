@@ -1,6 +1,9 @@
-import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
-import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Lists all available documentation files in the project, returning metadata such as file size, line count, section headings, and directory, with optional filtering by directory or filename pattern.
@@ -21,9 +24,7 @@ export interface DocMetadata {
   sections: string[];    // H1/H2 section titles
 }
 
-export interface DocsListResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface DocsListResult extends CommandResult {
   success: boolean;
   error?: string;
   docs: DocMetadata[];
@@ -47,3 +48,37 @@ export const DocsList = {
   },
   commandName: 'utilities/docs/list' as const,
 } as const;
+
+/**
+ * Factory function for creating UtilitiesDocsListParams
+ */
+export const createUtilitiesDocsListParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsListParams, 'context' | 'sessionId' | 'userId'>
+): DocsListParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating UtilitiesDocsListResult with defaults
+ */
+export const createUtilitiesDocsListResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsListResult, 'context' | 'sessionId' | 'userId'>
+): DocsListResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart utilities/docs/list-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createUtilitiesDocsListResultFromParams = (
+  params: DocsListParams,
+  differences: Omit<DocsListResult, 'context' | 'sessionId' | 'userId'>
+): DocsListResult => transformPayload(params, differences);
+
