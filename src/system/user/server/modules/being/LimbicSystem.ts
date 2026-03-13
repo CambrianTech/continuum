@@ -45,7 +45,7 @@ export interface PersonaUserForLimbic {
   readonly homeDirectory: string;
   /** Personal database handle (longterm.db) — set by Hippocampus, read by subsystems */
   personalDbHandle: DbHandle | null;
-  saveState(): Promise<void>;
+  saveState(): Promise<{ success: boolean; error?: string }>;
 }
 
 /**
