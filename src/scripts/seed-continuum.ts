@@ -85,7 +85,32 @@ async function ensurePersonaProfiles(usersByUniqueId: Map<string, UserEntity>): 
 
 // ===== LOCAL HELPERS (not in ./seed/helpers or ./seed/factories) =====
 
-function createMessageContent(text: string): any {
+interface MessageContent {
+  text: string;
+  attachments: unknown[];
+  formatting: {
+    markdown: boolean;
+    mentions: unknown[];
+    hashtags: unknown[];
+    links: unknown[];
+    codeBlocks: unknown[];
+  };
+}
+
+interface SeedMessage extends Record<string, unknown> {
+  id: string;
+  roomId: string;
+  senderId: string;
+  senderName: string;
+  senderType: string;
+  content: MessageContent;
+  status: string;
+  priority: string;
+  timestamp: string;
+  reactions: unknown[];
+}
+
+function createMessageContent(text: string): MessageContent {
   return {
     text,
     attachments: [],
@@ -99,7 +124,7 @@ function createMessageContent(text: string): any {
   };
 }
 
-function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string, senderType: 'human' | 'agent' | 'persona' | 'system' = 'system'): any {
+function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string, senderType: 'human' | 'agent' | 'persona' | 'system' = 'system'): SeedMessage {
   return {
     id,
     roomId,
@@ -164,17 +189,23 @@ async function loadAllUsers(): Promise<{
 /**
  * Load ALL rooms in one bulk call and return as array + uniqueId set.
  */
+interface LoadedRoom extends Record<string, unknown> {
+  id: string;
+  uniqueId: string;
+  members?: Array<{ userId: string; role: string; joinedAt: string }>;
+}
+
 async function loadAllRooms(): Promise<{
-  rooms: any[];
+  rooms: LoadedRoom[];
   uniqueIds: Set<string>;
 }> {
   try {
     const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection}`);
     const response = JSON.parse(stdout);
-    const rooms = response.success && response.items ? response.items : [];
-    const uniqueIds = new Set<string>(rooms.map((r: any) => r.uniqueId));
+    const rooms: LoadedRoom[] = response.success && response.items ? response.items : [];
+    const uniqueIds = new Set<string>(rooms.map(r => r.uniqueId));
     return { rooms, uniqueIds };
-  } catch (error) {
+  } catch {
     return { rooms: [], uniqueIds: new Set() };
   }
 }
@@ -418,14 +449,14 @@ async function seedViaJTAG() {
       // Ensure system rooms have Helper AI — using already-loaded room data (NO extra queries)
       if (helperPersona) {
         console.log('🏠 Ensuring system rooms have Helper AI...');
-        const helperUpdates: Promise<any>[] = [];
+        const helperUpdates: Promise<void>[] = [];
 
         for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
-          const room = existingRooms.find((r: any) => r.uniqueId === roomUniqueId);
+          const room = existingRooms.find(r => r.uniqueId === roomUniqueId);
           if (!room) continue;
 
           const existingMembers = room.members || [];
-          const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+          const helperAlreadyMember = existingMembers.some(m => m.userId === helperPersona.id);
 
           if (!helperAlreadyMember) {
             const updatedMembers = [
@@ -468,7 +499,7 @@ async function seedViaJTAG() {
 
     // System room helper setup (parallel — using rooms we just created)
     console.log('🏠 Adding Helper AI to system rooms...');
-    const systemRoomHelperUpdates: Promise<any>[] = [];
+    const systemRoomHelperUpdates: Promise<void>[] = [];
     for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
       systemRoomHelperUpdates.push(
         (async () => {
@@ -478,7 +509,7 @@ async function seedViaJTAG() {
             if (parsed.success && parsed.items?.[0]) {
               const room = parsed.items[0];
               const existingMembers = room.members || [];
-              const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+              const helperAlreadyMember = existingMembers.some(m => m.userId === helperPersona.id);
 
               if (!helperAlreadyMember) {
                 const updatedMembers = [
@@ -645,8 +676,8 @@ async function seedViaJTAG() {
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
-  } catch (error: any) {
-    console.error('❌ SEEDING FAILED:', error.message);
+  } catch (error: unknown) {
+    console.error('❌ SEEDING FAILED:', error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }
