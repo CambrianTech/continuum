@@ -69,7 +69,7 @@ pub fn reset_slot_pool() {
     let before = pool.len();
     pool.clear();
     pool.extend(0..max);
-    let recovered = max as usize - before;
+    let recovered = (max as usize).saturating_sub(before);
     if recovered > 0 {
         clog_warn!(
             "🎨 Slot pool reset: recovered {} zombie slots ({} → {} available)",

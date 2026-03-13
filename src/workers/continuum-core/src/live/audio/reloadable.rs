@@ -92,11 +92,12 @@ impl<T> ReloadableModel<T> {
     }
 }
 
-// SAFETY: ReloadableModel is Send + Sync because RwLock<Option<Arc<T>>> is Send + Sync
-// when T: Send + Sync. This is automatically derived by the compiler, but we document
-// the intent here for clarity.
-unsafe impl<T: Send + Sync> Send for ReloadableModel<T> {}
-unsafe impl<T: Send + Sync> Sync for ReloadableModel<T> {}
+// Send + Sync are auto-derived by the compiler since RwLock<Option<Arc<T>>> is
+// Send + Sync when T: Send + Sync. Compile-time assertion:
+fn _assert_send_sync<T: Send + Sync>() {
+    fn require_send_sync<U: Send + Sync>() {}
+    require_send_sync::<ReloadableModel<T>>();
+}
 
 #[cfg(test)]
 mod tests {
