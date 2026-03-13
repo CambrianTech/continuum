@@ -6,6 +6,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Generate vector embeddings from text or code for use in semantic search, similarity matching, and RAG retrieval.
@@ -66,3 +70,37 @@ export const EmbeddingGenerate = {
   },
   commandName: 'ai/embedding/generate' as const,
 } as const;
+
+/**
+ * Factory function for creating AiEmbeddingGenerateParams
+ */
+export const createAiEmbeddingGenerateParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<EmbeddingGenerateParams, 'context' | 'sessionId' | 'userId'>
+): EmbeddingGenerateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiEmbeddingGenerateResult with defaults
+ */
+export const createAiEmbeddingGenerateResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<EmbeddingGenerateResult, 'context' | 'sessionId' | 'userId'>
+): EmbeddingGenerateResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/embedding/generate-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiEmbeddingGenerateResultFromParams = (
+  params: EmbeddingGenerateParams,
+  differences: Omit<EmbeddingGenerateResult, 'context' | 'sessionId' | 'userId'>
+): EmbeddingGenerateResult => transformPayload(params, differences);
+

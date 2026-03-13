@@ -7,6 +7,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Whitelisted shell commands that can be executed
@@ -182,3 +186,37 @@ export const ShellExecute = {
   },
   commandName: 'development/shell/execute' as const,
 } as const;
+
+/**
+ * Factory function for creating DevelopmentShellExecuteParams
+ */
+export const createDevelopmentShellExecuteParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ShellExecuteParams, 'context' | 'sessionId' | 'userId'>
+): ShellExecuteParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating DevelopmentShellExecuteResult with defaults
+ */
+export const createDevelopmentShellExecuteResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ShellExecuteResult, 'context' | 'sessionId' | 'userId'>
+): ShellExecuteResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart development/shell/execute-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createDevelopmentShellExecuteResultFromParams = (
+  params: ShellExecuteParams,
+  differences: Omit<ShellExecuteResult, 'context' | 'sessionId' | 'userId'>
+): ShellExecuteResult => transformPayload(params, differences);
+

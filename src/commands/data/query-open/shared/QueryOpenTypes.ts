@@ -9,6 +9,9 @@ import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '.
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface DataQueryOpenParams extends CommandParams {
   readonly collection: string;
@@ -41,3 +44,37 @@ export const DataQueryOpen = {
   },
   commandName: 'data/query-open' as const,
 } as const;
+
+/**
+ * Factory function for creating DataQueryOpenParams
+ */
+export const createDataQueryOpenParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DataQueryOpenParams, 'context' | 'sessionId' | 'userId'>
+): DataQueryOpenParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating DataQueryOpenResult with defaults
+ */
+export const createDataQueryOpenResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DataQueryOpenResult, 'context' | 'sessionId' | 'userId'>
+): DataQueryOpenResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart data/query-open-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createDataQueryOpenResultFromParams = (
+  params: DataQueryOpenParams,
+  differences: Omit<DataQueryOpenResult, 'context' | 'sessionId' | 'userId'>
+): DataQueryOpenResult => transformPayload(params, differences);
+

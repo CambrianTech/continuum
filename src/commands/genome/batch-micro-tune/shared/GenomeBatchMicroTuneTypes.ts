@@ -8,6 +8,9 @@
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /** Perform a fast, in-memory LoRA micro-tune on accumulated training examples during recipe execution, without persisting weights to disk. */
 export interface GenomeBatchMicroTuneParams extends CommandParams {
@@ -89,3 +92,37 @@ export const GenomeBatchMicroTune = {
   },
   commandName: 'genome/batch-micro-tune' as const,
 } as const;
+
+/**
+ * Factory function for creating GenomeBatchMicroTuneParams
+ */
+export const createGenomeBatchMicroTuneParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeBatchMicroTuneParams, 'context' | 'sessionId' | 'userId'>
+): GenomeBatchMicroTuneParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating GenomeBatchMicroTuneResult with defaults
+ */
+export const createGenomeBatchMicroTuneResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeBatchMicroTuneResult, 'context' | 'sessionId' | 'userId'>
+): GenomeBatchMicroTuneResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart genome/batch-micro-tune-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createGenomeBatchMicroTuneResultFromParams = (
+  params: GenomeBatchMicroTuneParams,
+  differences: Omit<GenomeBatchMicroTuneResult, 'context' | 'sessionId' | 'userId'>
+): GenomeBatchMicroTuneResult => transformPayload(params, differences);
+

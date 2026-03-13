@@ -4,10 +4,12 @@
  * Get comprehensive status of all AI personas in the system
  */
 
-import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface AIStatusParams extends CommandParams {
   // Filtering
@@ -56,10 +58,7 @@ export interface PersonaHealth {
   toolsAvailable?: number;             // Number of tools available to this persona
 }
 
-export interface AIStatusResult {
-  context: JTAGContext;
-  sessionId: UUID;
-
+export interface AIStatusResult extends CommandResult {
   success: boolean;
   error?: string;
 
@@ -98,3 +97,37 @@ export const AIStatus = {
   },
   commandName: 'ai/status' as const,
 } as const;
+
+/**
+ * Factory function for creating AiStatusParams
+ */
+export const createAiStatusParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIStatusParams, 'context' | 'sessionId' | 'userId'>
+): AIStatusParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiStatusResult with defaults
+ */
+export const createAiStatusResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIStatusResult, 'context' | 'sessionId' | 'userId'>
+): AIStatusResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/status-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiStatusResultFromParams = (
+  params: AIStatusParams,
+  differences: Omit<AIStatusResult, 'context' | 'sessionId' | 'userId'>
+): AIStatusResult => transformPayload(params, differences);
+

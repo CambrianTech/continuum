@@ -7,6 +7,10 @@
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { RecipeEntity } from '@system/data/entities/RecipeEntity';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface RecipeLoadParams extends CommandParams {
   // Load specific recipe by uniqueId
@@ -39,3 +43,37 @@ export const RecipeLoad = {
   },
   commandName: 'workspace/recipe/load' as const,
 } as const;
+
+/**
+ * Factory function for creating WorkspaceRecipeLoadParams
+ */
+export const createWorkspaceRecipeLoadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RecipeLoadParams, 'context' | 'sessionId' | 'userId'>
+): RecipeLoadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating WorkspaceRecipeLoadResult with defaults
+ */
+export const createWorkspaceRecipeLoadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RecipeLoadResult, 'context' | 'sessionId' | 'userId'>
+): RecipeLoadResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart workspace/recipe/load-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createWorkspaceRecipeLoadResultFromParams = (
+  params: RecipeLoadParams,
+  differences: Omit<RecipeLoadResult, 'context' | 'sessionId' | 'userId'>
+): RecipeLoadResult => transformPayload(params, differences);
+

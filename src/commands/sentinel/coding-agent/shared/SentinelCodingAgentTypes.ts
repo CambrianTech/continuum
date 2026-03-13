@@ -7,6 +7,10 @@
 
 import type { CommandParams, CommandResult, CommandInput } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface SentinelCodingAgentParams extends CommandParams {
   /** Task prompt — what the agent should do */
@@ -102,3 +106,37 @@ export const SentinelCodingAgent = {
   },
   commandName: 'sentinel/coding-agent' as const,
 } as const;
+
+/**
+ * Factory function for creating SentinelCodingAgentParams
+ */
+export const createSentinelCodingAgentParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelCodingAgentParams, 'context' | 'sessionId' | 'userId'>
+): SentinelCodingAgentParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SentinelCodingAgentResult with defaults
+ */
+export const createSentinelCodingAgentResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelCodingAgentResult, 'context' | 'sessionId' | 'userId'>
+): SentinelCodingAgentResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart sentinel/coding-agent-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSentinelCodingAgentResultFromParams = (
+  params: SentinelCodingAgentParams,
+  differences: Omit<SentinelCodingAgentResult, 'context' | 'sessionId' | 'userId'>
+): SentinelCodingAgentResult => transformPayload(params, differences);
+

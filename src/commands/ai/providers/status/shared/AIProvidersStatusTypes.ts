@@ -7,6 +7,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface AIProvidersStatusParams extends CommandParams {
   // No additional params needed - returns all provider statuses
@@ -43,3 +47,37 @@ export const AIProvidersStatus = {
   },
   commandName: 'ai/providers/status' as const,
 } as const;
+
+/**
+ * Factory function for creating AiProvidersStatusParams
+ */
+export const createAiProvidersStatusParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIProvidersStatusParams, 'context' | 'sessionId' | 'userId'>
+): AIProvidersStatusParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiProvidersStatusResult with defaults
+ */
+export const createAiProvidersStatusResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIProvidersStatusResult, 'context' | 'sessionId' | 'userId'>
+): AIProvidersStatusResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/providers/status-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiProvidersStatusResultFromParams = (
+  params: AIProvidersStatusParams,
+  differences: Omit<AIProvidersStatusResult, 'context' | 'sessionId' | 'userId'>
+): AIProvidersStatusResult => transformPayload(params, differences);
+

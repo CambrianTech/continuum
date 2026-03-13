@@ -8,6 +8,10 @@
 import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { CodeExportType } from '../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Crawl and index TypeScript, Markdown, and other source files into the RAG store with domain-specific embeddings for semantic code search.
@@ -91,3 +95,37 @@ export const CodebaseIndex = {
   },
   commandName: 'ai/rag/index-codebase' as const,
 } as const;
+
+/**
+ * Factory function for creating AiRagIndexCodebaseParams
+ */
+export const createAiRagIndexCodebaseParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<CodebaseIndexParams, 'context' | 'sessionId' | 'userId'>
+): CodebaseIndexParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiRagIndexCodebaseResult with defaults
+ */
+export const createAiRagIndexCodebaseResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<CodebaseIndexResult, 'context' | 'sessionId' | 'userId'>
+): CodebaseIndexResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/rag/index-codebase-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiRagIndexCodebaseResultFromParams = (
+  params: CodebaseIndexParams,
+  differences: Omit<CodebaseIndexResult, 'context' | 'sessionId' | 'userId'>
+): CodebaseIndexResult => transformPayload(params, differences);
+

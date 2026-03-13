@@ -5,6 +5,10 @@
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Read a log stream for a sentinel with optional offset and limit for pagination.
@@ -50,3 +54,37 @@ export const SentinelLogsRead = {
   },
   commandName: 'sentinel/logs/read' as const,
 } as const;
+
+/**
+ * Factory function for creating SentinelLogsReadParams
+ */
+export const createSentinelLogsReadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelLogsReadParams, 'context' | 'sessionId' | 'userId'>
+): SentinelLogsReadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SentinelLogsReadResult with defaults
+ */
+export const createSentinelLogsReadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelLogsReadResult, 'context' | 'sessionId' | 'userId'>
+): SentinelLogsReadResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart sentinel/logs/read-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSentinelLogsReadResultFromParams = (
+  params: SentinelLogsReadParams,
+  differences: Omit<SentinelLogsReadResult, 'context' | 'sessionId' | 'userId'>
+): SentinelLogsReadResult => transformPayload(params, differences);
+

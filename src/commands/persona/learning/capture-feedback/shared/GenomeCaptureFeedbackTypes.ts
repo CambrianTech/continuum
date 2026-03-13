@@ -8,6 +8,9 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Type of feedback being provided
@@ -130,3 +133,37 @@ export const GenomeCaptureFeedback = {
   },
   commandName: 'persona/learning/capture-feedback' as const,
 } as const;
+
+/**
+ * Factory function for creating PersonaLearningCaptureFeedbackParams
+ */
+export const createPersonaLearningCaptureFeedbackParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeCaptureFeedbackParams, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureFeedbackParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating PersonaLearningCaptureFeedbackResult with defaults
+ */
+export const createPersonaLearningCaptureFeedbackResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeCaptureFeedbackResult, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureFeedbackResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart persona/learning/capture-feedback-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createPersonaLearningCaptureFeedbackResultFromParams = (
+  params: GenomeCaptureFeedbackParams,
+  differences: Omit<GenomeCaptureFeedbackResult, 'context' | 'sessionId' | 'userId'>
+): GenomeCaptureFeedbackResult => transformPayload(params, differences);
+

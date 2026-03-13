@@ -1,6 +1,9 @@
-import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
-import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Reads the content of a documentation file by name, with support for table-of-contents extraction, jumping to a specific section, or reading a line range.
@@ -19,9 +22,7 @@ export interface SectionInfo {
   lines: [number, number];  // [startLine, endLine]
 }
 
-export interface DocsReadResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface DocsReadResult extends CommandResult {
   success: boolean;
   error?: string;
   doc: string;
@@ -43,3 +44,37 @@ export const DocsRead = {
   },
   commandName: 'utilities/docs/read' as const,
 } as const;
+
+/**
+ * Factory function for creating UtilitiesDocsReadParams
+ */
+export const createUtilitiesDocsReadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsReadParams, 'context' | 'sessionId' | 'userId'>
+): DocsReadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating UtilitiesDocsReadResult with defaults
+ */
+export const createUtilitiesDocsReadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsReadResult, 'context' | 'sessionId' | 'userId'>
+): DocsReadResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart utilities/docs/read-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createUtilitiesDocsReadResultFromParams = (
+  params: DocsReadParams,
+  differences: Omit<DocsReadResult, 'context' | 'sessionId' | 'userId'>
+): DocsReadResult => transformPayload(params, differences);
+

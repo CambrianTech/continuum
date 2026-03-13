@@ -1,6 +1,9 @@
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /** Analyze a chat room for duplicate messages, timestamp anomalies, and data integrity issues. */
 export interface ChatAnalyzeParams extends CommandParams {
@@ -65,3 +68,37 @@ export const ChatAnalyze = {
   },
   commandName: 'collaboration/chat/analyze' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationChatAnalyzeParams
+ */
+export const createCollaborationChatAnalyzeParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatAnalyzeParams, 'context' | 'sessionId' | 'userId'>
+): ChatAnalyzeParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationChatAnalyzeResult with defaults
+ */
+export const createCollaborationChatAnalyzeResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatAnalyzeResult, 'context' | 'sessionId' | 'userId'>
+): ChatAnalyzeResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/chat/analyze-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationChatAnalyzeResultFromParams = (
+  params: ChatAnalyzeParams,
+  differences: Omit<ChatAnalyzeResult, 'context' | 'sessionId' | 'userId'>
+): ChatAnalyzeResult => transformPayload(params, differences);
+

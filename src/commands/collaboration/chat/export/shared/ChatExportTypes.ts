@@ -12,6 +12,9 @@
 import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface ChatExportParams extends CommandParams {
   /** Room name or ID to export from (optional - if not provided, exports all rooms) */
@@ -75,3 +78,37 @@ export const ChatExport = {
   },
   commandName: 'collaboration/chat/export' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationChatExportParams
+ */
+export const createCollaborationChatExportParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatExportParams, 'context' | 'sessionId' | 'userId'>
+): ChatExportParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationChatExportResult with defaults
+ */
+export const createCollaborationChatExportResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatExportResult, 'context' | 'sessionId' | 'userId'>
+): ChatExportResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/chat/export-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationChatExportResultFromParams = (
+  params: ChatExportParams,
+  differences: Omit<ChatExportResult, 'context' | 'sessionId' | 'userId'>
+): ChatExportResult => transformPayload(params, differences);
+

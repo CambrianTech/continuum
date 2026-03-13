@@ -1,6 +1,9 @@
-import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
-import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Searches across all project documentation files for lines matching a text pattern, returning matching lines with their document name, line number, and content.
@@ -11,9 +14,7 @@ export interface DocsSearchParams extends CommandParams {
   maxMatches?: number;
 }
 
-export interface DocsSearchResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface DocsSearchResult extends CommandResult {
   success: boolean;
   error?: string;
   pattern: string;
@@ -34,3 +35,37 @@ export const DocsSearch = {
   },
   commandName: 'utilities/docs/search' as const,
 } as const;
+
+/**
+ * Factory function for creating UtilitiesDocsSearchParams
+ */
+export const createUtilitiesDocsSearchParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsSearchParams, 'context' | 'sessionId' | 'userId'>
+): DocsSearchParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating UtilitiesDocsSearchResult with defaults
+ */
+export const createUtilitiesDocsSearchResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DocsSearchResult, 'context' | 'sessionId' | 'userId'>
+): DocsSearchResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart utilities/docs/search-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createUtilitiesDocsSearchResultFromParams = (
+  params: DocsSearchParams,
+  differences: Omit<DocsSearchResult, 'context' | 'sessionId' | 'userId'>
+): DocsSearchResult => transformPayload(params, differences);
+

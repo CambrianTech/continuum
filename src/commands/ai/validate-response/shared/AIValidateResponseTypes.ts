@@ -7,6 +7,10 @@
 
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * AI's decision on what to do with generated response
@@ -72,3 +76,37 @@ export const AIValidateResponse = {
   },
   commandName: 'ai/validate-response' as const,
 } as const;
+
+/**
+ * Factory function for creating AiValidateResponseParams
+ */
+export const createAiValidateResponseParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIValidateResponseParams, 'context' | 'sessionId' | 'userId'>
+): AIValidateResponseParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiValidateResponseResult with defaults
+ */
+export const createAiValidateResponseResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AIValidateResponseResult, 'context' | 'sessionId' | 'userId'>
+): AIValidateResponseResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/validate-response-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiValidateResponseResultFromParams = (
+  params: AIValidateResponseParams,
+  differences: Omit<AIValidateResponseResult, 'context' | 'sessionId' | 'userId'>
+): AIValidateResponseResult => transformPayload(params, differences);
+

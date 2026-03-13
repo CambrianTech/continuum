@@ -4,10 +4,12 @@
  * Query and visualize AI generation costs with filtering and time-series data
  */
 
-import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface AICostParams extends CommandParams {
   // Time range filtering
@@ -36,10 +38,7 @@ export interface AICostParams extends CommandParams {
   limit?: number;                  // Max results to return
 }
 
-export interface AICostResult {
-  context: JTAGContext;
-  sessionId: UUID;
-
+export interface AICostResult extends CommandResult {
   success: boolean;
   error?: string;
 
@@ -170,3 +169,37 @@ export const AICost = {
   },
   commandName: 'ai/cost' as const,
 } as const;
+
+/**
+ * Factory function for creating AiCostParams
+ */
+export const createAiCostParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AICostParams, 'context' | 'sessionId' | 'userId'>
+): AICostParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiCostResult with defaults
+ */
+export const createAiCostResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AICostResult, 'context' | 'sessionId' | 'userId'>
+): AICostResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/cost-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiCostResultFromParams = (
+  params: AICostParams,
+  differences: Omit<AICostResult, 'context' | 'sessionId' | 'userId'>
+): AICostResult => transformPayload(params, differences);
+

@@ -10,6 +10,10 @@
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface AgentStatusParams extends CommandParams {
   /** Agent handle from agent/start */
@@ -42,3 +46,37 @@ export const AgentStatus = {
   },
   commandName: 'agent/status' as const,
 } as const;
+
+/**
+ * Factory function for creating AgentStatusParams
+ */
+export const createAgentStatusParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AgentStatusParams, 'context' | 'sessionId' | 'userId'>
+): AgentStatusParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AgentStatusResult with defaults
+ */
+export const createAgentStatusResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<AgentStatusResult, 'context' | 'sessionId' | 'userId'>
+): AgentStatusResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart agent/status-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAgentStatusResultFromParams = (
+  params: AgentStatusParams,
+  differences: Omit<AgentStatusResult, 'context' | 'sessionId' | 'userId'>
+): AgentStatusResult => transformPayload(params, differences);
+

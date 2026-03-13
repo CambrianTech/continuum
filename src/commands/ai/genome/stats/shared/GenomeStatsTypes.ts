@@ -11,6 +11,9 @@
 import type { CommandParams, JTAGPayload, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Genome Stats Request Parameters
@@ -306,3 +309,37 @@ export const GenomeStats = {
   },
   commandName: 'ai/genome/stats' as const,
 } as const;
+
+/**
+ * Factory function for creating AiGenomeStatsParams
+ */
+export const createAiGenomeStatsParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeStatsParams, 'context' | 'sessionId' | 'userId'>
+): GenomeStatsParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiGenomeStatsResult with defaults
+ */
+export const createAiGenomeStatsResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<GenomeStatsResult, 'context' | 'sessionId' | 'userId'>
+): GenomeStatsResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/genome/stats-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiGenomeStatsResultFromParams = (
+  params: GenomeStatsParams,
+  differences: Omit<GenomeStatsResult, 'context' | 'sessionId' | 'userId'>
+): GenomeStatsResult => transformPayload(params, differences);
+

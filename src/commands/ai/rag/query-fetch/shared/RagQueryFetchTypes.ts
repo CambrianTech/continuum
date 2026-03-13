@@ -9,6 +9,9 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../../s
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { CodeSearchResult } from '../../query-open/shared/RagQueryOpenTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Parameters for fetching results from a query handle
@@ -101,3 +104,37 @@ export const RagQueryFetch = {
   },
   commandName: 'ai/rag/query-fetch' as const,
 } as const;
+
+/**
+ * Factory function for creating AiRagQueryFetchParams
+ */
+export const createAiRagQueryFetchParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RagQueryFetchParams, 'context' | 'sessionId' | 'userId'>
+): RagQueryFetchParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiRagQueryFetchResult with defaults
+ */
+export const createAiRagQueryFetchResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RagQueryFetchResult, 'context' | 'sessionId' | 'userId'>
+): RagQueryFetchResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/rag/query-fetch-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiRagQueryFetchResultFromParams = (
+  params: RagQueryFetchParams,
+  differences: Omit<RagQueryFetchResult, 'context' | 'sessionId' | 'userId'>
+): RagQueryFetchResult => transformPayload(params, differences);
+

@@ -6,6 +6,10 @@
 
 import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Time-series data point for system metrics
@@ -70,3 +74,37 @@ export const SystemMetrics = {
   },
   commandName: 'system/metrics' as const,
 } as const;
+
+/**
+ * Factory function for creating SystemMetricsParams
+ */
+export const createSystemMetricsParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SystemMetricsParams, 'context' | 'sessionId' | 'userId'>
+): SystemMetricsParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SystemMetricsResult with defaults
+ */
+export const createSystemMetricsResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SystemMetricsResult, 'context' | 'sessionId' | 'userId'>
+): SystemMetricsResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart system/metrics-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSystemMetricsResultFromParams = (
+  params: SystemMetricsParams,
+  differences: Omit<SystemMetricsResult, 'context' | 'sessionId' | 'userId'>
+): SystemMetricsResult => transformPayload(params, differences);
+

@@ -8,6 +8,9 @@
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Scoring weights for different signal types
@@ -166,3 +169,37 @@ export const ShouldRespondFast = {
   },
   commandName: 'ai/should-respond-fast' as const,
 } as const;
+
+/**
+ * Factory function for creating AiShouldRespondFastParams
+ */
+export const createAiShouldRespondFastParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ShouldRespondFastParams, 'context' | 'sessionId' | 'userId'>
+): ShouldRespondFastParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiShouldRespondFastResult with defaults
+ */
+export const createAiShouldRespondFastResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ShouldRespondFastResult, 'context' | 'sessionId' | 'userId'>
+): ShouldRespondFastResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/should-respond-fast-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiShouldRespondFastResultFromParams = (
+  params: ShouldRespondFastParams,
+  differences: Omit<ShouldRespondFastResult, 'context' | 'sessionId' | 'userId'>
+): ShouldRespondFastResult => transformPayload(params, differences);
+

@@ -11,6 +11,8 @@ import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '@syst
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Chat poll parameters
@@ -57,3 +59,37 @@ export const ChatPoll = {
   },
   commandName: 'collaboration/chat/poll' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationChatPollParams
+ */
+export const createCollaborationChatPollParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatPollParams, 'context' | 'sessionId' | 'userId'>
+): ChatPollParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationChatPollResult with defaults
+ */
+export const createCollaborationChatPollResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<ChatPollResult, 'context' | 'sessionId' | 'userId'>
+): ChatPollResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/chat/poll-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationChatPollResultFromParams = (
+  params: ChatPollParams,
+  differences: Omit<ChatPollResult, 'context' | 'sessionId' | 'userId'>
+): ChatPollResult => transformPayload(params, differences);
+

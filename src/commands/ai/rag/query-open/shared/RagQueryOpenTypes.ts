@@ -9,6 +9,9 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../../s
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Parameters for opening a RAG similarity search
@@ -114,3 +117,37 @@ export const RagQueryOpen = {
   },
   commandName: 'ai/rag/query-open' as const,
 } as const;
+
+/**
+ * Factory function for creating AiRagQueryOpenParams
+ */
+export const createAiRagQueryOpenParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RagQueryOpenParams, 'context' | 'sessionId' | 'userId'>
+): RagQueryOpenParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating AiRagQueryOpenResult with defaults
+ */
+export const createAiRagQueryOpenResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<RagQueryOpenResult, 'context' | 'sessionId' | 'userId'>
+): RagQueryOpenResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart ai/rag/query-open-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createAiRagQueryOpenResultFromParams = (
+  params: RagQueryOpenParams,
+  differences: Omit<RagQueryOpenResult, 'context' | 'sessionId' | 'userId'>
+): RagQueryOpenResult => transformPayload(params, differences);
+

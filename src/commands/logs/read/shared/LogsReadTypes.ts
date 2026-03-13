@@ -1,6 +1,9 @@
-import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /** Read lines from a log file with optional filtering by level or component, and optional multi-dimensional structure analysis (temporal, severity, spatial). */
 export interface LogsReadParams extends CommandParams {
@@ -14,9 +17,7 @@ export interface LogsReadParams extends CommandParams {
   includeSessionLogs?: boolean;  // Include session logs in error message (default: false)
 }
 
-export interface LogsReadResult {
-  context: JTAGContext;
-  sessionId: UUID;
+export interface LogsReadResult extends CommandResult {
   success: boolean;
   error?: string;
   log: string;
@@ -91,3 +92,37 @@ export const LogsRead = {
   },
   commandName: 'logs/read' as const,
 } as const;
+
+/**
+ * Factory function for creating LogsReadParams
+ */
+export const createLogsReadParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LogsReadParams, 'context' | 'sessionId' | 'userId'>
+): LogsReadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating LogsReadResult with defaults
+ */
+export const createLogsReadResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<LogsReadResult, 'context' | 'sessionId' | 'userId'>
+): LogsReadResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart logs/read-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createLogsReadResultFromParams = (
+  params: LogsReadParams,
+  differences: Omit<LogsReadResult, 'context' | 'sessionId' | 'userId'>
+): LogsReadResult => transformPayload(params, differences);
+

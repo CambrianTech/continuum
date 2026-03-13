@@ -9,6 +9,10 @@ import type { CommandParams, CommandResult } from '../../../../system/core/types
 import type { EscalationRule } from '../../../../system/sentinel/entities/SentinelEntity';
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandInput } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Pushed from Rust when a sentinel reaches a terminal state.
@@ -50,3 +54,37 @@ export const SentinelEscalate = {
   },
   commandName: 'sentinel/escalate' as const,
 } as const;
+
+/**
+ * Factory function for creating SentinelEscalateParams
+ */
+export const createSentinelEscalateParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelEscalateParams, 'context' | 'sessionId' | 'userId'>
+): SentinelEscalateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating SentinelEscalateResult with defaults
+ */
+export const createSentinelEscalateResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<SentinelEscalateResult, 'context' | 'sessionId' | 'userId'>
+): SentinelEscalateResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart sentinel/escalate-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createSentinelEscalateResultFromParams = (
+  params: SentinelEscalateParams,
+  differences: Omit<SentinelEscalateResult, 'context' | 'sessionId' | 'userId'>
+): SentinelEscalateResult => transformPayload(params, differences);
+

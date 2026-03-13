@@ -13,6 +13,9 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { SignificanceLevel, ProposalScope, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 export interface DecisionProposeParams extends CommandParams {
   /** What decision is being made */
@@ -66,3 +69,37 @@ export const DecisionPropose = {
   },
   commandName: 'collaboration/decision/propose' as const,
 } as const;
+
+/**
+ * Factory function for creating CollaborationDecisionProposeParams
+ */
+export const createCollaborationDecisionProposeParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DecisionProposeParams, 'context' | 'sessionId' | 'userId'>
+): DecisionProposeParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating CollaborationDecisionProposeResult with defaults
+ */
+export const createCollaborationDecisionProposeResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<DecisionProposeResult, 'context' | 'sessionId' | 'userId'>
+): DecisionProposeResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart collaboration/decision/propose-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createCollaborationDecisionProposeResultFromParams = (
+  params: DecisionProposeParams,
+  differences: Omit<DecisionProposeResult, 'context' | 'sessionId' | 'userId'>
+): DecisionProposeResult => transformPayload(params, differences);
+

@@ -8,6 +8,9 @@
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 
 /**
  * Marks a task as completed or failed, recording its output, error details, and performance metrics such as tokens used, latency, and confidence.
@@ -74,3 +77,37 @@ export const TaskComplete = {
   },
   commandName: 'workspace/task/complete' as const,
 } as const;
+
+/**
+ * Factory function for creating WorkspaceTaskCompleteParams
+ */
+export const createWorkspaceTaskCompleteParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<TaskCompleteParams, 'context' | 'sessionId' | 'userId'>
+): TaskCompleteParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  ...data
+});
+
+/**
+ * Factory function for creating WorkspaceTaskCompleteResult with defaults
+ */
+export const createWorkspaceTaskCompleteResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: Omit<TaskCompleteResult, 'context' | 'sessionId' | 'userId'>
+): TaskCompleteResult => createPayload(context, sessionId, {
+  ...data
+});
+
+/**
+ * Smart workspace/task/complete-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createWorkspaceTaskCompleteResultFromParams = (
+  params: TaskCompleteParams,
+  differences: Omit<TaskCompleteResult, 'context' | 'sessionId' | 'userId'>
+): TaskCompleteResult => transformPayload(params, differences);
+
