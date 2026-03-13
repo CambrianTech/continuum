@@ -359,6 +359,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.currentRoomName = roomName;
       this.currentRoomUniqueId = roomUniqueId;
 
+      // Use the room entity we already loaded (don't re-fetch in loadRoomData)
+      if (room) {
+        this.currentRoom = room;
+      }
+
       // Notify server: human user is now viewing this room (presence awareness for personas)
       const humanUser = this.roomMembers.get(DEFAULT_USERS.HUMAN);
       Events.emit(PRESENCE_EVENTS.ROOM_ACTIVE, {
@@ -380,13 +385,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Update header immediately
       this.updateHeader();
 
-      // Load room data and refresh messages
+      // Load member user entities and refresh messages in parallel
       await Promise.all([
-        this.loadRoomData(roomId),
+        this.loadRoomMembers(),
         this.scroller?.refresh()
       ]);
 
-      // Update header with correct count
+      // Update header with members and correct count
       this.updateHeader();
 
       // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
