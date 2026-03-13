@@ -60,6 +60,28 @@ fn release_slot(slot: u8) {
     );
 }
 
+/// Reset the slot pool to full capacity. Called by the idle watcher when all
+/// sessions have ended and models are being unloaded. Any slots held by zombie
+/// tasks (video loops that didn't exit cleanly) are reclaimed.
+pub fn reset_slot_pool() {
+    let max = crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS;
+    let mut pool = slot_pool().lock().unwrap();
+    let before = pool.len();
+    pool.clear();
+    pool.extend(0..max);
+    let recovered = (max as usize).saturating_sub(before);
+    if recovered > 0 {
+        clog_warn!(
+            "🎨 Slot pool reset: recovered {} zombie slots ({} → {} available)",
+            recovered,
+            before,
+            max
+        );
+    } else {
+        clog_info!("🎨 Slot pool reset: all {} slots available (no zombies)", max);
+    }
+}
+
 // =============================================================================
 // SlotGuard — RAII cleanup for Bevy slots (used by allocate_bevy_slot path)
 // =============================================================================

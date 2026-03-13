@@ -13,6 +13,7 @@
 //! Priority: Realtime — voice operations are time-critical.
 
 use crate::live::audio::buffer::AudioBufferPool;
+use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;
 use crate::live::transport::livekit_agent::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
@@ -33,6 +34,7 @@ pub struct VoiceState {
     pub voice_service: Arc<VoiceService>,
     pub livekit_manager: Arc<LiveKitAgentManager>,
     pub audio_pool: Arc<AudioBufferPool>,
+    pub resource_lifecycle: Arc<AudioResourceLifecycle>,
 }
 
 impl VoiceState {
@@ -41,10 +43,12 @@ impl VoiceState {
         livekit_manager: Arc<LiveKitAgentManager>,
         audio_pool: Arc<AudioBufferPool>,
     ) -> Self {
+        let resource_lifecycle = Arc::new(AudioResourceLifecycle::new());
         Self {
             voice_service,
             livekit_manager,
             audio_pool,
+            resource_lifecycle,
         }
     }
 }
@@ -74,6 +78,8 @@ impl ServiceModule for VoiceModule {
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+        // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
+        self.state.resource_lifecycle.spawn_idle_watcher();
         Ok(())
     }
 
@@ -102,6 +108,9 @@ impl ServiceModule for VoiceModule {
                 self.state
                     .voice_service
                     .register_session(session_id, room_id, participants)?;
+
+                // Track session for resource lifecycle (idle timeout unloading)
+                self.state.resource_lifecycle.on_session_start();
 
                 // CRITICAL: STT listener MUST connect first, before agents.
                 // With 20+ agents all connecting simultaneously, LiveKit gets overwhelmed
@@ -212,6 +221,13 @@ impl ServiceModule for VoiceModule {
                     .livekit_manager
                     .remove_listener(session_id)
                     .await;
+
+                // Track session end for resource lifecycle (triggers idle timeout).
+                // Avatar models and audio adapters unload after the idle timeout
+                // (default 60s) — NOT immediately, because:
+                // 1. User might rejoin quickly (avoids expensive model reload)
+                // 2. LiveKit agents need time to tear down cleanly
+                self.state.resource_lifecycle.on_session_end();
 
                 Ok(CommandResult::Json(
                     serde_json::json!({ "ended": true, "session_id": session_id }),
@@ -871,6 +887,127 @@ impl ServiceModule for VoiceModule {
                         "error": format!("No video frame for participant '{}'", identity)
                     }))),
                 }
+            }
+
+            "voice/resource-status" => {
+                let _timer = TimingGuard::new("module", "voice_resource_status");
+
+                // Collect STT adapter status
+                let stt_status: Vec<serde_json::Value> = {
+                    let registry = crate::live::audio::stt::get_registry();
+                    let reg = registry.read();
+                    reg.list()
+                        .iter()
+                        .map(|(name, initialized)| {
+                            serde_json::json!({
+                                "name": name,
+                                "loaded": initialized,
+                            })
+                        })
+                        .collect()
+                };
+
+                // Collect TTS adapter status
+                let tts_status: Vec<serde_json::Value> = {
+                    let registry = crate::live::audio::tts::get_registry();
+                    let reg = registry.read();
+                    reg.list()
+                        .iter()
+                        .map(|(name, initialized)| {
+                            serde_json::json!({
+                                "name": name,
+                                "loaded": initialized,
+                            })
+                        })
+                        .collect()
+                };
+
+                let active_sessions = self.state.resource_lifecycle.active_count();
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "active_sessions": active_sessions,
+                    "stt_adapters": stt_status,
+                    "tts_adapters": tts_status,
+                })))
+            }
+
+            "voice/resource-unload" => {
+                let _timer = TimingGuard::new("module", "voice_resource_unload");
+
+                log_info!(
+                    "module",
+                    "voice_resource_unload",
+                    "Force-unloading all audio models"
+                );
+
+                let mut unloaded = Vec::new();
+
+                // Collect initialized STT adapters (drop lock before await)
+                let stt_adapters: Vec<_> = {
+                    let registry = crate::live::audio::stt::get_registry();
+                    let reg = registry.read();
+                    reg.list()
+                        .into_iter()
+                        .filter(|(_, initialized)| *initialized)
+                        .filter_map(|(name, _)| reg.get(name).map(|a| (name, a)))
+                        .collect()
+                };
+                for (name, adapter) in stt_adapters {
+                    match adapter.shutdown().await {
+                        Ok(()) => unloaded.push(name.to_string()),
+                        Err(e) => {
+                            log_error!(
+                                "module",
+                                "voice_resource_unload",
+                                "STT '{}' shutdown failed: {}",
+                                name,
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Collect initialized TTS adapters (drop lock before await)
+                let tts_adapters: Vec<_> = {
+                    let registry = crate::live::audio::tts::get_registry();
+                    let reg = registry.read();
+                    reg.list()
+                        .into_iter()
+                        .filter(|(_, initialized)| *initialized)
+                        .filter_map(|(name, _)| reg.get(name).map(|a| (name, a)))
+                        .collect()
+                };
+                for (name, adapter) in tts_adapters {
+                    match adapter.shutdown().await {
+                        Ok(()) => unloaded.push(name.to_string()),
+                        Err(e) => {
+                            log_error!(
+                                "module",
+                                "voice_resource_unload",
+                                "TTS '{}' shutdown failed: {}",
+                                name,
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Reset session counter — force-unload means we don't care about
+                // in-flight sessions. Models will reload on next call.
+                self.state.resource_lifecycle.reset_sessions();
+
+                log_info!(
+                    "module",
+                    "voice_resource_unload",
+                    "Unloaded {} adapters: {:?}",
+                    unloaded.len(),
+                    unloaded
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "unloaded": unloaded,
+                    "count": unloaded.len(),
+                })))
             }
 
             _ => Err(format!("Unknown voice command: {command}")),

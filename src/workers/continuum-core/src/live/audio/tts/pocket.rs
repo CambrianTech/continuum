@@ -23,11 +23,10 @@ use crate::clog_info;
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use async_trait::async_trait;
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Preset voices shipped with Pocket-TTS (Les Misérables characters)
 const PRESET_VOICES: &[(&str, &str, &str)] = &[
@@ -45,7 +44,7 @@ const PRESET_VOICES: &[(&str, &str, &str)] = &[
 const DEFAULT_VARIANT: &str = "b6369a24";
 
 /// Global model (Mutex because TTSModel::generate needs &self but voice cache needs &mut)
-static POCKET_MODEL: OnceCell<Arc<Mutex<PocketState>>> = OnceCell::new();
+static POCKET_MODEL: ReloadableModel<Mutex<PocketState>> = ReloadableModel::new("Pocket-TTS");
 
 /// GPU allocation tracking for Pocket-TTS model (~400MB CPU/GPU)
 static POCKET_GPU: GpuModelTracker = GpuModelTracker::new("Pocket-TTS");
@@ -304,11 +303,11 @@ impl TextToSpeech for PocketTTS {
     }
 
     fn is_initialized(&self) -> bool {
-        POCKET_MODEL.get().is_some()
+        POCKET_MODEL.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        if POCKET_MODEL.get().is_some() {
+        if POCKET_MODEL.is_loaded() {
             clog_info!("Pocket-TTS: Already initialized");
             return Ok(());
         }
@@ -359,8 +358,7 @@ impl TextToSpeech for PocketTTS {
             GpuPriority::Interactive,
         );
 
-        let _ = POCKET_MODEL.set(Arc::new(Mutex::new(pocket_state)));
-        // OnceLock::set Err = another thread already initialized — that's fine
+        let _ = POCKET_MODEL.load_with(|| Ok::<_, TTSError>(Mutex::new(pocket_state)));
 
         clog_info!(
             "Pocket-TTS: Ready — {} preset voices + WAV voice cloning",
@@ -378,8 +376,7 @@ impl TextToSpeech for PocketTTS {
                 TTSError::ModelNotLoaded(
                     "Pocket-TTS not initialized. Call initialize() first.".into(),
                 )
-            })?
-            .clone();
+            })?;
 
         // Check for WAV file voice cloning
         let voice_wav = if voice.ends_with(".wav") && Path::new(voice).exists() {
@@ -398,6 +395,14 @@ impl TextToSpeech for PocketTTS {
         })
         .await
         .map_err(|e| TTSError::SynthesisFailed(format!("Task join: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if POCKET_MODEL.unload() {
+            POCKET_GPU.release();
+            clog_info!("Pocket-TTS: Models unloaded (~400MB freed)");
+        }
+        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

@@ -11,7 +11,7 @@ use crate::gpu::tracker::GpuModelTracker;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray;
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use parking_lot::Mutex;
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Global Piper session
-static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
+static PIPER_SESSION: ReloadableModel<Mutex<PiperModel>> = ReloadableModel::new("Piper");
 
 /// GPU allocation tracking for Piper ONNX model
 static PIPER_GPU: GpuModelTracker = GpuModelTracker::new("Piper");
@@ -159,11 +159,11 @@ impl TextToSpeech for PiperTTS {
     }
 
     fn is_initialized(&self) -> bool {
-        PIPER_SESSION.get().is_some()
+        PIPER_SESSION.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        if PIPER_SESSION.get().is_some() {
+        if PIPER_SESSION.is_loaded() {
             clog_info!("Piper already initialized");
             return Ok(());
         }
@@ -209,8 +209,7 @@ impl TextToSpeech for PiperTTS {
             GpuPriority::Interactive,
         );
 
-        let _ = PIPER_SESSION.set(Arc::new(Mutex::new(model)));
-        // OnceLock::set Err = another thread already initialized — that's fine
+        let _ = PIPER_SESSION.load_with(|| Ok::<_, TTSError>(Mutex::new(model)));
 
         clog_info!("Piper model loaded successfully");
         Ok(())
@@ -221,8 +220,7 @@ impl TextToSpeech for PiperTTS {
 
         let session = PIPER_SESSION
             .get()
-            .ok_or_else(|| TTSError::ModelNotLoaded("Piper not initialized".into()))?
-            .clone();
+            .ok_or_else(|| TTSError::ModelNotLoaded("Piper not initialized".into()))?;
 
         let text = text.to_string();
         let voice = voice.to_string();
@@ -230,6 +228,14 @@ impl TextToSpeech for PiperTTS {
         tokio::task::spawn_blocking(move || Self::synthesize_sync(&session, &text, &voice, 1.0))
             .await
             .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if PIPER_SESSION.unload() {
+            PIPER_GPU.release();
+            clog_info!("Piper: Models unloaded (~100MB freed)");
+        }
+        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

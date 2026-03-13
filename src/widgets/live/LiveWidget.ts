@@ -293,9 +293,12 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
     }
 
     // If still joined when DOM removes us (e.g. page navigation without tab close),
-    // do a best-effort cleanup. Normally willClose() already handled this.
+    // fire willClose() which handles both local cleanup AND server notification.
+    // Fire-and-forget — disconnectedCallback is synchronous, but the server
+    // notification (live/leave) needs to reach the server to trigger resource
+    // lifecycle cleanup (unloading STT/TTS models after idle timeout).
     if (this.isJoined) {
-      this.cleanup();
+      this.willClose().catch(err => console.error('LiveWidget: disconnectedCallback willClose failed:', err));
     }
   }
 

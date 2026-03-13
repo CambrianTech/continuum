@@ -1,6 +1,8 @@
 pub mod buffer;
 pub mod capabilities;
 pub mod mixer;
+pub mod reloadable;
+pub mod resource_lifecycle;
 pub mod router;
 pub mod stt;
 pub mod stt_service;

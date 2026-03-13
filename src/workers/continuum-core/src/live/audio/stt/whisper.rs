@@ -7,7 +7,7 @@ use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +26,7 @@ struct WhisperRuntime {
     state: whisper_rs::WhisperState,
 }
 
-static WHISPER_RT: OnceCell<Arc<Mutex<WhisperRuntime>>> = OnceCell::new();
+static WHISPER_RT: ReloadableModel<Mutex<WhisperRuntime>> = ReloadableModel::new("Whisper");
 
 /// Whisper STT Adapter - local inference
 pub struct WhisperSTT {
@@ -258,11 +258,11 @@ impl SpeechToText for WhisperSTT {
     }
 
     fn is_initialized(&self) -> bool {
-        WHISPER_RT.get().is_some()
+        WHISPER_RT.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), STTError> {
-        if WHISPER_RT.get().is_some() {
+        if WHISPER_RT.is_loaded() {
             clog_info!("Whisper already initialized");
             return Ok(());
         }
@@ -294,8 +294,8 @@ impl SpeechToText for WhisperSTT {
         let runtime = WhisperRuntime { state };
 
         WHISPER_RT
-            .set(Arc::new(Mutex::new(runtime)))
-            .map_err(|_| STTError::ModelNotLoaded("Failed to set global runtime".into()))?;
+            .load_with(|| Ok::<_, STTError>(Mutex::new(runtime)))
+            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to load Whisper runtime: {e}")))?;
 
         clog_info!("Whisper model loaded with pre-allocated state (~407MB compute buffers, reused for all transcriptions)");
         Ok(())
@@ -317,8 +317,7 @@ impl SpeechToText for WhisperSTT {
             .get()
             .ok_or_else(|| {
                 STTError::ModelNotLoaded("Whisper not initialized. Call initialize() first.".into())
-            })?
-            .clone();
+            })?;
 
         let lang = language.map(|s| s.to_string());
 
@@ -326,6 +325,13 @@ impl SpeechToText for WhisperSTT {
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&rt, samples, lang.as_deref()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), STTError> {
+        if WHISPER_RT.unload() {
+            clog_info!("Whisper: Models unloaded (~407MB freed)");
+        }
+        Ok(())
     }
 
     fn supported_languages(&self) -> Vec<&'static str> {

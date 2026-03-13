@@ -19,13 +19,12 @@ use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray::{Array2, ArrayD, IxDyn};
-use once_cell::sync::OnceCell;
+use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor, Value};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 // Token constants (SentencePiece, same as Llama)
 const BOS_TOKEN_ID: i64 = 1;
@@ -33,7 +32,7 @@ const EOS_TOKEN_ID: i64 = 2;
 const MAX_TOKENS: usize = 194; // max_position_embeddings
 
 /// Global model (loaded once — ONNX sessions are expensive)
-static MOONSHINE_MODEL: OnceCell<Arc<MoonshineModel>> = OnceCell::new();
+static MOONSHINE_MODEL: ReloadableModel<MoonshineModel> = ReloadableModel::new("Moonshine");
 
 /// Loaded Moonshine ONNX pipeline (4 sessions + vocabulary)
 /// Sessions wrapped in Mutex because ort 2.x `run()` requires `&mut self`.
@@ -440,11 +439,11 @@ impl SpeechToText for MoonshineStt {
     }
 
     fn is_initialized(&self) -> bool {
-        MOONSHINE_MODEL.get().is_some()
+        MOONSHINE_MODEL.is_loaded()
     }
 
     async fn initialize(&self) -> Result<(), STTError> {
-        if MOONSHINE_MODEL.get().is_some() {
+        if MOONSHINE_MODEL.is_loaded() {
             clog_info!("Moonshine: Already initialized");
             return Ok(());
         }
@@ -485,8 +484,8 @@ impl SpeechToText for MoonshineStt {
         };
 
         MOONSHINE_MODEL
-            .set(Arc::new(model))
-            .map_err(|_| STTError::ModelNotLoaded("Failed to set global model".into()))?;
+            .load_with(|| Ok::<_, STTError>(model))
+            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to load Moonshine model: {e}")))?;
 
         clog_info!("Moonshine: All models loaded successfully");
         Ok(())
@@ -503,12 +502,18 @@ impl SpeechToText for MoonshineStt {
                 STTError::ModelNotLoaded(
                     "Moonshine not initialized. Call initialize() first.".into(),
                 )
-            })?
-            .clone();
+            })?;
 
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&model, samples))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
+    }
+
+    async fn shutdown(&self) -> Result<(), STTError> {
+        if MOONSHINE_MODEL.unload() {
+            clog_info!("Moonshine: Models unloaded (~200MB freed)");
+        }
+        Ok(())
     }
 
     fn supported_languages(&self) -> Vec<&'static str> {
