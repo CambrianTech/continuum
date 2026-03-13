@@ -11,6 +11,19 @@ import { DEFAULT_VOICE_CONFIG } from '../shared/VoiceConfig';
 import { AUDIO_SAMPLE_RATE } from '../../../shared/AudioConstants';
 import { VoiceSynthesize } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 import { VoiceTranscribe } from '../../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
+
+/** Event payload emitted on voice:audio:{handle} */
+interface VoiceAudioEvent {
+  audio: string;        // base64-encoded PCM
+  sampleRate?: number;
+  duration: number;     // seconds
+  adapter: string;
+}
+
+/** Event payload emitted on voice:error:{handle} */
+interface VoiceErrorEvent {
+  error: string;
+}
 export interface SynthesizeSpeechRequest {
   text: string;
   userId?: string;         // For per-user preferences
@@ -56,8 +69,9 @@ export class VoiceService {
     const adapter = request.adapter || this.config.tts.adapter;
     const adapterConfig = this.config.tts.adapters[adapter as keyof typeof this.config.tts.adapters];
 
-    const voice = request.voice || (adapterConfig as any)?.voice || 'default';
-    const speed = request.speed || (adapterConfig as any)?.speed || 1.0;
+    const adapterWithVoice = adapterConfig as { voice?: string; speed?: number } | undefined;
+    const voice = request.voice || adapterWithVoice?.voice || 'default';
+    const speed = request.speed || adapterWithVoice?.speed || 1.0;
 
     // NO FALLBACKS - fail immediately if this doesn't work
     return await this.synthesizeWithAdapter(request.text, adapter, voice, speed);
@@ -120,7 +134,7 @@ export class VoiceService {
         }, SAFETY_TIMEOUT_MS);
 
         // Subscribe to audio event
-        const unsubAudio = Events.subscribe(`voice:audio:${handle}`, (event: any) => {
+        const unsubAudio = Events.subscribe<VoiceAudioEvent>(`voice:audio:${handle}`, (event) => {
           if (settled) return;
           try {
             // Decode base64 to buffer
@@ -153,7 +167,7 @@ export class VoiceService {
         });
 
         // Subscribe to error event
-        const unsubError = Events.subscribe(`voice:error:${handle}`, (event: any) => {
+        const unsubError = Events.subscribe<VoiceErrorEvent>(`voice:error:${handle}`, (event) => {
           if (settled) return;
           settle();
           if (safetyTimer) clearTimeout(safetyTimer);

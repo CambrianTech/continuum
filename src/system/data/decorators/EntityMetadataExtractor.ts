@@ -39,8 +39,8 @@ export interface DecoratorExtractedField {
   nullable: boolean;
   unique: boolean;
   converter?: {
-    toStorage: (value: any) => any;
-    fromStorage: (value: any) => any;
+    toStorage: (value: unknown) => unknown;
+    fromStorage: (value: unknown) => unknown;
   };
 }
 

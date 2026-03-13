@@ -18,6 +18,12 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIGenerateParams, AIGenerateResult } from './AIGenerateTypes';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { ChatMessage } from '../../../../shared/generated/ai';
+
+/** Extended message type for preview display - includes optional timestamp from RAG context */
+interface PreviewChatMessage extends ChatMessage {
+  timestamp?: number;
+}
 
 export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AIGenerateResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -62,13 +68,14 @@ export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AI
     lines.push('');
 
     request.messages.forEach((msg, index) => {
+      const previewMsg = msg as PreviewChatMessage;
       const roleSymbol = msg.role === 'system' ? '⚙️' : msg.role === 'assistant' ? '🤖' : '👤';
-      const timestamp = (msg as any).timestamp ? ` @ ${new Date((msg as any).timestamp).toLocaleTimeString()}` : '';
+      const timestamp = previewMsg.timestamp ? ` @ ${new Date(previewMsg.timestamp).toLocaleTimeString()}` : '';
 
       lines.push(`   ┌─ Message ${index + 1} ${roleSymbol}────────────────────────────────`);
       lines.push(`   │ role: "${msg.role}"`);
-      if ((msg as any).name) lines.push(`   │ name: "${(msg as any).name}"`);
-      if ((msg as any).timestamp) lines.push(`   │ timestamp: ${(msg as any).timestamp}${timestamp}`);
+      if (previewMsg.name) lines.push(`   │ name: "${previewMsg.name}"`);
+      if (previewMsg.timestamp) lines.push(`   │ timestamp: ${previewMsg.timestamp}${timestamp}`);
       lines.push(`   │ content:`);
 
       // Show full content for system prompt, truncate others

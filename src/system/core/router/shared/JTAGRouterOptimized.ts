@@ -36,9 +36,11 @@ import type { JTAGRouterConfig } from './JTAGRouterTypes';
 import type { JTAGMessage } from '../../types/JTAGTypes';
 import type { QueuedItem } from './queuing/PriorityQueue';
 import { MessagePriority } from './queuing/JTAGMessageQueue';
-import { PerformanceProfiler } from '../../../../shared/performance/PerformanceProfiler';
+import { PerformanceProfiler, type TimingResult } from '../../../../shared/performance/PerformanceProfiler';
 import { WorkerPoolManager } from '../../workers/WorkerPoolManager';
 import { TRANSPORT_TYPES } from '../../../transports';
+import type { ConnectionHealth } from './ConnectionHealthManager';
+import type { WorkerPerformanceMetrics } from '../../workers/WorkerPoolManager';
 
 /**
  * Adaptive Batch Configuration - ML-driven dynamic sizing
@@ -112,7 +114,7 @@ export abstract class JTAGRouterOptimized extends JTAGRouter {
     
     console.log(`🚀 JTAGRouterOptimized: Initialized with AI-optimized parallel-batching and adaptive sizing`);
     console.log(`   🧠 Adaptive batch config: min=${this.adaptiveBatchConfig.minBatchSize}, max=${this.adaptiveBatchConfig.maxBatchSize}, target=${this.adaptiveBatchConfig.targetLatency}ms`);
-    console.log(`   ⚡ Worker pool: ${this.workerPool.getStatus().maxWorkers} workers available`);
+    console.log(`   ⚡ Worker pool: ${this.workerPool.getMetrics().tasksCompleted} tasks completed`);
   }
   
   /**
@@ -187,7 +189,7 @@ export abstract class JTAGRouterOptimized extends JTAGRouter {
       
       const successRate = ((messages.length - failedMessages.length) / messages.length) * 100;
       console.log(`🏁 JTAGRouterOptimized: Batch complete - ${messages.length - failedMessages.length}/${messages.length} delivered (${successRate.toFixed(1)}% success)`);
-      console.log(`   📈 Processing time: ${timing?.executionTime.toFixed(2)}ms (target: ${this.adaptiveBatchConfig.targetLatency}ms)`);
+      console.log(`   📈 Processing time: ${timing?.duration.toFixed(2)}ms (target: ${this.adaptiveBatchConfig.targetLatency}ms)`);
       
       return failedMessages;
       
@@ -371,8 +373,8 @@ export abstract class JTAGRouterOptimized extends JTAGRouter {
    * This implements the "adaptive-batching" strategy discovered by our
    * ML optimization engine (98.5% optimization score, 87.7% accuracy).
    */
-  private adaptBatchSize(timing: any, health: any): void {
-    const actualLatency = timing.executionTime;
+  private adaptBatchSize(timing: TimingResult, health: ConnectionHealth): void {
+    const actualLatency = timing.duration;
     const targetLatency = this.adaptiveBatchConfig.targetLatency;
     
     // Only adapt if we have healthy connection (avoid adapting to poor conditions)
@@ -410,9 +412,9 @@ export abstract class JTAGRouterOptimized extends JTAGRouter {
   /**
    * Update real-time performance statistics
    */
-  private async updatePerformanceStats(timing: any, messageCount: number, failedCount: number): Promise<void> {
+  private async updatePerformanceStats(timing: TimingResult, messageCount: number, failedCount: number): Promise<void> {
     this.parallelStats.totalBatches++;
-    this.parallelStats.totalProcessingTime += timing.executionTime;
+    this.parallelStats.totalProcessingTime += timing.duration;
     this.parallelStats.averageLatency = this.parallelStats.totalProcessingTime / this.parallelStats.totalBatches;
     
     // Update rolling success rate
@@ -437,12 +439,12 @@ export abstract class JTAGRouterOptimized extends JTAGRouter {
    */
   public getOptimizationStats(): ParallelProcessingStats & { 
     adaptiveConfig: AdaptiveBatchConfig;
-    workerPoolStatus: any;
+    workerPoolStatus: WorkerPerformanceMetrics;
   } {
     return {
       ...this.parallelStats,
       adaptiveConfig: this.adaptiveBatchConfig,
-      workerPoolStatus: this.workerPool.getStatus()
+      workerPoolStatus: this.workerPool.getMetrics()
     };
   }
   

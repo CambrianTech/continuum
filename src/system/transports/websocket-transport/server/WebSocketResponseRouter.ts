@@ -5,9 +5,14 @@
  * Maps correlation IDs to specific WebSocket connections for targeted response delivery.
  */
 
-import type { JTAGMessage } from '../../../core/types/JTAGTypes';
+import type { JTAGMessage, JTAGResponseMessage } from '../../../core/types/JTAGTypes';
 import type { WebSocket as WSWebSocket } from 'ws';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
+
+/** Internal socket properties exposed by ws library but not in public types */
+interface WSWebSocketInternal {
+  _socket?: { remoteAddress?: string; remotePort?: number };
+}
 
 // Verbose logging helper for server
 const verbose = () => process.env.JTAG_VERBOSE === '1';
@@ -57,11 +62,12 @@ export class WebSocketResponseRouter {
    */
   async sendResponse(message: JTAGMessage): Promise<boolean> {
     if (!JTAGMessageTypes.isResponse(message)) {
-      console.warn(`⚠️ WebSocketResponseRouter: Message is not a response:`, (message as any).type);
+      console.warn(`⚠️ WebSocketResponseRouter: Message is not a response:`, message.messageType);
       return false;
     }
 
-    const correlationId = (message as any).correlationId;
+    const responseMessage = message as JTAGResponseMessage;
+    const correlationId = responseMessage.correlationId;
     if (!correlationId) {
       console.warn(`⚠️ WebSocketResponseRouter: Response has no correlation ID`);
       return false;
@@ -145,8 +151,9 @@ export class WebSocketResponseRouter {
    * Uses socket properties to generate a consistent client ID
    */
   static generateClientId(socket: WSWebSocket): string {
-    const remoteAddress = (socket as any)._socket?.remoteAddress || 'unknown';
-    const remotePort = (socket as any)._socket?.remotePort || 'unknown';
+    const internal = socket as unknown as WSWebSocketInternal;
+    const remoteAddress = internal._socket?.remoteAddress || 'unknown';
+    const remotePort = internal._socket?.remotePort || 'unknown';
     return `ws-${remoteAddress}-${remotePort}-${Date.now()}`;
   }
 }

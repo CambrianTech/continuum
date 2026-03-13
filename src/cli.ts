@@ -8,6 +8,7 @@
 
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
 import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGClient';
+import type { JTAGPayload } from './system/core/types/JTAGTypes';
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
@@ -119,7 +120,7 @@ async function main() {
           const value = valueParts.join('='); // Handle values that contain =
 
           // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
-          let parsedValue: any = value;
+          let parsedValue: ParsedValue = value;
 
           // Always try JSON.parse for known JSON types
           if (value === 'true' || value === 'false' || value === 'null' ||
@@ -152,7 +153,7 @@ async function main() {
           const value = rawParams[i + 1];
           if (value !== undefined && !value.startsWith('--')) {
             // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
-            let parsedValue: any = value;
+            let parsedValue: ParsedValue = value;
 
             // Always try JSON.parse for known JSON types
             if (value === 'true' || value === 'false' || value === 'null' ||
@@ -190,7 +191,7 @@ async function main() {
         const value = valueParts.join('='); // Handle values that contain =
 
         // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
-        let parsedValue: any = value;
+        let parsedValue: ParsedValue = value;
 
         // Always try JSON.parse for known JSON types
         if (value === 'true' || value === 'false' || value === 'null' ||
@@ -446,21 +447,22 @@ async function main() {
         }
       }
       
-      const commandExecution = (client as any).commands[command](params);
-      
-      const result = await Promise.race([commandExecution, commandTimeout]);
+      // Wire boundary: CLI params are transformed to JTAGPayload by the transport layer
+      const commandExecution = client.commands[command](params as unknown as JTAGPayload);
+
+      const result = await Promise.race([commandExecution, commandTimeout]) as Record<string, unknown> | undefined;
 
       // Extract just the essential result, removing wrapper layers
-      let cleanOutput = result;
+      let cleanOutput: Record<string, unknown> | undefined = result;
 
       // Navigate to the innermost commandResult (the actual result)
       while (cleanOutput && typeof cleanOutput === 'object' && 'commandResult' in cleanOutput) {
-        cleanOutput = cleanOutput.commandResult;
+        cleanOutput = cleanOutput.commandResult as Record<string, unknown>;
       }
 
       // Remove context and other wrapper fields, keep only the actual result
       if (cleanOutput && typeof cleanOutput === 'object') {
-        const { context, sessionId, ...actualResult } = cleanOutput;
+        const { context: _ctx, sessionId: _sid, ...actualResult } = cleanOutput;
         // If no meaningful data remains after stripping context/sessionId, keep success field
         const hasData = Object.keys(actualResult).filter(key => key !== 'success').length > 0;
         if (!hasData && 'success' in cleanOutput) {
@@ -477,7 +479,7 @@ async function main() {
       } else {
         // Session persistence - disconnect transport only, keep session alive
         // The session remains active in the browser for next CLI call
-        const transport = (client as any).getSystemTransport();
+        const transport = client.getSystemTransport();
         if (transport) {
           await transport.disconnect();
           if (behavior.logLevel === 'verbose') {

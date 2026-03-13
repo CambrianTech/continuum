@@ -63,8 +63,8 @@ export interface IAIService {
   evaluateGenomicCompatibility(layers: GenomicLoRALayer[]): Promise<number>;
   
   // AI Conversation & Tool Integration
-  sendPersonaMessage(personaId: UUID, message: string, context?: Record<string, any>): Promise<string>;
-  executeAgentCommand(agentId: UUID, command: string, params: Record<string, any>): Promise<any>;
+  sendPersonaMessage(personaId: UUID, message: string, context?: Record<string, unknown>): Promise<string>;
+  executeAgentCommand(agentId: UUID, command: string, params: Record<string, unknown>): Promise<unknown>;
   getAICapabilities(aiUserId: UUID): Promise<string[]>;
   
   // Performance Monitoring
@@ -196,12 +196,12 @@ export class AIService extends ServiceBase implements IAIService {
   }
 
   // AI Conversation & Tool Integration
-  async sendPersonaMessage(personaId: UUID, message: string, context?: Record<string, any>): Promise<string> {
+  async sendPersonaMessage(personaId: UUID, message: string, context?: Record<string, unknown>): Promise<string> {
     const result = await this.executeCommand('ai/persona-chat', { personaId, message, context });
     return result.success ? result.response : '';
   }
 
-  async executeAgentCommand(agentId: UUID, command: string, params: Record<string, any>): Promise<any> {
+  async executeAgentCommand(agentId: UUID, command: string, params: Record<string, unknown>): Promise<unknown> {
     const result = await this.executeCommand('ai/agent-execute', { agentId, command, params });
     return result.success ? result.result : null;
   }

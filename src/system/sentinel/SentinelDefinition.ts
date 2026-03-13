@@ -555,7 +555,7 @@ export function validateDefinition(def: SentinelDefinition): { valid: boolean; e
       break;
 
     default:
-      errors.push(`Unknown sentinel type: ${(def as any).type}`);
+      errors.push(`Unknown sentinel type: ${(def as Record<string, unknown>).type}`);
   }
 
   return { valid: errors.length === 0, errors };
@@ -564,13 +564,13 @@ export function validateDefinition(def: SentinelDefinition): { valid: boolean; e
 /**
  * Create a definition from CLI-style params
  */
-export function createDefinitionFromParams(params: Record<string, any>): SentinelDefinition {
+export function createDefinitionFromParams(params: Record<string, unknown>): SentinelDefinition {
   const base: Partial<SentinelDefinitionBase> = {
-    name: params.name || `${params.type}-sentinel-${Date.now()}`,
-    description: params.description,
-    workingDir: params.workingDir,
-    timeout: params.timeout,
-    tags: params.tags,
+    name: (params.name as string) || `${params.type}-sentinel-${Date.now()}`,
+    description: params.description as string | undefined,
+    workingDir: params.workingDir as string | undefined,
+    timeout: params.timeout as number | undefined,
+    tags: params.tags as string[] | undefined,
     version: '1.0',
     createdAt: new Date().toISOString(),
   };
@@ -706,8 +706,8 @@ export class SentinelBuilder {
     return this;
   }
 
-  set(key: string, value: any): this {
-    (this.def as any)[key] = value;
+  set(key: string, value: unknown): this {
+    (this.def as Record<string, unknown>)[key] = value;
     return this;
   }
 
