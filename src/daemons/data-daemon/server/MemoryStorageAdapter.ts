@@ -36,7 +36,7 @@ interface MemoryStorageOptions {
  * Memory Storage Adapter - High-Performance In-Memory Storage
  */
 export class MemoryStorageAdapter extends DataStorageAdapter {
-  private collections: Map<string, Map<UUID, DataRecord<any>>> = new Map();
+  private collections: Map<string, Map<UUID, DataRecord<RecordData>>> = new Map();
   private namespace: string = '';
   private options: MemoryStorageOptions = {};
   private autoSaveTimer?: NodeJS.Timeout;
@@ -104,10 +104,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: record
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -132,10 +133,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: record
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -202,10 +204,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         }
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -249,10 +252,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: updated
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -282,10 +286,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: deleted
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -302,10 +307,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: collections
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -352,10 +358,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: stats
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -364,11 +371,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
    * Batch operations - Memory operations are fast
    */
   async batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>> {
-    const results: any[] = [];
+    const results: unknown[] = [];
     
     try {
       for (const op of operations) {
-        let result: StorageResult<any>;
+        let result: StorageResult<unknown>;
         
         switch (op.type) {
           case 'create':
@@ -411,10 +418,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: results
       };
       
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       return {
         success: false,
-        error: error.message,
+        error: err.message,
         data: results
       };
     }
@@ -447,11 +455,12 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: true
       };
 
-    } catch (error: any) {
-      console.error('❌ MemoryStorage: Error clearing data:', error.message);
+    } catch (error: unknown) {
+      const err = error as Error;
+      console.error('❌ MemoryStorage: Error clearing data:', err.message);
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -480,11 +489,12 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         data: true
       };
 
-    } catch (error: any) {
-      console.error(`❌ MemoryStorage: Error truncating collection '${collection}':`, error.message);
+    } catch (error: unknown) {
+      const err = error as Error;
+      console.error(`❌ MemoryStorage: Error truncating collection '${collection}':`, err.message);
       return {
         success: false,
-        error: error.message
+        error: err.message
       };
     }
   }
@@ -554,22 +564,23 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Check if record matches query filters
    */
-  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
+  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, unknown>): boolean {
     if (!filters) return true;
     
     for (const [key, value] of Object.entries(filters)) {
       // Support nested property access with dot notation
-      const recordValue = this.getNestedProperty(record, key);
-      
+      const recordValue = this.getNestedProperty(record as unknown as Record<string, unknown>, key);
+
       // Support MongoDB-style operators
+      const ops = value as Record<string, unknown>;
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        if (value.$gt !== undefined && recordValue <= value.$gt) return false;
-        if (value.$gte !== undefined && recordValue < value.$gte) return false;
-        if (value.$lt !== undefined && recordValue >= value.$lt) return false;
-        if (value.$lte !== undefined && recordValue > value.$lte) return false;
-        if (value.$ne !== undefined && recordValue === value.$ne) return false;
-        if (value.$in !== undefined && !value.$in.includes(recordValue)) return false;
-        if (value.$nin !== undefined && value.$in.includes(recordValue)) return false;
+        if (ops.$gt !== undefined && (recordValue as number) <= (ops.$gt as number)) return false;
+        if (ops.$gte !== undefined && (recordValue as number) < (ops.$gte as number)) return false;
+        if (ops.$lt !== undefined && (recordValue as number) >= (ops.$lt as number)) return false;
+        if (ops.$lte !== undefined && (recordValue as number) > (ops.$lte as number)) return false;
+        if (ops.$ne !== undefined && recordValue === ops.$ne) return false;
+        if (ops.$in !== undefined && !(ops.$in as unknown[]).includes(recordValue)) return false;
+        if (ops.$nin !== undefined && (ops.$nin as unknown[]).includes(recordValue)) return false;
       } else {
         // Simple equality check
         if (recordValue !== value) {
@@ -584,8 +595,9 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Get nested property value using dot notation
    */
-  private getNestedProperty(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => current?.[key], obj);
+  private getNestedProperty(obj: Record<string, unknown>, path: string): unknown {
+    return path.split('.').reduce<unknown>((current, key) =>
+      (current && typeof current === 'object') ? (current as Record<string, unknown>)[key] : undefined, obj);
   }
   
   /**
@@ -597,11 +609,11 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
     sortFields: { field: string; direction: 'asc' | 'desc' }[]
   ): number {
     for (const sort of sortFields) {
-      const aValue = this.getNestedProperty(a, sort.field);
-      const bValue = this.getNestedProperty(b, sort.field);
-      
-      if (aValue < bValue) return sort.direction === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sort.direction === 'asc' ? 1 : -1;
+      const aValue = this.getNestedProperty(a as unknown as Record<string, unknown>, sort.field);
+      const bValue = this.getNestedProperty(b as unknown as Record<string, unknown>, sort.field);
+
+      if ((aValue as string | number) < (bValue as string | number)) return sort.direction === 'asc' ? -1 : 1;
+      if ((aValue as string | number) > (bValue as string | number)) return sort.direction === 'asc' ? 1 : -1;
     }
     
     return 0;
@@ -621,8 +633,8 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       // Reconstruct Maps from serialized data
       this.collections.clear();
       for (const [collectionName, records] of Object.entries(serialized)) {
-        const collectionMap = new Map<UUID, DataRecord<any>>();
-        for (const [id, record] of Object.entries(records as Record<UUID, DataRecord<any>>)) {
+        const collectionMap = new Map<UUID, DataRecord<RecordData>>();
+        for (const [id, record] of Object.entries(records as Record<UUID, DataRecord<RecordData>>)) {
           collectionMap.set(id, record);
         }
         this.collections.set(collectionName, collectionMap);
@@ -645,7 +657,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       const path = await import('path');
       
       // Convert Maps to serializable objects
-      const serialized: Record<string, Record<UUID, DataRecord<any>>> = {};
+      const serialized: Record<string, Record<UUID, DataRecord<RecordData>>> = {};
       for (const [collectionName, collectionMap] of this.collections.entries()) {
         serialized[collectionName] = {};
         for (const [id, record] of collectionMap.entries()) {
