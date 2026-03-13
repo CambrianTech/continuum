@@ -7,10 +7,8 @@ import { createThemeSetResult } from '../shared/ThemeSetTypes';
 import { EnhancementError } from '../../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import { Commands } from '../../../../system/core/shared/Commands';
-import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
-import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
+import { jtagWindow } from '../../../../system/core/types/GlobalAugmentations';
 
 import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
@@ -23,8 +21,9 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   async execute(params: ThemeSetParams): Promise<ThemeSetResult> {
     // Handle CLI positional arguments - if themeName is undefined, use first positional argument
     let themeName = params.themeName;
-    if (!themeName && (params as any)._positional && (params as any)._positional.length > 0) {
-      themeName = (params as any)._positional[0];
+    const positionalParams = params as ThemeSetParams & { _positional?: string[] };
+    if (!themeName && positionalParams._positional && positionalParams._positional.length > 0) {
+      themeName = positionalParams._positional[0];
       console.log(`🔧 ThemeSetBrowser: Using positional argument '${themeName}' as theme name`);
     }
     
@@ -67,7 +66,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
 
     try {
       // Try to delegate to existing ThemeWidget
-      const themeWidget = document.querySelector('theme-widget') as any;
+      const themeWidget = document.querySelector('theme-widget') as HTMLElement & { setTheme?: (name: string) => Promise<void> } | null;
       if (themeWidget && typeof themeWidget.setTheme === 'function') {
         console.log('🎨 ThemeSetBrowser: Delegating to ThemeWidget (includes persistence)');
         await themeWidget.setTheme(themeName);
@@ -102,16 +101,16 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   private async loadThemeFile(filename: string): Promise<string> {
     try {
       const filePath = `widgets/shared/themes/${filename}`;
-      const jtagClient = (window as any).jtag;
+      const jtagClient = jtagWindow?.jtag;
       if (!jtagClient?.commands) {
         throw new Error('JTAG client not available');
       }
+
+      const result = await jtagClient.commands['file/load']({ filepath: filePath }) as Record<string, unknown>;
+      const fileData = (result as Record<string, unknown> & { commandResult?: Record<string, unknown> }).commandResult || result;
       
-      const result = await jtagClient.commands['file/load']({ filepath: filePath });
-      const fileData = (result as any).commandResult || result;
-      
-      if (result.success && fileData.success && fileData.content) {
-        return fileData.content;
+      if (result['success'] && fileData['success'] && typeof fileData['content'] === 'string') {
+        return fileData['content'];
       }
       return '';
     } catch (error) {
@@ -140,7 +139,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   private async getCurrentTheme(): Promise<string | undefined> {
     try {
       // Try to get current theme from ThemeWidget
-      const themeWidget = document.querySelector('theme-widget') as any;
+      const themeWidget = document.querySelector('theme-widget') as HTMLElement & { getCurrentTheme?: () => string } | null;
       if (themeWidget && typeof themeWidget.getCurrentTheme === 'function') {
         return themeWidget.getCurrentTheme();
       }

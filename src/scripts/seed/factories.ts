@@ -7,16 +7,100 @@
  * IMPORTANT: Use constants from UserCapabilitiesDefaults.ts for single source of truth
  */
 
+import type { UserCapabilities } from '../../system/data/entities/UserEntity';
 import {
   getDefaultCapabilitiesForType,
   getDefaultPreferencesForType
 } from '../../system/user/config/UserCapabilitiesDefaults';
 
+/** Seed data shape for a chat room (pre-persistence) */
+interface SeedRoom {
+  id: string;
+  uniqueId: string;
+  name: string;
+  displayName: string;
+  description: string;
+  topic: string;
+  type: string;
+  status: string;
+  ownerId: string;
+  lastMessageAt: string;
+  recipeId: string;
+  privacy: { isPublic: boolean; requiresInvite: boolean; allowGuestAccess: boolean; searchable: boolean };
+  settings: { allowReactions: boolean; allowThreads: boolean; allowFileSharing: boolean; messageRetentionDays: number };
+  stats: { memberCount: number; messageCount: number; createdAt: string; lastActivityAt: string };
+  members: string[];
+  tags: string[];
+}
+
+/** Seed data shape for a chat message (pre-persistence) */
+interface SeedChatMessage {
+  id: string;
+  roomId: string;
+  senderId: string;
+  senderType: 'user' | 'bot' | 'system';
+  content: {
+    text: string;
+    attachments: unknown[];
+    formatting: { markdown: boolean; mentions: unknown[]; hashtags: unknown[]; links: unknown[]; codeBlocks: unknown[] };
+  };
+  status: string;
+  priority: string;
+  timestamp: string;
+  reactions: unknown[];
+}
+
+/** Seed data shape for a content type definition */
+interface SeedContentType {
+  id: string;
+  type: string;
+  displayName: string;
+  description: string;
+  category: string;
+  config: {
+    widgetSelector: string;
+    allowMultiple: boolean;
+    autoSave: boolean;
+    preloadData: boolean;
+    requiredPermissions: string[];
+    minUserType: string;
+  };
+  isActive: boolean;
+  isBuiltIn: boolean;
+  sortOrder: number;
+}
+
+/** Seed data shape for a user state */
+interface SeedUserState {
+  id: string;
+  userId: string;
+  deviceId: string;
+  contentState: { openItems: unknown[]; lastUpdatedAt: string };
+  preferences: Record<string, unknown>;
+}
+
+/** Seed data shape for a training session template */
+interface SeedTrainingSession {
+  id: string;
+  sessionName: string;
+  description: string;
+  status: string;
+  hyperparameters: {
+    learningRate: number;
+    batchSize: number;
+    epochs: number;
+    warmupSteps: number;
+    maxGradNorm: number;
+    weightDecay: number;
+  };
+  isTemplate: boolean;
+}
+
 /**
  * Create user capabilities based on user type
  * Uses single source of truth from UserCapabilitiesDefaults
  */
-export function createUserCapabilities(type: 'human' | 'agent' | 'persona'): any {
+export function createUserCapabilities(type: 'human' | 'agent' | 'persona'): UserCapabilities {
   return getDefaultCapabilitiesForType(type);
 }
 
@@ -34,7 +118,7 @@ export function createRoom(
   ownerId: string,
   uniqueId: string,
   recipeId: string = 'general-chat'
-): any {
+): SeedRoom {
   return {
     id,
     uniqueId,
@@ -79,7 +163,7 @@ export function createChatMessage(
   senderId: string,
   text: string,
   senderType: "user" | "bot" | "system" = "user"
-): any {
+): SeedChatMessage {
   return {
     id,
     roomId,
@@ -106,7 +190,7 @@ export function createChatMessage(
 /**
  * Create default content type registry
  */
-export function createDefaultContentTypes(): any[] {
+export function createDefaultContentTypes(): SeedContentType[] {
   return [
     {
       id: 'ct-chat',
@@ -169,7 +253,7 @@ export function createDefaultContentTypes(): any[] {
  * Create default user states - Fixed to match UserStateEntity schema
  * Uses single source of truth from UserCapabilitiesDefaults
  */
-export function createDefaultUserStates(humanUserId: string, claudeUserId: string): any[] {
+export function createDefaultUserStates(humanUserId: string, claudeUserId: string): SeedUserState[] {
   const humanPrefs = getDefaultPreferencesForType('human');
   const agentPrefs = getDefaultPreferencesForType('agent');
 
@@ -206,7 +290,7 @@ export function createDefaultUserStates(humanUserId: string, claudeUserId: strin
 /**
  * Create default training session templates
  */
-export function createDefaultTrainingSessions(): any[] {
+export function createDefaultTrainingSessions(): SeedTrainingSession[] {
   return [
     {
       id: 'ts-template-chat',

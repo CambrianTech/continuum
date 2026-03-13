@@ -5,13 +5,11 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { toShortId } from '@system/core/types/CrossPlatformUUID';
+import { EnhancementError } from '@system/core/types/ErrorTypes';
 import type { DecisionViewParams, DecisionViewResult } from '../shared/DecisionViewTypes';
 import { createDecisionViewResultFromParams } from '../shared/DecisionViewTypes';
-import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
-import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
@@ -32,7 +30,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         success: false,
         proposal: null,
         summary: errorMsg,
-        error: errorMsg as any  // ToolRegistry stringifyError handles strings
+        error: new EnhancementError('decision/view', errorMsg)
       });
     }
 
@@ -57,7 +55,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         });
 
         if (proposalsResult.success && proposalsResult.items) {
-          const matching = proposalsResult.items.find((p: any) => p.id.endsWith(proposalShortId));
+          const matching = proposalsResult.items.find((p: DecisionProposalEntity) => p.id.endsWith(proposalShortId));
           if (matching) {
             resolvedProposalId = matching.id;
             console.log(`Resolved short ID #${proposalShortId} to full UUID ${resolvedProposalId}`);
@@ -77,7 +75,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
           success: false,
           proposal: null,
           summary: errorMsg,
-          error: errorMsg as any  // ToolRegistry stringifyError handles strings
+          error: new EnhancementError('decision/view', errorMsg)
         });
       }
 
@@ -107,18 +105,18 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
 
       return createDecisionViewResultFromParams(params, {
         success: true,
-        proposal: proposal as any,  // Type mismatch between DecisionEntity and DecisionProposalEntity
+        proposal,
         summary
       });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error in decision/view:', error);
-      const errorMsg = `Error retrieving proposal: ${error.message || 'Unknown error'}`;
+      const errorMsg = `Error retrieving proposal: ${error instanceof Error ? error.message : String(error)}`;
       return createDecisionViewResultFromParams(params, {
         success: false,
         proposal: null,
         summary: errorMsg,
-        error: errorMsg as any  // ToolRegistry stringifyError handles strings
+        error: new EnhancementError('decision/view', errorMsg)
       });
     }
   }

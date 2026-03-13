@@ -32,7 +32,7 @@ export interface IWidgetAIService extends IWidgetService {
   connectToAgent(agentType: string): Promise<boolean>;
   
   // AI coordination
-  notifyAI(message: string, context?: any): Promise<void>;
+  notifyAI(message: string, context?: Record<string, unknown>): Promise<void>;
   subscribeToAIEvents(handler: AIEventHandler): void;
   unsubscribeFromAIEvents(handler: AIEventHandler): void;
 }
@@ -41,7 +41,7 @@ export interface IWidgetAIService extends IWidgetService {
 export interface AIQueryOptions {
   timeout?: number;           // Query timeout in ms
   priority?: 'low' | 'normal' | 'high';
-  context?: any;             // Additional context for AI
+  context?: Record<string, unknown>;  // Additional context for AI
   expectsResponse?: boolean;  // Whether to wait for response
   model?: string;            // Specific model to use
   temperature?: number;      // AI temperature setting
@@ -76,7 +76,7 @@ export type AIEventHandler = (event: AIEvent) => void;
 
 export interface AIEvent {
   type: 'persona_changed' | 'agent_connected' | 'ai_response' | 'ai_error';
-  data: any;
+  data: Record<string, unknown>;
   timestamp: string;
   source: string;
 }
@@ -265,7 +265,7 @@ export class WidgetAIService implements IWidgetAIService {
   }
 
   // AI coordination
-  async notifyAI(message: string, context?: any): Promise<void> {
+  async notifyAI(message: string, context?: Record<string, unknown>): Promise<void> {
     try {
       // Send notification to Academy daemon
       await this.executeAcademyOperation('notify', {
@@ -374,7 +374,7 @@ export class WidgetAIService implements IWidgetAIService {
     };
   }
 
-  private async executeAcademyOperation(operation: string, data: any): Promise<any> {
+  private async executeAcademyOperation(operation: string, data: Record<string, unknown>): Promise<{ success: boolean; operation: string; data: Record<string, unknown> }> {
     // This will be replaced with actual Academy daemon communication
     console.debug(`🎓 WidgetAIService: Academy operation '${operation}'`);
     return { success: true, operation, data };
@@ -391,7 +391,7 @@ export class WidgetAIService implements IWidgetAIService {
     this.connectedAgents.delete(agentType);
   }
 
-  private emitAIEvent(type: AIEvent['type'], data: any): void {
+  private emitAIEvent(type: AIEvent['type'], data: Record<string, unknown>): void {
     const event: AIEvent = {
       type,
       data,

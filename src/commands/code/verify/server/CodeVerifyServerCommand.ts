@@ -131,7 +131,7 @@ export class CodeVerifyServerCommand extends CommandBase<CodeVerifyParams, CodeV
       cwd: workspaceDir,
       timeoutMs: 120_000,
       maxOutputBytes: 102_400,
-      personaId: personaId as any,
+      personaId,
     });
   }
 
@@ -150,7 +150,7 @@ export class CodeVerifyServerCommand extends CommandBase<CodeVerifyParams, CodeV
       cwd: workspaceDir,
       timeoutMs: 120_000,
       maxOutputBytes: 102_400,
-      personaId: personaId as any,
+      personaId,
     });
   }
 
@@ -211,15 +211,30 @@ export class CodeVerifyServerCommand extends CommandBase<CodeVerifyParams, CodeV
     }
 
     try {
-      // vitest --reporter=json outputs JSON to stdout
-      const json = JSON.parse(sandboxResult.stdout);
+      // vitest --reporter=json outputs JSON to stdout — wire boundary parse
+      interface VitestAssertion {
+        status: string;
+        ancestorTitles?: string[];
+        title?: string;
+        failureMessages?: string[];
+      }
+      interface VitestSuite {
+        assertionResults?: VitestAssertion[];
+      }
+      interface VitestReport {
+        numPassedTests?: number;
+        numFailedTests?: number;
+        numTotalTests?: number;
+        testResults?: VitestSuite[];
+      }
+      const json: VitestReport = JSON.parse(sandboxResult.stdout);
       const numPassed = json.numPassedTests ?? 0;
       const numFailed = json.numFailedTests ?? 0;
       const total = json.numTotalTests ?? (numPassed + numFailed);
       const failures = (json.testResults ?? [])
-        .flatMap((suite: any) => (suite.assertionResults ?? [])
-          .filter((t: any) => t.status === 'failed')
-          .map((t: any) => `${t.ancestorTitles?.join(' > ')} > ${t.title}: ${t.failureMessages?.[0] ?? 'Failed'}`)
+        .flatMap((suite: VitestSuite) => (suite.assertionResults ?? [])
+          .filter((t: VitestAssertion) => t.status === 'failed')
+          .map((t: VitestAssertion) => `${t.ancestorTitles?.join(' > ')} > ${t.title}: ${t.failureMessages?.[0] ?? 'Failed'}`)
         );
 
       return {

@@ -10,6 +10,7 @@ import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DecisionEntity } from '@system/data/entities/DecisionEntity';
+import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
@@ -43,7 +44,7 @@ export interface DecisionViewResult extends CommandResult {
   // Whether the proposal was found
   success: boolean;
   // The complete proposal details (null if not found)
-  proposal: DecisionEntity | null;
+  proposal: DecisionEntity | DecisionProposalEntity | null;
   // Human-readable summary of proposal status and results
   summary: string;
   error?: JTAGError;
@@ -58,7 +59,7 @@ export const createDecisionViewResult = (
   data: {
     success: boolean;
     // The complete proposal details (null if not found)
-    proposal?: DecisionEntity | null;
+    proposal?: DecisionEntity | DecisionProposalEntity | null;
     // Human-readable summary of proposal status and results
     summary?: string;
     error?: JTAGError;

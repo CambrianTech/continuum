@@ -18,10 +18,11 @@ import type {
   AgentUser,
   UserType
 } from '../../api/types/User';
-import { 
+import type { PersonaConfig, AgentConfig } from '../../api/types/User';
+import {
   createHumanUser,
   isHumanUser,
-  isPersonaUser, 
+  isPersonaUser,
   isAgentUser
 } from '../../api/types/User';
 
@@ -33,8 +34,8 @@ export interface IUserService {
   
   // User creation and management
   createHumanUser(config: { name: string; email: string; avatar?: string }): Promise<HumanUser>;
-  createPersonaUser(config: any): Promise<PersonaUser>;  // PersonaConfig from API
-  createAgentUser(config: any): Promise<AgentUser>;      // AgentConfig from API
+  createPersonaUser(config: PersonaConfig): Promise<PersonaUser>;
+  createAgentUser(config: AgentConfig): Promise<AgentUser>;
   
   // User queries
   listUsers(userType?: UserType): Promise<BaseUser[]>;
@@ -47,7 +48,7 @@ export interface IUserService {
   
   // User state management  
   updateUserStatus(userId: string, status: string): Promise<boolean>;
-  updateUserPreferences(userId: string, preferences: Record<string, any>): Promise<boolean>;
+  updateUserPreferences(userId: string, preferences: Record<string, unknown>): Promise<boolean>;
 }
 
 export class UserService extends ServiceBase implements IUserService {
@@ -117,12 +118,12 @@ export class UserService extends ServiceBase implements IUserService {
     return user;
   }
 
-  async createPersonaUser(config: any): Promise<PersonaUser> {
+  async createPersonaUser(config: PersonaConfig): Promise<PersonaUser> {
     // TODO: Import PersonaUser constructor from API types
     throw new Error('PersonaUser creation not implemented yet');
   }
 
-  async createAgentUser(config: any): Promise<AgentUser> {
+  async createAgentUser(config: AgentConfig): Promise<AgentUser> {
     // TODO: Import AgentUser constructor from API types  
     throw new Error('AgentUser creation not implemented yet');
   }
@@ -185,7 +186,7 @@ export class UserService extends ServiceBase implements IUserService {
     return result.success;
   }
 
-  async updateUserPreferences(userId: string, preferences: Record<string, any>): Promise<boolean> {
+  async updateUserPreferences(userId: string, preferences: Record<string, unknown>): Promise<boolean> {
     const result = await this.executeCommand('user/update-preferences', { userId, preferences });
     return result.success;
   }
