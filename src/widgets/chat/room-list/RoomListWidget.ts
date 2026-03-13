@@ -34,6 +34,10 @@ type RoomFilter = 'all' | 'rooms' | 'dms';
 export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   readonly collection = RoomEntity.collection;
 
+  // Always fetch rooms from server — localStorage cache goes stale after reseed
+  // and 'auto' backend returns cached data without ever hitting the server.
+  protected override get loadBackend(): 'server' { return 'server'; }
+
   @reactive() private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID;
   @reactive() private activeFilter: RoomFilter = 'all';
   @reactive() private userCache = new Map<string, UserEntity>();
