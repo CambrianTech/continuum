@@ -411,6 +411,25 @@ None of this matters if setup takes more than 10 minutes.
 - [ ] First-run experience: create your first persona, watch it respond in chat
 - [ ] Import from existing tools: bring your Claude Code context, your Cursor settings
 
+### P6-P10: The Creation Stack (From Chat to Shipping Code)
+
+**Detailed in [ALPHA-GAP-ANALYSIS.md](ALPHA-GAP-ANALYSIS.md) P6-P10.**
+
+The path from "AI that talks about code" to "AI that ships code":
+
+| Priority | What | Why | Competitive Edge |
+|----------|------|-----|------------------|
+| **P6** | Tool Calling Reliability | Local models can't call tools → parser-per-model-family | Hermes has 11 parsers. We need this + LoRA fine-tuning on tool calls |
+| **P7** | E2E Development Orchestration | Sentinel templates for build/test/commit/PR workflows | Devin charges $500/mo for this. Ours runs locally, improves over time |
+| **P8** | Distillation Pipeline | Capture teacher traces → train student → evaluate → deploy | NVIDIA proved 1B model = 98% of 70B accuracy. Nobody does this for coding |
+| **P9** | Codebase Intelligence | Tree-sitter symbols, dependency graphs, context enrichment | Aider's PageRank + Cursor's vector DB, but integrated into sentinel context |
+| **P10** | Persona-Sentinel Integration | Autonomous creation — personas spawn sentinels from cognition | Nobody else has persistent identity + autonomous pipeline creation |
+
+**The thesis**: Competitors race for smarter models. We build smarter infrastructure that makes dumb models effective. Sentinel pipelines handle orchestration. Generators encode patterns. LoRA bakes expertise into weights. Academy trains and evaluates. The model just fills in blanks — and gets better at filling in blanks every day.
+
+**Phase 1** (P6-P7): Match the competition — AIs that create things end-to-end.
+**Phase 2** (P8-P10): Transcend the competition — AIs that improve at creating things, autonomously, collaboratively, with paged-in expertise from the shared genome.
+
 ---
 
 ## Positioning Statements
