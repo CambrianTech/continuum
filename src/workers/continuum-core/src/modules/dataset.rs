@@ -11,33 +11,45 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::path::{Path, PathBuf};
+use ts_rs::TS;
 
 /// Manifest persisted alongside imported datasets.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/dataset/DatasetManifest.ts")]
 pub struct DatasetManifest {
     pub name: String,
     pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub source: Option<String>,
+    #[ts(type = "number")]
     pub total_examples: usize,
+    #[ts(type = "number")]
     pub train_examples: usize,
+    #[ts(type = "number")]
     pub eval_examples: usize,
     pub train_path: String,
     pub eval_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub metrics: Option<DatasetMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
     pub pre_cutoff: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
     pub post_cutoff: Option<usize>,
     pub imported_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/dataset/DatasetMetrics.ts")]
 pub struct DatasetMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub avg_cyclomatic_complexity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub avg_lines_of_code: Option<f64>,
 }
 

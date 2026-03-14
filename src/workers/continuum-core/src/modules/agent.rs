@@ -31,6 +31,7 @@ use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use ts_rs::TS;
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,7 +63,8 @@ pub const TOOL_NAMES: &[&str] = &[
 // ============================================================================
 
 /// Agent execution status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export, export_to = "../../../shared/generated/agent/AgentStatus.ts")]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Running,
@@ -72,29 +74,38 @@ pub enum AgentStatus {
 }
 
 /// A single tool call made by the agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/agent/AgentToolCall.ts")]
 pub struct ToolCall {
     pub name: String,
+    #[ts(type = "Record<string, unknown>")]
     pub arguments: Value,
 }
 
 /// Result of executing a tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/agent/AgentToolResult.ts")]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 
 /// A single action taken by the agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/agent/AgentAction.ts")]
 pub struct AgentAction {
     pub timestamp: String,
     pub action_type: String,
+    #[ts(optional)]
     pub tool_name: Option<String>,
+    #[ts(optional, type = "Record<string, unknown>")]
     pub tool_args: Option<Value>,
+    #[ts(optional)]
     pub result: Option<ToolResult>,
+    #[ts(optional)]
     pub thought: Option<String>,
 }
 

@@ -24,9 +24,11 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use ts_rs::TS;
 
 /// MCP tool definition (matches MCP protocol)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/mcp/MCPTool.ts")]
 pub struct MCPTool {
     pub name: String,
     pub description: String,
@@ -34,16 +36,19 @@ pub struct MCPTool {
     pub input_schema: MCPInputSchema,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/mcp/MCPInputSchema.ts")]
 pub struct MCPInputSchema {
     #[serde(rename = "type")]
     pub schema_type: String,
     pub properties: HashMap<String, MCPProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub required: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/mcp/MCPProperty.ts")]
 pub struct MCPProperty {
     #[serde(rename = "type")]
     pub prop_type: String,

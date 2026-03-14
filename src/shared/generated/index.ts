@@ -2,8 +2,10 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
+export * from './agent';
 export * from './ai';
 export * from './code';
+export * from './dataset';
 // data-daemon: explicit exports (has duplicate types)
 export type { AdapterConfig } from './data-daemon';
 export type { AdapterOpenResult } from './data-daemon';
@@ -24,6 +26,7 @@ export * from './gpu';
 export * from './ipc';
 export * from './live';
 export * from './logger';
+export * from './mcp';
 // orm: explicit exports (has duplicate types)
 export type { BackfillVectorsProgress } from './orm';
 export type { BackfillVectorsRequest } from './orm';

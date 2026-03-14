@@ -130,14 +130,15 @@ All timing constants consolidated into `PersonaTimingConfig.ts`:
   - These are correct: a poisoned mutex = corrupted data, crashing is the right behavior
 - 3 `.expect()` in init code (home_dir, AIProviderModule) — genuine preconditions
 
-### 1F. Missing ts-rs Exports
+### 1F. Missing ts-rs Exports — COMPLETE
 
-Types crossing Rust-TS boundary without `#[derive(TS)]`:
-- `RagComposeRequest` (modules/rag.rs)
-- Agent tool call types (modules/agent.rs)
-- Various IPC request/response types
+Added `#[derive(TS)]` with proper exports to 10 types across 4 modules:
+- `RagComposeRequest` (rag.rs) → `shared/generated/rag/`
+- `AgentStatus`, `ToolCall`, `ToolResult`, `AgentAction` (agent.rs) → `shared/generated/agent/`
+- `DatasetManifest`, `DatasetMetrics` (dataset.rs) → `shared/generated/dataset/`
+- `MCPTool`, `MCPInputSchema`, `MCPProperty` (mcp.rs) → `shared/generated/mcp/`
 
-**Fix**: Audit all `CommandResult::Json()` returns — if it crosses the wire, it needs `#[derive(TS)]`.
+Barrel exports created for agent/, dataset/, mcp/ and added to main index.ts.
 
 ---
 
@@ -293,7 +294,7 @@ P1: Architectural Integrity     ← Foundation for everything else
   ├── 1C: God class decomposition        ← PARTIALLY COMPLETE (4 extractions done)
   ├── 1D: Magic number consolidation     ← COMPLETE
   ├── 1E: Rust panic safety              ← MOSTLY COMPLETE
-  └── 1F: ts-rs exports
+  └── 1F: ts-rs exports                 ← COMPLETE
 
 P2: Pressure System              ← COMPLETE (PR #304)
   ├── 2A: ThoughtStream slots    ✓
