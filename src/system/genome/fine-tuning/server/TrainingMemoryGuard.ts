@@ -117,7 +117,7 @@ export class TrainingMemoryGuard {
 
     if (!sufficient) {
       result.reason = `Training ${this.modelName} needs ~${estimatedGb.toFixed(1)}GB + ${SAFETY_MARGIN_GB}GB safety = ${requiredGb.toFixed(1)}GB, ` +
-        `but only ${availableGb.toFixed(1)}GB available. Free memory by stopping Ollama models or other processes.`;
+        `but only ${availableGb.toFixed(1)}GB available. Free memory by stopping other processes.`;
     }
 
     log.info(`Preflight: model=${this.modelName}, need=${requiredGb.toFixed(1)}GB, available=${availableGb.toFixed(1)}GB, sufficient=${sufficient}`);

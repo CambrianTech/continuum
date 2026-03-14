@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a shell step
 ///
@@ -95,14 +95,8 @@ pub async fn execute(
                 }),
             })
         }
-        Ok(Err(e)) => Err(format!(
-            "[{}] Shell step failed to execute '{}': {}",
-            pipeline_ctx.handle_id, actual_cmd, e
-        )),
-        Err(_) => Err(format!(
-            "[{}] Shell step timed out after {}s",
-            pipeline_ctx.handle_id, timeout_secs
-        )),
+        Ok(Err(e)) => Err(step_err(pipeline_ctx.handle_id, &format!("Shell step failed to execute '{actual_cmd}'"), e)),
+        Err(_) => Err(step_err(pipeline_ctx.handle_id, "Shell step", format!("timed out after {timeout_secs}s"))),
     }
 }
 

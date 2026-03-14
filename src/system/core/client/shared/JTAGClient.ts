@@ -72,12 +72,11 @@ import { JTAGBase, type CommandsInterface } from '../../shared/JTAGBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload, JTAGEnvironment, CommandParams, CommandResult } from '../../types/JTAGTypes';
 import type { JTAGRouter } from '../../router/shared/JTAGRouter';
 import type { EventEmitOptions } from '../../shared/Events';
-import type { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { ParticipantProfile } from '../../detection/AgentDetectionPlugin';
 import type { CommandResponse, CommandSuccessResponse, CommandErrorResponse } from '../../../../daemons/command-daemon/shared/CommandResponseTypes';
-import { JTAGMessageFactory, JTAGMessageTypes, isJTAGResponseMessage } from '../../types/JTAGTypes';
+import { JTAGMessageTypes, isJTAGResponseMessage } from '../../types/JTAGTypes';
 import { ResponseCorrelator } from '../../shared/ResponseCorrelator';
-import type { ITransportFactory, TransportConfig, JTAGTransport, TransportProtocol, TransportSendResult } from '../../../transports';
+import type { ITransportFactory, JTAGTransport, TransportProtocol } from '../../../transports';
 import type { ITransportHandler } from '../../../transports';
 import type { ListParams, ListResult, CommandSignature } from '../../../../commands/list/shared/ListTypes';
 import { createListParams } from '../../../../commands/list/shared/ListTypes';
@@ -88,6 +87,10 @@ import { isTestEnvironment } from '../../../shared/BrowserSafeConfig';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
+import { LocalConnection, RemoteConnection } from './JTAGClientConnections';
+import type { JTAGConnection, ICommandCorrelator, RemoteConnectionHost } from './JTAGClientConnections';
+export { LocalConnection, RemoteConnection };
+export type { JTAGConnection, ICommandCorrelator };
 import type { SessionMetadata, ClientType, ConnectionIdentity, AssistantContext, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import type { BaseUser } from '../../../user/shared/BaseUser';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
@@ -174,17 +177,6 @@ export interface JTAGClientConnectionResult {
 }
 
 /**
- * Connection abstraction - local vs remote execution strategy
- * ISSUE 5 FIXED: Simplified interface without over-typing generics
- */
-export interface JTAGConnection {
-  executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload>;
-  getCommandsInterface(): CommandsInterface;
-  readonly sessionId: UUID;
-  readonly context: JTAGContext;
-}
-
-/**
  * Dynamic commands interface - temporary during migration to JTAGBase.commands
  * TODO: Remove when migration to JTAGBase.commands is complete
  */
@@ -197,7 +189,7 @@ export interface DynamicCommandsInterface {
 }
 
 // TODO: Remove ITransportHandler - mixing client/server responsibilities (ISSUE 7)
-export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
+export abstract class JTAGClient extends JTAGBase implements ITransportHandler, RemoteConnectionHost {
   // Static client registry for sharedInstance access (fixes server-side sharedInstance timeout)
   private static clientRegistry: Map<string, JTAGClient> = new Map();
 
@@ -1106,116 +1098,4 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     };
   }
 
-}
-
-
-/**
- * Local connection - direct calls to local JTAG system (no transport)
- */
-export class LocalConnection implements JTAGConnection {
-  public readonly sessionId: UUID;
-  public readonly context: JTAGContext;
-  public readonly localSystem: JTAGSystem;
-
-  constructor(
-    localSystem: JTAGSystem, 
-    context: JTAGContext, 
-    sessionId: UUID
-  ) {
-    this.localSystem = localSystem;
-    this.context = context;
-    this.sessionId = sessionId;
-  }
-
-  async executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload> {
-    // Direct call to local system - zero transport overhead
-    const commandFn = this.localSystem.commands[commandName];
-    if (!commandFn) {
-      throw new Error(`Command '${commandName}' not available in local system`);
-    }
-    // commands proxy accepts CommandParams; JTAGPayload at wire boundary narrows here
-    return await commandFn(params as CommandParams) as JTAGPayload;
-  }
-
-  getCommandsInterface(): CommandsInterface {
-    // Delegate to local system's getCommandsInterface - zero transport overhead
-    return this.localSystem.getCommandsInterface();
-  }
-}
-
-/**
- * Correlation interface for remote command execution
- * Implemented by environment-specific correlators
- */
-export interface ICommandCorrelator {
-  waitForResponse(correlationId: string, timeoutMs?: number): Promise<JTAGPayload>;
-}
-
-/**
- * Remote connection - transport-based calls to remote JTAG system
- */
-export class RemoteConnection implements JTAGConnection {
-  public get sessionId(): UUID {
-    return this.client.sessionId; // Dynamic getter - always uses client's current session
-  }
-  public readonly context: JTAGContext;
-
-  constructor(
-    private readonly client: JTAGClient,
-    private readonly correlator: ICommandCorrelator
-  ) {
-    this.context = client.context;
-  }
-
-  async executeCommand(commandName: string, params: CommandParams | JTAGPayload): Promise<JTAGPayload> {
-    // Create strongly-typed request message
-    // Use client_ prefix for external client detection
-    const correlationId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
-
-    const requestMessage: JTAGMessage = JTAGMessageFactory.createRequest(
-      this.context,
-      this.context.environment, // origin: current environment
-      `server/commands/${commandName}`, // target: server command
-      params,
-      correlationId
-    );
-
-    // Send via transport - correlation handled by shared ResponseCorrelator
-    const transport = this.client.getSystemTransport();
-    if (!transport) {
-      throw new Error('No transport available for remote command execution');
-    }
-
-    verbose(`📤 RemoteConnection: Sending command '${commandName}' with correlation ${correlationId}`);
-    const sendResult: TransportSendResult = await transport.send(requestMessage);
-
-    if (!sendResult.success) {
-      throw new Error(`Transport failed to send command at ${sendResult.timestamp}`);
-    }
-
-    // Wait for correlated response — 10min safety net, CLI enforces the real per-command timeout
-    const response = await this.correlator.waitForResponse(correlationId, 600000);
-    return response;
-  }
-
-  getCommandsInterface(): CommandsInterface {
-    // ISSUE 2 FIXED: Create CommandsInterface from client's discovered commands
-    const map = new Map();
-    
-    // Convert discovered commands to CommandsInterface format
-    for (const [name, signature] of this.client.getDiscoveredCommands()) {
-      // Create a command function that routes through this remote connection
-      const commandFn = async (params?: JTAGPayload): Promise<JTAGPayload> => {
-        return await this.executeCommand(name, params || { context: this.context, sessionId: this.sessionId });
-      };
-      
-      // Store as CommandBase-like object (simplified for remote)
-      // Remote commands are functions proxying through transport, not real CommandBase instances.
-      // This cast is a wire boundary: the CommandsInterface Map expects CommandBase but remote
-      // connections provide function proxies. TODO: Create proper CommandBase proxy adapter.
-      map.set(name, commandFn as unknown as CommandBase<CommandParams, CommandResult>);
-    }
-    
-    return map;
-  }
 }

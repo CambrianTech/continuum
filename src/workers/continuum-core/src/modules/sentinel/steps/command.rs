@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::time::Instant;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a command step via TypeScript CommandRouterServer.
 ///
@@ -40,12 +40,7 @@ pub async fn execute(
     let json =
         runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params)
             .await
-            .map_err(|e| {
-                format!(
-                    "[{}] Command '{}' failed: {}",
-                    pipeline_ctx.handle_id, interpolated_command, e
-                )
-            })?;
+            .map_err(|e| step_err(pipeline_ctx.handle_id, &format!("Command '{interpolated_command}' failed"), e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

@@ -399,3 +399,10 @@ pub fn step_type_name(step: &PipelineStep) -> &'static str {
         PipelineStep::CodingAgent { .. } => "codingagent",
     }
 }
+
+/// Format a sentinel step error with consistent `[handle_id] context: error` format.
+///
+/// Used by all step implementations to produce uniform error messages.
+pub fn step_err(handle_id: &str, context: &str, error: impl std::fmt::Display) -> String {
+    format!("[{handle_id}] {context}: {error}")
+}

@@ -53,6 +53,39 @@ export const PersonaTimingConfig = {
   generation: {
     timeoutMs: 180_000,            // 180s generous limit for local generation
     voiceMaxTokens: 800,           // Cap tokens for voice responses
+    daemonInitWaitMs: 30_000,      // Max wait for AIProviderDaemon to initialize
+    daemonInitPollMs: 100,         // Poll interval while waiting for daemon
+  },
+
+  /** State snapshot emission */
+  snapshot: {
+    throttleMs: 2_000,             // Min interval between snapshot emissions per persona
+    initialDelayMs: 2_000,         // Delay before first snapshot after construction
+    periodicIntervalMs: 10_000,    // Periodic snapshot emission interval
+  },
+
+  /** Self-task generation (autonomous learning) */
+  selfTask: {
+    sweepCooldownMs: 5 * 60 * 1000,   // 5 min between gap sweeps
+    domainCooldownMs: 60 * 60 * 1000,  // 1 hr between same-domain enrollments
+    gapAssessmentInterval: 50,          // Gap assessment every N service cycles
+  },
+
+  /** Subprocess priority-based wait times (RTOS-inspired tiered scheduling) */
+  subprocess: {
+    waitMs: {
+      highest: 10,
+      high: 50,
+      moderate: 100,
+      default: 200,
+      low: 500,
+      lowest: 1_000,
+    },
+  },
+
+  /** UI telemetry */
+  ui: {
+    diamondPersistMs: 2_500,       // Cognitive diamond glow duration per stage
   },
 
   /** Circuit breaker (Tier 4: re-enabled with sane threshold) */

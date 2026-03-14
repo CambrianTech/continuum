@@ -307,7 +307,8 @@ pub struct RagSection {
 }
 
 /// Full RAG compose request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/rag/RagComposeRequest.ts")]
 pub struct RagComposeRequest {
     /// Persona ID for memory/persona-specific sources
     pub persona_id: String,
@@ -317,12 +318,14 @@ pub struct RagComposeRequest {
 
     /// Current message/query for semantic search
     #[serde(default)]
+    #[ts(optional)]
     pub query_text: Option<String>,
 
     /// All sources to load in parallel
     pub sources: Vec<RagSourceRequest>,
 
     /// Total token budget across all sources
+    #[ts(type = "number")]
     pub total_budget: usize,
 }
 

@@ -28,7 +28,7 @@ import { PersonaTimingConfig } from './PersonaTimingConfig';
 import { BackpressureService } from '../../../core/services/BackpressureService';
 
 /** Gap assessment runs every N service cycles (~25-50s during active operation) */
-const GAP_ASSESSMENT_INTERVAL = 50;
+const GAP_ASSESSMENT_INTERVAL = PersonaTimingConfig.selfTask.gapAssessmentInterval;
 
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;

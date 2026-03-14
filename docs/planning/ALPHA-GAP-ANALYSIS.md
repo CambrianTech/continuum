@@ -87,53 +87,58 @@ Each item is a self-contained feature branch. Priority order is the implementati
 
 **Validation**: `grep -r "Commands.execute(" --include="*.ts" | grep -v "CommandName\."` should return zero results when done.
 
-### 1C. God Class Decomposition
+### 1C. God Class Decomposition — PARTIALLY COMPLETE
 
-**Current**:
+**Completed extractions**:
+- `DataSchemaManager.ts` extracted from DataDaemon (schema extraction, validation, provisioning)
+- `DataVectorOperations.ts` extracted from DataDaemon (6 vector methods + VectorCapableAdapter interface)
+- `JTAGClientConnections.ts` extracted from JTAGClient (LocalConnection, RemoteConnection, RemoteConnectionHost interface)
+- `PersonaAgentLoop.ts` extracted from PersonaResponseGenerator (agent tool loop, 294 lines)
+
+**Remaining**:
 | File | Lines | Should Be |
 |------|-------|-----------|
-| PersonaUser.ts | 2,213 | <500 — extract to focused modules |
-| PersonaResponseGenerator.ts | 1,174 | <500 — split RAG assembly, LLM formatting, generation, posting |
-| DataDaemon.ts | 1,402 | <500 — extract collection ops, query builder, subscription mgmt |
+| PersonaUser.ts | ~2,200 | <500 — extract to focused modules |
 | RustWorkerStorageAdapter.ts | 1,234 | <500 — extract per-operation modules |
 | OllamaAdapter.ts | 1,225 | <500 — extract model management, streaming, tool parsing |
 | ChatRAGBuilder.ts | 1,214 | <500 — extract source management, assembly, caching |
-| JTAGClient.ts | 1,210 | <500 — extract transport, correlation, subscription |
 | PersonaMessageEvaluator.ts | 909 | <500 — extract training signal, topic detection |
 
 **Approach**: Extract using the existing module pattern (PersonaUser already has `modules/`). Each extraction is a PR with tests proving behavior preservation.
 
-### 1D. Magic Number Consolidation
+### 1D. Magic Number Consolidation — COMPLETE
 
-**Current**: Timing values scattered across 8+ files with no single source of truth.
+All timing constants consolidated into `PersonaTimingConfig.ts`:
+- `PersonaState.ts` — snapshot throttle, initial delay, periodic interval
+- `SelfTaskGenerator.ts` — sweep cooldown, domain cooldown
+- `PersonaAutonomousLoop.ts` — gap assessment interval, circuit breaker
+- `PersonaSubprocess.ts` — priority-based wait times (6-case switch → map lookup)
+- `PersonaTile.ts` — diamond persist duration
+- `PersonaResponseGenerator.ts` — daemon init wait/poll, generation timeout, voice max tokens
+- `PersonaUser.ts` — generation timeout
 
-**Fix**: `PersonaTimingConfig.ts` already exists but doesn't cover everything. Audit all timing constants and consolidate:
-- Persona cadence (500ms, 1000ms, 2000ms, 3000ms)
-- Dedup windows (3000ms in PersonaInbox)
-- Poll intervals (10s, 30s, 60s in PersonaAutonomousLoop)
-- Self-task intervals (30min, 1hr, 6hr in SelfTaskGenerator)
-- Snapshot throttle (2000ms in PersonaState)
-- Diamond persist (2500ms in PersonaTile)
+### 1E. Rust Panic Safety — MOSTLY COMPLETE
 
-### 1E. Rust Panic Safety
+**Fixed**:
+- All regex sites already use `LazyLock` or `once_cell::Lazy` (agent.rs, garbage_detection.rs, parsers.rs, interpolation.rs)
+- `.ok()` on file writes → warn log in sentinel/executor.rs (PID write, log writes, mkdir, cleanup — 20 sites)
+- Log write errors use first-failure-only logging to avoid flooding
+- `step_err()` helper added to `sentinel/types.rs` — used by llm.rs, coding_agent.rs, command.rs, emit.rs, watch.rs, shell.rs
 
-**Current**: 21+ `.lock().unwrap()` sites, regex `.unwrap()` without lazy init.
+**Remaining (intentionally kept)**:
+- 36 `.lock().unwrap()` sites in render_loop, selection, message_bus, livekit_agent, bevy_renderer, archive
+  - These are correct: a poisoned mutex = corrupted data, crashing is the right behavior
+- 3 `.expect()` in init code (home_dir, AIProviderModule) — genuine preconditions
 
-| Fix | Files | Impact |
-|-----|-------|--------|
-| `.lock().unwrap()` → `.lock().ok()` or match | logger.rs, orchestrator.rs | Prevents panic on mutex poison |
-| `Regex::new().unwrap()` → `once_cell::Lazy` | agent.rs | Prevents panic on bad regex |
-| `.ok()` on file writes → warn log | sentinel/executor.rs (7 sites) | Silent failures become visible |
-| Duplicated error wrapping → `step_err!` macro | sentinel steps (~12 sites) | DRY |
+### 1F. Missing ts-rs Exports — COMPLETE
 
-### 1F. Missing ts-rs Exports
+Added `#[derive(TS)]` with proper exports to 10 types across 4 modules:
+- `RagComposeRequest` (rag.rs) → `shared/generated/rag/`
+- `AgentStatus`, `ToolCall`, `ToolResult`, `AgentAction` (agent.rs) → `shared/generated/agent/`
+- `DatasetManifest`, `DatasetMetrics` (dataset.rs) → `shared/generated/dataset/`
+- `MCPTool`, `MCPInputSchema`, `MCPProperty` (mcp.rs) → `shared/generated/mcp/`
 
-Types crossing Rust-TS boundary without `#[derive(TS)]`:
-- `RagComposeRequest` (modules/rag.rs)
-- Agent tool call types (modules/agent.rs)
-- Various IPC request/response types
-
-**Fix**: Audit all `CommandResult::Json()` returns — if it crosses the wire, it needs `#[derive(TS)]`.
+Barrel exports created for agent/, dataset/, mcp/ and added to main index.ts.
 
 ---
 
@@ -219,9 +224,17 @@ Ask Helper AI "Why does PersonaUser have both inbox and coordinator?" and get a 
 - Decision: re-enable with proper values, or remove entirely
 
 ### 6C. Error Handling Audit
-- Silent `.ok()` swallowing in sentinel executor (7+ sites)
+- Silent `.ok()` swallowing in sentinel executor (7+ sites) — **FIXED in P1E**
 - Missing input validation: sentinel/run doesn't validate pipeline after JSON.parse()
 - `e.to_string()` vs `format_pg_error()` pattern may exist in other Postgres sites
+
+### 6D. Rust Test Failures (14 pre-existing)
+- 6 `modules::data::tests::*` — data module integration tests (SQLite-related)
+- 3 `orm::connection_manager::tests::*` — connection pooling / LRU eviction
+- 3 `orm::migration::tests::*` — migration pause/resume, verify, cross-db
+- 1 `orm::sqlite::tests::test_create_and_read` — basic CRUD assertion failure
+- 1 `rag::engine::tests::test_parallel_source_loading` — timing-dependent race condition
+- Total: 1261 pass, 14 fail, 25 ignored (as of 2026-03-14)
 
 ---
 
@@ -278,10 +291,10 @@ Ask Helper AI "Why does PersonaUser have both inbox and coordinator?" and get a 
 P1: Architectural Integrity     ← Foundation for everything else
   ├── 1A: Type safety (any elimination)
   ├── 1B: Command infrastructure (single source of truth + generator enforcement)
-  ├── 1C: God class decomposition
-  ├── 1D: Magic number consolidation
-  ├── 1E: Rust panic safety
-  └── 1F: ts-rs exports
+  ├── 1C: God class decomposition        ← PARTIALLY COMPLETE (4 extractions done)
+  ├── 1D: Magic number consolidation     ← COMPLETE
+  ├── 1E: Rust panic safety              ← MOSTLY COMPLETE
+  └── 1F: ts-rs exports                 ← COMPLETE
 
 P2: Pressure System              ← COMPLETE (PR #304)
   ├── 2A: ThoughtStream slots    ✓

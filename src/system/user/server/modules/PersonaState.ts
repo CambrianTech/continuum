@@ -51,7 +51,7 @@ export const DEFAULT_STATE_CONFIG: StateConfig = {
  * PersonaStateManager: Manages internal state and traffic decisions
  */
 /** Minimum interval between snapshot emissions per persona (ms) */
-const SNAPSHOT_THROTTLE_MS = 2000;
+const SNAPSHOT_THROTTLE_MS = PersonaTimingConfig.snapshot.throttleMs;
 
 export class PersonaStateManager {
   private readonly config: StateConfig;
@@ -85,11 +85,11 @@ export class PersonaStateManager {
 
     // Emit initial snapshot after a short delay so the browser widget
     // gets state on page load even if the persona is idle.
-    setTimeout(() => this.emitSnapshotNow(), 2000);
+    setTimeout(() => this.emitSnapshotNow(), PersonaTimingConfig.snapshot.initialDelayMs);
 
-    // Periodic snapshot every 10s ensures browser always gets fresh state,
+    // Periodic snapshot ensures browser always gets fresh state,
     // even when persona is idle and no activity/rest events fire.
-    this._periodicInterval = setInterval(() => this.emitSnapshotNow(), 10_000);
+    this._periodicInterval = setInterval(() => this.emitSnapshotNow(), PersonaTimingConfig.snapshot.periodicIntervalMs);
 
     // Listen for browser-side state requests (widget mount, page refresh).
     // When a PersonaTile mounts it emits 'persona:state:request' — we respond

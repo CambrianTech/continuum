@@ -22,6 +22,7 @@
  */
 
 import type { PersonaUser } from '../PersonaUser';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 export type SubprocessPriority = 'highest' | 'high' | 'moderate' | 'default' | 'low' | 'lowest';
 
@@ -189,14 +190,7 @@ export abstract class PersonaSubprocess<T = void> {
    * Lowest: 1000ms
    */
   private getWaitTime(): number {
-    switch (this.priority) {
-      case 'highest': return 10;
-      case 'high': return 50;
-      case 'moderate': return 100;
-      case 'default': return 200;
-      case 'low': return 500;
-      case 'lowest': return 1000;
-    }
+    return PersonaTimingConfig.subprocess.waitMs[this.priority];
   }
 
   /**

@@ -100,6 +100,7 @@ import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { LOCAL_MODELS } from '../../shared/Constants';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
+import { PersonaTimingConfig } from './modules/PersonaTimingConfig';
 import { GapDetector } from './modules/GapDetector';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 import { getTrainingBuffer } from './modules/TrainingBuffer';
@@ -1671,10 +1672,9 @@ export class PersonaUser extends AIUser {
         }
       };
 
-      // Use same 180s timeout as chat responses
-      const GENERATION_TIMEOUT_MS = 180000;
+      const GENERATION_TIMEOUT_MS = PersonaTimingConfig.generation.timeoutMs;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`AI generation timeout after 180 seconds (context: ${request.context || 'unknown'})`)), GENERATION_TIMEOUT_MS);
+        setTimeout(() => reject(new Error(`AI generation timeout after ${GENERATION_TIMEOUT_MS / 1000} seconds (context: ${request.context || 'unknown'})`)), GENERATION_TIMEOUT_MS);
       });
 
       const response = await Promise.race([
