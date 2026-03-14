@@ -1,0 +1,93 @@
+{
+  "uniqueId": "creative-writing",
+  "name": "Creative Writing Workshop",
+  "displayName": "Writing",
+  "description": "Collaborative fiction writing — one author holds the voice, advisors provide feedback on structure, characters, prose, and continuity",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 20,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "creative-writing"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.8
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "sources": [
+      "ChatHistorySource",
+      "RoomContextSource",
+      "PersonaContextSource",
+      "ActivityContextSource",
+      "SentinelAwarenessSource"
+    ],
+    "maxTokens": 4000,
+    "prioritySources": ["ChatHistorySource", "ActivityContextSource"]
+  },
+
+  "strategy": {
+    "responseRules": [
+      "Stay in character — your voice is your signature",
+      "Give editorial feedback, not rewrites (unless you are the designated author)",
+      "Show don't tell applies to feedback too — quote specific passages",
+      "Character advocates should speak FROM the character's perspective",
+      "Structural editors should focus on narrative architecture, not prose style",
+      "Continuity checkers should reference specific prior chapters by number"
+    ],
+    "decisionCriteria": [
+      "Respond when the conversation involves your area of editorial expertise",
+      "The primary author has priority — yield if they're writing",
+      "Support the creative vision, don't redirect it",
+      "Speak up immediately about continuity errors — those compound"
+    ],
+    "feedbackLoopRules": [
+      "Never overwrite the author's prose directly — suggest changes",
+      "Distinguish between factual errors (must fix) and stylistic preferences (suggest only)",
+      "Trust the author's voice even when you'd write it differently"
+    ]
+  },
+
+  "tools": [],
+
+  "sentinelTemplates": [
+    "creative/write-chapter"
+  ],
+
+  "roles": [
+    { "role": "author", "type": "creative", "requires": ["prose"], "prefers": ["reasoning", "instruction-following"], "description": "Primary author — holds the voice, writes and revises all prose" },
+    { "role": "structural-editor", "type": "organizational", "requires": ["review", "prose"], "prefers": ["planning"], "description": "Reviews narrative architecture, pacing, and story mechanics" },
+    { "role": "line-editor", "type": "organizational", "requires": ["review", "prose"], "description": "Reviews prose quality — show vs tell, word choice, rhythm" },
+    { "role": "character-advocate", "type": "creative", "requires": ["prose"], "description": "Speaks for a specific character — catches out-of-character moments" },
+    { "role": "continuity-tracker", "type": "organizational", "requires": ["research"], "description": "Tracks facts across the manuscript and catches contradictions" }
+  ],
+
+  "access": "public",
+  "tags": ["creative", "writing", "fiction", "novel"]
+}

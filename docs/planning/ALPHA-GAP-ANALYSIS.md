@@ -20,7 +20,7 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
 | LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
 | Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass |
-| Sentinel pipeline | Working | 10 step types, 103+ tests, CodingAgent integration, 4 dev templates proven E2E |
+| Sentinel pipeline | Working | 10 step types, 103+ tests, CodingAgent integration, 4 dev + 1 creative + 1 research templates |
 | Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe, role declarations, RecipeAssembler |
 | Capability registry | Working | Skill domains, all 10 adapters self-register via getCapabilityRegistration() |
 | ORM | Working | SQLite + Postgres, schema evolution, self-healing |

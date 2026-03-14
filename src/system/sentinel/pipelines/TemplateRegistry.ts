@@ -19,6 +19,8 @@ import { buildDevBuildFeaturePipeline, type DevBuildFeatureConfig } from './DevB
 import { buildDevFixBugPipeline, type DevFixBugConfig } from './DevFixBugPipeline';
 import { buildDevCodeReviewPipeline, type DevCodeReviewConfig } from './DevCodeReviewPipeline';
 import { buildDevIntegratePipeline, type DevIntegrateConfig } from './DevIntegratePipeline';
+import { buildCreativeWriteChapterPipeline, type CreativeWriteChapterConfig } from './CreativeWriteChapterPipeline';
+import { buildResearchInvestigatePipeline, type ResearchInvestigateConfig } from './ResearchInvestigatePipeline';
 
 // -- Template metadata --------------------------------------------------------
 
@@ -108,6 +110,34 @@ register(
     ],
   },
   buildDevIntegratePipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'creative/write-chapter',
+    description: 'Primary-author-with-support: outline → draft → parallel advisory reviews → revise → commit',
+    category: 'creative',
+    requiredFields: ['chapter', 'chapterTitle', 'personaId', 'personaName', 'cwd'],
+    optionalFields: [
+      'storyBiblePath', 'previousChaptersGlob', 'genre', 'targetWordCount',
+      'roomId', 'advisorProvider', 'writingProvider', 'writingModel',
+      'maxTurns', 'maxBudgetUsd', 'feedbackTimeoutSecs', 'autonomous', 'characters',
+    ],
+  },
+  buildCreativeWriteChapterPipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'research/investigate',
+    description: 'Gather-and-synthesize: decompose question → parallel investigation → deduplicate → synthesize → publish',
+    category: 'research',
+    requiredFields: ['question', 'outputPath', 'personaId', 'personaName', 'cwd'],
+    optionalFields: [
+      'branches', 'provider', 'roomId', 'reviewTimeoutSecs', 'autonomous', 'aspects',
+    ],
+  },
+  buildResearchInvestigatePipeline as BuilderFn,
 );
 
 // -- Public API ---------------------------------------------------------------
