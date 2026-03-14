@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 use crate::runtime::CommandResult;
 
 /// LLM step configuration extracted from PipelineStep::Llm
@@ -190,20 +190,14 @@ async fn execute_generate_mode(
                 });
             }
             Ok(CommandResult::Binary { .. }) => {
-                return Err(format!(
-                    "[{}] Unexpected binary response from ai/generate",
-                    pipeline_ctx.handle_id
-                ));
+                return Err(step_err(pipeline_ctx.handle_id, "LLM step", "unexpected binary response from ai/generate"));
             }
             Err(e) => {
                 if is_transient_error(&e) && attempt < LLM_MAX_RETRIES {
                     last_error = e;
                     continue;
                 }
-                return Err(format!(
-                    "[{}] LLM step error: {}",
-                    pipeline_ctx.handle_id, e
-                ));
+                return Err(step_err(pipeline_ctx.handle_id, "LLM step", e));
             }
         }
     }
@@ -284,7 +278,7 @@ async fn execute_agent_mode(
     // so execute_json would route back to Rust and never reach TypeScript.
     let json = runtime::command_executor::execute_ts_json("ai/agent", agent_params)
         .await
-        .map_err(|e| format!("[{}] LLM agent step error: {}", pipeline_ctx.handle_id, e))?;
+        .map_err(|e| step_err(pipeline_ctx.handle_id, "LLM agent step", e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

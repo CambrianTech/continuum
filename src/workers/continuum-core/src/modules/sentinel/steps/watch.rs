@@ -7,7 +7,7 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Default timeout for watch step: 5 minutes
 const DEFAULT_WATCH_TIMEOUT_SECS: u64 = 300;
@@ -34,12 +34,7 @@ pub async fn execute(
         timeout.as_secs()
     ));
 
-    let bus = pipeline_ctx.bus.ok_or_else(|| {
-        format!(
-            "[{}] Watch step requires MessageBus",
-            pipeline_ctx.handle_id
-        )
-    })?;
+    let bus = pipeline_ctx.bus.ok_or_else(|| step_err(pipeline_ctx.handle_id, "Watch step", "requires MessageBus"))?;
 
     // Check recent event buffer BEFORE subscribing to avoid race conditions.
     // If the emit happened just before we subscribed, we'd miss it without this.
@@ -110,10 +105,7 @@ pub async fn execute(
                 }),
             })
         }
-        Ok(Err(e)) => Err(format!(
-            "[{}] Watch step error: {}",
-            pipeline_ctx.handle_id, e
-        )),
+        Ok(Err(e)) => Err(step_err(pipeline_ctx.handle_id, "Watch step", e)),
         Err(_) => {
             log.warn(&format!(
                 "[{}] Watch step timed out after {}s waiting for '{}'",

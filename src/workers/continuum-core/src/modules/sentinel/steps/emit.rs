@@ -7,7 +7,7 @@ use serde_json::json;
 use std::time::Instant;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
+use crate::modules::sentinel::types::{step_err, ExecutionContext, PipelineContext, StepResult};
 
 /// Publish an event on the MessageBus with an interpolated payload
 pub async fn execute(
@@ -31,7 +31,7 @@ pub async fn execute(
 
     let bus = pipeline_ctx
         .bus
-        .ok_or_else(|| format!("[{}] Emit step requires MessageBus", pipeline_ctx.handle_id))?;
+        .ok_or_else(|| step_err(pipeline_ctx.handle_id, "Emit step", "requires MessageBus"))?;
 
     bus.publish_async_only(&interpolated_event, interpolated_payload.clone());
 
