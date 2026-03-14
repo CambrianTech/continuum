@@ -80,6 +80,8 @@ impl ServiceModule for VoiceModule {
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
+        // Safety net: detect orphaned sessions (browser crash, lost WebSocket, deploy)
+        self.state.resource_lifecycle.spawn_orphan_watchdog();
         Ok(())
     }
 

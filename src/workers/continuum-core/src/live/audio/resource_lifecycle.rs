@@ -151,6 +151,56 @@ impl AudioResourceLifecycle {
         });
     }
 
+    /// Spawn a safety-net watchdog that detects orphaned sessions.
+    ///
+    /// If the session count has been stuck at the same non-zero value for
+    /// longer than the orphan timeout (5 minutes), it means voice/end-session
+    /// was never called (browser crash, lost WebSocket, deploy killed the tab).
+    /// Force-reset the counter and trigger shutdown.
+    pub fn spawn_orphan_watchdog(self: &Arc<Self>) {
+        let lifecycle = Arc::clone(self);
+        const ORPHAN_CHECK_INTERVAL_SECS: u64 = 60;
+        const ORPHAN_TIMEOUT_SECS: u64 = 300; // 5 minutes without change = orphaned
+        const CHECKS_UNTIL_ORPHAN: u64 = ORPHAN_TIMEOUT_SECS / ORPHAN_CHECK_INTERVAL_SECS;
+
+        tokio::spawn(async move {
+            let mut stale_count: u32 = 0;
+            let mut stale_ticks: u64 = 0;
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(ORPHAN_CHECK_INTERVAL_SECS)).await;
+
+                let current = lifecycle.active_sessions.load(Ordering::SeqCst);
+                if current == 0 {
+                    // No sessions — nothing to watch
+                    stale_count = 0;
+                    stale_ticks = 0;
+                    continue;
+                }
+
+                if current == stale_count {
+                    stale_ticks += 1;
+                    if stale_ticks >= CHECKS_UNTIL_ORPHAN {
+                        clog_warn!(
+                            "AudioResourceLifecycle: {} sessions stuck for {}s — orphaned, force-resetting",
+                            current,
+                            stale_ticks * ORPHAN_CHECK_INTERVAL_SECS
+                        );
+                        lifecycle.active_sessions.store(0, Ordering::SeqCst);
+                        Self::shutdown_all_adapters().await;
+                        Self::unload_avatar_models();
+                        stale_count = 0;
+                        stale_ticks = 0;
+                    }
+                } else {
+                    // Count changed — reset staleness tracker
+                    stale_count = current;
+                    stale_ticks = 0;
+                }
+            }
+        });
+    }
+
     /// Unload avatar models from Bevy render slots and clear identity mappings.
     ///
     /// Called after idle timeout — all agents are long gone, safe to teardown.
