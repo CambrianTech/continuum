@@ -28,6 +28,7 @@ import {
   supportsNativeTools,
   type ToolDefinition
 } from '../../user/server/modules/ToolFormatAdapter';
+import { ToolGroupRegistry } from './ToolGroupRegistry';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('ToolDefinitionsSource', 'rag');
@@ -131,7 +132,16 @@ export class ToolDefinitionsSource implements RAGSource {
 
     // Native providers still need behavioral instruction IN the system prompt.
     // JSON tool specs alone don't tell the model to prefer action over prose.
-    const nativeBehavioralNudge = `When asked to do something, USE your tools to do it. Do not describe what you would do — act. Prefer tool use over prose.`;
+    // Include contextual guidance based on what the user is asking about.
+    const groupRegistry = ToolGroupRegistry.sharedInstance();
+    const triggerText = context.options.currentMessage?.content || '';
+    const selectedGroups = groupRegistry.selectGroups(triggerText, 3);
+    const groupHints = selectedGroups
+      .filter(g => !g.alwaysInclude)
+      .map(g => `For ${g.label.toLowerCase()}: use ${g.toolPatterns.slice(0, 2).join(', ')}`)
+      .join('. ');
+
+    const nativeBehavioralNudge = `You MUST use tools to take action. Do not describe what you would do — DO IT. Prefer tool calls over prose.${groupHints ? `\n${groupHints}.` : ''}`;
     const nudgeTokens = this.estimateTokens(nativeBehavioralNudge);
 
     log.debug(`Native tools: ${finalSpecs.length} specs (~${finalTokens + nudgeTokens} tokens) for persona ${context.personaId.slice(0, 8)}`);
@@ -155,10 +165,13 @@ export class ToolDefinitionsSource implements RAGSource {
    * XML tool providers (DeepSeek, Candle, etc.):
    * Produce systemPromptSection with formatted tool definitions, budget-truncated.
    *
-   * CRITICAL: Prioritize BEFORE truncation. Previously, tools were truncated from
-   * the end of an alphabetically-sorted list, keeping useless tools (adapter/*)
-   * and dropping essential ones (collaboration/chat/send, code/*). Now we put
-   * essential tools first so budget truncation drops the least important ones.
+   * Uses contextual tool group selection: analyzes the trigger message to determine
+   * which tool GROUPS are relevant, then presents only those tools with few-shot
+   * examples. A code question gets code tools with a code example. A task request
+   * gets sentinel tools with a sentinel example.
+   *
+   * This dramatically reduces tool count (5-12 instead of 30-60) and gives models
+   * concrete examples of HOW to call tools, not just WHAT tools exist.
    */
   private loadXmlTools(
     context: RAGSourceContext,
@@ -171,46 +184,63 @@ export class ToolDefinitionsSource implements RAGSource {
       toolDefinitions = toolDefinitions.filter(t => t.name !== 'collaboration/chat/send');
     }
 
-    // Prioritize BEFORE formatting — essential tools first, rest at end.
-    // This ensures budget truncation drops lowest-priority tools, not essential ones.
+    // Contextual group selection: analyze trigger message to find relevant tool groups
+    const groupRegistry = ToolGroupRegistry.sharedInstance();
+    const triggerText = context.options.currentMessage?.content || '';
     const recipeToolNames = this.getRecipeToolNames(context);
-    let prioritized = this.prioritizeTools(
-      toolDefinitions,
-      recipeToolNames,
-      recipeToolNames.size > 0,
-      toolDefinitions.length  // No cap yet — budget handles the limiting
-    );
 
+    // Select relevant groups based on what the user is asking about
+    const selectedGroups = groupRegistry.selectGroups(triggerText, 5);
+
+    // Filter tools to only those in selected groups + recipe tools
+    let contextualTools = groupRegistry.filterToolsByGroups(toolDefinitions, selectedGroups);
+
+    // Always include recipe tools at the top
+    if (recipeToolNames.size > 0) {
+      const recipeTools = toolDefinitions.filter(t => recipeToolNames.has(t.name));
+      const contextualNames = new Set(contextualTools.map(t => t.name));
+      for (const rt of recipeTools) {
+        if (!contextualNames.has(rt.name)) {
+          contextualTools.unshift(rt);
+        }
+      }
+    }
+
+    // Build grouped prompt with examples (shows tools organized by purpose)
+    const groupedPrompt = groupRegistry.buildGroupedPrompt(selectedGroups, contextualTools);
+
+    // Also format the actual tool specs for XML tool calling
     const adapter = getPrimaryAdapter();
-    const formattedTools = adapter.formatToolsForPrompt(prioritized);
+    const formattedTools = adapter.formatToolsForPrompt(contextualTools);
 
-    const behavioralNudge = `When asked to do something, USE TOOLS to do it. Do not describe — act.
-When asked about code: USE code/read, code/write, code/edit.
-When assigned a task: USE sentinel/coding-agent for complex work.`;
+    const behavioralNudge = `You MUST use tools to take action. Do not describe what you would do — DO IT.
+When you see code-related questions: call code/read or code/search IMMEDIATELY.
+When asked to fix or change something: call code/read first, then code/edit.
+For complex tasks: call sentinel/coding-agent.
 
-    const toolsSection = `\n\n=== AVAILABLE TOOLS ===\n${behavioralNudge}\n\nYou have access to the following tools:\n\n${formattedTools}\n================================`;
+RESPOND WITH TOOL CALLS, NOT DESCRIPTIONS.`;
+
+    const toolsSection = `\n\n=== YOUR CAPABILITIES ===\n${behavioralNudge}\n\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${formattedTools}\n================================`;
 
     let finalSection = toolsSection;
     let tokenCount = this.estimateTokens(toolsSection);
-    let finalToolCount = prioritized.length;
 
-    // Budget truncation: progressively drop lowest-priority tools (at end of list)
-    // Minimum 2 tools (critical: chat/send + chat/history) — not 5, which is too
-    // many for tight Candle budgets (~250 tokens for tools).
-    if (tokenCount > allocatedBudget && prioritized.length > 2) {
-      let reducedTools = prioritized;
+    // Budget truncation: progressively remove tools from the end
+    let reducedTools = contextualTools;
+    if (tokenCount > allocatedBudget && reducedTools.length > 2) {
       while (tokenCount > allocatedBudget && reducedTools.length > 2) {
-        // Drop 3 at a time for faster convergence, or 1 when close to minimum
         const dropCount = reducedTools.length > 8 ? 3 : 1;
         reducedTools = reducedTools.slice(0, reducedTools.length - dropCount);
         const reduced = adapter.formatToolsForPrompt(reducedTools);
-        finalSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools:\n\n${reduced}\n================================`;
+        // Keep grouped prompt (examples) even when truncating tool specs
+        finalSection = `\n\n=== YOUR CAPABILITIES ===\n${behavioralNudge}\n\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${reduced}\n================================`;
         tokenCount = this.estimateTokens(finalSection);
       }
-      finalToolCount = reducedTools.length;
     }
 
-    log.debug(`XML tools: ${finalToolCount}/${toolDefinitions.length} tools (~${tokenCount} tokens, budget=${allocatedBudget})`);
+    const finalToolCount = reducedTools.length;
+    const groupIds = selectedGroups.map(g => g.id).join(', ');
+    log.debug(`XML tools: ${finalToolCount}/${toolDefinitions.length} tools in groups [${groupIds}] (~${tokenCount} tokens, budget=${allocatedBudget})`);
 
     return {
       sourceName: this.name,
@@ -221,6 +251,7 @@ When assigned a task: USE sentinel/coding-agent for complex work.`;
         toolCount: finalToolCount,
         totalAvailable: toolDefinitions.length,
         format: 'xml',
+        selectedGroups: groupIds,
         budgetRespected: tokenCount <= allocatedBudget,
       },
     };

@@ -39,7 +39,7 @@ const TOOL_CATEGORIES: readonly ToolCategory[] = [
   {
     prefix: 'collaboration/chat/',
     label: 'Chat',
-    guidance: 'Use collaboration/chat/send to communicate. collaboration/chat/history for recent context. Reply with --replyToId for threaded conversations.',
+    guidance: 'Call collaboration/chat/send to communicate with others. Call collaboration/chat/export to read recent messages. Use --replyToId for threaded replies.',
   },
   {
     prefix: 'collaboration/wall/',
@@ -59,7 +59,7 @@ const TOOL_CATEGORIES: readonly ToolCategory[] = [
   {
     prefix: 'sentinel/',
     label: 'Sentinel',
-    guidance: 'sentinel/run for executing pipelines. sentinel/coding-agent for multi-file coding tasks that need agentic iteration. sentinel/status to check running pipelines.',
+    guidance: 'Call sentinel/coding-agent for ANY coding task — it uses Claude Code to read, edit, and verify code across multiple files. Call sentinel/run for custom pipelines. Call sentinel/status to check progress.',
   },
 ] as const;
 
