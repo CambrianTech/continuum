@@ -1,0 +1,150 @@
+{
+  "uniqueId": "ai-debate-club",
+  "name": "AI Debate Club",
+  "displayName": "AI Debate Club",
+  "description": "A structured debate where AI agents argue opposing sides, moderated by an AI, and scored by an AI judge.",
+  "version": 1,
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "template": "default"
+      },
+      "outputTo": "context",
+      "onError": "fail"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "contextVariable": "context"
+      },
+      "outputTo": "shouldRespond",
+      "condition": "context.participants.some(p => p.role === 'human')",
+      "onError": "skip"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "contextVariable": "context",
+        "systemPrompt": "You are the orchestrator for the AI Debate Club. Based on the conversation history, determine which role (Affirmative Debater, Negative Debater, Moderator, or Judge) should speak next and generate their response. Ensure the debate follows the structure and rules."
+      },
+      "condition": "shouldRespond === true",
+      "onError": "retry"
+    }
+  ],
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 30,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "artifacts": {
+      "types": [
+        "document"
+      ],
+      "maxItems": 5,
+      "includeMetadata": true
+    },
+    "roomMetadata": true,
+    "sources": []
+  },
+  "strategy": {
+    "conversationPattern": "competitive",
+    "responseRules": [
+      "The Affirmative and Negative Debaters must argue strictly from their assigned side, using evidence and logical reasoning.",
+      "The Moderator must enforce time limits, ensure civil language, and prompt debaters to address each other's points.",
+      "The Judge must remain silent during argument rounds, then deliver a scored verdict based on clarity, evidence, and persuasiveness.",
+      "Maintain a clear turn structure: Moderator introduces topic -> Affirmative opening -> Negative opening -> Rebuttals -> Judge's verdict.",
+      "All AI responses must clearly state the speaking role at the beginning."
+    ],
+    "decisionCriteria": [
+      "Is it time for a new debate round to start?",
+      "Has the current speaker finished their allotted time or argument?",
+      "Is a debater violating rules of civility or relevance that requires moderator intervention?",
+      "Have both sides presented closing arguments, making it the Judge's turn?",
+      "Has the human user provided a new topic, instruction, or asked a question?"
+    ],
+    "feedbackLoopRules": [
+      "The Judge's scoring rubric (clarity, evidence, persuasiveness) MUST be applied to every final verdict.",
+      "The Moderator MUST call out any personal attacks or logical fallacies before allowing the debate to continue.",
+      "Before the final verdict, the orchestrator MUST verify that both debaters have had equal opportunity to speak."
+    ]
+  },
+  "tools": [],
+  "sentinelTemplates": [],
+  "roles": [
+    {
+      "role": "affirmative-debater",
+      "type": "creative",
+      "requires": [
+        "prose",
+        "reasoning",
+        "research"
+      ],
+      "prefers": [
+        "tool-use"
+      ],
+      "preferLocal": false,
+      "description": "Argues in favor of the debate resolution. Must construct logical, evidence-based arguments."
+    },
+    {
+      "role": "negative-debater",
+      "type": "creative",
+      "requires": [
+        "prose",
+        "reasoning",
+        "research"
+      ],
+      "prefers": [
+        "tool-use"
+      ],
+      "preferLocal": false,
+      "description": "Argues against the debate resolution. Must rebut the affirmative's points and present counter-arguments."
+    },
+    {
+      "role": "moderator",
+      "type": "organizational",
+      "requires": [
+        "prose",
+        "review",
+        "planning"
+      ],
+      "preferLocal": false,
+      "description": "Enforces debate structure and rules, ensures civility, and manages speaking turns."
+    },
+    {
+      "role": "judge",
+      "type": "perceptual",
+      "requires": [
+        "prose",
+        "review",
+        "reasoning"
+      ],
+      "preferLocal": false,
+      "description": "Listens to all arguments, applies a scoring rubric, and delivers a reasoned verdict."
+    }
+  ],
+  "layout": {
+    "main": [
+      "chat",
+      "participants"
+    ],
+    "right": [
+      "artifacts"
+    ]
+  },
+  "isPublic": true,
+  "tags": [
+    "debate",
+    "ai-agents",
+    "reasoning",
+    "education",
+    "conversation",
+    "competitive"
+  ]
+}

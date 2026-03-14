@@ -2132,6 +2132,109 @@
       }
     },
     {
+      "name": "recipe/run",
+      "description": "Run a recipe's sentinel template with role validation. Higher-level wrapper around sentinel/run that: 1. Looks up the recipe by uniqueId 2. Validates model availability for the recipe's role requirements 3. Dispatches to sentinel/run with the matching template",
+      "params": {
+        "recipe": {
+          "type": "string",
+          "required": true,
+          "description": "recipe parameter"
+        },
+        "template": {
+          "type": "string",
+          "required": false,
+          "description": "template parameter"
+        },
+        "config": {
+          "type": "object",
+          "required": true,
+          "description": "config parameter"
+        },
+        "skipValidation": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipValidation parameter"
+        }
+      }
+    },
+    {
+      "name": "recipe/list",
+      "description": "List available recipes with optional filters. Recipes define collaborative workflow activities — what personas do together. Each recipe can declare sentinel templates (workflows) and role requirements.",
+      "params": {
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "withTemplates": {
+          "type": "boolean",
+          "required": false,
+          "description": "withTemplates parameter"
+        }
+      }
+    },
+    {
+      "name": "recipe/generate",
+      "description": "Generate a recipe from a natural language description. Uses an LLM to produce valid RecipeDefinition JSON from English, validates the output against the schema, and saves it as a recipe file.",
+      "params": {
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "uniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "uniqueId parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "required": false,
+          "description": "dryRun parameter"
+        },
+        "hints": {
+          "type": "object",
+          "required": false,
+          "description": "hints parameter"
+        },
+        "templates": {
+          "type": "array",
+          "required": false,
+          "description": "templates parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        }
+      }
+    },
+    {
       "name": "rag/load",
       "description": "RAG Load Command - Test incremental message loading with token counting Shows exactly which messages would be loaded for RAG context given a token budget. Makes the incremental loading algorithm transparent and debuggable.",
       "params": {
