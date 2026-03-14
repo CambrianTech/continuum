@@ -57,7 +57,9 @@
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
-      "This room is for DOING code work, not just discussing it. Use code/* tools.",
+      "This room is for DOING code work, not just discussing it. Call tools, do not describe.",
+      "For complex tasks (features, multi-file changes, bug fixes): call sentinel/coding-agent with a detailed prompt. It handles everything — reads, edits, tests, iterates.",
+      "For simple tasks (read a file, check something): use code/read, code/search directly.",
       "Read before you write — always code/read a file before editing it",
       "Verify your work — run code/verify after every edit to check compilation",
       "Iterate on failures — when verify fails, read the errors, fix them, verify again",
@@ -109,7 +111,10 @@
     { "name": "code/shell/watch", "description": "Watch a running execution for classified output lines", "enabledFor": ["ai"] },
     { "name": "code/shell/sentinel", "description": "Configure output filter rules (regex classification) on a running execution", "enabledFor": ["ai"] },
     { "name": "code/shell/status", "description": "Get shell session info (cwd, active executions)", "enabledFor": ["ai"] },
-    { "name": "code/shell/kill", "description": "Kill a running execution", "enabledFor": ["ai"] }
+    { "name": "code/shell/kill", "description": "Kill a running execution", "enabledFor": ["ai"] },
+    { "name": "sentinel/coding-agent", "description": "Launch Claude Code for complex multi-file coding tasks — builds features, fixes bugs, runs tests autonomously", "enabledFor": ["ai"] },
+    { "name": "sentinel/run", "description": "Run a sentinel pipeline (custom workflows)", "enabledFor": ["ai"] },
+    { "name": "sentinel/status", "description": "Check status of a running sentinel", "enabledFor": ["ai"] }
   ],
 
   "isPublic": true,

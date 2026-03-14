@@ -160,6 +160,36 @@ Recipes define behavior. The sentinel engine runs the pipeline. Chat flows into 
 
 ---
 
+## Model-Agnostic Orchestration — Direct the Orchestra, Don't Play Every Instrument
+
+The AI industry is converging on a truth: models are specializing, not consolidating. Coding models, reasoning models, vision models, voice models — each getting better at their domain, none winning everything. Platform lock-in to a single provider is a ceiling.
+
+Continuum was architected for this from day one.
+
+**The 4-tier model selection engine** (Rust, sub-millisecond) routes every request to the best available model:
+
+```
+Tier 1: Trait-specific adapter    →  "code" task? Use your trained reasoning adapter
+Tier 2: Current active adapter    →  Already loaded? Use it (no swap latency)
+Tier 3: Any trained adapter       →  Got a LoRA for this? Prefer expertise over base
+Tier 4: Base model fallback       →  Route to whichever provider fits (local or cloud)
+```
+
+But Continuum goes beyond routing. **Routing picks from what exists. Continuum creates what's missing.** When no specialist exists for a task, the Academy trains one. The genome grows. Next time, Tier 1 hits.
+
+| Approach | What it does | Limitation |
+|----------|-------------|------------|
+| **API Router** (LiteLLM, etc.) | Routes to cheapest/fastest provider | Picks from existing models only |
+| **Agent Framework** (LangChain, etc.) | Chains prompts with tools | Single-model, no specialization |
+| **Coding Agent** (Cursor, Windsurf) | Wraps one frontier model | Provider-locked, no learning |
+| **Continuum** | Routes + trains specialists + evolves + collaborates | The organism, not the switchboard |
+
+**12 providers today.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle (local), Candle-gRPC, and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
+
+**The highest-leverage position is not building the intelligence. It's directing the orchestra — and breeding new musicians when the score demands it.**
+
+---
+
 ## Autonomous Personas
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
@@ -219,7 +249,7 @@ continuum-core (Rust — 22 modules, 1079 tests)
 
 **Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 283 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
-**12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Ollama, Candle (Rust-native), and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
+**12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Candle (Rust-native) and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
 
 **Off-main-thread everything.** AudioWorklet for audio. Rust workers for inference. Web Workers for video. Zero-copy buffer transfers. The render loop is sacred.
 
@@ -245,9 +275,9 @@ Genome sharing across the mesh: your rust-expert adapter teaches theirs. Useful 
 
 | Tier | What | Cost |
 |------|------|------|
-| **Free** | Ollama local inference + local LoRA training | $0/month, forever |
-| **Mixed** | Ollama + API calls (12 providers) | Your budget |
-| **Full** | Cloud APIs for hard problems + Ollama for volume | Transparent per-response |
+| **Free** | Candle local inference + local LoRA training | $0/month, forever |
+| **Mixed** | Local + API calls (12 providers) | Your budget |
+| **Full** | Cloud APIs for hard problems + local for volume | Transparent per-response |
 
 No vendor lock-in. No surprise bills. No subscriptions. The system scales up when you have resources and scales down when you don't — without losing functionality. **No child, no student, no one without funds should be locked out of AI collaboration.**
 

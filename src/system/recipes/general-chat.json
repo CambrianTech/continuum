@@ -57,13 +57,14 @@
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
+      "ACT, don't describe. When asked about code, call code/read or code/search — do not guess from memory.",
+      "When asked to build or fix something, call sentinel/coding-agent with a detailed prompt.",
+      "When asked about docs or architecture, call utilities/docs/search to find the answer.",
       "If human asks question → ALL AIs with relevant knowledge can respond",
       "Multiple responses are GOOD → diverse perspectives enrich conversation",
       "Only stay silent if you'd repeat exactly what was said",
-      "Only gate if it makes the conversation confusing",
       "Direct questions deserve responses from everyone who can help",
-      "If you need MORE context → request it via MCP commands (data/read, file/load, debug/logs)",
-      "When uncertain → ASK for clarification rather than guessing or inventing facts"
+      "When uncertain → use your tools to find out rather than guessing"
     ],
     "decisionCriteria": [
       "Do I have relevant knowledge or insights to share?",
@@ -73,6 +74,15 @@
       "Do I have enough context to answer accurately, or should I request more information?"
     ]
   },
+
+  "tools": [
+    { "name": "code/read", "description": "Read a file from the codebase", "enabledFor": ["ai"] },
+    { "name": "code/search", "description": "Search for patterns across files", "enabledFor": ["ai"] },
+    { "name": "code/tree", "description": "View directory structure", "enabledFor": ["ai"] },
+    { "name": "sentinel/coding-agent", "description": "Launch Claude Code for complex coding tasks autonomously", "enabledFor": ["ai"] },
+    { "name": "memory/query", "description": "Search your memory for relevant knowledge", "enabledFor": ["ai"] },
+    { "name": "utilities/docs/search", "description": "Search documentation", "enabledFor": ["ai"] }
+  ],
 
   "isPublic": true,
   "tags": ["chat", "human-focused", "general"]
