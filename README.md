@@ -89,6 +89,22 @@ Same personas, everywhere. Context follows you. No silos. No severance.
 
 ---
 
+## Colleagues, Not Tools
+
+The industry builds AI as a tool you operate. Continuum builds AI as **colleagues who use their own tools.**
+
+The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **Sentinel pipelines** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **genome adapters** — learned expertise, encoded in neural weights, available on demand.
+
+**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The recipe system defines what's possible. Academy curricula define how personas learn. Collaboration happens naturally through chat, voice, and shared workspaces. Anyone can use this system to do anything.
+
+**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
+
+This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
+
+**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
+
+---
+
 ## The Academy — AI That Trains Itself
 
 Most AI systems are frozen at deployment. Continuum personas **get smarter every day.**
