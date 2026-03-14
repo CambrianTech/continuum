@@ -422,8 +422,8 @@ export class PersonaResponseGenerator {
         // Wait for AIProviderDaemon to initialize (max 30 seconds)
         // This handles race condition where PersonaUser tries to respond before daemon is ready
         const phase33bStart = Date.now();
-        const MAX_WAIT_MS = 30000;
-        const POLL_INTERVAL_MS = 100;
+        const MAX_WAIT_MS = PersonaTimingConfig.generation.daemonInitWaitMs;
+        const POLL_INTERVAL_MS = PersonaTimingConfig.generation.daemonInitPollMs;
         let waitedMs = 0;
         while (!AIProviderDaemon.isInitialized() && waitedMs < MAX_WAIT_MS) {
           await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));

@@ -19,12 +19,13 @@ import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEven
 import { TOOL_EVENTS } from '../../../system/core/shared/ToolResult';
 import { GenomeLayers, type GenomeLayerInfo } from '../../../commands/genome/layers/shared/GenomeLayersTypes';
 import { styles as tileStyles } from './persona-tile.styles';
+import { PersonaTimingConfig } from '../../../system/user/server/modules/PersonaTimingConfig';
 
 /**
  * Diamond persist duration — each stage of cognition holds its diamond
  * lit for this long after the last event, giving a visible sequential glow.
  */
-const DIAMOND_PERSIST_MS = 2500;
+const DIAMOND_PERSIST_MS = PersonaTimingConfig.ui.diamondPersistMs;
 
 type CognitivePhase = 'evaluating' | 'responding' | 'generating' | 'checking' | 'passed' | 'error' | null;
 

@@ -20,19 +20,20 @@ import { TaskEntity } from '../../../data/entities/TaskEntity';
 import { COLLECTIONS } from '../../../shared/Constants';
 import { GpuPressureWatcher } from '../../../gpu/server/GpuPressureWatcher';
 import type { GapReport, DomainGap, SuggestedAction } from './GapDetector';
+import { PersonaTimingConfig } from './PersonaTimingConfig';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Minimum time between gap sweeps (ms) */
-const SWEEP_COOLDOWN_MS = 5 * 60 * 1000;  // 5 minutes
+const SWEEP_COOLDOWN_MS = PersonaTimingConfig.selfTask.sweepCooldownMs;
 
 /** Maximum concurrent learning tasks per persona */
 const MAX_CONCURRENT_LEARNING = 2;
 
 /** Minimum time between academy enrollments for the same domain (ms) */
-const DOMAIN_COOLDOWN_MS = 60 * 60 * 1000;  // 1 hour
+const DOMAIN_COOLDOWN_MS = PersonaTimingConfig.selfTask.domainCooldownMs;
 
 /** Minimum severity to act on */
 const MIN_SEVERITY = 0.2;
