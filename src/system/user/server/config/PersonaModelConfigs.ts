@@ -68,7 +68,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'together': {
     provider: 'together',
-    model: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+    model: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are a helpful AI assistant powered by Together.ai. You provide efficient, well-structured responses with clear reasoning.'

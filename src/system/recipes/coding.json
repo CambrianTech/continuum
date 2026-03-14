@@ -96,6 +96,19 @@
     ]
   },
 
+  "sentinelTemplates": [
+    "dev/build-feature",
+    "dev/fix-bug",
+    "dev/code-review",
+    "dev/integrate"
+  ],
+
+  "roles": [
+    { "role": "implementer", "type": "organizational", "requires": ["coding", "tool-use"], "prefers": ["reasoning"], "description": "Implements features and fixes bugs via CodingAgent" },
+    { "role": "reviewer", "type": "organizational", "requires": ["review", "coding"], "prefers": ["reasoning"], "description": "Reviews code for architecture, security, and quality" },
+    { "role": "planner", "type": "organizational", "requires": ["planning", "coding"], "prefers": ["reasoning"], "description": "Plans implementation strategy before coding begins" }
+  ],
+
   "tools": [
     { "name": "code/read", "description": "Read a file from your workspace", "enabledFor": ["ai"] },
     { "name": "code/write", "description": "Create or overwrite a file", "enabledFor": ["ai"] },

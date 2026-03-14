@@ -16,6 +16,7 @@
  */
 
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import { TogetherBaseConfig } from './TogetherBaseConfig';
 
 /**
@@ -35,7 +36,7 @@ export class TogetherAIAdapter extends BaseOpenAICompatibleAdapter {
       providerName: sharedConfig.providerName,
       apiKey: sharedConfig.apiKey,
       baseUrl: sharedConfig.baseUrl,
-      defaultModel: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+      defaultModel: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
       timeout: 60000,
       supportedCapabilities: [
         'text-generation',
@@ -53,5 +54,48 @@ export class TogetherAIAdapter extends BaseOpenAICompatibleAdapter {
    */
   getSharedConfig(): TogetherBaseConfig {
     return this.sharedConfig;
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'together',
+      providerName: 'Together AI',
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
+      models: [
+        {
+          modelId: 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
+          displayName: 'Llama 3.1 405B Instruct Turbo',
+          capabilities: ['reasoning', 'coding', 'context-window-large',
+            'prose', 'planning', 'review', 'research', 'instruction-following'],
+          contextWindow: 128000,
+          costTier: 'high',
+          latencyTier: 'medium',
+        },
+        {
+          modelId: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+          displayName: 'Llama 3.1 70B Instruct Turbo',
+          capabilities: ['reasoning', 'coding', 'context-window-large', 'instruction-following'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+          displayName: 'Llama 3.1 8B Instruct Turbo',
+          capabilities: ['coding', 'context-window-large', 'instruction-following'],
+          contextWindow: 128000,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
+          displayName: 'Llama 3.2 90B Vision',
+          capabilities: ['image-input', 'multimodal', 'reasoning', 'context-window-large'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'medium',
+        },
+      ],
+    };
   }
 }

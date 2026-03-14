@@ -20,7 +20,9 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
 | LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
 | Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass |
-| Sentinel pipeline | Working | 10 step types, 103+ tests, CodingAgent integration |
+| Sentinel pipeline | Working | 10 step types, 103+ tests, CodingAgent integration, 4 dev templates proven E2E |
+| Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe, role declarations, RecipeAssembler |
+| Capability registry | Working | Skill domains, all 10 adapters self-register via getCapabilityRegistration() |
 | ORM | Working | SQLite + Postgres, schema evolution, self-healing |
 | RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
 | RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource |
@@ -279,19 +281,37 @@ The ultimate solution: fine-tune local models to call OUR tools correctly.
 
 **Our advantage**: Sentinel pipelines are JSON-serializable data that personas can create, save, share, and modify. A "build feature" sentinel is a reusable template. A LoRA-trained local model inside a sentinel pipeline with shell verification steps doesn't need to be "smart enough to remember to run tests" — the pipeline MAKES it run tests. The model just writes code. **Infrastructure compensates for model capability.**
 
-### 7A. Sentinel Development Templates
+### 7A. Sentinel Development Templates — IMPLEMENTED
 
-Pre-built pipeline templates stored as JSON. Personas invoke by name, not by constructing JSON.
+Pre-built pipeline templates as TypeScript builder functions. Personas invoke by name via `--template=dev/build-feature`. `TemplateRegistry` provides name-based lookup, listing, and runtime extensibility.
 
-| Template | Steps | What It Does |
-|----------|-------|-------------|
-| `dev/build-feature` | LLM(plan) → Shell(branch) → Loop[LLM(code) → Shell(build) → Condition(pass?) → Shell(test)] → Shell(commit) | Plan, implement, verify, commit |
-| `dev/fix-bug` | LLM(diagnose) → Shell(reproduce) → Loop[LLM(fix) → Shell(build) → Shell(test)] → Shell(commit) | Reproduce, fix, verify |
-| `dev/create-pr` | Shell(git status) → LLM(summarize) → Shell(push) → Shell(gh pr create) | Summarize changes, push, open PR |
-| `dev/review-pr` | Shell(gh pr diff) → LLM(review) → Shell(gh pr comment) | Analyze diff, post review comments |
-| `dev/refactor` | LLM(plan) → Parallel[LLM(edit-file) × N] → Shell(build) → Shell(test) → Shell(commit) | Multi-file refactor with parallel edits |
+| Template | Steps | What It Does | Status |
+|----------|-------|-------------|--------|
+| `dev/build-feature` | LLM(plan) → Emit(review) → Watch(feedback) → CodingAgent(implement) → Shell(build) → Condition → Shell(test) → Shell(commit) | Collaborative feature dev with team review checkpoints | **Done** |
+| `dev/fix-bug` | CodingAgent(diagnose) → Emit(diagnosis) → Watch(approval) → CodingAgent(fix) → Shell(build+test) → Shell(commit) | Root cause diagnosis → team review → fix → verify | **Done** |
+| `dev/code-review` | Shell(diff) → Parallel[LLM(arch) + LLM(security) + LLM(quality)] → Emit(reviews) → Watch(discussion) → LLM(verdict) | Three parallel review perspectives → team discussion → verdict | **Done** |
+| `dev/create-pr` | Shell(git status) → LLM(summarize) → Shell(push) → Shell(gh pr create) | Summarize changes, push, open PR | Planned |
+| `dev/refactor` | LLM(plan) → Parallel[LLM(edit-file) × N] → Shell(build) → Shell(test) → Shell(commit) | Multi-file refactor with parallel edits | Planned |
 
-**Key design**: Templates use Sentinel's existing step interpolation (`{{steps.N.output}}`, `{{input.feature_description}}`). The LLM steps are where the model's intelligence matters — everything else is deterministic shell execution. A LoRA-tuned 3B model fills in the LLM blanks; the pipeline handles orchestration, verification, and retry.
+**Key design — Collaborative Decision Points**: Templates are NOT fire-and-forget. They have Emit→Watch checkpoints where the AI team reviews, discusses, votes, and provides feedback. Sentinels escalate when stuck, consult when uncertain — like any competent employee. User controls involvement via `autonomous: true` to skip checkpoints.
+
+**Key design — Template + Config**: Templates use Sentinel's existing step interpolation (`{{steps.N.output}}`, `{{input.iteration}}`). The LLM/CodingAgent steps are where intelligence matters — everything else is deterministic. A LoRA-tuned 3B model fills in the LLM blanks; the pipeline handles orchestration, verification, and retry.
+
+**Files**:
+- `system/sentinel/pipelines/TemplateRegistry.ts` — Name-based lookup, listing, runtime registration
+- `system/sentinel/pipelines/DevBuildFeaturePipeline.ts` — Feature builder with collaborative checkpoints
+- `system/sentinel/pipelines/DevFixBugPipeline.ts` — Bug fix with diagnosis-first approach
+- `system/sentinel/pipelines/DevCodeReviewPipeline.ts` — Parallel multi-perspective code review
+
+**Usage**:
+```bash
+# Run a template by name
+./jtag sentinel/run --type=pipeline --template=dev/build-feature \
+  --templateConfig='{"feature":"Add user profiles","personaName":"Helper AI"}'
+
+# List available templates
+./jtag sentinel/list --templatesOnly=true
+```
 
 ### 7B. Auto-Triggering From Chat
 
@@ -320,18 +340,21 @@ The last mile of "creating things" — code changes must become PRs.
 
 Sentinels currently report via `sentinel/status` polling. For personas creating things, progress must flow into the room naturally.
 
-- [ ] SentinelEventBridge emits to chat room when sentinel step completes
-- [ ] Errors are posted immediately (don't wait for pipeline completion)
-- [ ] Final result includes summary, files changed, test results, commit hash
+- [x] SentinelEventBridge emits to chat room when sentinel step completes (SentinelChatBridge)
+- [x] Errors are posted immediately (don't wait for pipeline completion)
+- [x] Final result includes summary, files changed, test results, commit hash
 - [ ] Other personas in the room can see and react to progress
 
 **Build checklist**:
-- [ ] 5 sentinel development templates (build-feature, fix-bug, create-pr, review-pr, refactor)
-- [ ] Template loader in SentinelRunServerCommand (load by name, not just inline JSON)
-- [ ] SentinelDispatchDecider in response pipeline
-- [ ] Auto-triggering for complex tasks
+- [x] 3 sentinel development templates (build-feature, fix-bug, code-review) with collaborative checkpoints
+- [x] TemplateRegistry for name-based lookup, listing, and runtime registration
+- [x] Template resolver in SentinelRunServerCommand (`--template=dev/build-feature`)
+- [x] Built-in templates appear in `sentinel/list --templatesOnly=true`
+- [ ] 2 more templates (create-pr, refactor)
+- [x] SentinelDispatchDecider in response pipeline
+- [x] Auto-triggering for complex tasks (pattern matching + confidence scoring)
 - [ ] PR workflow commands (push, create, review, status)
-- [ ] SentinelEventBridge → chat room integration
+- [x] SentinelEventBridge → chat room integration (SentinelChatBridge)
 - [ ] Template parameter extraction from chat context (LLM step)
 
 ---
@@ -532,6 +555,29 @@ Multiple external agents as teachers, each captured in the same training format.
 - Silent `.ok()` swallowing in sentinel executor (7+ sites) — **FIXED in P1E**
 - Missing input validation: sentinel/run doesn't validate pipeline after JSON.parse()
 - `e.to_string()` vs `format_pg_error()` pattern may exist in other Postgres sites
+
+### 12E. AI `data/create` Failures — System Must Accommodate, Not Friction
+
+**Status**: Active, high-impact. Every AI persona hits this. The system is too rigid.
+
+**Philosophy**: Models will emit whatever format they emit. Providers will retire models without notice. Commands will be called with weird payloads. The system must absorb all of this gracefully — accommodate, don't friction.
+
+**Current errors (2026-03-14):**
+
+| Provider | Error | What System Should Do Instead |
+|----------|-------|-------------------------------|
+| Groq Lightning | 400: `tool_use_failed` — emits `<function=name{json}</function>` | Parse it. That's a valid tool call in Groq's format. Add a parser. (P6A) |
+| DeepSeek, Helper, Local, CodeReview | Request timeout: `data/create` | `data/create` is hanging — fix the command, not the callers |
+| Qwen3-Omni | "Provider not available" | Discover and register dynamically. Don't require manual registration. (P4) |
+| Together Assistant | "Unable to access non-serverless model" | Model was retired. Detect, fall back to available model, don't error. |
+
+**Root causes — all are system rigidity, not model failures:**
+1. **Tool call parsing is too narrow**: Only handles native JSON + our XML format. Models emit dozens of formats (Groq function tags, DeepSeek fullwidth Unicode, Llama python tags). System must parse all of them. → P6A parser-per-model-family.
+2. **`data/create` hangs under load**: 4+ providers all timing out on the same command. The ORM write path or schema validation is the bottleneck, not the models. Needs investigation and fix.
+3. **Provider/model discovery is static**: Models get retired, new ones appear daily. Hard-coded model lists go stale immediately. → P4 adapter self-registration + API discovery.
+4. **No graceful degradation on provider errors**: A retired model should trigger automatic fallback to the next available model in that provider, not a 400 error surfaced to the persona.
+
+**Impact**: Personas cannot persist data (memories, observations, decisions). A persona that can't write memories can't learn. This is the autonomous loop's foundation — it must be rock solid.
 
 ### 12D. Rust Test Failures (14 pre-existing)
 - 6 `modules::data::tests::*` — data module integration tests (SQLite-related)

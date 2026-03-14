@@ -69,3 +69,12 @@ export {
   initializeSentinelEventBridge,
   shutdownSentinelEventBridge,
 } from './SentinelEventBridge';
+
+// Chat bridge (sentinel events → chat room messages)
+export {
+  initializeSentinelChatBridge,
+  announceSentinelStart,
+} from './SentinelChatBridge';
+
+// Pipeline template registry
+export { TemplateRegistry, type TemplateInfo } from './pipelines/TemplateRegistry';

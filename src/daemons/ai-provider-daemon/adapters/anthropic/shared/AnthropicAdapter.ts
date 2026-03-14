@@ -23,6 +23,7 @@ import type {
   ContentPart,
 } from '../../../shared/AIProviderTypesV2';
 import { AIProviderError } from '../../../shared/AIProviderTypesV2';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
 import {
   ModelTier,
@@ -78,7 +79,38 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
     // Basic connectivity check (Anthropic doesn't have a health endpoint)
     this.isInitialized = true;
+    this.registerCapabilities();
     this.log(null, 'info', `✅ ${this.providerName}: Initialized successfully`);
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'anthropic',
+      providerName: 'Anthropic',
+      defaultCapabilities: [
+        'text-input', 'text-output', 'image-input', 'function-calling',
+        'streaming', 'multimodal', 'context-window-huge', 'reasoning', 'coding',
+        'prose', 'review', 'planning', 'research', 'instruction-following', 'tool-use'
+      ],
+      models: [
+        {
+          modelId: MODEL_IDS.ANTHROPIC.HAIKU_4_5,
+          displayName: 'Claude Haiku 4.5',
+          capabilities: ['coding'],
+          contextWindow: 200000,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: MODEL_IDS.ANTHROPIC.SONNET_4_5,
+          displayName: 'Claude Sonnet 4.5',
+          capabilities: ['reasoning', 'coding', 'math'],
+          contextWindow: 200000,
+          costTier: 'medium',
+          latencyTier: 'medium',
+        },
+      ],
+    };
   }
 
   protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {

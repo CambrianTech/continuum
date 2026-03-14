@@ -99,6 +99,19 @@ class SentinelEventBridge {
   }
 
   /**
+   * Get all currently watched sentinels with their metadata.
+   * Used by SentinelAwarenessSource to inject active sentinel state into RAG.
+   */
+  get activeSentinels(): ReadonlyArray<{ handle: string; metadata: WatchMetadata; lastStatus: string; registeredAt: number }> {
+    return Array.from(this._watched.values()).map(w => ({
+      handle: w.handle,
+      metadata: w.metadata,
+      lastStatus: w.lastStatus,
+      registeredAt: w.registeredAt,
+    }));
+  }
+
+  /**
    * Initialize the bridge (called at server startup).
    */
   initialize(): void {

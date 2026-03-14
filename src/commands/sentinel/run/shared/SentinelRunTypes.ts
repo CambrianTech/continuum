@@ -139,7 +139,13 @@ export interface PipelineSentinelParams extends SentinelRunParams {
   type: 'pipeline';
 
   /** Pipeline definition (JSON), or entity ID string to load from database */
-  definition: PipelineSentinelDefinition | string;
+  definition?: PipelineSentinelDefinition | string;
+
+  /** Template name from TemplateRegistry (e.g., 'dev/build-feature') */
+  template?: string;
+
+  /** Template config — merged with other params and passed to builder */
+  templateConfig?: Record<string, unknown>;
 }
 
 /**

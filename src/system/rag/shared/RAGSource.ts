@@ -52,6 +52,16 @@ export interface RAGSourceContext {
    * The persona decides WHETHER to engage and HOW MUCH effort to invest.
    */
   readonly activeSources?: readonly string[];
+
+  /**
+   * Sentinel template filter from recipe.
+   *
+   * If present, SentinelAwarenessSource only shows these templates.
+   * If absent, all registered templates are shown (backwards-compatible default).
+   *
+   * Recipe → sentinelTemplates → this field → SentinelAwarenessSource filters
+   */
+  readonly sentinelTemplates?: readonly string[];
 }
 
 /**

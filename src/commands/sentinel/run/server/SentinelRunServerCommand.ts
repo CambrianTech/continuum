@@ -15,6 +15,9 @@ import type { PipelineSentinelParams, SentinelRunParams, SentinelRunResult } fro
 import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { Pipeline, PipelineStep, SentinelRunParams as SentinelIPCParams } from '../../../../workers/continuum-core/bindings/modules/sentinel';
+import { TemplateRegistry } from '../../../../system/sentinel/pipelines/TemplateRegistry';
+import { sentinelEventBridge } from '../../../../system/sentinel/SentinelEventBridge';
+import { announceSentinelStart } from '../../../../system/sentinel/SentinelChatBridge';
 
 export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, SentinelRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -31,19 +34,53 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
       timeout_secs?: number;
       inputs?: Record<string, unknown>;
     };
-    let definition: PipelineDefinitionJSON;
+    let definition: PipelineDefinitionJSON | undefined;
 
-    if (runParams.definition) {
+    // Template resolution — build pipeline from named template + config
+    if (runParams.template) {
+      const templateName = runParams.template;
+      if (!TemplateRegistry.has(templateName)) {
+        const available = TemplateRegistry.list().map(t => `${t.name} — ${t.description}`).join('\n  ');
+        return transformPayload(params, {
+          success: false,
+          completed: true,
+          error: `Template '${templateName}' not found.\n\nAvailable templates:\n  ${available}`,
+        });
+      }
+
+      const templateConfig = {
+        ...runParams.templateConfig,
+        // Common fields auto-populated from sentinel params
+        ...(runParams.parentPersonaId && { personaId: runParams.parentPersonaId }),
+        ...(runParams.workingDir && { cwd: runParams.workingDir }),
+      };
+
+      const pipeline = TemplateRegistry.build(templateName, templateConfig);
+      // Convert Pipeline to PipelineDefinitionJSON format
+      // version/loop are required by PipelineSentinelDefinition but not used by Rust Pipeline
+      definition = {
+        type: 'pipeline',
+        name: pipeline.name || templateName,
+        version: '1.0',
+        loop: { type: 'once' },
+        steps: pipeline.steps as PipelineDefinitionJSON['steps'],
+        timeoutSecs: pipeline.timeoutSecs,
+        inputs: pipeline.inputs as Record<string, unknown>,
+      };
+    } else if (runParams.definition) {
       definition = typeof runParams.definition === 'string'
         ? JSON.parse(runParams.definition) as PipelineDefinitionJSON
         : runParams.definition as PipelineDefinitionJSON;
     } else if (runParams.steps) {
       definition = { type: 'pipeline', name: 'unnamed', steps: runParams.steps } as PipelineDefinitionJSON;
-    } else {
+    }
+
+    if (!definition) {
+      const available = TemplateRegistry.list().map(t => `${t.name} — ${t.description}`).join('\n  ');
       return transformPayload(params, {
         success: false,
         completed: true,
-        error: 'Missing pipeline definition. Provide --definition or --steps',
+        error: `Missing pipeline definition. Provide --definition, --steps, or --template.\n\nAvailable templates:\n  ${available}`,
       });
     }
 
@@ -80,6 +117,28 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
     try {
       if (asyncMode) {
         const result = await rustClient.sentinelRun(ipcParams);
+
+        // Wire up event bridge so progress/completion events flow to TypeScript
+        const roomId = (runParams.templateConfig as Record<string, unknown> | undefined)?.roomId as string | undefined;
+        sentinelEventBridge.watch(result.handle, 'pipeline', {
+          personaId: runParams.parentPersonaId,
+          entityId: runParams.entityId,
+          sentinelName: ipcParams.sentinelName,
+          template: runParams.template,
+          roomId,
+        });
+
+        // Announce to chat room if one is associated
+        if (roomId) {
+          const templateConfig = runParams.templateConfig as Record<string, unknown> | undefined;
+          announceSentinelStart(
+            roomId,
+            ipcParams.sentinelName ?? runParams.template ?? 'pipeline',
+            result.handle,
+            templateConfig?.personaName as string | undefined,
+            runParams.parentPersonaId,
+          );
+        }
 
         return transformPayload(params, {
           success: true,

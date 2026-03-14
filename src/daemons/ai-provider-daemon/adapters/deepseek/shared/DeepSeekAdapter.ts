@@ -1,5 +1,6 @@
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
 import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import { DeepSeekBaseConfig } from './DeepSeekBaseConfig';
 
 /**
@@ -48,5 +49,47 @@ export class DeepSeekAdapter extends BaseOpenAICompatibleAdapter {
 
   async getAvailableModels(): Promise<ModelInfo[]> {
     return this.config.models ?? [];
+  }
+
+  /**
+   * Dynamic capability registration.
+   * Maps DeepSeekBaseConfig model data to AICapabilityRegistry format.
+   */
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'deepseek',
+      providerName: 'DeepSeek',
+      defaultCapabilities: [
+        'text-input', 'text-output', 'streaming', 'function-calling',
+        'instruction-following'
+      ],
+      models: [
+        {
+          modelId: 'deepseek-chat',
+          displayName: 'DeepSeek Chat',
+          capabilities: ['coding', 'reasoning', 'math', 'planning', 'review', 'research',
+            'prose', 'context-window-large', 'tool-use'],
+          contextWindow: 128000,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'deepseek-coder',
+          displayName: 'DeepSeek Coder',
+          capabilities: ['coding', 'reasoning', 'math'],
+          contextWindow: 16384,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'deepseek-reasoner',
+          displayName: 'DeepSeek Reasoner',
+          capabilities: ['coding', 'reasoning', 'math', 'planning'],
+          contextWindow: 128000,
+          costTier: 'low',
+          latencyTier: 'slow',
+        },
+      ],
+    };
   }
 }

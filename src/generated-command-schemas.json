@@ -1761,6 +1761,16 @@
           "required": false,
           "description": "definition parameter"
         },
+        "template": {
+          "type": "string",
+          "required": false,
+          "description": "template parameter"
+        },
+        "templateConfig": {
+          "type": "object",
+          "required": false,
+          "description": "templateConfig parameter"
+        },
         "handle": {
           "type": "string",
           "required": false,
@@ -5738,6 +5748,267 @@
           "type": "string",
           "required": false,
           "description": "benchmark parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/integrate",
+      "description": "dev/integrate — Merge persona branches into a feature/integration branch. Usage: ./jtag dev/integrate --featureBranch=\"feature/auth\" --cwd=\".\" ./jtag dev/integrate --featureBranch=\"feature/auth\" --branches=\"ai/helper/middleware,ai/teacher/tests\" ./jtag dev/integrate --featureBranch=\"feature/auth\" # auto-discovers all ai/* branches",
+      "params": {
+        "featureBranch": {
+          "type": "string",
+          "required": true,
+          "description": "featureBranch parameter"
+        },
+        "branches": {
+          "type": "string",
+          "required": false,
+          "description": "branches parameter"
+        },
+        "baseBranch": {
+          "type": "string",
+          "required": false,
+          "description": "baseBranch parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "buildCommand": {
+          "type": "string",
+          "required": false,
+          "description": "buildCommand parameter"
+        },
+        "testCommand": {
+          "type": "string",
+          "required": false,
+          "description": "testCommand parameter"
+        },
+        "codingModel": {
+          "type": "string",
+          "required": false,
+          "description": "codingModel parameter"
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "required": false,
+          "description": "maxBudgetUsd parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "autonomous": {
+          "type": "boolean",
+          "required": false,
+          "description": "autonomous parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/init",
+      "description": "dev/init — Detect project type and verify dev pipeline setup. Usage: ./jtag dev/init --cwd=\".\" ./jtag dev/init --repo=\"/path/to/project\"",
+      "params": {
+        "repo": {
+          "type": "string",
+          "required": false,
+          "description": "repo parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/fix-bug",
+      "description": "dev/fix-bug — Shorthand for sentinel/run --template=dev/fix-bug Usage: ./jtag dev/fix-bug --bug=\"Users can't upload files > 2MB\"",
+      "params": {
+        "bug": {
+          "type": "string",
+          "required": true,
+          "description": "bug parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "autonomous": {
+          "type": "boolean",
+          "required": false,
+          "description": "autonomous parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        },
+        "buildCommand": {
+          "type": "string",
+          "required": false,
+          "description": "buildCommand parameter"
+        },
+        "testCommand": {
+          "type": "string",
+          "required": false,
+          "description": "testCommand parameter"
+        },
+        "codingModel": {
+          "type": "string",
+          "required": false,
+          "description": "codingModel parameter"
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "required": false,
+          "description": "maxBudgetUsd parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/code-review",
+      "description": "dev/code-review — Shorthand for sentinel/run --template=dev/code-review Usage: ./jtag dev/code-review --branch=\"feature/user-profiles\" ./jtag dev/code-review (reviews HEAD vs main)",
+      "params": {
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "baseBranch": {
+          "type": "string",
+          "required": false,
+          "description": "baseBranch parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "autonomous": {
+          "type": "boolean",
+          "required": false,
+          "description": "autonomous parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/build-feature",
+      "description": "dev/build-feature — Shorthand for sentinel/run --template=dev/build-feature Usage: ./jtag dev/build-feature --feature=\"Add user profiles\" --cwd=\".\" ./jtag dev/build-feature --feature=\"Implement search\" --autonomous=true",
+      "params": {
+        "feature": {
+          "type": "string",
+          "required": true,
+          "description": "feature parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "autonomous": {
+          "type": "boolean",
+          "required": false,
+          "description": "autonomous parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        },
+        "buildCommand": {
+          "type": "string",
+          "required": false,
+          "description": "buildCommand parameter"
+        },
+        "testCommand": {
+          "type": "string",
+          "required": false,
+          "description": "testCommand parameter"
+        },
+        "codingModel": {
+          "type": "string",
+          "required": false,
+          "description": "codingModel parameter"
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "required": false,
+          "description": "maxBudgetUsd parameter"
+        }
+      }
+    },
+    {
+      "name": "dev/activity",
+      "description": "dev/activity — Show what each persona and sentinel has edited. Usage: ./jtag dev/activity # All persona workspaces + recent sentinels ./jtag dev/activity --personaId=\"helper\" # Single persona's activity ./jtag dev/activity --repo=\"/path/to/project\" # Activity on a specific repo ./jtag dev/activity --sentinelsOnly=true # Only sentinel history",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "repo": {
+          "type": "string",
+          "required": false,
+          "description": "repo parameter"
+        },
+        "sentinelsOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "sentinelsOnly parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         }
       }
     },

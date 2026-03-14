@@ -15,6 +15,7 @@
 
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import type {
   TextGenerationRequest,
   TextGenerationResponse,
@@ -42,11 +43,31 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     try {
       // Get singleton IPC client (auto-connects)
       this.client = await RustCoreIPCClient.getInstanceAsync();
+      this.registerCapabilities();
       // Connected
     } catch (err) {
       console.error(`[CandleAdapter] Failed to connect to continuum-core:`, err);
       throw err;
     }
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'candle',
+      providerName: 'Candle (Local IPC)',
+      defaultCapabilities: ['text-input', 'text-output'],
+      models: [
+        {
+          modelId: 'unsloth/Llama-3.2-3B-Instruct',
+          displayName: 'Llama 3.2 3B (IPC)',
+          capabilities: ['coding', 'reasoning', 'instruction-following'],
+          contextWindow: 2048,
+          maxOutputTokens: 200,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+      ],
+    };
   }
 
   async shutdown(): Promise<void> {

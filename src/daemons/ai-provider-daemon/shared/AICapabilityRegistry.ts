@@ -51,7 +51,16 @@ export type AICapability =
   | 'context-window-huge'  // 200k+ context
   | 'reasoning'          // Strong reasoning (Opus, o1, etc.)
   | 'coding'             // Optimized for code
-  | 'math';              // Optimized for math
+  | 'math'               // Optimized for math
+
+  // Skill domains — what the model is GOOD AT beyond modality
+  // Used by RecipeAssembler to match recipe role requirements to available models
+  | 'prose'              // Strong prose/creative writing (Claude, GPT-4o)
+  | 'review'             // Code/document review with structured feedback
+  | 'planning'           // Project planning, task decomposition, architecture
+  | 'research'           // Information synthesis, analysis, investigation
+  | 'instruction-following'  // Reliable instruction following for orchestration
+  | 'tool-use';          // Reliable agentic tool use (beyond function-calling schema support)
 
 /**
  * Provider capability registration
@@ -325,7 +334,8 @@ export class AICapabilityRegistry {
       providerName: 'Anthropic',
       defaultCapabilities: [
         'text-input', 'text-output', 'image-input', 'function-calling',
-        'streaming', 'multimodal', 'context-window-huge', 'reasoning', 'coding'
+        'streaming', 'multimodal', 'context-window-huge', 'reasoning', 'coding',
+        'prose', 'review', 'planning', 'research', 'instruction-following', 'tool-use'
       ],
       models: [
         // Haiku first — cheapest vision-capable model, preferred for automated tasks like vision descriptions
@@ -355,13 +365,15 @@ export class AICapabilityRegistry {
       providerId: 'openai',
       providerName: 'OpenAI',
       defaultCapabilities: [
-        'text-input', 'text-output', 'function-calling', 'streaming'
+        'text-input', 'text-output', 'function-calling', 'streaming',
+        'instruction-following'
       ],
       models: [
         {
           modelId: 'gpt-4o',
           displayName: 'GPT-4o',
-          capabilities: ['image-input', 'multimodal', 'reasoning', 'coding', 'context-window-large'],
+          capabilities: ['image-input', 'multimodal', 'reasoning', 'coding', 'context-window-large',
+            'prose', 'review', 'planning', 'research', 'tool-use'],
           contextWindow: 128000,
           costTier: 'medium',
           latencyTier: 'fast',
