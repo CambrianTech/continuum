@@ -42,7 +42,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy::scene::SceneInstanceReady;
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use crate::live::avatar::RgbaFrame;
@@ -92,19 +92,57 @@ fn gpu_manager() -> Option<&'static Arc<GpuMemoryManager>> {
 }
 
 /// Global singleton for the Bevy avatar rendering system.
-static BEVY_SYSTEM: OnceLock<BevyAvatarSystem> = OnceLock::new();
+/// RwLock<Option<Arc<...>>> allows shutdown + restart (memory reclaim on idle).
+static BEVY_SYSTEM: RwLock<Option<Arc<BevyAvatarSystem>>> = RwLock::new(None);
 
 /// Get or initialize the global BevyAvatarSystem.
-pub fn get_or_init() -> &'static BevyAvatarSystem {
-    BEVY_SYSTEM.get_or_init(|| {
-        clog_info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)");
-        BevyAvatarSystem::start()
-    })
+/// Starts Bevy on first call; restarts it if previously shut down.
+pub fn get_or_init() -> Arc<BevyAvatarSystem> {
+    // Fast path: read lock, clone Arc if present
+    {
+        let guard = BEVY_SYSTEM.read().unwrap();
+        if let Some(ref sys) = *guard {
+            return Arc::clone(sys);
+        }
+    }
+    // Slow path: write lock, double-check, start
+    let mut guard = BEVY_SYSTEM.write().unwrap();
+    if let Some(ref sys) = *guard {
+        return Arc::clone(sys);
+    }
+    clog_info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {AVATAR_WIDTH}x{AVATAR_HEIGHT} @{AVATAR_FPS}fps)");
+    let sys = Arc::new(BevyAvatarSystem::start());
+    *guard = Some(Arc::clone(&sys));
+    sys
 }
 
-/// Get the BevyAvatarSystem if it has already been initialized.
-pub fn try_get() -> Option<&'static BevyAvatarSystem> {
-    BEVY_SYSTEM.get()
+/// Get the BevyAvatarSystem if it is currently running.
+/// Returns a cloned Arc — safe to hold across await points.
+pub fn try_get() -> Option<Arc<BevyAvatarSystem>> {
+    let guard = BEVY_SYSTEM.read().unwrap();
+    guard.as_ref().map(Arc::clone)
+}
+
+/// Shut down the Bevy renderer entirely to reclaim ~3GB of memory.
+/// Sends Shutdown command to the Bevy thread, then clears the global.
+/// Next call to `get_or_init()` will restart it transparently.
+pub fn shutdown() {
+    let sys = {
+        let mut guard = BEVY_SYSTEM.write().unwrap();
+        guard.take()
+    };
+    if let Some(sys) = sys {
+        clog_info!("🎨 Shutting down Bevy renderer to reclaim memory");
+        let _ = sys.command_tx.send(AvatarCommand::Shutdown);
+        // The Bevy thread will exit when it processes Shutdown + AppExit.
+        // The Arc<BevyAvatarSystem> drops when all holders release their clones.
+    }
+}
+
+/// Returns true if the Bevy renderer is currently running.
+pub fn is_running() -> bool {
+    let guard = BEVY_SYSTEM.read().unwrap();
+    guard.is_some()
 }
 
 /// The singleton Bevy avatar rendering system.
@@ -1329,7 +1367,17 @@ fn process_commands(
                 }
             }
             AvatarCommand::Shutdown => {
-                clog_info!("🎨 Bevy renderer shutting down");
+                clog_info!("🎨 Bevy renderer shutting down — releasing GPU + ECS memory");
+                // Teardown all slots to release model memory before app exits
+                let all_slots: Vec<u8> = registry.slots.keys().copied().collect();
+                for slot in &all_slots {
+                    if let Some(slot_data) = registry.slots.get_mut(slot) {
+                        slot_data.teardown(&mut commands);
+                        gpu_guards.model_guards.remove(slot);
+                    }
+                }
+                // Signal Bevy to exit the app loop
+                commands.write_message(AppExit::from_code(0));
                 return;
             }
         }
