@@ -29,10 +29,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore};
 
-/// Max concurrent query operations. Limits peak heap from 15 personas × N queries
-/// all materializing result sets simultaneously. Without this, RSS spikes to 9GB+
+/// Max concurrent query operations. Limits peak heap from personas × N queries
+/// all materializing result sets simultaneously. Without this, RSS spikes
 /// from concurrent JSON serialization of large result sets.
-const MAX_CONCURRENT_QUERIES: usize = 4;
+///
+/// Set to 16 to match SQLite reader pool capacity (main DB has 20 readers).
+/// Previous value of 4 caused head-of-line blocking: 20 readers sat idle
+/// while the semaphore refused to let queries through, causing cascading
+/// timeouts under normal 15-persona load.
+const MAX_CONCURRENT_QUERIES: usize = 16;
 
 // ============================================================================
 // Vector Search Types and Cache

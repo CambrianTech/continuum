@@ -80,6 +80,8 @@ impl ServiceModule for VoiceModule {
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
+        // Safety net: detect orphaned sessions (browser crash, lost WebSocket, deploy)
+        self.state.resource_lifecycle.spawn_orphan_watchdog();
         Ok(())
     }
 
@@ -923,9 +925,11 @@ impl ServiceModule for VoiceModule {
                 };
 
                 let active_sessions = self.state.resource_lifecycle.active_count();
+                let bevy_running = crate::live::video::bevy_renderer::is_running();
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "active_sessions": active_sessions,
+                    "bevy_renderer": bevy_running,
                     "stt_adapters": stt_status,
                     "tts_adapters": tts_status,
                 })))
@@ -996,6 +1000,14 @@ impl ServiceModule for VoiceModule {
                 // in-flight sessions. Models will reload on next call.
                 self.state.resource_lifecycle.reset_sessions();
 
+                // Shut down Bevy renderer to reclaim ~3GB GPU/ECS memory
+                let bevy_was_running = crate::live::video::bevy_renderer::is_running();
+                if bevy_was_running {
+                    crate::live::video::bevy_renderer::shutdown();
+                    crate::live::avatar::reset_slot_pool();
+                    unloaded.push("bevy-renderer".to_string());
+                }
+
                 log_info!(
                     "module",
                     "voice_resource_unload",
@@ -1007,6 +1019,7 @@ impl ServiceModule for VoiceModule {
                 Ok(CommandResult::Json(serde_json::json!({
                     "unloaded": unloaded,
                     "count": unloaded.len(),
+                    "bevy_shutdown": bevy_was_running,
                 })))
             }
 

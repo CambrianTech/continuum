@@ -7,17 +7,18 @@
  * - Chunking: splits files into meaningful units (classes, functions, sections)
  * - Embedding: fastembed via Rust IPC (AllMiniLML6V2, 384 dims, ~5ms per embed)
  * - Storage: ORM → code_index collection with embedding vectors
- * - Query: vector similarity search via embeddingTopK
+ * - Query: ORM.vectorSearch delegates to Rust for cosine similarity
+ * - Incremental: content hashes skip unchanged files on re-index
  *
- * All heavy work (embedding generation) runs in Rust off main thread.
+ * All heavy work (embedding generation, vector search) runs in Rust off main thread.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { CodeIndexEntity } from '../../data/entities/CodeIndexEntity';
-import type { IndexingResult, CodeExportType } from '../shared/CodebaseTypes';
-import type { CodeIndexEntry } from '../shared/CodebaseTypes';
+import type { IndexingResult, CodeExportType, CodeIndexEntry } from '../shared/CodebaseTypes';
 import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Logger } from '../../core/logging/Logger';
@@ -59,15 +60,33 @@ interface FileChunk {
 
 export class CodebaseIndexer {
   private ipcClient: RustCoreIPCClientType | null = null;
+  private _indexing = false;
+
+  /** Whether an indexing operation is in progress */
+  get indexing(): boolean { return this._indexing; }
 
   /**
    * Index a directory tree, generating embeddings and storing in code_index.
-   *
-   * @param rootDir - Root directory to index (e.g., project src/)
-   * @param options - Indexing options
-   * @returns Indexing result with counts
+   * Supports incremental mode: skips files whose content hash hasn't changed.
    */
   async index(rootDir: string, options?: {
+    fileTypes?: string[];
+    recursive?: boolean;
+    clearExisting?: boolean;
+  }): Promise<IndexingResult> {
+    if (this._indexing) {
+      return { success: false, filesIndexed: 0, entriesCreated: 0, entriesUpdated: 0, errors: [{ file: '', error: 'Indexing already in progress' }], durationMs: 0 };
+    }
+
+    this._indexing = true;
+    try {
+      return await this.indexInternal(rootDir, options);
+    } finally {
+      this._indexing = false;
+    }
+  }
+
+  private async indexInternal(rootDir: string, options?: {
     fileTypes?: string[];
     recursive?: boolean;
     clearExisting?: boolean;
@@ -82,23 +101,74 @@ export class CodebaseIndexer {
       await this.clearIndex();
     }
 
-    // 2. Discover files
+    // 2. Load existing content hashes for incremental indexing
+    const existingHashes = await this.loadContentHashes();
+
+    // 3. Discover files
     const files = this.discoverFiles(rootDir, options?.recursive ?? true);
     log.info(`Discovered ${files.length} indexable files`);
 
-    // 3. Chunk all files
-    const allChunks: FileChunk[] = [];
+    // 4. Filter to changed files using content hashes
+    const changedFiles: Array<{ filePath: string; hash: string }> = [];
+    const currentFilePaths = new Set<string>();
+
     for (const filePath of files) {
+      const relativePath = path.relative(rootDir, filePath);
+      currentFilePaths.add(relativePath);
+
       try {
-        const chunks = await this.chunkFile(filePath, rootDir);
-        allChunks.push(...chunks);
+        const content = await fs.promises.readFile(filePath, 'utf-8');
+        const hash = createHash('sha256').update(content).digest('hex');
+
+        if (existingHashes.get(relativePath) !== hash) {
+          changedFiles.push({ filePath, hash });
+        }
       } catch (err) {
         errors.push({ file: filePath, error: String(err) });
       }
     }
-    log.info(`Generated ${allChunks.length} chunks from ${files.length} files`);
 
-    // 4. Generate embeddings in batches via Rust IPC
+    // 5. Remove entries for deleted files
+    const deletedPaths: string[] = [];
+    for (const [existingPath] of existingHashes) {
+      if (!currentFilePaths.has(existingPath)) {
+        deletedPaths.push(existingPath);
+      }
+    }
+    if (deletedPaths.length > 0) {
+      await this.removeEntriesForFiles(deletedPaths);
+      log.info(`Removed entries for ${deletedPaths.length} deleted files`);
+    }
+
+    if (changedFiles.length === 0 && deletedPaths.length === 0) {
+      const durationMs = Date.now() - startTime;
+      log.info(`Index up to date — no files changed (${durationMs}ms)`);
+      return { success: true, filesIndexed: 0, entriesCreated: 0, entriesUpdated: 0, errors, durationMs };
+    }
+
+    log.info(`${changedFiles.length} files changed, ${files.length - changedFiles.length} unchanged (skipped)`);
+
+    // 6. Remove stale entries for changed files before re-indexing
+    const changedRelativePaths = changedFiles.map(f => path.relative(rootDir, f.filePath));
+    if (changedRelativePaths.length > 0) {
+      await this.removeEntriesForFiles(changedRelativePaths);
+    }
+
+    // 7. Chunk changed files
+    const allChunks: Array<FileChunk & { contentHash: string }> = [];
+    for (const { filePath, hash } of changedFiles) {
+      try {
+        const chunks = await this.chunkFile(filePath, rootDir);
+        for (const chunk of chunks) {
+          allChunks.push({ ...chunk, contentHash: hash });
+        }
+      } catch (err) {
+        errors.push({ file: filePath, error: String(err) });
+      }
+    }
+    log.info(`Generated ${allChunks.length} chunks from ${changedFiles.length} changed files`);
+
+    // 8. Generate embeddings in batches via Rust IPC
     const ipc = await this.getIPC();
     let entriesCreated = 0;
 
@@ -107,7 +177,6 @@ export class CodebaseIndexer {
       const texts = batch.map(c => this.chunkToEmbeddingText(c));
 
       try {
-        // Single Rust IPC call for entire batch — fastembed handles batches natively
         const embeddings = await ipc.embeddingGenerateBatch(texts);
 
         for (let j = 0; j < batch.length; j++) {
@@ -125,6 +194,7 @@ export class CodebaseIndexer {
           entry.embedding = embedding.embedding;
           entry.embeddingModel = embedding.model;
           entry.lastIndexed = new Date();
+          entry.contentHash = chunk.contentHash;
 
           await ORM.store(CodeIndexEntity.collection, entry, false, 'default');
           entriesCreated++;
@@ -138,11 +208,11 @@ export class CodebaseIndexer {
     }
 
     const durationMs = Date.now() - startTime;
-    log.info(`Indexing complete: ${entriesCreated} entries in ${(durationMs / 1000).toFixed(1)}s (${errors.length} errors)`);
+    log.info(`Indexing complete: ${entriesCreated} entries from ${changedFiles.length} files in ${(durationMs / 1000).toFixed(1)}s (${errors.length} errors)`);
 
     return {
       success: errors.length === 0,
-      filesIndexed: files.length,
+      filesIndexed: changedFiles.length,
       entriesCreated,
       entriesUpdated: 0,
       errors,
@@ -153,9 +223,9 @@ export class CodebaseIndexer {
   /**
    * Query the code index using semantic vector search.
    *
-   * @param query - Natural language query
-   * @param maxResults - Maximum results to return
-   * @returns Matching code entries sorted by relevance
+   * Loads all entries with embeddings, then uses Rust embeddingTopK for
+   * fast cosine similarity. ORM.vectorSearch not available on SQLite
+   * (supports_vector_search: false), so we do the topK in Rust IPC.
    */
   async query(queryText: string, maxResults: number = 10): Promise<CodeIndexEntry[]> {
     const ipc = await this.getIPC();
@@ -167,7 +237,7 @@ export class CodebaseIndexer {
     const result = await ORM.query<CodeIndexEntity>({
       collection: CodeIndexEntity.collection,
       filter: {},
-      limit: 1000,  // Load all for vector search
+      limit: 20000,
     }, 'default');
 
     if (!result.success || !result.data || result.data.length === 0) {
@@ -217,6 +287,78 @@ export class CodebaseIndexer {
       }
     } catch (err) {
       log.warn(`Failed to clear code index: ${err}`);
+    }
+  }
+
+  /**
+   * Get the number of indexed entries.
+   */
+  async entryCount(): Promise<number> {
+    const result = await ORM.query<CodeIndexEntity>({
+      collection: CodeIndexEntity.collection,
+      filter: {},
+      limit: 10000,
+    }, 'default');
+
+    return result.success ? (result.data?.length ?? 0) : 0;
+  }
+
+  // ── Incremental indexing helpers ────────────────────────────────────
+
+  /**
+   * Load existing content hashes from the index.
+   * Returns a Map of filePath → contentHash for deduplication.
+   */
+  private async loadContentHashes(): Promise<Map<string, string>> {
+    const hashes = new Map<string, string>();
+
+    try {
+      const result = await ORM.query<CodeIndexEntity>({
+        collection: CodeIndexEntity.collection,
+        filter: {},
+        limit: 10000,
+      }, 'default');
+
+      if (result.success && result.data) {
+        for (const record of result.data) {
+          const entry = record.data;
+          if (entry.contentHash && entry.filePath) {
+            // Use first occurrence — all chunks from same file share the hash
+            if (!hashes.has(entry.filePath)) {
+              hashes.set(entry.filePath, entry.contentHash);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(`Failed to load content hashes: ${err}`);
+    }
+
+    return hashes;
+  }
+
+  /**
+   * Remove all entries for the given file paths (before re-indexing changed files).
+   */
+  private async removeEntriesForFiles(filePaths: string[]): Promise<void> {
+    const pathSet = new Set(filePaths);
+
+    try {
+      const result = await ORM.query<CodeIndexEntity>({
+        collection: CodeIndexEntity.collection,
+        filter: {},
+        limit: 10000,
+      }, 'default');
+
+      if (result.success && result.data) {
+        for (const record of result.data) {
+          if (pathSet.has(record.data.filePath)) {
+            await ORM.remove(CodeIndexEntity.collection, record.data.id as UUID, false, 'default');
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(`Failed to remove stale entries: ${err}`);
     }
   }
 

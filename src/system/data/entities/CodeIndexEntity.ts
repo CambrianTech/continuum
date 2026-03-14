@@ -83,6 +83,10 @@ export class CodeIndexEntity extends BaseEntity {
   @DateField({ index: true })
   lastIndexed!: Date;  // When this entry was last indexed
 
+  // Content hash for incremental indexing — skip unchanged files
+  @TextField({ nullable: true, index: true })
+  contentHash?: string;  // SHA-256 of source file content at index time
+
   // Additional metadata
   @JsonField({ nullable: true })
   imports?: string[];  // Files/modules this code imports from

@@ -1224,7 +1224,14 @@ impl StorageAdapter for PostgresAdapter {
         );
 
         if let Err(e) = client.execute(&sql, &[]).await {
-            return StorageResult::err(format!("Create table failed: {}", e));
+            // Concurrent DDL race: table may already exist
+            let is_race = e.as_db_error().map_or(false, |db| {
+                matches!(db.code(), &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                    | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+            });
+            if !is_race {
+                return StorageResult::err(format!("Create table failed: {}", format_pg_error(&e)));
+            }
         }
 
         // Create indexes
@@ -1237,7 +1244,7 @@ impl StorageAdapter for PostgresAdapter {
                     idx_name, table, col_name
                 );
                 if let Err(e) = client.execute(&idx_sql, &[]).await {
-                    return StorageResult::err(format!("Create index failed: {}", e));
+                    return StorageResult::err(format!("Create index failed: {}", format_pg_error(&e)));
                 }
             }
         }
@@ -1258,7 +1265,7 @@ impl StorageAdapter for PostgresAdapter {
                 cols.join(", ")
             );
             if let Err(e) = client.execute(&idx_sql, &[]).await {
-                return StorageResult::err(format!("Create composite index failed: {}", e));
+                return StorageResult::err(format!("Create composite index failed: {}", format_pg_error(&e)));
             }
         }
 
@@ -1379,54 +1386,9 @@ async fn ensure_table_exists_pg(
     schema: &str,
     data: &Value,
 ) -> Result<(), String> {
-    // Check if table already exists
-    let check_sql = format!(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
-         WHERE table_schema = '{}' AND table_name = '{}')",
-        schema, bare_table
-    );
-    let exists: bool = client
-        .query_one(&check_sql, &[])
-        .await
-        .map_err(|e| format!("Table check failed: {}", e))?
-        .get(0);
-
-    if exists {
-        // Table exists — check for new columns we need to add
-        if let Value::Object(obj) = data {
-            let cols_sql = format!(
-                "SELECT column_name FROM information_schema.columns \
-                 WHERE table_schema = '{}' AND table_name = '{}'",
-                schema, bare_table
-            );
-            let rows = client
-                .query(&cols_sql, &[])
-                .await
-                .map_err(|e| format!("Column check failed: {}", e))?;
-            let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
-
-            for (key, value) in obj {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                let col_name = naming::to_snake_case(key);
-                if !existing_cols.contains(&col_name) {
-                    let col_type = pg_type_from_value(value, &col_name);
-                    let alter_sql = format!(
-                        "ALTER TABLE {} ADD COLUMN {} {}",
-                        qualified_table, col_name, col_type
-                    );
-                    client
-                        .execute(&alter_sql, &[])
-                        .await
-                        .map_err(|e| format!("Add column failed: {}", e))?;
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    // Create table
+    // Try CREATE TABLE IF NOT EXISTS first (idempotent, handles races).
+    // Previous approach checked SELECT EXISTS first, but that TOCTOU race
+    // caused "duplicate key on pg_class" errors under concurrent creates.
     let mut columns = vec![
         "id TEXT PRIMARY KEY".to_string(),
         "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string(),
@@ -1451,10 +1413,54 @@ async fn ensure_table_exists_pg(
         columns.join(", ")
     );
 
-    client
-        .execute(&sql, &[])
-        .await
-        .map_err(|e| format!("Create table failed: {}", e))?;
+    match client.execute(&sql, &[]).await {
+        Ok(_) => {}
+        Err(e) => {
+            // Concurrent CREATE TABLE IF NOT EXISTS can race on pg_class.
+            // Error code 42P07 = duplicate_table — another connection won the race.
+            // Error code 23505 = unique_violation on pg_class index.
+            // Both mean the table exists — safe to continue.
+            let is_race = e.as_db_error().map_or(false, |db| {
+                matches!(db.code(), &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                    | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+            });
+            if !is_race {
+                return Err(format!("Create table failed: {}", format_pg_error(&e)));
+            }
+        }
+    }
+
+    // Schema evolution: add any missing columns
+    if let Value::Object(obj) = data {
+        let cols_sql = format!(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = '{}' AND table_name = '{}'",
+            schema, bare_table
+        );
+        let rows = client
+            .query(&cols_sql, &[])
+            .await
+            .map_err(|e| format!("Column check failed: {}", format_pg_error(&e)))?;
+        let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+
+        for (key, value) in obj {
+            if METADATA_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let col_name = naming::to_snake_case(key);
+            if !existing_cols.contains(&col_name) {
+                let col_type = pg_type_from_value(value, &col_name);
+                let alter_sql = format!(
+                    "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                    qualified_table, col_name, col_type
+                );
+                client
+                    .execute(&alter_sql, &[])
+                    .await
+                    .map_err(|e| format!("Add column failed: {}", format_pg_error(&e)))?;
+            }
+        }
+    }
 
     Ok(())
 }

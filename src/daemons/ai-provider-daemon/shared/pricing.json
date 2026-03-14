@@ -85,14 +85,14 @@
         }
       }
     },
-    "ollama": {
+    "candle": {
       "models": {
         "*": {
           "inputPer1M": 0.00,
           "outputPer1M": 0.00,
           "currency": "USD",
           "effectiveDate": "2024-01-01",
-          "notes": "Local inference, hardware cost only (not tracked here)"
+          "notes": "Local inference via Candle, hardware cost only (not tracked here)"
         }
       }
     }

@@ -4,18 +4,19 @@
 //! Uses reader pool + dedicated writer for concurrent reads (WAL mode).
 //!
 //! Architecture:
-//! - 1 writer thread: handles mutations (create, update, delete, schema, truncate)
-//! - N reader threads: handle concurrent reads (query, count, read, list)
+//! - 1 writer connection behind Mutex: serializes mutations naturally
+//! - N reader connections: handle concurrent reads via spawn_blocking
 //! - WAL mode: readers never block writers, writers never block readers
 //! - Round-robin dispatch across reader pool
+//! - All synchronous rusqlite calls run via tokio::task::spawn_blocking
 
 use crate::{clog_error, clog_info, clog_warn};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{mpsc, oneshot};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
@@ -27,71 +28,83 @@ use super::types::{
 // No artificial cap on reader pool — AdapterConfig.max_connections controls it.
 // WAL mode supports unlimited concurrent readers.
 
-/// Commands sent to the SQLite worker thread
-enum SqliteCommand {
-    Create {
-        record: DataRecord,
-        reply: oneshot::Sender<StorageResult<DataRecord>>,
-    },
-    Read {
-        collection: String,
-        id: UUID,
-        reply: oneshot::Sender<StorageResult<DataRecord>>,
-    },
-    Query {
-        query: StorageQuery,
-        reply: oneshot::Sender<StorageResult<Vec<DataRecord>>>,
-    },
-    Count {
-        query: StorageQuery,
-        reply: oneshot::Sender<StorageResult<usize>>,
-    },
-    Update {
-        collection: String,
-        id: UUID,
-        data: Value,
-        increment_version: bool,
-        reply: oneshot::Sender<StorageResult<DataRecord>>,
-    },
-    Delete {
-        collection: String,
-        id: UUID,
-        reply: oneshot::Sender<StorageResult<bool>>,
-    },
-    EnsureSchema {
-        schema: CollectionSchema,
-        reply: oneshot::Sender<StorageResult<bool>>,
-    },
-    ListCollections {
-        reply: oneshot::Sender<StorageResult<Vec<String>>>,
-    },
-    Truncate {
-        collection: String,
-        reply: oneshot::Sender<StorageResult<bool>>,
-    },
-    ClearAll {
-        reply: oneshot::Sender<StorageResult<ClearAllResult>>,
-    },
-    Cleanup {
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    Close,
+/// Open a SQLite connection with the given flags and apply performance PRAGMAs.
+///
+/// For `:memory:` databases, uses `file::memory:?cache=shared` with SQLITE_OPEN_URI
+/// so that multiple connections (writer + reader pool) share the same in-memory DB.
+/// Without this, each connection to `:memory:` gets its own separate database.
+fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
+    let (effective_path, effective_flags) = if path == ":memory:" {
+        // Shared-cache URI: all connections see the same in-memory database
+        ("file::memory:?cache=shared".to_string(), flags | OpenFlags::SQLITE_OPEN_URI)
+    } else {
+        (path.to_string(), flags)
+    };
+
+    let conn = Connection::open_with_flags(&effective_path, effective_flags)
+        .map_err(|e| format!("SQLite open failed: {}", e))?;
+
+    // Performance PRAGMAs — applied to every connection.
+    // mmap_size=0: disabled. On macOS, mmap'd pages count toward RSS.
+    // With 20+ databases × 256MB mmap = 5GB+ RSS inflation under bursty load.
+    // SQLite page cache (cache_size) provides the same benefit without RSS bloat.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\
+         PRAGMA synchronous=NORMAL;\
+         PRAGMA busy_timeout=5000;\
+         PRAGMA cache_size=-8192;\
+         PRAGMA mmap_size=0;\
+         PRAGMA temp_store=MEMORY;"
+    ).map_err(|e| format!("SQLite PRAGMA error: {}", e))?;
+
+    Ok(conn)
+}
+
+/// Adaptive memory management: adjust cache_size based on system memory pressure.
+/// Called before operations, rate-limited to once per 10 seconds via atomic timestamp.
+fn apply_memory_pressure(conn: &Connection, last_check: &AtomicU64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = last_check.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 10 {
+        return;
+    }
+    // CAS: only one thread applies the pressure adjustment
+    if last_check.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
+    let level = crate::system_resources::MemoryPressureMonitor::current_level();
+    let _ = match level {
+        crate::system_resources::PressureLevel::Critical
+        | crate::system_resources::PressureLevel::High => {
+            conn.execute_batch("PRAGMA cache_size=-2048; PRAGMA shrink_memory;")
+        }
+        crate::system_resources::PressureLevel::Warning => {
+            conn.execute_batch("PRAGMA cache_size=-4096;")
+        }
+        crate::system_resources::PressureLevel::Normal => {
+            conn.execute_batch("PRAGMA cache_size=-8192;")
+        }
+    };
 }
 
 /// SQLite storage adapter with reader pool + dedicated writer.
 ///
 /// Reads are dispatched round-robin across N reader connections.
-/// Writes go to a single dedicated writer connection.
+/// Writes go to a single dedicated writer connection (Mutex serializes).
 /// WAL mode ensures readers and writers never block each other.
+/// All synchronous rusqlite calls run via tokio::task::spawn_blocking.
 pub struct SqliteAdapter {
-    /// Single writer connection for mutations
-    writer: Option<mpsc::Sender<SqliteCommand>>,
+    /// Single writer connection for mutations (Mutex serializes writes)
+    writer: Option<Arc<Mutex<Connection>>>,
     /// Pool of reader connections for concurrent reads
-    readers: Vec<mpsc::Sender<SqliteCommand>>,
+    readers: Vec<Arc<Mutex<Connection>>>,
     /// Round-robin counter for reader selection
     reader_index: AtomicUsize,
-    /// Worker thread handles
-    _handles: Vec<std::thread::JoinHandle<()>>,
+    /// Timestamp of last memory pressure check (unix seconds)
+    last_pressure_check: Arc<AtomicU64>,
 }
 
 impl SqliteAdapter {
@@ -100,24 +113,25 @@ impl SqliteAdapter {
             writer: None,
             readers: Vec::new(),
             reader_index: AtomicUsize::new(0),
-            _handles: Vec::new(),
+            last_pressure_check: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Get writer channel for mutations
-    fn get_writer(&self) -> Result<&mpsc::Sender<SqliteCommand>, String> {
+    /// Get writer connection for mutations
+    fn get_writer(&self) -> Result<Arc<Mutex<Connection>>, String> {
         self.writer
             .as_ref()
+            .cloned()
             .ok_or_else(|| "SQLite adapter not initialized".to_string())
     }
 
-    /// Get next reader channel via round-robin
-    fn get_reader(&self) -> Result<&mpsc::Sender<SqliteCommand>, String> {
+    /// Get next reader connection via round-robin
+    fn get_reader(&self) -> Result<Arc<Mutex<Connection>>, String> {
         if self.readers.is_empty() {
             return Err("SQLite adapter not initialized".to_string());
         }
         let idx = self.reader_index.fetch_add(1, Ordering::Relaxed) % self.readers.len();
-        Ok(&self.readers[idx])
+        Ok(self.readers[idx].clone())
     }
 }
 
@@ -125,160 +139,6 @@ impl Default for SqliteAdapter {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Worker thread that owns a SQLite connection.
-/// Used for both reader and writer workers — each gets its own connection.
-fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>, role: &str) {
-    clog_info!("SQLite {} worker starting for: {}", role, path);
-
-    // Open connection — readers use read-only flag for safety
-    let flags = if role == "reader" {
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-    };
-
-    let conn = match Connection::open_with_flags(&path, flags) {
-        Ok(c) => c,
-        Err(e) => {
-            clog_error!("SQLite {} open failed: {}", role, e);
-            return;
-        }
-    };
-
-    // Performance PRAGMAs — applied to every connection.
-    // mmap_size=0: disabled. On macOS, mmap'd pages count toward RSS.
-    // With 20+ databases × 256MB mmap = 5GB+ RSS inflation under bursty load.
-    // SQLite page cache (cache_size) provides the same benefit without RSS bloat.
-    let pragmas = "\
-        PRAGMA journal_mode=WAL;\
-        PRAGMA synchronous=NORMAL;\
-        PRAGMA busy_timeout=5000;\
-        PRAGMA cache_size=-8192;\
-        PRAGMA mmap_size=0;\
-        PRAGMA temp_store=MEMORY;\
-    ";
-    if let Err(e) = conn.execute_batch(pragmas) {
-        clog_error!("SQLite {} PRAGMA error: {}", role, e);
-    }
-
-    clog_info!("SQLite {} worker ready", role);
-
-    let mut query_count = 0u64;
-    let mut last_shrink_check = std::time::Instant::now();
-
-    // Process commands until channel closes
-    while let Some(cmd) = receiver.blocking_recv() {
-        query_count += 1;
-        let start = std::time::Instant::now();
-
-        // Adaptive memory management: every 10s, check memory pressure.
-        // Each subsystem responds to the pressure monitor's guidance:
-        //   Normal:   8MB cache per connection (reasonable for 20+ DBs)
-        //   Warning:  4MB cache
-        //   High:     2MB cache + shrink_memory
-        //   Critical: 2MB cache + shrink_memory (gate also blocks new inference)
-        if last_shrink_check.elapsed().as_secs() >= 10 {
-            last_shrink_check = std::time::Instant::now();
-            let level = crate::system_resources::MemoryPressureMonitor::current_level();
-            match level {
-                crate::system_resources::PressureLevel::Critical |
-                crate::system_resources::PressureLevel::High => {
-                    let _ = conn.execute_batch(
-                        "PRAGMA cache_size=-2048; PRAGMA shrink_memory;"
-                    );
-                }
-                crate::system_resources::PressureLevel::Warning => {
-                    let _ = conn.execute_batch("PRAGMA cache_size=-4096;");
-                }
-                crate::system_resources::PressureLevel::Normal => {
-                    let _ = conn.execute_batch("PRAGMA cache_size=-8192;");
-                }
-            }
-        }
-
-        match cmd {
-            SqliteCommand::Create { record, reply } => {
-                let result = do_create(&conn, record);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Read {
-                collection,
-                id,
-                reply,
-            } => {
-                let result = do_read(&conn, &collection, &id);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Query { query, reply } => {
-                let collection = query.collection.clone();
-                let result = do_query(&conn, query);
-                if start.elapsed().as_millis() > 100 {
-                    clog_warn!(
-                        "SLOW query #{} on {}: {}ms ({})",
-                        query_count,
-                        collection,
-                        start.elapsed().as_millis(),
-                        role
-                    );
-                }
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Count { query, reply } => {
-                let result = do_count(&conn, query);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Update {
-                collection,
-                id,
-                data,
-                increment_version,
-                reply,
-            } => {
-                let result = do_update(&conn, &collection, &id, data, increment_version);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Delete {
-                collection,
-                id,
-                reply,
-            } => {
-                let result = do_delete(&conn, &collection, &id);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::EnsureSchema { schema, reply } => {
-                let result = do_ensure_schema(&conn, schema);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::ListCollections { reply } => {
-                let result = do_list_collections(&conn);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Truncate { collection, reply } => {
-                let result = do_truncate(&conn, &collection);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::ClearAll { reply } => {
-                let result = do_clear_all(&conn);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Cleanup { reply } => {
-                let result = do_cleanup(&conn);
-                let _ = reply.send(result);
-            }
-            SqliteCommand::Close => {
-                break;
-            }
-        }
-    }
-    clog_info!(
-        "SQLite {} worker shutting down (processed {} commands)",
-        role,
-        query_count
-    );
 }
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
@@ -298,7 +158,7 @@ fn infer_sqlite_type(value: &Value) -> &'static str {
 
 /// Ensure table exists by creating it dynamically from record data.
 /// This mimics TypeScript's auto-table-creation behavior.
-fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
+fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) -> Result<(), String> {
     // Build columns from the data object, inferring types
     let mut columns = vec![
         "id TEXT PRIMARY KEY".to_string(),
@@ -324,9 +184,11 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
         columns.join(", ")
     );
 
-    if let Err(e) = conn.execute(&sql, []) {
+    conn.execute(&sql, []).map_err(|e| {
         clog_error!("SQLite table creation error for '{}': {}", table, e);
-    }
+        format!("Create table failed for '{}': {}", table, e)
+    })?;
+    Ok(())
 }
 
 /// Schema evolution: add missing columns to an existing table.
@@ -373,7 +235,9 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
     let now = chrono::Utc::now().to_rfc3339();
 
     // Auto-create table if it doesn't exist (like TypeScript does)
-    ensure_table_exists(conn, &table, &record.data);
+    if let Err(e) = ensure_table_exists(conn, &table, &record.data) {
+        return StorageResult::err(e);
+    }
 
     // Build column list and values from data
     let mut columns = vec![
@@ -496,7 +360,13 @@ fn do_query(conn: &Connection, query: StorageQuery) -> StorageResult<Vec<DataRec
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(e) => return StorageResult::err(format!("Prepare failed: {}", e)),
+        Err(e) => {
+            // Table doesn't exist → empty results (not an error)
+            if e.to_string().contains("no such table") {
+                return StorageResult::ok(Vec::new());
+            }
+            return StorageResult::err(format!("Prepare failed: {}", e));
+        }
     };
 
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -534,7 +404,13 @@ fn do_count(conn: &Connection, query: StorageQuery) -> StorageResult<usize> {
 
     match conn.query_row(&sql, params_ref.as_slice(), |row| row.get::<_, i64>(0)) {
         Ok(count) => StorageResult::ok(count as usize),
-        Err(e) => StorageResult::err(format!("Count failed: {}", e)),
+        Err(e) => {
+            // Table doesn't exist → count is 0 (not an error)
+            if e.to_string().contains("no such table") {
+                return StorageResult::ok(0);
+            }
+            StorageResult::err(format!("Count failed: {}", e))
+        }
     }
 }
 
@@ -997,24 +873,18 @@ impl StorageAdapter for SqliteAdapter {
         let path = config.connection_string.clone();
         let reader_count = config.max_connections.saturating_sub(1).max(1);
 
-        // Spawn writer thread (handles mutations)
-        let (writer_tx, writer_rx) = mpsc::channel(256);
-        let writer_path = path.clone();
-        let writer_handle = std::thread::spawn(move || {
-            sqlite_worker(writer_path, writer_rx, "writer");
-        });
-        self.writer = Some(writer_tx);
-        self._handles.push(writer_handle);
+        // Open writer connection (read-write + create)
+        let writer_flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let writer_conn = open_connection(&path, writer_flags)?;
+        self.writer = Some(Arc::new(Mutex::new(writer_conn)));
 
-        // Spawn reader pool (handles concurrent reads)
-        for _i in 0..reader_count {
-            let (reader_tx, reader_rx) = mpsc::channel(256);
-            let reader_path = path.clone();
-            let handle = std::thread::spawn(move || {
-                sqlite_worker(reader_path, reader_rx, "reader");
-            });
-            self.readers.push(reader_tx);
-            self._handles.push(handle);
+        // Open reader pool (read-only connections)
+        let reader_flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        for _ in 0..reader_count {
+            let reader_conn = open_connection(&path, reader_flags)?;
+            self.readers.push(Arc::new(Mutex::new(reader_conn)));
         }
 
         clog_info!(
@@ -1026,102 +896,86 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn close(&mut self) -> Result<(), String> {
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.send(SqliteCommand::Close).await;
-        }
-        for reader in self.readers.drain(..) {
-            let _ = reader.send(SqliteCommand::Close).await;
-        }
+        // Drop all connection Arcs — connections close when last reference drops
+        self.writer.take();
+        self.readers.clear();
         Ok(())
     }
 
-    // ─── READ operations → reader pool (concurrent) ─────────────────────────
+    // ─── READ operations → reader pool (concurrent via spawn_blocking) ──────
 
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
-        let sender = match self.get_reader() {
-            Ok(s) => s,
+        let conn = match self.get_reader() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Read {
-                collection: collection.to_string(),
-                id: id.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let collection = collection.to_string();
+        let id = id.clone();
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_read(&conn, &collection, &id)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
-        let sender = match self.get_reader() {
-            Ok(s) => s,
+        let conn = match self.get_reader() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Query {
-                query,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let pressure = self.last_pressure_check.clone();
+        let collection_name = query.collection.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            let start = std::time::Instant::now();
+            let result = do_query(&conn, query);
+            if start.elapsed().as_millis() > 100 {
+                clog_warn!(
+                    "SLOW query on {}: {}ms",
+                    collection_name,
+                    start.elapsed().as_millis()
+                );
+            }
+            result
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
-        // TODO: Implement proper JOIN handling in Rust
         self.query(query).await
     }
 
     async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
-        let sender = match self.get_reader() {
-            Ok(s) => s,
+        let conn = match self.get_reader() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Count {
-                query,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_count(&conn, query)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
-        let sender = match self.get_reader() {
-            Ok(s) => s,
+        let conn = match self.get_reader() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::ListCollections { reply: reply_tx })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_list_collections(&conn)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
@@ -1144,27 +998,21 @@ impl StorageAdapter for SqliteAdapter {
         })
     }
 
-    // ─── WRITE operations → dedicated writer (serialized) ───────────────────
+    // ─── WRITE operations → dedicated writer (serialized via Mutex) ─────────
 
     async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Create {
-                record,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_create(&conn, record)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn update(
@@ -1174,49 +1022,35 @@ impl StorageAdapter for SqliteAdapter {
         data: Value,
         increment_version: bool,
     ) -> StorageResult<DataRecord> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Update {
-                collection: collection.to_string(),
-                id: id.clone(),
-                data,
-                increment_version,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let collection = collection.to_string();
+        let id = id.clone();
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_update(&conn, &collection, &id, data, increment_version)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Delete {
-                collection: collection.to_string(),
-                id: id.clone(),
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let collection = collection.to_string();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_delete(&conn, &collection, &id)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
@@ -1268,73 +1102,53 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::EnsureSchema {
-                schema,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_ensure_schema(&conn, schema)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::Truncate {
-                collection: collection.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        let collection = collection.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_truncate(&conn, &collection)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
-        let sender = match self.get_writer() {
-            Ok(s) => s,
+        let conn = match self.get_writer() {
+            Ok(c) => c,
             Err(e) => return StorageResult::err(e),
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if sender
-            .send(SqliteCommand::ClearAll { reply: reply_tx })
-            .await
-            .is_err()
-        {
-            return StorageResult::err("Channel closed");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| StorageResult::err("Channel closed"))
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_clear_all(&conn)
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
     }
 
     async fn cleanup(&self) -> Result<(), String> {
-        let sender = self.get_writer()?;
-        let (reply_tx, reply_rx) = oneshot::channel();
-        sender
-            .send(SqliteCommand::Cleanup { reply: reply_tx })
-            .await
-            .map_err(|_| "Channel closed".to_string())?;
-        reply_rx.await.map_err(|_| "Channel closed".to_string())?
+        let conn = self.get_writer()?;
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            do_cleanup(&conn)
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
     }
 }
 
@@ -1359,7 +1173,7 @@ mod tests {
         (adapter, dir)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_create_and_read() {
         let (adapter, _dir) = setup_adapter().await;
 
@@ -1386,17 +1200,33 @@ mod tests {
         };
 
         let create_result = adapter.create(record).await;
-        assert!(create_result.success);
+        assert!(create_result.success, "Create failed: {:?}", create_result.error);
 
         let read_result = adapter.read("users", &"test-123".to_string()).await;
-        assert!(read_result.success);
+        assert!(read_result.success, "Read failed: {:?}", read_result.error);
         let data = read_result.data.unwrap();
         assert_eq!(data.data["name"], "Joel");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_reads() {
         let (adapter, _dir) = setup_adapter().await;
+
+        // Pre-create table via schema
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "items".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "value".to_string(),
+                    field_type: super::super::types::FieldType::Number,
+                    indexed: false,
+                    unique: false,
+                    nullable: false,
+                    max_length: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
 
         // Create test data
         for i in 0..20 {
@@ -1406,27 +1236,57 @@ mod tests {
                 data: json!({"value": i}),
                 metadata: RecordMetadata::default(),
             };
-            adapter.create(record).await;
+            let result = adapter.create(record).await;
+            assert!(result.success, "Create item-{} failed: {:?}", i, result.error);
         }
 
-        // Fire off concurrent reads — these should go to different reader threads
-        let mut handles = Vec::new();
-        let adapter = std::sync::Arc::new(adapter);
-        for i in 0..20 {
-            let adapter = adapter.clone();
-            handles.push(tokio::spawn(async move {
-                adapter.read("items", &format!("item-{}", i)).await
-            }));
-        }
+        // Truly concurrent reads via spawn_blocking — each goes to a different reader
+        let ids: Vec<String> = (0..20).map(|i| format!("item-{}", i)).collect();
+        let futures: Vec<_> = ids.iter().map(|id| adapter.read("items", id)).collect();
+        let results = futures::future::join_all(futures).await;
 
-        let mut success_count = 0;
-        for handle in handles {
-            if let Ok(result) = handle.await {
-                if result.success {
-                    success_count += 1;
-                }
-            }
+        let success_count = results.iter().filter(|r| r.success).count();
+        let errors: Vec<_> = results
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.success)
+            .map(|(i, r)| format!("item-{}: {:?}", i, r.error))
+            .collect();
+        assert_eq!(
+            success_count, 20,
+            "All reads should succeed (got {}/20). Errors: {:?}",
+            success_count, errors
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_writes() {
+        let (adapter, _dir) = setup_adapter().await;
+
+        // Concurrent writes — all serialized through the writer Mutex
+        let mut futures = Vec::new();
+        for i in 0..10 {
+            let record = DataRecord {
+                id: format!("write-{}", i),
+                collection: "concurrent_writes".to_string(),
+                data: json!({"value": i, "name": format!("item-{}", i)}),
+                metadata: RecordMetadata::default(),
+            };
+            futures.push(adapter.create(record));
         }
-        assert_eq!(success_count, 20, "All concurrent reads should succeed");
+        let results = futures::future::join_all(futures).await;
+
+        let success_count = results.iter().filter(|r| r.success).count();
+        assert_eq!(success_count, 10, "All concurrent writes should succeed");
+
+        // Verify all data is readable
+        let query_result = adapter
+            .query(StorageQuery {
+                collection: "concurrent_writes".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(query_result.success);
+        assert_eq!(query_result.data.unwrap().len(), 10);
     }
 }
