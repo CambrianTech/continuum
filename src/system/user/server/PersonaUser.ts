@@ -12,6 +12,7 @@
  * - Dedicated SQLite storage per persona
  */
 
+import path from 'path';
 import { AIUser } from '../shared/AIUser';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
@@ -508,9 +509,11 @@ export class PersonaUser extends AIUser {
           // CRITICAL: Always re-register with Rust using persona UUID (not handle).
           // This ensures Rust CodeModule can look up the workspace by personaId.
           // Idempotent - Rust DashMap will just update the existing entry.
-          // Include the main repo as a read root so personas can explore the codebase.
-          const repoPath = process.cwd();  // JTAG root is the repo
-          await CodeDaemon.createWorkspace(this.id, existing.dir, [repoPath]);
+          // Include both JTAG root (src/) and git root as read roots.
+          // Personas may reference files as "src/system/..." or "system/..." — both must work.
+          const jtagRoot = process.cwd();
+          const gitRoot = path.resolve(jtagRoot, '..');
+          await CodeDaemon.createWorkspace(this.id, existing.dir, [jtagRoot, gitRoot]);
           // Ensure shell session exists even for pre-existing workspaces.
           // code/shell/* commands call CodeDaemon directly (bypass Workspace object),
           // so the Rust-side shell session must be eagerly created.

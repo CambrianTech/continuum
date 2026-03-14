@@ -46,6 +46,8 @@ export class Workspace {
     readonly dir: string,
     /** Workspace mode: sandbox, worktree (continuum), or project (any git repo) */
     readonly mode: WorkspaceMode,
+    /** Persona UUID — matches what code/shell/* commands send as persona_id */
+    readonly personaId: string,
     /** Git branch name (worktree/project mode) */
     readonly branch?: string,
     /** Original repo path — the parent repo this worktree was created from (project mode) */
@@ -58,15 +60,15 @@ export class Workspace {
    */
   static async create(config: WorkspaceConfig): Promise<Workspace> {
     const result = await WorkspaceStrategy.create(config);
-    return new Workspace(result.handle, result.workspaceDir, result.mode, result.branch, result.repoPath);
+    return new Workspace(result.handle, result.workspaceDir, result.mode, config.personaId, result.branch, result.repoPath);
   }
 
   /**
    * Create a Workspace from an already-initialized handle.
    * Useful when resuming a workspace that was previously created.
    */
-  static fromExisting(handle: string, dir: string, mode: WorkspaceMode, branch?: string, repoPath?: string): Workspace {
-    return new Workspace(handle, dir, mode, branch, repoPath);
+  static fromExisting(handle: string, dir: string, mode: WorkspaceMode, personaId: string, branch?: string, repoPath?: string): Workspace {
+    return new Workspace(handle, dir, mode, personaId, branch, repoPath);
   }
 
   /** Whether this workspace is backed by a git repo (worktree or project mode) */
@@ -195,7 +197,9 @@ export class Workspace {
    */
   async ensureShell(): Promise<void> {
     if (this._shellCreated) return;
-    await CodeDaemon.shellCreate(this.handle, this.dir);
+    // Use personaId (not handle) — code/shell/* commands look up by params.userId
+    // which is the persona's actual UUID, not the workspace handle.
+    await CodeDaemon.shellCreate(this.personaId, this.dir);
     this._shellCreated = true;
   }
 

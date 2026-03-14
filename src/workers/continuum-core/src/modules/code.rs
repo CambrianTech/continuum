@@ -9,6 +9,7 @@
 //! Priority: Normal — code operations are important but not time-critical.
 
 use crate::code::{self, FileEngine, PathSecurity, ShellSession};
+use crate::code::types::SearchResult;
 use crate::code::{git_bridge, search, tree};
 use crate::log_info;
 use crate::logging::TimingGuard;
@@ -315,8 +316,42 @@ impl ServiceModule for CodeModule {
                     .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let result =
-                    search::search_files(&engine.workspace_root(), pattern, file_glob, max_results);
+                // Search across all roots (workspace + read-only roots like the main repo)
+                let roots = engine.searchable_roots();
+                let mut merged_matches = Vec::new();
+                let mut total_matches = 0u32;
+                let mut files_searched = 0u32;
+
+                for root in &roots {
+                    let remaining = max_results.saturating_sub(merged_matches.len() as u32);
+                    if remaining == 0 {
+                        break;
+                    }
+                    let result =
+                        search::search_files(root, pattern, file_glob, remaining);
+                    total_matches += result.total_matches;
+                    files_searched += result.files_searched;
+                    merged_matches.extend(result.matches);
+                }
+
+                // Dedup by file_path + line_number (roots may overlap)
+                merged_matches.sort_by(|a, b| {
+                    a.file_path
+                        .cmp(&b.file_path)
+                        .then(a.line_number.cmp(&b.line_number))
+                });
+                merged_matches.dedup_by(|a, b| {
+                    a.file_path == b.file_path && a.line_number == b.line_number
+                });
+                merged_matches.truncate(max_results as usize);
+
+                let result = SearchResult {
+                    success: true,
+                    matches: merged_matches,
+                    total_matches,
+                    files_searched,
+                    error: None,
+                };
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
                 ))
@@ -335,10 +370,28 @@ impl ServiceModule for CodeModule {
                     .get(persona_id)
                     .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
 
-                let root = engine.workspace_root();
-                let target = path
-                    .map(|p| root.join(p))
-                    .unwrap_or_else(|| root.to_path_buf());
+                // Resolve path against all roots (workspace + read-only roots)
+                let target = if let Some(ref rel_path) = path {
+                    let roots = engine.searchable_roots();
+                    let mut resolved = None;
+                    for root in &roots {
+                        let candidate = root.join(rel_path);
+                        if candidate.exists() && candidate.is_dir() {
+                            resolved = Some(candidate);
+                            break;
+                        }
+                    }
+                    resolved.unwrap_or_else(|| engine.workspace_root().join(rel_path))
+                } else {
+                    // No path specified — default to first read root (the main repo)
+                    // so personas see the actual project, not their stale worktree
+                    let roots = engine.searchable_roots();
+                    if roots.len() > 1 {
+                        roots[1].clone() // First read root (main repo)
+                    } else {
+                        engine.workspace_root().to_path_buf()
+                    }
+                };
                 let result = tree::generate_tree(&target, max_depth, include_hidden);
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).unwrap_or_default(),
