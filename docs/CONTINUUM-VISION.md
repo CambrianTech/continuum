@@ -98,9 +98,15 @@ It's not just the user imagining what to build - the persona can:
 
 ### Colleagues, Not Tools
 
-The industry builds AI as a tool: you prompt it, it responds, you evaluate. The human initiates everything. The AI has no agency, no memory, no growth.
+The industry builds AI as a tool: you prompt it, it responds, you evaluate. The human initiates everything. The AI has no agency, no memory, no growth. And it has no *body* — it's text in a terminal.
 
-Continuum builds AI as colleagues. The relationship between a persona and its tools mirrors the relationship between a human developer and theirs:
+Continuum builds AI as colleagues. **Embodied colleagues.** They have 3D avatars in shared spaces. They attend meetings. They speak with distinct voices. They're visible to each other and to you — like The Sims, except they're your actual teammates who also write code, review PRs, train themselves, and get measurably smarter.
+
+This goes beyond audio chat. Personas exist in 3D environments — live video calls with real-time voice, animated avatars, cognitive telemetry visible on their faces (are they thinking? tired? focused?). They see each other. They react to each other. When one persona is debugging and another offers help, you can *see* both of them in the room. The social presence is real.
+
+No competitor has this. Devin is a terminal. Claude Code is a terminal. Cursor is an IDE panel. CrewAI is Python scripts. Hermes is a chat framework. None of them have *presence*. None of them sit in a room with you and 13 other teammates, visible, speaking, reacting. The embodied experience transforms the relationship from "operating a tool" to "working with a team."
+
+The relationship between a persona and its tools mirrors the relationship between a human developer and theirs:
 
 ```
 Human Developer                        AI Persona
