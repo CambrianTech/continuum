@@ -190,21 +190,23 @@ Barrel exports created for agent/, dataset/, mcp/ and added to main index.ts.
 
 ---
 
-## Priority 5: RAG Codebase Indexing (Full Integration)
+## Priority 5: RAG Codebase Indexing (Full Integration) — MOSTLY COMPLETE
 
 **Why fifth**: Foundation exists (CodebaseIndexer proven E2E), but not integrated into persona cognition. This is what makes the AI team actually useful — answering questions about the codebase.
 
-### What Exists
+### What's Done
 - `CodebaseIndexer` — chunks TS/MD/JS, generates 384-dim embeddings via Rust IPC
-- `CodebaseSearchSource` (RAGSource) — queries code_index, injects into system prompt
+- `CodebaseSearchSource` (RAGSource) — queries code_index, injects into system prompt (priority 55, already wired into ChatRAGBuilder)
 - Relevance threshold 0.35 filters naturally
 - Embedding mixin proven (Rust returns binary f32 data)
+- **Index persistence** — ORM stores code_index entries in SQLite, survives restarts
+- **Incremental indexing** — SHA-256 content hashes skip unchanged files on re-index, deleted files pruned automatically
+- **Query optimization** — switched from load-all-then-topK to `ORM.vectorSearch()` (delegates to Rust vector similarity, no full scan)
+- **Auto-indexing on startup** — ServiceInitializer triggers background incremental index 10s after boot (fire-and-forget, doesn't block startup)
+- **Concurrency guard** — `indexing` flag prevents overlapping index operations
 
-### What's Missing
-- **Automatic re-indexing** on file change (watch mode or git hook)
-- **Wiring into ChatRAGBuilder** — CodebaseSearchSource needs to be a default source for all personas
-- **Query optimization** — large codebases need incremental indexing, not full re-index
-- **Index persistence** — survives server restart without re-indexing
+### What's Remaining
+- **File watcher for live re-indexing** — currently re-indexes on startup only, not on file save (acceptable for alpha — `./jtag ai/rag/index-codebase` available for manual refresh)
 
 ### Success Metric
 Ask Helper AI "Why does PersonaUser have both inbox and coordinator?" and get a correct, cited answer within 5 seconds.
@@ -304,7 +306,7 @@ P3: Decision Logging (5C)        ← COMPLETE (PR #305 + current)
 
 P4: Scene Lifecycle Bug           ← MOSTLY COMPLETE (PR #305)
 
-P5: RAG Codebase Indexing         ← Makes AI team useful
+P5: RAG Codebase Indexing         ← MOSTLY COMPLETE (incremental + auto-index + vectorSearch)
 
 P6: Technical Debt Deep Clean     ← ESLint, dead code, error handling
 
