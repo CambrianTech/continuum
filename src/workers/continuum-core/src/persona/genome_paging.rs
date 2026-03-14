@@ -41,9 +41,9 @@ pub struct GenomeAdapterInfo {
     /// Epoch ms when last used (for LRU age calculation)
     #[ts(type = "number")]
     pub last_used_ms: u64,
-    /// Ollama model name for inference (if available)
+    /// Trained model name for inference (if available after LoRA fine-tuning)
     #[ts(optional)]
-    pub ollama_model_name: Option<String>,
+    pub trained_model_name: Option<String>,
 }
 
 /// Full genome paging state for a single persona.
@@ -484,7 +484,7 @@ mod tests {
             priority,
             is_loaded: loaded,
             last_used_ms,
-            ollama_model_name: Some(format!("{}:7b", name)),
+            trained_model_name: Some(format!("{}:7b", name)),
         }
     }
 

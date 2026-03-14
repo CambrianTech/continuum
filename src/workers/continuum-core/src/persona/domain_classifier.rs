@@ -546,7 +546,7 @@ mod tests {
             priority: 0.5,
             is_loaded: false,
             last_used_ms: 0,
-            ollama_model_name: None,
+            trained_model_name: None,
         }
     }
 

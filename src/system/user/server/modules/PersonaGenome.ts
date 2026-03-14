@@ -186,7 +186,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: true,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.trainedModelName ?? undefined,
+        trained_model_name: state.trainedModelName ?? undefined,
       });
     }
 
@@ -199,7 +199,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: false,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.trainedModelName ?? undefined,
+        trained_model_name: state.trainedModelName ?? undefined,
       });
     }
 
