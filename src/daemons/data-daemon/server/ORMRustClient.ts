@@ -166,7 +166,14 @@ class IPCConnection {
   }
 
   private onData(data: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, data]);
+    // Append incoming data. When buffer is empty (common case after fully
+    // consuming all frames), just assign directly — avoids Buffer.concat
+    // allocation on every TCP packet, which was a memory leak under load.
+    if (this.buffer.length === 0) {
+      this.buffer = data;
+    } else {
+      this.buffer = Buffer.concat([this.buffer, data]);
+    }
 
     while (this.buffer.length >= 4) {
       const totalLength = this.buffer.readUInt32BE(0);
@@ -194,6 +201,11 @@ class IPCConnection {
       } catch (e) {
         console.error(`[IPC#${this.connectionIndex}] Failed to parse response:`, e);
       }
+    }
+
+    // Release buffer memory when fully consumed
+    if (this.buffer.length === 0) {
+      this.buffer = Buffer.alloc(0);
     }
   }
 
@@ -275,8 +287,11 @@ class IPCConnection {
 // ─── ORMRustClient ──────────────────────────────────────────────────────────
 // Pool of IPC connections with least-busy routing.
 
-/** Number of concurrent IPC socket connections to Rust */
-const POOL_SIZE = 12;
+/** Number of concurrent IPC socket connections to Rust.
+ * Must exceed persona count (15+) since each persona can fire
+ * multiple concurrent queries (RAG context, chat history, user lookup).
+ * Previous value of 12 caused connection exhaustion under load. */
+const POOL_SIZE = 20;
 
 export class ORMRustClient {
   private static instance: ORMRustClient | null = null;
@@ -334,6 +349,7 @@ export class ORMRustClient {
    */
   private async getConnection(): Promise<IPCConnection> {
     let best: IPCConnection | null = null;
+    let totalPending = 0;
 
     for (const conn of this.connections) {
       if (!conn.connected) {
@@ -341,9 +357,15 @@ export class ORMRustClient {
         conn.connect().catch(() => {});
         continue;
       }
+      totalPending += conn.pendingCount;
       if (!best || conn.pendingCount < best.pendingCount) {
         best = conn;
       }
+    }
+
+    // Backpressure warning — if we're piling up, something is wrong
+    if (totalPending > 50) {
+      console.warn(`[ORM] BACKPRESSURE: ${totalPending} pending IPC requests across pool`);
     }
 
     if (best) return best;
