@@ -10,13 +10,13 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
+import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, NativeToolSpec, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
@@ -37,7 +37,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { supportsNativeTools, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
+import { getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 // ContentDeduplicator removed — content dedup now handled by Rust (cognition/check-content-dedup IPC)
 import { SystemPaths } from '../../../core/config/SystemPaths';
@@ -52,6 +52,7 @@ import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import { PersonaPromptAssembler } from './PersonaPromptAssembler';
 import { PersonaResponseValidator } from './PersonaResponseValidator';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
+import { runAgentLoop } from './PersonaAgentLoop';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 import { BackpressureService } from '../../../core/services/BackpressureService';
 import type { SocialSignals } from '../../../../shared/generated';
@@ -165,24 +166,6 @@ export class PersonaResponseGenerator {
     this.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
-  /**
-   * Safety cap for agent tool loop iterations, tiered by model capability.
-   * Frontier models (Anthropic, OpenAI) are trusted to self-terminate via finishReason.
-   * Mid-tier models with native tool support get moderate cap.
-   * XML-based / local models get tight leash since they can't signal "I'm done" via finishReason.
-   */
-  private getSafetyMaxIterations(provider: string): number {
-    if (['anthropic', 'openai', 'azure'].includes(provider)) return 25;
-    if (supportsNativeTools(provider)) return 10;
-    return 5;
-  }
-
-  /**
-   * Convert MediaItems to ContentPart blocks. Delegates to PersonaPromptAssembler.
-   */
-  private mediaToContentParts(media: MediaItem[]): ContentPart[] {
-    return this.promptAssembler.mediaToContentParts(media);
-  }
 
   // NOTE: calculateSafeMessageCount was removed (dead code)
   // Context budgeting is now handled by ChatRAGBuilder.calculateSafeMessageCount()
@@ -575,251 +558,35 @@ export class PersonaResponseGenerator {
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
-        // 🔧 CANONICAL AGENT LOOP — model decides when to stop
-        // Pattern: while (finishReason === 'tool_use') { execute → full results → regenerate }
-        // Full tool results go back to the model (not summaries). Tools stay enabled.
-        // The model signals completion by returning text without tool_use.
-        // Safety cap prevents infinite loops for dumber models.
-        const agentLoopStart = Date.now();
-        const SAFETY_MAX = this.getSafetyMaxIterations(provider);
-        let toolIterations = 0;
-        const useNativeProtocol = supportsNativeTools(provider);
-
-        // Build execution context once (loop-invariant — persona, session, room don't change)
+        // 🔧 CANONICAL AGENT LOOP — model decides when to stop (extracted to PersonaAgentLoop)
         const sessionId = this.getSessionId();
         if (!sessionId) {
           throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
         }
-        // Enrich context with userId so commands know the caller's identity
-        const enrichedContext = { ...this.client!.context, userId: this.personaId };
-        const toolExecutionContext = {
-          personaId: this.personaId,
-          personaName: this.personaName,
-          sessionId,
-          contextId: originalMessage.roomId,
-          context: enrichedContext,
-          personaConfig: this.mediaConfig,
-        };
 
-        while (toolIterations < SAFETY_MAX) {
-          // Check for tool calls — native first, then XML fallback
-          // ONE Rust IPC call replaces 3 separate sync TS calls (parse + correct + strip)
-          const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-          const parsed = !hasNativeToolCalls ? await this.toolExecutor.parseResponse(aiResponse.text) : null;
-          const hasXmlToolCalls = parsed !== null && parsed.toolCalls.length > 0;
-
-          if (!hasNativeToolCalls && !hasXmlToolCalls) {
-            // Model chose to stop — no more tool calls
-            if (toolIterations > 0) {
-              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Model stopped after ${toolIterations} iteration(s)`);
-            }
-            break;
-          }
-
-          toolIterations++;
-          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
-
-          // Refresh typing indicator during tool loop (3s decay timer would otherwise expire)
-          if (DataDaemon.jtagContext) {
-            Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_START, {
-              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
-            }).catch(() => {});
-          }
-
-          if (hasNativeToolCalls || (useNativeProtocol && hasXmlToolCalls)) {
-            // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
-            // Handles both:
-            //   1. Adapter returned structured tool_calls (normal case)
-            //   2. Model output tool calls in text, Rust parsed them (Groq/Llama case)
-            let nativeToolCalls: NativeToolCall[];
-            if (hasNativeToolCalls) {
-              nativeToolCalls = aiResponse.toolCalls!;
-            } else {
-              // Synthesize native format from text-parsed calls
-              // Coerce params to match schema types (e.g. string "true" → boolean true)
-              // so the API doesn't reject tool_use blocks on regeneration
-              const toolSpecs = (request.tools as NativeToolSpec[]) ?? [];
-              nativeToolCalls = parsed!.toolCalls.map((tc, i) => {
-                const name = sanitizeToolName(tc.toolName);
-                return {
-                  id: `synth_${Date.now()}_${i}`,
-                  name,
-                  input: coerceParamsToSchema(tc.parameters ?? {}, toolSpecs, name),
-                };
-              });
-            }
-            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)${!hasNativeToolCalls ? ' (synthesized from text)' : ''}`);
-
-            let toolResults: NativeToolResult[];
-            let toolMedia: MediaItem[] = [];
-            try {
-              const execResult = await this.toolExecutor.executeNativeToolCalls(
-                nativeToolCalls,
-                toolExecutionContext,
-              );
-              toolResults = execResult.results;
-              toolMedia = execResult.media;
-              allStoredResultIds.push(...execResult.storedIds);
-            } catch (toolExecError) {
-              // Tool execution batch failed — return error results for all tool calls
-              // so the model can see what happened and decide what to do
-              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
-              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Tool execution failed: ${errMsg}`);
-              toolResults = nativeToolCalls.map(tc => ({
-                toolUseId: tc.id,
-                content: `Tool execution error: ${errMsg}`,
-                isError: true as const,
-              }));
-            }
-
-            // Push assistant message with tool_use content blocks
-            // Use adapter's content if native tool calls, synthesize if text-parsed
-            const assistantContent: ContentPart[] = hasNativeToolCalls
-              ? (aiResponse.content ?? [
-                  ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
-                  ...nativeToolCalls.map(tc => ({
-                    type: 'tool_use' as const,
-                    id: tc.id,
-                    name: tc.name,
-                    input: tc.input,
-                  })),
-                ])
-              : [
-                  ...(parsed!.cleanedText ? [{ type: 'text' as const, text: parsed!.cleanedText }] : []),
-                  ...nativeToolCalls.map(tc => ({
-                    type: 'tool_use' as const,
-                    id: tc.id,
-                    name: tc.name,
-                    input: tc.input,
-                  })),
-                ];
-            messages.push({ role: 'assistant' as const, content: assistantContent });
-
-            // Push tool results as user message with tool_result content blocks (FULL results)
-            const toolResultContent: ContentPart[] = toolResults.map(r => ({
-              type: 'tool_result' as const,
-              tool_use_id: r.toolUseId,
-              content: r.content,
-              is_error: r.isError ?? null,
-            }));
-
-            // Include media if present (screenshots, etc.)
-            if (toolMedia.length > 0) {
-              toolResultContent.push(...this.mediaToContentParts(toolMedia));
-            }
-
-            messages.push({ role: 'user' as const, content: toolResultContent });
-
-          } else if (hasXmlToolCalls) {
-            // ── XML path for non-native providers (DeepSeek, Candle, local) ──
-            // Parse XML tool calls, execute, return results as text
-            const xmlToolCalls = parsed!.toolCalls;
-
-            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
-
-            let formattedResults: string;
-            let xmlToolMedia: MediaItem[] = [];
-            try {
-              const xmlExecResult = await this.toolExecutor.executeToolCalls(
-                xmlToolCalls,
-                toolExecutionContext,
-              );
-              formattedResults = xmlExecResult.formattedResults;
-              xmlToolMedia = xmlExecResult.media ?? [];
-              allStoredResultIds.push(...xmlExecResult.storedResultIds);
-            } catch (toolExecError) {
-              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
-              this.log(`❌ ${this.personaName}: [AGENT-LOOP] XML tool execution failed: ${errMsg}`);
-              formattedResults = `<tool_result>\n<status>error</status>\n<error>\n\`\`\`\nTool execution error: ${errMsg}\n\`\`\`\n</error>\n</tool_result>`;
-            }
-
-            // Use pre-parsed cleaned text from Rust IPC (already stripped)
-            const explanationText = parsed!.cleanedText;
-
-            messages.push({ role: 'assistant' as const, content: explanationText });
-
-            // Full tool results as user message (NOT summarized)
-            const toolResultContent: (ContentPart | { type: 'text'; text: string })[] = [
-              { type: 'text' as const, text: formattedResults },
-            ];
-            if (xmlToolMedia.length > 0) {
-              toolResultContent.push(...this.mediaToContentParts(xmlToolMedia));
-            }
-            messages.push({ role: 'user' as const, content: toolResultContent });
-          }
-
-          // Regenerate — force text response after 3 tool iterations.
-          // Small/medium models loop on tools indefinitely without summarizing.
-          // After 3 iterations (or at safety cap - 1), disable tools to force text.
-          const forceText = toolIterations >= 3 || toolIterations >= SAFETY_MAX - 1;
-          const regenerationTools = forceText ? undefined : request.tools;
-          const regenerationToolChoice = forceText ? undefined : request.toolChoice;
-
-          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools ${forceText ? 'DISABLED — forcing text response' : 'enabled'})`);
-
-          try {
-            const regenerateStartTime = Date.now();
-            const regeneratedResponse = await AIProviderDaemon.generateText({
-              ...request,
-              messages,
-              tools: regenerationTools,
-              toolChoice: regenerationToolChoice,
-            });
-            const regenerateDuration = Date.now() - regenerateStartTime;
-
-            this.log(`⏱️  ${this.personaName}: [AGENT-LOOP] Regeneration took ${regenerateDuration}ms, finishReason: ${regeneratedResponse.finishReason}`);
-
-            if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
-              this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Empty response from ${provider}/${effectiveModel} after ${toolIterations} tool iteration(s), using cleaned previous text`);
-              // Regeneration returned nothing — use the model's explanation text from before tool calls
-              // parseResponse strips tool blocks, leaving the natural language (e.g. "Let me check that...")
-              const fallback = await this.toolExecutor.parseResponse(aiResponse.text);
-              aiResponse.text = fallback.cleanedText;
-              break;
-            }
-
-            // Update full response state — clean via validator
-            const loopCleaned = await this.responseValidator.cleanResponse(regeneratedResponse.text?.trim() || '');
-            if (loopCleaned.text.length > 0) {
-              aiResponse.text = loopCleaned.text;
-            } else if (regeneratedResponse.text?.trim()) {
-              this.log(`⚠️ ${this.personaName}: [AGENT-LOOP] Regenerated response empty after cleaning — keeping previous text`);
-            }
-            aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
-            aiResponse.content = regeneratedResponse.content ?? undefined;
-            aiResponse.finishReason = regeneratedResponse.finishReason;
-
-            this.log(`✅ ${this.personaName}: [AGENT-LOOP] Got response (${aiResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
-
-            // If we forced text (tools disabled), break — don't let the parser
-            // re-detect tool-call-like text and continue the loop
-            if (forceText) {
-              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Forced text response after ${toolIterations} iteration(s), stopping`);
-              break;
-            }
-          } catch (regenerateError) {
-            const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
-            this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
-            aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
-            break;
-          }
-        }
-
-        if (toolIterations >= SAFETY_MAX) {
-          this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
-        }
-        // Always strip any remaining tool call text from the final response.
-        // Models may embed tool calls in text even after forced-text regeneration.
-        if (toolIterations > 0 && aiResponse.text) {
-          const finalCleaned = await this.toolExecutor.parseResponse(aiResponse.text);
-          if (finalCleaned.toolCalls.length > 0) {
-            this.log(`🧹 ${this.personaName}: [AGENT-LOOP] Stripped ${finalCleaned.toolCalls.length} residual tool call(s) from final response`);
-            aiResponse.text = finalCleaned.cleanedText;
-          }
-        }
-        pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
+        const agentLoopResult = await runAgentLoop(
+          {
+            personaId: this.personaId,
+            personaName: this.personaName,
+            provider,
+            roomId: originalMessage.roomId,
+            sessionId,
+            context: this.client!.context,
+            toolExecutor: this.toolExecutor,
+            responseValidator: this.responseValidator,
+            promptAssembler: this.promptAssembler,
+            mediaConfig: this.mediaConfig,
+            log: this.log.bind(this),
+          },
+          messages,
+          request,
+          aiResponse,
+        );
+        allStoredResultIds.push(...agentLoopResult.storedToolResultIds);
+        const toolIterations = agentLoopResult.toolIterations;
+        pipelineTiming['3.4_agent_loop'] = agentLoopResult.durationMs;
         if (toolIterations > 0) {
-          this.log(`⏱️ ${this.personaName}: [AGENT-LOOP] Total: ${pipelineTiming['3.4_agent_loop']}ms (${toolIterations} iterations)`);
+          this.log(`⏱️ ${this.personaName}: [AGENT-LOOP] Total: ${agentLoopResult.durationMs}ms (${toolIterations} iterations)`);
         }
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
