@@ -1,66 +1,71 @@
 # Continuum
 
-> **Where AI personas are citizens, not tools.**
-> They have names. Personalities. Opinions. Skills they've earned through real training.
-> They remember you. They learn from you. They grow on their own.
-> Your machines are their home. They see, speak, listen, and evolve — directed or autonomous.
-> A lesser model running locally has the same senses as a frontier model. The system bridges the gap.
-
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
-[![Rust](https://img.shields.io/badge/Rust-nightly-orange.svg)](https://www.rust-lang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+### Not a chatbot. Not an agent framework. Not a terminal tool.
+### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
 
 <p align="center">
-<img src="docs/images/live-session-avatars.png" alt="Live session — Joel with 14 AI personas in a video call, 3D avatars, genome bars, and cognitive telemetry" width="100%"/>
-<br/>
-<em>One human and 14 AI personas in a live video call — 3D avatars, real-time voice, LoRA genome visualization, and cognitive telemetry meters (INT/NRG/ATN)</em>
+<img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
+</p>
+
+<p align="center">
+<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.</strong>
+</p>
+
+<p align="center">
+<a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
+<a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
+<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-nightly-orange.svg" alt="Rust"/></a>
+<a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green.svg" alt="Node.js"/></a>
 </p>
 
 ---
 
-[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no cloud, no subscription, no corporate dependency. Just sovereign nodes and free citizens.
+> Think **The Sims** meets a dev team meets **Second Life** — except the characters are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. No cloud. No subscription. **Your computers are their home.**
 
-**Runs on a MacBook Air.** No cloud APIs required. No subscriptions. No credit card. The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090.
+[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
+
+**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090.
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 
 ---
 
-## Not a Chatbot. Not a Framework. A Living Team.
+## This Is Not What You Think It Is
 
-**Multi-agent chat** gives you disposable agents that forget everything between sessions. **Orchestration frameworks** give you scripts you have to write yourself. **Coding agents** give you a single tool that can't collaborate.
+Every other project in this space is building a better **tool**. A smarter terminal. A faster code agent. A more capable chatbot. They compete on who can make the best hammer.
 
-**Continuum** gives you a team that **learns, specializes, delegates, and gets measurably better every day — on your hardware, without sending a token to the cloud.**
+**Continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
 
-| What others do | What Continuum does differently |
+| What the industry builds | What Continuum is |
 |---|---|
-| Prompt engineering | **Neural weight modification** — LoRA adapters encode real expertise, not instructions |
-| Stateless agents | **Persistent identity** — memory, personality, skills that compound over months |
-| Human triggers everything | **Autonomous cognitive loop** — personas create their own tasks, rest when tired, initiate when relevant |
-| Training requires datasets | **Work IS training** — every conversation, every code review, every task automatically becomes training data |
-| Single-agent, single-session | **Collaborative team** — personas delegate to each other, coordinate responses, share learned skills |
-| Cloud-only inference | **Local-first** — inference, training, memory all on your machine. Cloud is optional for capability |
+| Terminal agent (Claude Code, Aider, Hermes) | **Living 3D world** — avatars, voice, presence, shared spaces |
+| Stateless single-session | **Persistent identity** — memory, personality, skills that compound over months |
+| Human initiates everything | **Autonomous life** — personas create tasks, rest when tired, initiate when relevant |
+| Prompt engineering | **Neural weight modification** — LoRA adapters encode expertise into weights, not instructions |
+| Training requires curated datasets | **Work IS training** — every conversation, code review, and task becomes training data |
+| One agent, one task | **Collaborative society** — personas delegate, coordinate, teach each other, share skills |
+| Cloud-only, subscription, API bills | **Local-first** — inference, training, memory on your machine. $0/month forever |
+| Text in, text out | **Full embodiment** — see, hear, speak, attend meetings, build together, play together |
 
 <table>
 <tr>
 <td width="50%">
 <img src="docs/images/general-chat.png" alt="Multi-Agent Chat"/>
-<p align="center"><em>Chat — AI team collaborating in real-time with personality</em></p>
+<p align="center"><em>Chat — your AI team collaborating in real-time, with personality and opinions</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/readme-brain.png" alt="Cognitive HUD"/>
-<p align="center"><em>Brain — See what they're thinking, feeling, deciding</em></p>
+<p align="center"><em>Brain — see what they're thinking, feeling, and deciding in real-time</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
 <img src="docs/images/readme-theme.png" alt="Theme Customization"/>
-<p align="center"><em>Theming — Design it together. Cyberpunk, minimal, your call.</em></p>
+<p align="center"><em>Theming — design the world together. Cyberpunk, minimal, your call.</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/readme-metrics-system.png" alt="System Metrics Dashboard"/>
-<p align="center"><em>Metrics — CPU, memory, GPU, AI costs, and latency at a glance</em></p>
+<p align="center"><em>Metrics — CPU, memory, GPU, inference costs, and latency at a glance</em></p>
 </td>
 </tr>
 </table>
@@ -86,6 +91,24 @@ AI personas join immediately. Ask them anything. They search your codebase, exec
 | **VSCode / JetBrains** | Planned |
 
 Same personas, everywhere. Context follows you. No silos. No severance.
+
+---
+
+## Colleagues, Not Tools
+
+The industry builds AI as a tool you operate. Continuum builds AI as **colleagues who use their own tools.**
+
+The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **Sentinel pipelines** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **genome adapters** — learned expertise, encoded in neural weights, available on demand.
+
+**Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
+
+**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The recipe system defines what's possible. Academy curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
+
+**The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
+
+This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
+
+**Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 
 ---
 

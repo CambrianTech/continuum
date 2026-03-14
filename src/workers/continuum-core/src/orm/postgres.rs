@@ -173,14 +173,10 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
                     Box::new(n.as_i64().unwrap_or(0))
                 }
                 _ => {
-                    // Default: prefer i64 for integers, f64 for floats
-                    if let Some(i) = n.as_i64() {
-                        Box::new(i)
-                    } else if let Some(f) = n.as_f64() {
-                        Box::new(f)
-                    } else {
-                        Box::new(n.to_string())
-                    }
+                    // No column type info — serialize as string (TEXT is the safest default).
+                    // Sending i64 to a TEXT column causes WrongType { postgres: Text, rust: "i64" }.
+                    // If the column is actually numeric, Postgres implicitly casts '123'::text to int.
+                    Box::new(n.to_string())
                 }
             }
         }

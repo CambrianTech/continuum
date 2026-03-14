@@ -401,7 +401,7 @@ export class UserDataSeed {
       preferences: {},
       isOnline: true,
       modelConfig: {
-        model: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+        model: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
         provider: 'together',
         maxTokens: 3000,
         temperature: 0.7,

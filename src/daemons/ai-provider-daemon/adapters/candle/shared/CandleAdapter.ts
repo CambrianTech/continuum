@@ -13,6 +13,7 @@
 
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import type {
   TextGenerationRequest,
   TextGenerationResponse,
@@ -297,6 +298,32 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     this.client.close();
     this.loadedModels.clear();
     this.loadedAdapters.clear();
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'candle',
+      providerName: 'Candle (Native Rust)',
+      defaultCapabilities: ['text-input', 'text-output', 'embeddings'],
+      models: [
+        {
+          modelId: LOCAL_MODELS.DEFAULT,
+          displayName: 'Llama 3.2 3B (Quantized)',
+          capabilities: ['coding', 'reasoning', 'instruction-following'],
+          contextWindow: 1600,
+          maxOutputTokens: 200,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'nomic-embed-text:latest',
+          displayName: 'Nomic Embed',
+          capabilities: ['embeddings'],
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+      ],
+    };
   }
 
   // ============================================================================

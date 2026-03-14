@@ -6,6 +6,7 @@ import type {
   ModelCapability,
   ModelInfo
 } from './AIProviderTypesV2';
+import { AICapabilityRegistry, type ProviderCapabilities } from './AICapabilityRegistry';
 import { Logger, FileMode, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { LoggingConfig } from '../../../system/core/logging/LoggingConfig';
 import { PersonaTimingConfig } from '../../../system/user/server/modules/PersonaTimingConfig';
@@ -297,7 +298,38 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   async initialize(): Promise<void> {
     this.log(null, 'info', `🔧 ${this.providerName}: Initializing...`);
     await this.initializeProvider();
+    // Self-register capabilities with the central registry
+    this.registerCapabilities();
     // Health monitoring handled by AdapterHealthMonitor (no local setInterval)
+  }
+
+  /**
+   * Register this adapter's capabilities with AICapabilityRegistry.
+   *
+   * Override `getCapabilityRegistration()` to declare capabilities dynamically.
+   * Called automatically during initialize(). Adapters that override initialize()
+   * directly (without calling super) should call this manually.
+   *
+   * Adapters that discover models at runtime (e.g., Ollama /api/tags, cloud /v1/models)
+   * should override getCapabilityRegistration() to return discovered models.
+   */
+  protected registerCapabilities(): void {
+    const registration = this.getCapabilityRegistration();
+    if (registration) {
+      const registry = AICapabilityRegistry.getInstance();
+      registry.registerProvider(registration);
+      this.log(null, 'info', `📋 ${this.providerName}: Registered ${registration.models.length} models with capability registry`);
+    }
+  }
+
+  /**
+   * Override to declare this adapter's capabilities for the central registry.
+   * Return null to skip registration (capabilities already registered statically).
+   *
+   * Adapters should dynamically build this from their discovered model list.
+   */
+  protected getCapabilityRegistration(): ProviderCapabilities | null {
+    return null;  // Default: use static registration in AICapabilityRegistry
   }
 
   async shutdown(): Promise<void> {

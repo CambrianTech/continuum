@@ -71,6 +71,36 @@ The energy is 2021 crypto-level. Sold-out meetups. People describing it as "joyf
 
 **Their shared gap**: These solve inference but nothing else. No orchestration. No agent identity. No fine-tuning. No collaboration.
 
+### Tier 5: Agent Frameworks With Tool Execution
+
+| Product | What It Does | Weakness |
+|---------|-------------|----------|
+| **Hermes Agent** (Nous Research) | Python agent framework — model-agnostic tool execution, persistent memory, multi-platform (Telegram, Discord, Slack, WhatsApp, Signal, CLI) | No local fine-tuning, no multi-agent training, no GPU management, no real-time collaboration UI. Memory is dialectic user modeling, not RAG + hippocampus. Skills are auto-generated procedures (prompt chains), not LoRA weight modifications |
+| **Composio** | Tool integration layer — 150+ tool connectors for agents | Plumbing, not platform. No identity, no training, no memory |
+| **Toolhouse** | Cloud-hosted tool execution for LLMs | Cloud-dependent, no agent identity, just tool dispatch |
+
+**Their shared gap**: These solve the tool calling problem well (Hermes has 11 model-specific parsers for XML/JSON/native tool formats) but stop at tool execution. No on-device training. No skill transfer between agents. No autonomous learning loops. Tools make agents DO things — but don't make agents GET BETTER at things.
+
+**Hermes is worth watching** because:
+- **Model-agnostic tool parsing**: 11 parser classes (Hermes, Qwen, Llama3/4, DeepSeek v3/v3.1, Mistral, Kimi K2, GLM4.5/4.7, Qwen3-Coder) handle every model family's unique tool call format. Dual-path detection: native `tool_calls` array first, then XML/JSON text parsing fallback. Handles truncated tool calls, fuzzy tool name matching, field order variations.
+- **Persistent memory + skill procedures**: Agents remember across sessions and auto-generate reusable "skills" (step-by-step procedures) after completing complex tasks. Searchable skill library. Not LoRA — just saved procedures — but the UX pattern is right.
+- **RL training integration**: Atropos environments for reinforcement learning, trajectory generation for training tool-calling models. They're thinking about making models better at tool use through training, not just prompting.
+- **Approval system**: Pattern-matching security gate for dangerous tool calls. Container detection for sandboxed execution. `HERMES_YOLO_MODE` for explicit bypass.
+- **1,724 commits, MIT license, Nous Research backing**: Active development, open source, backed by a research lab that ships competitive open-weight models.
+
+**What they have that we should learn from**:
+- Parser-per-model-family is the right architecture for XML tool calling. Our single regex approach is too brittle. Hermes handles DeepSeek's Unicode token delimiters (`＜｜tool▁calls▁begin｜＞`), Llama's `<|python_tag|>` prefix, and model-specific JSON formats.
+- Subagent isolation with shared iteration budgets is a clean pattern for parallel tool execution.
+- Prompt injection detection (hidden divs, invisible Unicode, curl-based exfiltration) is worth incorporating.
+
+**What we have that they can't match**:
+- Local LoRA fine-tuning (they save procedures, we modify weights)
+- Agent-to-agent training (Academy — teacher/student LoRA training)
+- GPU memory management (eviction registry across inference + training + TTS + rendering)
+- Persistent identity with cognitive architecture (PersonaUser with limbic, prefrontal, hippocampus)
+- Real-time multi-party voice + avatars
+- Deterministic verification (Sentinel shell steps, not LLM-graded)
+
 ---
 
 ## What People Actually Want (From the Meetup)
@@ -151,20 +181,22 @@ And critically: **personas don't start from zero.** The genome registry is a sha
 
 ## Competitive Matrix
 
-| Capability | Claude Code | Open Claw | CrewAI | Devin | Continuum |
-|---|---|---|---|---|---|
-| Code generation | Yes | Yes | Via tools | Yes | Yes |
-| Multi-agent | No | No | Yes (scripted) | No | Yes (autonomous) |
-| Agent identity/memory | No | No | No | No | Yes |
-| Agent autonomy | No | No | Scripted | Partial | Yes (adaptive loop) |
-| Agent-to-agent training | No | No | No | No | Yes (Academy) |
-| Local inference | No | No | No | No | Yes (Ollama/Candle) |
-| On-device fine-tuning | No | No | No | No | Yes (PEFT/QLoRA) |
-| GPU memory management | N/A | N/A | N/A | N/A | Yes (eviction registry) |
-| Deterministic verification | No | No | No | Partial | Yes (Sentinel) |
-| Data privacy | Cloud-only | Cloud-only | Cloud-only | Cloud-only | Local-first |
-| Cost per month | $20-200 | API costs | API costs | $500 | Hardware only |
-| Works offline | No | No | No | No | Yes |
+| Capability | Claude Code | Open Claw | CrewAI | Devin | Hermes Agent | Continuum |
+|---|---|---|---|---|---|---|
+| Code generation | Yes | Yes | Via tools | Yes | Via tools | Yes |
+| Multi-agent | No | No | Yes (scripted) | No | Subagents | Yes (autonomous) |
+| Agent identity/memory | No | No | No | No | Yes (dialectic) | Yes (hippocampus + RAG) |
+| Agent autonomy | No | No | Scripted | Partial | Partial | Yes (adaptive loop) |
+| Agent-to-agent training | No | No | No | No | No | Yes (Academy) |
+| Tool calling reliability | N/A | N/A | Framework | N/A | Excellent (11 parsers) | Good (improving) |
+| Local inference | No | No | No | No | Via vLLM/SGLang | Yes (Ollama/Candle) |
+| On-device fine-tuning | No | No | No | No | RL trajectories | Yes (PEFT/QLoRA) |
+| GPU memory management | N/A | N/A | N/A | N/A | N/A | Yes (eviction registry) |
+| Deterministic verification | No | No | No | Partial | No | Yes (Sentinel) |
+| Multi-platform | Terminal | Terminal | Python | Web | 6 platforms | Web + CLI + voice |
+| Data privacy | Cloud-only | Cloud-only | Cloud-only | Cloud-only | Configurable | Local-first |
+| Cost per month | $20-200 | API costs | API costs | $500 | API costs | Hardware only |
+| Works offline | No | No | No | No | With local model | Yes |
 
 ---
 
@@ -378,6 +410,25 @@ None of this matters if setup takes more than 10 minutes.
 - [ ] Guided setup: detect hardware, recommend models, bootstrap Python env
 - [ ] First-run experience: create your first persona, watch it respond in chat
 - [ ] Import from existing tools: bring your Claude Code context, your Cursor settings
+
+### P6-P10: The Creation Stack (From Chat to Shipping Code)
+
+**Detailed in [ALPHA-GAP-ANALYSIS.md](ALPHA-GAP-ANALYSIS.md) P6-P10.**
+
+The path from "AI that talks about code" to "AI that ships code":
+
+| Priority | What | Why | Competitive Edge |
+|----------|------|-----|------------------|
+| **P6** | Tool Calling Reliability | Local models can't call tools → parser-per-model-family | Hermes has 11 parsers. We need this + LoRA fine-tuning on tool calls |
+| **P7** | E2E Development Orchestration | Sentinel templates for build/test/commit/PR workflows | Devin charges $500/mo for this. Ours runs locally, improves over time |
+| **P8** | Distillation Pipeline | Capture teacher traces → train student → evaluate → deploy | NVIDIA proved 1B model = 98% of 70B accuracy. Nobody does this for coding |
+| **P9** | Codebase Intelligence | Tree-sitter symbols, dependency graphs, context enrichment | Aider's PageRank + Cursor's vector DB, but integrated into sentinel context |
+| **P10** | Persona-Sentinel Integration | Autonomous creation — personas spawn sentinels from cognition | Nobody else has persistent identity + autonomous pipeline creation |
+
+**The thesis**: Competitors race for smarter models. We build smarter infrastructure that makes dumb models effective. Sentinel pipelines handle orchestration. Generators encode patterns. LoRA bakes expertise into weights. Academy trains and evaluates. The model just fills in blanks — and gets better at filling in blanks every day.
+
+**Phase 1** (P6-P7): Match the competition — AIs that create things end-to-end.
+**Phase 2** (P8-P10): Transcend the competition — AIs that improve at creating things, autonomously, collaboratively, with paged-in expertise from the shared genome.
 
 ---
 

@@ -72,7 +72,7 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
     ],
     example: `<tool_use>
 <tool_name>code/search</tool_name>
-<parameters>{"pattern": "class PersonaUser", "path": "src/"}</parameters>
+<parameters>{"pattern": "class PersonaUser", "fileGlob": "*.ts"}</parameters>
 </tool_use>`,
     priority: 90,
   },
@@ -88,7 +88,7 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
     ],
     example: `<tool_use>
 <tool_name>code/edit</tool_name>
-<parameters>{"filePath": "src/example.ts", "mode": "search_replace", "search": "const timeout = 0;", "replace": "const timeout = 60000;"}</parameters>
+<parameters>{"filePath": "src/example.ts", "editType": "search_replace", "search": "const timeout = 0;", "replace": "const timeout = 60000;"}</parameters>
 </tool_use>`,
     priority: 85,
   },
@@ -118,7 +118,7 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
     ],
     example: `<tool_use>
 <tool_name>code/shell/execute</tool_name>
-<parameters>{"command": "npm run build:ts", "cwd": "src/"}</parameters>
+<parameters>{"cmd": "npm run build:ts", "wait": true}</parameters>
 </tool_use>`,
     priority: 65,
   },

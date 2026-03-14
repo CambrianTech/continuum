@@ -111,6 +111,42 @@ export interface RecipeToolDeclaration {
 }
 
 /**
+ * Role type classification for recipe assembly.
+ *
+ * - organizational: Any capable LLM (planning, coordination, management)
+ * - perceptual: Needs specific senses (audio review, image analysis)
+ * - creative: Needs sense + generation (writing, composing, art)
+ */
+export type RecipeRoleType = 'organizational' | 'perceptual' | 'creative';
+
+/**
+ * Role declaration in a recipe.
+ *
+ * Recipes declare WHAT capabilities they need, not WHO fills them.
+ * The system matches available models to required roles at runtime.
+ *
+ * Example roles:
+ * - { role: 'implementer', type: 'organizational', requires: ['coding', 'tool-use'] }
+ * - { role: 'reviewer', type: 'organizational', requires: ['review', 'coding'] }
+ * - { role: 'writer', type: 'creative', requires: ['prose'] }
+ * - { role: 'audio-reviewer', type: 'perceptual', requires: ['audio-input'] }
+ */
+export interface RecipeRole {
+  /** Role identifier (unique within recipe) */
+  role: string;
+  /** Role classification */
+  type: RecipeRoleType;
+  /** Required AICapabilities — model MUST have all of these */
+  requires: string[];
+  /** Preferred AICapabilities — model scores higher with these */
+  prefers?: string[];
+  /** Prefer local models (lower latency, no API cost) */
+  preferLocal?: boolean;
+  /** Description of what this role does (for UI and LLM context) */
+  description?: string;
+}
+
+/**
  * Recipe input parameter definition
  * Recipe = function definition, Activity = function call with arguments
  *
@@ -192,6 +228,32 @@ export interface RecipeEntity {
   // Tool highlights — which tools are especially relevant for this activity
   tools?: RecipeToolDeclaration[];
 
+  /**
+   * Sentinel templates relevant for this recipe/activity.
+   *
+   * When set, SentinelAwarenessSource only shows these templates in the RAG context.
+   * When absent, all templates are shown (backwards-compatible default).
+   *
+   * Examples:
+   * - coding recipe: ['dev/build-feature', 'dev/fix-bug', 'dev/code-review', 'dev/integrate']
+   * - creative writing recipe: ['creative/write-chapter', 'creative/edit']
+   * - research recipe: ['research/investigate', 'research/synthesize']
+   */
+  sentinelTemplates?: string[];
+
+  /**
+   * Role declarations for dynamic persona/model assembly.
+   *
+   * Recipes declare WHAT capabilities they need, not WHO fills them.
+   * RecipeAssembler matches available models to required roles at runtime.
+   *
+   * Three role types:
+   * - organizational: any capable LLM (planning, coordination)
+   * - perceptual: needs the sense (audio review, image analysis)
+   * - creative: needs sense + generation (writing, composing, drawing)
+   */
+  roles?: RecipeRole[];
+
   // Sharing
   isPublic: boolean;
   createdBy: UUID;
@@ -251,6 +313,12 @@ export interface RecipeDefinition {
 
   // Tool highlights — which tools are especially relevant for this activity
   tools?: RecipeToolDeclaration[];
+
+  // Sentinel templates relevant for this activity
+  sentinelTemplates?: string[];
+
+  // Role declarations for dynamic persona/model assembly
+  roles?: RecipeRole[];
 
   // UI composition (optional - defaults handled by layout system)
   layout?: ActivityUILayout;

@@ -21,6 +21,7 @@ import type {
   ModelInfo,
   ModelCapability,
 } from '../../../shared/AIProviderTypesV2';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import type { ChatMessage } from '../../../shared/PromptFormatters';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { truncateMessages } from '../../../shared/PromptFormatters';
@@ -127,6 +128,34 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
    * Event-driven: doesn't block on process termination
    * Health monitoring will verify when server is back up
    */
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'sentinel',
+      providerName: 'Sentinel AI',
+      defaultCapabilities: ['text-input', 'text-output'],
+      models: [
+        {
+          modelId: 'gpt2',
+          displayName: 'GPT-2 (124M)',
+          capabilities: [],
+          contextWindow: 1024,
+          maxOutputTokens: 150,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'distilgpt2',
+          displayName: 'DistilGPT-2 (82M)',
+          capabilities: [],
+          contextWindow: 1024,
+          maxOutputTokens: 150,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+      ],
+    };
+  }
+
   protected async restartProvider(): Promise<void> {
     this.log(null, 'info', '🔄 Sentinel: Restarting server...');
 

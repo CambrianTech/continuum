@@ -15,6 +15,7 @@
  */
 
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 import { FireworksBaseConfig } from './FireworksBaseConfig';
 
 export class FireworksAdapter extends BaseOpenAICompatibleAdapter {
@@ -40,5 +41,47 @@ export class FireworksAdapter extends BaseOpenAICompatibleAdapter {
 
   getSharedConfig(): FireworksBaseConfig {
     return this.sharedConfig;
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'fireworks',
+      providerName: 'Fireworks AI',
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
+      models: [
+        {
+          modelId: 'accounts/fireworks/models/llama-v3p3-70b-instruct',
+          displayName: 'Llama 3.3 70B Instruct',
+          capabilities: ['reasoning', 'coding', 'instruction-following', 'context-window-large'],
+          contextWindow: 131072,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'accounts/fireworks/models/llama-v3p1-405b-instruct',
+          displayName: 'Llama 3.1 405B Instruct',
+          capabilities: ['reasoning', 'coding', 'prose', 'planning', 'review', 'context-window-large'],
+          contextWindow: 131072,
+          costTier: 'medium',
+          latencyTier: 'medium',
+        },
+        {
+          modelId: 'accounts/fireworks/models/qwen2p5-72b-instruct',
+          displayName: 'Qwen 2.5 72B Instruct',
+          capabilities: ['reasoning', 'coding', 'math'],
+          contextWindow: 32768,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'accounts/fireworks/models/mixtral-8x7b-instruct',
+          displayName: 'Mixtral 8x7B Instruct',
+          capabilities: ['coding', 'instruction-following'],
+          contextWindow: 32768,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+      ],
+    };
   }
 }

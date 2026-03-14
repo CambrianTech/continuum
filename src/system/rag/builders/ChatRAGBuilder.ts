@@ -54,7 +54,8 @@ import {
   OpenProposalsSource,
   CodebaseSearchSource,
   MediaArtifactSource,
-  LiveRoomAwarenessSource
+  LiveRoomAwarenessSource,
+  SentinelAwarenessSource
 } from '../sources';
 
 /**
@@ -132,6 +133,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource(),      // Priority 60: Long-term memories
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
+        new SentinelAwarenessSource(),   // Priority 58: Sentinel pipeline awareness (autonomous orchestration)
         new CodebaseSearchSource(),      // Priority 55: Semantic code search from indexed codebase
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
@@ -144,7 +146,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         new MediaArtifactSource(),       // Priority 65: Media artifacts (images, files) with vision preprocessing
         new LiveRoomAwarenessSource()    // Priority 30: Live call participant awareness
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 16 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 17 sources');
     }
     return this.composer;
   }
@@ -246,7 +248,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       recipeStrategy = extractedRecipeContext?.strategy;
       recipeTools = extractedRecipeContext?.tools;
 
-      // Build source context — pass recipe's source activation list if declared
+      // Build source context — pass recipe's source activation list and sentinel templates if declared
       const sourceContext: RAGSourceContext = {
         personaId,
         roomId: contextId,
@@ -262,6 +264,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         provider: options.provider,
         toolCapability: options?.toolCapability,
         activeSources: extractedRecipeContext?.ragTemplateSources,
+        sentinelTemplates: extractedRecipeContext?.sentinelTemplates,
       };
 
       // Load compose + learning config in parallel
@@ -489,7 +492,7 @@ export class ChatRAGBuilder extends RAGBuilder {
   /**
    * Load recipe context (strategy + tools) from room's recipeId
    */
-  private async loadRecipeContext(roomId: UUID, overrideRecipeId?: string): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[]; ragTemplateSources?: string[] } | undefined> {
+  private async loadRecipeContext(roomId: UUID, overrideRecipeId?: string): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[]; ragTemplateSources?: string[]; sentinelTemplates?: string[] } | undefined> {
     try {
       // Use override recipeId (from queue item) or fall back to room's recipe
       let recipeId = overrideRecipeId;
@@ -518,11 +521,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       }
 
       const ragTemplateSources = recipe.ragTemplate?.sources;
-      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}, ragSources=${ragTemplateSources?.length ?? 'all'}`);
+      const sentinelTemplates = recipe.sentinelTemplates;
+      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}, ragSources=${ragTemplateSources?.length ?? 'all'}, sentinelTemplates=${sentinelTemplates?.length ?? 'all'}`);
       return {
         strategy: recipe.strategy,
         tools: recipe.tools,
         ragTemplateSources,
+        sentinelTemplates,
       };
     } catch (error) {
       this.log(`❌ ChatRAGBuilder: Error loading recipe context:`, error);

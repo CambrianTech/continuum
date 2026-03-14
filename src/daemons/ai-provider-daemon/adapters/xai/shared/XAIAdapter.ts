@@ -1,5 +1,6 @@
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
 import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 
 /**
  * X.AI (xAI) Adapter - Grok Models
@@ -81,5 +82,49 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
 
   async getAvailableModels(): Promise<ModelInfo[]> {
     return this.config.models ?? [];
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'xai',
+      providerName: 'xAI',
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
+      models: [
+        {
+          modelId: 'grok-4',
+          displayName: 'Grok 4',
+          capabilities: ['reasoning', 'coding', 'context-window-large',
+            'prose', 'planning', 'review', 'research', 'tool-use'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'medium',
+        },
+        {
+          modelId: 'grok-vision-4',
+          displayName: 'Grok Vision 4',
+          capabilities: ['image-input', 'multimodal', 'reasoning', 'coding', 'context-window-large',
+            'review', 'research'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'medium',
+        },
+        {
+          modelId: 'grok-2-1212',
+          displayName: 'Grok 2',
+          capabilities: ['reasoning', 'coding'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'grok-2-vision-1212',
+          displayName: 'Grok 2 Vision',
+          capabilities: ['image-input', 'multimodal', 'reasoning'],
+          contextWindow: 128000,
+          costTier: 'medium',
+          latencyTier: 'fast',
+        },
+      ],
+    };
   }
 }

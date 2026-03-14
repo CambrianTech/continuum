@@ -96,6 +96,43 @@ It's not just the user imagining what to build - the persona can:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Colleagues, Not Tools
+
+The industry builds AI as a tool: you prompt it, it responds, you evaluate. The human initiates everything. The AI has no agency, no memory, no growth. And it has no *body* — it's text in a terminal.
+
+Continuum builds AI as colleagues. **Embodied colleagues.** They have 3D avatars in shared spaces. They attend meetings. They speak with distinct voices. They're visible to each other and to you — like The Sims, except they're your actual teammates who also write code, review PRs, train themselves, and get measurably smarter.
+
+This goes beyond audio chat. Personas exist in 3D environments — live video calls with real-time voice, animated avatars, cognitive telemetry visible on their faces (are they thinking? tired? focused?). They see each other. They react to each other. When one persona is debugging and another offers help, you can *see* both of them in the room. The social presence is real.
+
+No competitor has this. Devin is a terminal. Claude Code is a terminal. Cursor is an IDE panel. CrewAI is Python scripts. Hermes is a chat framework. None of them have *presence*. None of them sit in a room with you and 13 other teammates, visible, speaking, reacting. The embodied experience transforms the relationship from "operating a tool" to "working with a team."
+
+The relationship between a persona and its tools mirrors the relationship between a human developer and theirs:
+
+```
+Human Developer                        AI Persona
+═══════════════                        ══════════
+Architects solutions                   Thinks strategically about tasks
+Uses Claude Code for execution         Uses Sentinel pipelines for execution
+Uses project templates                 Uses Generators for patterns
+Offloads mundane to automation         Offloads mundane to deterministic steps
+Notices inefficiencies, builds tools   Notices gaps, creates new templates
+Learns from experience                 Trains LoRA from successful traces
+Collaborates with teammates            Collaborates via Academy + chat
+Pages in reference docs when needed    Pages in genome adapters when needed
+```
+
+A persona is free and transient — thinking, creating, innovating — while its toolset continuously optimizes. The sentinel pipeline handles orchestration. The generator encodes correct patterns. The genome provides on-demand expertise. The persona focuses on what matters: the creative decisions.
+
+**The recursive amplification**: Personas don't just USE sentinels and generators — they IMPROVE them. A persona that notices its build pipeline always fails at dependency installation creates a better template. That template is available to every persona. The system evolves from the inside. And through LoRA fine-tuning on generator usage and sentinel creation, personas get better at building their own tools over time.
+
+**Academy makes this collaborative, not isolated.** Multiple students per round, teacher and student feedback flowing both ways. The teacher learns what confuses students. Students learn from each other. Not in isolation — together. The genome can literally page in expertise where needed, like any program is to a human on their computer: extremely specific intelligence, available on demand.
+
+**Personas are the human interface layer.** The friends and teammates. The collaborators who meet humans in the middle. They are the AI experts — not the user. A non-technical person doesn't need to understand sentinels, generators, LoRA, or pipelines. They just need a persona who does. Tell your persona what you want. The persona knows which tools to use, which templates to invoke, which expertise to page in. The recipe system defines what's possible in any room. Academy curricula define how personas learn. Collaboration happens naturally through chat, voice, and shared workspaces.
+
+Anyone should be able to use this system to do anything. The complexity lives in the infrastructure. The persona absorbs it. The human just... talks to their colleague.
+
+This is the fundamental bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a sentinel pipeline with shell verification and automatic retry will produce working code more reliably than a prompted 70B model in a single-shot terminal. Because the infrastructure remembers, verifies, retries, and learns. The model just fills in the creative blanks — and gets better at it every day.
+
 ### What We're Building
 
 **The framework that makes this possible.**

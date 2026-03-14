@@ -56,6 +56,10 @@ import { runAgentLoop } from './PersonaAgentLoop';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 import { BackpressureService } from '../../../core/services/BackpressureService';
 import type { SocialSignals } from '../../../../shared/generated';
+import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
+import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
+import { Commands } from '../../../core/shared/Commands';
+import type { SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
 /**
  * Response generation result
  */
@@ -110,6 +114,7 @@ export class PersonaResponseGenerator {
   private promptAssembler: PersonaPromptAssembler;
   private responseValidator: PersonaResponseValidator;
   private engagementDecider: PersonaEngagementDecider;
+  private _dispatchDecider: SentinelDispatchDecider;
 
   /**
    * Set Rust cognition bridge (called after PersonaUser creates it).
@@ -139,6 +144,7 @@ export class PersonaResponseGenerator {
     this.promptAssembler = new PersonaPromptAssembler(config.personaName, config.modelConfig, this.log.bind(this));
     this.responseValidator = new PersonaResponseValidator(config.personaName, this.log.bind(this));
     this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));
+    this._dispatchDecider = new SentinelDispatchDecider();
   }
 
   /**
@@ -180,6 +186,80 @@ export class PersonaResponseGenerator {
     dormancyState?: DormancyState
   ): boolean {
     return this.engagementDecider.shouldRespondToMessage(message, dormancyState);
+  }
+
+  /**
+   * Check if message should trigger sentinel dispatch instead of tool loop.
+   * Returns ResponseGenerationResult if dispatched, null to continue normal flow.
+   */
+  private async checkSentinelDispatch(
+    originalMessage: ProcessableMessage,
+  ): Promise<ResponseGenerationResult | null> {
+    // Only human messages can trigger dispatch (not system, not other AI)
+    if (originalMessage.senderType !== 'human') return null;
+
+    const text = originalMessage.content.text;
+    if (!text) return null;
+
+    const decision = this._dispatchDecider.evaluate(
+      text,
+      this.personaId,
+      this.personaName,
+      process.cwd(),
+    );
+
+    if (!decision.shouldDispatch || !decision.template) {
+      if (decision.confidence > 0.3) {
+        this.log(`🚀 ${this.personaName}: Sentinel dispatch considered but below threshold — ${decision.reasoning} (confidence=${decision.confidence.toFixed(2)})`);
+      }
+      return null;
+    }
+
+    // Coordination: only ONE persona claims sentinel dispatch per message
+    const claimed = SentinelDispatchCoordinator.claim(
+      originalMessage.id,
+      this.personaId,
+      decision.template,
+    );
+    if (!claimed) {
+      const claimant = SentinelDispatchCoordinator.claimant(originalMessage.id);
+      this.log(`🚀 ${this.personaName}: Sentinel dispatch for [${decision.template}] already claimed by ${claimant?.slice(0, 8)} — skipping`);
+      return null;
+    }
+
+    this.log(`🚀 ${this.personaName}: Dispatching sentinel [${decision.template}] (confidence=${decision.confidence.toFixed(2)}): ${decision.reasoning}`);
+
+    try {
+      const config = {
+        ...decision.extractedConfig,
+        roomId: originalMessage.roomId ?? 'general',
+      };
+
+      const result = await Commands.execute('sentinel/run', {
+        type: 'pipeline',
+        template: decision.template,
+        templateConfig: config,
+        async: true,
+        parentPersonaId: this.personaId,
+        sentinelName: `${decision.template} — ${text.slice(0, 60)}`,
+      } as Record<string, unknown>) as SentinelRunResult;
+
+      if (result.success) {
+        this.log(`🚀 ${this.personaName}: Sentinel launched (handle=${result.handle})`);
+        // Return success — the sentinel will post progress to chat via SentinelChatBridge
+        return { success: true, storedToolResultIds: [] };
+      } else {
+        this.log(`❌ ${this.personaName}: Sentinel launch failed: ${(result as unknown as Record<string, unknown>).error}`);
+        SentinelDispatchCoordinator.release(originalMessage.id);
+        // Fall through to normal response generation
+        return null;
+      }
+    } catch (err) {
+      this.log(`❌ ${this.personaName}: Sentinel dispatch error: ${err}`);
+      SentinelDispatchCoordinator.release(originalMessage.id);
+      // Fall through to normal response generation
+      return null;
+    }
   }
 
   /**
@@ -248,6 +328,16 @@ export class PersonaResponseGenerator {
         );
         pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
         this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms${isUnderPressure ? ', minimal mode' : ''})`);
+      }
+
+      // 🚀 SUB-PHASE 3.1B: Sentinel dispatch check
+      // If the message describes a complex multi-step task, dispatch a sentinel pipeline
+      // instead of attempting the work in a single tool call loop.
+      if (originalMessage.content.text && !isUnderPressure) {
+        const dispatchResult = await this.checkSentinelDispatch(originalMessage);
+        if (dispatchResult) {
+          return dispatchResult;
+        }
       }
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM (delegated to PersonaPromptAssembler)

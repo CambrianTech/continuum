@@ -266,12 +266,12 @@ class IPCConnection {
 
       setTimeout(() => {
         if (this.pendingRequests.has(requestId)) {
-          console.error(`[IPC#${this.connectionIndex}] TIMEOUT for ${cmdName} (id=${requestId}, pending=${this.pendingCount})`);
+          console.error(`[IPC#${this.connectionIndex}] TIMEOUT for ${cmdName} (id=${requestId}, pending=${this.pendingCount}, elapsed=${Date.now() - timing.sendTime}ms)`);
           this.pendingRequests.delete(requestId);
           this.pendingTimings.delete(requestId);
           reject(new Error(`Request timeout: ${cmdName}`));
         }
-      }, 30000);
+      }, IPC_TIMEOUT_MS);
     });
   }
 
@@ -290,8 +290,14 @@ class IPCConnection {
 /** Number of concurrent IPC socket connections to Rust.
  * Must exceed persona count (15+) since each persona can fire
  * multiple concurrent queries (RAG context, chat history, user lookup).
- * Previous value of 12 caused connection exhaustion under load. */
-const POOL_SIZE = 20;
+ * Previous value of 12 caused connection exhaustion under load.
+ * Raised to 40: 15+ personas × 2-3 concurrent ops each under peak load. */
+const POOL_SIZE = 40;
+
+/** IPC request timeout in milliseconds.
+ * 60s accommodates load spikes when all personas fire concurrently.
+ * Previous 30s caused cascading timeouts under normal multi-persona load. */
+const IPC_TIMEOUT_MS = 60_000;
 
 export class ORMRustClient {
   private static instance: ORMRustClient | null = null;
@@ -364,8 +370,8 @@ export class ORMRustClient {
     }
 
     // Backpressure warning — if we're piling up, something is wrong
-    if (totalPending > 50) {
-      console.warn(`[ORM] BACKPRESSURE: ${totalPending} pending IPC requests across pool`);
+    if (totalPending > 100) {
+      console.warn(`[ORM] BACKPRESSURE: ${totalPending} pending IPC requests across ${POOL_SIZE} connections`);
     }
 
     if (best) return best;

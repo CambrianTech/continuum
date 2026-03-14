@@ -489,10 +489,10 @@ ${generatedText}
 Conversation Pattern: ${strategy.conversationPattern}
 
 Response Rules:
-${strategy.responseRules.map(rule => `- ${rule}`).join('\n')}
+${strategy.responseRules.map((rule: string) => `- ${rule}`).join('\n')}
 
 Decision Criteria:
-${strategy.decisionCriteria.map(criterion => `- ${criterion}`).join('\n')}
+${strategy.decisionCriteria.map((criterion: string) => `- ${criterion}`).join('\n')}
 
 `;
     }

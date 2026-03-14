@@ -1,4 +1,5 @@
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import type { ProviderCapabilities } from '../../../shared/AICapabilityRegistry';
 
 /**
  * Groq Adapter
@@ -27,5 +28,39 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
       supportedCapabilities: ['text-generation', 'chat'],
       // No hardcoded models — fetched dynamically via GET /v1/models
     });
+  }
+
+  protected getCapabilityRegistration(): ProviderCapabilities {
+    return {
+      providerId: 'groq',
+      providerName: 'Groq',
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
+      models: [
+        {
+          modelId: 'llama-3.3-70b-versatile',
+          displayName: 'Llama 3.3 70B Versatile',
+          capabilities: ['reasoning', 'coding', 'instruction-following', 'tool-use'],
+          contextWindow: 128000,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'llama-3.2-90b-vision-preview',
+          displayName: 'Llama 3.2 90B Vision',
+          capabilities: ['image-input', 'multimodal', 'reasoning'],
+          contextWindow: 8192,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'mixtral-8x7b-32768',
+          displayName: 'Mixtral 8x7B',
+          capabilities: ['coding', 'instruction-following'],
+          contextWindow: 32768,
+          costTier: 'low',
+          latencyTier: 'fast',
+        },
+      ],
+    };
   }
 }

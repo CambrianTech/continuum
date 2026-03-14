@@ -63,6 +63,11 @@ export async function initializeServices(): Promise<void> {
   initializeSentinelEventBridge();
   log.debug('Sentinel event bridge initialized');
 
+  // Sentinel chat bridge: post sentinel lifecycle events to chat rooms
+  const { initializeSentinelChatBridge } = await import('../../../sentinel/SentinelChatBridge');
+  initializeSentinelChatBridge();
+  log.debug('Sentinel chat bridge initialized');
+
   // Training completion: async genome/train → post-training workflow
   const { initializeTrainingCompletionHandler } = await import('../../../genome/server/TrainingCompletionHandler');
   initializeTrainingCompletionHandler();

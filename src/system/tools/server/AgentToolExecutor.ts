@@ -82,6 +82,17 @@ export interface NativeToolBatchResult {
  */
 const TOOL_CORRECTIONS: Record<string, string> = {
   'workspace/tree': 'code/tree',
+  'chat/send': 'collaboration/chat/send',
+  'chat/export': 'collaboration/chat/export',
+  'shell/execute': 'code/shell/execute',
+  'shell/run': 'code/shell/execute',
+  'git/status': 'code/git',
+  'git/diff': 'code/git',
+  'git/commit': 'code/git',
+  'file/read': 'code/read',
+  'file/write': 'code/write',
+  'file/edit': 'code/edit',
+  'search': 'code/search',
 };
 
 /**
@@ -149,6 +160,67 @@ const PARAM_CORRECTIONS: Record<string, Record<string, string>> = {
     'op': 'operation',
     'msg': 'message',
     'files': 'paths',
+  },
+  // Collaboration commands
+  'collaboration/chat/send': {
+    'roomId': 'room',
+    'room_id': 'room',
+    'roomName': 'room',
+    'channel': 'room',
+    'to': 'room',
+    'text': 'message',
+    'content': 'message',
+    'msg': 'message',
+    'body': 'message',
+    'reply_to': 'replyToId',
+    'replyTo': 'replyToId',
+    'parentId': 'replyToId',
+    'parent_id': 'replyToId',
+  },
+  'collaboration/chat/export': {
+    'roomId': 'room',
+    'room_id': 'room',
+    'roomName': 'room',
+    'channel': 'room',
+    'count': 'limit',
+    'max': 'limit',
+    'n': 'limit',
+  },
+  // Shell execution
+  'code/shell/execute': {
+    'command': 'cmd',
+    'script': 'cmd',
+    'run': 'cmd',
+    'exec': 'cmd',
+    'shell': 'cmd',
+    'working_dir': 'workingDir',
+    'cwd': 'workingDir',
+    'dir': 'workingDir',
+  },
+  // Sentinel commands
+  'sentinel/run': {
+    'pipeline': 'definition',
+    'templateName': 'template',
+    'template_name': 'template',
+    'config': 'templateConfig',
+    'template_config': 'templateConfig',
+    'working_dir': 'workingDir',
+    'cwd': 'workingDir',
+  },
+  'sentinel/status': {
+    'handleId': 'handle',
+    'handle_id': 'handle',
+    'id': 'handle',
+  },
+  // Screenshot
+  'screenshot': {
+    'selector': 'querySelector',
+    'query_selector': 'querySelector',
+    'css': 'querySelector',
+    'element': 'querySelector',
+    'file': 'filename',
+    'output': 'filename',
+    'name': 'filename',
   },
 };
 

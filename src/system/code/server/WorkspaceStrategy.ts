@@ -321,12 +321,13 @@ export class WorkspaceStrategy {
       log.warn(`Could not set worktree-specific config: ${configErr instanceof Error ? configErr.message : String(configErr)}. Commits will use GIT_AUTHOR_* env vars.`);
     }
 
-    // Register with Rust CodeDaemon — worktree is the write location, JTAG root is read-only.
+    // Register with Rust CodeDaemon — worktree is the write location, repo roots are read-only.
     // CRITICAL: Must register with personaId (UUID), not handle — Rust looks up by personaId
-    // Use JTAG root (process.cwd()) as read root, NOT git root — code files are under src/
+    // Include both JTAG root (src/) and git root — personas may use "src/..." or bare paths
     const jtagRoot = process.cwd();
-    log.info(`🔧 Registering workspace with Rust: personaId=${config.personaId}, workspaceRoot=${worktreeDir}, readRoots=[${jtagRoot}]`);
-    await CodeDaemon.createWorkspace(config.personaId, worktreeDir, [jtagRoot]);
+    const readRoots = [jtagRoot, resolvedRepoPath];
+    log.info(`🔧 Registering workspace with Rust: personaId=${config.personaId}, workspaceRoot=${worktreeDir}, readRoots=[${readRoots.join(', ')}]`);
+    await CodeDaemon.createWorkspace(config.personaId, worktreeDir, readRoots);
     log.info(`✅ Workspace registered with Rust for persona ${config.personaUniqueId}`);
     initializedWorkspaces.add(handle);
     projectWorkspacePaths.set(handle, { worktreeDir, branch: branchName, repoPath: resolvedRepoPath, personaId: config.personaId });

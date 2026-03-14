@@ -85,6 +85,11 @@ export class ActivityContextSource implements RAGSource {
             strategy.responseRules.map((rule: string) => `- ${rule}`).join('\n');
         }
 
+        if (!isLimited && strategy.feedbackLoopRules && strategy.feedbackLoopRules.length > 0) {
+          activitySection += '\n\nMANDATORY verification rules (non-negotiable):\n' +
+            strategy.feedbackLoopRules.map((rule: string) => `- ${rule}`).join('\n');
+        }
+
         if (!isLimited && strategy.decisionCriteria.length > 0) {
           activitySection += '\n\nWhen deciding whether to respond, consider:\n' +
             strategy.decisionCriteria.map((c: string) => `- ${c}`).join('\n');

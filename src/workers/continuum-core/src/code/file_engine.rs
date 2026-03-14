@@ -461,6 +461,14 @@ impl FileEngine {
         self.security.workspace_root().to_path_buf()
     }
 
+    /// Get all searchable roots: workspace root + read-only roots.
+    /// Used by code/search and code/tree to search the full project, not just the worktree.
+    pub fn searchable_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.security.workspace_root().to_path_buf()];
+        roots.extend(self.security.read_roots().iter().cloned());
+        roots
+    }
+
     /// Get the latest parent ID for a file (for DAG edges).
     fn latest_parent(&self, file_path: &str) -> Vec<Uuid> {
         self.graph

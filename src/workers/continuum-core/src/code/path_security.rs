@@ -320,6 +320,11 @@ impl PathSecurity {
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
+
+    /// Get read-only root paths (e.g., the main project repo).
+    pub fn read_roots(&self) -> &[PathBuf] {
+        &self.read_roots
+    }
 }
 
 #[cfg(test)]

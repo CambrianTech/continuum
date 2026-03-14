@@ -1,0 +1,89 @@
+{
+  "uniqueId": "research",
+  "name": "Research Investigation",
+  "displayName": "Research",
+  "description": "Collaborative research — parallel investigation, deduplication, synthesis into structured documents",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 25,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "research"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.4
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "sources": [
+      "ChatHistorySource",
+      "RoomContextSource",
+      "PersonaContextSource",
+      "ActivityContextSource",
+      "SentinelAwarenessSource"
+    ],
+    "maxTokens": 5000,
+    "prioritySources": ["ChatHistorySource", "ActivityContextSource"]
+  },
+
+  "strategy": {
+    "responseRules": [
+      "Distinguish fact from inference — cite sources when possible",
+      "Flag uncertainty levels: confirmed, likely, speculative",
+      "Contradictions must be called out immediately, not smoothed over",
+      "Stay in your investigation lane — don't duplicate other researchers' work",
+      "Synthesis requires judgment, not just concatenation"
+    ],
+    "decisionCriteria": [
+      "Respond when you have relevant findings or can challenge an assumption",
+      "The synthesizer has priority during the synthesis phase",
+      "Question methodology as well as conclusions"
+    ],
+    "feedbackLoopRules": [
+      "All claims must have supporting evidence",
+      "Contradictions between investigators must be explicitly resolved, not ignored",
+      "Missing coverage should be flagged, not silently accepted"
+    ]
+  },
+
+  "tools": [],
+
+  "sentinelTemplates": [
+    "research/investigate"
+  ],
+
+  "roles": [
+    { "role": "lead-researcher", "type": "organizational", "requires": ["research", "planning"], "prefers": ["reasoning"], "description": "Decomposes the research question and synthesizes final findings" },
+    { "role": "investigator", "type": "organizational", "requires": ["research"], "prefers": ["reasoning"], "description": "Investigates assigned aspects of the research question in depth" },
+    { "role": "fact-checker", "type": "organizational", "requires": ["research", "review"], "description": "Verifies claims, checks sources, catches contradictions" }
+  ],
+
+  "access": "public",
+  "tags": ["research", "analysis", "investigation", "documents"]
+}

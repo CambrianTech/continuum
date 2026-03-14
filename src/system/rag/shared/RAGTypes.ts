@@ -121,13 +121,10 @@ export interface PersonaIdentity {
 
 /**
  * Recipe strategy - conversation governance rules
- * Loaded from system/recipes/*.json
+ * Re-exported from canonical RecipeTypes (single source of truth).
  */
-export interface RecipeStrategy {
-  conversationPattern: string;  // 'collaborative', 'human-focused', etc.
-  responseRules: string[];  // Rules AIs should follow
-  decisionCriteria: string[];  // What to consider when deciding to respond
-}
+import type { RecipeStrategy as _RecipeStrategy } from '../../recipes/shared/RecipeTypes';
+export type RecipeStrategy = _RecipeStrategy;
 
 /**
  * Complete RAG context for LLM inference

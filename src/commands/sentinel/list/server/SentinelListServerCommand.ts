@@ -10,6 +10,7 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelListParams, SentinelListResult, SentinelSummary } from '../shared/SentinelListTypes';
 import type { SentinelEntity } from '../../../../system/sentinel';
 import { DataList } from '@commands/data/list/shared/DataListTypes';
+import { TemplateRegistry } from '../../../../system/sentinel/pipelines/TemplateRegistry';
 
 const COLLECTION = 'sentinels';
 
@@ -75,6 +76,25 @@ export class SentinelListServerCommand extends CommandBase<SentinelListParams, S
           createdBy: entity.createdBy,
         };
       });
+
+      // Include built-in templates from TemplateRegistry when listing templates
+      if (listParams.templatesOnly) {
+        const builtInTemplates = TemplateRegistry.list()
+          .filter(t => !listParams.search || t.name.includes(listParams.search))
+          .filter(t => !listParams.tags || listParams.tags.some(tag => t.category === tag))
+          .map(t => ({
+            id: `builtin:${t.name}`,
+            shortId: `builtin:${t.name}`,
+            name: t.name,
+            type: 'pipeline' as const,
+            description: t.description,
+            tags: [t.category, 'built-in'],
+            isTemplate: true,
+            executionCount: 0,
+            createdAt: 'built-in',
+          }));
+        summaries.push(...builtInTemplates);
+      }
 
       return transformPayload(params, {
         success: true,
