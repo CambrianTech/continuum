@@ -62,7 +62,7 @@ register(
     category: 'dev',
     requiredFields: ['feature', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'roomId', 'branchName', 'baseBranch', 'planProvider', 'codingProvider',
+      'repoPath', 'roomId', 'branchName', 'baseBranch', 'planProvider', 'codingProvider',
       'codingModel', 'maxBudgetUsd', 'maxTurns', 'buildCommand', 'testCommand',
       'planReviewTimeoutSecs', 'qaReviewTimeoutSecs', 'autonomous', 'captureTraining',
     ],
@@ -77,7 +77,7 @@ register(
     category: 'dev',
     requiredFields: ['bug', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'roomId', 'codingProvider', 'codingModel', 'maxBudgetUsd', 'maxTurns',
+      'repoPath', 'roomId', 'codingProvider', 'codingModel', 'maxBudgetUsd', 'maxTurns',
       'buildCommand', 'testCommand', 'diagnosisReviewTimeoutSecs', 'autonomous', 'captureTraining',
     ],
   },
@@ -91,7 +91,7 @@ register(
     category: 'dev',
     requiredFields: ['personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'branch', 'files', 'baseBranch', 'roomId', 'reviewProvider',
+      'repoPath', 'branch', 'files', 'baseBranch', 'roomId', 'reviewProvider',
       'discussionTimeoutSecs', 'autonomous',
     ],
   },
@@ -105,7 +105,7 @@ register(
     category: 'dev',
     requiredFields: ['featureBranch', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'branches', 'baseBranch', 'roomId', 'codingProvider', 'codingModel',
+      'repoPath', 'branches', 'baseBranch', 'roomId', 'codingProvider', 'codingModel',
       'maxBudgetUsd', 'buildCommand', 'testCommand', 'autonomous',
     ],
   },

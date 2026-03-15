@@ -16,6 +16,8 @@ export interface DevCodeReviewParams extends CommandParams {
   baseBranch?: string;
   /** Working directory */
   cwd?: string;
+  /** Git repo path — enables workspace isolation via project worktree */
+  repoPath?: string;
   /** Skip collaborative checkpoints */
   autonomous?: boolean;
   roomId?: string;

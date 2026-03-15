@@ -25,11 +25,13 @@ export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixB
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = await ProjectDetector.detect(cwd);
+    const repoPath = typed.repoPath || cwd;
+    const project = await ProjectDetector.detect(repoPath);
 
     const templateConfig: Record<string, unknown> = {
       bug: typed.bug,
       cwd,
+      repoPath,
       autonomous: typed.autonomous ?? true,
       roomId: typed.roomId ?? 'general',
       personaId: typed.personaId ?? 'system',

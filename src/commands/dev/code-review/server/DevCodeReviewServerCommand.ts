@@ -17,9 +17,11 @@ export class DevCodeReviewServerCommand extends CommandBase<DevCodeReviewParams,
     const typed = params as JTAGPayload & DevCodeReviewParams;
 
     const cwd = typed.cwd || process.cwd();
+    const repoPath = typed.repoPath || cwd;
 
     const templateConfig: Record<string, unknown> = {
       cwd,
+      repoPath,
       branch: typed.branch ?? 'HEAD',
       baseBranch: typed.baseBranch ?? 'main',
       autonomous: typed.autonomous ?? true,

@@ -71,11 +71,16 @@ export class VoiceOrchestrator {
   private sessionParticipants: Map<UUID, VoiceParticipant[]> = new Map();
   private sessions: Map<UUID, SessionState> = new Map();
 
-  private constructor() {
-    this.setupEventListeners();
+  // Event listener cleanup — subscribed on first session, unsubscribed when last session ends
+  private _eventUnsubscribes: (() => void)[] = [];
+  private _listenersActive = false;
 
+  private constructor() {
     // Register with VoiceConversationSource for RAG context building
     registerVoiceOrchestrator(this);
+    // Activate listeners eagerly — they must be ready before registerSession() to
+    // avoid race conditions. They deactivate when last session ends (deterministic deinit).
+    this.activateEventListeners();
   }
 
   static get instance(): VoiceOrchestrator {
@@ -129,6 +134,11 @@ export class VoiceOrchestrator {
       roomId,
       timeline: new VoiceSessionTimeline(sessionId),
     });
+
+    // Re-activate listeners if they were deactivated after a previous session ended
+    if (!this._listenersActive) {
+      this.activateEventListeners();
+    }
 
     // Connect AI participants to the appropriate audio bridge
     const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
@@ -194,6 +204,11 @@ export class VoiceOrchestrator {
     if (session) {
       session.timeline.clear();
       this.sessions.delete(sessionId);
+    }
+
+    // Deactivate event listeners when last session ends — deterministic deinit
+    if (this.sessions.size === 0) {
+      this.deactivateEventListeners();
     }
 
     // Tell Rust to drop LiveKit agents, Room listeners, and session state.
@@ -303,11 +318,27 @@ export class VoiceOrchestrator {
   }
 
   /**
-   * Setup event listeners for persona responses and incoming transcriptions
+   * Deactivate event listeners — called when last session ends.
+   * Deterministic deinit: no handlers running when no sessions active.
    */
-  private setupEventListeners(): void {
+  private deactivateEventListeners(): void {
+    for (const unsub of this._eventUnsubscribes) {
+      unsub();
+    }
+    this._eventUnsubscribes = [];
+    this._listenersActive = false;
+  }
+
+  /**
+   * Activate event listeners — called when first session starts.
+   * Listeners are session-scoped: active only while sessions exist.
+   */
+  private activateEventListeners(): void {
+    if (this._listenersActive) return;
+    this._listenersActive = true;
+
     // Listen for persona responses that might need TTS routing
-    Events.subscribe('persona:response:generated', async (event: {
+    this._eventUnsubscribes.push(Events.subscribe('persona:response:generated', async (event: {
       personaId: UUID;
       response: string;
       originalMessage: InboxMessage;
@@ -315,13 +346,13 @@ export class VoiceOrchestrator {
       if (this.isVoiceMessage(event.originalMessage)) {
         await this.onPersonaResponse(event.personaId, event.response, event.originalMessage);
       }
-    });
+    }));
 
     // Listen for transcriptions — update session context for RAG only.
     // AI notification is handled by CollaborationLiveTranscriptionServerCommand
     // which calls the Rust VoiceOrchestrator and emits directed events.
     // We do NOT call onUtterance() here to avoid duplicate broadcasts.
-    Events.subscribe('voice:transcription', async (event: {
+    this._eventUnsubscribes.push(Events.subscribe('voice:transcription', async (event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
@@ -343,11 +374,11 @@ export class VoiceOrchestrator {
           timestamp: event.timestamp,
         });
       }
-    });
+    }));
 
     // Listen for mid-call participant joins
     // When a new AI joins an active call, connect them to the appropriate audio bridge
-    Events.subscribe('live:participant:joined', async (event: {
+    this._eventUnsubscribes.push(Events.subscribe('live:participant:joined', async (event: {
       sessionId: string;
       userId: string;
       displayName: string;
@@ -404,10 +435,10 @@ export class VoiceOrchestrator {
           // Failed to add mid-call joiner
         }
       }
-    });
+    }));
 
     // Listen for AI speech events — record in session context for RAG and export
-    Events.subscribe('voice:ai:speech', (event: {
+    this._eventUnsubscribes.push(Events.subscribe('voice:ai:speech', (event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
@@ -435,7 +466,7 @@ export class VoiceOrchestrator {
           timestamp: event.timestamp,
         });
       }
-    });
+    }));
   }
 
   /**

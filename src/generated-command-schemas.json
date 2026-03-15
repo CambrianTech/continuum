@@ -2007,6 +2007,21 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        },
+        "repoPath": {
+          "type": "string",
+          "required": false,
+          "description": "repoPath parameter"
+        },
+        "taskSlug": {
+          "type": "string",
+          "required": false,
+          "description": "taskSlug parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
         }
       }
     },
@@ -5914,6 +5929,11 @@
           "required": false,
           "description": "cwd parameter"
         },
+        "repoPath": {
+          "type": "string",
+          "required": false,
+          "description": "repoPath parameter"
+        },
         "buildCommand": {
           "type": "string",
           "required": false,
@@ -5986,6 +6006,11 @@
           "required": false,
           "description": "cwd parameter"
         },
+        "repoPath": {
+          "type": "string",
+          "required": false,
+          "description": "repoPath parameter"
+        },
         "autonomous": {
           "type": "boolean",
           "required": false,
@@ -6047,6 +6072,11 @@
           "required": false,
           "description": "cwd parameter"
         },
+        "repoPath": {
+          "type": "string",
+          "required": false,
+          "description": "repoPath parameter"
+        },
         "autonomous": {
           "type": "boolean",
           "required": false,
@@ -6082,6 +6112,11 @@
           "type": "string",
           "required": false,
           "description": "cwd parameter"
+        },
+        "repoPath": {
+          "type": "string",
+          "required": false,
+          "description": "repoPath parameter"
         },
         "autonomous": {
           "type": "boolean",
@@ -9265,6 +9300,11 @@
           "type": "string",
           "required": false,
           "description": "sentinelHandle parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     },

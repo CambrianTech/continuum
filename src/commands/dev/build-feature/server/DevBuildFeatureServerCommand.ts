@@ -28,11 +28,13 @@ export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeaturePar
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = await ProjectDetector.detect(cwd);
+    const repoPath = typed.repoPath || cwd;
+    const project = await ProjectDetector.detect(repoPath);
 
     const templateConfig: Record<string, unknown> = {
       feature: typed.feature,
       cwd,
+      repoPath,
       autonomous: typed.autonomous ?? true,
       roomId: typed.roomId ?? 'general',
       personaId: typed.personaId ?? 'system',

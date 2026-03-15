@@ -28,7 +28,8 @@ export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, D
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = await ProjectDetector.detect(cwd);
+    const repoPath = typed.repoPath || cwd;
+    const project = await ProjectDetector.detect(repoPath);
 
     // Parse comma-separated branches into array
     const branches = typed.branches
@@ -38,6 +39,7 @@ export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, D
     const templateConfig: Record<string, unknown> = {
       featureBranch: typed.featureBranch,
       cwd,
+      repoPath,
       autonomous: typed.autonomous ?? true,
       roomId: typed.roomId ?? 'general',
       personaId: typed.personaId ?? 'system',
