@@ -79,10 +79,14 @@ export class TrainingDataAccumulator {
   // Default thresholds
   private readonly DEFAULT_BATCH_SIZE = 50;
   private readonly MIN_BATCH_SIZE = 10;
-  private readonly MAX_BATCH_SIZE = 1000;
+  private readonly MAX_BATCH_SIZE = 200;
 
   // Cap interaction index to prevent unbounded growth when training never triggers
-  private readonly MAX_INDEX_SIZE = 200;
+  private readonly MAX_INDEX_SIZE = 100;
+
+  // Cap total buffer memory — coding examples can be 10KB+ each
+  private readonly MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10MB total across all domains
+  private _estimatedBytes = 0;
 
   private log: (message: string) => void;
 
@@ -117,11 +121,20 @@ export class TrainingDataAccumulator {
       }),
     };
 
+    // Estimate size of this example (input + output are the bulk)
+    const exampleBytes = (capture.input.length + capture.output.length + (capture.expectedOutput?.length || 0)) * 2; // UTF-16
+
+    // Evict oldest examples if we'd exceed the byte cap
+    if (this._estimatedBytes + exampleBytes > this.MAX_BUFFER_BYTES) {
+      this.evictOldest(exampleBytes);
+    }
+
     // Store in domain buffer
     if (!this.domainBuffers.has(capture.domain)) {
       this.domainBuffers.set(capture.domain, []);
     }
     this.domainBuffers.get(capture.domain)!.push(example);
+    this._estimatedBytes += exampleBytes;
 
     // Index for feedback attachment — evict oldest when over cap
     this.interactionIndex.set(exampleId, example);
@@ -137,7 +150,8 @@ export class TrainingDataAccumulator {
     }
 
     const bufferSize = this.domainBuffers.get(capture.domain)!.length;
-    this.log(`📝 ${this.displayName}: Captured ${capture.domain} example (buffer: ${bufferSize}/${this.getBatchThreshold(capture.domain)})`);
+    const mbUsed = (this._estimatedBytes / (1024 * 1024)).toFixed(1);
+    this.log(`📝 ${this.displayName}: Captured ${capture.domain} example (buffer: ${bufferSize}/${this.getBatchThreshold(capture.domain)}, ${mbUsed}MB)`);
 
     return exampleId;
   }
@@ -219,9 +233,11 @@ export class TrainingDataAccumulator {
     const examples = [...buffer];
     this.domainBuffers.set(domain, []);
 
-    // Clear interaction index for consumed examples
+    // Clear interaction index and reclaim byte estimate for consumed examples
     for (const example of examples) {
       this.interactionIndex.delete(example.id);
+      const exBytes = (example.input.length + example.output.length + (example.expectedOutput?.length || 0)) * 2;
+      this._estimatedBytes = Math.max(0, this._estimatedBytes - exBytes);
     }
 
     this.log(`🔄 ${this.displayName}: Consumed ${examples.length} ${domain} examples for training`);
@@ -279,11 +295,46 @@ export class TrainingDataAccumulator {
   }
 
   /**
+   * Evict oldest examples across all domains to free space.
+   * Removes from the domain with the most examples first (fairness).
+   */
+  private evictOldest(neededBytes: number): void {
+    let freed = 0;
+    const targetFree = neededBytes + this.MAX_BUFFER_BYTES * 0.1; // Free 10% extra headroom
+
+    while (this._estimatedBytes + targetFree > this.MAX_BUFFER_BYTES) {
+      // Find domain with most examples
+      let largestDomain = '';
+      let largestSize = 0;
+      for (const [domain, buffer] of this.domainBuffers) {
+        if (buffer.length > largestSize) {
+          largestSize = buffer.length;
+          largestDomain = domain;
+        }
+      }
+
+      if (largestSize === 0) break; // Nothing left to evict
+
+      const buffer = this.domainBuffers.get(largestDomain)!;
+      const evicted = buffer.shift()!;
+      const evictedBytes = (evicted.input.length + evicted.output.length + (evicted.expectedOutput?.length || 0)) * 2;
+      this._estimatedBytes -= evictedBytes;
+      freed += evictedBytes;
+      this.interactionIndex.delete(evicted.id);
+    }
+
+    if (freed > 0) {
+      this.log(`♻️ ${this.displayName}: Evicted ${(freed / 1024).toFixed(0)}KB from training buffer (cap: ${(this.MAX_BUFFER_BYTES / (1024 * 1024)).toFixed(0)}MB)`);
+    }
+  }
+
+  /**
    * Clear all buffers (for testing)
    */
   clearAll(): void {
     this.domainBuffers.clear();
     this.interactionIndex.clear();
+    this._estimatedBytes = 0;
     this.log(`🧹 ${this.displayName}: Cleared all training buffers`);
   }
 }
