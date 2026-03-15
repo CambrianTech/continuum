@@ -17,9 +17,12 @@ export type {
 
 export { CodingAgentRegistry } from './CodingAgentRegistry';
 export { ClaudeCodeProvider } from './ClaudeCodeProvider';
+export { LocalAgentProvider } from './LocalAgentProvider';
 
 // Self-register built-in providers
 import { CodingAgentRegistry } from './CodingAgentRegistry';
 import { ClaudeCodeProvider } from './ClaudeCodeProvider';
+import { LocalAgentProvider } from './LocalAgentProvider';
 
 CodingAgentRegistry.register(new ClaudeCodeProvider());
+CodingAgentRegistry.register(new LocalAgentProvider());
