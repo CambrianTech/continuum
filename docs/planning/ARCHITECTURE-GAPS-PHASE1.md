@@ -14,7 +14,7 @@
 - ✅ **PersonaState** - Energy/mood/adaptive cadence (PersonaState.ts)
 - ✅ **TrainingDaemon** - Observes chat, creates TrainingExampleEntity
 - ✅ **Commands/Events** - Universal primitives working
-- ✅ **AIProviderDaemon** - Ollama integration
+- ✅ **AIProviderDaemon** - Candle integration
 - ✅ **ChatCoordinator** - Turn-taking for multi-AI
 - ✅ **DataDaemon** - Persistent storage
 - ✅ **ChatRAGBuilder** - RAG for chat history

@@ -61,7 +61,7 @@ Statement B generation: 4,453ms (13 tokens)
 
 **Proposed investigation**:
 - Check if negation/opposition requires deeper semantic processing
-- Test if Ollama batches embeddings differently
+- Test if Candle batches embeddings differently
 - Monitor for queue backlog
 
 **Novel insight**: Generation time variance could be a signal for semantic complexity.
@@ -155,7 +155,7 @@ Statement B generation: 4,453ms (13 tokens)
 ```bash
 ./jtag system/queue-status    # Show command queue depth
 ./jtag system/daemon-health    # Per-daemon health check
-./jtag system/resource-usage   # Memory, CPU, Ollama status
+./jtag system/resource-usage   # Memory, CPU, inference status
 ```
 
 ### 3. Create Conflict Detection Command

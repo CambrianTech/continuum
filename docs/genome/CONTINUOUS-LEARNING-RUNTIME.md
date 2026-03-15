@@ -412,7 +412,7 @@ In addition to text-only LLMs, the system supports Vision Language Models (VLMs)
 
 | Model | Params | Training | Inference | Best For |
 |-------|--------|----------|-----------|----------|
-| **Qwen2.5-VL 3B** | 3B | MLX-VLM (Mac) | Ollama/GGUF | UI design, screenshots |
+| **Qwen2.5-VL 3B** | 3B | MLX-VLM (Mac) | Candle (Rust) | UI design, screenshots |
 | **Moondream 2** | 1.6B | MLX-VLM | Candle (Rust) | Fast image Q&A |
 | **LLaVA 1.5/1.6** | 7-13B | Unsloth (CUDA) | Candle (Rust) | Detailed analysis |
 | **SmolVLM** | 2B | HuggingFace | Transformers | Memory-efficient |
@@ -431,10 +431,10 @@ python -m mlx_vlm.lora \
   --lora-rank 32 \
   --epochs 3
 
-# Convert for Ollama inference
+# Convert for Candle inference
 python -m mlx_vlm.convert \
   --adapter .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
-  --output ./ui-expert.gguf
+  --output ./ui-expert.safetensors
 ```
 
 ### Training on NVIDIA GPU (RTX 5090)

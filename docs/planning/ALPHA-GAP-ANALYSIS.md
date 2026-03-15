@@ -1,8 +1,8 @@
 # Alpha Gap Analysis — Prioritized Feature Backlog
 
-**Date**: 2026-03-12
+**Date**: 2026-03-15
 **Status**: UI/UX alpha complete. System runs stable with 14+ AI personas in live video calls.
-**Branch**: `main` (merged `feature/rust-live-memory-leaks`)
+**Branch**: `main`
 
 This document is the **single source of truth** for remaining work before open-source launch.
 Each item is a self-contained feature branch. Priority order is the implementation order.
@@ -20,7 +20,9 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
 | LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
 | Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass |
-| Sentinel pipeline | Working | 10 step types, 103+ tests, CodingAgent integration, 4 dev + 1 creative + 1 research templates |
+| Sentinel pipeline | Working | 10 step types, 120+ tests, CodingAgent integration, 4 dev + 1 creative + 1 research templates |
+| Sentinel workspaces | Working | SentinelWorkspaceManager: identity chain fix, git worktree isolation, lifecycle cleanup |
+| Dev CLI front door | Working | `--repoPath` on all dev commands: build-feature, fix-bug, code-review, integrate |
 | Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe, role declarations, RecipeAssembler |
 | Recipe commands | Working | recipe/list, recipe/run, recipe/generate (NL→Recipe via LLM with validation) |
 | Capability registry | Working | Skill domains, all 10 adapters self-register via getCapabilityRegistration() |
@@ -103,7 +105,7 @@ Each item is a self-contained feature branch. Priority order is the implementati
 |------|-------|-----------|
 | PersonaUser.ts | ~2,200 | <500 — extract to focused modules |
 | RustWorkerStorageAdapter.ts | 1,234 | <500 — extract per-operation modules |
-| OllamaAdapter.ts | 1,225 | <500 — extract model management, streaming, tool parsing |
+| OllamaAdapter.ts (legacy) | 1,225 | <500 — extract model management, streaming, tool parsing |
 | ChatRAGBuilder.ts | 1,214 | <500 — extract source management, assembly, caching |
 | PersonaMessageEvaluator.ts | 909 | <500 — extract training signal, topic detection |
 
@@ -190,6 +192,115 @@ Barrel exports created for agent/, dataset/, mcp/ and added to main index.ts.
 ### Remaining Investigation
 - Verify `AvatarCommand::UnloadIdle` actually tears down Bevy scenes (ECS entities, loaded meshes)
 - Bevy render loop must tick for commands to process — confirmed it does (idle_cadence gating disabled for this reason)
+
+---
+
+## Priority 4B: Live Video Call Quality — ACTIVE ISSUES
+
+**Status**: Functional but degraded. Multiple resource management and UX issues observed (2026-03-15).
+
+### 4B-1. Memory Not Deallocating After Live Chat Close — CRITICAL
+
+**Symptom**: Closing live chat does not release GPU/system memory. Node process at 10.5GB RSS and 344% CPU after session ends. Machine runs hot with no active work. Blocks development (can't even type in Claude Code).
+
+**Root causes (identified 2026-03-15)**:
+
+1. **VoiceOrchestrator event listeners never cleaned up**: 4 `Events.subscribe()` calls in constructor, never unsubscribed. Handlers fire continuously even with zero sessions — thousands of emissions/sec × map lookups = 344% CPU burn.
+   - **FIXED**: Listeners now session-scoped — activate on first `registerSession()`, deactivate on last `unregisterSession()`. No idle handlers.
+
+2. **60-second idle timeout hack**: `AudioResourceLifecycle.spawn_idle_watcher()` uses `DEFAULT_IDLE_TIMEOUT_SECS = 60` instead of deterministic cleanup. Session ends → wait 60s → maybe unload. During that window, STT/TTS models (~5GB), Bevy renderer (~3GB), avatar textures (~1GB) all stay loaded.
+   - **NOT FIXED**: Needs deterministic deinit — `on_session_end()` should trigger immediate cleanup when session count hits zero, not a timer.
+
+3. **Fire-and-forget willClose()**: `LiveWidget.disconnectedCallback()` calls `willClose().catch()` — if promise hangs or page unloads before completion, `voice/end-session` never reaches Rust. Session counter stays non-zero → idle watcher never fires → resources leak permanently.
+   - **NOT FIXED**: Needs `beforeunload` + synchronous IPC or Rust-side orphan detection with short timeout.
+
+4. **VoiceOrchestrator belongs in Rust**: This is TypeScript orchestration logic doing event processing, session state management, and bridge coordination. Should be a Rust module with its own thread, queues, init/deinit/health — not a TS singleton.
+
+**Target**: Closing live chat should return memory to within 500MB of pre-session baseline within 30 seconds. Deterministic, not timer-based.
+
+### 4B-2. High Latency in Live Video Calls
+
+**Symptom**: Huge delay between speaking and AI response. Makes conversation feel sluggish.
+
+**Factors**:
+- STT transcription latency (local Whisper model)
+- LLM inference latency (cloud round-trip or local Candle inference)
+- TTS synthesis latency (local model)
+- Video render pipeline latency (Bevy → LiveKit)
+- Network round-trip if using cloud providers
+
+**Targets**:
+- Measure end-to-end latency breakdown (STT → LLM → TTS → render)
+- Streaming TTS: begin speaking as tokens arrive, don't wait for full response
+- Speculative STT: detect speech end faster (current silence threshold may be too conservative)
+- Prefetch/warm models: keep STT/TTS loaded in memory during active session
+
+### 4B-3. Turn-Taking & Simultaneous Speech — UX IMPROVEMENT
+
+**Current**: Multiple AIs sometimes speak simultaneously, creating cacophony. ThoughtStream coordination exists but doesn't prevent overlap well enough in live mode.
+
+**Targets**:
+- Reduce simultaneous speech occurrence (not eliminate — organic conversation is valuable)
+- Better turn-taking signals: detect when one AI is mid-sentence before allowing another to start
+- Priority-based interruption: high-relevance responses can interrupt, low-relevance waits
+- Visual indicator: show who's "about to speak" so user can see the queue
+
+### 4B-4. Multi-AI Presentation Quality
+
+**Current**: All AI avatars render at same resolution regardless of context.
+
+**Targets**:
+- **Full singular view**: When user expands one AI to full screen, render at higher resolution (HD/FullHD tier from ResolutionTier)
+- **Picture-in-picture**: When focused on one AI, show others who are actively speaking as small PiP overlays
+- **Active speaker highlighting**: More prominent visual distinction for who's currently speaking
+- **Adaptive quality**: Speaking AIs get higher resolution budget, silent AIs get lower (already partially implemented via idle_cadence but can be more aggressive)
+
+### 4B-5. Efficiency Improvements
+
+**Current**: System resource usage stays high even when live call is idle or has few active participants.
+
+**Targets**:
+- Deterministic model unloading on session end (not idle timeout)
+- Reduce Bevy render rate further when no visual changes (current: 15fps idle, could go lower)
+- GPU memory pooling: share texture allocations across avatar slots instead of per-slot allocation
+- Track and log resource usage per-component so leaks are visible
+
+### 4B-6. Architectural Consistency — Every Subsystem Needs Init/Deinit/Health
+
+**Current**: VoiceOrchestrator, VoiceService, SentinelWorkspaceManager are ad-hoc singletons with no lifecycle management. No health monitoring, no resource tracking, no observability. Contrast with Rust `ServiceModule` trait and adapter `getCapabilityRegistration()` patterns which have all of this.
+
+**Target**: Every subsystem follows the same pattern:
+- Non-blocking initialization
+- Deterministic deinitialization (releases ALL resources)
+- Health monitoring (healthy/degraded/failed)
+- Resource tracking visible to pressure system
+- Observable via widgets, commands, events
+- Own thread, own queue, lazy wakeup — don't waste cycles, don't hold up callers
+
+---
+
+## Priority 4C: Offline-First Architecture — ARCHITECTURAL FAILURE
+
+**Status**: System fails to load live calls (and likely other features) without internet access. This violates the core thesis: MacBook Air running the impossible, locally.
+
+**Symptom (2026-03-15)**: Internet dropped at home. Tried to open a live call — nothing would load.
+
+**Investigation needed**:
+- [ ] Which assets load from CDN? (fonts, CSS frameworks, JS libraries, WASM modules)
+- [ ] Does LiveKit client SDK phone home or check a remote server?
+- [ ] Do browser widgets import from unpkg/cdnjs/googleapis?
+- [ ] Does the WebSocket connection fail-check against an external endpoint?
+- [ ] Are avatar models downloaded on demand from remote?
+- [ ] Does any auth flow require internet (OAuth token refresh)?
+
+**The rule**: Every feature that uses local resources (Candle inference, local LiveKit server, local Bevy renderer, local STT/TTS) MUST work offline. Cloud providers failing is expected and acceptable — but the UI not loading, the call not starting, the avatars not rendering? That's a broken architecture.
+
+**Targets**:
+- All static assets bundled locally (no CDN dependencies)
+- LiveKit client connects to local `livekit-server` — no external DNS/STUN/TURN needed
+- UI loads fully offline — degrade gracefully (show "cloud providers unavailable" but local features work)
+- Avatar models cached locally after first download
+- Test: airplane mode → `npm start` → open browser → start live call → local Candle personas respond
 
 ---
 
@@ -282,9 +393,9 @@ The ultimate solution: fine-tune local models to call OUR tools correctly.
 
 **Our advantage**: Sentinel pipelines are JSON-serializable data that personas can create, save, share, and modify. A "build feature" sentinel is a reusable template. A LoRA-trained local model inside a sentinel pipeline with shell verification steps doesn't need to be "smart enough to remember to run tests" — the pipeline MAKES it run tests. The model just writes code. **Infrastructure compensates for model capability.**
 
-### 7A. Sentinel Development Templates — IMPLEMENTED
+### 7A. Sentinel Development Templates — IMPLEMENTED + WORKSPACE ISOLATION
 
-Pre-built pipeline templates as TypeScript builder functions. Personas invoke by name via `--template=dev/build-feature`. `TemplateRegistry` provides name-based lookup, listing, and runtime extensibility.
+Pre-built pipeline templates as TypeScript builder functions. **Workspace architecture complete (PR #314)**: identity chain fix (personaId flows through full stack), SentinelWorkspaceManager for git worktree isolation, lifecycle cleanup on completion/failure. **CLI front door complete**: `--repoPath` wired through all 4 dev commands (build-feature, fix-bug, code-review, integrate) + TemplateRegistry. **Claude Agent SDK installed**: ClaudeCodeProvider ready for E2E testing. Personas invoke by name via `--template=dev/build-feature`. `TemplateRegistry` provides name-based lookup, listing, and runtime extensibility.
 
 | Template | Steps | What It Does | Status |
 |----------|-------|-------------|--------|

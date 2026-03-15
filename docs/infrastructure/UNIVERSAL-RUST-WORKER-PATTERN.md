@@ -108,7 +108,7 @@ async fn train_adapter(task: TrainingTask) {
 - Access to training data via DataDaemon
 
 ### 3. InferenceDaemon
-**Problem**: Ollama calls block for 2-10 seconds, TypeScript single-threaded
+**Problem**: Inference calls block for 2-10 seconds, TypeScript single-threaded
 
 **Rust Solution**:
 ```rust
@@ -120,8 +120,8 @@ async fn inference_task(task: InferenceTask) {
         "limit": 50
     })).await?;
 
-    // Run inference (blocking Ollama HTTP call)
-    let response = ollama_generate(&task.model, &messages).await?;
+    // Run inference (blocking call)
+    let response = candle_generate(&task.model, &messages).await?;
 
     // Save AI generation for cost tracking
     Commands::execute("data/create", json!({
@@ -346,7 +346,7 @@ impl CommandClient {
 
 **Tasks**:
 1. Copy rust-worker-template → `workers/inference/`
-2. Implement Ollama HTTP client in Rust
+2. Implement Candle inference in Rust
 3. Use RustCommandClient for context retrieval and cost tracking
 4. Test 10+ concurrent inference requests
 

@@ -379,14 +379,14 @@ system/lora/shipped/
 │   ├── grok-beta.lora          # MCP Sheriff tuned for xAI Grok
 │   ├── claude-opus-4.lora      # MCP Sheriff tuned for Anthropic Claude
 │   ├── deepseek-v3.lora        # MCP Sheriff tuned for DeepSeek
-│   ├── llama-3-70b.lora        # MCP Sheriff tuned for Ollama
+│   ├── llama-3-70b.lora        # MCP Sheriff tuned for Llama (local Candle)
 │   └── README.md               # MCP training methodology
 │
 ├── thoughtstream/
 │   ├── grok-beta.lora          # Conversation coordinator tuned for Grok
 │   ├── claude-opus-4.lora      # Conversation coordinator tuned for Claude
 │   ├── deepseek-v3.lora        # Conversation coordinator tuned for DeepSeek
-│   └── llama-3-70b.lora        # Conversation coordinator tuned for Ollama
+│   └── llama-3-70b.lora        # Conversation coordinator tuned for Llama (local Candle)
 │
 ├── command-access/
 │   ├── grok-beta.lora          # Security coordinator tuned for Grok
@@ -399,7 +399,7 @@ system/lora/shipped/
     │   ├── claude-opus-4.lora
     │   └── deepseek-v3.lora
     ├── teacher/
-    │   ├── llama-3-70b.lora    # Free Ollama option
+    │   ├── llama-3-70b.lora    # Free local Candle option
     │   └── claude-opus-4.lora  # Premium option
     └── helper/
         ├── llama-3-70b.lora
@@ -415,7 +415,7 @@ system/lora/shipped/
 // User has NO API keys configured
 const mcpPersona = PersonaUser.create({
   role: 'sheriff',
-  baseModel: 'llama-3-70b',  // Free Ollama
+  baseModel: 'llama-3-70b',  // Free local Candle
   loraLayer: 'system/lora/shipped/master-control/llama-3-70b.lora'
 });
 ```
@@ -636,7 +636,7 @@ Detailed in [ORGANIC-COGNITION-ARCHITECTURE.md](./ORGANIC-COGNITION-ARCHITECTURE
 
 **Integration**:
 - PersonaUser loads LoRA layer based on base model + role
-- Adaptive model selection (free Ollama OR premium API models)
+- Adaptive model selection (free local Candle inference OR premium API models)
 - User-generated LoRA layers (local training) + shipped LoRA layers (production)
 
 **Files**: `system/lora/shipped/*/*.lora`, `system/user/server/PersonaUser.ts`
@@ -665,7 +665,7 @@ Detailed in [ORGANIC-COGNITION-ARCHITECTURE.md](./ORGANIC-COGNITION-ARCHITECTURE
 
 ### User Experience Metrics
 
-- ✅ **Out-of-the-box**: Works with free Ollama, no API keys required
+- ✅ **Out-of-the-box**: Works with free local Candle inference, no API keys required
 - ✅ **Scales up**: Premium models (Grok, Claude, GPT-4) when user adds keys
 - ✅ **Natural coordination**: ThoughtStream prevents talking over each other
 - ✅ **Secure**: CommandAccessCoordinator prevents malicious behavior

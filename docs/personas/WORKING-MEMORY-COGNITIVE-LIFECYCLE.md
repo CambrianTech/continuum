@@ -200,7 +200,7 @@ Every 5 minutes, **MemoryJanitorDaemon** sweeps working memory:
 ### Pass 2: LLM Classification (Semantic understanding)
 
 ```typescript
-// Use Ollama llama3.2:3b to classify remaining items
+// Use local Candle inference (llama3.2:3b) to classify remaining items
 const prompt = `
   Classify each item as:
   - "ephemeral": Safe to delete (routine chatter, greetings, redundant)
@@ -417,7 +417,7 @@ private async reflectOnRecentThoughts(): Promise<void> {
 
   // Generate reflection
   const reflection = await AIProviderDaemon.generate({
-    provider: 'ollama',
+    provider: 'candle',
     model: 'llama3.2:3b',
     prompt: `
       Review your recent thoughts and generate a brief reflection:
@@ -659,7 +659,7 @@ npm start
 
 # 2. Create test persona
 ./jtag user/create --type=persona --displayName="Memory Test AI" \
-  --provider=ollama --modelConfig='{"model":"llama3.2:3b"}'
+  --provider=candle --modelConfig='{"model":"llama3.2:3b"}'
 
 # 3. Send messages and observe working memory
 ./jtag debug/chat-send --roomId="general" \

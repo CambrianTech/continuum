@@ -79,17 +79,17 @@ const contextWindows: Record<string, number> = {
 export interface ModelConfig {
   readonly id: string;              // Canonical model ID
   readonly displayName: string;     // Human-readable name
-  readonly provider: ModelProvider; // ollama, openai, anthropic, etc.
+  readonly provider: ModelProvider; // candle, openai, anthropic, etc.
   readonly contextWindow: number;   // Maximum tokens
   readonly costPer1kTokens: number; // 0 for local models
-  readonly tier: ModelTier;         // local-fast, ollama-capable, api-cheap, api-premium
+  readonly tier: ModelTier;         // local-fast, candle-capable, api-cheap, api-premium
   readonly capabilities: ModelCapability[];
   readonly deprecated?: boolean;    // Mark old models
   readonly aliases?: string[];      // Alternative names
 }
 
 export type ModelProvider =
-  | 'ollama'
+  | 'candle'
   | 'openai'
   | 'anthropic'
   | 'deepseek'
@@ -99,7 +99,7 @@ export type ModelProvider =
 
 export type ModelTier =
   | 'local-fast'
-  | 'ollama-capable'
+  | 'candle-capable'
   | 'api-cheap'
   | 'api-premium';
 
@@ -114,11 +114,11 @@ export type ModelCapability =
  * Central model registry - THE ONLY SOURCE OF TRUTH
  */
 export const MODEL_REGISTRY: Record<string, ModelConfig> = {
-  // Local Models (Ollama)
+  // Local Models (Candle)
   'qwen2.5:7b': {
     id: 'qwen2.5:7b',
     displayName: 'Qwen 2.5 (7B)',
-    provider: 'ollama',
+    provider: 'candle',
     contextWindow: 128000,
     costPer1kTokens: 0,
     tier: 'local-fast',
@@ -128,7 +128,7 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   'llama3.2:3b': {
     id: 'llama3.2:3b',
     displayName: 'Llama 3.2 (3B)',
-    provider: 'ollama',
+    provider: 'candle',
     contextWindow: 128000,
     costPer1kTokens: 0,
     tier: 'local-fast',
@@ -138,17 +138,17 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   'llama3.1:70b': {
     id: 'llama3.1:70b',
     displayName: 'Llama 3.1 (70B)',
-    provider: 'ollama',
+    provider: 'candle',
     contextWindow: 128000,
     costPer1kTokens: 0,
-    tier: 'ollama-capable',
+    tier: 'candle-capable',
     capabilities: ['text', 'streaming', 'function-calling']
   },
 
   'deepseek-coder:6.7b': {
     id: 'deepseek-coder:6.7b',
     displayName: 'DeepSeek Coder (6.7B)',
-    provider: 'ollama',
+    provider: 'candle',
     contextWindow: 16000,
     costPer1kTokens: 0,
     tier: 'local-fast',
@@ -158,7 +158,7 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   'mistral:7b': {
     id: 'mistral:7b',
     displayName: 'Mistral (7B)',
-    provider: 'ollama',
+    provider: 'candle',
     contextWindow: 32768,
     costPer1kTokens: 0,
     tier: 'local-fast',

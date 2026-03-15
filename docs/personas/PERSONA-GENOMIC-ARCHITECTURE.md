@@ -956,7 +956,7 @@ async searchSimilarContext(
 - ✅ Per-persona isolated SQLite databases
 - ✅ Event-driven chat system
 - ✅ Universal Commands API
-- ✅ AIProviderDaemon (handles inference across Ollama, OpenAI, Anthropic)
+- ✅ AIProviderDaemon (handles inference across Candle, OpenAI, Anthropic)
 
 **Genome (Minimal):**
 - ✅ GenomeManager singleton interface (structure only)

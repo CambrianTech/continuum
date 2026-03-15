@@ -408,7 +408,7 @@ class PersonaConnection {
  * Supports:
  * - OpenAI (GPT-4, GPT-3.5)
  * - Anthropic (Claude)
- * - Local models (Ollama, vLLM)
+ * - Local models (Candle, vLLM)
  * - LoRA adapters (genomic layers - future)
  */
 class ModelAPIClient {
@@ -463,7 +463,7 @@ class ModelAPIClient {
   }
 
   /**
-   * Call local model (Ollama, vLLM)
+   * Call local model (Candle, vLLM)
    */
   private async callLocalModel(messages: Message[]): Promise<string> {
     // TODO: Implement local model call

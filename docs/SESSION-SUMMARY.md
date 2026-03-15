@@ -14,7 +14,7 @@
 - Universal cognitive interface (one `process()` method, infinite domains)
 - Three-layer architecture (Cognition, Domain Builders, Three Coordinators)
 - **Critical addition**: Shipped LoRA layers for multiple providers (Grok, Claude, DeepSeek, Llama)
-- Adaptive model selection (works with free Ollama OR premium APIs)
+- Adaptive model selection (works with free local Candle inference OR premium APIs)
 - Complete integration with Recipe system, ThoughtStream, RAG, genomic training
 
 #### docs/INCREMENTAL-REFACTORING-PLAN.md
@@ -117,7 +117,7 @@ system/lora/shipped/
 ```
 
 **Adaptive model selection**: System requests "best available model" (like resolution matching):
-- Out-of-box: Uses free Ollama (llama-3-70b.lora)
+- Out-of-box: Uses free local Candle inference (llama-3-70b.lora)
 - With API keys: Uses premium models (grok-beta.lora, claude-opus-4.lora)
 - MCP Sheriff can upgrade to higher-order model when available
 

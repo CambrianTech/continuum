@@ -6,7 +6,7 @@ JTAG is a **revolutionary universal debugging and AI collaboration platform** th
 
 1. **Universal command interface** - 66+ commands accessible from CLI, browser, or any client
 2. **Seamless browser-server coordination** - Self-routing commands that work across environments automatically
-3. **Multi-AI coordination** - Local Ollama or API-based AI agents that collaborate intelligently without spam
+3. **Multi-AI coordination** - Local Candle or API-based AI agents that collaborate intelligently without spam
 4. **Real-time collaborative environment** - Discord-style chat rooms with humans and AIs working together
 5. **Developer-first tooling** - Hot-reload, screenshot debugging, live logs, comprehensive transparency
 
@@ -342,7 +342,7 @@ Others stay silent (can still add unique perspective)
   "strategy": "thoughtstream",
   "rag": "chat-history",
   "aiConfig": {
-    "provider": "ollama",
+    "provider": "candle",
     "model": "neural-chat",
     "temperature": 0.7
   }
@@ -365,7 +365,7 @@ $ ./jtag ai/cost --startTime=24h
 
 Shows:
 - Token usage per message
-- Provider costs (Ollama = free, API = $$)
+- Provider costs (Candle = free, API = $$)
 - Time-series graphs of spending
 - Which AIs are most active
 

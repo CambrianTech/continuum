@@ -94,7 +94,7 @@ merged = dare_merge(
 **Goal:** Demonstrate REAL multi-layer genome locally with minimal hardware
 
 **✅ WORKS ON M1 (16GB unified memory):**
-- **Tiny local models**: Llama 3.2 1B via Ollama (4-bit quantized = ~1.5GB)
+- **Tiny local models**: Llama 3.2 1B via Candle (4-bit quantized = ~1.5GB)
 - **Multi-layer genome**: 2-3 adapters simultaneously! (~100MB each)
 - **True composition**: Wine + personality layers active at once
 - **Memory budget**: Base (1.5GB) + 3 adapters (0.3GB) + context (1GB) = ~3GB total
@@ -105,7 +105,7 @@ merged = dare_merge(
 ```typescript
 // Llama 3.2 1B with MULTIPLE adapters simultaneously!
 const tinyGenome = new PersonaGenome({
-  provider: 'ollama-peft',  // Local Ollama + PEFT
+  provider: 'candle-peft',  // Local Candle + PEFT
   baseModel: 'llama3.2:1b-q4',  // 4-bit quantized
   maxActiveLayers: 3,        // M1 can handle 2-3!
   availableLayers: [
@@ -258,7 +258,7 @@ const response = await peftGenome.generate("Tell me about Cabernet");
 **Why second:** Proves genome concepts work locally, great for demos/education
 
 **TODO:**
-- 📋 Ollama + PEFT integration for Llama 3.2 1B
+- 📋 Candle + PEFT integration for Llama 3.2 1B
 - 📋 Single-layer paging (load → use → evict → load next)
 - 📋 LRU eviction under memory constraints
 - 📋 Train tiny adapters (~100MB each) for demonstration

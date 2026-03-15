@@ -521,7 +521,7 @@ class PersonaUser extends AIUser {
 - Grid: Works with any base model (not locked to OpenAI)
 - Grid: Decentralized (censorship-resistant)
 
-### vs. Ollama Library
+### vs. Ollama Library (External Product)
 **Similarities**: Local model management
 **Differences**:
 - Grid: Marketplace for buying/selling (not just downloading)

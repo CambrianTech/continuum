@@ -418,7 +418,7 @@ const trainingRoom = await continuum.createRoom({
 │   │  ┌─────────────────────────────────────────────────────┐   │   │
 │   │  │              Shared Infrastructure                   │   │   │
 │   │  │  • STT Service (Whisper / Deepgram)                 │   │   │
-│   │  │  • LLM Inference (Ollama cluster / GPU pool)        │   │   │
+│   │  │  • LLM Inference (Candle / GPU pool)                │   │   │
 │   │  │  • TTS Service (Eleven Labs / PlayHT)               │   │   │
 │   │  │  • LoRA Storage (S3 + Redis cache)                  │   │   │
 │   │  └─────────────────────────────────────────────────────┘   │   │
@@ -454,7 +454,7 @@ services:
       - "8080:8080"      # WebRTC
 
   llm:
-    image: ollama/ollama:latest
+    image: local-inference:latest  # Was ollama/ollama, now Candle-based
     volumes:
       - ./lora-adapters:/models
     deploy:

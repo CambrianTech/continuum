@@ -53,7 +53,7 @@
 **Why dumbing down is wrong**:
 - Embedding adapters already exist (AIProviderAdapter pattern)
 - Local embedding models are FREE (nomic-embed-text, all-minilm, etc.)
-- Ollama already supports embeddings API
+- Candle already supports embeddings via Rust IPC
 - Vector search is THE RIGHT WAY to do semantic code search
 
 **Architecture**:
@@ -63,7 +63,7 @@ interface EmbeddingAdapter extends AIProviderAdapter {
   async generateEmbedding(text: string, domain?: 'code' | 'text' | 'multilingual'): Promise<number[]>;
 }
 
-// Ollama supports multiple embedding models!
+// Candle supports multiple embedding models!
 // Code-specific: qwen3-embedding (8B, ranks #1 on MTEB for code+multilingual)
 // General text: nomic-embed-text (high-performance, long context)
 // Large: mxbai-embed-large (state-of-the-art)
@@ -75,7 +75,7 @@ interface EmbeddingAdapter extends AIProviderAdapter {
 - **Mixed/Unknown**: `qwen3-embedding` - Handles both code and text well
 
 **What we build**:
-- Vector embeddings from day 1 (via Ollama adapter)
+- Vector embeddings from day 1 (via Candle Rust IPC)
 - **Smart model selection by content type**
 - Cosine similarity search
 - Hybrid approach: keyword + vector (best of both)
@@ -206,7 +206,7 @@ class MarkdownIndexer {
 - Embeddings generated during indexing (one-time cost)
 - Stored in database alongside content
 - Query uses appropriate model based on what we're searching
-- Ollama embedding models are free and local
+- Local embedding models are free and in-process via Candle
 
 ### 4. Query Strategy - Hybrid (Vector + Keyword)
 
@@ -389,7 +389,7 @@ class ChatRAGBuilder extends RAGBuilder {
 - [ ] Create CodeIndexEntity.ts extending BaseEntity
 - [ ] Register in EntityRegistry
 - [ ] Add embedding capability to AIProviderAdapter interface
-- [ ] Implement in OllamaAdapter (use nomic-embed-text model)
+- [ ] Implement embedding generation via Candle Rust IPC
 
 **Day 2: Indexers with Embeddings**
 - [ ] Create TypeScriptIndexer.ts
@@ -418,7 +418,7 @@ class ChatRAGBuilder extends RAGBuilder {
   - Returns formatted results with relevance scores
 
 **Day 4: Testing + Validation**
-- [ ] Pull nomic-embed-text model: `ollama pull nomic-embed-text`
+- [ ] Verify embedding model is available in Candle
 - [ ] Index /system/user/ directory (~50 files)
 - [ ] Query "PersonaUser inbox" (expect PersonaInbox.ts first)
 - [ ] Query "How do Commands work?" (semantic similarity test)

@@ -170,7 +170,7 @@ private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
           reasoning: gatingResult.reason,
           responseContent: undefined,
           modelUsed: gatingResult.model,
-          modelProvider: this.modelConfig.provider ?? 'ollama',
+          modelProvider: this.modelConfig.provider ?? 'candle',
           tokensUsed: undefined,
           responseTime: Date.now() - decisionStartTime,
           sessionId: DataDaemon.jtagContext!.sessionId,
@@ -208,7 +208,7 @@ private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
           reasoning: gatingResult.reason,
           responseContent: undefined,  // Will be filled after generation
           modelUsed: gatingResult.model,
-          modelProvider: this.modelConfig.provider ?? 'ollama',
+          modelProvider: this.modelConfig.provider ?? 'candle',
           tokensUsed: undefined,
           responseTime: Date.now() - decisionStartTime,
           sessionId: DataDaemon.jtagContext!.sessionId,

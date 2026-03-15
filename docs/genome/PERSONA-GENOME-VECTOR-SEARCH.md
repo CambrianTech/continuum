@@ -522,7 +522,7 @@ const response = await persona.generateText({
 ### Local Search
 
 - **Vector search latency**: 1-5ms for 100s of adapters
-- **Embedding generation**: ~50-100ms per query (Ollama local)
+- **Embedding generation**: ~50-100ms per query (local Candle inference)
 - **Total latency**: <200ms for local search
 
 ### Network Search

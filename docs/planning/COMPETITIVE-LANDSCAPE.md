@@ -135,7 +135,7 @@ LoRA fine-tuning IS the answer to "prompting is dead." You don't write instructi
 ### 6. Cost Control (#7)
 > $1-2K/month. 1 billion tokens per day.
 
-Local inference via Ollama/Candle eliminates the token meter. Fine-tuned small models (3B, 4B) outperform prompted large models on specific domains. Our GPU memory management system ensures local inference is practical, not a science project.
+Local inference via Candle eliminates the token meter. Fine-tuned small models (3B, 4B) outperform prompted large models on specific domains. Our GPU memory management system ensures local inference is practical, not a science project.
 
 ### 7. Security (#1, #2)
 > "If you're not okay with all your data being leaked onto the internet, you shouldn't use it."
@@ -154,7 +154,7 @@ Not "here's a spec, go build" — conversational co-creation. Our chat system wi
 Nobody else combines:
 
 ```
-Local inference (Ollama/Candle)
+Local inference (Candle)
   + Local LoRA fine-tuning (PEFT/QLoRA)
     + Multi-agent orchestration (Sentinel pipelines)
       + Agent-to-agent training (Academy — 3 learning modes)
@@ -189,7 +189,7 @@ And critically: **personas don't start from zero.** The genome registry is a sha
 | Agent autonomy | No | No | Scripted | Partial | Partial | Yes (adaptive loop) |
 | Agent-to-agent training | No | No | No | No | No | Yes (Academy) |
 | Tool calling reliability | N/A | N/A | Framework | N/A | Excellent (11 parsers) | Good (improving) |
-| Local inference | No | No | No | No | Via vLLM/SGLang | Yes (Ollama/Candle) |
+| Local inference | No | No | No | No | Via vLLM/SGLang | Yes (Candle) |
 | On-device fine-tuning | No | No | No | No | RL trajectories | Yes (PEFT/QLoRA) |
 | GPU memory management | N/A | N/A | N/A | N/A | N/A | Yes (eviction registry) |
 | Deterministic verification | No | No | No | Partial | No | Yes (Sentinel) |

@@ -1,3 +1,5 @@
+**LEGACY**: This document references Ollama which is no longer used. Local inference is now Candle-based (Rust, in-process). This doc is kept for historical reference only.
+
 **Parent:** [Personas](README.md)
 
 # Phase 7: LoRA Fine-Tuning Architecture

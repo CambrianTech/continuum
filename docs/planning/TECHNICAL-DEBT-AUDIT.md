@@ -14,7 +14,7 @@
 1647 lines - system/user/server/modules/PersonaResponseGenerator.ts
 1402 lines - daemons/data-daemon/shared/DataDaemon.ts
 1234 lines - daemons/data-daemon/server/RustWorkerStorageAdapter.ts
-1225 lines - daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter.ts
+1225 lines - daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter.ts (legacy)
 1214 lines - system/rag/builders/ChatRAGBuilder.ts
 1210 lines - system/core/client/shared/JTAGClient.ts
 ```

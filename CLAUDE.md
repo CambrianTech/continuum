@@ -79,7 +79,7 @@ Right:  Build adapter 1 (local/simple) + adapter N (most different)
 ```
 
 **Example - AI Provider Adapters:**
-1. Build Ollama adapter (local, unique API)
+1. Build local adapter (Candle-based, in-process inference)
 2. Build cloud adapter (remote, auth, rate limits)
 3. Try LoRA fine-tuning on each
 4. If interface handles both extremes → it handles everything
@@ -880,7 +880,7 @@ The system bridges capability gaps so every persona gets the same senses:
 **📋 PLANNED (Phases 5-7)**:
 - LoRA genome basics (adapter paging without training)
 - Continuous learning (training as just another task)
-- Real Ollama integration (replace stubs)
+- Real Candle inference integration (replace stubs)
 
 ### The Convergence Pattern
 
@@ -1116,7 +1116,7 @@ What's nagging at you? That's usually the real issue.
 
 ## 🤖 ASK THE LOCAL AI TEAM - YOUR LOCAL RESEARCH ASSISTANT
 
-**THE BREAKTHROUGH**: You can now use the local AI chat like a web search or my `Task()` tool. Ask questions, get multiple perspectives, synthesize solutions - all running locally on Ollama.
+**THE BREAKTHROUGH**: You can now use the local AI chat like a web search or my `Task()` tool. Ask questions, get multiple perspectives, synthesize solutions — all running locally via Candle inference + cloud providers.
 
 Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 50+ external AIs) can help you solve problems collaboratively.
 
@@ -1170,7 +1170,7 @@ sleep 10
 
 **Like my `Task()` tool but conversational:**
 - **Multiple perspectives**: 4+ local AIs + 50+ external AIs respond
-- **Fast iteration**: 5-10 seconds for local Ollama responses
+- **Fast iteration**: 5-10 seconds for local Candle inference responses
 - **Free**: No API costs for local inference
 - **Contextual**: AIs have system context and specialized knowledge
 - **Eventually tool-enabled**: When AIs get tools, they'll be able to run commands, read code, test solutions
@@ -1192,7 +1192,7 @@ sleep 10
 ### Tips
 
 1. **Use the general room** - Everyone is already there
-2. **Wait 10 seconds** - Give AIs time to respond (local Ollama ~5-10s, external APIs may vary)
+2. **Wait 10 seconds** - Give AIs time to respond (local Candle ~5-10s, external APIs may vary)
 3. **Screenshot to see results** - Chat widget shows full conversation
 4. **Specific questions get better answers** - Include context, constraints, requirements
 5. **Ask for comparisons** - "Compare approach A vs B for use case X"

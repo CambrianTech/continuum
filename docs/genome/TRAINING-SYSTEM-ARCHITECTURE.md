@@ -106,7 +106,7 @@ Same patterns that power validation power data generation:
 
 ✅ LoRA Adapter System
    ├── LoRAAdapter class (load/unload/activate)
-   ├── Provider-agnostic (Anthropic, OpenAI, Ollama)
+   ├── Provider-agnostic (Anthropic, OpenAI, Candle)
    ├── LRU eviction when memory full
    └── Genome paging (virtual memory for skills)
 

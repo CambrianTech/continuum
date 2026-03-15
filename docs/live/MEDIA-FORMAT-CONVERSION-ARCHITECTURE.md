@@ -491,12 +491,12 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
 ---
 
-### OllamaAdapter
+### OllamaAdapter (Legacy)
 
-**Model-specific logic**: Different Ollama models have different capabilities
+**Model-specific logic**: Different local models have different capabilities. Now handled by Candle.
 
 ```typescript
-export class OllamaAdapter extends BaseLocalAdapter {
+export class OllamaAdapter extends BaseLocalAdapter { // Legacy - now Candle-based
   protected inferCapabilitiesFromModel(): MediaCapabilities {
     const modelName = this.config.model;
 

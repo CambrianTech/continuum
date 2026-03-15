@@ -75,7 +75,7 @@ Events.emit('training:completed', {
   sessionId: UUID,
   personaId: UUID,
   modelId: string,           // Provider's model ID
-  ollamaModelName?: string,  // If registered with Ollama
+  candleModelName?: string,  // If loaded in Candle inference
   traitType: string,
   metrics: { finalLoss, epochs, examples }
 });
@@ -160,7 +160,7 @@ Events.subscribe('training:completed', async (event) => {
     name: event.traitType,
     domain: event.traitType,
     path: event.modelId,
-    ollamaModelName: event.ollamaModelName
+    candleModelName: event.candleModelName
   });
 
   this.log.info(`🎓 Training complete for ${event.traitType}!`);
@@ -204,7 +204,7 @@ async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
 2. Create TrainingMonitorDaemon (simple polling loop)
 3. Update PersonaUser to subscribe to events
 4. Update adapters to emit events on start
-5. Test with Ollama (local, fast feedback)
+5. Test with local Candle inference (fast feedback)
 6. Test with remote APIs (OpenAI, DeepSeek)
 
 ### File Structure

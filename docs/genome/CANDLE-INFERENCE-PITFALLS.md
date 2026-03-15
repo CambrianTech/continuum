@@ -8,9 +8,9 @@ This document captures pitfalls discovered during debugging of the Candle native
 
 ## Pitfall 1: Provider Aliasing Only Works with `preferredProvider`
 
-**Problem**: Code like SignalDetector uses `ai/generate` with a model name (`llama3.2:1b`) but NO `preferredProvider`. The aliasing logic only checked `preferredProvider`, so these requests went to OllamaAdapter instead of Candle.
+**Problem**: Code like SignalDetector uses `ai/generate` with a model name (`llama3.2:1b`) but NO `preferredProvider`. The aliasing logic only checked `preferredProvider`, so these requests went to OllamaAdapter (legacy cloud provider adapter) instead of Candle.
 
-**Symptom**: OllamaAdapter queue timeouts, error: "Request timed out in queue after 45022ms"
+**Symptom**: Legacy OllamaAdapter queue timeouts, error: "Request timed out in queue after 45022ms"
 
 **Fix**: Added `isLocalModel()` check in `AIProviderDaemon.selectAdapter()`:
 ```typescript
@@ -40,7 +40,7 @@ const registrations = Array.from(this.adapters.values())
 
 ## Pitfall 3: PersonaUser Timeout Includes Queue Wait Time
 
-**Problem**: PersonaUser starts a 180-second timeout when PHASE 3.3 begins (calling generateText), but the request may wait in queue for 100+ seconds before execution starts.
+**Problem**: PersonaUser starts a 180-second timeout when PHASE 3.3 begins (calling generateText), but the request may wait in the inference queue for 100+ seconds before execution starts.
 
 **Symptom**: Request times out even though Candle generation succeeds. Timeline:
 - 13:25:08: PHASE 3.3 starts (timeout timer begins)
@@ -58,13 +58,13 @@ const registrations = Array.from(this.adapters.values())
 
 ## Pitfall 4: Race Condition on Startup
 
-**Problem**: `PersonaUser.queueStatsProvider` called `AIProviderDaemon.getAdapter('ollama')` before the daemon was initialized, causing "AIProviderDaemon not initialized" errors.
+**Problem**: `PersonaUser.queueStatsProvider` called `AIProviderDaemon.getAdapter('candle')` before the daemon was initialized, causing "AIProviderDaemon not initialized" errors.
 
 **Fix**: Wrap in try/catch with defaults:
 ```typescript
 this.inbox.setQueueStatsProvider(() => {
   try {
-    const adapter = AIProviderDaemon.getAdapter('ollama');
+    const adapter = AIProviderDaemon.getAdapter('candle');
     if (adapter?.getQueueStats) return adapter.getQueueStats();
   } catch {
     // AIProviderDaemon not initialized yet

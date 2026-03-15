@@ -1,3 +1,5 @@
+**LEGACY**: This document references Ollama which is no longer used. Local inference is now Candle-based (Rust, in-process). This doc is kept for historical reference only.
+
 # AI Infrastructure Dashboard - TensorBoard for JTAG
 
 **Vision**: A TensorBoard-inspired real-time monitoring and control panel for AI adapter testing, training, and deployment across all providers (Ollama, OpenAI, Anthropic, Together, Fireworks, etc.).

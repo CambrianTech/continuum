@@ -202,10 +202,11 @@ replicate trainings create \
 3. **Test Locally** (Verify before deployment):
    ```bash
    # Download trained adapter
-   # Test with Ollama locally
-   ollama run llama3.1:8b \
-     --adapter ./wine-expertise-v1.safetensors \
-     --prompt "What's the difference between Cabernet and Merlot?"
+   # Test with local Candle inference
+   # Load model + adapter and test via Candle in-process inference
+   ./jtag ai/generate --model=llama3.1:8b \
+     --adapter=./wine-expertise-v1.safetensors \
+     --prompt="What's the difference between Cabernet and Merlot?"
    ```
 
 **Advantages**:
@@ -440,7 +441,7 @@ Use other LLMs to rate outputs automatically - much faster than human eval!
 // For each test prompt
 for (const prompt of testPrompts) {
   // Generate response from trained adapter
-  const response = await ollama('llama3.1:8b', prompt, {
+  const response = await candle_generate('llama3.1:8b', prompt, {
     adapter: 'wine-expertise-v1'
   });
 

@@ -36,7 +36,7 @@ Settings organized like command paths:
 system/data/storage/max-size
 system/chat/history/max-messages
 system/scheduling/timings/adapter-health-check
-system/ai/providers/ollama/enabled
+system/ai/providers/candle/enabled
 ```
 
 ### Core API
@@ -240,8 +240,8 @@ Start minimal system - no daemons, no AI providers
 npm run recovery
 
 # Allows manual inspection/repair
-./jtag system/config/get --path="system/ai/providers/ollama/enabled"
-./jtag system/config/set --path="system/ai/providers/ollama/enabled" --value=false
+./jtag system/config/get --path="system/ai/providers/candle/enabled"
+./jtag system/config/set --path="system/ai/providers/candle/enabled" --value=false
 ```
 
 ### Validation & Auto-Rollback
@@ -338,12 +338,12 @@ Track interdependencies for smarter validation:
 
 ```typescript
 const FACTORY_DEFAULTS = {
-  'system/ai/providers/ollama/enabled': {
+  'system/ai/providers/candle/enabled': {
     type: 'boolean',
     defaultValue: true,
     // If this changes, these become relevant
     affects: [
-      'system/ai/providers/ollama/max-concurrent',
+      'system/ai/providers/candle/max-concurrent',
       'system/scheduling/timings/adapter-health-check',
     ],
   },
@@ -781,7 +781,7 @@ class SQLiteAdapter implements IStorageAdapter {
 ./jtag data/export --output="/tmp/backup-before-upgrade.json"
 
 # 2. Perform risky operation (upgrade, config change, etc.)
-./jtag system/config/set --path="system/ai/providers/ollama/enabled" --value=true
+./jtag system/config/set --path="system/ai/providers/candle/enabled" --value=true
 
 # 3. Test system
 ./jtag ping

@@ -150,7 +150,7 @@
 const initialModel = 'qwen2.5:7b'; // Free, local, fast
 
 // Step 6: Start generating
-const stream = await ollama.generate(initialModel, prompt);
+const stream = await candle.generate(initialModel, prompt);
 
 // Progressive scoring during streaming (200 token windows)
 const scorer = new ProgressiveScorer();
@@ -163,7 +163,7 @@ for await (const chunk of stream) {
 
     // Switch to next tier
     const upgradedModel = getNextTier(currentTier);
-    stream = await ollama.generate(upgradedModel, prompt + partialResponse);
+    stream = await candle.generate(upgradedModel, prompt + partialResponse);
 
     // Continue with better model
   }
@@ -290,7 +290,7 @@ async autonomousLife() {
 // Low energy → Conservative routing
 if (this.state.energy < 0.3) {
   // Start with capable model (skip fast tier)
-  return 'ollama-capable'; // llama3.1:70b
+  return 'candle-capable'; // llama3.1:70b
 }
 
 // High energy → Aggressive optimization
@@ -721,7 +721,7 @@ async processMessage(inboxMessage: InboxMessage) {
                               ▼
                    ┌─────────────────────┐
                    │  AIProviderDaemon   │
-                   │  - Ollama (local)   │
+                   │  - Candle (local)   │
                    │  - OpenAI (API)     │
                    │  - Anthropic (API)  │
                    │  - DeepSeek (API)   │
