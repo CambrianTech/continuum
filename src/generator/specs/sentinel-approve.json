@@ -1,0 +1,53 @@
+{
+  "name": "sentinel/approve",
+  "description": "Approve or reject a pending pipeline approval step. Resolves the blocking approval gate in the Rust executor.",
+  "params": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Sentinel handle ID with pending approval"
+    },
+    {
+      "name": "approved",
+      "type": "boolean",
+      "description": "Whether to approve (true) or reject (false) the pending step"
+    },
+    {
+      "name": "reason",
+      "type": "string",
+      "optional": true,
+      "description": "Human-readable reason for the approval decision"
+    },
+    {
+      "name": "approverId",
+      "type": "string",
+      "optional": true,
+      "description": "UUID of the user or persona approving/rejecting"
+    }
+  ],
+  "results": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "The sentinel handle that was approved/rejected"
+    },
+    {
+      "name": "approved",
+      "type": "boolean",
+      "description": "Whether the approval was granted"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Approve a pending pipeline step",
+      "command": "./jtag sentinel/approve --handle=abc123 --approved=true --reason='Looks good'",
+      "expectedResult": "{ handle: 'abc123', approved: true }"
+    },
+    {
+      "description": "Reject a pending pipeline step",
+      "command": "./jtag sentinel/approve --handle=abc123 --approved=false --reason='Needs more tests'",
+      "expectedResult": "{ handle: 'abc123', approved: false }"
+    }
+  ],
+  "accessLevel": "system"
+}

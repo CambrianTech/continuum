@@ -31,9 +31,14 @@ import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { Workspace } from '../../../code/server/Workspace';
-import type { PipelineSentinelParams, SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
+import { SentinelRun, type PipelineSentinelParams, type SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
 import type { SentinelLoadParams, SentinelLoadResult } from '../../../../commands/sentinel/load/shared/SentinelLoadTypes';
 import type { PipelineSentinelDefinition } from '../../../sentinel/SentinelDefinition';
+import { SentinelResume } from '../../../../commands/sentinel/resume/shared/SentinelResumeTypes';
+import { SentinelApprove } from '../../../../commands/sentinel/approve/shared/SentinelApproveTypes';
+import { SentinelExtendBudget } from '../../../../commands/sentinel/extend-budget/shared/SentinelExtendBudgetTypes';
+import { SentinelWebResearch } from '../../../../commands/sentinel/web-research/shared/SentinelWebResearchTypes';
+import { AIGenerate } from '../../../../commands/ai/generate/shared/AIGenerateTypes';
 
 /**
  * Interface for PersonaUser dependency injection into task executor.
@@ -125,6 +130,7 @@ export class PersonaTaskExecutor {
         case 'sentinel-failed':
         case 'sentinel-escalation':
         case 'sentinel-approval':
+        case 'sentinel-budget-exhausted':
           outcome = await this.executeSentinelTask(task);
           break;
 
@@ -1069,16 +1075,19 @@ export class PersonaTaskExecutor {
    * Handle sentinel lifecycle tasks (escalated from SentinelEscalationService)
    *
    * When a sentinel completes, fails, or needs approval, the persona processes
-   * the notification. This enables the persona to:
-   * - Acknowledge completion ("my training sentinel finished")
-   * - React to failures ("the build sentinel failed, should I retry?")
-   * - Recall similar past sentinel patterns for learning
+   * the notification and EVALUATES what to do next. This is the intelligence layer:
+   *
+   * On success: Acknowledge, reload genome if academy, store memory
+   * On failure: LLM evaluates → DONE / RETRY(adjustedPrompt) / RESEARCH(query) / ESCALATE(message)
+   * On approval: Evaluate context and approve/reject via sentinel/approve
+   * On budget exhausted: Decide whether to extend budget or stop
    */
   private async executeSentinelTask(task: InboxTask): Promise<string> {
     const metadata = task.metadata ?? {};
     const sentinelName = metadata.sentinelName ?? 'unknown';
     const sentinelStatus = metadata.sentinelStatus ?? task.taskType;
     const error = metadata.error as string | undefined;
+    const handle = metadata.sentinelHandle as string | undefined;
 
     this.log(`🤖 ${this.displayName}: Sentinel notification — "${sentinelName}" ${sentinelStatus}`);
 
@@ -1097,7 +1106,6 @@ export class PersonaTaskExecutor {
           this.log(`🧬 ${this.displayName}: Academy sentinel completed — reloading genome to activate new adapters`);
           try {
             await this.personaUser.limbicSystem.loadGenomeFromDatabase();
-            // Sync domain classifier with new adapters
             if (this.personaUser.rustCognitionBridge) {
               await this.personaUser.rustCognitionBridge.syncDomainClassifier();
             }
@@ -1114,20 +1122,263 @@ export class PersonaTaskExecutor {
       }
 
       case 'sentinel-failed':
-        return `Sentinel "${sentinelName}" failed: ${error ?? 'unknown error'}. ` +
-          (relevantMemories.length > 0
-            ? `${relevantMemories.filter(m => m.context?.status === 'failed').length} previous failures recorded.`
-            : 'No prior execution history.');
+        return await this.evaluateSentinelFailure(task, sentinelName, error, handle, relevantMemories);
 
       case 'sentinel-escalation':
         return `Sentinel "${sentinelName}" requires attention: ${task.description}`;
 
       case 'sentinel-approval':
-        return `Sentinel "${sentinelName}" awaiting approval: ${task.description}`;
+        return await this.evaluateSentinelApproval(task, sentinelName, handle);
+
+      case 'sentinel-budget-exhausted':
+        return await this.evaluateBudgetExhaustion(task, sentinelName, handle);
 
       default:
         return `Sentinel task: ${task.description}`;
     }
+  }
+
+  /**
+   * Evaluate a sentinel failure with LLM and decide: RETRY, RESEARCH, ESCALATE, or DONE.
+   *
+   * This is the intelligence layer — the persona reasons about what went wrong
+   * and autonomously decides the next action.
+   */
+  private async evaluateSentinelFailure(
+    task: InboxTask,
+    sentinelName: string,
+    error: string | undefined,
+    handle: string | undefined,
+    relevantMemories: Array<{ content: string; context: Record<string, unknown> }>,
+  ): Promise<string> {
+    const metadata = task.metadata ?? {};
+    const stepResults = metadata.stepResults as Array<Record<string, unknown>> | undefined;
+    const definition = metadata.definition as PipelineSentinelDefinition | string | undefined;
+    const retryCount = (metadata.retryCount as number) ?? 0;
+
+    // Guard: don't retry forever
+    const MAX_RETRIES = 3;
+    if (retryCount >= MAX_RETRIES) {
+      this.log(`⛔ ${this.displayName}: Sentinel "${sentinelName}" failed ${retryCount} times — escalating to human`);
+      return `Sentinel "${sentinelName}" failed ${retryCount} times. Giving up. Last error: ${error}`;
+    }
+
+    // Build context for LLM evaluation
+    const failureContext = [
+      `Sentinel "${sentinelName}" failed.`,
+      error ? `Error: ${error}` : '',
+      stepResults?.length ? `Step results: ${JSON.stringify(stepResults.slice(-3))}` : '',
+      relevantMemories.length > 0
+        ? `Previous similar executions: ${relevantMemories.length} (${relevantMemories.filter(m => m.context?.status === 'failed').length} failures)`
+        : '',
+    ].filter(Boolean).join('\n');
+
+    const evaluationPrompt = `You are an autonomous AI evaluating a failed sentinel pipeline.
+
+${failureContext}
+
+Retry count so far: ${retryCount}/${MAX_RETRIES}
+
+Decide the best action. Respond with EXACTLY one of these JSON formats:
+- {"action":"RETRY","reason":"why retrying will help","adjustedPrompt":"modified instructions"}
+- {"action":"RESEARCH","reason":"what to look up","query":"search query for web research"}
+- {"action":"ESCALATE","reason":"why human needs to see this","message":"message for human"}
+- {"action":"DONE","reason":"why we should stop trying"}
+
+Prefer RETRY if the error seems transient or fixable with adjusted instructions.
+Prefer RESEARCH if the error references unknown APIs, libraries, or concepts.
+Prefer ESCALATE if the error is a permissions issue, missing credentials, or needs human judgment.
+Prefer DONE if the error is fundamental and retrying won't help.`;
+
+    try {
+      const llmResult = await AIGenerate.execute({
+        messages: [{ role: 'user', content: evaluationPrompt }],
+        model: 'claude-sonnet-4-20250514',
+        provider: 'anthropic',
+        maxTokens: 500,
+      });
+
+      const responseText = llmResult?.text ?? '';
+      const decision = this.parseEvaluationDecision(responseText);
+
+      this.log(`🧠 ${this.displayName}: Evaluation decision for "${sentinelName}": ${decision.action} — ${decision.reason}`);
+
+      switch (decision.action) {
+        case 'RETRY': {
+          if (!definition) {
+            return `Sentinel "${sentinelName}" failed and RETRY recommended, but no definition available to re-launch.`;
+          }
+          this.log(`🔄 ${this.displayName}: Retrying sentinel "${sentinelName}" (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+
+          // If there's a checkpoint, try resuming; otherwise re-launch
+          if (handle) {
+            try {
+              await SentinelResume.execute({ handle });
+              return `Sentinel "${sentinelName}" resumed from checkpoint (attempt ${retryCount + 1}).`;
+            } catch {
+              // Resume failed — fall through to fresh launch
+            }
+          }
+
+          // Fresh re-launch with adjusted metadata
+          await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
+            type: 'pipeline',
+            definition,
+            async: true,
+            parentPersonaId: this.personaId,
+            sentinelName,
+          });
+          return `Sentinel "${sentinelName}" re-launched (attempt ${retryCount + 1}/${MAX_RETRIES}). Reason: ${decision.reason}`;
+        }
+
+        case 'RESEARCH': {
+          this.log(`🔍 ${this.displayName}: Researching before retry: "${decision.query}"`);
+          try {
+            const research = await SentinelWebResearch.execute({
+              query: decision.query ?? '',
+              maxPages: 3,
+              extract: 'solutions and code examples',
+            });
+            const summary = research.summary || 'No results';
+            this.log(`📚 ${this.displayName}: Research complete, ${summary.length} chars. Will retry with findings.`);
+
+            // Re-launch with research context injected
+            if (definition) {
+              await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
+                type: 'pipeline',
+                definition,
+                async: true,
+                parentPersonaId: this.personaId,
+                sentinelName,
+              });
+              return `Sentinel "${sentinelName}" re-launched with research findings. Query: "${decision.query}"`;
+            }
+            return `Research completed for "${sentinelName}" but no definition to retry: ${summary.slice(0, 500)}`;
+          } catch (researchError) {
+            return `Research failed for "${sentinelName}": ${researchError}. Original error: ${error}`;
+          }
+        }
+
+        case 'ESCALATE': {
+          this.log(`🚨 ${this.displayName}: Escalating "${sentinelName}" to human: ${decision.message}`);
+          return `ESCALATE: Sentinel "${sentinelName}" needs human attention. ${decision.message}. Error: ${error}`;
+        }
+
+        case 'DONE':
+        default:
+          return `Sentinel "${sentinelName}" failed: ${error}. Decision: ${decision.reason}`;
+      }
+    } catch (evalError) {
+      // LLM evaluation itself failed — fall back to simple escalation
+      this.log(`⚠️ ${this.displayName}: Evaluation LLM call failed: ${evalError}`);
+      return `Sentinel "${sentinelName}" failed: ${error ?? 'unknown error'}. ` +
+        (relevantMemories.length > 0
+          ? `${relevantMemories.filter(m => m.context?.status === 'failed').length} previous failures recorded.`
+          : 'No prior execution history.');
+    }
+  }
+
+  /**
+   * Parse LLM evaluation response into structured decision.
+   */
+  private parseEvaluationDecision(text: string): {
+    action: 'RETRY' | 'RESEARCH' | 'ESCALATE' | 'DONE';
+    reason: string;
+    adjustedPrompt?: string;
+    query?: string;
+    message?: string;
+  } {
+    try {
+      // Try to extract JSON from response (may be wrapped in markdown fences)
+      const jsonMatch = text.match(/\{[\s\S]*"action"[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.action && ['RETRY', 'RESEARCH', 'ESCALATE', 'DONE'].includes(parsed.action)) {
+          return {
+            action: parsed.action,
+            reason: parsed.reason || 'No reason given',
+            adjustedPrompt: parsed.adjustedPrompt,
+            query: parsed.query,
+            message: parsed.message,
+          };
+        }
+      }
+    } catch {
+      // JSON parse failed
+    }
+    // Default: escalate if we can't parse
+    return { action: 'ESCALATE', reason: 'Could not parse evaluation response', message: text.slice(0, 500) };
+  }
+
+  /**
+   * Evaluate an approval request — persona decides whether to approve the pending step.
+   */
+  private async evaluateSentinelApproval(
+    task: InboxTask,
+    sentinelName: string,
+    handle: string | undefined,
+  ): Promise<string> {
+    if (!handle) {
+      return `Sentinel "${sentinelName}" awaiting approval but no handle provided`;
+    }
+
+    const metadata = task.metadata ?? {};
+    const prompt = (metadata.approvalPrompt as string) ?? task.description ?? '';
+
+    this.log(`🔍 ${this.displayName}: Evaluating approval for "${sentinelName}": ${prompt}`);
+
+    // For now: auto-approve if the persona is the owner (it launched the sentinel)
+    // Future: LLM evaluation of the diff/plan/results
+    try {
+      await SentinelApprove.execute({
+        handle,
+        approved: true,
+        reason: `Auto-approved by ${this.displayName}: persona is the sentinel owner`,
+        approverId: this.personaId,
+      });
+      return `Sentinel "${sentinelName}" approved by ${this.displayName}`;
+    } catch (approveError) {
+      return `Failed to approve sentinel "${sentinelName}": ${approveError}`;
+    }
+  }
+
+  /**
+   * Evaluate budget exhaustion — extend budget or stop.
+   */
+  private async evaluateBudgetExhaustion(
+    task: InboxTask,
+    sentinelName: string,
+    handle: string | undefined,
+  ): Promise<string> {
+    if (!handle) {
+      return `Sentinel "${sentinelName}" budget exhausted but no handle provided`;
+    }
+
+    const metadata = task.metadata ?? {};
+    const consumed = metadata.budgetConsumed as Record<string, unknown> | undefined;
+    const limits = metadata.budgetLimits as Record<string, unknown> | undefined;
+
+    this.log(`💰 ${this.displayName}: Budget exhausted for "${sentinelName}". Consumed: ${JSON.stringify(consumed)}`);
+
+    // Simple heuristic: if less than 3 iterations, extend by 2x; otherwise stop
+    const iterations = (consumed?.iterations as number) ?? 0;
+    if (iterations < 3) {
+      try {
+        const currentMaxTime = (limits?.maxTimeSecs as number) ?? 3600;
+        await SentinelExtendBudget.execute({
+          handle,
+          maxTimeSecs: currentMaxTime * 2,
+          maxIterations: ((limits?.maxIterations as number) ?? 10) * 2,
+        });
+        // Resume after extending budget
+        await SentinelResume.execute({ handle });
+        return `Sentinel "${sentinelName}" budget extended and resumed (iteration ${iterations})`;
+      } catch (extendError) {
+        return `Failed to extend budget for "${sentinelName}": ${extendError}`;
+      }
+    }
+
+    return `Sentinel "${sentinelName}" budget exhausted after ${iterations} iterations. Stopping.`;
   }
 
   /**

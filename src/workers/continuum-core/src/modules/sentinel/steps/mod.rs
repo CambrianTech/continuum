@@ -1,5 +1,6 @@
 //! Step dispatch — routes PipelineStep variants to their handlers
 
+pub mod approve;
 pub mod coding_agent;
 pub mod command;
 pub mod condition;
@@ -10,6 +11,7 @@ pub mod parallel;
 pub mod sentinel;
 pub mod shell;
 pub mod watch;
+pub mod web_research;
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -121,6 +123,28 @@ pub fn execute_step<'a>(
             } => watch::execute(event, *timeout_secs, index, ctx, pipeline_ctx).await,
             PipelineStep::Sentinel { pipeline } => {
                 sentinel::execute(pipeline, index, ctx, pipeline_ctx).await
+            }
+            PipelineStep::Approve {
+                prompt,
+                approvers,
+                timeout_secs,
+            } => {
+                approve::execute(prompt, approvers, *timeout_secs, index, ctx, pipeline_ctx).await
+            }
+            PipelineStep::WebResearch {
+                query,
+                max_pages,
+                extract,
+            } => {
+                web_research::execute(
+                    query,
+                    *max_pages,
+                    extract.as_deref(),
+                    index,
+                    ctx,
+                    pipeline_ctx,
+                )
+                .await
             }
             PipelineStep::CodingAgent {
                 prompt,

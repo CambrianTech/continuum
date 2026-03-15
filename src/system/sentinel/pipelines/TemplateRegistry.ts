@@ -21,6 +21,8 @@ import { buildDevCodeReviewPipeline, type DevCodeReviewConfig } from './DevCodeR
 import { buildDevIntegratePipeline, type DevIntegrateConfig } from './DevIntegratePipeline';
 import { buildCreativeWriteChapterPipeline, type CreativeWriteChapterConfig } from './CreativeWriteChapterPipeline';
 import { buildResearchInvestigatePipeline, type ResearchInvestigateConfig } from './ResearchInvestigatePipeline';
+import { buildPublishPipeline, type PublishConfig } from './PublishPipeline';
+import { buildSafeDeployPipeline, type SafeDeployConfig } from './SafeDeployPipeline';
 
 // -- Template metadata --------------------------------------------------------
 
@@ -138,6 +140,34 @@ register(
     ],
   },
   buildResearchInvestigatePipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'dev/publish',
+    description: 'Push branch → create PR → wait for CI → approve → merge (with human gates)',
+    category: 'dev',
+    requiredFields: ['branch', 'title', 'personaId', 'personaName', 'cwd'],
+    optionalFields: [
+      'baseBranch', 'body', 'remote', 'mergeStrategy', 'ciTimeoutSecs',
+      'ciPollIntervalSecs', 'autoApprovePr', 'autoApproveMerge',
+      'approvalTimeoutSecs', 'roomId', 'deploy', 'deployHealthTimeout',
+    ],
+  },
+  buildPublishPipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'deploy/safe-deploy',
+    description: 'Safe deployment: compile → deploy → health check → auto-revert on failure',
+    category: 'deploy',
+    requiredFields: ['cwd', 'personaId', 'personaName'],
+    optionalFields: [
+      'healthTimeoutSecs', 'healthPollIntervalSecs', 'requireAiHealthy', 'roomId',
+    ],
+  },
+  buildSafeDeployPipeline as BuilderFn,
 );
 
 // -- Public API ---------------------------------------------------------------

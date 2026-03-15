@@ -19,6 +19,7 @@ extern crate objc;
 pub mod ai;
 pub mod audio_constants;
 pub mod code;
+pub mod http;
 pub mod concurrent;
 pub mod ffi;
 pub mod gpu;

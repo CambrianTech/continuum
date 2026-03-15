@@ -88,7 +88,8 @@ export type TaskType =
   | 'sentinel-complete'      // Sentinel finished successfully
   | 'sentinel-failed'        // Sentinel failed with error
   | 'sentinel-escalation'    // Sentinel needs human/persona attention
-  | 'sentinel-approval';     // Sentinel paused, awaiting approval
+  | 'sentinel-approval'      // Sentinel paused, awaiting approval
+  | 'sentinel-budget-exhausted'; // Sentinel hit budget limit, needs decision
 
 export class TaskEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.TASKS;
@@ -180,6 +181,22 @@ export class TaskEntity extends BaseEntity {
     trainingData?: unknown[];    // Training examples
     domain?: string;             // Skill domain for academy enrollment
     suggested_mode?: string;     // Academy mode (knowledge, coding, project)
+
+    // Sentinel domain (lifecycle events)
+    handle?: string;             // Rust sentinel handle ID
+    sentinelName?: string;       // Human-readable sentinel name
+    sentinelStatus?: string;     // Terminal status from Rust
+    sentinelEntityId?: string;   // SentinelEntity ID for persistence
+    error?: string;              // Error message if failed
+    definition?: unknown;        // Pipeline definition for re-launch
+    stepResults?: unknown[];     // Step results from pipeline execution
+    retryCount?: number;         // How many times this sentinel has been retried
+    adjustedPrompt?: string;     // Modified prompt from evaluation loop
+    previousError?: string;      // Error from previous attempt
+    researchFindings?: string;   // Web research results injected for retry
+    approvalPrompt?: string;     // Prompt shown for approval decision
+    budgetConsumed?: unknown;    // Budget consumed so far
+    budgetLimits?: unknown;      // Budget limits for the pipeline
   };
 
   constructor() {

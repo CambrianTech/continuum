@@ -12,6 +12,7 @@
 //! - **Event-driven**: Emits sentinel:{handle}:log events for real-time streaming
 //! - **Pipeline Support**: Multi-step pipelines with LLM, conditions, loops
 
+pub mod checkpoint;
 pub mod executor;
 pub mod interpolation;
 pub mod logs;
@@ -600,6 +601,349 @@ impl SentinelModule {
         }
     }
 
+    /// Resume a pipeline from a durable checkpoint
+    async fn resume_from_checkpoint(&self, params: Value) -> Result<CommandResult, String> {
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
+        let log = crate::runtime::logger("sentinel");
+
+        let cp = checkpoint::load_checkpoint(handle_id)?
+            .ok_or_else(|| format!("No checkpoint found for handle: {handle_id}"))?;
+
+        match cp.status {
+            PipelineStatus::Interrupted | PipelineStatus::Paused | PipelineStatus::BudgetExhausted => {}
+            other => {
+                return Err(format!(
+                    "Cannot resume pipeline in status {:?} — only Interrupted, Paused, or BudgetExhausted",
+                    other
+                ));
+            }
+        }
+
+        log.info(&format!(
+            "Resuming pipeline '{}' from step {} (handle={handle_id})",
+            cp.pipeline_name.as_deref().unwrap_or("unnamed"),
+            cp.step_index
+        ));
+
+        // Update checkpoint to Running
+        let mut updated_cp = cp.clone();
+        updated_cp.status = PipelineStatus::Running;
+        updated_cp.last_checkpoint_at = chrono::Utc::now().to_rfc3339();
+        checkpoint::save_checkpoint(handle_id, &updated_cp)?;
+
+        let bus = self.bus.read().clone();
+        let registry = self.registry.read().clone();
+        let logs_base_dir = self.logs_base_dir.read().clone();
+        let handle_id_owned = handle_id.to_string();
+
+        // Create sentinel handle for the resumed pipeline
+        let (cancel_tx, _cancel_rx) = mpsc::channel(1);
+        let handle = SentinelHandle {
+            id: handle_id_owned.clone(),
+            sentinel_type: "pipeline".to_string(),
+            status: SentinelStatus::Running,
+            progress: ((cp.step_index as f64 / cp.pipeline.steps.len() as f64) * 100.0) as u8,
+            start_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            end_time: None,
+            exit_code: None,
+            error: None,
+            working_dir: cp.working_dir.clone(),
+            logs_dir: logs_base_dir.join(&handle_id_owned).to_string_lossy().to_string(),
+        };
+
+        let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
+        self.sentinels.insert(
+            handle_id_owned.clone(),
+            RunningSentinel {
+                handle: handle.clone(),
+                cancel_tx: Some(cancel_tx),
+                escalation: cp.escalation.clone(),
+                completion_tx: Some(completion_tx),
+                completion_rx,
+            },
+        );
+
+        let sentinels = Arc::clone(&self.sentinels);
+        let escalation_clone = cp.escalation.clone();
+
+        tokio::spawn(async move {
+            let log = crate::runtime::logger("sentinel");
+            let registry = match registry {
+                Some(r) => r,
+                None => {
+                    log.error(&format!("[{handle_id_owned}] Cannot resume: no registry"));
+                    return;
+                }
+            };
+
+            let steps_log_path = logs_base_dir.join(&handle_id_owned).join("steps.jsonl");
+            let pipeline_ctx = PipelineContext {
+                handle_id: &handle_id_owned,
+                registry: &registry,
+                bus: bus.as_ref(),
+                steps_log_path: Some(&steps_log_path),
+            };
+
+            let mut ctx = ExecutionContext {
+                step_results: cp.step_results.clone(),
+                inputs: cp.pipeline.inputs.clone(),
+                working_dir: PathBuf::from(&cp.working_dir),
+                named_outputs: std::collections::HashMap::new(),
+            };
+
+            let mut budget = cp.budget_consumed.clone();
+            let limits = cp.budget_limits.clone();
+            let start_time = std::time::Instant::now();
+            let mut failed = false;
+            let mut error_msg: Option<String> = None;
+
+            // Resume from checkpoint step_index
+            for i in cp.step_index..cp.pipeline.steps.len() {
+                let step = &cp.pipeline.steps[i];
+                let step_type = step_type_name(step);
+
+                log.info(&format!(
+                    "[{handle_id_owned}] Resuming step {}/{}: {step_type}",
+                    i + 1,
+                    cp.pipeline.steps.len()
+                ));
+
+                match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {
+                    Ok(result) => {
+                        if !result.success {
+                            failed = true;
+                            error_msg = result.error.clone();
+                        }
+                        ctx.step_results.push(result);
+
+                        // Update budget and checkpoint after each step
+                        budget.elapsed_secs = start_time.elapsed().as_secs()
+                            + cp.budget_consumed.elapsed_secs;
+
+                        let mut updated_cp = PipelineCheckpoint {
+                            sentinel_handle: handle_id_owned.clone(),
+                            pipeline_name: cp.pipeline_name.clone(),
+                            step_index: i + 1,
+                            step_results: ctx.step_results.clone(),
+                            budget_consumed: budget.clone(),
+                            budget_limits: limits.clone(),
+                            started_at: cp.started_at.clone(),
+                            last_checkpoint_at: chrono::Utc::now().to_rfc3339(),
+                            status: if failed {
+                                PipelineStatus::Failed
+                            } else {
+                                PipelineStatus::Running
+                            },
+                            pipeline: cp.pipeline.clone(),
+                            working_dir: cp.working_dir.clone(),
+                            escalation: cp.escalation.clone(),
+                        };
+
+                        // Check budget limits
+                        if let Some(max_secs) = limits.max_time_secs {
+                            if budget.elapsed_secs >= max_secs {
+                                updated_cp.status = PipelineStatus::BudgetExhausted;
+                                let _ = checkpoint::save_checkpoint(&handle_id_owned, &updated_cp);
+                                log.warn(&format!(
+                                    "[{handle_id_owned}] Budget exhausted: time limit {max_secs}s"
+                                ));
+                                error_msg = Some(format!("Budget exhausted: time limit {max_secs}s"));
+                                failed = true;
+                            }
+                        }
+                        if let Some(max_iters) = limits.max_iterations {
+                            if budget.iterations >= max_iters {
+                                updated_cp.status = PipelineStatus::BudgetExhausted;
+                                let _ = checkpoint::save_checkpoint(&handle_id_owned, &updated_cp);
+                                log.warn(&format!(
+                                    "[{handle_id_owned}] Budget exhausted: iteration limit {max_iters}"
+                                ));
+                                error_msg = Some(format!("Budget exhausted: iteration limit {max_iters}"));
+                                failed = true;
+                            }
+                        }
+
+                        let _ = checkpoint::save_checkpoint(&handle_id_owned, &updated_cp);
+
+                        if failed {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log.error(&format!("[{handle_id_owned}] Step {i} error: {e}"));
+                        failed = true;
+                        error_msg = Some(e.clone());
+                        ctx.step_results.push(StepResult {
+                            step_index: i,
+                            step_type: step_type.to_string(),
+                            success: false,
+                            duration_ms: 0,
+                            output: None,
+                            error: Some(e),
+                            exit_code: None,
+                            data: Value::Null,
+                        });
+                        break;
+                    }
+                }
+            }
+
+            // Final checkpoint
+            let final_status = if failed {
+                PipelineStatus::Failed
+            } else {
+                PipelineStatus::Completed
+            };
+            let final_cp = PipelineCheckpoint {
+                sentinel_handle: handle_id_owned.clone(),
+                pipeline_name: cp.pipeline_name.clone(),
+                step_index: cp.pipeline.steps.len(),
+                step_results: ctx.step_results.clone(),
+                budget_consumed: budget,
+                budget_limits: limits,
+                started_at: cp.started_at.clone(),
+                last_checkpoint_at: chrono::Utc::now().to_rfc3339(),
+                status: final_status,
+                pipeline: cp.pipeline.clone(),
+                working_dir: cp.working_dir.clone(),
+                escalation: cp.escalation.clone(),
+            };
+            let _ = checkpoint::save_checkpoint(&handle_id_owned, &final_cp);
+
+            // Update sentinel handle status
+            if let Some(mut entry) = sentinels.get_mut(&handle_id_owned) {
+                entry.handle.status = if failed {
+                    SentinelStatus::Failed
+                } else {
+                    SentinelStatus::Completed
+                };
+                entry.handle.exit_code = Some(if failed { 1 } else { 0 });
+                entry.handle.end_time = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                );
+                if let Some(ref err) = error_msg {
+                    entry.handle.error = Some(err.clone());
+                }
+                if let Some(tx) = entry.completion_tx.take() {
+                    let _ = tx.send(true);
+                }
+            }
+
+            // Emit completion
+            if let Some(ref bus) = bus {
+                bus.publish_async_only(
+                    "sentinel:pipeline:complete",
+                    json!({
+                        "handle": handle_id_owned,
+                        "success": !failed,
+                        "resumed": true,
+                    }),
+                );
+            }
+
+            // Escalation
+            if let Some(ref esc) = escalation_clone {
+                let _ = crate::runtime::command_executor::execute_ts_json(
+                    "sentinel/escalate",
+                    json!({
+                        "handle": handle_id_owned,
+                        "status": if failed { "failed" } else { "completed" },
+                        "parentPersonaId": esc.parent_persona_id,
+                        "entityId": esc.entity_id,
+                        "sentinelName": esc.sentinel_name,
+                    }),
+                )
+                .await;
+            }
+        });
+
+        Ok(CommandResult::Json(json!({
+            "handle": handle_id,
+            "status": "running",
+            "resumed": true,
+            "resumeFromStep": cp.step_index,
+        })))
+    }
+
+    /// List all durable checkpoints
+    async fn list_checkpoints_command(&self, _params: Value) -> Result<CommandResult, String> {
+        let checkpoints = checkpoint::list_checkpoints()?;
+        Ok(CommandResult::Json(json!({
+            "checkpoints": checkpoints,
+            "total": checkpoints.len(),
+        })))
+    }
+
+    /// Extend budget limits for a running or paused pipeline
+    async fn extend_budget(&self, params: Value) -> Result<CommandResult, String> {
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
+
+        let mut cp = checkpoint::load_checkpoint(handle_id)?
+            .ok_or_else(|| format!("No checkpoint found for handle: {handle_id}"))?;
+
+        // Merge new limits (only override fields that are provided)
+        if let Some(v) = p.f64_opt("maxTimeSecs") {
+            cp.budget_limits.max_time_secs = Some(v as u64);
+        }
+        if let Some(v) = p.f64_opt("maxCostUsd") {
+            cp.budget_limits.max_cost_usd = Some(v);
+        }
+        if let Some(v) = p.f64_opt("maxTokens") {
+            cp.budget_limits.max_tokens = Some(v as u64);
+        }
+        if let Some(v) = p.f64_opt("maxIterations") {
+            cp.budget_limits.max_iterations = Some(v as u32);
+        }
+
+        cp.last_checkpoint_at = chrono::Utc::now().to_rfc3339();
+        checkpoint::save_checkpoint(handle_id, &cp)?;
+
+        Ok(CommandResult::Json(json!({
+            "handle": handle_id,
+            "budgetLimits": cp.budget_limits,
+        })))
+    }
+
+    /// Approve or reject a pending approval step
+    async fn approve_command(&self, params: Value) -> Result<CommandResult, String> {
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
+        let approved = p.bool_or("approved", true);
+        let reason = p.str_opt("reason").map(|s| s.to_string());
+        let approver_id = p.str_opt("approverId").map(|s| s.to_string());
+
+        // Find and resolve the pending approval
+        if let Some((_, tx)) = steps::approve::PENDING_APPROVALS.remove(handle_id) {
+            let decision = steps::approve::ApprovalDecision {
+                approved,
+                reason: reason.clone(),
+                approver_id: approver_id.clone(),
+            };
+            tx.send(decision).map_err(|_| {
+                format!("Failed to send approval decision — pipeline may have been cancelled")
+            })?;
+
+            Ok(CommandResult::Json(json!({
+                "handle": handle_id,
+                "approved": approved,
+                "reason": reason,
+                "approverId": approver_id,
+            })))
+        } else {
+            Err(format!(
+                "No pending approval found for handle: {handle_id}"
+            ))
+        }
+    }
+
     /// Reap completed/failed sentinels older than REAP_AGE_SECS from the registry.
     /// Prevents the DashMap from growing forever.
     pub fn reap_dead(&self) {
@@ -652,13 +996,39 @@ impl ServiceModule for SentinelModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         let log = crate::runtime::logger("sentinel");
-        log.info("SentinelModule initialized with pipeline support");
 
         *self.bus.write() = Some(Arc::clone(&ctx.bus));
         *self.registry.write() = Some(Arc::clone(&ctx.registry));
 
-        // logs_base_dir already set to $HOME/.continuum/... in new() — no cwd override needed
+        // Scan for orphaned pipelines (were Running when process died)
+        match checkpoint::recover_interrupted() {
+            Ok(interrupted) => {
+                if !interrupted.is_empty() {
+                    log.info(&format!(
+                        "Found {} interrupted pipeline(s): {:?}",
+                        interrupted.len(),
+                        interrupted
+                    ));
+                    // Emit events so persona layer can decide whether to resume
+                    if let Some(ref bus) = *self.bus.read() {
+                        for handle in &interrupted {
+                            bus.publish_async_only(
+                                "sentinel:pipeline:interrupted",
+                                json!({
+                                    "handle": handle,
+                                    "message": "Pipeline was interrupted by process restart",
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log.warn(&format!("Failed to scan for interrupted checkpoints: {e}"));
+            }
+        }
 
+        log.info("SentinelModule initialized with pipeline + checkpoint support");
         Ok(())
     }
 
@@ -672,9 +1042,42 @@ impl ServiceModule for SentinelModule {
             "sentinel/list" => self.list_handles(params).await,
             "sentinel/cancel" => self.cancel_sentinel(params).await,
             "sentinel/pipeline" => self.execute_pipeline_command(params).await,
+            "sentinel/resume" => self.resume_from_checkpoint(params).await,
+            "sentinel/list-checkpoints" => self.list_checkpoints_command(params).await,
+            "sentinel/extend-budget" => self.extend_budget(params).await,
+            "sentinel/approve" => self.approve_command(params).await,
             "sentinel/logs/list" => logs::list_logs(&logs_base_dir, params).await,
             "sentinel/logs/read" => logs::read_log(&logs_base_dir, params).await,
             "sentinel/logs/tail" => logs::tail_log(&logs_base_dir, params).await,
+
+            // Local inference HTTP endpoint management
+            "sentinel/local-inference-port" => {
+                match crate::http::port().await {
+                    Some(port) => Ok(CommandResult::Json(serde_json::json!({
+                        "success": true,
+                        "port": port,
+                        "url": format!("http://127.0.0.1:{}", port)
+                    }))),
+                    None => Ok(CommandResult::Json(serde_json::json!({
+                        "success": false,
+                        "error": "HTTP inference server not started"
+                    }))),
+                }
+            }
+            "sentinel/local-inference-start" => {
+                match crate::http::start_if_needed().await {
+                    Ok(port) => Ok(CommandResult::Json(serde_json::json!({
+                        "success": true,
+                        "port": port,
+                        "url": format!("http://127.0.0.1:{}", port)
+                    }))),
+                    Err(e) => Ok(CommandResult::Json(serde_json::json!({
+                        "success": false,
+                        "error": e
+                    }))),
+                }
+            }
+
             _ => Err(format!("Unknown sentinel command: {command}")),
         }
     }

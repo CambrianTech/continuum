@@ -40,6 +40,7 @@
  */
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import { buildPublishSteps, type PublishConfig } from './PublishPipeline';
 
 export interface DevBuildFeatureConfig {
   /** Natural language feature description */
@@ -80,6 +81,16 @@ export interface DevBuildFeatureConfig {
   autonomous?: boolean;
   /** Capture training data for persona improvement */
   captureTraining?: boolean;
+  /** After build/test, publish: push → PR → CI → merge */
+  publish?: boolean;
+  /** PR body (used when publish=true) */
+  prBody?: string;
+  /** Merge strategy when publish=true: squash, merge, rebase */
+  mergeStrategy?: 'squash' | 'merge' | 'rebase';
+  /** Auto-approve PR creation (skip human gate) */
+  autoApprovePr?: boolean;
+  /** Auto-approve merge (skip human gate) */
+  autoApproveMerge?: boolean;
 }
 
 /**
@@ -240,6 +251,25 @@ export function buildDevBuildFeaturePipeline(config: DevBuildFeatureConfig): Pip
     allowFailure: true,
   });
 
+  // ─── Publication (if --publish) ──────────────────────────────────
+  if (config.publish && hasWorkspace) {
+    const branchName = `ai/${personaId.slice(0, 8)}/${taskSlug}`;
+    const publishSteps = buildPublishSteps({
+      branch: branchName,
+      baseBranch,
+      title: `feat: ${featureSummary}`,
+      body: config.prBody || `Implemented by ${personaName} via sentinel pipeline.\n\n${feature}`,
+      personaId,
+      personaName,
+      cwd: workDir,
+      mergeStrategy: config.mergeStrategy,
+      autoApprovePr: config.autoApprovePr,
+      autoApproveMerge: config.autoApproveMerge,
+      roomId,
+    });
+    steps.push(...publishSteps);
+  }
+
   // ─── Completion event ────────────────────────────────────────────
   steps.push({
     type: 'emit',
@@ -250,6 +280,7 @@ export function buildDevBuildFeaturePipeline(config: DevBuildFeatureConfig): Pip
       personaId,
       personaName,
       taskSlug,
+      published: !!config.publish,
     },
   });
 

@@ -9,6 +9,9 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
+import type { BudgetLimits } from '../../../../shared/generated/sentinel/BudgetLimits';
+import type { BudgetConsumed } from '../../../../shared/generated/sentinel/BudgetConsumed';
+import type { PipelineCheckpoint } from '../../../../shared/generated/sentinel/PipelineCheckpoint';
 
 /**
  * Sentinel execution handle
@@ -132,7 +135,9 @@ export type PipelineStep =
 	| { type: 'watch'; event: string; timeoutSecs?: number }
 	| { type: 'parallel'; branches: PipelineStep[][]; failFast?: boolean }
 	| { type: 'sentinel'; pipeline: Pipeline }
-	| { type: 'codingagent'; prompt: string; provider?: string; workingDir?: string; systemPrompt?: string; model?: string; allowedTools?: string[]; maxTurns?: number; maxBudgetUsd?: number; permissionMode?: string; resumeSessionId?: string; captureTraining?: boolean; personaId?: string };
+	| { type: 'approve'; prompt: string; approvers?: string[]; timeoutSecs?: number }
+	| { type: 'webresearch'; query: string; maxPages?: number; extract?: string }
+	| { type: 'codingagent'; prompt: string; provider?: string; workingDir?: string; systemPrompt?: string; model?: string; allowedTools?: string[]; maxTurns?: number; maxBudgetUsd?: number; permissionMode?: string; resumeSessionId?: string; captureTraining?: boolean; personaId?: string; repoPath?: string; taskSlug?: string };
 
 /**
  * Pipeline definition
@@ -172,6 +177,9 @@ export interface PipelineResult {
 	error?: string;
 }
 
+// BudgetLimits, BudgetConsumed, PipelineCheckpoint — imported from ts-rs generated types above
+// Single source of truth: Rust defines wire types, ts-rs generates TypeScript
+
 /**
  * Mixin interface for type-safety
  */
@@ -185,6 +193,12 @@ export interface SentinelMixin {
 	sentinelLogsRead(handle: string, stream?: string, offset?: number, limit?: number): Promise<SentinelLogsReadResult>;
 	sentinelLogsTail(handle: string, stream?: string, lines?: number): Promise<SentinelLogsTailResult>;
 	sentinelPipeline(pipeline: Pipeline): Promise<PipelineResult>;
+	sentinelResume(handle: string): Promise<SentinelRunResult>;
+	sentinelListCheckpoints(): Promise<{ checkpoints: PipelineCheckpoint[]; total: number }>;
+	sentinelExtendBudget(handle: string, limits: Partial<BudgetLimits>): Promise<{ handle: string; budgetLimits: BudgetLimits }>;
+	sentinelApprove(handle: string, approved: boolean, reason?: string, approverId?: string): Promise<{ handle: string; approved: boolean }>;
+	sentinelLocalInferencePort(): Promise<{ success: boolean; port?: number; url?: string; error?: string }>;
+	sentinelLocalInferenceStart(): Promise<{ success: boolean; port?: number; url?: string; error?: string }>;
 }
 
 /**
@@ -413,6 +427,98 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 			}
 
 			return response.result as PipelineResult;
+		}
+
+		/**
+		 * Resume a pipeline from a durable checkpoint.
+		 * Only works for pipelines in Interrupted, Paused, or BudgetExhausted status.
+		 */
+		async sentinelResume(handle: string): Promise<SentinelRunResult> {
+			const response = await this.request({
+				command: 'sentinel/resume',
+				handle,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'sentinel/resume failed');
+			}
+
+			return response.result as SentinelRunResult;
+		}
+
+		/**
+		 * List all durable pipeline checkpoints.
+		 */
+		async sentinelListCheckpoints(): Promise<{ checkpoints: PipelineCheckpoint[]; total: number }> {
+			const response = await this.request({
+				command: 'sentinel/list-checkpoints',
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'sentinel/list-checkpoints failed');
+			}
+
+			return response.result as { checkpoints: PipelineCheckpoint[]; total: number };
+		}
+
+		/**
+		 * Extend budget limits for a running or paused pipeline.
+		 */
+		async sentinelExtendBudget(handle: string, limits: Partial<BudgetLimits>): Promise<{ handle: string; budgetLimits: BudgetLimits }> {
+			const response = await this.request({
+				command: 'sentinel/extend-budget',
+				handle,
+				...(limits.maxTimeSecs !== undefined && { maxTimeSecs: limits.maxTimeSecs }),
+				...(limits.maxCostUsd !== undefined && { maxCostUsd: limits.maxCostUsd }),
+				...(limits.maxTokens !== undefined && { maxTokens: limits.maxTokens }),
+				...(limits.maxIterations !== undefined && { maxIterations: limits.maxIterations }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'sentinel/extend-budget failed');
+			}
+
+			return response.result as { handle: string; budgetLimits: BudgetLimits };
+		}
+
+		/**
+		 * Approve or reject a pending approval step.
+		 */
+		async sentinelApprove(handle: string, approved: boolean, reason?: string, approverId?: string): Promise<{ handle: string; approved: boolean }> {
+			const response = await this.request({
+				command: 'sentinel/approve',
+				handle,
+				approved,
+				...(reason && { reason }),
+				...(approverId && { approverId }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'sentinel/approve failed');
+			}
+
+			return response.result as { handle: string; approved: boolean };
+		}
+
+		/**
+		 * Get the port of the local inference HTTP server (if running).
+		 */
+		async sentinelLocalInferencePort(): Promise<{ success: boolean; port?: number; url?: string; error?: string }> {
+			const response = await this.request({
+				command: 'sentinel/local-inference-port',
+			});
+			return response.result as { success: boolean; port?: number; url?: string; error?: string };
+		}
+
+		/**
+		 * Start the local inference HTTP server (if not already running).
+		 * Returns the port number.
+		 */
+		async sentinelLocalInferenceStart(): Promise<{ success: boolean; port?: number; url?: string; error?: string }> {
+			const response = await this.request({
+				command: 'sentinel/local-inference-start',
+			});
+			return response.result as { success: boolean; port?: number; url?: string; error?: string };
 		}
 	};
 }

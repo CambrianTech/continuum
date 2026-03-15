@@ -42,6 +42,12 @@ static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> =
 /// Track if we've done first-time initialization
 static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Public accessor for the global adapter registry.
+/// Used by the HTTP inference endpoint to share adapters with AIProviderModule.
+pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
+    GLOBAL_REGISTRY.clone()
+}
+
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
     registry: Arc<RwLock<AdapterRegistry>>,

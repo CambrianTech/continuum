@@ -1,0 +1,55 @@
+{
+  "name": "sentinel/extend-budget",
+  "description": "Extend budget limits for a running or paused pipeline. Merges new limits into existing checkpoint budget.",
+  "params": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Sentinel handle ID to extend budget for"
+    },
+    {
+      "name": "maxTimeSecs",
+      "type": "number",
+      "optional": true,
+      "description": "New max time limit in seconds (e.g., 3600 for 1 hour)"
+    },
+    {
+      "name": "maxCostUsd",
+      "type": "number",
+      "optional": true,
+      "description": "New max cost limit in USD (e.g., 5.00)"
+    },
+    {
+      "name": "maxTokens",
+      "type": "number",
+      "optional": true,
+      "description": "New max token limit (e.g., 1000000)"
+    },
+    {
+      "name": "maxIterations",
+      "type": "number",
+      "optional": true,
+      "description": "New max iteration limit (full pipeline loops, not agent turns)"
+    }
+  ],
+  "results": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "The sentinel handle whose budget was extended"
+    },
+    {
+      "name": "budgetLimits",
+      "type": "BudgetLimits",
+      "description": "The new merged budget limits after extension"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Double time limit for a running pipeline",
+      "command": "./jtag sentinel/extend-budget --handle=abc123 --maxTimeSecs=7200",
+      "expectedResult": "{ handle: 'abc123', budgetLimits: { maxTimeSecs: 7200, ... } }"
+    }
+  ],
+  "accessLevel": "system"
+}
