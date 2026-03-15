@@ -51,6 +51,15 @@ export interface SentinelCodingAgentParams extends CommandParams {
 
   /** Persona ID for training attribution */
   personaId?: string;
+
+  /** Path to an external git repo — triggers project worktree workspace (proper git isolation) */
+  repoPath?: string;
+
+  /** Branch slug for workspace: ai/sentinel-{handle}/{slug} (default: "work") */
+  taskSlug?: string;
+
+  /** Persona display name for git identity in workspace */
+  personaName?: string;
 }
 
 export interface CodingAgentToolCallResult {
@@ -97,6 +106,12 @@ export interface SentinelCodingAgentResult extends CommandResult {
 
   /** Error message if failed */
   error?: string;
+
+  /** Resolved workspace directory (for downstream step interpolation via {{steps.N.data.workspaceDir}}) */
+  workspaceDir?: string;
+
+  /** Git branch created for the workspace (for downstream step interpolation) */
+  branch?: string;
 }
 
 /** Static executor for type-safe command invocation */

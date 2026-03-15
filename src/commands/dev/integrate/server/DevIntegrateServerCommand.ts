@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevIntegrateParams, DevIntegrateResult } from '../shared/DevIntegrateTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
-import { detectProject } from '../../../../system/sentinel/ProjectDetector';
+import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, DevIntegrateResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -28,7 +28,7 @@ export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, D
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = detectProject(cwd);
+    const project = await ProjectDetector.detect(cwd);
 
     // Parse comma-separated branches into array
     const branches = typed.branches
@@ -46,8 +46,8 @@ export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, D
       ...(typed.baseBranch && { baseBranch: typed.baseBranch }),
       ...(typed.buildCommand !== undefined && { buildCommand: typed.buildCommand }),
       ...(typed.testCommand !== undefined && { testCommand: typed.testCommand }),
-      ...(typed.buildCommand === undefined && project.buildCommand !== null && { buildCommand: project.buildCommand }),
-      ...(typed.testCommand === undefined && project.testCommand !== null && { testCommand: project.testCommand }),
+      ...(typed.buildCommand === undefined && project.buildCommand && { buildCommand: project.buildCommand }),
+      ...(typed.testCommand === undefined && project.testCommand && { testCommand: project.testCommand }),
       ...(typed.codingModel && { codingModel: typed.codingModel }),
       ...(typed.maxBudgetUsd && { maxBudgetUsd: typed.maxBudgetUsd }),
     };

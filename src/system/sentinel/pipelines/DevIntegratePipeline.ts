@@ -29,6 +29,8 @@ import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bin
 export interface DevIntegrateConfig {
   /** Project working directory */
   cwd: string;
+  /** Git repo path — for future workspace support */
+  repoPath?: string;
   /** Target integration branch name (created from baseBranch if doesn't exist) */
   featureBranch: string;
   /** Specific branches to merge (if omitted, discovers all ai/* branches) */

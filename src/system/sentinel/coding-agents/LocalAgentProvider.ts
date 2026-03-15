@@ -107,6 +107,7 @@ export class LocalAgentProvider implements CodingAgentProvider {
         tools,
         maxIterations: config.maxTurns || 10,
         sentinelHandle: config.sentinelHandle,
+        personaId: config.personaId,
         temperature: 0.3,
         maxTokens: 4096,
       } as Record<string, unknown>) as unknown as {

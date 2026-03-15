@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevBuildFeatureParams, DevBuildFeatureResult } from '../shared/DevBuildFeatureTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
-import { detectProject } from '../../../../system/sentinel/ProjectDetector';
+import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeatureParams, DevBuildFeatureResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -28,7 +28,7 @@ export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeaturePar
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = detectProject(cwd);
+    const project = await ProjectDetector.detect(cwd);
 
     const templateConfig: Record<string, unknown> = {
       feature: typed.feature,
@@ -40,8 +40,8 @@ export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeaturePar
       ...(typed.buildCommand !== undefined && { buildCommand: typed.buildCommand }),
       ...(typed.testCommand !== undefined && { testCommand: typed.testCommand }),
       // Auto-detect if not specified
-      ...(typed.buildCommand === undefined && project.buildCommand !== null && { buildCommand: project.buildCommand }),
-      ...(typed.testCommand === undefined && project.testCommand !== null && { testCommand: project.testCommand }),
+      ...(typed.buildCommand === undefined && project.buildCommand && { buildCommand: project.buildCommand }),
+      ...(typed.testCommand === undefined && project.testCommand && { testCommand: project.testCommand }),
       ...(typed.codingModel && { codingModel: typed.codingModel }),
       ...(typed.maxBudgetUsd && { maxBudgetUsd: typed.maxBudgetUsd }),
     };

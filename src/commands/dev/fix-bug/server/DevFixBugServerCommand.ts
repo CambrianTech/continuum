@@ -7,7 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevFixBugParams, DevFixBugResult } from '../shared/DevFixBugTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
-import { detectProject } from '../../../../system/sentinel/ProjectDetector';
+import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixBugResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -25,7 +25,7 @@ export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixB
     }
 
     const cwd = typed.cwd || process.cwd();
-    const project = detectProject(cwd);
+    const project = await ProjectDetector.detect(cwd);
 
     const templateConfig: Record<string, unknown> = {
       bug: typed.bug,
@@ -36,8 +36,8 @@ export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixB
       personaName: typed.personaName ?? 'Dev Pipeline',
       ...(typed.buildCommand !== undefined && { buildCommand: typed.buildCommand }),
       ...(typed.testCommand !== undefined && { testCommand: typed.testCommand }),
-      ...(typed.buildCommand === undefined && project.buildCommand !== null && { buildCommand: project.buildCommand }),
-      ...(typed.testCommand === undefined && project.testCommand !== null && { testCommand: project.testCommand }),
+      ...(typed.buildCommand === undefined && project.buildCommand && { buildCommand: project.buildCommand }),
+      ...(typed.testCommand === undefined && project.testCommand && { testCommand: project.testCommand }),
       ...(typed.codingModel && { codingModel: typed.codingModel }),
       ...(typed.maxBudgetUsd && { maxBudgetUsd: typed.maxBudgetUsd }),
     };

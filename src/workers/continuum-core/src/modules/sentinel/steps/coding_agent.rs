@@ -28,6 +28,8 @@ pub async fn execute(
     resume_session_id: Option<&str>,
     capture_training: Option<bool>,
     persona_id: Option<&str>,
+    repo_path: Option<&str>,
+    task_slug: Option<&str>,
     index: usize,
     ctx: &mut ExecutionContext,
     pipeline_ctx: &PipelineContext<'_>,
@@ -86,6 +88,12 @@ pub async fn execute(
     }
     if let Some(pid) = interpolated_persona_id {
         params["personaId"] = json!(pid);
+    }
+    if let Some(rp) = repo_path {
+        params["repoPath"] = json!(interpolation::interpolate(rp, ctx));
+    }
+    if let Some(ts) = task_slug {
+        params["taskSlug"] = json!(interpolation::interpolate(ts, ctx));
     }
 
     // Route to TypeScript via Unix socket — sentinel/ prefix is NOT claimed by a Rust module,

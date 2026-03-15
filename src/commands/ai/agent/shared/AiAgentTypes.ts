@@ -56,6 +56,9 @@ export interface AiAgentParams extends CommandParams {
 
   /** Sentinel handle for log correlation */
   sentinelHandle?: string;
+
+  /** Persona UUID — used as callerId for workspace lookup so code tools find the right workspace */
+  personaId?: string;
 }
 
 // ─── Result ──────────────────────────────────────────────────────────
