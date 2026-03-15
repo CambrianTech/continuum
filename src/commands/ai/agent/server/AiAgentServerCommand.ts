@@ -173,10 +173,11 @@ export class AiAgentServerCommand extends AiAgentCommand {
       const executor = new AgentToolExecutor();
 
       // Build execution context for tool calls
-      // callerId: sentinel handle or caller userId, sessionId for session scope,
-      // contextId: generated per-invocation (no persistent room/conversation scope)
+      // callerId: personaId (for workspace lookup) > sentinelHandle > userId
+      // The personaId is the workspace registration key — code tools look up by this UUID.
+      // sentinelHandle stays separate for event routing.
       const callCtx: ToolCallContext = {
-        callerId: params.sentinelHandle ?? params.userId ?? params.sessionId ?? generateUUID(),
+        callerId: params.personaId ?? params.sentinelHandle ?? params.userId ?? params.sessionId ?? generateUUID(),
         sessionId: params.sessionId ?? generateUUID(),
         contextId: generateUUID(),
         context: params.context,

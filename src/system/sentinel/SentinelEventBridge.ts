@@ -24,6 +24,7 @@
 import { Events } from '../core/shared/Events';
 import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
 import type { SentinelHandle } from '../../workers/continuum-core/bindings/modules/sentinel';
+import { SentinelWorkspaceManager } from './SentinelWorkspaceManager';
 
 /**
  * Metadata attached when watching a sentinel — flows through to all emitted events.
@@ -186,6 +187,13 @@ class SentinelEventBridge {
     const durationMs = sentinel.endTime
       ? sentinel.endTime - sentinel.startTime
       : Date.now() - watched.registeredAt;
+
+    // Release workspace on terminal status transitions
+    if (newStatus === 'completed' || newStatus === 'failed' || newStatus === 'cancelled') {
+      SentinelWorkspaceManager.release(handle, newStatus === 'completed').catch(err => {
+        console.warn(`[SentinelEventBridge] Workspace release failed for ${handle}:`, err);
+      });
+    }
 
     if (newStatus === 'completed') {
       // Per-handle event

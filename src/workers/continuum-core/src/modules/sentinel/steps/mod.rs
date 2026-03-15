@@ -135,6 +135,8 @@ pub fn execute_step<'a>(
                 resume_session_id,
                 capture_training,
                 persona_id,
+                repo_path,
+                task_slug,
             } => {
                 coding_agent::execute(
                     prompt,
@@ -149,6 +151,8 @@ pub fn execute_step<'a>(
                     resume_session_id.as_deref(),
                     *capture_training,
                     persona_id.as_deref(),
+                    repo_path.as_deref(),
+                    task_slug.as_deref(),
                     index,
                     ctx,
                     pipeline_ctx,

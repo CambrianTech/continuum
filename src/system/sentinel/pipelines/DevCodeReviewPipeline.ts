@@ -37,6 +37,8 @@ export interface DevCodeReviewConfig {
   personaName: string;
   /** Project working directory */
   cwd: string;
+  /** Git repo path — for future workspace support */
+  repoPath?: string;
   /** Base branch for diff */
   baseBranch?: string;
   /** Chat room for collaborative discussion */

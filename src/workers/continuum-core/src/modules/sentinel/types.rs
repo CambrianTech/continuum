@@ -263,6 +263,14 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "personaId")]
         persona_id: Option<String>,
+        /// Path to git repo — triggers project worktree workspace (proper git isolation)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "repoPath")]
+        repo_path: Option<String>,
+        /// Branch slug: ai/sentinel-{handle}/{slug} (default: "work")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "taskSlug")]
+        task_slug: Option<String>,
     },
 }
 
