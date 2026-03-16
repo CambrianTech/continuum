@@ -31,6 +31,7 @@ import type {
   CodingAgentToolCall,
 } from './CodingAgentProvider';
 import { Commands } from '@system/core/shared/Commands';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class LocalClaudeCodeProvider implements CodingAgentProvider {
   readonly providerId = 'local-claude-code';
@@ -40,12 +41,6 @@ export class LocalClaudeCodeProvider implements CodingAgentProvider {
     try {
       // Need the SDK installed
       await import('@anthropic-ai/claude-agent-sdk');
-
-      // Check if local inference is configured (INFERENCE_MODE includes candle/local)
-      const portResult = await Commands.execute('sentinel/local-inference-port', {}) as unknown as {
-        success: boolean;
-        port?: number;
-      };
       // Server doesn't need to be running yet — we'll start it on demand
       return true;
     } catch {
@@ -87,12 +82,8 @@ export class LocalClaudeCodeProvider implements CodingAgentProvider {
       timestamp: Date.now(),
     });
 
-    const startResult = await Commands.execute('sentinel/local-inference-start', {}) as unknown as {
-      success: boolean;
-      port?: number;
-      url?: string;
-      error?: string;
-    };
+    const ipc = await RustCoreIPCClient.getInstanceAsync();
+    const startResult = await ipc.sentinelLocalInferenceStart();
 
     if (!startResult.success || !startResult.port) {
       return {
@@ -121,10 +112,11 @@ export class LocalClaudeCodeProvider implements CodingAgentProvider {
     // ─── Activate LoRA adapter if specified ───────────────────────────
     if (config.personaId && localModel.startsWith('local/')) {
       try {
-        await Commands.execute('ai/lora/activate', {
+        await ipc.request({
+          command: 'ai/lora/activate',
           personaId: config.personaId,
           domain: 'coding',
-        } as Record<string, unknown>);
+        });
       } catch {
         // Non-fatal — may not have a trained adapter yet
         console.log(`[LocalClaudeCodeProvider] No LoRA adapter for persona ${config.personaId}, using base model`);

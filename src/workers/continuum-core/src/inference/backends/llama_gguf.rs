@@ -149,6 +149,8 @@ impl ModelBackend for LlamaGgufBackend {
     ///
     /// Each forward call has seq_len=1, which uses the Metal SDPA kernel
     /// instead of the manual O(n²) attention path that corrupts at >1000 tokens.
+    /// The quantized_llama `forward()` doesn't support multi-token chunks with
+    /// KV cache — attention mask shape assumes seq_len=1 when pos > 0.
     fn prefill(&mut self, tokens: &[u32]) -> Result<Tensor, String> {
         if tokens.is_empty() {
             return Err("Empty token sequence".to_string());

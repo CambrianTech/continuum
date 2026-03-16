@@ -110,45 +110,69 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 /// POST /v1/messages — Anthropic Messages API handler
+///
+/// Pass-through proxy: converts Anthropic format → internal format, routes to
+/// the selected adapter. The adapter/backend validates context length and returns
+/// errors if input exceeds the model's capacity. No artificial truncation here —
+/// the model's own definition is the single source of truth for its limits.
 async fn messages_handler(
     Json(req): Json<MessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let start = std::time::Instant::now();
 
-    // Resolve model → adapter selection
-    // Format: "local/{persona}" or just a model name
-    let (provider, model) = parse_model_spec(&req.model);
+    // Resolve model spec → provider + model + optional LoRA adapter
+    let spec = parse_model_spec(&req.model);
 
-    // Convert Anthropic messages → our ChatMessage format
+    // Resolve the adapter
+    let registry = crate::modules::ai_provider::global_registry();
+    let registry_guard = registry.read().await;
+
+    let (provider_id, adapter) = registry_guard
+        .select(Some(&spec.provider), spec.model.as_deref())
+        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_QUANTIZED), None))
+        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_SAFETENSORS), None))
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "No local inference provider available. Set INFERENCE_MODE=local in config.env"
+                    }
+                })),
+            )
+        })?;
+
+    // Log request sizes for debugging
+    let context_window = adapter.capabilities().max_context_window;
+    let system_chars = req.system.as_ref().map(|s| s.as_text().len()).unwrap_or(0);
+    let msg_chars: usize = req.messages.iter().map(|m| m.content.as_text().len()).sum();
+    let tools_count = req.tools.as_ref().map(|t| t.len()).unwrap_or(0);
+    eprintln!(
+        "[http] Request: model={}, context_window={}, system={}chars, messages={}chars ({}msgs), tools={}, max_tokens={}",
+        req.model, context_window, system_chars, msg_chars, req.messages.len(), tools_count, req.max_tokens
+    );
+
+    // Convert Anthropic messages → internal format (no truncation — pass through faithfully)
+    let system_prompt = req.system.as_ref().map(|s| s.as_text());
     let messages = convert_messages(&req.messages);
 
-    // Extract system prompt
-    let system_prompt = req.system.as_ref().map(|s| s.as_text());
-
-    // Parse LoRA adapter from model spec if present
-    let active_adapters = if provider == "candle" || provider == "local" {
-        // "local/helper" → activate adapter for "helper" persona
-        let adapter_name = req.model.strip_prefix("local/").unwrap_or(&req.model);
-        if adapter_name != req.model {
-            // Check if an adapter path is available — we let the adapter resolve it
-            Some(vec![ActiveAdapterRequest {
-                name: adapter_name.to_string(),
-                path: String::new(), // CandleAdapter resolves from AdapterStore
-                domain: "coding".to_string(),
-                scale: 1.0,
-            }])
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // Build LoRA adapter request if persona was specified
+    let active_adapters = spec.adapter.as_ref().map(|name| {
+        vec![ActiveAdapterRequest {
+            name: name.clone(),
+            path: String::new(), // CandleAdapter resolves from AdapterStore
+            domain: "coding".to_string(),
+            scale: 1.0,
+        }]
+    });
 
     let gen_request = TextGenerationRequest {
         messages,
         system_prompt,
-        model: Some(model.clone()),
-        provider: Some(provider.clone()),
+        model: spec.model.clone(),
+        provider: Some(spec.provider.clone()),
         temperature: req.temperature,
         max_tokens: Some(req.max_tokens),
         top_p: req.top_p,
@@ -162,29 +186,6 @@ async fn messages_handler(
         room_id: None,
         purpose: Some("local-coding-agent".to_string()),
     };
-
-    // Route through GLOBAL_REGISTRY (same as AIProviderModule)
-    let registry = crate::modules::ai_provider::global_registry();
-    let registry_guard = registry.read().await;
-
-    let (provider_id, adapter) = registry_guard
-        .select(Some(&provider), Some(&model))
-        .or_else(|| {
-            // Fall back to candle if specific provider not found
-            registry_guard.select(Some("candle"), None)
-        })
-        .ok_or_else(|| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "type": "error",
-                    "error": {
-                        "type": "overloaded_error",
-                        "message": "No local inference provider available. Set INFERENCE_MODE=local in config.env"
-                    }
-                })),
-            )
-        })?;
 
     let response = adapter.generate_text(gen_request).await.map_err(|e| {
         (
@@ -250,15 +251,63 @@ async fn messages_handler(
     }
 }
 
-/// Parse model spec: "local/helper" → ("candle", "helper"), "candle" → ("candle", default)
-fn parse_model_spec(model: &str) -> (String, String) {
-    if let Some(name) = model.strip_prefix("local/") {
-        ("candle".to_string(), name.to_string())
-    } else if model.contains('/') {
-        let parts: Vec<&str> = model.splitn(2, '/').collect();
-        (parts[0].to_string(), parts[1].to_string())
+/// Parsed model specification from the Anthropic API request.
+///
+/// Model strings map as follows:
+///   "local/default"     → provider=candle, model=None (base model), adapter=None
+///   "local/helper"      → provider=candle, model=None (base model), adapter=Some("helper")
+///   "candle"            → provider=candle, model=None (base model), adapter=None
+///   "unsloth/Llama-3.2" → provider=candle, model=Some("unsloth/Llama-3.2"), adapter=None
+///
+/// The "local/" prefix is the convention for routing through Candle.
+/// Anything after "local/" that isn't "default" is treated as a persona
+/// name whose LoRA adapter should be activated.
+struct ModelSpec {
+    provider: String,
+    /// Explicit model name (None = use adapter's default_model)
+    model: Option<String>,
+    /// LoRA adapter to activate (persona name)
+    adapter: Option<String>,
+}
+
+const LOCAL_PREFIX: &str = "local/";
+const DEFAULT_PERSONA: &str = "default";
+/// Provider ID for quantized GGUF backend (large context, no LoRA).
+const PROVIDER_CANDLE_QUANTIZED: &str = "candle-q";
+/// Provider ID for safetensors BF16 backend (LoRA support, smaller context).
+const PROVIDER_CANDLE_SAFETENSORS: &str = "candle";
+
+fn parse_model_spec(raw: &str) -> ModelSpec {
+    if let Some(persona) = raw.strip_prefix(LOCAL_PREFIX) {
+        if persona == DEFAULT_PERSONA || persona.is_empty() {
+            // No LoRA needed → use quantized (larger context window)
+            ModelSpec {
+                provider: PROVIDER_CANDLE_QUANTIZED.to_string(),
+                model: None,
+                adapter: None,
+            }
+        } else {
+            // Persona specified → use safetensors (LoRA support)
+            ModelSpec {
+                provider: PROVIDER_CANDLE_SAFETENSORS.to_string(),
+                model: None,
+                adapter: Some(persona.to_string()),
+            }
+        }
+    } else if raw == "candle" || raw == "candle-q" {
+        ModelSpec {
+            provider: raw.to_string(),
+            model: None,
+            adapter: None,
+        }
     } else {
-        ("candle".to_string(), model.to_string())
+        // Treat as explicit model name (e.g. "unsloth/Llama-3.2-3B-Instruct")
+        // Default to quantized for large context
+        ModelSpec {
+            provider: PROVIDER_CANDLE_QUANTIZED.to_string(),
+            model: Some(raw.to_string()),
+            adapter: None,
+        }
     }
 }
 

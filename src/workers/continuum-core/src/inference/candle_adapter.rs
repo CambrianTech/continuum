@@ -21,7 +21,9 @@ use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
 
-use super::backends::llama_safetensors::BF16_PRACTICAL_CONTEXT;
+/// Default context window reported before a model is loaded.
+/// Once loaded, the actual model's context_length is used.
+const DEFAULT_CONTEXT_WINDOW: u32 = 131072;
 use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
 use super::lora::{load_lora_adapter, LoadedAdapter};
 use super::model::load_model_by_id;
@@ -101,6 +103,8 @@ impl CandleAdapter {
     pub fn quantized() -> Self {
         let mut adapter = Self::new();
         adapter.use_quantized = true;
+        adapter.config.provider_id = "candle-q".to_string();
+        adapter.config.name = "Candle Local (Quantized)".to_string();
         adapter
     }
 
@@ -420,6 +424,14 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
+        // Query the actual loaded backend for its context window.
+        // Falls back to BF16_PRACTICAL_CONTEXT if backend not yet loaded.
+        let context_window = self
+            .backend
+            .try_read()
+            .and_then(|guard| guard.as_ref().map(|b| b.0.context_length() as u32))
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+
         AdapterCapabilities {
             supports_text_generation: true,
             supports_chat: true,
@@ -430,7 +442,7 @@ impl AIProviderAdapter for CandleAdapter {
             supports_audio: false,
             supports_image_generation: false,
             is_local: true,
-            max_context_window: BF16_PRACTICAL_CONTEXT as u32,
+            max_context_window: context_window,
         }
     }
 
@@ -688,7 +700,7 @@ impl AIProviderAdapter for CandleAdapter {
             name: format!("{} ({})", self.config.default_model, format_label),
             provider: "candle".to_string(),
             capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
-            context_window: BF16_PRACTICAL_CONTEXT as u32,
+            context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: Some(4096),
             cost_per_1k_tokens: None,
             supports_streaming: false,

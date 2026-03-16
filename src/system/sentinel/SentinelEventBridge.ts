@@ -79,7 +79,21 @@ class SentinelEventBridge {
 
     // Fire-and-forget: long-await IPC call resolves when sentinel completes
     this._awaitCompletion(watched).catch(err => {
-      console.warn(`[SentinelEventBridge] Await error for ${handle}:`, err);
+      if (abortController.signal.aborted) return;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[SentinelEventBridge] Await error for ${handle}: ${errorMsg}`);
+      Events.emit(`sentinel:${handle}:error`, {
+        handle,
+        ...watched.metadata,
+        status: 'ipc-failed',
+        error: errorMsg,
+      });
+      Events.emit('sentinel:error', {
+        handle,
+        ...watched.metadata,
+        status: 'ipc-failed',
+        error: errorMsg,
+      });
       this._watched.delete(handle);
     });
   }

@@ -153,22 +153,28 @@ impl AIProviderModule {
             || inference_mode.eq_ignore_ascii_case("hybrid");
 
         if enable_candle {
+            let is_primary = inference_mode.eq_ignore_ascii_case("local")
+                || inference_mode.eq_ignore_ascii_case("candle");
+
+            // Register quantized adapter (GGUF) — larger context, lower VRAM, no LoRA.
+            // Best for coding agent sessions where context window matters most.
             self.log()
-                .info("Registering Candle adapter (local inference)");
-            // Priority 8: Local inference is fallback when cloud fails or for LoRA
-            // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
-            let priority = if inference_mode.eq_ignore_ascii_case("local")
-                || inference_mode.eq_ignore_ascii_case("candle")
-            {
-                0
-            } else {
-                8
-            };
-            let mut candle = CandleAdapter::new();
+                .info("Registering Candle quantized adapter (GGUF, large context)");
+            let mut candle_q = CandleAdapter::quantized();
             if let Some(mgr) = &self.gpu_manager {
-                candle.set_gpu_manager(mgr.clone());
+                candle_q.set_gpu_manager(mgr.clone());
             }
-            registry.register(Box::new(candle), priority);
+            registry.register(Box::new(candle_q), if is_primary { 0 } else { 8 });
+
+            // Register safetensors adapter (BF16) — supports LoRA fine-tuning.
+            // Used when a persona's LoRA adapter needs to be activated.
+            self.log()
+                .info("Registering Candle safetensors adapter (BF16, LoRA support)");
+            let mut candle_st = CandleAdapter::regular();
+            if let Some(mgr) = &self.gpu_manager {
+                candle_st.set_gpu_manager(mgr.clone());
+            }
+            registry.register(Box::new(candle_st), if is_primary { 1 } else { 9 });
         }
 
         // Initialize all registered adapters

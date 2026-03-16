@@ -9,6 +9,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { SentinelExtendBudgetParams, SentinelExtendBudgetResult } from '../shared/SentinelExtendBudgetTypes';
+import type { BudgetLimits } from '../../../../shared/generated/sentinel/BudgetLimits';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class SentinelExtendBudgetServerCommand extends CommandBase<SentinelExtendBudgetParams, SentinelExtendBudgetResult> {
@@ -37,12 +38,7 @@ export class SentinelExtendBudgetServerCommand extends CommandBase<SentinelExten
       return transformPayload(params, {
         success: false,
         handle: params.handle,
-        budgetLimits: {
-          maxTimeSecs: undefined,
-          maxCostUsd: null,
-          maxTokens: undefined,
-          maxIterations: null,
-        },
+        budgetLimits: {} as BudgetLimits,
         error: message,
       });
     }

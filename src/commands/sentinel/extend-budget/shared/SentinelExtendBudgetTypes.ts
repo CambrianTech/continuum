@@ -48,11 +48,7 @@ export const createSentinelExtendBudgetParams = (
   }
 ): SentinelExtendBudgetParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
-  maxTimeSecs: data.maxTimeSecs ?? 0,
-  maxCostUsd: data.maxCostUsd ?? 0,
-  maxTokens: data.maxTokens ?? 0,
-  maxIterations: data.maxIterations ?? 0,
-  ...data
+  ...data,
 });
 
 /**

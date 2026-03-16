@@ -18,8 +18,9 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { SentinelWebResearchParams, SentinelWebResearchResult, WebResearchPage } from '../shared/SentinelWebResearchTypes';
-import type { WebSearchResult } from '../../../interface/web/search/shared/WebSearchTypes';
-import type { WebFetchResult } from '../../../interface/web/fetch/shared/WebFetchTypes';
+import type { WebSearchParams, WebSearchResult } from '../../../interface/web/search/shared/WebSearchTypes';
+import type { WebFetchParams, WebFetchResult } from '../../../interface/web/fetch/shared/WebFetchTypes';
+import type { AIGenerateParams, AIGenerateResult } from '../../../ai/generate/shared/AIGenerateTypes';
 
 export class SentinelWebResearchServerCommand extends CommandBase<SentinelWebResearchParams, SentinelWebResearchResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -45,7 +46,7 @@ export class SentinelWebResearchServerCommand extends CommandBase<SentinelWebRes
 
     try {
       // Step 1: Search the web
-      const searchResult = await Commands.execute<any, WebSearchResult>('interface/web/search', {
+      const searchResult = await Commands.execute<WebSearchParams, WebSearchResult>('interface/web/search', {
         query,
         maxResults: maxPages * 2, // fetch extra in case some fail
       });
@@ -65,7 +66,7 @@ export class SentinelWebResearchServerCommand extends CommandBase<SentinelWebRes
       const urlsToFetch = searchResult.results.slice(0, maxPages);
       const fetchPromises = urlsToFetch.map(async (result) => {
         try {
-          const fetchResult = await Commands.execute<any, WebFetchResult>('interface/web/fetch', {
+          const fetchResult = await Commands.execute<WebFetchParams, WebFetchResult>('interface/web/fetch', {
             url: result.url,
             format: 'text',
             maxLength: 15000, // Cap per page to avoid overwhelming LLM
@@ -131,11 +132,11 @@ Provide a concise, actionable summary. Include specific code examples, commands,
 
       let summary = '';
       try {
-        const llmResult = await Commands.execute<any, any>('ai/generate', {
-          prompt: summaryPrompt,
+        const llmResult = await Commands.execute<AIGenerateParams, AIGenerateResult>('ai/generate', {
+          messages: [{ role: 'user', content: summaryPrompt }],
           maxTokens: 2000,
-        });
-        summary = llmResult.text || llmResult.output || llmResult.content || '';
+        } as Partial<AIGenerateParams>);
+        summary = llmResult.text || '';
       } catch {
         // LLM unavailable — concatenate snippets
         summary = fetchedPages
@@ -150,14 +151,15 @@ Provide a concise, actionable summary. Include specific code examples, commands,
         pagesFetched: fetchedPages.length,
         query,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       return transformPayload(params, {
         success: false,
         summary: '',
         pages: [],
         pagesFetched: 0,
         query,
-        error: error.message || String(error),
+        error: message,
       });
     }
   }

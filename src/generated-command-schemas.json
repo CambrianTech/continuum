@@ -1561,6 +1561,27 @@
       }
     },
     {
+      "name": "sentinel/web-research",
+      "description": "Sentinel Web Research — Types Composes interface/web/search + interface/web/fetch + LLM summarization. Called from Rust web_research step via execute_ts_json.",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "maxPages": {
+          "type": "number",
+          "required": false,
+          "description": "maxPages parameter"
+        },
+        "extract": {
+          "type": "string",
+          "required": false,
+          "description": "extract parameter"
+        }
+      }
+    },
+    {
       "name": "sentinel/status",
       "description": "Check the status of a running sentinel by its handle.",
       "params": {
@@ -1779,6 +1800,17 @@
       }
     },
     {
+      "name": "sentinel/resume",
+      "description": "Resume a pipeline from a durable checkpoint. Only works for pipelines in Interrupted, Paused, or BudgetExhausted status.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
       "name": "sentinel/logs/tail",
       "description": "Get the last N lines of a sentinel log stream, like Unix tail.",
       "params": {
@@ -1890,6 +1922,37 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/extend-budget",
+      "description": "Extend budget limits for a running or paused pipeline. Merges new limits into existing checkpoint budget.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "maxTimeSecs": {
+          "type": "number",
+          "required": false,
+          "description": "maxTimeSecs parameter"
+        },
+        "maxCostUsd": {
+          "type": "number",
+          "required": false,
+          "description": "maxCostUsd parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "maxIterations": {
+          "type": "number",
+          "required": false,
+          "description": "maxIterations parameter"
         }
       }
     },
@@ -2079,6 +2142,32 @@
           "type": "string",
           "required": false,
           "description": "status parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/approve",
+      "description": "Approve or reject a pending pipeline approval step. Resolves the blocking approval gate in the Rust executor.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "approved": {
+          "type": "boolean",
+          "required": true,
+          "description": "approved parameter"
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "description": "reason parameter"
+        },
+        "approverId": {
+          "type": "string",
+          "required": false,
+          "description": "approverId parameter"
         }
       }
     },
