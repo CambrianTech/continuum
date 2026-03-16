@@ -26,6 +26,7 @@ try:
         AutoModelForCausalLM,
         AutoTokenizer,
         TrainingArguments,
+        TrainerCallback,
         BitsAndBytesConfig
     )
     from datasets import load_dataset
@@ -277,6 +278,149 @@ def format_chat_template(example, tokenizer):
     return {"text": text}
 
 
+class GateGradientCallback(TrainerCallback):
+    """Capture per-head gradient magnitudes during LoRA training for plasticity optimization.
+
+    During training, LoRA adapters are applied to attention projections (q/k/v/o_proj).
+    This callback captures the gradient magnitude flowing through each head's LoRA_B weights,
+    producing per-head utilization scores that drive the plasticity optimization engine:
+
+    - Dead heads (low gradient) -> prune (reclaim memory)
+    - Low-utilization heads -> heavy quantization (Q4)
+    - High-utilization heads -> full precision (BF16) + targeted LoRA
+
+    Output: gate_gradients.json in the training output directory.
+    """
+
+    def __init__(self, model_config, model_name: str):
+        self.num_layers = model_config.num_hidden_layers
+        self.num_heads = model_config.num_attention_heads
+        self.num_kv_heads = getattr(model_config, 'num_key_value_heads', self.num_heads)
+        self.head_dim = model_config.hidden_size // self.num_heads
+        self.model_name = model_name
+
+        # EMA-smoothed per-head gradient magnitudes: [layer][head]
+        self.scores = [[0.5] * self.num_heads for _ in range(self.num_layers)]
+        self.alpha = 0.1  # EMA smoothing factor
+        self.step_count = 0
+
+    def on_log(self, args, state, control, model=None, **kwargs):
+        if model is None:
+            return
+
+        self.step_count += 1
+
+        # Walk through model layers looking for LoRA attention projections
+        layers = self._find_layers(model)
+        if not layers:
+            return
+
+        for layer_idx, layer in enumerate(layers):
+            if layer_idx >= self.num_layers:
+                break
+
+            attn = self._find_attention(layer)
+            if attn is None:
+                continue
+
+            for proj_name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
+                proj = getattr(attn, proj_name, None)
+                if proj is None:
+                    continue
+
+                # PEFT wraps projections; look for lora_B gradient
+                lora_b = self._find_lora_b(proj)
+                if lora_b is None or lora_b.grad is None:
+                    continue
+
+                grad = lora_b.grad.detach().float()
+
+                # For q_proj/o_proj: gradient shape relates to num_heads
+                # For k_proj/v_proj: gradient shape relates to num_kv_heads
+                if proj_name in ('q_proj', 'o_proj'):
+                    n_heads = self.num_heads
+                else:
+                    n_heads = self.num_kv_heads
+
+                # Reshape gradient to per-head and compute magnitude
+                try:
+                    # lora_B.weight shape: [out_features, rank]
+                    # out_features = n_heads * head_dim for q/k/v_proj
+                    out_features = grad.shape[0]
+                    if out_features < n_heads:
+                        continue
+                    head_size = out_features // n_heads
+                    head_grads = grad.reshape(n_heads, head_size, -1)
+                    head_magnitudes = head_grads.norm(dim=(1, 2))  # [n_heads]
+
+                    # Normalize to [0, 1] range
+                    max_mag = head_magnitudes.max()
+                    if max_mag > 0:
+                        head_magnitudes = head_magnitudes / max_mag
+
+                    # EMA update for Q heads (k/v use the same heads via GQA mapping)
+                    if proj_name in ('q_proj', 'o_proj'):
+                        for h in range(min(n_heads, self.num_heads)):
+                            mag = head_magnitudes[h].item()
+                            self.scores[layer_idx][h] = (
+                                (1 - self.alpha) * self.scores[layer_idx][h] +
+                                self.alpha * mag
+                            )
+                except (RuntimeError, ValueError):
+                    # Shape mismatch — skip this projection
+                    continue
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Write gate_gradients.json for the plasticity compaction engine."""
+        data = {
+            "layer_scores": self.scores,
+            "num_steps": self.step_count,
+            "model_name": self.model_name,
+            "num_heads": self.num_heads,
+            "num_kv_heads": self.num_kv_heads,
+        }
+
+        output_path = os.path.join(args.output_dir, "gate_gradients.json")
+        with open(output_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"🧬 Gate gradients written to: {output_path}")
+        print(f"   Layers: {self.num_layers}, Heads: {self.num_heads}, Steps: {self.step_count}")
+
+    def _find_layers(self, model):
+        """Navigate PEFT wrapper to find transformer layers."""
+        # PEFT wraps: model.base_model.model.model.layers
+        for path in [
+            lambda m: m.base_model.model.model.layers,
+            lambda m: m.model.model.layers,
+            lambda m: m.model.layers,
+            lambda m: m.base_model.model.transformer.h,
+        ]:
+            try:
+                return list(path(model))
+            except AttributeError:
+                continue
+        return None
+
+    def _find_attention(self, layer):
+        """Find attention module in a transformer layer."""
+        for attr in ['self_attn', 'attention', 'attn']:
+            if hasattr(layer, attr):
+                return getattr(layer, attr)
+        return None
+
+    def _find_lora_b(self, proj):
+        """Find LoRA_B weight in a PEFT-wrapped projection."""
+        # PEFT structure: proj.lora_B.default.weight
+        if hasattr(proj, 'lora_B'):
+            lora_b = proj.lora_B
+            if hasattr(lora_b, 'default'):
+                return lora_b.default.weight
+            # Direct weight
+            if hasattr(lora_b, 'weight'):
+                return lora_b.weight
+        return None
+
+
 def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume_from: str = None):
     """Execute LoRA training."""
     num_examples = len(dataset)
@@ -360,6 +504,9 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
         save_total_limit=3,
     )
 
+    # Plasticity: capture per-head gradient magnitudes for optimization engine
+    gate_callback = GateGradientCallback(model.config, config['baseModel'])
+
     # SFT Trainer (TRL 0.24+ simplified API)
     trainer = SFTTrainer(
         model=model,
@@ -367,6 +514,7 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
         train_dataset=dataset,
         formatting_func=formatting_func,
         args=training_args,
+        callbacks=[gate_callback],
     )
 
     # Train! Resume from checkpoint if available.

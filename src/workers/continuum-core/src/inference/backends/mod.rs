@@ -13,6 +13,7 @@
 //! EOS tokens, tokenization, cache management, and LoRA support.
 //! One `generate()` function works with ANY backend.
 
+pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
 

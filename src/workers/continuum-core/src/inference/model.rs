@@ -21,9 +21,12 @@ use candle_transformers::models::llama::{Cache, Llama, LlamaConfig};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
+use super::backends::compact_llama_safetensors::CompactLlamaSafetensorsBackend;
 use super::backends::llama_safetensors::LlamaSafetensorsBackend;
 use super::backends::{GenomeAdapter, ModelBackend};
 use super::lora::{map_lora_name_to_model_name, merge_lora_weight, LoRAWeights};
+use super::vendored::compact_llama;
+use crate::modules::plasticity::topology;
 use crate::runtime;
 
 /// Select best available compute device.
@@ -156,6 +159,52 @@ pub fn load_model_by_id(
         "  Loading model weights from {} file(s)...",
         weight_paths.len()
     ));
+
+    // Check for compacted model topology — if present, use CompactLlama
+    // which supports per-layer variable head counts from plasticity compaction.
+    let model_dir = weight_paths
+        .first()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf());
+
+    if let Some(ref dir) = model_dir {
+        if let Some(topo_path) = compact_llama::detect_topology(dir) {
+            log.info(&format!(
+                "  Detected compacted topology: {:?}",
+                topo_path
+            ));
+            let topo = topology::load_topology(&topo_path)
+                .map_err(|e| format!("Failed to load topology: {e}"))?;
+
+            log.info(&format!(
+                "  Compact model: {:.1}% parameter reduction, {} layers",
+                topo.parameter_reduction * 100.0,
+                topo.layers.len()
+            ));
+
+            let vb =
+                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
+            let compact_model = compact_llama::CompactLlama::load(vb, &config, &topo)
+                .map_err(|e| format!("CompactLlama load failed: {e}"))?;
+
+            let duration = start.elapsed();
+            log.info(&format!("Compact model loaded in {:?}", duration));
+
+            return Ok(Box::new(CompactLlamaSafetensorsBackend::new(
+                compact_model,
+                tokenizer,
+                device,
+                dtype,
+                config,
+                topo,
+                model_id.to_string(),
+                eos_token_ids,
+                weight_paths,
+            )));
+        }
+    }
+
+    // Standard (non-compacted) model path
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
 
     let model = Llama::load(vb, &config)?;

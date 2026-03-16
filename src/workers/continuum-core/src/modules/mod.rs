@@ -24,6 +24,7 @@ pub mod logger;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod plasticity;
 pub mod rag;
 pub mod runtime_control;
 pub mod search;
