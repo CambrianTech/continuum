@@ -590,6 +590,7 @@ mod tests {
             is_loaded: false,
             last_used_ms: 0,
             trained_model_name: None,
+            compaction: None,
         }]);
 
         // Record lots of activity in the covered domain

@@ -46,6 +46,28 @@ export interface AdapterManifest {
   version: number;
   /** QLoRA quantization metadata — tracks base model quantization during training */
   quantization?: QuantizationInfo;
+  /** Plasticity compaction metadata — present if trained on a compacted base model */
+  compaction?: CompactionManifest;
+}
+
+/**
+ * Plasticity compaction metadata — tracks base model compaction via head pruning.
+ *
+ * When present, the adapter was trained on (or targets) a compacted base model
+ * with per-layer variable attention head counts. The topology file describes
+ * which heads survived and their precision assignments.
+ */
+export interface CompactionManifest {
+  /** Fraction of parameters removed from base model (e.g., 0.30 = 30% smaller) */
+  parameterReduction: number;
+  /** Relative path to head_topology.json within the adapter directory */
+  topologyPath: string;
+  /** Whether compacted base model weights exist alongside the adapter */
+  hasCompactedWeights: boolean;
+  /** Original base model size in MB (before compaction) */
+  originalSizeMB: number;
+  /** Compacted base model size in MB */
+  compactedSizeMB: number;
 }
 
 /**
@@ -63,6 +85,8 @@ export const DISTRIBUTABLE_FILES = [
   'tokenizer_config.json',
   'special_tokens_map.json',
   'chat_template.jinja',
+  'head_topology.json',
+  'gate_gradients.json',
 ] as const;
 
 /** Result of packing an adapter directory into a .genome.tgz archive */
@@ -143,4 +167,6 @@ export interface AdapterPackageManifest {
   version: number;
   /** QLoRA quantization metadata — tracks base model quantization during training */
   quantization?: QuantizationInfo;
+  /** Plasticity compaction metadata — present if trained on a compacted base model */
+  compaction?: CompactionManifest;
 }

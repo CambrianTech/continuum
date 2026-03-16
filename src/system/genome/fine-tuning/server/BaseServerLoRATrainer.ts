@@ -16,6 +16,7 @@ import type {
   TrainingDataset
 } from '../shared/FineTuningTypes';
 import { AdapterPackage, type AdapterPackageManifest, type QuantizationInfo } from '../../server/AdapterPackage';
+import type { CompactionManifest } from '../../shared/AdapterPackageTypes';
 import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as path from 'path';
@@ -245,6 +246,9 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     // Read quantization info written by peft-train.py
     const quantization = await this.readQuantizationInfo(adapterPath);
 
+    // Auto-compact if gate_gradients.json was captured during training
+    const compaction = await this.attemptAutoCompaction(adapterPath);
+
     // Calculate real size and content hash
     const sizeMB = await AdapterPackage.calculateSizeMB(adapterPath);
     const contentHash = await AdapterPackage.calculateContentHash(adapterPath);
@@ -261,6 +265,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       contentHash,
       trainingMetadata,
       quantization,
+      compaction,
     });
 
     await AdapterPackage.writeManifest(adapterPath, manifest);
@@ -287,6 +292,60 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       };
     } catch {
       // No quantization info file — pre-QLoRA adapter or non-PEFT training
+      return undefined;
+    }
+  }
+
+  /**
+   * Attempt auto-compaction if gate_gradients.json was captured during training.
+   * Calls plasticity/analyze via IPC to compute topology, writes head_topology.json.
+   * Returns CompactionManifest if successful, undefined otherwise.
+   */
+  private async attemptAutoCompaction(adapterPath: string): Promise<CompactionManifest | undefined> {
+    const gradientsPath = path.join(adapterPath, 'gate_gradients.json');
+    try {
+      await fs.promises.access(gradientsPath);
+    } catch {
+      return undefined;
+    }
+
+    try {
+      const client = RustCoreIPCClient.getInstance();
+      const analysis = await client.plasticityAnalyze({ adapterPath });
+      const topology = analysis.topology;
+
+      // Write topology for future compaction/inference
+      const topologyPath = path.join(adapterPath, 'head_topology.json');
+      await fs.promises.writeFile(topologyPath, JSON.stringify(topology, null, 2), 'utf-8');
+
+      // Estimate sizes from parameter reduction
+      const adapterWeightsPath = path.join(adapterPath, 'adapter_model.safetensors');
+      let originalSizeMB = 0;
+      try {
+        const stats = await fs.promises.stat(adapterWeightsPath);
+        originalSizeMB = Math.round((stats.size / (1024 * 1024)) * 100) / 100;
+      } catch {
+        // No weights file
+      }
+
+      const compactedSizeMB = Math.round(originalSizeMB * (1 - topology.parameterReduction) * 100) / 100;
+
+      this.log('info',
+        `Auto-compaction analysis: ${(topology.parameterReduction * 100).toFixed(1)}% reduction, ` +
+        `savings=${(analysis.estimatedSavingsBytes / 1024 / 1024).toFixed(1)}MB, ` +
+        `profile: removed=${topology.precisionProfile.removed} q4=${topology.precisionProfile.q4} ` +
+        `q8=${topology.precisionProfile.q8} bf16=${topology.precisionProfile.bf16}`
+      );
+
+      return {
+        parameterReduction: topology.parameterReduction,
+        topologyPath: 'head_topology.json',
+        hasCompactedWeights: false,
+        originalSizeMB,
+        compactedSizeMB,
+      };
+    } catch (err) {
+      this.log('warn', `Auto-compaction analysis failed (non-blocking): ${err}`);
       return undefined;
     }
   }

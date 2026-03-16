@@ -143,22 +143,19 @@ impl PrecisionProfile {
 
 /// Raw utilization data from training (gate gradients + gate values).
 /// Produced by peft-train.py's GateGradientCallback, consumed by scoring.rs.
+///
+/// Note: snake_case — this is deserialized from Python-written JSON, not TypeScript.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UtilizationData {
     /// Per-layer, per-head utilization scores: [layer][head]
     pub layer_scores: Vec<Vec<f64>>,
     /// Number of training steps that contributed to these scores
-    #[serde(rename = "num_steps")]
     pub num_steps: usize,
     /// Model name (for validation against base model)
-    #[serde(rename = "model_name")]
     pub model_name: String,
     /// Number of Q attention heads per layer in the original model
-    #[serde(rename = "num_heads")]
     pub num_heads: usize,
     /// Number of KV attention heads per layer
-    #[serde(rename = "num_kv_heads")]
     pub num_kv_heads: usize,
 }
 

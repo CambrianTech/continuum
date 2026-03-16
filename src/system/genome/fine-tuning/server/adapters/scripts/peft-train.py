@@ -304,7 +304,13 @@ class GateGradientCallback(TrainerCallback):
         self.alpha = 0.1  # EMA smoothing factor
         self.step_count = 0
 
-    def on_log(self, args, state, control, model=None, **kwargs):
+    def on_pre_optimizer_step(self, args, state, control, model=None, **kwargs):
+        """Capture gradients BEFORE optimizer.step() zeros them.
+
+        HuggingFace Trainer callback order:
+          forward → backward → on_pre_optimizer_step → optimizer.step → zero_grad → on_log
+        This is the only reliable point where .grad tensors are populated.
+        """
         if model is None:
             return
 

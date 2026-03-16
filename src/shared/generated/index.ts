@@ -94,6 +94,7 @@ export type { VectorSearchCapabilities } from './orm';
 export type { VectorSearchOptions } from './orm';
 export type { VectorSearchResponse } from './orm';
 export * from './persona';
+export * from './plasticity';
 export * from './rag';
 export * from './runtime';
 export * from './search';

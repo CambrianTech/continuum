@@ -44,6 +44,31 @@ pub struct GenomeAdapterInfo {
     /// Trained model name for inference (if available after LoRA fine-tuning)
     #[ts(optional)]
     pub trained_model_name: Option<String>,
+    /// Plasticity compaction metadata (present if adapter uses a compacted base model)
+    #[ts(optional)]
+    pub compaction: Option<CompactionMetadata>,
+}
+
+/// Compaction metadata for plasticity-optimized adapters.
+/// When present, the adapter targets a compacted base model with fewer attention heads.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/CompactionMetadata.ts"
+)]
+pub struct CompactionMetadata {
+    /// Fraction of parameters removed (e.g., 0.30 = 30% smaller base model)
+    pub parameter_reduction: f32,
+    /// Path to head_topology.json relative to adapter directory
+    pub topology_path: String,
+    /// Whether the compacted base model weights exist alongside the adapter
+    pub has_compacted_weights: bool,
+    /// Original base model size in MB (before compaction)
+    #[ts(type = "number")]
+    pub original_size_mb: f32,
+    /// Compacted base model size in MB
+    #[ts(type = "number")]
+    pub compacted_size_mb: f32,
 }
 
 /// Full genome paging state for a single persona.
@@ -485,6 +510,7 @@ mod tests {
             is_loaded: loaded,
             last_used_ms,
             trained_model_name: Some(format!("{}:7b", name)),
+            compaction: None,
         }
     }
 
@@ -876,7 +902,63 @@ mod tests {
         assert_eq!(report.gaps[2].domain, "analysis");
     }
 
+    // ── Compacted Adapters ─────────────────────────────────────────────
+
+    #[test]
+    fn test_compacted_adapter_smaller_size() {
+        let mut engine = GenomePagingEngine::new(200.0);
+
+        // Compacted adapter is smaller — more fit in budget
+        let mut compacted = make_adapter("compacted", "code", 35.0, 0.5, false, 0);
+        compacted.compaction = Some(CompactionMetadata {
+            parameter_reduction: 0.30,
+            topology_path: "head_topology.json".to_string(),
+            has_compacted_weights: true,
+            original_size_mb: 50.0,
+            compacted_size_mb: 35.0,
+        });
+        engine.available.insert("compacted".into(), compacted);
+
+        let normal = make_adapter("normal", "chat", 50.0, 0.5, false, 0);
+        engine.available.insert("normal".into(), normal);
+
+        // Load both — compacted takes 35MB, normal 50MB = 85MB (fits in 200MB)
+        engine.activate_skill("compacted", 1000);
+        engine.activate_skill("normal", 2000);
+
+        assert!((engine.memory_used_mb - 85.0).abs() < 0.001);
+        assert!(engine.memory_pressure() < 0.5, "Should be well under budget");
+    }
+
+    #[test]
+    fn test_compacted_adapter_metadata_preserved() {
+        let mut engine = GenomePagingEngine::new(200.0);
+        let mut adapter = make_adapter("compacted", "code", 35.0, 0.5, false, 0);
+        adapter.compaction = Some(CompactionMetadata {
+            parameter_reduction: 0.25,
+            topology_path: "head_topology.json".to_string(),
+            has_compacted_weights: true,
+            original_size_mb: 50.0,
+            compacted_size_mb: 35.0,
+        });
+        engine.available.insert("compacted".into(), adapter);
+
+        engine.activate_skill("compacted", 1000);
+
+        let active = engine.active.get("compacted").unwrap();
+        assert!(active.compaction.is_some());
+        let meta = active.compaction.as_ref().unwrap();
+        assert!((meta.parameter_reduction - 0.25).abs() < 0.001);
+        assert!(meta.has_compacted_weights);
+    }
+
     // ── ts-rs binding tests ───────────────────────────────────────────
+
+    #[test]
+    fn export_bindings_compactionmetadata() {
+        let cfg = ts_rs::Config::default();
+        CompactionMetadata::export_all(&cfg).unwrap();
+    }
 
     #[test]
     fn export_bindings_genomeadapterinfo() {
