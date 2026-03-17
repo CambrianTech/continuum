@@ -333,17 +333,17 @@ pub fn generate(
             for &token_id in &suppress_tokens {
                 let idx = token_id as usize;
                 if idx < logits_slice.len() {
-                    logits_slice[idx] = f32::NEG_INFINITY;
+                    logits_slice[idx] = 0.0;
                 }
             }
-            // Dampen EOS probability. Q3_K_S output head gives inflated EOS logits
-            // (11.9 vs PyTorch's 0.4), causing premature stopping. Cap EOS probability
-            // to prevent early termination while still allowing natural stops.
+            // Dampen EOS probability. Q3_K_S output head inflates special token logits
+            // (EOS at 11.9 vs PyTorch's 0.4). Scale down by 100x — still allows
+            // eventual stopping but prevents premature termination.
             // TODO: proper fix is mixed quant with output head at Q6_K from BF16 source.
             for &eos_id in &eos_ids {
                 let idx = eos_id as usize;
                 if idx < logits_slice.len() {
-                    logits_slice[idx] = 0.0;
+                    logits_slice[idx] *= 0.01;
                 }
             }
             // Apply repetition penalty on PROBABILITIES (sample_f gives us probs, not logits).
@@ -408,9 +408,15 @@ pub fn generate(
         }
 
         if backend.eos_token_ids().contains(&next_token) {
+            if debug_tokens {
+                eprintln!("  → EOS hit: token {} at iteration {}", next_token, i);
+            }
             break;
         }
         all_tokens.push(next_token);
+        if debug_tokens && i <= 3 {
+            eprintln!("  → generated token {} at pos {}, total tokens {}", next_token, pos, all_tokens.len());
+        }
     }
 
     // Final GPU sync

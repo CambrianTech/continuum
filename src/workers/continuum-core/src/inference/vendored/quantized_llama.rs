@@ -851,6 +851,24 @@ impl ModelWeights {
             let x = (x + residual)?;
             layer_in = x;
 
+            // Log hidden state stats per layer (CANDLE_DEBUG_LAYERS=1)
+            if layer_idx % 16 == 0 || layer_idx == effective_max - 1 {
+                if std::env::var("CANDLE_DEBUG_LAYERS").is_ok() {
+                    device.synchronize()?;
+                    if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                        let mean = flat.iter().sum::<f32>() / flat.len() as f32;
+                        let max = flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let min = flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let has_nan = flat.iter().any(|v| v.is_nan());
+                        let has_inf = flat.iter().any(|v| v.is_infinite());
+                        eprintln!(
+                            "  [layer {:>2}] mean={:>8.3} min={:>8.1} max={:>8.1} nan={} inf={}",
+                            layer_idx, mean, min, max, has_nan, has_inf
+                        );
+                    }
+                }
+            }
+
             // Sync GPU every 8 layers to release intermediate Metal command buffers.
             if (layer_idx + 1) % 8 == 0 {
                 device.synchronize()?;
