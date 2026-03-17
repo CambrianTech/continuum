@@ -25,6 +25,7 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod plasticity;
+pub mod python_adapter;
 pub mod rag;
 pub mod runtime_control;
 pub mod search;
