@@ -221,11 +221,40 @@ pub fn generate(
     // Debug: log token-level diagnostics if CANDLE_DEBUG_TOKENS is set
     let debug_tokens = std::env::var("CANDLE_DEBUG_TOKENS").is_ok();
 
+    // Print top-10 logits from prefill for comparison with PyTorch
+    if debug_tokens {
+        let prefill_vec: Vec<f32> = prefill_logits.flatten_all()
+            .and_then(|t| t.to_vec1())
+            .unwrap_or_default();
+        let mut indexed: Vec<(usize, f32)> = prefill_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("Top 10 logits after prefill (Candle GGUF):");
+        for (rank, &(tid, val)) in indexed.iter().take(10).enumerate() {
+            let decoded = backend.decode(&[tid as u32]).unwrap_or_else(|_| "?".into());
+            eprintln!("  {}. token={:>6} logit={:>8.3}  {:?}", rank+1, tid, val, &decoded[..decoded.len().min(20)]);
+        }
+        for &eos_id in backend.eos_token_ids() {
+            if let Some(&val) = prefill_vec.get(eos_id as usize) {
+                eprintln!("  EOS[{}] logit={:.3}", eos_id, val);
+            }
+        }
+    }
+
     let mut all_tokens = prompt_tokens;
 
-    // Sample first token from prefill logits
+    // Special tokens that should NEVER be generated (only appear in prompts).
+    let suppress_tokens: Vec<u32> = vec![151644]; // <|im_start|> (Qwen2)
+    let eos_ids = backend.eos_token_ids().to_vec();
+
+    // Sample first token from prefill logits (with same suppression as generation)
     let first_token = logits_processor
-        .sample(&prefill_logits)
+        .sample_f(&prefill_logits, |logits_slice| {
+            for &tid in &suppress_tokens {
+                if (tid as usize) < logits_slice.len() {
+                    logits_slice[tid as usize] = 0.0;
+                }
+            }
+        })
         .map_err(|e| format!("First token sampling failed: {e}"))?;
 
     if backend.eos_token_ids().contains(&first_token) {
@@ -298,19 +327,31 @@ pub fn generate(
         // it more likely the model produces new content or hits EOS.
         // 1.1 is the llama.cpp default; 1.15 is slightly stronger for Q3_K.
         let repeat_penalty = 1.1f32;
-        let eos_ids = backend.eos_token_ids().to_vec();
 
         let next_token = match logits_processor.sample_f(&logits, |logits_slice| {
-            // Apply repetition penalty: reduce logits for previously generated tokens.
-            // NEVER penalize EOS tokens — the model must always be able to stop.
+            // Suppress special tokens that should never be generated
+            for &token_id in &suppress_tokens {
+                let idx = token_id as usize;
+                if idx < logits_slice.len() {
+                    logits_slice[idx] = f32::NEG_INFINITY;
+                }
+            }
+            // Dampen EOS probability. Q3_K_S output head gives inflated EOS logits
+            // (11.9 vs PyTorch's 0.4), causing premature stopping. Cap EOS probability
+            // to prevent early termination while still allowing natural stops.
+            // TODO: proper fix is mixed quant with output head at Q6_K from BF16 source.
+            for &eos_id in &eos_ids {
+                let idx = eos_id as usize;
+                if idx < logits_slice.len() {
+                    logits_slice[idx] = 0.0;
+                }
+            }
+            // Apply repetition penalty on PROBABILITIES (sample_f gives us probs, not logits).
+            // Divide probability of seen tokens by penalty factor.
             for &token_id in all_tokens[prompt_len..].iter() {
                 let idx = token_id as usize;
                 if idx < logits_slice.len() && !eos_ids.contains(&token_id) {
-                    if logits_slice[idx] > 0.0 {
-                        logits_slice[idx] /= repeat_penalty;
-                    } else {
-                        logits_slice[idx] *= repeat_penalty;
-                    }
+                    logits_slice[idx] /= repeat_penalty;
                 }
             }
         }) {
