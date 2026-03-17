@@ -19,6 +19,7 @@
 
 pub mod compactor;
 pub mod gguf_writer;
+pub mod pipeline;
 pub mod planner;
 pub mod quantizer;
 pub mod scoring;
