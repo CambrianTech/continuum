@@ -64,6 +64,7 @@ impl ServiceModule for PlasticityModule {
         match command {
             "plasticity/analyze" => self.handle_analyze(params).await,
             "plasticity/compact" => self.handle_compact(params).await,
+            "plasticity/compress" => self.handle_compress(params).await,
             "plasticity/topology" => self.handle_topology(params).await,
             "plasticity/pipeline" => self.handle_pipeline(params).await,
             _ => Err(format!("Unknown plasticity command: {command}")),
@@ -169,6 +170,70 @@ impl PlasticityModule {
     ///
     /// Params:
     /// - `topologyPath` (string): Path to head_topology.json
+    /// Compress a model to a mixed-quantization GGUF, fitted to a target device.
+    ///
+    /// Params:
+    /// - `capturePath` (string): Directory with head_topology.json
+    /// - `modelPath` (string): Base model safetensors directory
+    /// - `deviceSpec` (string, optional): Target device ("32gb", "16gb", "5090"). Default: "32gb"
+    /// - `outputPath` (string, optional): Output GGUF path
+    /// - `architecture` (string, optional): "qwen2" or "llama". Auto-detected if absent.
+    async fn handle_compress(&self, params: Value) -> Result<CommandResult, String> {
+        let capture_path = params
+            .get("capturePath")
+            .and_then(|v| v.as_str())
+            .ok_or("plasticity/compress requires 'capturePath' string param")?;
+
+        let model_path = params
+            .get("modelPath")
+            .and_then(|v| v.as_str())
+            .ok_or("plasticity/compress requires 'modelPath' string param")?;
+
+        let device_spec_str = params
+            .get("deviceSpec")
+            .and_then(|v| v.as_str())
+            .unwrap_or("32gb");
+
+        let device_spec = pipeline::parse_device_spec(device_spec_str)?;
+
+        let output_path = params
+            .get("outputPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                PathBuf::from(home)
+                    .join(".continuum/genome/models")
+                    .join(format!(
+                        "{}-compressed.gguf",
+                        PathBuf::from(model_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("model")
+                    ))
+            });
+
+        let architecture = params
+            .get("architecture")
+            .and_then(|v| v.as_str())
+            .unwrap_or("qwen2")
+            .to_string();
+
+        let config = pipeline::CompressConfig {
+            capture_path: PathBuf::from(capture_path),
+            model_path: PathBuf::from(model_path),
+            output_path,
+            device_spec,
+            architecture,
+        };
+
+        let result = pipeline::compress(&config)?;
+
+        let json = serde_json::to_value(&result)
+            .map_err(|e| format!("Serialize result: {e}"))?;
+        Ok(CommandResult::Json(json))
+    }
+
     async fn handle_topology(&self, params: Value) -> Result<CommandResult, String> {
         let topo_path = params
             .get("topologyPath")

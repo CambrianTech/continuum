@@ -1,0 +1,84 @@
+{
+  "name": "plasticity/compress",
+  "description": "Compress a model using utilization-aware head pruning + mixed quantization. Takes a base model + gradient capture data + target device spec, produces an optimized GGUF file that fits the device's memory budget. Precision is allocated per-tensor based on head utilization scores.",
+  "params": [
+    {
+      "name": "capturePath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to gradient capture directory (containing head_topology.json from plasticity/analyze)"
+    },
+    {
+      "name": "modelPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to base model safetensors directory (or HuggingFace model ID)"
+    },
+    {
+      "name": "deviceSpec",
+      "type": "string",
+      "optional": true,
+      "description": "Target device: '16gb', '32gb', '24gb-vram', '5090', 'macbookair', 'macbookpro', or JSON DeviceSpec. Default: '32gb'"
+    },
+    {
+      "name": "outputPath",
+      "type": "string",
+      "optional": true,
+      "description": "Output GGUF file path. Default: ~/.continuum/genome/models/<model>-compressed.gguf"
+    },
+    {
+      "name": "architecture",
+      "type": "string",
+      "optional": true,
+      "description": "Model architecture: 'qwen2', 'llama'. Auto-detected from config.json if not specified."
+    }
+  ],
+  "results": [
+    {
+      "name": "ggufPath",
+      "type": "string",
+      "description": "Path to the output compressed GGUF file"
+    },
+    {
+      "name": "outputSizeGb",
+      "type": "number",
+      "description": "Output file size in GB"
+    },
+    {
+      "name": "compressionRatio",
+      "type": "number",
+      "description": "Compression ratio vs original BF16 (e.g., 4.8x)"
+    },
+    {
+      "name": "quantDistribution",
+      "type": "object",
+      "description": "Count of tensors at each quantization level"
+    },
+    {
+      "name": "verified",
+      "type": "boolean",
+      "description": "Whether the output passed verification (NaN check, dimension check)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Compress Qwen2.5-Coder-32B for MacBook Pro 32GB",
+      "params": {
+        "capturePath": "~/.continuum/genome/captures/qwen32b-coding",
+        "modelPath": "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "deviceSpec": "32gb"
+      }
+    },
+    {
+      "description": "Compress a 14B model for MacBook Air 16GB",
+      "params": {
+        "capturePath": "/path/to/capture",
+        "modelPath": "/path/to/model",
+        "deviceSpec": "16gb",
+        "architecture": "llama"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}

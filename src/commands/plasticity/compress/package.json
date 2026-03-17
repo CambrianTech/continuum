@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/plasticity/compress",
+  "version": "1.0.0",
+  "description": "Compress a model using utilization-aware head pruning + mixed quantization. Takes a base model + gradient capture data + target device spec, produces an optimized GGUF file that fits the device's memory budget. Precision is allocated per-tensor based on head utilization scores.",
+  "main": "server/PlasticityCompressServerCommand.ts",
+  "types": "shared/PlasticityCompressTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/PlasticityCompressIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "plasticity/compress"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
