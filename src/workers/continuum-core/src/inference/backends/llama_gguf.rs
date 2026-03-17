@@ -75,19 +75,44 @@ impl LlamaGgufBackend {
 
     /// Read EOS token IDs from GGUF metadata.
     fn read_eos_tokens(ct: &gguf_file::Content) -> Vec<u32> {
-        if let Some(eos) = ct
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        let base_eos = ct
             .metadata
             .get("tokenizer.ggml.eos_token_id")
-            .and_then(|v| v.to_u32().ok())
-        {
-            if eos == 128001 {
-                // Llama 3 has TWO EOS: <|end_of_text|> (128001) + <|eot_id|> (128009)
-                vec![128001, 128009]
-            } else {
-                vec![eos]
+            .and_then(|v| v.to_u32().ok());
+
+        match arch.as_str() {
+            "qwen2" => {
+                // Qwen2 EOS: <|endoftext|> (151643) + <|im_end|> (151645)
+                // The model emits <|im_end|> at end of chat turns — MUST be detected
+                let mut tokens = vec![151643, 151645];
+                if let Some(eos) = base_eos {
+                    if !tokens.contains(&eos) {
+                        tokens.push(eos);
+                    }
+                }
+                tokens
             }
-        } else {
-            vec![128009]
+            "llama" => {
+                if let Some(eos) = base_eos {
+                    if eos == 128001 {
+                        vec![128001, 128009] // Llama 3: <|end_of_text|> + <|eot_id|>
+                    } else {
+                        vec![eos]
+                    }
+                } else {
+                    vec![128009]
+                }
+            }
+            _ => {
+                base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009])
+            }
         }
     }
 
