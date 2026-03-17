@@ -30,6 +30,11 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
 | RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource |
 | Vision pipeline | Proven E2E | Tiered perception, content-addressed cache |
+| Neural compression | Proven E2E | Head pruning + Q3_K_S: 32B model on 32GB MacBook, 5.3 tok/s |
+| Compression pipeline | Built | planner + GGUF writer + pipeline orchestration, 142 tests |
+| HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-32b-compacted published |
+| Local GGUF inference | Working | Candle Metal backend, Qwen2 architecture support |
+| Auto model discovery | Working | CandleAdapter finds local GGUFs, falls back to HF download |
 
 ---
 
@@ -382,6 +387,55 @@ The ultimate solution: fine-tune local models to call OUR tools correctly.
 - [ ] Model-format-aware few-shot examples in ToolGroupRegistry
 - [ ] Training data capture for successful tool calls
 - [ ] Academy dojo mode for tool-calling proficiency
+
+---
+
+## Priority 6B: Local Coding Model — Compacted 32B Integration
+
+**Why here**: P6 makes local models call tools. P6B makes the local model GOOD ENOUGH to be the default coding agent. A 32B compacted model is dramatically more capable than a 3B model at code generation, reasoning, and tool calling. This is what makes local-first viable.
+
+**Breakthrough (2026-03-17)**: Qwen2.5-Coder-32B-Instruct running on M1 Pro 32GB MacBook at 5.3 tok/s. Head-pruned (40Q/8KV → 25Q/5KV) + Q3_K_S quantization. Published: [continuum-ai/qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted).
+
+### 6B-1. Qwen2 Chat Template (GAP)
+
+Local model needs proper prompt formatting: `<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n`
+
+### 6B-2. Persona Config for Local Model (GAP)
+
+PersonaUser / AIProviderDaemon needs `localModel: "coder"` config option that routes to the compacted 32B via CandleAdapter instead of cloud API.
+
+### 6B-3. Mixed Quantization (GAP)
+
+Uniform Q3_K_S has 26% repetition. Mixed quant (high-util layers → Q5_K, low-util → Q3_K) should improve quality at same size. Planner + GGUF writer are built, need end-to-end test.
+
+### 6B-4. 14B Model for 16GB MacBook Air (GAP)
+
+Compress Qwen2.5-Coder-14B for the 16GB target. Expands addressable hardware from "32GB Pro" to "16GB Air" — huge for adoption.
+
+### 6B-5. Auto Device Detection (GAP)
+
+Detect available memory at startup, auto-select the best model that fits: 32B for 32GB, 14B for 16GB, 7B for 8GB. Zero user configuration.
+
+### 6B-6. Publish Command (GAP)
+
+`./jtag genome/publish --repo=continuum-ai/my-model` — one command from compressed GGUF to HuggingFace. Auto-generates model card with benchmarks.
+
+**Build checklist**:
+- [x] Candle GGUF backend with Qwen2 support (quantized_llama.rs)
+- [x] Architecture-aware metadata, head_dim derivation, KV cache fix
+- [x] DeviceEmbedding (F16 on Metal, no CPU↔Metal copies)
+- [x] CandleAdapter local model discovery + "coder" alias
+- [x] Compression pipeline: planner, GGUF writer, pipeline orchestrator
+- [x] IPC command: plasticity/compress (generated via CommandGenerator)
+- [x] Python subprocess adapter (unified Rust wrapper)
+- [x] First model published to continuum-ai on HuggingFace
+- [x] Benchmark harness (5 coding prompts, speed/quality/memory)
+- [ ] Qwen2 chat template in prompt builder
+- [ ] Persona config for local model selection
+- [ ] Mixed quantization end-to-end test
+- [ ] 14B model for 16GB target
+- [ ] Auto device detection + model selection
+- [ ] Publish command (genome/publish)
 
 ---
 

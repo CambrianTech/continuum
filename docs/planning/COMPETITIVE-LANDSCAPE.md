@@ -154,15 +154,19 @@ Not "here's a spec, go build" — conversational co-creation. Our chat system wi
 Nobody else combines:
 
 ```
-Local inference (Candle)
-  + Local LoRA fine-tuning (PEFT/QLoRA)
-    + Multi-agent orchestration (Sentinel pipelines)
-      + Agent-to-agent training (Academy — 3 learning modes)
-        + Autonomous continuous learning (no human trigger required)
-          + Persistent identity and memory (PersonaUser + Hippocampus)
-            + GPU memory management for all of the above
-              + Real-time human-AI collaboration (chat, tools, shared workspace)
+Adaptive neural compression (head pruning + mixed quantization)
+  + Local inference (Candle, Metal/CUDA)
+    + Local LoRA fine-tuning (PEFT/QLoRA)
+      + Multi-agent orchestration (Sentinel pipelines)
+        + Agent-to-agent training (Academy — 3 learning modes)
+          + Autonomous continuous learning (no human trigger required)
+            + Persistent identity and memory (PersonaUser + Hippocampus)
+              + GPU memory management for all of the above
+                + Real-time human-AI collaboration (chat, tools, shared workspace)
+                  + Model distribution (HuggingFace, zero-key download)
 ```
+
+**Proven (2026-03-17)**: Qwen2.5-Coder-32B running on M1 Pro 32GB at 5.3 tok/s. Published: [continuum-ai/qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted). A 32B coding model on a laptop — built by Continuum's plasticity pipeline, inspired by sentinel-ai research.
 
 **The one-liner**: "Your AI team lives on your machine, learns while you sleep, and is measurably smarter every morning — without sending a token to the cloud."
 
@@ -189,7 +193,9 @@ And critically: **personas don't start from zero.** The genome registry is a sha
 | Agent autonomy | No | No | Scripted | Partial | Partial | Yes (adaptive loop) |
 | Agent-to-agent training | No | No | No | No | No | Yes (Academy) |
 | Tool calling reliability | N/A | N/A | Framework | N/A | Excellent (11 parsers) | Good (improving) |
-| Local inference | No | No | No | No | Via vLLM/SGLang | Yes (Candle) |
+| Local inference | No | No | No | No | Via vLLM/SGLang | Yes (Candle, Metal) |
+| Adaptive model compression | No | No | No | No | No | Yes (head pruning + mixed quant) |
+| Model distribution | No | No | No | No | No | Yes (HuggingFace, zero-key) |
 | On-device fine-tuning | No | No | No | No | RL trajectories | Yes (PEFT/QLoRA) |
 | GPU memory management | N/A | N/A | N/A | N/A | N/A | Yes (eviction registry) |
 | Deterministic verification | No | No | No | Partial | No | Yes (Sentinel) |
