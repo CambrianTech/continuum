@@ -288,8 +288,28 @@ pub fn generate(
             logits
         };
 
-        // Sample next token
-        let next_token = match logits_processor.sample(&logits) {
+        // Sample with repetition penalty.
+        // Quantized models (especially Q3_K) tend to enter repetition loops
+        // because the EOS logit is too noisy to fire. Repetition penalty
+        // reduces the probability of tokens that already appeared, making
+        // it more likely the model produces new content or hits EOS.
+        // 1.1 is the llama.cpp default; 1.15 is slightly stronger for Q3_K.
+        let repeat_penalty = 1.15f32;
+        let repeat_context = &all_tokens; // penalize all generated tokens
+
+        let next_token = match logits_processor.sample_f(&logits, |logits_slice| {
+            // Apply repetition penalty: divide logits for seen tokens
+            for &token_id in repeat_context.iter() {
+                let idx = token_id as usize;
+                if idx < logits_slice.len() {
+                    if logits_slice[idx] > 0.0 {
+                        logits_slice[idx] /= repeat_penalty;
+                    } else {
+                        logits_slice[idx] *= repeat_penalty;
+                    }
+                }
+            }
+        }) {
             Ok(token) => {
                 nan_count = 0;
                 token
