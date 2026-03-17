@@ -99,7 +99,25 @@ fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<PathBuf>, S
         return Ok(paths);
     }
 
-    Err("No weights found (tried model.safetensors and sharded index)".to_string())
+    // Try GGUF files (for compacted models on HuggingFace)
+    // List repo files and find any .gguf
+    if let Ok(repo_info) = repo.info() {
+        let gguf_files: Vec<_> = repo_info
+            .siblings
+            .iter()
+            .filter(|s| s.rfilename.ends_with(".gguf"))
+            .collect();
+        if !gguf_files.is_empty() {
+            let gguf_name = &gguf_files[0].rfilename;
+            runtime::logger("candle").info(&format!("  Found GGUF: {}", gguf_name));
+            let path = repo
+                .get(gguf_name)
+                .map_err(|e| format!("Failed to download GGUF {gguf_name}: {e}"))?;
+            return Ok(vec![path]);
+        }
+    }
+
+    Err("No weights found (tried model.safetensors, sharded index, and GGUF)".to_string())
 }
 
 /// Load a safetensors model by HuggingFace model ID.
@@ -129,6 +147,29 @@ pub fn load_model_by_id(
 
     let weight_paths =
         download_weights(&repo).map_err(|e| format!("Failed to download weights: {e}"))?;
+
+    // If we got a GGUF file, route directly to GGUF backend
+    if weight_paths.len() == 1
+        && weight_paths[0]
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e == "gguf")
+            .unwrap_or(false)
+    {
+        log.info("  Detected GGUF format — loading via GGUF backend");
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
+        let backend =
+            backends::load_gguf_backend(&weight_paths[0], tokenizer, model_id, &device)?;
+        let duration = start.elapsed();
+        log.info(&format!(
+            "GGUF model loaded in {:?} (arch={}, ctx={})",
+            duration,
+            backend.architecture(),
+            backend.context_length()
+        ));
+        return Ok(backend);
+    }
 
     let config_str = std::fs::read_to_string(&config_path)?;
 
