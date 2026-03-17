@@ -327,7 +327,8 @@ async function attemptAutoCompaction(adapterPath: string): Promise<CompactionMan
     console.log(
       `[TrainingCompletion] Auto-compaction analysis: ${(topology.parameterReduction * 100).toFixed(1)}% reduction, ` +
       `${analysis.estimatedSavingsBytes} bytes savings, ` +
-      `profile: removed=${topology.precisionProfile.removed} q4=${topology.precisionProfile.q4} ` +
+      `profile: removed=${topology.precisionProfile.removed} ternary=${topology.precisionProfile.ternary} ` +
+      `q2=${topology.precisionProfile.q2} q4=${topology.precisionProfile.q4} ` +
       `q8=${topology.precisionProfile.q8} bf16=${topology.precisionProfile.bf16}`
     );
 

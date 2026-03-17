@@ -238,6 +238,8 @@ mod tests {
             parameter_reduction: 0.25,
             precision_profile: PrecisionProfile {
                 removed: 4,
+                ternary: 0,
+                q2: 0,
                 q4: 0,
                 q8: 0,
                 bf16: 12,
@@ -884,6 +886,8 @@ mod tests {
             parameter_reduction: 0.0,
             precision_profile: PrecisionProfile {
                 removed: 0,
+                ternary: 0,
+                q2: 0,
                 q4: 0,
                 q8: 0,
                 bf16: 0,

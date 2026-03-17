@@ -333,7 +333,8 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       this.log('info',
         `Auto-compaction analysis: ${(topology.parameterReduction * 100).toFixed(1)}% reduction, ` +
         `savings=${(analysis.estimatedSavingsBytes / 1024 / 1024).toFixed(1)}MB, ` +
-        `profile: removed=${topology.precisionProfile.removed} q4=${topology.precisionProfile.q4} ` +
+        `profile: removed=${topology.precisionProfile.removed} ternary=${topology.precisionProfile.ternary} ` +
+        `q2=${topology.precisionProfile.q2} q4=${topology.precisionProfile.q4} ` +
         `q8=${topology.precisionProfile.q8} bf16=${topology.precisionProfile.bf16}`
       );
 

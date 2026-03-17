@@ -1,5 +1,7 @@
 //! Tensor slicing: physically remove pruned heads from safetensors.
 //!
+//! Supports both single-file and multi-shard safetensors (e.g., model-00001-of-00007.safetensors).
+//!
 //! For Llama-3.2-3B (24 Q heads, 8 KV heads, head_dim=128, hidden=3072):
 //!
 //! ```text
@@ -15,7 +17,48 @@ use super::types::*;
 use safetensors::tensor::TensorView;
 use safetensors::{Dtype, SafeTensors};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Discover all safetensors shard files for a model directory.
+///
+/// Handles both:
+/// - Single file: `model.safetensors`
+/// - Multi-shard: `model-00001-of-00007.safetensors`, etc.
+///
+/// Returns shard paths sorted by shard number.
+pub fn discover_shards(model_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    // Check for single file first
+    let single = model_dir.join("model.safetensors");
+    if single.exists() {
+        return Ok(vec![single]);
+    }
+
+    // Check for multi-shard pattern
+    let mut shards: Vec<PathBuf> = Vec::new();
+    let entries = std::fs::read_dir(model_dir)
+        .map_err(|e| format!("Failed to read model directory {}: {}", model_dir.display(), e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read dir entry: {e}"))?;
+        let path = entry.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            // Match pattern: model-NNNNN-of-NNNNN.safetensors
+            if name.starts_with("model-") && name.ends_with(".safetensors") && name.contains("-of-") {
+                shards.push(path);
+            }
+        }
+    }
+
+    if shards.is_empty() {
+        return Err(format!(
+            "No safetensors files found in {}. Expected model.safetensors or model-NNNNN-of-NNNNN.safetensors",
+            model_dir.display()
+        ));
+    }
+
+    shards.sort();
+    Ok(shards)
+}
 
 /// Compact a model's safetensors file according to the computed topology.
 ///
@@ -72,6 +115,99 @@ pub fn compact_model(
         original_size_bytes: original_size,
         compacted_size_bytes: serialized.len() as u64,
     })
+}
+
+/// Compact a multi-shard model into a single output safetensors file.
+///
+/// This is the main entry point for 32B+ models that use multiple safetensor shards.
+/// Reads all shards, compacts attention tensors, and writes a single output file.
+///
+/// For very large models (70B+), a streaming approach would be needed, but for
+/// 32B models the compacted output fits in memory (~20-30GB → ~15-20GB compacted).
+pub fn compact_model_sharded(
+    model_dir: &Path,
+    topology: &HeadTopology,
+    output_path: &Path,
+) -> Result<CompactionResult, String> {
+    let shards = discover_shards(model_dir)?;
+
+    eprintln!(
+        "[compactor] Found {} shard(s) in {}",
+        shards.len(),
+        model_dir.display()
+    );
+
+    let mut all_output_tensors: Vec<(String, Vec<u8>, Vec<usize>, Dtype)> = Vec::new();
+    let mut total_original_size: u64 = 0;
+
+    for (shard_idx, shard_path) in shards.iter().enumerate() {
+        eprintln!(
+            "[compactor] Processing shard {}/{}: {}",
+            shard_idx + 1,
+            shards.len(),
+            shard_path.display()
+        );
+
+        let shard_bytes = std::fs::read(shard_path)
+            .map_err(|e| format!("Failed to read shard {}: {}", shard_path.display(), e))?;
+        total_original_size += shard_bytes.len() as u64;
+
+        let tensors = SafeTensors::deserialize(&shard_bytes)
+            .map_err(|e| format!("Failed to deserialize shard {}: {e}", shard_path.display()))?;
+
+        for (name, tensor) in tensors.tensors() {
+            let (data, shape, dtype) = compact_tensor(&name, &tensor, topology)?;
+            all_output_tensors.push((name, data, shape, dtype));
+        }
+
+        // Drop shard_bytes to free memory before loading next shard
+        drop(shard_bytes);
+    }
+
+    eprintln!(
+        "[compactor] Compacted {} tensors, serializing...",
+        all_output_tensors.len()
+    );
+
+    // Serialize all tensors into a single output file
+    let tensor_refs: Vec<(&str, &[u8], &[usize], Dtype)> = all_output_tensors
+        .iter()
+        .map(|(name, data, shape, dtype)| (name.as_str(), data.as_slice(), shape.as_slice(), *dtype))
+        .collect();
+
+    let serialized = serialize_tensors(&tensor_refs)?;
+
+    std::fs::write(output_path, &serialized)
+        .map_err(|e| format!("Failed to write compacted model to {}: {}", output_path.display(), e))?;
+
+    // Save topology alongside
+    let topology_path = output_path.with_extension("topology.json");
+    super::topology::save_topology(topology, &topology_path)?;
+
+    eprintln!(
+        "[compactor] Done: {} → {} ({:.1}% reduction)",
+        format_bytes(total_original_size),
+        format_bytes(serialized.len() as u64),
+        (1.0 - serialized.len() as f64 / total_original_size as f64) * 100.0
+    );
+
+    Ok(CompactionResult {
+        model_path: output_path.display().to_string(),
+        topology_path: topology_path.display().to_string(),
+        topology: topology.clone(),
+        original_size_bytes: total_original_size,
+        compacted_size_bytes: serialized.len() as u64,
+    })
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 /// Compact a single tensor according to the topology.
@@ -481,6 +617,38 @@ mod tests {
         assert_eq!(floats[5], 11.0); // (1, 1)
         assert_eq!(floats[6], 14.0); // (1, 4)
         assert_eq!(floats[7], 15.0); // (1, 5)
+    }
+
+    #[test]
+    fn test_discover_shards_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_file = dir.path().join("model.safetensors");
+        std::fs::write(&model_file, b"dummy").unwrap();
+
+        let shards = discover_shards(dir.path()).unwrap();
+        assert_eq!(shards.len(), 1);
+        assert_eq!(shards[0], model_file);
+    }
+
+    #[test]
+    fn test_discover_shards_multi() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create fake shard files
+        for i in 1..=3 {
+            let name = format!("model-{:05}-of-00003.safetensors", i);
+            std::fs::write(dir.path().join(name), b"dummy").unwrap();
+        }
+
+        let shards = discover_shards(dir.path()).unwrap();
+        assert_eq!(shards.len(), 3);
+        assert!(shards[0].file_name().unwrap().to_str().unwrap().contains("00001"));
+        assert!(shards[2].file_name().unwrap().to_str().unwrap().contains("00003"));
+    }
+
+    #[test]
+    fn test_discover_shards_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_shards(dir.path()).is_err());
     }
 
     #[test]

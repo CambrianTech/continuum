@@ -756,6 +756,11 @@ fn resolve_model_id(requested: &str) -> String {
         "llama3.2:1b" | "llama3.2-1b" => "unsloth/Llama-3.2-1B-Instruct".to_string(),
         "llama3.2:3b" | "llama3.2-3b" | "llama3.2" => "unsloth/Llama-3.2-3B-Instruct".to_string(),
 
+        // Qwen 2.5 Coder family
+        "qwen2.5-coder:32b" | "qwen2.5-coder-32b" => "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
+        "qwen2.5-coder:7b" | "qwen2.5-coder-7b" => "Qwen/Qwen2.5-Coder-7B-Instruct".to_string(),
+        "qwen2.5-coder:1.5b" | "qwen2.5-coder-1.5b" => "Qwen/Qwen2.5-Coder-1.5B-Instruct".to_string(),
+
         // TinyLlama
         "tinyllama" | "tinyllama:1.1b" => "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
 
