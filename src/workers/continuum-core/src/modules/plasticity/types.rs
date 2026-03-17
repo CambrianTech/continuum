@@ -385,3 +385,236 @@ pub struct CompactionResult {
     #[ts(type = "number")]
     pub compacted_size_bytes: u64,
 }
+
+// ── Compression Pipeline Types ──
+//
+// These types drive the unified compression pipeline:
+// Score → Plan → Compress → Verify → Infer
+// See docs/genome/COMPRESSION-PIPELINE.md
+
+/// GGUF quantization types we support for mixed-precision compression.
+///
+/// Maps to candle_core::quantized::GgmlDType. Ordered roughly by bits-per-weight
+/// from lowest to highest precision. The planner assigns these per-tensor
+/// based on utilization scores and device memory budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/GgufQuantType.ts"
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GgufQuantType {
+    /// ~2.6 bpw — practical floor. Below this, compacted models produce NaN.
+    Q2K,
+    /// ~3.4 bpw — proven working for compacted 32B on 32GB.
+    Q3KS,
+    /// ~3.9 bpw
+    Q3KM,
+    /// ~4.1 bpw
+    Q3KL,
+    /// ~4.3 bpw — importance-matrix quant, good quality/size ratio
+    Iq4Xs,
+    /// ~4.5 bpw
+    Q4KS,
+    /// ~4.8 bpw — llama.cpp default "medium"
+    Q4KM,
+    /// ~5.1 bpw
+    Q5KS,
+    /// ~5.3 bpw
+    Q5KM,
+    /// ~6.6 bpw — high precision, used for sensitive tensors (embeddings, output)
+    Q6K,
+    /// ~8.5 bpw
+    Q8_0,
+    /// 16 bpw — full half precision
+    F16,
+    /// 32 bpw — full precision (norms, biases)
+    F32,
+}
+
+impl GgufQuantType {
+    /// Approximate bits per weight for budget estimation.
+    pub fn bits_per_weight(&self) -> f64 {
+        match self {
+            Self::Q2K => 2.6,
+            Self::Q3KS => 3.4,
+            Self::Q3KM => 3.9,
+            Self::Q3KL => 4.1,
+            Self::Iq4Xs => 4.3,
+            Self::Q4KS => 4.5,
+            Self::Q4KM => 4.8,
+            Self::Q5KS => 5.1,
+            Self::Q5KM => 5.3,
+            Self::Q6K => 6.6,
+            Self::Q8_0 => 8.5,
+            Self::F16 => 16.0,
+            Self::F32 => 32.0,
+        }
+    }
+
+    /// GGUF block size constraint. Tensor row count must be divisible by this.
+    /// Returns 0 for types with no alignment constraint (F16, F32).
+    pub fn block_alignment(&self) -> usize {
+        match self {
+            Self::Q2K | Self::Q3KS | Self::Q3KM | Self::Q3KL
+            | Self::Q4KS | Self::Q4KM | Self::Q5KS | Self::Q5KM
+            | Self::Q6K => 256,
+            Self::Q8_0 => 32,
+            Self::Iq4Xs => 256,
+            Self::F16 | Self::F32 => 0,
+        }
+    }
+
+    /// Estimate bytes for a tensor with this quant type.
+    pub fn estimate_bytes(&self, element_count: usize) -> usize {
+        (element_count as f64 * self.bits_per_weight() / 8.0).ceil() as usize
+    }
+}
+
+/// Target device specification. Drives the planner's memory budget.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/DeviceSpec.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceSpec {
+    /// Total available memory in GB
+    pub memory_gb: f64,
+    /// Memory reserved for OS, KV cache, inference overhead
+    pub reserved_gb: f64,
+    /// Label for display
+    pub label: String,
+}
+
+impl DeviceSpec {
+    /// Effective memory budget for model weights.
+    pub fn effective_budget_gb(&self) -> f64 {
+        self.memory_gb - self.reserved_gb
+    }
+
+    pub fn effective_budget_bytes(&self) -> u64 {
+        (self.effective_budget_gb() * 1073741824.0) as u64
+    }
+
+    pub fn macbook_air_16gb() -> Self {
+        Self { memory_gb: 16.0, reserved_gb: 5.0, label: "MacBook Air 16GB".into() }
+    }
+
+    pub fn macbook_pro_32gb() -> Self {
+        Self { memory_gb: 32.0, reserved_gb: 8.0, label: "MacBook Pro 32GB".into() }
+    }
+
+    pub fn rtx_5090_24gb() -> Self {
+        Self { memory_gb: 24.0, reserved_gb: 2.0, label: "RTX 5090 24GB VRAM".into() }
+    }
+
+    /// Auto-compute reserves: 25% of total, minimum 3 GB.
+    pub fn from_memory_gb(total: f64) -> Self {
+        let reserved = (total * 0.25).max(3.0);
+        Self {
+            memory_gb: total,
+            reserved_gb: reserved,
+            label: format!("{:.0}GB device", total),
+        }
+    }
+}
+
+/// Per-tensor quantization assignment in a compression recipe.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/TensorQuantAssignment.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TensorQuantAssignment {
+    /// Tensor name pattern (glob: "model.layers.5.self_attn.q_proj.weight")
+    pub pattern: String,
+    /// GGUF quantization type
+    pub quant_type: GgufQuantType,
+    /// Why this assignment (utilization score, sensitivity, etc.)
+    pub reason: String,
+}
+
+/// Memory budget breakdown — where bytes go in the compressed model.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/MemoryBudget.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryBudget {
+    /// Embedding table bytes (token_embd + lm_head)
+    #[ts(type = "number")]
+    pub embedding_bytes: u64,
+    /// Attention projection bytes (Q, K, V, O across all layers)
+    #[ts(type = "number")]
+    pub attention_bytes: u64,
+    /// MLP bytes (gate, up, down across all layers)
+    #[ts(type = "number")]
+    pub mlp_bytes: u64,
+    /// Norm + bias bytes (small, always F32)
+    #[ts(type = "number")]
+    pub norm_bytes: u64,
+    /// Total model weight bytes
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// KV cache estimate at full context (for headroom check)
+    #[ts(type = "number")]
+    pub kv_cache_max_bytes: u64,
+}
+
+/// Complete compression recipe — the specification that turns a base model
+/// into a device-fitted, utilization-aware compressed GGUF.
+///
+/// Created by the planner from utilization scores + device spec.
+/// Consumed by the GGUF writer to produce the compressed model.
+/// Stored as custom metadata inside the output GGUF for provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/CompressionRecipe.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionRecipe {
+    /// Head topology: which heads to keep/prune, per-head precision tiers
+    pub topology: HeadTopology,
+
+    /// Per-tensor quantization assignments (attention, MLP, embeddings)
+    pub tensor_quant_map: Vec<TensorQuantAssignment>,
+
+    /// Target device that drove the budget
+    pub device_spec: DeviceSpec,
+
+    /// Memory budget breakdown
+    pub budget: MemoryBudget,
+
+    /// Base model identifier (HuggingFace repo ID)
+    pub base_model: String,
+
+    /// Pipeline version for forward compatibility
+    pub pipeline_version: u32,
+}
+
+/// Result of the full compression pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/plasticity/CompressionResult.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionPipelineResult {
+    /// Path to the output GGUF file
+    pub gguf_path: String,
+    /// The recipe that was applied
+    pub recipe: CompressionRecipe,
+    /// Actual output file size in bytes
+    #[ts(type = "number")]
+    pub output_size_bytes: u64,
+    /// Compression ratio (original BF16 size / output size)
+    pub compression_ratio: f64,
+    /// Verification passed?
+    pub verified: bool,
+    /// Short inference test output (if verification included generation)
+    pub test_output: Option<String>,
+}
