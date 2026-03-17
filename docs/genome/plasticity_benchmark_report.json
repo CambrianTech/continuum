@@ -1,0 +1,49 @@
+{
+  "model": "Qwen2.5-Coder-32B-Instruct (compacted 25Q/5KV)",
+  "device": "Apple M1 Pro 32GB",
+  "pruning": "40Q/8KV -> 25Q/5KV (37.5% KV cache reduction)",
+  "quantization_results": {
+    "Q3_K_S": {
+      "size_gb": 12.928712964057922,
+      "load_time_s": 8.807041416,
+      "rss_mb": 12512.875,
+      "avg_tok_s": 5.440998718614973,
+      "quality_score": 0.2,
+      "repetition": 0.29934837092731825,
+      "prompts_passed": 5,
+      "status": "working"
+    },
+    "Q2_K": {
+      "size_gb": 11.0,
+      "load_time_s": 5.9,
+      "rss_mb": 13185,
+      "avg_tok_s": 0,
+      "quality_score": 0,
+      "repetition": 0,
+      "prompts_passed": 0,
+      "status": "NaN - too aggressive quant for compacted model"
+    },
+    "Q4_K_M_runpod": {
+      "size_gb": 18.8,
+      "load_time_s": null,
+      "rss_mb": null,
+      "avg_tok_s": null,
+      "quality_score": 1.0,
+      "repetition": 0.0,
+      "prompts_passed": 1,
+      "status": "coherent on A100, OOMs on 32GB Mac"
+    },
+    "IQ4_XS": {
+      "size_gb": 11.0,
+      "status": "quantization partially failed - untested"
+    }
+  },
+  "notes": [
+    "Q4_K_M/Q4_K_S fail to quantize: attn_output.weight ncols=3200 not divisible by 256",
+    "Q2_K quantizes but produces NaN: too aggressive for compacted model",
+    "Q3_K_S is the current sweet spot: fits 32GB, 5.3 tok/s, coherent code",
+    "IQ4_XS partially quantized (11GB) but may be corrupt",
+    "Peak memory during load: ~20GB (F32->F16 embedding construction)",
+    "Steady state: ~13GB RSS"
+  ]
+}
