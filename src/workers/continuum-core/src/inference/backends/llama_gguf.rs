@@ -192,11 +192,10 @@ impl ModelBackend for LlamaGgufBackend {
         last_logits.ok_or_else(|| "Empty token sequence".to_string())
     }
 
-    /// Clear KV cache by reloading model from disk.
-    /// GGUF ModelWeights has internal per-layer kv_cache with no reset API.
-    /// The GGUF file should be in OS page cache, making this fast (~2-3s).
+    /// Clear KV cache without reloading the entire model.
     fn clear_cache(&mut self) -> Result<(), String> {
-        self.reload_weights()
+        self.model.clear_kv_cache();
+        Ok(())
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, String> {

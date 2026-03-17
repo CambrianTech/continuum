@@ -18,11 +18,65 @@ use std::collections::HashMap;
 use candle_core::quantized::QTensor;
 use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
-use candle_nn::{Embedding, Module};
+use candle_nn::Module;
 use candle_transformers::quantized_nn::RmsNorm;
 
 /// Default fallback if GGUF metadata doesn't contain context_length.
 const DEFAULT_CONTEXT_LENGTH: usize = 4096;
+
+/// Zero-overhead quantized embedding lookup via one-hot matmul.
+///
+/// Embedding: F16 table on the same device as the model (Metal).
+/// 1.55 GB in Metal shared memory. Forward: Metal index_select → F32 cast.
+/// Everything stays on GPU. No CPU↔Metal copies.
+#[derive(Debug, Clone)]
+struct DeviceEmbedding {
+    /// F16 embedding table: [vocab_size, hidden_size] on model device
+    table: Tensor,
+    hidden_size: usize,
+}
+
+impl DeviceEmbedding {
+    fn from_gguf<R: std::io::Seek + std::io::Read>(
+        ct: &gguf_file::Content,
+        reader: &mut R,
+        tensor_name: &str,
+        hidden_size: usize,
+        device: &Device,
+    ) -> Result<Self> {
+        // Load quantized to CPU, dequantize to F32 on CPU, convert to F16, move to device.
+        // Peak CPU: 3.1GB temporary (freed before return).
+        // Persistent: 1.55GB F16 on device.
+        let qt_cpu = ct.tensor(reader, tensor_name, &Device::Cpu)?;
+        let f32_table = qt_cpu.dequantize(&Device::Cpu)?;
+        let f16_table = f32_table.to_dtype(DType::F16)?;
+        drop(f32_table);
+        let table = f16_table.to_device(device)?;
+        // f16_table (CPU) dropped, only device copy persists
+        Ok(Self { table, hidden_size })
+    }
+
+    fn from_qtensor(qtensor: QTensor, hidden_size: usize, device: &Device) -> Result<Self> {
+        let f32_table = qtensor.dequantize(&Device::Cpu)?;
+        let f16_table = f32_table.to_dtype(DType::F16)?;
+        drop(f32_table);
+        let table = f16_table.to_device(device)?;
+        Ok(Self { table, hidden_size })
+    }
+
+    fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
+        // All on device — no CPU↔Metal transfers
+        let embeddings = self.table.index_select(&token_ids.flatten_all()?, 0)?
+            .contiguous()?  // Force copy of selected rows only — breaks view into full table
+            .to_dtype(DType::F32)?;
+        let orig_dims = token_ids.dims();
+        if orig_dims.len() == 2 {
+            embeddings.reshape((orig_dims[0], orig_dims[1], self.hidden_size))
+        } else {
+            Ok(embeddings)
+        }
+    }
+}
 
 // QMatMul wrapper adding some tracing.
 #[derive(Debug, Clone)]
@@ -187,6 +241,10 @@ struct LayerWeights {
     attention_wk: QMatMul,
     attention_wv: QMatMul,
     attention_wo: QMatMul,
+    /// Optional Q/K/V biases (Qwen2 has bias on Q, K, V; Llama does not).
+    attention_bq: Option<Tensor>,
+    attention_bk: Option<Tensor>,
+    attention_bv: Option<Tensor>,
     attention_norm: RmsNorm,
     mlp_or_moe: MlpOrMoe,
     ffn_norm: RmsNorm,
@@ -224,10 +282,21 @@ impl LayerWeights {
         index_pos: usize,
     ) -> Result<Tensor> {
         let _enter = self.span_attn.enter();
-        let (b_sz, seq_len, n_embd) = x.dims3()?;
-        let q = self.attention_wq.forward(x)?;
-        let k = self.attention_wk.forward(x)?;
-        let v = self.attention_wv.forward(x)?;
+        let (b_sz, seq_len, _n_embd) = x.dims3()?;
+        let mut q = self.attention_wq.forward(x)?;
+        let mut k = self.attention_wk.forward(x)?;
+        let mut v = self.attention_wv.forward(x)?;
+
+        // Apply attention biases (Qwen2 has bias on Q, K, V; Llama skips this)
+        if let Some(bq) = &self.attention_bq {
+            q = q.broadcast_add(bq)?;
+        }
+        if let Some(bk) = &self.attention_bk {
+            k = k.broadcast_add(bk)?;
+        }
+        if let Some(bv) = &self.attention_bv {
+            v = v.broadcast_add(bv)?;
+        }
 
         let q = q
             .reshape((b_sz, seq_len, self.n_head, self.head_dim))?
@@ -288,7 +357,12 @@ impl LayerWeights {
             att.matmul(&v.contiguous()?)?
         };
 
-        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, n_embd])?;
+        // Reshape from [batch, n_head, seq, head_dim] to [batch, seq, n_head * head_dim].
+        // For compacted models n_head * head_dim != n_embd (e.g. 25*128=3200 vs 5120),
+        // so we must NOT use n_embd here. W_o then projects back to hidden_size.
+        let y = y
+            .transpose(1, 2)?
+            .reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
         let y = self.attention_wo.forward(&y)?;
         Ok(y)
     }
@@ -345,7 +419,7 @@ fn parse_lora_layer_name(name: &str) -> Option<(usize, Projection)> {
 
 #[derive(Debug, Clone)]
 pub struct ModelWeights {
-    tok_embeddings: Embedding,
+    tok_embeddings: DeviceEmbedding,
     layers: Vec<LayerWeights>,
     norm: RmsNorm,
     output: QMatMul,
@@ -382,8 +456,9 @@ impl ModelWeights {
         let context_length = DEFAULT_CONTEXT_LENGTH; // GGML doesn't store context_length
         let (cos, sin) = precomput_freqs_cis(head_dim, 10000., context_length, &ct.device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, &ct.device)?;
-        let tok_embeddings = ct.remove("tok_embeddings.weight")?;
-        let tok_embeddings = tok_embeddings.dequantize(&ct.device)?;
+        let embedding_length = ct.hparams.n_embd as usize;
+        let tok_embeddings_q = ct.remove("tok_embeddings.weight")?;
+        let tok_embeddings = DeviceEmbedding::from_qtensor(tok_embeddings_q, embedding_length, &ct.device)?;
         let norm = RmsNorm::from_qtensor(ct.remove("norm.weight")?, 1e-5)?;
         let output = ct.remove("output.weight")?;
         let mut layers = Vec::with_capacity(ct.hparams.n_layer as usize);
@@ -413,6 +488,9 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq: None, // GGML format doesn't have bias
+                attention_bk: None,
+                attention_bv: None,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, 1e-5)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, 1e-5)?,
@@ -431,7 +509,7 @@ impl ModelWeights {
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, ct.hparams.n_embd as usize),
+            tok_embeddings,
             layers,
             norm,
             output: QMatMul::from_qtensor(output)?,
@@ -447,47 +525,78 @@ impl ModelWeights {
         reader: &mut R,
         device: &Device,
     ) -> Result<Self> {
+        // Determine architecture prefix (llama, qwen2, etc.) from metadata.
+        // GGUF stores metadata keys as "{arch}.{param}", e.g. "qwen2.block_count".
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_else(|| "llama".to_string());
+
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
 
-        // --- FIX: Read context_length from GGUF metadata (like Qwen2 does) ---
-        // Upstream candle-transformers hardcodes MAX_SEQ_LEN = 4096 here.
-        // The GGUF file knows the model's true context length.
-        let context_length = md_get("llama.context_length")
+        // Architecture-aware metadata key lookup
+        let arch_key = |param: &str| format!("{arch}.{param}");
+
+        let context_length = md_get(&arch_key("context_length"))
             .and_then(|v| v.to_u32())
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_CONTEXT_LENGTH);
 
-        let n_expert = md_get("llama.expert_count")
+        let n_expert = md_get(&arch_key("expert_count"))
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let n_expert_used = md_get("llama.expert_used_count")
+        let n_expert_used = md_get(&arch_key("expert_used_count"))
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let head_count = md_get("llama.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("llama.attention.head_count_kv")?.to_u32()? as usize;
-        let block_count = md_get("llama.block_count")?.to_u32()? as usize;
-        let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
-        let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
-        let rms_norm_eps = md_get("llama.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+        let head_count = md_get(&arch_key("attention.head_count"))?.to_u32()? as usize;
+        let head_count_kv = md_get(&arch_key("attention.head_count_kv"))?.to_u32()? as usize;
+        let block_count = md_get(&arch_key("block_count"))?.to_u32()? as usize;
+        let embedding_length = md_get(&arch_key("embedding_length"))?.to_u32()? as usize;
+        // Head dimension: try explicit metadata first, then derive from K weight shape.
+        // NEVER use embedding_length / head_count — it gives wrong answers for compacted
+        // models where head_count was reduced (e.g. 5120/25=204 instead of 128).
+        let head_dim = md_get(&arch_key("attention.key_length"))
+            .and_then(|v| v.to_u32())
+            .or_else(|_| md_get(&arch_key("attention.value_length")).and_then(|v| v.to_u32()))
+            .or_else(|_| md_get(&arch_key("rope.dimension_count")).and_then(|v| v.to_u32()))
+            .map(|v| v as usize)
+            .unwrap_or_else(|_| {
+                // Last resort: derive from K projection weight shape.
+                // K weight is [embedding_length, kv_heads * head_dim], so:
+                // head_dim = K_weight_dim1 / kv_heads
+                // But we don't have the tensor yet. Use embedding_length / ORIGINAL head_count
+                // approximation: for standard models this is correct, for compacted we need metadata.
+                // Qwen2 always uses 128.
+                if arch == "qwen2" { 128 } else { embedding_length / head_count }
+            });
+        let rope_dim = head_dim;
+        let rms_norm_eps =
+            md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
 
-        let rope_freq_base = md_get("llama.rope.freq_base")
+        let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, context_length, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
-        let tok_embeddings_q = ct.tensor(reader, "token_embd.weight", device)?;
-        let tok_embeddings = tok_embeddings_q.dequantize(device)?;
+        // Load embedding directly to CPU — bypasses Metal buffer pool entirely.
+        let tok_embeddings = DeviceEmbedding::from_gguf(
+            &ct, reader, "token_embd.weight", embedding_length, device,
+        )?;
         let norm = RmsNorm::from_qtensor(
             ct.tensor(reader, "output_norm.weight", device)?,
             rms_norm_eps,
         )?;
+        // Output head: use dedicated output.weight if present, otherwise re-read
+        // token_embd.weight (tied embeddings).
         let output = match ct.tensor(reader, "output.weight", device) {
             Ok(tensor) => tensor,
-            Err(_) => tok_embeddings_q,
+            Err(_) => ct.tensor(reader, "token_embd.weight", device)?,
         };
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
@@ -497,6 +606,24 @@ impl ModelWeights {
             let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
             let attention_wo =
                 ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+
+            // Optional attention biases (Qwen2 has Q/K/V bias; Llama does not)
+            let attention_bq = ct
+                .tensor(reader, &format!("{prefix}.attn_q.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+            let attention_bk = ct
+                .tensor(reader, &format!("{prefix}.attn_k.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+            let attention_bv = ct
+                .tensor(reader, &format!("{prefix}.attn_v.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+
             let mlp_or_moe = if n_expert <= 1 {
                 let feed_forward_w1 =
                     ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
@@ -543,12 +670,18 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq,
+                attention_bk,
+                attention_bv,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
                 n_head: head_count,
                 n_kv_head: head_count_kv,
-                head_dim: embedding_length / head_count,
+                // Use rope_dim as head_dim: for standard models rope_dim == head_dim,
+                // and for compacted models where embedding_length / head_count is non-integer,
+                // rope_dim (from metadata or defaulting to embedding_length/head_count) is correct.
+                head_dim: rope_dim,
                 cos: cos.clone(),
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
@@ -561,7 +694,7 @@ impl ModelWeights {
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
+            tok_embeddings,
             layers,
             norm,
             output: QMatMul::from_qtensor(output)?,
@@ -656,7 +789,36 @@ impl ModelWeights {
         Ok((merged, failed))
     }
 
+    /// Reset KV cache for all layers without reloading weights.
+    pub fn clear_kv_cache(&mut self) {
+        for layer in &mut self.layers {
+            layer.kv_cache = None;
+        }
+    }
+
+    /// Forward with optional layer limit for memory debugging.
+    /// Pass max_layers=0 for full forward.
+    pub fn forward_limited(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        max_layers: usize,
+    ) -> Result<Tensor> {
+        self.forward_inner(x, index_pos, if max_layers == 0 { self.layers.len() } else { max_layers })
+    }
+
     pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+        self.forward_inner(x, index_pos, self.layers.len())
+    }
+
+    fn forward_inner(&mut self, x: &Tensor, index_pos: usize, max_layers: usize) -> Result<Tensor> {
+        // Debug: CANDLE_MAX_LAYERS env var limits layer count for memory profiling
+        let effective_max = std::env::var("CANDLE_MAX_LAYERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(max_layers)
+            .min(max_layers);
+
         let (_b_sz, seq_len) = x.dims2()?;
         let mask = if seq_len == 1 {
             None
@@ -664,8 +826,17 @@ impl ModelWeights {
             Some(self.mask(seq_len, x.device())?)
         };
         let _enter = self.span.enter();
+        let device = x.device().clone();
         let mut layer_in = self.tok_embeddings.forward(x)?;
-        for layer in self.layers.iter_mut() {
+
+        // Debug: if CANDLE_MAX_LAYERS=0, return embedding directly (skip all layers)
+        if effective_max == 0 {
+            return self.output.forward(&self.norm.forward(&layer_in)?.i((.., seq_len - 1, ..))?);
+        }
+        for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
+            if layer_idx >= effective_max {
+                break;
+            }
             let x = layer_in;
             let residual = &x;
             let x = layer.attention_norm.forward(&x)?;
@@ -678,7 +849,12 @@ impl ModelWeights {
             let x = layer.ffn_norm.forward(&x)?;
             let x = layer.mlp_or_moe.forward(&x)?;
             let x = (x + residual)?;
-            layer_in = x
+            layer_in = x;
+
+            // Sync GPU every 8 layers to release intermediate Metal command buffers.
+            if (layer_idx + 1) % 8 == 0 {
+                device.synchronize()?;
+            }
         }
         let x = self.norm.forward(&layer_in)?;
         let x = x.i((.., seq_len - 1, ..))?;

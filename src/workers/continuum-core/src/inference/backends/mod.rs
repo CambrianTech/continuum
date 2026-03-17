@@ -16,6 +16,7 @@
 pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
+pub mod qwen2_safetensors;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -366,9 +367,11 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
         .cloned()
         .unwrap_or_else(|| "llama".to_string());
 
+    // Try architecture-specific key first, then llama fallback
     let context_length = content
         .metadata
         .get(&format!("{architecture}.context_length"))
+        .or_else(|| content.metadata.get("llama.context_length"))
         .and_then(|v| v.to_u32().ok())
         .map(|v| v as usize)
         .unwrap_or(4096);
@@ -432,8 +435,24 @@ pub fn load_gguf_backend(
             ));
             Ok(Box::new(backend))
         }
+        // Qwen2 uses the same GGUF format as Llama (same tensor layout in GGUF).
+        // The architecture metadata is "qwen2" but the model structure is compatible.
+        "qwen2" => {
+            let backend = llama_gguf::LlamaGgufBackend::from_gguf(
+                content,
+                &mut reader,
+                tokenizer,
+                model_id,
+                model_path,
+                device,
+            )?;
+            log.info(&format!(
+                "Loaded Qwen2 via Llama GGUF backend: context_length={}",
+                backend.context_length()
+            ));
+            Ok(Box::new(backend))
+        }
         // Future architectures:
-        // "qwen2" => { llama_gguf or qwen2_gguf::... }
         // "phi3" => { phi3_gguf::... }
         other => Err(format!(
             "Unsupported GGUF architecture: '{other}'. \
