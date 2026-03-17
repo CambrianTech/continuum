@@ -372,6 +372,11 @@ fn inference_inner(
         let model: Box<dyn ModelBackend> = if use_quantized {
             load_default_quantized()
                 .map_err(|e| format!("Failed to load quantized model: {e}"))?
+        } else if let Some(local_dir) = find_local_model(resolved_model) {
+            // Local GGUF model found — load from disk (no download needed)
+            log.info(&format!("Found local model: {:?}", local_dir));
+            super::model::load_model_from_dir(&local_dir, resolved_model)
+                .map_err(|e| format!("Failed to load local model {:?}: {e}", local_dir))?
         } else {
             load_model_by_id(resolved_model)
                 .map_err(|e| format!("Failed to load model '{}': {e}", resolved_model))?
@@ -761,6 +766,10 @@ fn resolve_model_id(requested: &str) -> String {
         "qwen2.5-coder:7b" | "qwen2.5-coder-7b" => "Qwen/Qwen2.5-Coder-7B-Instruct".to_string(),
         "qwen2.5-coder:1.5b" | "qwen2.5-coder-1.5b" => "Qwen/Qwen2.5-Coder-1.5B-Instruct".to_string(),
 
+        // Continuum compacted models (local GGUF)
+        "qwen2.5-coder:32b-compacted" | "coder-32b" | "coder" =>
+            "continuum-ai/qwen2.5-coder-32b-compacted".to_string(),
+
         // TinyLlama
         "tinyllama" | "tinyllama:1.1b" => "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
 
@@ -772,6 +781,67 @@ fn resolve_model_id(requested: &str) -> String {
             requested.to_string()
         }
     }
+}
+
+/// Check if a model is available locally as a GGUF in ~/.continuum/genome/models/.
+/// Returns the local directory path if found, None if not cached.
+fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let models_dir = std::path::Path::new(&home).join(".continuum/genome/models");
+
+    if !models_dir.exists() {
+        return None;
+    }
+
+    // Check for exact directory match (e.g., model dirs we created)
+    for entry in std::fs::read_dir(&models_dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Check if this directory has a GGUF file + tokenizer
+        let has_gguf = std::fs::read_dir(&path)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext == "gguf")
+                            .unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false);
+
+        let has_tokenizer = path.join("tokenizer.json").exists();
+
+        if has_gguf && has_tokenizer {
+            // Match by directory name containing model ID parts
+            let dir_name = path.file_name()?.to_str()?.to_lowercase();
+            let model_lower = model_id.to_lowercase();
+
+            // Match "continuum-ai/qwen2.5-coder-32b-compacted" against "qwen32b-compacted-v3"
+            if model_lower.contains("qwen") && model_lower.contains("compacted")
+                && dir_name.contains("qwen") && dir_name.contains("compacted")
+            {
+                return Some(path);
+            }
+
+            // Generic: check if model_id's repo name appears in dir name
+            if let Some(repo_name) = model_id.split('/').last() {
+                let repo_lower = repo_name.to_lowercase().replace('.', "");
+                if dir_name.contains(&repo_lower) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Estimate VRAM usage for a LoRA adapter from its file path.
