@@ -740,47 +740,61 @@ impl AIProviderAdapter for CandleAdapter {
 /// Academy pipelines pass model names in Ollama format (e.g., "smollm2:135m").
 /// Candle needs HuggingFace repo IDs (e.g., "HuggingFaceTB/SmolLM2-135M-Instruct").
 /// If the name is already a HF repo ID (contains '/'), it's returned as-is.
+/// Model registry entry loaded from model_registry.json.
+#[derive(Debug, serde::Deserialize)]
+struct ModelRegistryEntry {
+    repo: String,
+    #[allow(dead_code)]
+    format: Option<String>,
+    #[allow(dead_code)]
+    architecture: Option<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
+    #[allow(dead_code)]
+    min_memory_gb: Option<f64>,
+    #[allow(dead_code)]
+    chat_template: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelRegistry {
+    models: HashMap<String, ModelRegistryEntry>,
+}
+
+/// Load the model registry from the embedded JSON.
+fn load_registry() -> ModelRegistry {
+    let json = include_str!("model_registry.json");
+    serde_json::from_str(json).unwrap_or_else(|e| {
+        runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
+        ModelRegistry { models: HashMap::new() }
+    })
+}
+
 fn resolve_model_id(requested: &str) -> String {
     // Already a HuggingFace repo ID
     if requested.contains('/') {
         return requested.to_string();
     }
 
-    // Normalize: lowercase, strip leading/trailing whitespace
     let normalized = requested.trim().to_lowercase();
+    let registry = load_registry();
 
-    // Ollama-style mappings: "model:variant" or just "model"
-    match normalized.as_str() {
-        // SmolLM2 family (tiny models, ~270MB-3GB)
-        "smollm2:135m" | "smollm2-135m" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
-        "smollm2:360m" | "smollm2-360m" => "HuggingFaceTB/SmolLM2-360M-Instruct".to_string(),
-        "smollm2:1.7b" | "smollm2-1.7b" | "smollm2:1.7B" => "HuggingFaceTB/SmolLM2-1.7B-Instruct".to_string(),
-        "smollm2" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(), // Default to smallest
-
-        // Llama 3.2 family
-        "llama3.2:1b" | "llama3.2-1b" => "unsloth/Llama-3.2-1B-Instruct".to_string(),
-        "llama3.2:3b" | "llama3.2-3b" | "llama3.2" => "unsloth/Llama-3.2-3B-Instruct".to_string(),
-
-        // Qwen 2.5 Coder family
-        "qwen2.5-coder:32b" | "qwen2.5-coder-32b" => "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
-        "qwen2.5-coder:7b" | "qwen2.5-coder-7b" => "Qwen/Qwen2.5-Coder-7B-Instruct".to_string(),
-        "qwen2.5-coder:1.5b" | "qwen2.5-coder-1.5b" => "Qwen/Qwen2.5-Coder-1.5B-Instruct".to_string(),
-
-        // Continuum compacted models (local GGUF)
-        "qwen2.5-coder:32b-compacted" | "coder-32b" | "coder" =>
-            "continuum-ai/qwen2.5-coder-32b-compacted".to_string(),
-
-        // TinyLlama
-        "tinyllama" | "tinyllama:1.1b" => "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
-
-        // Fallback: treat as HF repo ID (will fail gracefully on load if invalid)
-        _ => {
-            runtime::logger("candle").warn(&format!(
-                "Unknown model '{}' — treating as HuggingFace repo ID", requested
-            ));
-            requested.to_string()
-        }
+    // Look up in registry (supports "coder", "smollm2:1.7b", "llama3.2:3b", etc.)
+    if let Some(entry) = registry.models.get(&normalized) {
+        return entry.repo.clone();
     }
+
+    // Try with common alias patterns: "smollm2-1.7b" → "smollm2:1.7b"
+    let dash_to_colon = normalized.replacen('-', ":", 1);
+    if let Some(entry) = registry.models.get(&dash_to_colon) {
+        return entry.repo.clone();
+    }
+
+    // Fallback: treat as HF repo ID
+    runtime::logger("candle").warn(&format!(
+        "Model '{}' not in registry — treating as HuggingFace repo ID", requested
+    ));
+    requested.to_string()
 }
 
 /// Check if a model is available locally as a GGUF in ~/.continuum/genome/models/.

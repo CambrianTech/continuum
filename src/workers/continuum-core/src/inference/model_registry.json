@@ -1,0 +1,73 @@
+{
+  "_comment": "Model registry: aliases → HuggingFace repos. Continuum auto-downloads on first use.",
+  "models": {
+    "coder": {
+      "repo": "continuum-ai/qwen2.5-coder-32b-compacted",
+      "format": "gguf",
+      "architecture": "qwen2",
+      "description": "32B coding model, compacted (25Q/5KV), Q3_K_S. Runs on 32GB MacBook.",
+      "min_memory_gb": 20,
+      "chat_template": "qwen2"
+    },
+    "coder-32b": {
+      "repo": "continuum-ai/qwen2.5-coder-32b-compacted",
+      "format": "gguf",
+      "architecture": "qwen2",
+      "description": "Alias for coder",
+      "min_memory_gb": 20,
+      "chat_template": "qwen2"
+    },
+    "smollm2": {
+      "repo": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "format": "safetensors",
+      "architecture": "llama",
+      "description": "135M tiny model for testing",
+      "min_memory_gb": 1,
+      "chat_template": "chatml"
+    },
+    "smollm2:1.7b": {
+      "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "format": "safetensors",
+      "architecture": "llama",
+      "description": "1.7B small model",
+      "min_memory_gb": 4,
+      "chat_template": "chatml"
+    },
+    "llama3.2:3b": {
+      "repo": "unsloth/Llama-3.2-3B-Instruct",
+      "format": "safetensors",
+      "architecture": "llama",
+      "description": "3B general model",
+      "min_memory_gb": 6,
+      "chat_template": "llama3"
+    },
+    "qwen2.5-coder:32b": {
+      "repo": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "format": "safetensors",
+      "architecture": "qwen2",
+      "description": "Full 32B (uncompacted, needs 80GB+)",
+      "min_memory_gb": 70,
+      "chat_template": "qwen2"
+    }
+  },
+  "chat_templates": {
+    "qwen2": {
+      "system": "<|im_start|>system\n{system}<|im_end|>\n",
+      "user": "<|im_start|>user\n{content}<|im_end|>\n",
+      "assistant": "<|im_start|>assistant\n",
+      "eos": "<|im_end|>"
+    },
+    "llama3": {
+      "system": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>",
+      "user": "<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>",
+      "assistant": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "eos": "<|eot_id|>"
+    },
+    "chatml": {
+      "system": "<|im_start|>system\n{system}<|im_end|>\n",
+      "user": "<|im_start|>user\n{content}<|im_end|>\n",
+      "assistant": "<|im_start|>assistant\n",
+      "eos": "<|im_end|>"
+    }
+  }
+}
