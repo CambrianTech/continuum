@@ -18,6 +18,7 @@
 //! | > 0.9       | Split (future) | BF16 × 2  | Both   |
 
 pub mod compactor;
+pub mod gguf_writer;
 pub mod planner;
 pub mod quantizer;
 pub mod scoring;
