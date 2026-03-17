@@ -218,6 +218,9 @@ pub fn generate(
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
 
+    // Debug: log token-level diagnostics if CANDLE_DEBUG_TOKENS is set
+    let debug_tokens = std::env::var("CANDLE_DEBUG_TOKENS").is_ok();
+
     let mut all_tokens = prompt_tokens;
 
     // Sample first token from prefill logits
@@ -294,14 +297,15 @@ pub fn generate(
         // reduces the probability of tokens that already appeared, making
         // it more likely the model produces new content or hits EOS.
         // 1.1 is the llama.cpp default; 1.15 is slightly stronger for Q3_K.
-        let repeat_penalty = 1.15f32;
-        let repeat_context = &all_tokens; // penalize all generated tokens
+        let repeat_penalty = 1.1f32;
+        let eos_ids = backend.eos_token_ids().to_vec();
 
         let next_token = match logits_processor.sample_f(&logits, |logits_slice| {
-            // Apply repetition penalty: divide logits for seen tokens
-            for &token_id in repeat_context.iter() {
+            // Apply repetition penalty: reduce logits for previously generated tokens.
+            // NEVER penalize EOS tokens — the model must always be able to stop.
+            for &token_id in all_tokens[prompt_len..].iter() {
                 let idx = token_id as usize;
-                if idx < logits_slice.len() {
+                if idx < logits_slice.len() && !eos_ids.contains(&token_id) {
                     if logits_slice[idx] > 0.0 {
                         logits_slice[idx] /= repeat_penalty;
                     } else {
@@ -335,6 +339,32 @@ pub fn generate(
                     .map_err(|e| format!("Sampling failed even after sanitization: {e}"))?
             }
         };
+
+        if debug_tokens {
+            // Log: token ID, decoded text, logit stats, EOS logit rank
+            let decoded = backend.decode(&[next_token]).unwrap_or_else(|_| "?".into());
+            let logits_vec: Vec<f32> = logits
+                .flatten_all()
+                .and_then(|t| t.to_vec1())
+                .unwrap_or_default();
+            let max_logit = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min_logit = logits_vec.iter().cloned().fold(f32::INFINITY, f32::min);
+
+            // Check where EOS tokens rank in logits
+            let mut eos_info = String::new();
+            for &eos_id in backend.eos_token_ids() {
+                if let Some(&eos_logit) = logits_vec.get(eos_id as usize) {
+                    let rank = logits_vec.iter().filter(|&&v| v > eos_logit).count();
+                    eos_info.push_str(&format!(" eos[{}]={:.2}(rank {})", eos_id, eos_logit, rank));
+                }
+            }
+
+            eprintln!(
+                "  tok[{:>3}] id={:<6} {:>20} logits=[{:.1}..{:.1}]{}",
+                i, next_token, format!("{:?}", &decoded[..decoded.len().min(20)]),
+                min_logit, max_logit, eos_info
+            );
+        }
 
         if backend.eos_token_ids().contains(&next_token) {
             break;
