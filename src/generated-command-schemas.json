@@ -2579,6 +2579,37 @@
       }
     },
     {
+      "name": "plasticity/compress",
+      "description": "Compress a model using utilization-aware head pruning + mixed quantization. Takes a base model + gradient capture data + target device spec, produces an optimized GGUF file that fits the device's memory budget. Precision is allocated per-tensor based on head utilization scores.",
+      "params": {
+        "capturePath": {
+          "type": "string",
+          "required": true,
+          "description": "capturePath parameter"
+        },
+        "modelPath": {
+          "type": "string",
+          "required": true,
+          "description": "modelPath parameter"
+        },
+        "deviceSpec": {
+          "type": "string",
+          "required": false,
+          "description": "deviceSpec parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "architecture": {
+          "type": "string",
+          "required": false,
+          "description": "architecture parameter"
+        }
+      }
+    },
+    {
       "name": "ping",
       "description": "Include detailed AI persona health status",
       "params": {

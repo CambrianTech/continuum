@@ -242,6 +242,7 @@ export const COMMANDS = {
   PERSONA_LEARNING_PATTERN_ENDORSE: 'persona/learning/pattern/endorse',
   PERSONA_LEARNING_PATTERN_QUERY: 'persona/learning/pattern/query',
   PING: 'ping',
+  PLASTICITY_COMPRESS: 'plasticity/compress',
   POSITRON_CURSOR: 'positron/cursor',
   PROCESS_REGISTRY: 'process-registry',
   RAG_BUDGET: 'rag/budget',
