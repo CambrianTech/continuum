@@ -89,15 +89,10 @@ impl LlamaGgufBackend {
 
         match arch.as_str() {
             "qwen2" => {
-                // Qwen2 EOS: <|endoftext|> (151643) + <|im_end|> (151645)
-                // The model emits <|im_end|> at end of chat turns — MUST be detected
-                let mut tokens = vec![151643, 151645];
-                if let Some(eos) = base_eos {
-                    if !tokens.contains(&eos) {
-                        tokens.push(eos);
-                    }
-                }
-                tokens
+                // Qwen2 chat: only <|im_end|> (151645) should stop generation.
+                // <|endoftext|> (151643) has inflated logits in Q3_K_S quantization
+                // and fires prematurely if included as EOS.
+                vec![151645]
             }
             "llama" => {
                 if let Some(eos) = base_eos {
