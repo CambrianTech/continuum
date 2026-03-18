@@ -71,11 +71,13 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
     // ── Bootstrap workspace ──────────────────────────────────────────
     let workspaceCwd: string;
     let workspaceBranch: string | undefined;
+    let workspacePersonaId: string | undefined;
 
     try {
       const wsResult = await this.bootstrapWorkspace(p);
       workspaceCwd = wsResult.cwd;
       workspaceBranch = wsResult.branch;
+      workspacePersonaId = wsResult.personaId;
     } catch (wsErr) {
       return transformPayload(params, {
         success: false,
@@ -83,7 +85,10 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
       });
     }
 
-    // Build config — cwd is the resolved workspace directory, not the raw input
+    // Build config — cwd is the resolved workspace directory, not the raw input.
+    // personaId MUST match the workspace registration key so code tools can find it.
+    const resolvedPersonaId = p.personaId || workspacePersonaId;
+
     const config: CodingAgentConfig = {
       prompt: p.prompt,
       cwd: workspaceCwd,
@@ -96,7 +101,7 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
       resumeSessionId: p.resumeSessionId,
       sentinelHandle: p.sentinelHandle,
       captureTraining: p.captureTraining,
-      personaId: p.personaId,
+      personaId: resolvedPersonaId,
     };
 
     // Progress callback — emits sentinel events
@@ -156,7 +161,7 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
    *
    * Returns the resolved workspace directory and branch name.
    */
-  private async bootstrapWorkspace(p: SentinelCodingAgentParams): Promise<{ cwd: string; branch?: string }> {
+  private async bootstrapWorkspace(p: SentinelCodingAgentParams): Promise<{ cwd: string; branch?: string; personaId?: string }> {
     const handle = p.sentinelHandle ?? 'anon';
 
     // Strategy 1: Project worktree via SentinelWorkspaceManager (proper git isolation)
@@ -171,26 +176,27 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
         taskSlug: p.taskSlug || 'work',
       });
 
-      return { cwd: workspace.workspaceDir, branch: workspace.branch };
+      return { cwd: workspace.workspaceDir, branch: workspace.branch, personaId: p.personaId };
     }
 
     // Strategy 2: Persona already has a workspace
     if (p.personaId && WorkspaceStrategy.isInitialized(p.personaId)) {
       const project = WorkspaceStrategy.getProjectForPersona(p.personaId);
       if (project) {
-        return { cwd: project.worktreeDir, branch: project.branch };
+        return { cwd: project.worktreeDir, branch: project.branch, personaId: p.personaId };
       }
       // Persona exists but no project workspace — use cwd
-      return { cwd: p.cwd || process.cwd() };
+      return { cwd: p.cwd || process.cwd(), personaId: p.personaId };
     }
 
-    // Strategy 3: Sandbox — register the pipeline's workingDir as a bare workspace
+    // Strategy 3: Sandbox — register the pipeline's workingDir as a bare workspace.
+    // The workspaceId MUST be returned so config.personaId matches the code module's lookup key.
     const cwd = p.cwd || process.cwd();
     const workspaceId = p.personaId || p.sentinelHandle || p.userId || 'sentinel-anonymous';
     const jtagRoot = process.cwd();
     const readRoots = cwd !== jtagRoot ? [jtagRoot] : [];
     await CodeDaemon.createWorkspace(workspaceId, cwd, readRoots);
-    return { cwd };
+    return { cwd, personaId: workspaceId };
   }
 
   private shouldCaptureTraining(params: SentinelCodingAgentParams): boolean {

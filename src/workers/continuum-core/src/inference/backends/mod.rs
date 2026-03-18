@@ -83,6 +83,14 @@ pub trait ModelBackend: Send + Sync {
     /// EOS token IDs for this model, read from model metadata.
     fn eos_token_ids(&self) -> &[u32];
 
+    /// Token IDs that should NEVER appear in generated output.
+    /// Control/special tokens (e.g., Qwen2's `<|endoftext|>`, `<|im_start|>`) that have
+    /// inflated logits in quantized models. These are set to probability 0 during sampling.
+    /// Default: empty (no suppression). Override per architecture.
+    fn suppress_token_ids(&self) -> &[u32] {
+        &[]
+    }
+
     /// Model identifier (HuggingFace repo ID or filename).
     fn model_id(&self) -> &str;
 
@@ -242,11 +250,20 @@ pub fn generate(
 
     let mut all_tokens = prompt_tokens;
 
-    let eos_ids = backend.eos_token_ids().to_vec();
+    let _eos_ids = backend.eos_token_ids().to_vec();
 
-    // Sample first token from prefill logits
+    // Tokens to suppress during generation (architecture-specific control tokens).
+    let suppress_ids: Vec<usize> = backend.suppress_token_ids().iter().map(|&t| t as usize).collect();
+
+    // Sample first token from prefill logits with special token suppression
     let first_token = logits_processor
-        .sample(&prefill_logits)
+        .sample_f(&prefill_logits, |prs| {
+            for &tid in &suppress_ids {
+                if tid < prs.len() {
+                    prs[tid] = 0.0;
+                }
+            }
+        })
         .map_err(|e| format!("First token sampling failed: {e}"))?;
 
     if backend.eos_token_ids().contains(&first_token) {
@@ -313,14 +330,17 @@ pub fn generate(
         };
 
         // Sample with repetition penalty.
-        // Quantized models (especially Q3_K) tend to enter repetition loops
-        // because the EOS logit is too noisy to fire. Repetition penalty
-        // reduces the probability of tokens that already appeared, making
-        // it more likely the model produces new content or hits EOS.
-        // 1.1 is the llama.cpp default; 1.15 is slightly stronger for Q3_K.
-        let repeat_penalty = 1.1f32;
+        // Quantized models (especially Q3/Q5_K_S) enter repetition loops
+        // because some logits are inflated. 1.15 stronger than llama.cpp default (1.1).
+        let repeat_penalty = 1.15f32;
 
         let next_token = match logits_processor.sample_f(&logits, |prs| {
+            // Suppress architecture-specific control tokens
+            for &tid in &suppress_ids {
+                if tid < prs.len() {
+                    prs[tid] = 0.0;
+                }
+            }
             // Repetition penalty on probabilities: reduce probability of seen tokens.
             for &token_id in all_tokens[prompt_len..].iter() {
                 let idx = token_id as usize;

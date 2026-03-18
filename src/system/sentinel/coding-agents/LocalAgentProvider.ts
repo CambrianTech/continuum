@@ -92,19 +92,19 @@ export class LocalAgentProvider implements CodingAgentProvider {
     // Build system prompt — coding-focused with workspace context
     const systemPrompt = this.buildSystemPrompt(config);
 
-    // Determine tools — use config.allowedTools or default code tools
-    const tools = config.allowedTools && config.allowedTools.length > 0
-      ? config.allowedTools
-      : CODE_TOOLS;
-
     try {
-      // Call ai/agent — the universal agentic loop
+      // Call ai/agent — the universal agentic loop.
+      // Pass tools=[] so ai/agent does NOT inject tool definitions via ToolFormatAdapter.
+      // The system prompt already contains QAT-trained tool descriptions in the exact format
+      // the model was fine-tuned on. ToolFormatAdapter's format is different and produces
+      // a 2000+ token prompt that overwhelms local models.
+      // Tool call PARSING still works via AgentToolExecutor (XML extraction is independent).
       const result = await Commands.execute('ai/agent', {
         prompt: config.prompt,
         systemPrompt,
         provider,
         model,
-        tools,
+        tools: [],
         maxIterations: config.maxTurns || 10,
         sentinelHandle: config.sentinelHandle,
         personaId: config.personaId,
@@ -209,19 +209,20 @@ export class LocalAgentProvider implements CodingAgentProvider {
     const parts: string[] = [
       `You are a coding agent working in: ${config.cwd}`,
       '',
-      'You have access to code tools for reading, writing, editing, searching, and executing shell commands.',
-      'Use them to accomplish the task. Be methodical:',
-      '1. Read relevant files first to understand the codebase',
-      '2. Plan your changes',
-      '3. Make edits using code/edit (preferred) or code/write',
-      '4. Verify your work with code/verify or code/shell/execute',
-      '5. Fix any errors before reporting completion',
+      'You have these tools:',
       '',
-      'Important:',
-      '- Always read a file before editing it',
-      '- Use code/edit for modifications (not code/write which overwrites)',
-      '- Run code/verify after changes to check compilation',
-      '- Be concise in your responses — show what you did, not what you plan to do',
+      '- code/write: Create a NEW file. Params: {filePath: string, content: string}',
+      '- code/read: Read an existing file. Params: {filePath: string}',
+      '- code/edit: Modify an existing file. Params: {filePath: string, oldString: string, newString: string}',
+      '- code/shell/execute: Run a shell command. Params: {command: string}',
+      '- code/tree: List directory structure. Params: {path: string}',
+      '- code/search: Search for text in files. Params: {query: string, path: string}',
+      '',
+      'Use <tool_use> XML format to call tools. IMPORTANT:',
+      '- Use code/write for NEW files',
+      '- Use code/edit for MODIFYING existing files',
+      '- Use code/read before editing to see current content',
+      '- Be concise — show what you did, not what you plan to do',
     ];
 
     if (config.systemPrompt) {

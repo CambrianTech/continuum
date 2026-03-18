@@ -91,6 +91,25 @@ export abstract class ToolFormatAdapter {
    */
   protected extractParameters(xmlBlock: string): Record<string, string> {
     const parameters: Record<string, string> = {};
+    const trimmed = xmlBlock.trim();
+
+    // Try JSON first — local models (via QAT) output JSON inside <parameters>
+    // e.g. <parameters>{"filePath": "app.py", "content": "..."}</parameters>
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'object' && parsed !== null) {
+          for (const [key, value] of Object.entries(parsed)) {
+            parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+          }
+          return parameters;
+        }
+      } catch {
+        // Not valid JSON, fall through to XML parsing
+      }
+    }
+
+    // Fall back to XML tags: <paramName>value</paramName>
     const paramRegex = /<(\w+)>(.*?)<\/\1>/gs;
     const paramMatches = xmlBlock.matchAll(paramRegex);
 

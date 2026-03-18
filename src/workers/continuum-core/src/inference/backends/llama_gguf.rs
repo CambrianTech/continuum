@@ -37,6 +37,7 @@ pub struct LlamaGgufBackend {
     tokenizer: Tokenizer,
     context_length: usize,
     eos_token_ids: Vec<u32>,
+    suppress_token_ids: Vec<u32>,
     model_id: String,
     model_path: PathBuf,
     device: Device,
@@ -56,6 +57,7 @@ impl LlamaGgufBackend {
         device: &Device,
     ) -> Result<Self, String> {
         let eos_token_ids = Self::read_eos_tokens(&ct);
+        let suppress_token_ids = Self::read_suppress_tokens(&ct);
 
         let model = ModelWeights::from_gguf(ct, reader, device)
             .map_err(|e| format!("Llama GGUF load failed: {e}"))?;
@@ -67,6 +69,7 @@ impl LlamaGgufBackend {
             tokenizer,
             context_length,
             eos_token_ids,
+            suppress_token_ids,
             model_id: model_id.to_string(),
             model_path: model_path.to_path_buf(),
             device: device.clone(),
@@ -111,6 +114,27 @@ impl LlamaGgufBackend {
         }
     }
 
+    /// Read suppress token IDs from GGUF metadata.
+    /// Architecture-specific control tokens that should never appear in output.
+    fn read_suppress_tokens(ct: &gguf_file::Content) -> Vec<u32> {
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        match arch.as_str() {
+            "qwen2" => {
+                // <|endoftext|> (151643): inflated logits in Q3/Q5_K_S quantization.
+                //   Consistently rank 1 (~18-21 logit) after ChatML prefill.
+                // <|im_start|> (151644): chat control token, never in generated text.
+                vec![151643, 151644]
+            }
+            _ => vec![],
+        }
+    }
+
     /// Reload model weights from disk to clear KV cache.
     fn reload_weights(&mut self) -> Result<(), String> {
         let mut file = std::fs::File::open(&self.model_path)
@@ -133,6 +157,10 @@ impl LlamaGgufBackend {
 impl ModelBackend for LlamaGgufBackend {
     fn architecture(&self) -> &str {
         "llama"
+    }
+
+    fn suppress_token_ids(&self) -> &[u32] {
+        &self.suppress_token_ids
     }
 
     fn context_length(&self) -> usize {

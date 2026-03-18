@@ -492,7 +492,6 @@ impl AIProviderAdapter for CandleAdapter {
             self.use_quantized, self as *const _
         ));
 
-        let prompt = build_prompt_from_messages(&request.messages);
         let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
         let temperature = request.temperature.unwrap_or(0.7) as f64;
 
@@ -507,6 +506,11 @@ impl AIProviderAdapter for CandleAdapter {
         // Resolve requested model: use request.model if provided, else default
         let requested_model = request.model.as_deref().unwrap_or(&self.config.default_model);
         let model_id = resolve_model_id(requested_model);
+
+        // Build prompt using the correct chat template for this model
+        let chat_template = resolve_chat_template(requested_model);
+        let prompt = build_prompt_from_messages(&request.messages, &chat_template);
+        log.info(&format!("Using chat template: {}", chat_template));
 
         let prompt_len = prompt.len();
         log.info(&format!(
@@ -798,28 +802,48 @@ fn resolve_model_id(requested: &str) -> String {
 }
 
 /// Resolve the storage root for large files (models, adapters, datasets).
-/// Checks CONTINUUM_STORAGE_PATH env var first, then falls back to ~/.continuum/.
+/// Checks CONTINUUM_STORAGE_PATH from: env var → ~/.continuum/config.env → fallback ~/.continuum/.
 fn storage_root() -> std::path::PathBuf {
+    // 1. Check env var first
     if let Ok(storage) = std::env::var("CONTINUUM_STORAGE_PATH") {
         if !storage.is_empty() {
             return std::path::PathBuf::from(storage);
         }
     }
+    // 2. Check config.env (Secrets module skips non-secret keys like this)
+    if let Some(home) = dirs::home_dir() {
+        let config_path = home.join(".continuum").join("config.env");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("CONTINUUM_STORAGE_PATH=") {
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        return std::path::PathBuf::from(value);
+                    }
+                }
+            }
+        }
+    }
+    // 3. Default
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     std::path::PathBuf::from(home).join(".continuum")
 }
 
 /// Check if a model is available locally as a GGUF.
-/// Searches both CONTINUUM_STORAGE_PATH and ~/.continuum/ for models.
+/// Searches ~/.continuum/ (internal NVMe, fast) FIRST, then CONTINUUM_STORAGE_PATH (external, slow).
 /// Returns the local directory path if found, None if not cached.
 fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
     let search_dirs = {
-        let mut dirs = vec![storage_root().join("genome/models")];
-        // Also check ~/.continuum/ if storage is elsewhere
+        let mut dirs = Vec::new();
+        // Internal drive first (NVMe = ~2s load vs external USB = ~105s)
         let home = std::env::var("HOME").ok()?;
         let home_models = std::path::PathBuf::from(&home).join(".continuum/genome/models");
-        if !dirs.contains(&home_models) {
-            dirs.push(home_models);
+        dirs.push(home_models.clone());
+        // External/overflow storage second
+        let storage_models = storage_root().join("genome/models");
+        if storage_models != home_models {
+            dirs.push(storage_models);
         }
         dirs
     };
@@ -872,10 +896,24 @@ fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std
             let model_lower = model_id.to_lowercase();
 
             // Match "continuum-ai/qwen2.5-coder-32b-compacted" against "qwen32b-compacted-v3"
+            // Must also match size indicator (14b, 32b) to avoid confusing 14B and 32B models
             if model_lower.contains("qwen") && model_lower.contains("compacted")
                 && dir_name.contains("qwen") && dir_name.contains("compacted")
             {
-                return Some(path);
+                // Extract size indicator from model_id (e.g., "14b", "32b")
+                let size_match = ["14b", "32b", "7b", "3b", "1b"]
+                    .iter()
+                    .find(|s| model_lower.contains(*s));
+                if let Some(size) = size_match {
+                    // If model specifies a size, directory must also contain it
+                    if dir_name.contains(size) {
+                        return Some(path);
+                    }
+                    // Size mismatch — skip this directory
+                } else {
+                    // No size in model_id — accept any match
+                    return Some(path);
+                }
             }
 
             // Generic: check if model_id's repo name appears in dir name
@@ -903,8 +941,80 @@ fn estimate_adapter_vram(path: &str) -> u64 {
     std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0)
 }
 
-/// Build a prompt string from chat messages using Llama 3 chat template.
-fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
+/// Look up the chat template name for a model from the registry.
+/// Falls back to "llama3" for unknown models.
+fn resolve_chat_template(requested_model: &str) -> String {
+    let normalized = requested_model.trim().to_lowercase();
+    let registry = load_registry();
+
+    // Direct registry lookup
+    if let Some(entry) = registry.models.get(&normalized) {
+        if let Some(ref tmpl) = entry.chat_template {
+            return tmpl.clone();
+        }
+    }
+
+    // Infer from model name
+    if normalized.contains("qwen") {
+        return "qwen2".to_string();
+    }
+    if normalized.contains("chatml") || normalized.contains("smollm") {
+        return "chatml".to_string();
+    }
+
+    "llama3".to_string()
+}
+
+/// Extract text content from a chat message.
+fn extract_message_text(msg: &crate::ai::ChatMessage) -> String {
+    match &msg.content {
+        crate::ai::MessageContent::Text(text) => text.clone(),
+        crate::ai::MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| {
+                if let crate::ai::ContentPart::Text { text } = p {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// Build a prompt string from chat messages using the appropriate chat template.
+fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage], template: &str) -> String {
+    match template {
+        "qwen2" | "chatml" => build_prompt_chatml(messages),
+        _ => build_prompt_llama3(messages),
+    }
+}
+
+/// ChatML / Qwen2 template: <|im_start|>role\ncontent<|im_end|>
+fn build_prompt_chatml(messages: &[crate::ai::ChatMessage]) -> String {
+    let mut prompt = String::new();
+
+    let has_system = messages.iter().any(|m| m.role == "system");
+    if !has_system {
+        prompt.push_str("<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>\n");
+    }
+
+    for msg in messages {
+        let role = match msg.role.as_str() {
+            "system" | "user" | "assistant" => msg.role.as_str(),
+            _ => "user",
+        };
+        let content = extract_message_text(msg);
+        prompt.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
+    }
+
+    prompt.push_str("<|im_start|>assistant\n");
+    prompt
+}
+
+/// Llama 3 template: <|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>
+fn build_prompt_llama3(messages: &[crate::ai::ChatMessage]) -> String {
     let mut prompt = String::from("<|begin_of_text|>");
 
     let has_system = messages.iter().any(|m| m.role == "system");
@@ -915,27 +1025,10 @@ fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
 
     for msg in messages {
         let role = match msg.role.as_str() {
-            "system" => "system",
-            "user" => "user",
-            "assistant" => "assistant",
+            "system" | "user" | "assistant" => msg.role.as_str(),
             _ => "user",
         };
-
-        let content = match &msg.content {
-            crate::ai::MessageContent::Text(text) => text.clone(),
-            crate::ai::MessageContent::Parts(parts) => parts
-                .iter()
-                .filter_map(|p| {
-                    if let crate::ai::ContentPart::Text { text } = p {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
-
+        let content = extract_message_text(msg);
         prompt.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n", role));
         prompt.push_str(&content);
         prompt.push_str("<|eot_id|>");
@@ -958,10 +1051,12 @@ mod tests {
         }
     }
 
+    // ── Llama 3 template tests ──
+
     #[test]
-    fn test_prompt_format_simple() {
+    fn test_llama3_prompt_simple() {
         let messages = vec![msg("user", "What is 2+2?")];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.starts_with("<|begin_of_text|>"));
         assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>"));
@@ -972,23 +1067,23 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_format_with_system() {
+    fn test_llama3_prompt_with_system() {
         let messages = vec![msg("system", "You are a pirate."), msg("user", "Hello!")];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.contains("You are a pirate."));
         assert!(!prompt.contains("You are a helpful AI assistant."));
     }
 
     #[test]
-    fn test_prompt_format_multi_turn() {
+    fn test_llama3_prompt_multi_turn() {
         let messages = vec![
             msg("system", "Be concise."),
             msg("user", "Hi"),
             msg("assistant", "Hello!"),
             msg("user", "How are you?"),
         ];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.starts_with("<|begin_of_text|>"));
         assert!(
@@ -999,5 +1094,58 @@ mod tests {
             prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nHello!<|eot_id|>")
         );
         assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+    }
+
+    // ── Qwen2 / ChatML template tests ──
+
+    #[test]
+    fn test_qwen2_prompt_simple() {
+        let messages = vec![msg("user", "What is 2+2?")];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nWhat is 2+2?<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+        // Must NOT contain Llama tokens
+        assert!(!prompt.contains("<|begin_of_text|>"));
+        assert!(!prompt.contains("<|start_header_id|>"));
+        assert!(!prompt.contains("<|eot_id|>"));
+    }
+
+    #[test]
+    fn test_qwen2_prompt_with_system() {
+        let messages = vec![msg("system", "You are a coding agent."), msg("user", "Write code")];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nYou are a coding agent.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nWrite code<|im_end|>"));
+        assert!(!prompt.contains("You are a helpful AI assistant."));
+    }
+
+    #[test]
+    fn test_qwen2_prompt_multi_turn() {
+        let messages = vec![
+            msg("system", "Be concise."),
+            msg("user", "Hi"),
+            msg("assistant", "Hello!"),
+            msg("user", "How are you?"),
+        ];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nBe concise.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nHi<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>assistant\nHello!<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nHow are you?<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn test_resolve_chat_template() {
+        assert_eq!(resolve_chat_template("coder"), "qwen2");
+        assert_eq!(resolve_chat_template("coder-14b"), "qwen2");
+        assert_eq!(resolve_chat_template("coder-32b"), "qwen2");
+        assert_eq!(resolve_chat_template("llama3.2:3b"), "llama3");
+        assert_eq!(resolve_chat_template("smollm2"), "chatml");
+        assert_eq!(resolve_chat_template("unknown-model"), "llama3"); // default fallback
     }
 }
