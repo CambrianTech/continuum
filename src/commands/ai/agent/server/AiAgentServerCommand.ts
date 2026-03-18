@@ -47,6 +47,8 @@ import {
 } from '../../../../system/user/server/modules/ToolFormatAdapter';
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import { ToolGroupRegistry } from '../../../../system/rag/sources/ToolGroupRegistry';
+import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 
 /** Default safety caps by provider tier */
 function getSafetyMax(provider: string): number {
@@ -133,11 +135,48 @@ export class AiAgentServerCommand extends AiAgentCommand {
           nativeToolSpecs = convertToNativeToolSpecs(toolDefinitions);
         }
 
-        // For XML providers, inject tool docs into system prompt
+        // For XML providers, use ToolGroupRegistry for contextual tool selection.
+        // Instead of dumping ALL tools (overwhelming for local models), select
+        // relevant groups based on the user's prompt, then format with examples.
         if (!useNative && toolDefinitions.length > 0) {
+          const groupRegistry = ToolGroupRegistry.sharedInstance();
+
+          // Extract prompt text for intent-based group selection
+          const promptText = params.prompt
+            || (params.messages?.filter(m => m.role === 'user').pop()?.content as string)
+            || '';
+
+          // Select relevant tool groups based on prompt content
+          const selectedGroups = groupRegistry.selectGroups(promptText, 5);
+
+          // Filter tools to only those in selected groups
+          let contextualTools = groupRegistry.filterToolsByGroups(toolDefinitions, selectedGroups);
+
+          // Build grouped prompt with few-shot examples per group
+          const groupedPrompt = groupRegistry.buildGroupedPrompt(selectedGroups, contextualTools);
+
+          // Also format the actual tool specs for XML tool calling
           const adapter = getPrimaryAdapter();
-          const toolDocs = adapter.formatToolsForPrompt(toolDefinitions);
-          // Prepend to first system message or create one
+          let formattedTools = adapter.formatToolsForPrompt(contextualTools);
+
+          let toolDocs = `\n\n=== YOUR CAPABILITIES ===\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${formattedTools}\n================================`;
+
+          // Context budget check: tool docs should not exceed 25% of context window.
+          // If they do, progressively drop lowest-priority groups until within budget.
+          const contextWindow = getContextWindow(model, provider);
+          const maxToolDocTokens = Math.floor(contextWindow * 0.25);
+          let estimatedTokens = Math.ceil(toolDocs.length / 4);
+
+          while (estimatedTokens > maxToolDocTokens && contextualTools.length > 2) {
+            // Drop 3 tools at a time from the end (lowest priority per group ordering)
+            const dropCount = contextualTools.length > 8 ? 3 : 1;
+            contextualTools = contextualTools.slice(0, contextualTools.length - dropCount);
+            formattedTools = adapter.formatToolsForPrompt(contextualTools);
+            toolDocs = `\n\n=== YOUR CAPABILITIES ===\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${formattedTools}\n================================`;
+            estimatedTokens = Math.ceil(toolDocs.length / 4);
+          }
+
+          // Inject into system message
           const sysIdx = messages.findIndex(m => m.role === 'system');
           if (sysIdx >= 0) {
             const existing = typeof messages[sysIdx].content === 'string'

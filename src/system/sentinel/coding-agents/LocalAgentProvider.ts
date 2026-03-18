@@ -1,18 +1,23 @@
 /**
  * LocalAgentProvider — CodingAgentProvider backed by the universal ai/agent command.
  *
- * Wraps the existing agentic tool loop (any provider × any model × all code tools)
+ * Wraps the existing agentic tool loop (any provider x any model x all code tools)
  * so sentinel CodingAgent steps can run entirely locally or with any cloud provider,
  * not just Claude Code.
  *
  * Provider routing:
- * - 'local-agent'            → Candle (local Llama) — fully offline
- * - 'local-agent:deepseek'   → DeepSeek via cloud
- * - 'local-agent:anthropic'  → Anthropic via API
- * - 'local-agent:groq'       → Groq cloud
+ * - 'local-agent'            -> Candle (local Llama) — fully offline
+ * - 'local-agent:deepseek'   -> DeepSeek via cloud
+ * - 'local-agent:anthropic'  -> Anthropic via API
+ * - 'local-agent:groq'       -> Groq cloud
  * - etc.
  *
- * The model and provider can be overridden per CodingAgentConfig.
+ * Tool resolution is fully delegated to ai/agent:
+ * - config.allowedTools set   -> passes that subset to ai/agent
+ * - config.allowedTools unset -> passes tools=undefined, ai/agent resolves all public tools
+ *
+ * System prompt is minimal — just identity + workspace. Tool formatting, group selection,
+ * and budget management are handled by AiAgentServerCommand + ToolGroupRegistry.
  */
 
 import type {
@@ -25,24 +30,6 @@ import type {
 } from './CodingAgentProvider';
 import { Commands } from '@system/core/shared/Commands';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
-
-/** Code tools available to the agent — mirrors what Claude Code can do */
-const CODE_TOOLS = [
-  'code/read',
-  'code/write',
-  'code/edit',
-  'code/search',
-  'code/tree',
-  'code/diff',
-  'code/undo',
-  'code/history',
-  'code/verify',
-  'code/git',
-  'code/shell/execute',
-  'code/shell/watch',
-  'code/shell/status',
-  'code/shell/kill',
-];
 
 export class LocalAgentProvider implements CodingAgentProvider {
   readonly providerId = 'local-agent';
@@ -89,22 +76,29 @@ export class LocalAgentProvider implements CodingAgentProvider {
       }
     }
 
-    // Build system prompt — coding-focused with workspace context
-    const systemPrompt = this.buildSystemPrompt(config);
+    // Minimal system prompt: identity + workspace context.
+    // Tool definitions, group selection, and budget management are handled
+    // entirely by ai/agent (AiAgentServerCommand + ToolGroupRegistry).
+    const systemParts: string[] = [
+      `You are a coding agent working in: ${config.cwd}`,
+    ];
+    if (config.systemPrompt) {
+      systemParts.push('', config.systemPrompt);
+    }
+    const systemPrompt = systemParts.join('\n');
+
+    // Tool resolution:
+    // - config.allowedTools defined -> pass that subset (ai/agent filters to these)
+    // - config.allowedTools undefined -> pass undefined (ai/agent resolves all public tools)
+    const tools = config.allowedTools ?? undefined;
 
     try {
-      // Call ai/agent — the universal agentic loop.
-      // Pass tools=[] so ai/agent does NOT inject tool definitions via ToolFormatAdapter.
-      // The system prompt already contains QAT-trained tool descriptions in the exact format
-      // the model was fine-tuned on. ToolFormatAdapter's format is different and produces
-      // a 2000+ token prompt that overwhelms local models.
-      // Tool call PARSING still works via AgentToolExecutor (XML extraction is independent).
       const result = await Commands.execute('ai/agent', {
         prompt: config.prompt,
         systemPrompt,
         provider,
         model,
-        tools: [],
+        tools,
         maxIterations: config.maxTurns || 10,
         sentinelHandle: config.sentinelHandle,
         personaId: config.personaId,
@@ -203,32 +197,5 @@ export class LocalAgentProvider implements CodingAgentProvider {
         error: errorMsg,
       };
     }
-  }
-
-  private buildSystemPrompt(config: CodingAgentConfig): string {
-    const parts: string[] = [
-      `You are a coding agent working in: ${config.cwd}`,
-      '',
-      'You have these tools:',
-      '',
-      '- code/write: Create a NEW file. Params: {filePath: string, content: string}',
-      '- code/read: Read an existing file. Params: {filePath: string}',
-      '- code/edit: Modify an existing file. Params: {filePath: string, oldString: string, newString: string}',
-      '- code/shell/execute: Run a shell command. Params: {command: string}',
-      '- code/tree: List directory structure. Params: {path: string}',
-      '- code/search: Search for text in files. Params: {query: string, path: string}',
-      '',
-      'Use <tool_use> XML format to call tools. IMPORTANT:',
-      '- Use code/write for NEW files',
-      '- Use code/edit for MODIFYING existing files',
-      '- Use code/read before editing to see current content',
-      '- Be concise — show what you did, not what you plan to do',
-    ];
-
-    if (config.systemPrompt) {
-      parts.push('', '--- Additional Context ---', '', config.systemPrompt);
-    }
-
-    return parts.join('\n');
   }
 }
