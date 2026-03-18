@@ -797,12 +797,45 @@ fn resolve_model_id(requested: &str) -> String {
     requested.to_string()
 }
 
-/// Check if a model is available locally as a GGUF in ~/.continuum/genome/models/.
+/// Resolve the storage root for large files (models, adapters, datasets).
+/// Checks CONTINUUM_STORAGE_PATH env var first, then falls back to ~/.continuum/.
+fn storage_root() -> std::path::PathBuf {
+    if let Ok(storage) = std::env::var("CONTINUUM_STORAGE_PATH") {
+        if !storage.is_empty() {
+            return std::path::PathBuf::from(storage);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home).join(".continuum")
+}
+
+/// Check if a model is available locally as a GGUF.
+/// Searches both CONTINUUM_STORAGE_PATH and ~/.continuum/ for models.
 /// Returns the local directory path if found, None if not cached.
 fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let models_dir = std::path::Path::new(&home).join(".continuum/genome/models");
+    let search_dirs = {
+        let mut dirs = vec![storage_root().join("genome/models")];
+        // Also check ~/.continuum/ if storage is elsewhere
+        let home = std::env::var("HOME").ok()?;
+        let home_models = std::path::PathBuf::from(&home).join(".continuum/genome/models");
+        if !dirs.contains(&home_models) {
+            dirs.push(home_models);
+        }
+        dirs
+    };
 
+    for models_dir in &search_dirs {
+        if !models_dir.exists() {
+            continue;
+        }
+        if let Some(found) = find_model_in_dir(model_id, models_dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     if !models_dir.exists() {
         return None;
     }
