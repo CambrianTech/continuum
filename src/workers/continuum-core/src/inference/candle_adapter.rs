@@ -739,34 +739,41 @@ impl AIProviderAdapter for CandleAdapter {
     }
 }
 
-/// Map Ollama-style model names to HuggingFace repo IDs for Candle loading.
+/// Single source of truth for local model metadata.
 ///
-/// Academy pipelines pass model names in Ollama format (e.g., "smollm2:135m").
-/// Candle needs HuggingFace repo IDs (e.g., "HuggingFaceTB/SmolLM2-135M-Instruct").
-/// If the name is already a HF repo ID (contains '/'), it's returned as-is.
-/// Model registry entry loaded from model_registry.json.
-#[derive(Debug, serde::Deserialize)]
-struct ModelRegistryEntry {
-    repo: String,
-    #[allow(dead_code)]
-    format: Option<String>,
-    #[allow(dead_code)]
-    architecture: Option<String>,
-    #[allow(dead_code)]
-    description: Option<String>,
-    #[allow(dead_code)]
-    min_memory_gb: Option<f64>,
-    #[allow(dead_code)]
-    chat_template: Option<String>,
+/// Model registry entry loaded from model_registry.json (embedded at compile time).
+/// TypeScript gets these types via ts-rs — NO hand-written duplicates.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts")]
+pub struct ModelRegistryEntry {
+    /// HuggingFace repo ID (canonical source)
+    pub repo: String,
+    /// Serialization format: "gguf" or "safetensors"
+    #[ts(optional)]
+    pub format: Option<String>,
+    /// Model architecture: "qwen2", "llama", "phi", etc.
+    #[ts(optional)]
+    pub architecture: Option<String>,
+    /// Human-readable description
+    #[ts(optional)]
+    pub description: Option<String>,
+    /// Minimum GPU memory in GB to run this model
+    #[ts(optional, type = "number")]
+    pub min_memory_gb: Option<f64>,
+    /// Chat template name: "qwen2", "llama3", "chatml"
+    #[ts(optional)]
+    pub chat_template: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct ModelRegistry {
-    models: HashMap<String, ModelRegistryEntry>,
+/// Full model registry — maps aliases to model entries.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistry.ts")]
+pub struct ModelRegistry {
+    pub models: HashMap<String, ModelRegistryEntry>,
 }
 
 /// Load the model registry from the embedded JSON.
-fn load_registry() -> ModelRegistry {
+pub fn load_registry() -> ModelRegistry {
     let json = include_str!("model_registry.json");
     serde_json::from_str(json).unwrap_or_else(|e| {
         runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
@@ -774,7 +781,7 @@ fn load_registry() -> ModelRegistry {
     })
 }
 
-fn resolve_model_id(requested: &str) -> String {
+pub fn resolve_model_id(requested: &str) -> String {
     // Already a HuggingFace repo ID
     if requested.contains('/') {
         return requested.to_string();
@@ -943,7 +950,7 @@ fn estimate_adapter_vram(path: &str) -> u64 {
 
 /// Look up the chat template name for a model from the registry.
 /// Falls back to "llama3" for unknown models.
-fn resolve_chat_template(requested_model: &str) -> String {
+pub fn resolve_chat_template(requested_model: &str) -> String {
     let normalized = requested_model.trim().to_lowercase();
     let registry = load_registry();
 
