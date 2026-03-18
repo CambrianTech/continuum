@@ -242,19 +242,11 @@ pub fn generate(
 
     let mut all_tokens = prompt_tokens;
 
-    // Special tokens that should NEVER be generated (only appear in prompts).
-    let suppress_tokens: Vec<u32> = vec![151644]; // <|im_start|> (Qwen2)
     let eos_ids = backend.eos_token_ids().to_vec();
 
-    // Sample first token from prefill logits (with same suppression as generation)
+    // Sample first token from prefill logits
     let first_token = logits_processor
-        .sample_f(&prefill_logits, |logits_slice| {
-            for &tid in &suppress_tokens {
-                if (tid as usize) < logits_slice.len() {
-                    logits_slice[tid as usize] = 0.0;
-                }
-            }
-        })
+        .sample(&prefill_logits)
         .map_err(|e| format!("First token sampling failed: {e}"))?;
 
     if backend.eos_token_ids().contains(&first_token) {
@@ -328,30 +320,12 @@ pub fn generate(
         // 1.1 is the llama.cpp default; 1.15 is slightly stronger for Q3_K.
         let repeat_penalty = 1.1f32;
 
-        let next_token = match logits_processor.sample_f(&logits, |logits_slice| {
-            // Suppress special tokens that should never be generated
-            for &token_id in &suppress_tokens {
-                let idx = token_id as usize;
-                if idx < logits_slice.len() {
-                    logits_slice[idx] = 0.0;
-                }
-            }
-            // Dampen EOS probability. Q3_K_S output head inflates special token logits
-            // (EOS at 11.9 vs PyTorch's 0.4). Scale down by 100x — still allows
-            // eventual stopping but prevents premature termination.
-            // TODO: proper fix is mixed quant with output head at Q6_K from BF16 source.
-            for &eos_id in &eos_ids {
-                let idx = eos_id as usize;
-                if idx < logits_slice.len() {
-                    logits_slice[idx] *= 0.01;
-                }
-            }
-            // Apply repetition penalty on PROBABILITIES (sample_f gives us probs, not logits).
-            // Divide probability of seen tokens by penalty factor.
+        let next_token = match logits_processor.sample_f(&logits, |prs| {
+            // Repetition penalty on probabilities: reduce probability of seen tokens.
             for &token_id in all_tokens[prompt_len..].iter() {
                 let idx = token_id as usize;
-                if idx < logits_slice.len() && !eos_ids.contains(&token_id) {
-                    logits_slice[idx] /= repeat_penalty;
+                if idx < prs.len() {
+                    prs[idx] /= repeat_penalty;
                 }
             }
         }) {

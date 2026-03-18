@@ -44,31 +44,22 @@ impl DeviceEmbedding {
         hidden_size: usize,
         device: &Device,
     ) -> Result<Self> {
-        // Load quantized to CPU, dequantize to F32 on CPU, convert to F16, move to device.
-        // Peak CPU: 3.1GB temporary (freed before return).
-        // Persistent: 1.55GB F16 on device.
+        // Dequantize to F32 on CPU, then move to device.
+        // Must be F32 (not F16) — F16 loses precision on embedding values,
+        // causing wrong logit distributions for special tokens.
         let qt_cpu = ct.tensor(reader, tensor_name, &Device::Cpu)?;
-        let f32_table = qt_cpu.dequantize(&Device::Cpu)?;
-        let f16_table = f32_table.to_dtype(DType::F16)?;
-        drop(f32_table);
-        let table = f16_table.to_device(device)?;
-        // f16_table (CPU) dropped, only device copy persists
+        let table = qt_cpu.dequantize(&Device::Cpu)?.to_device(device)?;
         Ok(Self { table, hidden_size })
     }
 
     fn from_qtensor(qtensor: QTensor, hidden_size: usize, device: &Device) -> Result<Self> {
-        let f32_table = qtensor.dequantize(&Device::Cpu)?;
-        let f16_table = f32_table.to_dtype(DType::F16)?;
-        drop(f32_table);
-        let table = f16_table.to_device(device)?;
+        let table = qtensor.dequantize(&Device::Cpu)?.to_device(device)?;
         Ok(Self { table, hidden_size })
     }
 
     fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
-        // All on device — no CPU↔Metal transfers
-        let embeddings = self.table.index_select(&token_ids.flatten_all()?, 0)?
-            .contiguous()?  // Force copy of selected rows only — breaks view into full table
-            .to_dtype(DType::F32)?;
+        // Table is already F32 — just index_select
+        let embeddings = self.table.index_select(&token_ids.flatten_all()?, 0)?;
         let orig_dims = token_ids.dims();
         if orig_dims.len() == 2 {
             embeddings.reshape((orig_dims[0], orig_dims[1], self.hidden_size))

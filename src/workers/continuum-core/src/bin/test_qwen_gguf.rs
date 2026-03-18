@@ -37,19 +37,15 @@ fn main() {
     device.synchronize().ok();
     eprintln!("Model loaded. Generating...\n");
 
-    // Real prompts with Qwen2 chat template
+    // Same prompts as RunPod PyTorch test — exact same strings for comparison
     let prompts = vec![
         (
             "flask_app",
-            "<|im_start|>system\nYou are an expert Python developer. Write clean, working, production-ready code. Only output the code, no explanations.<|im_end|>\n<|im_start|>user\nCreate a Flask web app with three routes: a homepage that shows a welcome message, an /about page, and a /api/status endpoint that returns JSON with the server uptime. Include proper error handling.<|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>system\nYou are an expert Python developer. Write clean, working code. Only output the code.<|im_end|>\n<|im_start|>user\nCreate a Flask web app with a homepage, /about page, and /api/status JSON endpoint showing uptime.<|im_end|>\n<|im_start|>assistant\n"
         ),
         (
-            "swift_todo",
-            "<|im_start|>system\nYou are an expert Swift/iOS developer. Write clean SwiftUI code. Only output the code, no explanations.<|im_end|>\n<|im_start|>user\nCreate a SwiftUI TodoList app with: a list of todo items, ability to add new items via a text field, ability to toggle completion with a checkmark, and ability to delete items with swipe. Use @State for the data model.<|im_end|>\n<|im_start|>assistant\n"
-        ),
-        (
-            "react_counter",
-            "<|im_start|>system\nYou are an expert React/TypeScript developer. Write clean, working code. Only output the code, no explanations.<|im_end|>\n<|im_start|>user\nCreate a React component in TypeScript that implements a counter with increment, decrement, and reset buttons. Style it with inline CSS. Include a history of the last 10 values displayed as a list.<|im_end|>\n<|im_start|>assistant\n"
+            "bare_flask",
+            "from flask import Flask, jsonify\nimport time\n\napp = Flask(__name__)\nstart_time = time.time()\n\n"
         ),
     ];
 
