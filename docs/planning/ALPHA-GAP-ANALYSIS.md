@@ -390,51 +390,58 @@ The ultimate solution: fine-tune local models to call OUR tools correctly.
 
 ---
 
-## Priority 6B: Local Coding Model — Compacted 32B Integration
+## Priority 6B: Local Coding Model — Ship 14B, Research 32B
 
-**Why here**: P6 makes local models call tools. P6B makes the local model GOOD ENOUGH to be the default coding agent. A 32B compacted model is dramatically more capable than a 3B model at code generation, reasoning, and tool calling. This is what makes local-first viable.
+**Strategy**: Ship the 14B model (guaranteed quality, fits everywhere). Continue 32B QAT research in parallel — don't block launch on it.
 
-**Breakthrough (2026-03-17)**: Qwen2.5-Coder-32B-Instruct running on M1 Pro 32GB MacBook at 5.3 tok/s. Head-pruned (40Q/8KV → 25Q/5KV) + Q3_K_S quantization. Published: [continuum-ai/qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted).
+### Alpha Launch Model: Qwen2.5-Coder-14B Compacted at Q5_K
 
-### 6B-1. Qwen2 Chat Template (GAP)
+- Fits 16GB MacBook Air AND 32GB Pro (~8-10GB)
+- Q5_K (5.1 bpw) is well above quality floor
+- 30-minute RunPod job using existing pipeline
+- Publish to `continuum-ai/qwen2.5-coder-14b-compacted`
 
-Local model needs proper prompt formatting: `<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n`
+### Research Track: 32B QAT (don't block launch)
 
-### 6B-2. Persona Config for Local Model (GAP)
+**Findings (2026-03-18)**:
+- 32B compacted model is PERFECT at NF4 4-bit (proven on RunPod PyTorch)
+- Q3_K_S (3.5 bpw) is below quality floor — degrades after ~20 tokens
+- QAT (quantization-aware training) WORKS: one round ($0.07) doubled coherent output
+- F16 embedding was a critical bug — F32 is mandatory for 152K+ vocabularies
+- Need more QAT rounds with larger dataset (RealClassEval 488 examples)
+- If QAT reaches 256+ tokens: ship as premium 32B model for 32GB machines
+- Q4_K_M needs dimension padding (ncols 3200 not divisible by 256)
 
-PersonaUser / AIProviderDaemon needs `localModel: "coder"` config option that routes to the compacted 32B via CandleAdapter instead of cloud API.
+### Remaining Gaps
 
-### 6B-3. Mixed Quantization (GAP)
-
-Uniform Q3_K_S has 26% repetition. Mixed quant (high-util layers → Q5_K, low-util → Q3_K) should improve quality at same size. Planner + GGUF writer are built, need end-to-end test.
-
-### 6B-4. 14B Model for 16GB MacBook Air (GAP)
-
-Compress Qwen2.5-Coder-14B for the 16GB target. Expands addressable hardware from "32GB Pro" to "16GB Air" — huge for adoption.
-
-### 6B-5. Auto Device Detection (GAP)
-
-Detect available memory at startup, auto-select the best model that fits: 32B for 32GB, 14B for 16GB, 7B for 8GB. Zero user configuration.
-
-### 6B-6. Publish Command (GAP)
-
-`./jtag genome/publish --repo=continuum-ai/my-model` — one command from compressed GGUF to HuggingFace. Auto-generates model card with benchmarks.
+| Item | Status | Priority |
+|------|--------|----------|
+| **14B model compress + publish** | GAP | **ALPHA BLOCKER** |
+| Qwen2 chat template | GAP | Alpha |
+| Persona config for local model | GAP | Alpha |
+| Auto device detection (16GB→14B, 32GB→32B) | GAP | Alpha |
+| 32B QAT longer training | GAP | Research |
+| Mixed quantization from BF16 | GAP | Research |
+| Publish command (genome/publish) | GAP | Post-alpha |
 
 **Build checklist**:
 - [x] Candle GGUF backend with Qwen2 support (quantized_llama.rs)
-- [x] Architecture-aware metadata, head_dim derivation, KV cache fix
-- [x] DeviceEmbedding (F16 on Metal, no CPU↔Metal copies)
-- [x] CandleAdapter local model discovery + "coder" alias
-- [x] Compression pipeline: planner, GGUF writer, pipeline orchestrator
+- [x] Architecture-aware metadata, head_dim derivation
+- [x] F32 embedding (F16 was corrupting logits — critical bug fixed)
+- [x] clear_kv_cache without model reload (was OOMing)
+- [x] CandleAdapter local model discovery + "coder" alias + model registry
+- [x] Compression pipeline: planner, GGUF writer, pipeline orchestrator (142 tests)
 - [x] IPC command: plasticity/compress (generated via CommandGenerator)
 - [x] Python subprocess adapter (unified Rust wrapper)
 - [x] First model published to continuum-ai on HuggingFace
 - [x] Benchmark harness (5 coding prompts, speed/quality/memory)
+- [x] QAT proof of concept ($0.07, doubled quality)
+- [x] Architecture-aware EOS tokens (Qwen2: im_end only for chat mode)
+- [ ] **14B model compress + publish (NEXT)**
 - [ ] Qwen2 chat template in prompt builder
 - [ ] Persona config for local model selection
-- [ ] Mixed quantization end-to-end test
-- [ ] 14B model for 16GB target
 - [ ] Auto device detection + model selection
+- [ ] 32B QAT with full RealClassEval dataset
 - [ ] Publish command (genome/publish)
 
 ---
