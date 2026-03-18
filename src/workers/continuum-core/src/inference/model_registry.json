@@ -2,18 +2,26 @@
   "_comment": "Model registry: aliases → HuggingFace repos. Continuum auto-downloads on first use.",
   "models": {
     "coder": {
-      "repo": "continuum-ai/qwen2.5-coder-32b-compacted",
+      "repo": "continuum-ai/qwen2.5-coder-14b-compacted",
       "format": "gguf",
       "architecture": "qwen2",
-      "description": "32B coding model, compacted (25Q/5KV), Q3_K_S. Runs on 32GB MacBook.",
-      "min_memory_gb": 20,
+      "description": "14B coding model, compacted (25Q/5KV), Q5_K_S. Fits 16GB MacBook Air.",
+      "min_memory_gb": 12,
+      "chat_template": "qwen2"
+    },
+    "coder-14b": {
+      "repo": "continuum-ai/qwen2.5-coder-14b-compacted",
+      "format": "gguf",
+      "architecture": "qwen2",
+      "description": "14B coding model for 16GB+ devices",
+      "min_memory_gb": 12,
       "chat_template": "qwen2"
     },
     "coder-32b": {
       "repo": "continuum-ai/qwen2.5-coder-32b-compacted",
       "format": "gguf",
       "architecture": "qwen2",
-      "description": "Alias for coder",
+      "description": "32B coding model for 32GB+ devices. Needs QAT for full quality.",
       "min_memory_gb": 20,
       "chat_template": "qwen2"
     },
