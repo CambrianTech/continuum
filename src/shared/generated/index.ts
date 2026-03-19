@@ -50,6 +50,7 @@ export type { VectorSearchHit } from './data-daemon';
 export type { VectorSearchResult } from './data-daemon';
 export * from './dataset';
 export * from './gpu';
+export * from './inference';
 export * from './ipc';
 export * from './live';
 export * from './logger';

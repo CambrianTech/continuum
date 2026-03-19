@@ -49,6 +49,7 @@ import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import { ToolGroupRegistry } from '../../../../system/rag/sources/ToolGroupRegistry';
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
+import { Events } from '../../../../system/core/shared/Events';
 
 /** Default safety caps by provider tier */
 function getSafetyMax(provider: string): number {
@@ -57,12 +58,41 @@ function getSafetyMax(provider: string): number {
   return 5;
 }
 
+/** Providers that run locally and need the handle+events pattern */
+const LOCAL_INFERENCE_PROVIDERS = new Set(['candle', 'candle-q', 'local', 'llamacpp']);
+
 export class AiAgentServerCommand extends AiAgentCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super(context, subpath, commander);
   }
 
   async execute(params: AiAgentParams): Promise<AiAgentResult> {
+    const provider = params.provider || 'anthropic';
+
+    // Local inference providers are too slow for synchronous request/response.
+    // Return a handle immediately and run in the background, emitting events.
+    if (LOCAL_INFERENCE_PROVIDERS.has(provider)) {
+      const handleId = generateUUID();
+      // Fire and forget — caller subscribes to ai:agent:{handleId}:complete
+      this.runAgentLoop(handleId, params).catch(err => {
+        Events.emit(`ai:agent:${handleId}:error`, { handleId, error: String(err) });
+      });
+      return createAiAgentResult(params, {
+        success: true,
+        handleId,
+        status: 'started',
+        text: '',
+        toolCalls: [],
+        iterations: 0,
+        durationMs: 0,
+      });
+    }
+
+    // Cloud providers: run synchronously (fast enough for request/response)
+    return this.runAgentLoop(null, params);
+  }
+
+  private async runAgentLoop(handleId: string | null, params: AiAgentParams): Promise<AiAgentResult> {
     const start = Date.now();
     const allToolCallRecords: ToolCallRecord[] = [];
 
@@ -86,12 +116,18 @@ export class AiAgentServerCommand extends AiAgentCommand {
       }
 
       // ── 2. Resolve model + provider ──────────────────────────────
-      const provider = params.provider || 'anthropic';
+      const provider = params.provider ?? 'anthropic';
       const model = params.model || (
         provider === 'anthropic' ? 'claude-sonnet-4-5-20250929' :
-        provider === 'candle' ? LOCAL_MODELS.DEFAULT :
+        LOCAL_INFERENCE_PROVIDERS.has(provider) ? LOCAL_MODELS.DEFAULT :
         'claude-sonnet-4-5-20250929'
       );
+
+      // Local models cannot handle ToolGroupRegistry injection (1500+ tokens overhead).
+      // Default to no tools when tools is unspecified — caller must opt-in explicitly.
+      const effectiveTools = LOCAL_INFERENCE_PROVIDERS.has(provider) && params.tools === undefined
+        ? []
+        : params.tools;
 
       // ── 3. Resolve tools ─────────────────────────────────────────
       const toolCap = getToolCapability(provider);
@@ -105,12 +141,12 @@ export class AiAgentServerCommand extends AiAgentCommand {
         const allDefs = await getAllToolDefinitionsAsync('public' as ToolAccessLevel);
 
         // Filter to subset if specified
-        if (params.tools !== undefined) {
-          if (params.tools.length === 0) {
+        if (effectiveTools !== undefined) {
+          if (effectiveTools.length === 0) {
             // Explicit empty = no tools
             toolDefinitions = [];
           } else {
-            const toolSet = new Set(params.tools);
+            const toolSet = new Set(effectiveTools);
             toolDefinitions = allDefs
               .filter(t => toolSet.has(t.name))
               .map(t => ({
@@ -367,7 +403,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
       }
 
       // ── 7. Return result ─────────────────────────────────────────
-      return createAiAgentResult(params, {
+      const result = createAiAgentResult(params, {
         success: true,
         text: response.text?.trim() || '',
         toolCalls: allToolCallRecords,
@@ -379,18 +415,30 @@ export class AiAgentServerCommand extends AiAgentCommand {
         model: response.model,
         provider: response.provider,
         durationMs: Date.now() - start,
+        ...(handleId ? { handleId, status: 'complete' as const } : {}),
       });
+
+      if (handleId) {
+        Events.emit(`ai:agent:${handleId}:complete`, result);
+      }
+      return result;
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      return createAiAgentResult(params, {
+      const errResult = createAiAgentResult(params, {
         success: false,
         text: '',
         toolCalls: allToolCallRecords,
         iterations: 0,
         error: errorMsg,
         durationMs: Date.now() - start,
+        ...(handleId ? { handleId, status: 'error' as const } : {}),
       });
+
+      if (handleId) {
+        Events.emit(`ai:agent:${handleId}:error`, { handleId, error: errorMsg });
+      }
+      return errResult;
     }
   }
 }

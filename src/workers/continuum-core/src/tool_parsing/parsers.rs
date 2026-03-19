@@ -1,12 +1,15 @@
 //! Format-specific tool call parsers.
 //!
-//! Six formats supported (matching TypeScript ToolFormatAdapter hierarchy):
+//! Formats supported (matching TypeScript ToolFormatAdapter hierarchy):
 //! 1. Anthropic XML: `<tool_use><tool_name>X</tool_name><parameters>...</parameters></tool_use>`
 //! 2. Function-style: `<function=tool_name>{"param": "value"}</function>`
 //! 3. Bare JSON: `tool/name {"param": "value"}` or `tool_name {"param": "value"}</function>`
 //! 4. JSON Object: `{"name": "tool_name", "parameters": {"param": "value"}}`
-//! 5. Markdown backtick: `` `tool: name` `param=value` ``
-//! 6. Old-style XML: `<tool name="X"><param>value</param></tool>`
+//! 5. Array-style: `["tool/name", {"param": "value"}]`
+//! 6. Curly shorthand: `{"tool_name": {"param": "value"}}`
+//! 7. Markdown backtick: `` `tool: name` `param=value` ``
+//! 8. Old-style XML: `<tool name="X"><param>value</param></tool>`
+//! 9. Colon shorthand: `tool/name: {param: "value"}` — QAT local model native format
 //!
 //! Handles both canonical (slash) and sanitized (underscore) tool names.
 //! Sanitized names from native tool protocol (code_tree → code/tree) are
@@ -25,7 +28,7 @@ pub struct RawToolMatch {
     pub end: usize,
 }
 
-/// Parse all tool calls from response text using all 8 format adapters.
+/// Parse all tool calls from response text using all format adapters.
 /// Returns matches in order of adapter priority (Anthropic first).
 pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -37,6 +40,7 @@ pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     results.extend(parse_curly_shorthand(text));
     results.extend(parse_markdown(text));
     results.extend(parse_old_style(text));
+    results.extend(parse_colon_shorthand(text));
     results
 }
 
@@ -456,6 +460,128 @@ fn parse_old_style(text: &str) -> Vec<RawToolMatch> {
             })
         })
         .collect()
+}
+
+// ─── Colon shorthand ─────────────────────────────────────────────────
+//
+// QAT-trained local models (14B Q5_K_S) generate tool calls in a natural
+// colon-separated format instead of `<tool_use>` XML. Two patterns:
+//
+// Simple: `code/read: {filePath: "path/to/file"}`
+// Write:  `code/write: {filePath: "app.py",\n```python\ncontent\n````
+//
+// Unquoted JSON keys (e.g. `filePath: "value"`) are handled in parse_colon_params.
+// For `code/write`, content embedded in a trailing markdown code block is extracted.
+
+// Pre-compiled regex for colon-shorthand tool lines.
+// Matches: `code/write: {filePath: "app.py",` or `code/read: {filePath: "path"}`
+// The prefix list is baked in (same as TOOL_PREFIXES_SLASH) for O(1) compilation.
+static RE_COLON_TOOL_LINE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?m)^((?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+):\s*\{([^\n\}]*)"
+    ).unwrap()
+});
+
+fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
+    let mut results = Vec::new();
+
+    // Markdown code block following the tool line.
+    static RE_CODE_BLOCK: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap()
+    });
+
+    for cap in RE_COLON_TOOL_LINE.captures_iter(text) {
+        let full_match = match cap.get(0) {
+            Some(m) => m,
+            None => continue,
+        };
+        let name = match cap.get(1) {
+            Some(n) => n.as_str().trim().to_string(),
+            None => continue,
+        };
+        let inline_params = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+
+        // Extract key: "value" pairs from the inline portion.
+        let mut parameters = parse_colon_params(inline_params);
+
+        // If tool is code/write or code/edit and content/newString not yet found,
+        // look for a trailing markdown code block starting right after this line.
+        let match_end = full_match.end();
+        let after = &text[match_end..];
+
+        // Accept optional comma / closing brace before the code block.
+        let trimmed_after = after.trim_start_matches([',', '}', '\n', '\r', ' ']);
+        if (name == "code/write" && !parameters.contains_key("content"))
+            || (name == "code/edit" && !parameters.contains_key("newString"))
+        {
+            if let Some(cb) = RE_CODE_BLOCK.captures(trimmed_after) {
+                let content = cb.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+                let cb_match = cb.get(0).unwrap();
+
+                let param_key = if name == "code/write" { "content" } else { "newString" };
+                parameters.insert(param_key.to_string(), content);
+
+                // Extend end to cover code block
+                let end = match_end
+                    + (trimmed_after.as_ptr() as usize - after.as_ptr() as usize)
+                    + cb_match.end();
+
+                results.push(RawToolMatch {
+                    tool_name: name,
+                    parameters,
+                    format: "colon-shorthand",
+                    start: full_match.start(),
+                    end,
+                });
+                continue;
+            }
+        }
+
+        // Only emit if we got at least one parameter.
+        if !parameters.is_empty() {
+            results.push(RawToolMatch {
+                tool_name: name,
+                parameters,
+                format: "colon-shorthand",
+                start: full_match.start(),
+                end: match_end,
+            });
+        }
+    }
+    results
+}
+
+/// Extract `key: "value"` pairs from colon-shorthand parameter strings.
+/// Handles both `"key": "value"` (quoted key) and `key: "value"` (unquoted key).
+fn parse_colon_params(s: &str) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+
+    // Try valid JSON first (keys and values both quoted).
+    let json_candidate = format!("{{{}}}", s);
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&json_candidate) {
+        return map
+            .into_iter()
+            .map(|(k, v)| {
+                let val = match v {
+                    serde_json::Value::String(s) => s,
+                    _ => v.to_string(),
+                };
+                (k, val)
+            })
+            .collect();
+    }
+
+    // Fallback: extract any `key: "value"` or `"key": "value"` pairs.
+    static RE_PARAM: Lazy<Regex> = Lazy::new(|| {
+        // Matches: optionally-quoted key, colon, then a quoted value.
+        Regex::new(r#""?([a-zA-Z_][a-zA-Z0-9_]*)"?\s*:\s*"([^"]*)""#).unwrap()
+    });
+    for cap in RE_PARAM.captures_iter(s) {
+        if let (Some(k), Some(v)) = (cap.get(1), cap.get(2)) {
+            params.insert(k.as_str().to_string(), v.as_str().to_string());
+        }
+    }
+    params
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -1024,5 +1150,102 @@ Then also:
             "Should catch curly-shorthand tool call"
         );
         assert_eq!(curly_match.unwrap().tool_name, "collaboration/wall/write");
+    }
+
+    // ─── Colon shorthand (QAT local model format) ──────────────────
+
+    #[test]
+    fn colon_shorthand_simple_read() {
+        // code/read: {filePath: "app.py"}
+        let text = "code/read: {filePath: \"app.py\"}";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "app.py");
+        assert_eq!(matches[0].format, "colon-shorthand");
+    }
+
+    #[test]
+    fn colon_shorthand_shell_command() {
+        // code/shell/execute: {command: "ls -la"}
+        let text = "code/shell/execute: {command: \"ls -la\"}";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/shell/execute");
+        assert_eq!(matches[0].parameters.get("command").unwrap(), "ls -la");
+    }
+
+    #[test]
+    fn colon_shorthand_tree() {
+        let text = "code/tree: {path: \".\"}";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), ".");
+    }
+
+    #[test]
+    fn colon_shorthand_write_with_codeblock() {
+        // Exact format produced by 14B QAT model:
+        // code/write: {filePath: "app.py",
+        // ```python
+        // from flask import Flask
+        // ...
+        // ```
+        let text = "code/write: {filePath: \"app.py\",\n```python\nfrom flask import Flask\napp = Flask(__name__)\n```";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1, "Should parse code/write with code block");
+        assert_eq!(matches[0].tool_name, "code/write");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "app.py");
+        let content = matches[0].parameters.get("content").unwrap();
+        assert!(content.contains("from flask import Flask"), "content should include Flask code");
+    }
+
+    #[test]
+    fn colon_shorthand_write_malformed_filename() {
+        // Model sometimes produces {filePath: "app.py, without closing quote
+        // The parameter extractor should still grab the filename up to comma/newline.
+        let text = "code/write: {filePath: \"app.py,\n```python\nprint('hello')\n```";
+        let matches = parse_colon_shorthand(text);
+        // Should still parse content from code block
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/write");
+        let content = matches[0].parameters.get("content").unwrap();
+        assert!(content.contains("print("));
+    }
+
+    #[test]
+    fn colon_shorthand_all_formats_integration() {
+        let text = "code/read: {filePath: \"main.ts\"}";
+        let matches = parse_all_formats(text);
+        let colon_match = matches.iter().find(|m| m.format == "colon-shorthand");
+        assert!(colon_match.is_some(), "parse_all_formats should include colon-shorthand");
+        assert_eq!(colon_match.unwrap().tool_name, "code/read");
+    }
+
+    #[test]
+    fn colon_shorthand_no_match_unknown_prefix() {
+        let text = "unknown/tool: {param: \"value\"}";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn colon_params_unquoted_key() {
+        let params = parse_colon_params(r#"filePath: "app.py""#);
+        assert_eq!(params.get("filePath").unwrap(), "app.py");
+    }
+
+    #[test]
+    fn colon_params_quoted_key() {
+        let params = parse_colon_params(r#""filePath": "app.py""#);
+        assert_eq!(params.get("filePath").unwrap(), "app.py");
+    }
+
+    #[test]
+    fn colon_params_multiple() {
+        let params = parse_colon_params(r#"query: "flask", path: "./src""#);
+        assert_eq!(params.get("query").unwrap(), "flask");
+        assert_eq!(params.get("path").unwrap(), "./src");
     }
 }

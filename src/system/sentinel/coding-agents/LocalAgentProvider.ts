@@ -29,7 +29,9 @@ import type {
   CodingAgentToolCall,
 } from './CodingAgentProvider';
 import { Commands } from '@system/core/shared/Commands';
+import { Events } from '@system/core/shared/Events';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { AiAgentResult } from '../../../commands/ai/agent/shared/AiAgentTypes';
 
 export class LocalAgentProvider implements CodingAgentProvider {
   readonly providerId = 'local-agent';
@@ -76,24 +78,39 @@ export class LocalAgentProvider implements CodingAgentProvider {
       }
     }
 
-    // Minimal system prompt: identity + workspace context.
-    // Tool definitions, group selection, and budget management are handled
-    // entirely by ai/agent (AiAgentServerCommand + ToolGroupRegistry).
+    // System prompt: identity + workspace + compact tool descriptions.
+    // For local models, we pass tools=[] so ai/agent does NOT inject additional
+    // tool definitions via ToolGroupRegistry (which produces 1500+ tokens that
+    // overwhelm local models). The compact format here matches QAT training data.
+    // For cloud providers, tools=undefined lets ai/agent use full ToolGroupRegistry.
+    const isLocal = provider === 'candle' || provider === 'candle-q';
     const systemParts: string[] = [
       `You are a coding agent working in: ${config.cwd}`,
+      '',
+      'You have these tools:',
+      '',
+      '- code/write: Create a NEW file. Params: {filePath: string, content: string}',
+      '- code/read: Read an existing file. Params: {filePath: string}',
+      '- code/edit: Modify an existing file. Params: {filePath: string, oldString: string, newString: string}',
+      '- code/shell/execute: Run a shell command. Params: {command: string}',
+      '- code/tree: List directory structure. Params: {path: string}',
+      '- code/search: Search for text in files. Params: {query: string, path: string}',
+      '',
+      'Use <tool_use> XML format to call tools. Always use code/write for NEW files, code/edit for MODIFYING existing files, code/read before editing.',
     ];
     if (config.systemPrompt) {
       systemParts.push('', config.systemPrompt);
     }
     const systemPrompt = systemParts.join('\n');
 
-    // Tool resolution:
-    // - config.allowedTools defined -> pass that subset (ai/agent filters to these)
-    // - config.allowedTools undefined -> pass undefined (ai/agent resolves all public tools)
-    const tools = config.allowedTools ?? undefined;
+    // Local models: tools=[] prevents ai/agent from injecting ToolGroupRegistry output.
+    // Cloud models: tools=undefined lets ai/agent resolve all public tools dynamically.
+    const tools = isLocal ? [] : (config.allowedTools ?? undefined);
 
     try {
-      const result = await Commands.execute('ai/agent', {
+      // Start agent — local providers return a handle immediately and run in background.
+      // Cloud providers block until complete (fast enough for request/response).
+      const agentResponse = await Commands.execute('ai/agent', {
         prompt: config.prompt,
         systemPrompt,
         provider,
@@ -104,23 +121,13 @@ export class LocalAgentProvider implements CodingAgentProvider {
         personaId: config.personaId,
         temperature: 0.3,
         maxTokens: 4096,
-      } as Record<string, unknown>) as unknown as {
-        success: boolean;
-        text: string;
-        toolCalls: Array<{
-          toolName: string;
-          params: Record<string, string>;
-          success: boolean;
-          content?: string;
-          error?: string;
-          durationMs: number;
-        }>;
-        iterations: number;
-        model?: string;
-        provider?: string;
-        durationMs: number;
-        error?: string;
-      };
+      } as Record<string, unknown>) as unknown as AiAgentResult;
+
+      // Local providers return { handleId, status: 'started' } immediately.
+      // Subscribe to the completion event and wait — no IPC timeout, no 300s cliff.
+      const result = agentResponse.handleId
+        ? await this.waitForCompletion(agentResponse.handleId, onProgress)
+        : agentResponse;
 
       const durationMs = Date.now() - startTime;
 
@@ -197,5 +204,35 @@ export class LocalAgentProvider implements CodingAgentProvider {
         error: errorMsg,
       };
     }
+  }
+
+  /**
+   * Wait for a background ai/agent session to complete via events.
+   * No request timeout — the caller's context (e.g. Sentinel step timeout) controls lifetime.
+   */
+  private waitForCompletion(
+    handleId: string,
+    onProgress?: (event: CodingAgentProgressEvent) => void,
+  ): Promise<AiAgentResult> {
+    return new Promise((resolve, reject) => {
+      const unsubComplete = Events.subscribe(`ai:agent:${handleId}:complete`, (data) => {
+        unsubComplete();
+        unsubError();
+        resolve(data as AiAgentResult);
+      });
+
+      const unsubError = Events.subscribe(`ai:agent:${handleId}:error`, (data) => {
+        unsubComplete();
+        unsubError();
+        const msg = (data as { error?: string }).error ?? 'Agent failed';
+        reject(new Error(msg));
+      });
+
+      onProgress?.({
+        type: 'status',
+        message: `Running (handle: ${handleId})`,
+        timestamp: Date.now(),
+      });
+    });
   }
 }
