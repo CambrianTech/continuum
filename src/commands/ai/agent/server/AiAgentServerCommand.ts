@@ -155,8 +155,18 @@ export class AiAgentServerCommand extends AiAgentCommand {
       // ── 1. Build messages ────────────────────────────────────────
       let messages: ChatMessage[] = [];
 
+      // For local inference providers without a system prompt, auto-build one
+      // using LocalContextBuilder (compact tool format matching QAT training).
       if (params.systemPrompt) {
         messages.push({ role: 'system', content: params.systemPrompt });
+      } else if (LOCAL_INFERENCE_PROVIDERS.has(params.provider ?? 'anthropic')) {
+        const { LocalContextBuilder } = await import('@system/sentinel/coding-agents/LocalContextBuilder');
+        const ctxResult = await LocalContextBuilder.sharedInstance().build({
+          cwd: (params as unknown as Record<string, unknown>).cwd as string ?? process.cwd(),
+          taskPrompt: params.prompt ?? '',
+          maxSystemTokens: 350,
+        });
+        messages.push({ role: 'system', content: ctxResult.systemPrompt });
       }
 
       if (params.messages && params.messages.length > 0) {

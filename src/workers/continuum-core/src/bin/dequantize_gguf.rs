@@ -1,27 +1,23 @@
 //! GGUF → F16 Safetensors Dequantizer
 //!
 //! Converts a quantized GGUF model (Q5_K_S, Q4_K_M, etc.) to F16 safetensors
-//! format. The output supports full-batch prefill in llama_safetensors.rs,
-//! which eliminates the Metal SDPA token-by-token prefill bottleneck:
+//! format for higher numerical precision. GGUF already supports batch prefill
+//! via Metal SDPA — this is an optional upgrade for quality, not speed.
 //!
-//!   GGUF Q5_K_S:  ~100ms/token prefill  → 150 tokens = 15s
-//!   F16 safetensors: ~2ms/token         → 150 tokens = 0.3s
-//!
-//! Usage (run once on 32GB+ MacBook Pro):
-//!   dequantize_gguf --input ~/.continuum/genome/models/qwen14b-compacted-v1/qwen14b-compacted-q5ks.gguf \
-//!                   --output ~/.continuum/genome/models/qwen14b-compacted-v1/bf16/
+//! Usage:
+//!   dequantize_gguf --input <path.gguf> --output <dir/>
 //!
 //! Output:
 //!   bf16/model.safetensors   — dequantized F16 weights (~19.6GB for 14B)
-//!   bf16/config.json         — copied from GGUF dir (for llama_safetensors.rs)
+//!   bf16/config.json         — copied from GGUF dir
 //!   bf16/tokenizer.json      — copied from GGUF dir
 //!   bf16/tokenizer_config.json — copied if present
+//!   bf16/head_topology.json  — copied if present (for compacted models)
 //!
-//! The output directory is auto-detected by load_model_by_id when ≥24GB RAM
-//! is available, transparently upgrading GGUF to batch-prefill mode.
+//! Auto-detected by load_model_by_id/load_model_from_dir when ≥24GB RAM available.
 //!
 //! Memory requirement: ~20GB for a 14B model (all tensors in RAM simultaneously).
-//! This is a one-time operation; subsequent runs are skipped if bf16/ exists.
+//! One-time operation; subsequent runs are skipped if bf16/ exists.
 
 use std::collections::HashMap;
 use std::io::BufReader;

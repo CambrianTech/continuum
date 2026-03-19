@@ -111,7 +111,7 @@ impl CompactAttention {
         };
         *cache = Some((k.clone(), v.clone()));
 
-        // Attention computation
+        // Attention — Metal SDPA for single-token, manual for batch prefill.
         let gqa_ratio = self.n_head / self.n_kv_head;
         let y = if x.device().is_metal() && seq_len == 1 {
             candle_nn::ops::sdpa(
@@ -127,7 +127,6 @@ impl CompactAttention {
             let k = candle_transformers::utils::repeat_kv(k, gqa_ratio)?;
             let v = candle_transformers::utils::repeat_kv(v, gqa_ratio)?;
             let att = (q.matmul(&k.t()?)? / (self.head_dim as f64).sqrt())?;
-            // Causal mask
             let mask = self.causal_mask(seq_len, index_pos, x.device())?;
             let att = att.broadcast_add(&mask)?;
             let att = candle_nn::ops::softmax_last_dim(&att)?;

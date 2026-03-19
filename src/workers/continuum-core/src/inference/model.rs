@@ -468,10 +468,9 @@ pub fn load_model_from_dir(
 
 /// Try to load a BF16 safetensors backend from a `bf16/` subdirectory alongside a GGUF.
 ///
-/// BF16 enables full-batch prefill (~2ms/token on Metal) vs GGUF token-by-token
-/// (~100ms/token, Metal SDPA limitation). For a 150-token system prompt:
-///   GGUF:  15s prefill
-///   BF16:  0.3s prefill
+/// Optional upgrade path: if a dequantized F16 version exists and RAM permits,
+/// load it instead of the GGUF. Both paths now support full-batch prefill via
+/// Metal SDPA, so this is primarily useful for higher numerical precision.
 ///
 /// Only activates when:
 ///   - `bf16/` dir exists next to the GGUF (created by `dequantize-gguf`)

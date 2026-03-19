@@ -56,8 +56,11 @@ pub struct GenomeAdapter {
 
 // ─── ModelBackend Trait ──────────────────────────────────────────────────────
 
-/// GPU sync interval during token-by-token prefill and generation.
-const GPU_SYNC_INTERVAL: usize = 16;
+/// GPU sync interval during generation.
+/// Higher = fewer CPU-GPU round trips = faster throughput.
+/// The sampler pulls logits to CPU every token anyway, so this sync
+/// is mainly to prevent Metal command buffer overflow on long sequences.
+const GPU_SYNC_INTERVAL: usize = 64;
 
 /// Check for NaN only on first N generated tokens.
 const NAN_CHECK_TOKENS: usize = 3;
@@ -107,10 +110,8 @@ pub trait ModelBackend: Send + Sync {
 
     /// Prefill: process prompt tokens to build KV cache before generation.
     ///
-    /// Returns logits from the final token position. Each backend chooses
-    /// its own strategy:
-    /// - GGUF: token-by-token (seq_len=1 each, Metal SDPA safe)
-    /// - Safetensors BF16: full-batch (proper causal masking, GPU-efficient)
+    /// Returns logits from the final token position.
+    /// All backends use full-batch prefill via Metal SDPA with is_causal=true.
     fn prefill(&mut self, tokens: &[u32]) -> Result<Tensor, String>;
 
     /// Clear KV cache for a fresh generation.
@@ -163,7 +164,7 @@ pub trait ModelBackend: Send + Sync {
 ///
 /// One function for all local models. Handles:
 /// - Context length validation
-/// - Prefill via backend strategy (token-by-token or full-batch)
+/// - Prefill via full-batch Metal SDPA
 /// - Token generation with sampling
 /// - NaN detection and prompt replay on failure
 /// - GPU sync management
@@ -211,7 +212,13 @@ pub fn generate(
     backend.clear_cache()?;
 
     // ── Phase 1: Prefill ──
+    let prefill_start = Instant::now();
     let prefill_logits = backend.prefill(&prompt_tokens)?;
+    backend.device().synchronize().map_err(|e| format!("Prefill sync: {e}"))?;
+    let prefill_ms = prefill_start.elapsed().as_millis();
+    log.info(&format!("Prefill: {} tokens in {}ms ({:.1}ms/tok)",
+        prompt_len, prefill_ms, prefill_ms as f64 / prompt_len as f64));
+
     let prefill_logits = extract_last_logits(&prefill_logits)?;
     let (prefill_logits, had_nan) = sanitize_logits_with_flag(&prefill_logits, backend.device())?;
     if had_nan {

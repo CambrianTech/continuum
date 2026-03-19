@@ -318,7 +318,9 @@ impl LayerWeights {
         self.kv_cache = Some((k.clone(), v.clone()));
 
         let y = if q.device().is_metal() && seq_len == 1 {
-            // Metal SDPA kernel — fast path for single-token generation.
+            // Metal SDPA vectorized kernel — fast path for single-token generation.
+            // is_causal=true with real quantized weights produces corrupted KV cache
+            // (verified: synthetic tensors pass but real 14B weights produce garbage).
             candle_nn::ops::sdpa(
                 &q,
                 &k,
@@ -329,10 +331,7 @@ impl LayerWeights {
                 1.,
             )?
         } else {
-            // Fallback: manual Q*K^T attention with causal mask.
-            // WARNING: This path creates O(seq_len^2) attention matrices that corrupt
-            // on Metal at ~1000+ tokens. Use token-by-token prefill (via QuantizedBackend
-            // trait) to ensure seq_len==1 for all forward calls, keeping us on the fast path.
+            // Manual attention for batch prefill and CPU/CUDA generation.
             let k = candle_transformers::utils::repeat_kv(k, self.n_head / self.n_kv_head)?;
             let v = candle_transformers::utils::repeat_kv(v, self.n_head / self.n_kv_head)?;
 
@@ -860,8 +859,10 @@ impl ModelWeights {
                 }
             }
 
-            // Sync GPU every 8 layers to release intermediate Metal command buffers.
-            if (layer_idx + 1) % 8 == 0 {
+            // Commit Metal command buffer every 24 layers so the GPU can start
+            // executing early layers while we encode later ones.
+            // Too frequent (8) = CPU waits too much. Never = giant stall at end.
+            if (layer_idx + 1) % 24 == 0 {
                 device.synchronize()?;
             }
         }

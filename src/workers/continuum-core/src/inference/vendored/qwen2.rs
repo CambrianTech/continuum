@@ -159,7 +159,8 @@ impl Qwen2Attention {
         };
         *cache = Some((k.clone(), v.clone()));
 
-        // Attention
+        // Attention — Metal SDPA for single-token, manual for batch prefill.
+        // Metal SDPA is_causal=true corrupts KV cache with real quantized weights.
         let gqa_ratio = self.n_head / self.n_kv_head;
         let y = if x.device().is_metal() && seq_len == 1 {
             candle_nn::ops::sdpa(

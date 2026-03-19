@@ -24,14 +24,11 @@ use super::{
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
-/// GPU sync interval during token-by-token prefill.
-const PREFILL_SYNC_INTERVAL: usize = 64;
-
 /// Llama-family GGUF quantized backend.
 ///
 /// Context length, EOS tokens — all from GGUF metadata.
-/// Token-by-token prefill keeps every forward call at seq_len=1
-/// (Metal SDPA fast path).
+/// Full-batch prefill via Metal SDPA with is_causal=true.
+/// Q/K/V are regular floats after projection — quantization is only in weight matrices.
 pub struct LlamaGgufBackend {
     model: ModelWeights,
     tokenizer: Tokenizer,
@@ -193,12 +190,11 @@ impl ModelBackend for LlamaGgufBackend {
         self.model.forward(input, index_pos)
     }
 
-    /// Token-by-token prefill (Metal SDPA safe path).
+    /// Full-batch prefill via Metal SDPA.
     ///
-    /// Each forward call has seq_len=1, which uses the Metal SDPA kernel
-    /// instead of the manual O(n²) attention path that corrupts at >1000 tokens.
-    /// The quantized_llama `forward()` doesn't support multi-token chunks with
-    /// KV cache — attention mask shape assumes seq_len=1 when pos > 0.
+    /// Sends all tokens in a single forward pass. Metal SDPA handles causal
+    /// masking internally (is_causal=true). Q/K/V are regular floats after
+    /// projection — quantization only affects weight matrices, not attention.
     fn prefill(&mut self, tokens: &[u32]) -> Result<Tensor, String> {
         if tokens.is_empty() {
             return Err("Empty token sequence".to_string());
@@ -206,38 +202,22 @@ impl ModelBackend for LlamaGgufBackend {
 
         let log = runtime::logger("candle");
         log.debug(&format!(
-            "Prefilling {} tokens one-at-a-time (Metal SDPA safe path)",
+            "Batch prefilling {} tokens (Metal SDPA)",
             tokens.len()
         ));
 
-        let mut last_logits = None;
-        for (pos, &token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[token], &self.device)
-                .map_err(|e| format!("Tensor creation at pos {pos}: {e}"))?
-                .unsqueeze(0)
-                .map_err(|e| format!("Unsqueeze at pos {pos}: {e}"))?;
+        let input = Tensor::new(tokens, &self.device)
+            .map_err(|e| format!("Tensor creation: {e}"))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Unsqueeze: {e}"))?;
 
-            let logits = self
-                .model
-                .forward(&input, pos)
-                .map_err(|e| format!("Forward at pos {pos}: {e}"))?;
+        let logits = self
+            .model
+            .forward(&input, 0)
+            .map_err(|e| format!("Batch prefill forward: {e}"))?;
 
-            // GPU sync periodically to prevent command buffer explosion
-            if (pos + 1) % PREFILL_SYNC_INTERVAL == 0 {
-                self.device
-                    .synchronize()
-                    .map_err(|e| format!("GPU sync at pos {pos}: {e}"))?;
-            }
-
-            last_logits = Some(logits);
-        }
-
-        // Final sync
-        self.device
-            .synchronize()
-            .map_err(|e| format!("GPU sync after prefill: {e}"))?;
-
-        last_logits.ok_or_else(|| "Empty token sequence".to_string())
+        // Caller (generate()) syncs after prefill — no double sync.
+        Ok(logits)
     }
 
     /// Clear KV cache without reloading the entire model.

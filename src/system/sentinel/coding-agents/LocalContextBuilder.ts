@@ -88,37 +88,54 @@ export class LocalContextBuilder {
   }
 
   async build(spec: LocalContextSpec): Promise<LocalContextResult> {
+    // ALWAYS include training-set tools first — these are the tools the model
+    // was trained on (QAT v2). Out-of-distribution tools cause hallucination.
+    // Additional tools from ToolGroupRegistry fill remaining budget.
+    const trainingToolNames = Object.keys(TRAINING_DESCRIPTIONS);
+
+    const maxTools = spec.maxSystemTokens <= 400 ? 6 : 10;
+    const maxToolChars = Math.floor(spec.maxSystemTokens * 0.45) * 4;
+
+    // Phase 1: Add training-set tools (always included, model knows these)
+    const toolLines: string[] = [];
+    let toolCharsUsed = 0;
+    for (const name of trainingToolNames) {
+      if (toolLines.length >= maxTools) break;
+      const desc = TRAINING_DESCRIPTIONS[name];
+      const params = TRAINING_PARAMS[name];
+      const line = params
+        ? `- ${name}: ${desc}. Params: {${params}}`
+        : `- ${name}: ${desc}`;
+      if (toolCharsUsed + line.length + 1 > maxToolChars) break;
+      toolLines.push(line);
+      toolCharsUsed += line.length + 1;
+    }
+
+    // Phase 2: Fill remaining budget with task-relevant tools from registry
     const groupRegistry = ToolGroupRegistry.sharedInstance();
     const selectedGroups = groupRegistry.selectGroups(spec.taskPrompt, 3);
     const toolPatterns = selectedGroups.flatMap(g => g.toolPatterns);
+    const includedNames = new Set(trainingToolNames);
 
-    // Load and filter tool definitions
     let defs: ToolDefinition[] = [];
     try {
       const allDefs = await getAllToolDefinitionsAsync('public' as ToolAccessLevel);
       defs = allDefs.filter(t =>
+        !includedNames.has(t.name) &&
         toolPatterns.some(p =>
           p.endsWith('/') ? t.name.startsWith(p) : t.name === p,
         ),
       );
     } catch {
-      // Tool definitions unavailable — continue with empty list
+      // Tool definitions unavailable — continue with training tools only
     }
 
-    // Tool budget: 45% of max tokens.
-    // Each training-format line ≈ 15 tokens (~60 chars). Cap at 6 for GGUF, 10 for BF16.
-    const maxTools = spec.maxSystemTokens <= 400 ? 6 : 10;
-    const maxToolChars = Math.floor(spec.maxSystemTokens * 0.45) * 4;
-
-    // Build tool lines, enforcing the char budget to stay in training distribution.
-    const toolLines: string[] = [];
-    let toolCharsUsed = 0;
     for (const t of defs) {
       if (toolLines.length >= maxTools) break;
       const line = this.formatToolLine(t);
       if (toolCharsUsed + line.length + 1 > maxToolChars) break;
       toolLines.push(line);
-      toolCharsUsed += line.length + 1; // +1 for newline
+      toolCharsUsed += line.length + 1;
     }
 
     // Training-time system prompt format (from diagnose_prefill.rs).
