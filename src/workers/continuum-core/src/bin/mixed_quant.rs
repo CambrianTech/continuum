@@ -7,7 +7,6 @@
 //! Attention in high-util layers → Q5_K
 //! Everything else → Q3_K (same as source)
 
-use std::path::Path;
 use std::time::Instant;
 
 use candle_core::quantized::{gguf_file, GgmlDType, QTensor};

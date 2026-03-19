@@ -429,6 +429,18 @@ pub fn load_model_from_dir(
 
         if let Some(gguf_path) = gguf_files.first() {
             log.info(&format!("  Found GGUF: {:?}", gguf_path));
+
+            // Check for BF16 safetensors upgrade (batch prefill, ~50x faster on Metal).
+            // Same detection as load_model_by_id — bf16/ dir + ≥24GB RAM available.
+            if let Some(bf16_backend) = try_load_bf16_safetensors(gguf_path, model_id) {
+                log.info(&format!(
+                    "BF16 backend ready in {:?} (ctx={})",
+                    start.elapsed(),
+                    bf16_backend.context_length()
+                ));
+                return Ok(bf16_backend);
+            }
+
             let tokenizer = Tokenizer::from_file(&tokenizer_path)
                 .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
             let backend = backends::load_gguf_backend(gguf_path, tokenizer, model_id, &device)?;

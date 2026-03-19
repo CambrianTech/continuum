@@ -183,17 +183,25 @@ fn dequantize(gguf_path: &Path, output_dir: &Path) -> Result<(), String> {
         write_start.elapsed().as_secs_f32()
     );
 
-    // Phase 4: Copy supporting files so llama_safetensors.rs can load the model
+    // Phase 4: Copy supporting files so the safetensors backend can load the model.
+    // head_topology.json (or compacted_model.topology.json) is required for CompactLlama
+    // to load the pruned per-layer head counts correctly.
     let gguf_dir = gguf_path.parent().unwrap_or(Path::new("."));
-    for filename in &["config.json", "tokenizer.json", "tokenizer_config.json"] {
+    for filename in &[
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "head_topology.json",
+        "compacted_model.topology.json",
+    ] {
         let src = gguf_dir.join(filename);
         if src.exists() {
             let dst = output_dir.join(filename);
             std::fs::copy(&src, &dst)
                 .map_err(|e| format!("Copy {filename} from {:?}: {e}", gguf_dir))?;
             println!("Copied {filename}");
-        } else {
-            println!("Skipped {filename} (not found in GGUF dir)");
+        } else if *filename == "config.json" || *filename == "tokenizer.json" {
+            println!("WARNING: {filename} not found in GGUF dir — model may fail to load");
         }
     }
 
