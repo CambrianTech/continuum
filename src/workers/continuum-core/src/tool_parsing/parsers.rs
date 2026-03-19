@@ -10,6 +10,7 @@
 //! 7. Markdown backtick: `` `tool: name` `param=value` ``
 //! 8. Old-style XML: `<tool name="X"><param>value</param></tool>`
 //! 9. Colon shorthand: `tool/name: {param: "value"}` — QAT local model native format
+//! 10. Colon bare: `tool/name: bare_value` — simplified positional variant (degraded models)
 //!
 //! Handles both canonical (slash) and sanitized (underscore) tool names.
 //! Sanitized names from native tool protocol (code_tree → code/tree) are
@@ -465,79 +466,113 @@ fn parse_old_style(text: &str) -> Vec<RawToolMatch> {
 // ─── Colon shorthand ─────────────────────────────────────────────────
 //
 // QAT-trained local models (14B Q5_K_S) generate tool calls in a natural
-// colon-separated format instead of `<tool_use>` XML. Two patterns:
+// colon-separated format instead of `<tool_use>` XML. Patterns:
 //
-// Simple: `code/read: {filePath: "path/to/file"}`
-// Write:  `code/write: {filePath: "app.py",\n```python\ncontent\n````
+// JSON params:  `code/read: {filePath: "path/to/file"}`
+// Write+block:  `code/write: {filePath: "app.py",\n```python\ncontent\n````
+// Bare value:   `code/write: hello.py\n```python\ncontent\n\`\`\``
+// Bare simple:  `code/shell/execute: ls -la`
 //
 // Unquoted JSON keys (e.g. `filePath: "value"`) are handled in parse_colon_params.
 // For `code/write`, content embedded in a trailing markdown code block is extracted.
+// Incomplete code blocks (truncated responses) are handled via open-block fallback.
 
-// Pre-compiled regex for colon-shorthand tool lines.
-// Matches: `code/write: {filePath: "app.py",` or `code/read: {filePath: "path"}`
-// The prefix list is baked in (same as TOOL_PREFIXES_SLASH) for O(1) compilation.
+// Tool name prefix set for colon-shorthand (matches known tool namespaces).
+static COLON_TOOL_PREFIX_RE: &str =
+    r"(?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+";
+
+// JSON-params variant: `tool/name: {key: "value"...}`
 static RE_COLON_TOOL_LINE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?m)^((?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+):\s*\{([^\n\}]*)"
-    ).unwrap()
+    Regex::new(&format!(
+        r"(?m)^({}):\s*\{{([^\n\}}]*)",
+        COLON_TOOL_PREFIX_RE
+    )).unwrap()
 });
+
+// Bare-value variant: `tool/name: bare_value` (no leading `{`)
+// Captures the rest of the line after the colon-space.
+// JSON-params cases (value starts with `{`) are filtered out in the parse loop.
+static RE_COLON_BARE_LINE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?m)^({}):\s*([^\n]+)",
+        COLON_TOOL_PREFIX_RE
+    )).unwrap()
+});
+
+/// Map a tool name to its first (only positional) parameter key.
+fn first_positional_param(tool: &str) -> &'static str {
+    match tool {
+        "code/write" | "code/read" | "code/edit" | "code/diff" | "code/undo" => "filePath",
+        "code/tree" => "path",
+        "code/shell/execute" | "code/shell/watch" | "code/shell/status" => "command",
+        "code/search" => "query",
+        _ => "path",
+    }
+}
+
+/// Extract code block content from text, handling incomplete (truncated) blocks.
+/// Returns (content, bytes_consumed_in_after).
+fn extract_code_block(after: &str) -> Option<(String, usize)> {
+    // Complete code block: ```lang\ncontent\n```
+    static RE_CODE_BLOCK: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap()
+    });
+    // Open/incomplete code block: ```lang\ncontent (no closing ```)
+    static RE_OPEN_BLOCK: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"```(?:\w*)\n([\s\S]+)$").unwrap()
+    });
+
+    let trimmed = after.trim_start_matches([',', '}', '\n', '\r', ' ']);
+    let offset = after.len() - trimmed.len();
+
+    if let Some(cb) = RE_CODE_BLOCK.captures(trimmed) {
+        let content = cb.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+        let consumed = offset + cb.get(0).unwrap().end();
+        Some((content, consumed))
+    } else if let Some(ob) = RE_OPEN_BLOCK.captures(trimmed) {
+        // Truncated response: accept content up to end of string
+        let content = ob.get(1).map(|m| m.as_str().trim_end()).unwrap_or("").to_string();
+        if content.is_empty() {
+            return None;
+        }
+        let consumed = after.len(); // consumed everything
+        Some((content, consumed))
+    } else {
+        None
+    }
+}
 
 fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
-    // Markdown code block following the tool line.
-    static RE_CODE_BLOCK: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap()
-    });
-
+    // ── Pass 1: JSON-params variant `tool: {key: "val"...}` ──────────
     for cap in RE_COLON_TOOL_LINE.captures_iter(text) {
-        let full_match = match cap.get(0) {
-            Some(m) => m,
-            None => continue,
-        };
-        let name = match cap.get(1) {
-            Some(n) => n.as_str().trim().to_string(),
-            None => continue,
-        };
+        let full_match = cap.get(0).unwrap();
+        let name = cap.get(1).unwrap().as_str().trim().to_string();
         let inline_params = cap.get(2).map(|m| m.as_str()).unwrap_or("");
 
-        // Extract key: "value" pairs from the inline portion.
         let mut parameters = parse_colon_params(inline_params);
 
-        // If tool is code/write or code/edit and content/newString not yet found,
-        // look for a trailing markdown code block starting right after this line.
         let match_end = full_match.end();
         let after = &text[match_end..];
 
-        // Accept optional comma / closing brace before the code block.
-        let trimmed_after = after.trim_start_matches([',', '}', '\n', '\r', ' ']);
         if (name == "code/write" && !parameters.contains_key("content"))
             || (name == "code/edit" && !parameters.contains_key("newString"))
         {
-            if let Some(cb) = RE_CODE_BLOCK.captures(trimmed_after) {
-                let content = cb.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-                let cb_match = cb.get(0).unwrap();
-
-                let param_key = if name == "code/write" { "content" } else { "newString" };
+            let param_key = if name == "code/write" { "content" } else { "newString" };
+            if let Some((content, consumed)) = extract_code_block(after) {
                 parameters.insert(param_key.to_string(), content);
-
-                // Extend end to cover code block
-                let end = match_end
-                    + (trimmed_after.as_ptr() as usize - after.as_ptr() as usize)
-                    + cb_match.end();
-
                 results.push(RawToolMatch {
                     tool_name: name,
                     parameters,
                     format: "colon-shorthand",
                     start: full_match.start(),
-                    end,
+                    end: match_end + consumed,
                 });
                 continue;
             }
         }
 
-        // Only emit if we got at least one parameter.
         if !parameters.is_empty() {
             results.push(RawToolMatch {
                 tool_name: name,
@@ -548,6 +583,65 @@ fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
             });
         }
     }
+
+    // ── Pass 2: Bare-value variant `tool: bare_value` ────────────────
+    // Only emit if no JSON-params match already covers this position.
+    'bare: for cap in RE_COLON_BARE_LINE.captures_iter(text) {
+        let full_match = cap.get(0).unwrap();
+        let start = full_match.start();
+
+        // Skip if a JSON-params result already covers this offset.
+        for r in &results {
+            if r.start <= start && start < r.end {
+                continue 'bare;
+            }
+        }
+
+        let name = cap.get(1).unwrap().as_str().trim().to_string();
+        let raw_value = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+
+        // Skip JSON-params cases (value starts with `{`) — handled by Pass 1.
+        if raw_value.starts_with('{') {
+            continue;
+        }
+
+        // Strip surrounding quotes if the model quoted the value.
+        let value = raw_value.trim_matches('"').trim_matches('\'').to_string();
+        if value.is_empty() {
+            continue;
+        }
+
+        let param_key = first_positional_param(&name);
+        let mut parameters = HashMap::new();
+        parameters.insert(param_key.to_string(), value);
+
+        let match_end = full_match.end();
+        let after = &text[match_end..];
+
+        // For code/write, look for trailing code block (content).
+        if name == "code/write" {
+            if let Some((content, consumed)) = extract_code_block(after) {
+                parameters.insert("content".to_string(), content);
+                results.push(RawToolMatch {
+                    tool_name: name,
+                    parameters,
+                    format: "colon-shorthand-bare",
+                    start: full_match.start(),
+                    end: match_end + consumed,
+                });
+                continue;
+            }
+        }
+
+        results.push(RawToolMatch {
+            tool_name: name,
+            parameters,
+            format: "colon-shorthand-bare",
+            start: full_match.start(),
+            end: match_end,
+        });
+    }
+
     results
 }
 
@@ -1228,6 +1322,81 @@ Then also:
         let text = "unknown/tool: {param: \"value\"}";
         let matches = parse_colon_shorthand(text);
         assert_eq!(matches.len(), 0);
+    }
+
+    // ─── Bare-value variant (degraded model output) ─────────────────
+
+    #[test]
+    fn colon_bare_read() {
+        let text = "code/read: hello.py";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "hello.py");
+        assert_eq!(matches[0].format, "colon-shorthand-bare");
+    }
+
+    #[test]
+    fn colon_bare_shell() {
+        let text = "code/shell/execute: ls -la";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/shell/execute");
+        assert_eq!(matches[0].parameters.get("command").unwrap(), "ls -la");
+    }
+
+    #[test]
+    fn colon_bare_write_with_codeblock() {
+        // Actual observed model output: bare filename + code block
+        let text = "code/write: hello.py\n```python\nprint('Hello World')\n```";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/write");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "hello.py");
+        assert_eq!(matches[0].parameters.get("content").unwrap(), "print('Hello World')");
+    }
+
+    #[test]
+    fn colon_bare_write_incomplete_codeblock() {
+        // Truncated response: code block not closed
+        let text = "code/write: hello.py\n```python\nprint('Hello World')\n# more code";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/write");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "hello.py");
+        let content = matches[0].parameters.get("content").unwrap();
+        assert!(content.contains("print("), "Should extract partial content");
+    }
+
+    #[test]
+    fn colon_bare_write_with_garbage_then_codeblock() {
+        // Model generates garbage between bare-filename line and code block.
+        // This is the actual degraded output observed from the compacted 14B model.
+        let text = "assistant\ncode/write: hello.py\nfrom typing import Path\n\n```python\nprint('Hello World')\n```";
+        let matches = parse_colon_shorthand(text);
+        let write_match = matches.iter().find(|m| m.tool_name == "code/write");
+        assert!(write_match.is_some(), "Should find code/write");
+        assert_eq!(write_match.unwrap().parameters.get("filePath").unwrap(), "hello.py");
+        assert!(write_match.unwrap().parameters.contains_key("content"));
+    }
+
+    #[test]
+    fn colon_bare_no_double_match_with_json_variant() {
+        // JSON-params variant should take precedence; bare variant should NOT also fire.
+        let text = "code/read: {filePath: \"main.ts\"}";
+        let matches = parse_colon_shorthand(text);
+        // Should only get one match (the JSON-params one)
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].format, "colon-shorthand");
+    }
+
+    #[test]
+    fn colon_bare_tree() {
+        let text = "code/tree: ./src";
+        let matches = parse_colon_shorthand(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), "./src");
     }
 
     #[test]

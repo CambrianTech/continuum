@@ -28,6 +28,8 @@ import type {
   CodingAgentResult,
   CodingAgentToolCall,
 } from './CodingAgentProvider';
+import { LocalContextBuilder } from './LocalContextBuilder';
+import { LocalModelRouter } from './LocalModelRouter';
 import { Commands } from '@system/core/shared/Commands';
 import { Events } from '@system/core/shared/Events';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -66,6 +68,7 @@ export class LocalAgentProvider implements CodingAgentProvider {
     // Resolve provider (can be overridden in config.model as 'provider:model')
     let provider = this._defaultProvider;
     let model = this._defaultModel;
+    const modelExplicitlySet = !!config.model;
 
     if (config.model) {
       if (config.model.includes(':')) {
@@ -78,34 +81,42 @@ export class LocalAgentProvider implements CodingAgentProvider {
       }
     }
 
-    // System prompt: identity + workspace + compact tool descriptions.
-    // For local models, we pass tools=[] so ai/agent does NOT inject additional
-    // tool definitions via ToolGroupRegistry (which produces 1500+ tokens that
-    // overwhelm local models). The compact format here matches QAT training data.
-    // For cloud providers, tools=undefined lets ai/agent use full ToolGroupRegistry.
     const isLocal = provider === 'candle' || provider === 'candle-q';
-    const systemParts: string[] = [
-      `You are a coding agent working in: ${config.cwd}`,
-      '',
-      'You have these tools:',
-      '',
-      '- code/write: Create a NEW file. Params: {filePath: string, content: string}',
-      '- code/read: Read an existing file. Params: {filePath: string}',
-      '- code/edit: Modify an existing file. Params: {filePath: string, oldString: string, newString: string}',
-      '- code/shell/execute: Run a shell command. Params: {command: string}',
-      '- code/tree: List directory structure. Params: {path: string}',
-      '- code/search: Search for text in files. Params: {query: string, path: string}',
-      '',
-      'Use <tool_use> XML format to call tools. Always use code/write for NEW files, code/edit for MODIFYING existing files, code/read before editing.',
-    ];
-    if (config.systemPrompt) {
-      systemParts.push('', config.systemPrompt);
-    }
-    const systemPrompt = systemParts.join('\n');
 
-    // Local models: tools=[] prevents ai/agent from injecting ToolGroupRegistry output.
-    // Cloud models: tools=undefined lets ai/agent resolve all public tools dynamically.
-    const tools = isLocal ? [] : (config.allowedTools ?? undefined);
+    // For local providers without an explicit model override: route based on VRAM.
+    // This determines whether we get BF16 batch prefill (800 token budget) or
+    // GGUF token-by-token (350 token budget). The Rust side does the actual
+    // model selection — the router just informs budget math here.
+    let maxSystemTokens = 350;
+    let usesBatchPrefill = false;
+    if (isLocal && !modelExplicitlySet) {
+      const gpuStats = await this.fetchGpuStats();
+      const routing = LocalModelRouter.sharedInstance().route(gpuStats.totalVramMb);
+      model = routing.model;
+      maxSystemTokens = routing.maxSystemTokens;
+      usesBatchPrefill = routing.usesBatchPrefill;
+    }
+
+    // Build dynamic system prompt using colon-shorthand tool format.
+    // LocalContextBuilder selects task-relevant tools and formats them compactly
+    // with colon-shorthand examples — the native output format of the 14B coder model.
+    // tools=[] prevents AiAgentServerCommand from injecting its own verbose tool docs.
+    // Cloud providers use full ToolGroupRegistry (undefined = all public tools).
+    let systemPrompt: string;
+    let tools: string[] | undefined;
+    if (isLocal) {
+      const ctxResult = await LocalContextBuilder.sharedInstance().build({
+        cwd: config.cwd,
+        taskPrompt: config.prompt,
+        maxSystemTokens,
+        customSystemPrompt: config.systemPrompt,
+      });
+      systemPrompt = ctxResult.systemPrompt;
+      tools = []; // Compact format is in systemPrompt; don't let ai/agent add verbose docs
+    } else {
+      systemPrompt = config.systemPrompt ?? `You are a coding agent working in: ${config.cwd}`;
+      tools = config.allowedTools ?? undefined;
+    }
 
     try {
       // Start agent — local providers return a handle immediately and run in background.
@@ -119,7 +130,10 @@ export class LocalAgentProvider implements CodingAgentProvider {
         maxIterations: config.maxTurns || 10,
         sentinelHandle: config.sentinelHandle,
         personaId: config.personaId,
-        temperature: 0.3,
+        // GGUF: greedy decoding (temperature=0) — quantized models get stuck in repetition
+      // loops under multinomial sampling at any temperature. BF16 batch prefill path
+      // can handle temperature > 0 since the model is more coherent.
+      temperature: isLocal && !usesBatchPrefill ? 0 : 0.3,
         maxTokens: 4096,
       } as Record<string, unknown>) as unknown as AiAgentResult;
 
@@ -203,6 +217,19 @@ export class LocalAgentProvider implements CodingAgentProvider {
         model: model || provider,
         error: errorMsg,
       };
+    }
+  }
+
+  /**
+   * Fetch GPU stats for model routing decisions.
+   * Returns zero VRAM on failure (routes to GGUF path, safe default).
+   */
+  private async fetchGpuStats(): Promise<{ totalVramMb: number }> {
+    try {
+      const stats = await Commands.execute('gpu/stats') as { totalVramMb?: number };
+      return { totalVramMb: stats.totalVramMb ?? 0 };
+    } catch {
+      return { totalVramMb: 0 };
     }
   }
 

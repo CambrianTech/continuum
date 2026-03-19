@@ -14,7 +14,7 @@
 //! - Cleans up child processes on drop (no zombies)
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_execute_simple() {
-        let call = PythonCall::new("/dev/null") // won't work but tests the path
+        let _call = PythonCall::new("/dev/null") // won't work but tests the path
             .arg("-c")
             .timeout(Duration::from_secs(5));
 

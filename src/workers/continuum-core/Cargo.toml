@@ -12,6 +12,10 @@ name = "continuum-core-server"
 path = "src/main.rs"
 
 [[bin]]
+name = "dequantize-gguf"
+path = "src/bin/dequantize_gguf.rs"
+
+[[bin]]
 name = "vrm-convert-textures"
 path = "src/bin/vrm_convert_textures.rs"
 

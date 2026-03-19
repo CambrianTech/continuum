@@ -51,6 +51,61 @@ import { ToolGroupRegistry } from '../../../../system/rag/sources/ToolGroupRegis
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 import { Events } from '../../../../system/core/shared/Events';
 
+/**
+ * Compress old tool results in the message history for local inference.
+ *
+ * GGUF prefill is ~100ms/token, so every token in the message history costs
+ * real time. After 3 tool call iterations the history can be 600+ tokens —
+ * we compress older tool results to one-liners, keeping the last exchange full.
+ *
+ * Keeps:
+ *   - messages[0]  system prompt (unchanged)
+ *   - messages[1]  initial user task (unchanged)
+ *   - all assistant messages (model reasoning, unchanged)
+ *   - last user tool-result message (full, so model sees what just happened)
+ *   - all earlier user tool-result messages → compressed to one-liner summaries
+ */
+function compressToolHistory(messages: ChatMessage[]): ChatMessage[] {
+  // Need at least: system + task + assistant + tool-result + assistant + tool-result
+  if (messages.length < 6) return messages;
+
+  const system = messages[0];
+  const task = messages[1];
+  const history = messages.slice(2);
+
+  // Separate user (tool results) and assistant messages, keeping order
+  // We compress all user messages EXCEPT the last one
+  const lastUserIdx = (() => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'user') return i;
+    }
+    return -1;
+  })();
+
+  if (lastUserIdx <= 0) return messages; // Nothing to compress
+
+  const compressed = history.map((msg, idx) => {
+    if (msg.role !== 'user' || idx === lastUserIdx) return msg;
+    if (typeof msg.content !== 'string') return msg;
+
+    // Extract tool_name from XML result block
+    const nameMatch = msg.content.match(/<tool_name>([^<]+)<\/tool_name>/);
+    const toolName = nameMatch ? nameMatch[1].trim() : 'tool';
+
+    // Extract and truncate result content
+    const contentMatch = msg.content.match(/<content>([\s\S]*?)<\/content>/);
+    const rawContent = contentMatch ? contentMatch[1].trim() : msg.content.trim();
+    const summary = rawContent.length > 80 ? `${rawContent.slice(0, 80)}...` : rawContent;
+
+    return {
+      ...msg,
+      content: `<tool_result><tool_name>${toolName}</tool_name><status>done</status><content>${summary}</content></tool_result>`,
+    };
+  });
+
+  return [system, task, ...compressed];
+}
+
 /** Default safety caps by provider tier */
 function getSafetyMax(provider: string): number {
   if (['anthropic', 'openai', 'azure'].includes(provider)) return 25;
@@ -98,7 +153,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
     try {
       // ── 1. Build messages ────────────────────────────────────────
-      const messages: ChatMessage[] = [];
+      let messages: ChatMessage[] = [];
 
       if (params.systemPrompt) {
         messages.push({ role: 'system', content: params.systemPrompt });
@@ -119,7 +174,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
       const provider = params.provider ?? 'anthropic';
       const model = params.model || (
         provider === 'anthropic' ? 'claude-sonnet-4-5-20250929' :
-        LOCAL_INFERENCE_PROVIDERS.has(provider) ? LOCAL_MODELS.DEFAULT :
+        LOCAL_INFERENCE_PROVIDERS.has(provider) ? LOCAL_MODELS.CODING_AGENT :
         'claude-sonnet-4-5-20250929'
       );
 
@@ -370,6 +425,13 @@ export class AiAgentServerCommand extends AiAgentCommand {
         }
 
         // ── Regenerate ──────────────────────────────────────────
+        // Compress old tool results for local inference before each regen.
+        // GGUF prefill costs ~100ms/token — stale tool results bloat context.
+        // Keep only the most recent tool result in full; compress the rest.
+        if (LOCAL_INFERENCE_PROVIDERS.has(provider) && iterations > 1) {
+          messages = compressToolHistory(messages);
+        }
+
         // After 3 consecutive iterations, disable tools to force a text summary.
         // Small models loop on tools indefinitely without summarizing.
         const forceText = iterations >= 3 || iterations >= safetyMax - 1;

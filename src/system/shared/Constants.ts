@@ -174,6 +174,16 @@ export const LOCAL_MODELS = {
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',
 
+  /**
+   * Coding agent model — Qwen2.5-Coder-14B compacted (GGUF Q5_K_S, 9GB).
+   * Resolved server-side by model_registry.json in the Candle adapter.
+   * On 32GB machines with bf16/ dir present, Rust auto-upgrades to BF16 batch prefill.
+   */
+  CODING_AGENT: 'coder',
+
+  /** BF16 batch-prefill variant — explicitly selects the safetensors backend (32GB+ only) */
+  CODING_AGENT_BF16: 'coder-bf16',
+
   /** Map legacy model names → HuggingFace model IDs (legacy naming style kept for backward compat) */
   LEGACY_TO_HUGGINGFACE: {
     // Llama 3.2 family — uses unsloth mirror (no HF approval needed)

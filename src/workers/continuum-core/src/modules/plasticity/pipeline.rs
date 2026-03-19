@@ -169,7 +169,7 @@ fn resolve_arch(arch_name: &str, topology: &HeadTopology) -> Result<ModelArchCon
 }
 
 /// Estimate original model size in BF16 bytes.
-fn estimate_original_size(arch: &ModelArchConfig, topology: &HeadTopology) -> u64 {
+fn estimate_original_size(arch: &ModelArchConfig, _topology: &HeadTopology) -> u64 {
     let attn_per_layer = arch.attention_params_per_layer(
         arch.num_attention_heads,
         arch.num_kv_heads,

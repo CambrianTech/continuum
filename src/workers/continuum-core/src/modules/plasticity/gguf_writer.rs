@@ -6,7 +6,6 @@
 //!
 //! See docs/genome/COMPRESSION-PIPELINE.md
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use candle_core::quantized::gguf_file::Value;

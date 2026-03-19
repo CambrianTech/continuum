@@ -12,7 +12,7 @@
 //! - LoRA weight merging (single and multi-adapter)
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
@@ -148,7 +148,9 @@ pub fn load_model_by_id(
     let weight_paths =
         download_weights(&repo).map_err(|e| format!("Failed to download weights: {e}"))?;
 
-    // If we got a GGUF file, route directly to GGUF backend
+    // If we got a GGUF file, check for BF16 safetensors upgrade first.
+    // BF16 enables full-batch prefill (~2ms/token vs GGUF ~100ms/token on Metal).
+    // Falls back to GGUF when bf16/ dir is absent or RAM < 24GB.
     if weight_paths.len() == 1
         && weight_paths[0]
             .extension()
@@ -156,6 +158,17 @@ pub fn load_model_by_id(
             .map(|e| e == "gguf")
             .unwrap_or(false)
     {
+        if let Some(bf16_backend) =
+            try_load_bf16_safetensors(&weight_paths[0], model_id)
+        {
+            log.info(&format!(
+                "BF16 backend ready in {:?} (ctx={})",
+                start.elapsed(),
+                bf16_backend.context_length()
+            ));
+            return Ok(bf16_backend);
+        }
+
         log.info("  Detected GGUF format — loading via GGUF backend");
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
@@ -172,18 +185,37 @@ pub fn load_model_by_id(
     }
 
     let config_str = std::fs::read_to_string(&config_path)?;
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
+    load_safetensors_from_config(weight_paths, &config_str, tokenizer, model_id, &device)
+}
+
+/// Load a safetensors model given already-resolved weight paths, config JSON, and tokenizer.
+///
+/// Called from two sites:
+///   1. `load_model_by_id` — after HF download, safetensors path
+///   2. `load_safetensors_from_local_dir` — BF16 local dir (no HF involved)
+///
+/// Architecture detection (model_type from config.json) and topology detection
+/// (head_topology.json) happen here — no separate code paths per call site.
+fn load_safetensors_from_config(
+    weight_paths: Vec<PathBuf>,
+    config_str: &str,
+    tokenizer: Tokenizer,
+    model_id: &str,
+    device: &Device,
+) -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
+    let log = runtime::logger("candle");
+    let start = Instant::now();
 
     // Detect architecture from config.json to route to correct backend
-    let raw_config: serde_json::Value = serde_json::from_str(&config_str)?;
+    let raw_config: serde_json::Value = serde_json::from_str(config_str)?;
     let model_type = raw_config
         .get("model_type")
         .and_then(|v| v.as_str())
         .unwrap_or("llama");
 
     log.info(&format!("  Model type: {model_type}"));
-
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
 
     let dtype = match &device {
         Device::Metal(_) => DType::BF16,
@@ -221,7 +253,7 @@ pub fn load_model_by_id(
             log.info(&format!("  EOS token IDs: {:?}", eos_token_ids));
 
             let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
+                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
             let model = Qwen2::load(vb, &qwen2_config)
                 .map_err(|e| format!("Qwen2 load failed: {e}"))?;
 
@@ -231,7 +263,7 @@ pub fn load_model_by_id(
             Ok(Box::new(Qwen2SafetensorsBackend::new(
                 model,
                 tokenizer,
-                device,
+                device.clone(),
                 dtype,
                 model_id.to_string(),
                 eos_token_ids,
@@ -240,7 +272,7 @@ pub fn load_model_by_id(
         }
         _ => {
             // Llama-family models (llama, codellama, mistral, etc.)
-            let llama_config: LlamaConfig = serde_json::from_str(&config_str)?;
+            let llama_config: LlamaConfig = serde_json::from_str(config_str)?;
             log.info(&format!(
                 "  Config: vocab_size={}, hidden_size={}, layers={}",
                 llama_config.vocab_size, llama_config.hidden_size, llama_config.num_hidden_layers
@@ -280,7 +312,7 @@ pub fn load_model_by_id(
                     ));
 
                     let vb = unsafe {
-                        VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)?
+                        VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)?
                     };
                     let compact_model =
                         compact_llama::CompactLlama::load(vb, &config, &topo)
@@ -292,7 +324,7 @@ pub fn load_model_by_id(
                     return Ok(Box::new(CompactLlamaSafetensorsBackend::new(
                         compact_model,
                         tokenizer,
-                        device,
+                        device.clone(),
                         dtype,
                         config,
                         topo,
@@ -305,10 +337,10 @@ pub fn load_model_by_id(
 
             // Standard (non-compacted) Llama path
             let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
+                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
 
             let model = Llama::load(vb, &config)?;
-            let cache = Cache::new(true, dtype, &config, &device)?;
+            let cache = Cache::new(true, dtype, &config, device)?;
 
             let duration = start.elapsed();
             log.info(&format!("Model loaded in {:?}", duration));
@@ -317,7 +349,7 @@ pub fn load_model_by_id(
                 model,
                 cache,
                 tokenizer,
-                device,
+                device.clone(),
                 dtype,
                 config,
                 model_id.to_string(),
@@ -416,86 +448,58 @@ pub fn load_model_from_dir(
     log.info(&format!("  {} weight file(s)", weight_paths.len()));
 
     let config_str = std::fs::read_to_string(&config_path)?;
-    let raw_config: serde_json::Value = serde_json::from_str(&config_str)?;
-    let model_type = raw_config
-        .get("model_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("llama");
-
-    log.info(&format!("  Model type: {model_type}"));
-
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
 
-    let dtype = match &device {
-        Device::Metal(_) => DType::BF16,
-        _ => DType::F32,
-    };
+    load_safetensors_from_config(weight_paths, &config_str, tokenizer, model_id, &device)
+}
 
-    match model_type {
-        "qwen2" => {
-            let qwen2_config = Qwen2Config::from_json(&raw_config)
-                .map_err(|e| format!("Invalid Qwen2 config: {e}"))?;
+/// Try to load a BF16 safetensors backend from a `bf16/` subdirectory alongside a GGUF.
+///
+/// BF16 enables full-batch prefill (~2ms/token on Metal) vs GGUF token-by-token
+/// (~100ms/token, Metal SDPA limitation). For a 150-token system prompt:
+///   GGUF:  15s prefill
+///   BF16:  0.3s prefill
+///
+/// Only activates when:
+///   - `bf16/` dir exists next to the GGUF (created by `dequantize-gguf`)
+///   - Available system RAM ≥ 24GB (safe threshold for ~20GB F16 14B model)
+///
+/// Returns `None` if either condition isn't met or loading fails — caller falls back to GGUF.
+fn try_load_bf16_safetensors(
+    gguf_path: &Path,
+    model_id: &str,
+) -> Option<Box<dyn ModelBackend>> {
+    let bf16_dir = gguf_path.parent()?.join("bf16");
+    if !bf16_dir.exists() {
+        return None;
+    }
 
-            log.info(&format!(
-                "  Qwen2: {}L, {}Qh, {}KVh, hd={}, ctx={}",
-                qwen2_config.num_hidden_layers,
-                qwen2_config.num_attention_heads,
-                qwen2_config.num_key_value_heads,
-                qwen2_config.head_dim,
-                qwen2_config.max_position_embeddings,
-            ));
+    let log = runtime::logger("candle");
 
-            let eos_token_ids = raw_config
-                .get("eos_token_id")
-                .and_then(|v| v.as_u64())
-                .map(|id| vec![id as u32])
-                .unwrap_or_else(|| vec![151645, 151643]);
+    // Require ≥24GB available RAM (F16 14B model needs ~20GB; leave headroom for KV cache)
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let available_gb = sys.available_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
 
-            let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
-            let model = Qwen2::load(vb, &qwen2_config)
-                .map_err(|e| format!("Qwen2 load failed: {e}"))?;
+    if available_gb < 24.0 {
+        log.info(&format!(
+            "  BF16 dir found but only {:.1}GB RAM available (<24GB) — using GGUF",
+            available_gb
+        ));
+        return None;
+    }
 
-            let duration = start.elapsed();
-            log.info(&format!("Qwen2 loaded from dir in {:?}", duration));
+    log.info(&format!(
+        "  BF16 safetensors found ({:.1}GB RAM) — loading batch-prefill backend",
+        available_gb
+    ));
 
-            Ok(Box::new(Qwen2SafetensorsBackend::new(
-                model,
-                tokenizer,
-                device,
-                dtype,
-                model_id.to_string(),
-                eos_token_ids,
-                weight_paths,
-            )))
-        }
-        _ => {
-            // Llama-family
-            let llama_config: LlamaConfig = serde_json::from_str(&config_str)?;
-            let config = llama_config.into_config(false);
-            let eos_token_ids =
-                LlamaSafetensorsBackend::parse_eos_tokens(&config.eos_token_id);
-
-            let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
-            let model = Llama::load(vb, &config)?;
-            let cache = Cache::new(true, dtype, &config, &device)?;
-
-            let duration = start.elapsed();
-            log.info(&format!("Llama loaded from dir in {:?}", duration));
-
-            Ok(Box::new(LlamaSafetensorsBackend::new(
-                model,
-                cache,
-                tokenizer,
-                device,
-                dtype,
-                config,
-                model_id.to_string(),
-                eos_token_ids,
-                weight_paths,
-            )))
+    match load_model_from_dir(&bf16_dir, model_id) {
+        Ok(backend) => Some(backend),
+        Err(e) => {
+            log.warn(&format!("  BF16 load failed (falling back to GGUF): {e}"));
+            None
         }
     }
 }

@@ -222,9 +222,19 @@ pub fn generate(
         );
     }
 
-    // Setup sampler
+    // Setup sampler.
+    //
+    // IMPORTANT: Never route to Sampling::ArgMax. The ArgMax path in Candle's sample_f()
+    // skips the callback f(), which means suppress_ids and repetition_penalty are NOT applied.
+    // Always use Sampling::All by keeping temperature above Candle's 1e-7 ArgMax threshold.
+    //
+    // temperature=0.0 ("greedy") → clamp to 0.1 → stays in All path → f() IS called.
+    // At 0.1, non-top tokens have small but non-zero probability, so repetition_penalty
+    // can actually penalize repeated tokens and break loops. Pure 1e-6 zeroes out all
+    // non-top probabilities via softmax, making repetition_penalty ineffective.
     let seed = rand::thread_rng().gen::<u64>();
-    let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
+    let effective_temperature = temperature.max(0.1);
+    let mut logits_processor = LogitsProcessor::new(seed, Some(effective_temperature), None);
 
     // Debug: log token-level diagnostics if CANDLE_DEBUG_TOKENS is set
     let debug_tokens = std::env::var("CANDLE_DEBUG_TOKENS").is_ok();
@@ -330,9 +340,11 @@ pub fn generate(
         };
 
         // Sample with repetition penalty.
-        // Quantized models (especially Q3/Q5_K_S) enter repetition loops
-        // because some logits are inflated. 1.15 stronger than llama.cpp default (1.1).
-        let repeat_penalty = 1.15f32;
+        // Quantized models (especially Q3/Q5_K_S) enter repetition loops because some
+        // logits are inflated. With temperature >= 0.1 (our minimum), non-top tokens have
+        // small but non-zero probability so the penalty can actually transfer mass away from
+        // the repeated token. 1.3 is aggressive — needed to break compacted-model loops.
+        let repeat_penalty = 1.3f32;
 
         let next_token = match logits_processor.sample_f(&logits, |prs| {
             // Suppress architecture-specific control tokens
