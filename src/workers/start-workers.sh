@@ -166,11 +166,16 @@ while read -r worker; do
   echo -e "   ${description}"
   echo -e "   Memory limit: ${mem_limit:-$DEFAULT_MEM_LIMIT} (${MEM_LIMIT_KB} KB)"
 
+  # ulimit -v: only enforce on macOS. Linux enforces strictly and CUDA/WebRTC
+  # need far more virtual memory than the configured limit allows.
+  ULIMIT_CMD=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    ULIMIT_CMD="ulimit -v $MEM_LIMIT_KB 2>/dev/null || true;"
+  fi
+
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
-    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
-    # Each TCP worker gets its own log file for better segregation
-    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+    (eval "$ULIMIT_CMD" exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -189,16 +194,15 @@ while read -r worker; do
     done
   else
     # Unix socket worker - each gets its own log file for better segregation
-    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+      (eval "$ULIMIT_CMD" exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+      (eval "$ULIMIT_CMD" exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     fi
 
     WORKER_PID=$!
