@@ -98,7 +98,7 @@ echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-
 # Non-GPU crates (archive, jtag-mcp) build normally.
 GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or ""
 BUILD_OUTPUT=""
-for pkg in archive jtag-mcp; do
+for pkg in archive-worker jtag-mcp; do
   OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 done
 for pkg in continuum-core inference-grpc; do
