@@ -94,7 +94,21 @@ MODELS_PID=$!
 cd workers
 source "$SCRIPT_DIR/shared/cargo-features.sh"
 echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-[cpu-only]}"
-BUILD_OUTPUT=$(cargo build --release $CARGO_GPU_FEATURES --quiet 2>&1) && RESULT=0 || RESULT=$?
+# Build GPU-aware crates individually (workspace --features only applies to focused package).
+# Non-GPU crates (archive, jtag-mcp) build normally.
+GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or ""
+BUILD_OUTPUT=""
+for pkg in archive jtag-mcp; do
+  OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+done
+for pkg in continuum-core inference-grpc; do
+  if [ -n "$GPU_FEAT" ]; then
+    OUT=$(cargo build --release -p $pkg --features "$GPU_FEAT" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  else
+    OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  fi
+done
+RESULT=${RESULT:-0}
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
 if [ $RESULT -eq 0 ]; then
