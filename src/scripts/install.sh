@@ -12,6 +12,14 @@
 
 set -e
 
+# Don't run as root — the script uses sudo only where needed (apt install).
+# Running as root puts config/venv under /root instead of $HOME.
+if [ "$(id -u)" -eq 0 ] && [ -n "$SUDO_USER" ]; then
+  echo "Don't run with sudo. The script elevates for apt only."
+  echo "Usage: bash scripts/install.sh"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
@@ -146,9 +154,14 @@ install_node() {
       brew install node
       ;;
     linux|wsl)
-      echo -e "  Installing Node.js 22.x..."
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-      sudo apt-get install -y nodejs
+      echo -e "  Installing Node.js 22 via nvm..."
+      if [ ! -d "$HOME/.nvm" ]; then
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+      fi
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      nvm install 22
+      nvm use 22
       ;;
   esac
   echo -e "  ${GREEN}✅ Node.js $(node --version) installed${NC}"
