@@ -20,6 +20,50 @@ use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::Module;
 
+// Toggle: use original Candle RmsNorm for A/B testing
+const USE_ORIGINAL_RMSNORM: bool = true;
+
+/// Softmax with f64 sum accumulation (matching llama.cpp's ggml_float).
+///
+/// Candle's softmax_last_dim accumulates exp() sum in f32. llama.cpp uses f64.
+/// With 187 tokens × 48 layers × 25 heads = 1200 softmax calls during prefill,
+/// the f32 error compounds and shifts attention patterns enough to cause divergence.
+fn softmax_f64(xs: &Tensor) -> Result<Tensor> {
+    let device = xs.device();
+    let dims = xs.dims();
+    let last_dim = *dims.last().unwrap();
+
+    let xs_f32 = xs.to_dtype(DType::F32)?;
+    let flat = xs_f32.flatten_all()?;
+    let data: Vec<f32> = flat.to_vec1()?;
+
+    let mut result = vec![0f32; data.len()];
+    for chunk in 0..(data.len() / last_dim) {
+        let start = chunk * last_dim;
+        let end = start + last_dim;
+        let row = &data[start..end];
+
+        // Max for numerical stability
+        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        // Accumulate exp() sum in f64 (matching llama.cpp)
+        let mut sum: f64 = 0.0;
+        for i in 0..last_dim {
+            let e = ((row[i] - max) as f64).exp();
+            result[start + i] = e as f32;
+            sum += e;
+        }
+
+        // Normalize
+        let inv_sum = (1.0 / sum) as f32;
+        for i in 0..last_dim {
+            result[start + i] *= inv_sum;
+        }
+    }
+
+    Tensor::from_vec(result, dims, device)
+}
+
 /// RmsNorm with f64 sum-of-squares accumulation (matching llama.cpp).
 ///
 /// Candle's built-in RmsNorm uses f32 accumulation, which loses precision
@@ -40,29 +84,24 @@ impl RmsNorm {
 
 impl Module for RmsNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // f64 accumulation for sum-of-squares, matching llama.cpp's ggml_float (double).
-        // Metal doesn't support f64, so we compute the norm scalar on CPU.
-        let device = x.device();
-        let x_f32 = x.to_dtype(DType::F32)?;
-        let dims = x_f32.dims();
-        let dim = *dims.last().unwrap();
-
-        // Compute sum-of-squares on CPU in f64 (matching llama.cpp)
-        let x_sq = (&x_f32 * &x_f32)?;
-        let sum_sq = x_sq.sum_keepdim(candle_core::D::Minus1)?
-            .to_device(&Device::Cpu)?;
-        let sum_vec: Vec<f32> = sum_sq.flatten_all()?.to_vec1()?;
-        let rms_vec: Vec<f32> = sum_vec.iter()
-            .map(|&s| {
-                let s64 = s as f64;
-                ((s64 / dim as f64) + self.eps).sqrt() as f32
-            })
-            .collect();
-        let rms_shape = sum_sq.dims().to_vec();
-        let rms = Tensor::from_vec(rms_vec, rms_shape, device)?;
-
-        let normalized = x_f32.broadcast_div(&rms)?;
-        normalized.broadcast_mul(&self.weight)
+        if USE_ORIGINAL_RMSNORM {
+            // Use original Candle RmsNorm for A/B testing
+            candle_nn::ops::rms_norm(x, &self.weight, self.eps as f32)
+        } else {
+            // f64 accumulation matching llama.cpp
+            let device = x.device();
+            let x_f32 = x.to_dtype(DType::F32)?;
+            let dim = *x_f32.dims().last().unwrap();
+            let x_sq = (&x_f32 * &x_f32)?;
+            let sum_sq = x_sq.sum_keepdim(candle_core::D::Minus1)?
+                .to_device(&Device::Cpu)?;
+            let sum_vec: Vec<f32> = sum_sq.flatten_all()?.to_vec1()?;
+            let rms_vec: Vec<f32> = sum_vec.iter()
+                .map(|&s| ((s as f64 / dim as f64 + self.eps).sqrt()) as f32)
+                .collect();
+            let rms = Tensor::from_vec(rms_vec, sum_sq.dims().to_vec(), device)?;
+            x_f32.broadcast_div(&rms)?.broadcast_mul(&self.weight)
+        }
     }
 }
 
@@ -659,6 +698,19 @@ impl ModelWeights {
                 .map(|qt| qt.dequantize(device))
                 .transpose()?;
 
+            // Log shapes for first layer to verify compacted model dimensions
+            if layer_idx == 0 {
+                let log = crate::runtime::logger("candle");
+                log.info(&format!("Layer 0 weight shapes: Q={:?} K={:?} V={:?} O={:?}",
+                    attention_wq.shape(), attention_wk.shape(), attention_wv.shape(), attention_wo.shape()));
+                if let Some(ref bq) = attention_bq {
+                    log.info(&format!("Layer 0 bias shapes: Q={:?} K={:?} V={:?}",
+                        bq.dims(), attention_bk.as_ref().map(|t| t.dims()), attention_bv.as_ref().map(|t| t.dims())));
+                }
+                log.info(&format!("Layer 0 config: n_head={}, n_kv_head={}, head_dim={}, rope_dim={}",
+                    head_count, head_count_kv, head_dim, rope_dim));
+            }
+
             let mlp_or_moe = if n_expert <= 1 {
                 let feed_forward_w1 =
                     ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
@@ -864,6 +916,16 @@ impl ModelWeights {
         let device = x.device().clone();
         let mut layer_in = self.tok_embeddings.forward(x)?;
 
+        // Dump embedding output for divergence debugging
+        if std::env::var("CANDLE_DUMP_LAYERS").is_ok() {
+            device.synchronize()?;
+            if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let n = flat.len().min(10);
+                let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("EMBED    shape={:?} first10=[{}]", layer_in.dims(), first10.join(", "));
+            }
+        }
+
         // Debug: if CANDLE_MAX_LAYERS=0, return embedding directly (skip all layers)
         if effective_max == 0 {
             return self.output.forward(&self.norm.forward(&layer_in)?.i((.., seq_len - 1, ..))?);
@@ -909,6 +971,19 @@ impl ModelWeights {
             // Too frequent (8) = CPU waits too much. Never = giant stall at end.
             if (layer_idx + 1) % 24 == 0 {
                 device.synchronize()?;
+            }
+
+            // Dump hidden state for divergence debugging
+            if std::env::var("CANDLE_DUMP_LAYERS").is_ok() && (layer_idx < 3 || layer_idx == effective_max - 1) {
+                device.synchronize()?;
+                if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                    let n = flat.len().min(10);
+                    let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    let mean: f64 = flat.iter().map(|&v| v as f64).sum::<f64>() / flat.len() as f64;
+                    let absmax = flat.iter().cloned().fold(0f32, |a, b| a.max(b.abs()));
+                    eprintln!("LAYER[{:>2}] mean={:.6} absmax={:.3} first10=[{}]",
+                        layer_idx, mean, absmax, first10.join(", "));
+                }
             }
         }
         let x = self.norm.forward(&layer_in)?;
