@@ -15,6 +15,12 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$SCRIPT_DIR/shared/preflight.sh"
 
+# Ensure cargo is in PATH (rustup installs to ~/.cargo/bin, not always in non-interactive shells)
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+# Ensure nvm is in PATH (for Linux/WSL installs via nvm)
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
 cd "$PROJECT_DIR"
 
 # All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
@@ -84,10 +90,11 @@ echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 MODELS_PID=$!
 
 # Rust: cargo build (exclusive access to target directory)
-# Suppress ts-rs serde parse warnings (harmless, just noisy)
+# GPU features selected by platform: Metal (macOS), CUDA (Linux+NVIDIA), CPU-only (fallback).
 cd workers
-echo -e "  [Rust] Building workers (cargo incremental)..."
-BUILD_OUTPUT=$(cargo build --release --quiet 2>&1) && RESULT=0 || RESULT=$?
+source "$SCRIPT_DIR/shared/cargo-features.sh"
+echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-[cpu-only]}"
+BUILD_OUTPUT=$(cargo build --release --no-default-features $CARGO_GPU_FEATURES --quiet 2>&1) && RESULT=0 || RESULT=$?
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
 if [ $RESULT -eq 0 ]; then

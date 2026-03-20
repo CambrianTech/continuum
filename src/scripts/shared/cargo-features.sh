@@ -1,0 +1,30 @@
+#!/bin/bash
+# Detect platform GPU and return appropriate cargo feature flags.
+# Source this file to get CARGO_GPU_FEATURES variable.
+#
+# Usage:
+#   source scripts/shared/cargo-features.sh
+#   cargo build --release --no-default-features $CARGO_GPU_FEATURES
+#
+# Results:
+#   macOS:         --features metal
+#   Linux + CUDA:  --features cuda
+#   Linux (no GPU): (empty — CPU only)
+#   AMD ROCm:      (empty for now — future: --features rocm)
+
+CARGO_GPU_FEATURES=""
+
+case "$(uname -s)" in
+  Darwin)
+    CARGO_GPU_FEATURES="--features metal"
+    ;;
+  Linux)
+    # CUDA: check for nvidia-smi in standard and WSL paths
+    if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
+      CARGO_GPU_FEATURES="--features cuda"
+    # ROCm (AMD): future support
+    # elif command -v rocminfo &>/dev/null; then
+    #   CARGO_GPU_FEATURES="--features rocm"
+    fi
+    ;;
+esac

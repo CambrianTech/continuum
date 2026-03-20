@@ -87,7 +87,7 @@ jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r wo
   echo -e "   ${YELLOW}Building ${name}-worker...${NC}"
 
   if [ -d "$build_dir" ]; then
-    (cd "$build_dir" && cargo build --release 2>&1 | tail -3)
+    (cd "$build_dir" && source "$SCRIPT_DIR/shared/cargo-features.sh" && cargo build --release --no-default-features $CARGO_GPU_FEATURES 2>&1 | tail -3)
 
     # Verify binary was created
     if [ -f "$binary" ]; then
