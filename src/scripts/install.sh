@@ -118,10 +118,12 @@ install_system_deps() {
         local pyver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.12")
         needed+=("python${pyver}-venv")
       fi
-      # OpenSSL dev (needed by Rust crates)
-      if ! pkg-config --exists openssl 2>/dev/null; then
-        needed+=("libssl-dev")
-      fi
+      # Dev libraries needed by Rust crates
+      pkg-config --exists openssl 2>/dev/null || needed+=("libssl-dev")
+      pkg-config --exists glib-2.0 2>/dev/null || needed+=("libglib2.0-dev")
+      pkg-config --exists alsa 2>/dev/null || needed+=("libasound2-dev")
+      # cmake needed by some native build scripts (whisper-rs, livekit)
+      command -v cmake &>/dev/null || needed+=("cmake")
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
