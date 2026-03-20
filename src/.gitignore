@@ -1,5 +1,6 @@
 # Voice/ML Models (downloaded automatically, too large for git)
-models/
+# Use /models/ (root-relative) to avoid catching Rust source dirs like continuum-core/src/models/
+/models/
 
 # Python Training Environment
 .continuum/genome/python/envs/
