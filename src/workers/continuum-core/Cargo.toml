@@ -145,7 +145,7 @@ deadpool-postgres.workspace = true                        # Postgres connection 
 tokio-postgres.workspace = true                           # Postgres async driver
 
 [features]
-default = ["metal", "accelerate"]
+default = []
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]

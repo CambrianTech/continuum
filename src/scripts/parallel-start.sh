@@ -94,7 +94,7 @@ MODELS_PID=$!
 cd workers
 source "$SCRIPT_DIR/shared/cargo-features.sh"
 echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-[cpu-only]}"
-BUILD_OUTPUT=$(cargo build --release --no-default-features $CARGO_GPU_FEATURES --quiet 2>&1) && RESULT=0 || RESULT=$?
+BUILD_OUTPUT=$(cargo build --release $CARGO_GPU_FEATURES --quiet 2>&1) && RESULT=0 || RESULT=$?
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
 if [ $RESULT -eq 0 ]; then
