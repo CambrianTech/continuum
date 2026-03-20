@@ -13,5 +13,5 @@ pub mod gpu_bridge;
 /// On other platforms, always returns false — falls back to CPU readback path.
 #[cfg(not(target_os = "macos"))]
 pub mod gpu_bridge {
-    pub fn has_bridge(_slot_id: u32) -> bool { false }
+    pub fn has_bridge<T>(_slot_id: T) -> bool { false }
 }
