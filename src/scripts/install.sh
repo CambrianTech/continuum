@@ -122,8 +122,10 @@ install_system_deps() {
       pkg-config --exists openssl 2>/dev/null || needed+=("libssl-dev")
       pkg-config --exists glib-2.0 2>/dev/null || needed+=("libglib2.0-dev")
       pkg-config --exists alsa 2>/dev/null || needed+=("libasound2-dev")
-      # cmake needed by some native build scripts (whisper-rs, livekit)
+      # cmake needed by native build scripts (whisper-rs, livekit)
       command -v cmake &>/dev/null || needed+=("cmake")
+      # libclang needed by bindgen (whisper-rs-sys, livekit FFI)
+      [ -f /usr/lib/llvm-*/lib/libclang.so ] || needed+=("libclang-dev")
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
