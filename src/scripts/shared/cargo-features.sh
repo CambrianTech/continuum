@@ -16,7 +16,7 @@ CARGO_GPU_FEATURES=""
 
 case "$(uname -s)" in
   Darwin)
-    CARGO_GPU_FEATURES="--features metal"
+    CARGO_GPU_FEATURES="--features metal,accelerate"
     ;;
   Linux)
     # CUDA: check for nvidia-smi in standard and WSL paths

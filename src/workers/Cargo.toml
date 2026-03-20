@@ -15,9 +15,9 @@ members = [
 [workspace.dependencies]
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
-candle-core = { version = "0.9", features = ["accelerate"] }
-candle-nn = { version = "0.9", features = ["accelerate"] }
-candle-transformers = { version = "0.9", features = ["accelerate"] }
+candle-core = { version = "0.9" }
+candle-nn = { version = "0.9" }
+candle-transformers = { version = "0.9" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
