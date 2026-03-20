@@ -7,7 +7,7 @@ jspm_packages/
 
 # Build outputs
 dist/
-build/
+/build/
 *.tsbuildinfo
 *.tgz
 continuum-jtag-*.tgz
