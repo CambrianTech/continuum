@@ -6,9 +6,4 @@ fn main() {
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-arg=-ObjC");
 
-    // Linux: webrtc-sys (LiveKit) and ort-sys (ONNX Runtime) both statically link
-    // their own copy of protobuf, causing duplicate symbol errors at link time.
-    // Allow multiple definitions so the linker picks one.
-    #[cfg(target_os = "linux")]
-    println!("cargo:rustc-link-arg=-Wl,--allow-multiple-definition");
 }
