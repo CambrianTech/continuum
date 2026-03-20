@@ -17,6 +17,8 @@ source "$SCRIPT_DIR/shared/preflight.sh"
 
 # Ensure cargo is in PATH (rustup installs to ~/.cargo/bin, not always in non-interactive shells)
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+# Raise open file limit (default 1024 on Linux/WSL is too low for rayon + tokio thread pools)
+ulimit -n 65536 2>/dev/null || true
 # Ensure nvm is in PATH (for Linux/WSL installs via nvm)
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
