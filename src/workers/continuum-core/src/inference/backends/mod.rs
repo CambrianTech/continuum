@@ -454,6 +454,7 @@ pub fn generate(
     // release_unused_buffers() removes those from the pool, freeing the MTLBuffers.
     // Without this, the pool grows indefinitely across sequential inferences.
     // See: https://github.com/huggingface/candle/issues/2271
+    #[cfg(target_os = "macos")]
     if backend.device().is_metal() {
         if let Ok(metal) = backend.device().as_metal_device() {
             metal.release_unused_buffers()

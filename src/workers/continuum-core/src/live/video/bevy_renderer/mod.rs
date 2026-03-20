@@ -52,7 +52,24 @@ pub use types::{
     AvatarCommand, BevyMemoryStats, Emotion, Gesture, SpeechAnimationClip,
 };
 // Re-export for metal_gpu_convert (crate-internal)
+#[cfg(target_os = "macos")]
 pub(crate) use scene::SlotRegistry;
+#[cfg(not(target_os = "macos"))]
+pub(crate) use scene::SlotRegistry;
+
+/// Platform-conditional GPU convert plugin (Metal IOSurface on macOS, no-op elsewhere).
+#[cfg(target_os = "macos")]
+fn gpu_convert_plugin() -> impl bevy::app::Plugin {
+    super::metal_gpu_convert::GpuConvertPlugin
+}
+#[cfg(not(target_os = "macos"))]
+fn gpu_convert_plugin() -> impl bevy::app::Plugin {
+    struct NoopPlugin;
+    impl bevy::app::Plugin for NoopPlugin {
+        fn build(&self, _app: &mut bevy::app::App) {}
+    }
+    NoopPlugin
+}
 pub(crate) use types::{FrameNotifiers, SlotDimensions};
 
 use scene::{
@@ -419,7 +436,7 @@ fn run_bevy_app(
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / AVATAR_FPS,
         )))
-        .add_plugins(super::metal_gpu_convert::GpuConvertPlugin)
+        .add_plugins(gpu_convert_plugin())
         .register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(

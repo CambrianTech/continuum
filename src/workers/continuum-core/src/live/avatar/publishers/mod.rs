@@ -8,3 +8,10 @@ pub mod native_buffer;
 
 #[cfg(target_os = "macos")]
 pub mod gpu_bridge;
+
+/// Cross-platform stub: GPU bridge is macOS-only (Metal IOSurface).
+/// On other platforms, always returns false — falls back to CPU readback path.
+#[cfg(not(target_os = "macos"))]
+pub mod gpu_bridge {
+    pub fn has_bridge(_slot_id: u32) -> bool { false }
+}
