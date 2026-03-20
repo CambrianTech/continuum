@@ -272,15 +272,20 @@ pub fn generate(
     // Tokens to suppress during generation (architecture-specific control tokens).
     let suppress_ids: Vec<usize> = backend.suppress_token_ids().iter().map(|&t| t as usize).collect();
 
-    // Sample first token from prefill logits with special token suppression
-    let first_token = logits_processor
-        .sample_f(&prefill_logits, |prs| {
-            for &tid in &suppress_ids {
-                if tid < prs.len() {
-                    prs[tid] = 0.0;
-                }
+    // Sample first token from prefill logits with suppression on logits (not probs)
+    let prefill_logits = {
+        let mut lv: Vec<f32> = prefill_logits.to_vec1()
+            .map_err(|e| format!("Prefill logits to vec: {e}"))?;
+        for &tid in &suppress_ids {
+            if tid < lv.len() {
+                lv[tid] = f32::NEG_INFINITY;
             }
-        })
+        }
+        Tensor::from_vec(lv, prefill_logits.dims(), backend.device())
+            .map_err(|e| format!("Prefill logits from vec: {e}"))?
+    };
+    let first_token = logits_processor
+        .sample(&prefill_logits)
         .map_err(|e| format!("First token sampling failed: {e}"))?;
 
     if backend.eos_token_ids().contains(&first_token) {
@@ -346,28 +351,37 @@ pub fn generate(
             logits
         };
 
-        // Sample with repetition penalty.
-        // Quantized models (especially Q3/Q5_K_S) enter repetition loops because some
-        // logits are inflated. With temperature >= 0.1 (our minimum), non-top tokens have
-        // small but non-zero probability so the penalty can actually transfer mass away from
-        // the repeated token. 1.3 is aggressive — needed to break compacted-model loops.
+        // Apply repetition penalty on LOGITS (before softmax), matching llama.cpp.
+        // This is far more effective than penalizing probabilities (after softmax).
+        // On logits: 20.0/1.3 = 15.4 → drops below competitors, softmax redistributes.
+        // On probs:  0.95/1.3 = 0.73 → still dominant after renormalization.
         let repeat_penalty = 1.3f32;
-
-        let next_token = match logits_processor.sample_f(&logits, |prs| {
-            // Suppress architecture-specific control tokens
+        let logits = {
+            let mut logits_vec: Vec<f32> = logits.to_vec1()
+                .map_err(|e| format!("Logits to vec: {e}"))?;
+            // Suppress control tokens (set to -inf so softmax gives 0)
             for &tid in &suppress_ids {
-                if tid < prs.len() {
-                    prs[tid] = 0.0;
+                if tid < logits_vec.len() {
+                    logits_vec[tid] = f32::NEG_INFINITY;
                 }
             }
-            // Repetition penalty on probabilities: reduce probability of seen tokens.
+            // Repetition penalty on logits (llama.cpp style):
+            // positive logits are divided, negative logits are multiplied
             for &token_id in all_tokens[prompt_len..].iter() {
                 let idx = token_id as usize;
-                if idx < prs.len() {
-                    prs[idx] /= repeat_penalty;
+                if idx < logits_vec.len() {
+                    if logits_vec[idx] > 0.0 {
+                        logits_vec[idx] /= repeat_penalty;
+                    } else {
+                        logits_vec[idx] *= repeat_penalty;
+                    }
                 }
             }
-        }) {
+            Tensor::from_vec(logits_vec, logits.dims(), backend.device())
+                .map_err(|e| format!("Logits from vec: {e}"))?
+        };
+
+        let next_token = match logits_processor.sample(&logits) {
             Ok(token) => {
                 nan_count = 0;
                 token
