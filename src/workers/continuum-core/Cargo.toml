@@ -125,12 +125,6 @@ wgpu-hal = "27"
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 
-# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
-# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.32"
-objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
-
 # Dataset module — CSV parsing for training data import
 csv = "1"
 
@@ -143,6 +137,12 @@ regex = "1"                      # Regex search for code search
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
+
+# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
+# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
 
 [features]
 default = []
