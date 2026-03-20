@@ -128,6 +128,8 @@ install_system_deps() {
       [ -f /usr/lib/llvm-*/lib/libclang.so ] || needed+=("libclang-dev")
       # protobuf compiler needed by tonic-prost (gRPC code gen)
       command -v protoc &>/dev/null || needed+=("protobuf-compiler")
+      # libva needed by webrtc-sys (LiveKit video)
+      pkg-config --exists libva 2>/dev/null || needed+=("libva-dev")
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
