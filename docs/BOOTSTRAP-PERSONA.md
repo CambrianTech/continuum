@@ -9,7 +9,7 @@
 The Bootstrap Persona is a special AI that:
 1. **Awakens on first install** (no configuration required)
 2. **Detects hardware capabilities** (M1 MacBook Air baseline)
-3. **Tests available adapters** (PEFT, Ollama, cloud APIs)
+3. **Tests available adapters** (PEFT, Candle, cloud APIs)
 4. **Learns user preferences** through conversation
 5. **Suggests optimal upgrades** (MLX for Apple Silicon, DeepSeek for cloud)
 6. **Gracefully handles changes** (API keys added/removed)
@@ -48,7 +48,7 @@ interface HardwareProfile {
 
 ```typescript
 interface AdapterStatus {
-  adapterId: 'peft' | 'ollama' | 'mlx' | 'deepseek' | 'openai';
+  adapterId: 'peft' | 'candle' | 'mlx' | 'deepseek' | 'openai';
   available: boolean;
   reason?: string;          // Why unavailable
   performance: {
@@ -66,7 +66,7 @@ interface AdapterStatus {
 
 **Health Check Process**:
 1. **PEFT**: Check if Python environment bootstrapped
-2. **Ollama**: Check if `ollama list` returns models
+2. **Candle**: Check if Candle inference worker is available
 3. **MLX**: Check if `mlx` importable (Apple Silicon only)
 4. **Cloud APIs**: Check for environment variables
 
@@ -109,7 +109,7 @@ npm start
 
 [Tests adapters]
 ✅ PEFT ready (local training)
-⚠️  Ollama not installed (optional)
+✅ Candle inference ready
 ℹ️  Cloud APIs not configured (optional)
 
 🤖 "You're all set! Try chatting with the AI personas - they'll learn from you automatically."
@@ -134,7 +134,7 @@ User chats with AIs, genome learning happens silently in background.
 🤖 Bootstrap Persona: "I see you're training often! Here are some options:
 
    🚀 FASTER (Free):
-      • Install Ollama → 2x faster inference
+      • Use Candle with GPU acceleration → 2x faster inference
       • Install MLX → 2x faster training (Apple Silicon native)
 
    💨 FASTEST (Paid):
@@ -240,13 +240,12 @@ function recommendAdapters(
       });
     }
 
-    if (!hasAdapter('ollama')) {
+    if (!hasAdapter('candle')) {
       recommendations.push({
-        adapterId: 'ollama',
+        adapterId: 'candle',
         priority: 3,
-        reason: 'Faster inference with Metal acceleration',
-        action: 'suggest-install',
-        installCmd: 'brew install ollama'
+        reason: 'Faster inference with Metal acceleration via Candle',
+        action: 'suggest-install'
       });
     }
   }
@@ -293,7 +292,7 @@ function recommendAdapters(
 **Informative, not pushy**:
 ```
 ✅ "Your training completed in 28s - perfectly normal for M1!"
-💡 "Tip: Ollama could reduce this to 15s (free, local)"
+💡 "Tip: Candle with GPU acceleration could reduce this to 15s (free, local)"
 [Tell me more] [Maybe later]
 ```
 
@@ -353,7 +352,7 @@ User controls:
 - [ ] UI integration
 
 ### Phase 4: Adapter Expansion
-- [ ] Ollama integration (hybrid mode)
+- [ ] Candle GPU acceleration (hybrid mode)
 - [ ] MLX adapter (Apple Silicon native)
 - [ ] Cloud API adapters (DeepSeek, OpenAI)
 
@@ -384,7 +383,7 @@ The Bootstrap Persona is successful when:
 **Community Intelligence**:
 - "1000 M1 users found MLX 2.3x faster than PEFT"
 - "DeepSeek most cost-effective for small training runs (<100 examples)"
-- "Ollama + PEFT hybrid gives best balance on M1"
+- "Candle + PEFT hybrid gives best balance on M1"
 
 **Adaptive Personas**:
 - Bootstrap Persona evolves into "Setup Concierge" after onboarding

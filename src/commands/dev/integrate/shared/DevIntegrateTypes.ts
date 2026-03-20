@@ -19,6 +19,8 @@ export interface DevIntegrateParams extends CommandParams {
   baseBranch?: string;
   /** Project working directory */
   cwd?: string;
+  /** Git repo path — enables workspace isolation via project worktree */
+  repoPath?: string;
   /** Build command (null to skip) */
   buildCommand?: string;
   /** Test command (null to skip) */

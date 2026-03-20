@@ -47,6 +47,64 @@ import {
 } from '../../../../system/user/server/modules/ToolFormatAdapter';
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import { ToolGroupRegistry } from '../../../../system/rag/sources/ToolGroupRegistry';
+import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
+import { Events } from '../../../../system/core/shared/Events';
+
+/**
+ * Compress old tool results in the message history for local inference.
+ *
+ * GGUF prefill is ~100ms/token, so every token in the message history costs
+ * real time. After 3 tool call iterations the history can be 600+ tokens —
+ * we compress older tool results to one-liners, keeping the last exchange full.
+ *
+ * Keeps:
+ *   - messages[0]  system prompt (unchanged)
+ *   - messages[1]  initial user task (unchanged)
+ *   - all assistant messages (model reasoning, unchanged)
+ *   - last user tool-result message (full, so model sees what just happened)
+ *   - all earlier user tool-result messages → compressed to one-liner summaries
+ */
+function compressToolHistory(messages: ChatMessage[]): ChatMessage[] {
+  // Need at least: system + task + assistant + tool-result + assistant + tool-result
+  if (messages.length < 6) return messages;
+
+  const system = messages[0];
+  const task = messages[1];
+  const history = messages.slice(2);
+
+  // Separate user (tool results) and assistant messages, keeping order
+  // We compress all user messages EXCEPT the last one
+  const lastUserIdx = (() => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'user') return i;
+    }
+    return -1;
+  })();
+
+  if (lastUserIdx <= 0) return messages; // Nothing to compress
+
+  const compressed = history.map((msg, idx) => {
+    if (msg.role !== 'user' || idx === lastUserIdx) return msg;
+    if (typeof msg.content !== 'string') return msg;
+
+    // Extract tool_name from XML result block
+    const nameMatch = msg.content.match(/<tool_name>([^<]+)<\/tool_name>/);
+    const toolName = nameMatch ? nameMatch[1].trim() : 'tool';
+
+    // Extract and truncate result content
+    const contentMatch = msg.content.match(/<content>([\s\S]*?)<\/content>/);
+    const rawContent = contentMatch ? contentMatch[1].trim() : msg.content.trim();
+    const summary = rawContent.length > 80 ? `${rawContent.slice(0, 80)}...` : rawContent;
+
+    return {
+      ...msg,
+      content: `<tool_result><tool_name>${toolName}</tool_name><status>done</status><content>${summary}</content></tool_result>`,
+    };
+  });
+
+  return [system, task, ...compressed];
+}
 
 /** Default safety caps by provider tier */
 function getSafetyMax(provider: string): number {
@@ -55,21 +113,60 @@ function getSafetyMax(provider: string): number {
   return 5;
 }
 
+/** Providers that run locally and need the handle+events pattern */
+const LOCAL_INFERENCE_PROVIDERS = new Set(['candle', 'candle-q', 'local', 'llamacpp']);
+
 export class AiAgentServerCommand extends AiAgentCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super(context, subpath, commander);
   }
 
   async execute(params: AiAgentParams): Promise<AiAgentResult> {
+    const provider = params.provider || 'anthropic';
+
+    // Local inference providers are too slow for synchronous request/response.
+    // Return a handle immediately and run in the background, emitting events.
+    if (LOCAL_INFERENCE_PROVIDERS.has(provider)) {
+      const handleId = generateUUID();
+      // Fire and forget — caller subscribes to ai:agent:{handleId}:complete
+      this.runAgentLoop(handleId, params).catch(err => {
+        Events.emit(`ai:agent:${handleId}:error`, { handleId, error: String(err) });
+      });
+      return createAiAgentResult(params, {
+        success: true,
+        handleId,
+        status: 'started',
+        text: '',
+        toolCalls: [],
+        iterations: 0,
+        durationMs: 0,
+      });
+    }
+
+    // Cloud providers: run synchronously (fast enough for request/response)
+    return this.runAgentLoop(null, params);
+  }
+
+  private async runAgentLoop(handleId: string | null, params: AiAgentParams): Promise<AiAgentResult> {
     const start = Date.now();
     const allToolCallRecords: ToolCallRecord[] = [];
 
     try {
       // ── 1. Build messages ────────────────────────────────────────
-      const messages: ChatMessage[] = [];
+      let messages: ChatMessage[] = [];
 
+      // For local inference providers without a system prompt, auto-build one
+      // using LocalContextBuilder (compact tool format matching QAT training).
       if (params.systemPrompt) {
         messages.push({ role: 'system', content: params.systemPrompt });
+      } else if (LOCAL_INFERENCE_PROVIDERS.has(params.provider ?? 'anthropic')) {
+        const { LocalContextBuilder } = await import('@system/sentinel/coding-agents/LocalContextBuilder');
+        const ctxResult = await LocalContextBuilder.sharedInstance().build({
+          cwd: (params as unknown as Record<string, unknown>).cwd as string ?? process.cwd(),
+          taskPrompt: params.prompt ?? '',
+          maxSystemTokens: 350,
+        });
+        messages.push({ role: 'system', content: ctxResult.systemPrompt });
       }
 
       if (params.messages && params.messages.length > 0) {
@@ -84,12 +181,18 @@ export class AiAgentServerCommand extends AiAgentCommand {
       }
 
       // ── 2. Resolve model + provider ──────────────────────────────
-      const provider = params.provider || 'anthropic';
+      const provider = params.provider ?? 'anthropic';
       const model = params.model || (
         provider === 'anthropic' ? 'claude-sonnet-4-5-20250929' :
-        provider === 'candle' ? LOCAL_MODELS.DEFAULT :
+        LOCAL_INFERENCE_PROVIDERS.has(provider) ? LOCAL_MODELS.CODING_AGENT :
         'claude-sonnet-4-5-20250929'
       );
+
+      // Local models cannot handle ToolGroupRegistry injection (1500+ tokens overhead).
+      // Default to no tools when tools is unspecified — caller must opt-in explicitly.
+      const effectiveTools = LOCAL_INFERENCE_PROVIDERS.has(provider) && params.tools === undefined
+        ? []
+        : params.tools;
 
       // ── 3. Resolve tools ─────────────────────────────────────────
       const toolCap = getToolCapability(provider);
@@ -103,12 +206,12 @@ export class AiAgentServerCommand extends AiAgentCommand {
         const allDefs = await getAllToolDefinitionsAsync('public' as ToolAccessLevel);
 
         // Filter to subset if specified
-        if (params.tools !== undefined) {
-          if (params.tools.length === 0) {
+        if (effectiveTools !== undefined) {
+          if (effectiveTools.length === 0) {
             // Explicit empty = no tools
             toolDefinitions = [];
           } else {
-            const toolSet = new Set(params.tools);
+            const toolSet = new Set(effectiveTools);
             toolDefinitions = allDefs
               .filter(t => toolSet.has(t.name))
               .map(t => ({
@@ -133,11 +236,48 @@ export class AiAgentServerCommand extends AiAgentCommand {
           nativeToolSpecs = convertToNativeToolSpecs(toolDefinitions);
         }
 
-        // For XML providers, inject tool docs into system prompt
+        // For XML providers, use ToolGroupRegistry for contextual tool selection.
+        // Instead of dumping ALL tools (overwhelming for local models), select
+        // relevant groups based on the user's prompt, then format with examples.
         if (!useNative && toolDefinitions.length > 0) {
+          const groupRegistry = ToolGroupRegistry.sharedInstance();
+
+          // Extract prompt text for intent-based group selection
+          const promptText = params.prompt
+            || (params.messages?.filter(m => m.role === 'user').pop()?.content as string)
+            || '';
+
+          // Select relevant tool groups based on prompt content
+          const selectedGroups = groupRegistry.selectGroups(promptText, 5);
+
+          // Filter tools to only those in selected groups
+          let contextualTools = groupRegistry.filterToolsByGroups(toolDefinitions, selectedGroups);
+
+          // Build grouped prompt with few-shot examples per group
+          const groupedPrompt = groupRegistry.buildGroupedPrompt(selectedGroups, contextualTools);
+
+          // Also format the actual tool specs for XML tool calling
           const adapter = getPrimaryAdapter();
-          const toolDocs = adapter.formatToolsForPrompt(toolDefinitions);
-          // Prepend to first system message or create one
+          let formattedTools = adapter.formatToolsForPrompt(contextualTools);
+
+          let toolDocs = `\n\n=== YOUR CAPABILITIES ===\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${formattedTools}\n================================`;
+
+          // Context budget check: tool docs should not exceed 25% of context window.
+          // If they do, progressively drop lowest-priority groups until within budget.
+          const contextWindow = getContextWindow(model, provider);
+          const maxToolDocTokens = Math.floor(contextWindow * 0.25);
+          let estimatedTokens = Math.ceil(toolDocs.length / 4);
+
+          while (estimatedTokens > maxToolDocTokens && contextualTools.length > 2) {
+            // Drop 3 tools at a time from the end (lowest priority per group ordering)
+            const dropCount = contextualTools.length > 8 ? 3 : 1;
+            contextualTools = contextualTools.slice(0, contextualTools.length - dropCount);
+            formattedTools = adapter.formatToolsForPrompt(contextualTools);
+            toolDocs = `\n\n=== YOUR CAPABILITIES ===\n${groupedPrompt}\n\n=== TOOL DEFINITIONS ===\n${formattedTools}\n================================`;
+            estimatedTokens = Math.ceil(toolDocs.length / 4);
+          }
+
+          // Inject into system message
           const sysIdx = messages.findIndex(m => m.role === 'system');
           if (sysIdx >= 0) {
             const existing = typeof messages[sysIdx].content === 'string'
@@ -173,10 +313,11 @@ export class AiAgentServerCommand extends AiAgentCommand {
       const executor = new AgentToolExecutor();
 
       // Build execution context for tool calls
-      // callerId: sentinel handle or caller userId, sessionId for session scope,
-      // contextId: generated per-invocation (no persistent room/conversation scope)
+      // callerId: personaId (for workspace lookup) > sentinelHandle > userId
+      // The personaId is the workspace registration key — code tools look up by this UUID.
+      // sentinelHandle stays separate for event routing.
       const callCtx: ToolCallContext = {
-        callerId: params.sentinelHandle ?? params.userId ?? params.sessionId ?? generateUUID(),
+        callerId: params.personaId ?? params.sentinelHandle ?? params.userId ?? params.sessionId ?? generateUUID(),
         sessionId: params.sessionId ?? generateUUID(),
         contextId: generateUUID(),
         context: params.context,
@@ -294,6 +435,13 @@ export class AiAgentServerCommand extends AiAgentCommand {
         }
 
         // ── Regenerate ──────────────────────────────────────────
+        // Compress old tool results for local inference before each regen.
+        // GGUF prefill costs ~100ms/token — stale tool results bloat context.
+        // Keep only the most recent tool result in full; compress the rest.
+        if (LOCAL_INFERENCE_PROVIDERS.has(provider) && iterations > 1) {
+          messages = compressToolHistory(messages);
+        }
+
         // After 3 consecutive iterations, disable tools to force a text summary.
         // Small models loop on tools indefinitely without summarizing.
         const forceText = iterations >= 3 || iterations >= safetyMax - 1;
@@ -327,7 +475,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
       }
 
       // ── 7. Return result ─────────────────────────────────────────
-      return createAiAgentResult(params, {
+      const result = createAiAgentResult(params, {
         success: true,
         text: response.text?.trim() || '',
         toolCalls: allToolCallRecords,
@@ -339,18 +487,30 @@ export class AiAgentServerCommand extends AiAgentCommand {
         model: response.model,
         provider: response.provider,
         durationMs: Date.now() - start,
+        ...(handleId ? { handleId, status: 'complete' as const } : {}),
       });
+
+      if (handleId) {
+        Events.emit(`ai:agent:${handleId}:complete`, result);
+      }
+      return result;
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      return createAiAgentResult(params, {
+      const errResult = createAiAgentResult(params, {
         success: false,
         text: '',
         toolCalls: allToolCallRecords,
         iterations: 0,
         error: errorMsg,
         durationMs: Date.now() - start,
+        ...(handleId ? { handleId, status: 'error' as const } : {}),
       });
+
+      if (handleId) {
+        Events.emit(`ai:agent:${handleId}:error`, { handleId, error: errorMsg });
+      }
+      return errResult;
     }
   }
 }

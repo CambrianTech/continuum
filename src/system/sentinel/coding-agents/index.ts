@@ -18,11 +18,14 @@ export type {
 export { CodingAgentRegistry } from './CodingAgentRegistry';
 export { ClaudeCodeProvider } from './ClaudeCodeProvider';
 export { LocalAgentProvider } from './LocalAgentProvider';
+export { LocalClaudeCodeProvider } from './LocalClaudeCodeProvider';
 
 // Self-register built-in providers
 import { CodingAgentRegistry } from './CodingAgentRegistry';
 import { ClaudeCodeProvider } from './ClaudeCodeProvider';
 import { LocalAgentProvider } from './LocalAgentProvider';
+import { LocalClaudeCodeProvider } from './LocalClaudeCodeProvider';
 
 CodingAgentRegistry.register(new ClaudeCodeProvider());
 CodingAgentRegistry.register(new LocalAgentProvider());
+CodingAgentRegistry.register(new LocalClaudeCodeProvider());

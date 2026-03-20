@@ -141,7 +141,7 @@ try {
     reasoning: gatingResult.reason,
     responseContent: undefined,
     modelUsed: gatingResult.model,
-    modelProvider: 'ollama',  // From this.modelConfig.provider
+    modelProvider: 'candle',  // From this.modelConfig.provider
     tokensUsed: undefined,
     responseTime: Date.now() - startTime,  // PROBLEM: startTime not in scope
 
@@ -191,7 +191,7 @@ try {
     reasoning: gatingResult.reason,
     responseContent: undefined,  // Will be filled after response generation
     modelUsed: gatingResult.model,
-    modelProvider: 'ollama',
+    modelProvider: 'candle',
     tokensUsed: undefined,
     responseTime: Date.now() - startTime,  // PROBLEM: startTime not in scope
 

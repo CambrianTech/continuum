@@ -57,13 +57,13 @@ Updated with latest RTOS, multi-layer genome, convergence, and hippocampus conce
 
 **Added sections:**
 1. **RTOS Architecture (Universal Across All Backends)**
-   - Key insight: RTOS is backend-agnostic (Ollama, OpenAI, Claude all use same pattern)
+   - Key insight: RTOS is backend-agnostic (Candle, OpenAI, Claude all use same pattern)
    - PersonaSubprocess pattern universal
    - `serviceInbox()` works for all backends
    - Memory consolidation works identically
 
 2. **Backend-Specific Genome Implementation**
-   - Ollama: Real LoRA (multi-layer PEFT)
+   - Candle: Real LoRA (multi-layer PEFT)
    - OpenAI/Claude: RAG context packages
    - Same `activateSkill()` interface, different implementation
 

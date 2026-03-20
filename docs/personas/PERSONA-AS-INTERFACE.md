@@ -236,7 +236,7 @@ this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter`);
 // OLD:
 adapter = new SemanticCompressionAdapter({
   modelConfig: {
-    provider: 'ollama',
+    provider: 'candle',
     model: 'llama3.2:3b',
     temperature: 0.3,
     maxTokens: 200

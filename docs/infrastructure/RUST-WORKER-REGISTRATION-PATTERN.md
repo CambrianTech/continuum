@@ -255,7 +255,7 @@ let adapter = registry.get(adapter_name)
   - Uses registry pattern
 
 - ✅ **Fine-tuning adapters**: `system/genome/fine-tuning/server/adapters/`
-  - PEFT, AWS, Fireworks, Ollama adapters
+  - PEFT, AWS, Fireworks, Candle adapters
   - Excellent example of polymorphic registry
 
 ### Broken Example (Fixed):

@@ -123,7 +123,7 @@ class GeneratorGenerator {
 ```
 Low Intelligence                    High Intelligence
 │────────┼────────┼────────┼────────│
-Ollama   Haiku   Sonnet   Opus     Human Expert
+Candle   Haiku   Sonnet   Opus     Human Expert
 
 Traditional System:
 │ blocked │ blocked │ blocked │ can contribute │ can contribute │
@@ -168,7 +168,7 @@ class UserReport {
 
 **Meta-Language (Any Intelligence Level):**
 ```json
-// Even Ollama can write:
+// Even a small local model can write:
 {
   "reportType": "user",
   "fields": ["name", "email", "createdAt"],
@@ -308,7 +308,7 @@ Specs describe modules → Generator produces code → Audit validates
 Smart AI (Opus) → Creates specs, templates, generators
 Mid AI (Sonnet) → Uses specs to build modules, learns patterns
 Fast AI (Haiku) → Fills in business logic within guardrails
-Local AI (Ollama) → Contributes safely with full validation
+Local AI (Candle) → Contributes safely with full validation
 ```
 
 **Result:** System that builds itself with contributions from all intelligence levels.

@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-web-research",
+  "version": "1.0.0",
+  "description": "Search the web and extract relevant information for sentinel pipelines"
+}

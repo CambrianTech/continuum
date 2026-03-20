@@ -111,6 +111,14 @@ export interface InboxTask extends BaseQueueItem {
     sentinelStatus?: string;         // completed | failed | cancelled
     error?: string;                  // Error message for failed sentinels
     definition?: unknown;            // Inline pipeline definition for launch-sentinel tasks
+    stepResults?: unknown[];         // Step results from pipeline execution
+    retryCount?: number;             // How many times this sentinel has been retried
+    adjustedPrompt?: string;         // Modified prompt from evaluation loop
+    previousError?: string;          // Error from previous attempt
+    researchFindings?: string;       // Web research results injected for retry
+    approvalPrompt?: string;         // Prompt shown for approval decision
+    budgetConsumed?: unknown;        // Budget consumed so far
+    budgetLimits?: unknown;          // Budget limits for the pipeline
   };
 }
 

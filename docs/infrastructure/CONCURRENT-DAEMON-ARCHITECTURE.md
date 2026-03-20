@@ -29,7 +29,7 @@ Move all potentially intensive or blocking daemon operations **off the main thre
 1. Heavy `initialize()` methods block the main thread
 2. I/O-bound operations (SQLite, file reads) starve the event loop
 3. CPU-bound work (entity scanning, JSON parsing) causes jank
-4. External service connections (Ollama, APIs) can timeout others
+4. External service connections (inference, APIs) can timeout others
 
 ## Target Architecture
 

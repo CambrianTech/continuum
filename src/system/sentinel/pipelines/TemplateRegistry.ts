@@ -21,6 +21,8 @@ import { buildDevCodeReviewPipeline, type DevCodeReviewConfig } from './DevCodeR
 import { buildDevIntegratePipeline, type DevIntegrateConfig } from './DevIntegratePipeline';
 import { buildCreativeWriteChapterPipeline, type CreativeWriteChapterConfig } from './CreativeWriteChapterPipeline';
 import { buildResearchInvestigatePipeline, type ResearchInvestigateConfig } from './ResearchInvestigatePipeline';
+import { buildPublishPipeline, type PublishConfig } from './PublishPipeline';
+import { buildSafeDeployPipeline, type SafeDeployConfig } from './SafeDeployPipeline';
 
 // -- Template metadata --------------------------------------------------------
 
@@ -62,7 +64,7 @@ register(
     category: 'dev',
     requiredFields: ['feature', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'roomId', 'branchName', 'baseBranch', 'planProvider', 'codingProvider',
+      'repoPath', 'roomId', 'branchName', 'baseBranch', 'planProvider', 'codingProvider',
       'codingModel', 'maxBudgetUsd', 'maxTurns', 'buildCommand', 'testCommand',
       'planReviewTimeoutSecs', 'qaReviewTimeoutSecs', 'autonomous', 'captureTraining',
     ],
@@ -77,7 +79,7 @@ register(
     category: 'dev',
     requiredFields: ['bug', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'roomId', 'codingProvider', 'codingModel', 'maxBudgetUsd', 'maxTurns',
+      'repoPath', 'roomId', 'codingProvider', 'codingModel', 'maxBudgetUsd', 'maxTurns',
       'buildCommand', 'testCommand', 'diagnosisReviewTimeoutSecs', 'autonomous', 'captureTraining',
     ],
   },
@@ -91,7 +93,7 @@ register(
     category: 'dev',
     requiredFields: ['personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'branch', 'files', 'baseBranch', 'roomId', 'reviewProvider',
+      'repoPath', 'branch', 'files', 'baseBranch', 'roomId', 'reviewProvider',
       'discussionTimeoutSecs', 'autonomous',
     ],
   },
@@ -105,7 +107,7 @@ register(
     category: 'dev',
     requiredFields: ['featureBranch', 'personaId', 'personaName', 'cwd'],
     optionalFields: [
-      'branches', 'baseBranch', 'roomId', 'codingProvider', 'codingModel',
+      'repoPath', 'branches', 'baseBranch', 'roomId', 'codingProvider', 'codingModel',
       'maxBudgetUsd', 'buildCommand', 'testCommand', 'autonomous',
     ],
   },
@@ -138,6 +140,34 @@ register(
     ],
   },
   buildResearchInvestigatePipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'dev/publish',
+    description: 'Push branch → create PR → wait for CI → approve → merge (with human gates)',
+    category: 'dev',
+    requiredFields: ['branch', 'title', 'personaId', 'personaName', 'cwd'],
+    optionalFields: [
+      'baseBranch', 'body', 'remote', 'mergeStrategy', 'ciTimeoutSecs',
+      'ciPollIntervalSecs', 'autoApprovePr', 'autoApproveMerge',
+      'approvalTimeoutSecs', 'roomId', 'deploy', 'deployHealthTimeout',
+    ],
+  },
+  buildPublishPipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'deploy/safe-deploy',
+    description: 'Safe deployment: compile → deploy → health check → auto-revert on failure',
+    category: 'deploy',
+    requiredFields: ['cwd', 'personaId', 'personaName'],
+    optionalFields: [
+      'healthTimeoutSecs', 'healthPollIntervalSecs', 'requireAiHealthy', 'roomId',
+    ],
+  },
+  buildSafeDeployPipeline as BuilderFn,
 );
 
 // -- Public API ---------------------------------------------------------------

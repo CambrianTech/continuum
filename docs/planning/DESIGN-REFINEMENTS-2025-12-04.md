@@ -197,7 +197,7 @@ class AIProviderDaemon {
 ---
 
 #### MEDIUM: Health Check Polling
-**Files**: OllamaAdapter, SentinelAdapter
+**Files**: OllamaAdapter (legacy), SentinelAdapter
 **Violation**:
 ```typescript
 private pollLoop(): void {
@@ -502,7 +502,7 @@ system/user/server/modules/PersonaInbox.ts
 3. `daemons/ai-provider-daemon/shared/BaseAIProviderAdapter.ts` - HIGH
 4. `daemons/ai-provider-daemon/shared/adapters/BaseOpenAICompatibleAdapter.ts` - HIGH
 5. `daemons/ai-provider-daemon/shared/adapters/BaseLocalAdapter.ts` - HIGH
-6. `daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter.ts` - MEDIUM
+6. `daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter.ts` - MEDIUM (legacy)
 7. `daemons/ai-provider-daemon/adapters/sentinel/shared/SentinelAdapter.ts` - MEDIUM
 8. `daemons/ai-provider-daemon/adapters/anthropic/shared/AnthropicAdapter.ts` - HIGH
 9. `daemons/ai-provider-daemon/adapters/deepseek/server/DeepSeekFineTuningAdapter.ts` - HIGH

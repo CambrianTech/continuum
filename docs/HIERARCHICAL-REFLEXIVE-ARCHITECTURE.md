@@ -103,7 +103,7 @@ class AmygdalaAdapter extends LoRAAdapter {
 ### Level 1: Quick Cortex Adapter (300-800ms)
 
 **Purpose**: Fast inference for simple queries
-**Model**: qwen2.5:7b, llama3.2:3b (free Ollama)
+**Model**: qwen2.5:7b, llama3.2:3b (free local Candle inference)
 **Cost**: $0 (local inference)
 
 ```typescript
@@ -194,7 +194,7 @@ class DeepCortexAdapter extends LoRAAdapter {
     if (await this.hasLocalCapability('llama3.1:70b')) {
       return {
         model: 'llama3.1:70b',
-        provider: 'ollama',
+        provider: 'candle',
         cost: 0,
         reasoning: 'Local 70B available - free inference'
       };
@@ -516,7 +516,7 @@ Users see:
 
 **80% of queries never leave your machine:**
 - Amygdala: Pre-cached, no network
-- Quick: Local Ollama, no network
+- Quick: Local Candle, no network
 - Deep (local): Local 70B, no network
 
 Only the most complex 5% go to APIs, and you choose which provider.

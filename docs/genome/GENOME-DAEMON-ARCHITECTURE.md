@@ -99,7 +99,7 @@ From research (S-LoRA paper, NVIDIA NIM, AdapterHub):
   "bio": "Wine expert with action hero energy",
   "genome": {
     "baseModel": "llama3.1:8b",
-    "provider": "ollama",
+    "provider": "candle",
     "adapters": [
       {
         "id": "wine-expertise-v1",
@@ -135,9 +135,9 @@ From research (S-LoRA paper, NVIDIA NIM, AdapterHub):
 
 | Provider | LoRA Support | Status | Notes |
 |----------|-------------|---------|-------|
-| **Ollama** | ✅ Native | Phase 8 | Primary target, load adapters via API |
+| **Candle** | ✅ Native | Phase 8 | Primary target, load adapters in-process |
 | **Fireworks AI** | ✅ Native | Phase 9 | Upload adapters, specify per request |
-| **LM Studio** | ✅ Native | Phase 10 | Similar to Ollama |
+| **LM Studio** | ✅ Native | Phase 10 | Similar to Candle |
 | **OpenAI GPT** | ❌ No LoRA | Fallback | System prompts only, no genome paging |
 | **Anthropic Claude** | ❌ No LoRA | Fallback | System prompts only, no genome paging |
 | **Grok (X.AI)** | ⚠️ Unknown | Future | Monitor for LoRA support |
@@ -149,14 +149,14 @@ From research (S-LoRA paper, NVIDIA NIM, AdapterHub):
 - Test LRU eviction, thrashing detection
 - Prove architecture works
 
-**Phase 8**: Ollama integration (local, free, full LoRA support)
-- Replace MockLoRAAdapter with OllamaLoRAAdapter
-- Load adapters via Ollama API: `/api/chat` with `"adapter"` param
+**Phase 8**: Candle integration (local, free, full LoRA support)
+- Replace MockLoRAAdapter with CandleLoRAAdapter
+- Load adapters via Candle in-process inference
 - Test Vine Diesel with real llama3.1 + wine + action adapters
 
 **Phase 9**: Fireworks AI integration (cloud, paid, full LoRA support)
 - Upload persona adapters to Fireworks
-- Similar API to Ollama (specify adapter per request)
+- Similar API to Candle (specify adapter per request)
 - Fallback when local GPU unavailable
 
 **Phase 10**: Cloud API fallback (no LoRA, system prompts only)
@@ -166,15 +166,13 @@ From research (S-LoRA paper, NVIDIA NIM, AdapterHub):
 
 ### Adapter Loading Per Provider
 
-**Ollama (Local)**:
+**Candle (Local, In-Process)**:
 ```typescript
-const response = await fetch('http://localhost:11434/api/chat', {
-  method: 'POST',
-  body: JSON.stringify({
-    model: 'llama3.1:8b',
-    adapter: '/path/to/wine-expertise-v1.safetensors',  // ← Adapter path
-    messages: [...]
-  })
+// Candle loads adapters directly in the Rust inference worker
+const response = await Commands.execute('ai/generate', {
+  model: 'llama3.1:8b',
+  adapter: '/path/to/wine-expertise-v1.safetensors',  // ← Adapter path
+  messages: [...]
 });
 ```
 
@@ -209,7 +207,7 @@ GenomeDaemon must handle different backends:
 
 ```typescript
 interface AdapterBackend {
-  provider: 'ollama' | 'fireworks' | 'openai' | 'anthropic';
+  provider: 'candle' | 'fireworks' | 'openai' | 'anthropic';
   supportsLoRA: boolean;
 
   // For LoRA-capable backends
@@ -328,7 +326,7 @@ interface AdapterBackend {
 
   "genome": {
     "baseModel": "llama3.1:8b",
-    "provider": "ollama",
+    "provider": "candle",
 
     "layers": [
       {

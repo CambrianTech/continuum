@@ -1225,7 +1225,7 @@ private setupProcessHandlers(personaId: UUID, process: ChildProcess): void {
  * Supports:
  * - OpenAI (GPT-4, GPT-3.5-turbo, o1)
  * - Anthropic (Claude Sonnet, Claude Opus)
- * - Local models (Ollama, LocalAI, vLLM)
+ * - Local models (Candle, LocalAI, vLLM)
  * - Future: Google Gemini, Cohere, etc.
  */
 interface ModelAPIClientConfig {
@@ -1375,10 +1375,10 @@ class ModelAPIClient {
   }
 
   /**
-   * Local model integration (Ollama, LocalAI, vLLM)
+   * Local model integration (Candle, LocalAI, vLLM)
    */
   private async callLocalModel(request: ModelCompletionRequest): Promise<ModelCompletionResponse> {
-    const baseURL = this.config.baseURL || 'http://localhost:11434';  // Ollama default
+    const baseURL = this.config.baseURL || 'http://localhost:11434';  // Local model default
 
     // Use OpenAI-compatible API (most local servers support this)
     const response = await fetch(`${baseURL}/v1/chat/completions`, {

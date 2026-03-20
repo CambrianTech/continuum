@@ -37,7 +37,7 @@ Continuum integrates with multiple AI providers. Add your API keys to enable eac
 | **Groq** | `GROQ_API_KEY` | Ultra-fast inference (LPU) | Pay per token |
 | **Mistral AI** | `MISTRAL_API_KEY` | Mistral models | Pay per token |
 | **HuggingFace** | `HF_TOKEN` | Model hub, inference API | Free tier + paid |
-| **Ollama** | (local) | Local models, free, private | Free (your hardware) |
+| **Candle** | (local) | Local models via Candle (Rust, in-process), free, private | Free (your hardware) |
 
 ### Example Configuration
 
@@ -72,29 +72,20 @@ HF_TOKEN=hf_xxxxx
 │   Fireworks       ✅       ✅           ✅           Very Fast       │
 │   Groq            ✅       ❌           ❌           Ultra Fast      │
 │   DeepSeek        ✅       ✅           ✅           Fast            │
-│   Ollama          ✅       ✅*          ✅           Local           │
+│   Candle          ✅       ✅*          ✅           Local           │
 │                                                                      │
-│   * Ollama fine-tuning requires local GPU and Unsloth               │
+│   * Local fine-tuning requires local GPU and PEFT                   │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Ollama (Local Inference)
+### Candle (Local Inference)
 
-Ollama runs locally — no API key needed, completely private.
+Candle runs locally as an in-process Rust inference engine — no API key needed, completely private.
 
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
+Models are downloaded from HuggingFace automatically on first use.
 
-# Pull a model
-ollama pull llama3.2:3b
-
-# Continuum auto-detects running Ollama
-npm start
-```
-
-Ollama models are used for local PersonaUsers (Helper AI, Teacher AI, etc.).
+Local Candle inference is used for local PersonaUsers (Helper AI, Teacher AI, etc.).
 
 ---
 

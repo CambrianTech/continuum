@@ -201,7 +201,7 @@ export class PersonaResponseGenerator {
     const text = originalMessage.content.text;
     if (!text) return null;
 
-    const decision = this._dispatchDecider.evaluate(
+    const decision = await this._dispatchDecider.evaluate(
       text,
       this.personaId,
       this.personaName,

@@ -42,6 +42,95 @@ pub enum SentinelStatus {
     Cancelled,
 }
 
+/// Pipeline lifecycle status — richer than SentinelStatus for checkpoint persistence
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineStatus.ts"
+)]
+#[serde(rename_all = "lowercase")]
+pub enum PipelineStatus {
+    Running,
+    Paused,
+    WaitingApproval,
+    BudgetExhausted,
+    Completed,
+    Failed,
+    Cancelled,
+    /// Set on startup for pipelines that were Running when process died
+    Interrupted,
+}
+
+/// Budget consumed so far during pipeline execution
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/BudgetConsumed.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetConsumed {
+    #[ts(type = "number")]
+    pub elapsed_secs: u64,
+    pub cost_usd: f64,
+    #[ts(type = "number")]
+    pub tokens_used: u64,
+    pub iterations: u32,
+}
+
+/// Budget limits — any field None means unlimited
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/BudgetLimits.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetLimits {
+    /// e.g. 3600 (1 hour)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | undefined")]
+    pub max_time_secs: Option<u64>,
+    /// e.g. 5.00
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    /// e.g. 1_000_000
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | undefined")]
+    pub max_tokens: Option<u64>,
+    /// Full pipeline loop iterations (NOT agent turns)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+}
+
+/// Durable checkpoint for pipeline resume after restart
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/PipelineCheckpoint.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineCheckpoint {
+    pub sentinel_handle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline_name: Option<String>,
+    /// Resume from this step index (next step to execute)
+    pub step_index: usize,
+    pub step_results: Vec<StepResult>,
+    pub budget_consumed: BudgetConsumed,
+    pub budget_limits: BudgetLimits,
+    /// ISO 8601
+    pub started_at: String,
+    /// ISO 8601
+    pub last_checkpoint_at: String,
+    pub status: PipelineStatus,
+    /// The full pipeline definition — needed to resume
+    pub pipeline: Pipeline,
+    /// Working directory at time of checkpoint
+    pub working_dir: String,
+    /// Escalation metadata for persona routing on resume
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<SentinelEscalation>,
+}
+
 /// Log stream info
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
@@ -212,6 +301,35 @@ pub enum PipelineStep {
         pipeline: Box<Pipeline>,
     },
 
+    /// Pause pipeline and wait for human or persona approval before continuing.
+    /// Pipeline status becomes WaitingApproval; durable across restart via checkpoint.
+    Approve {
+        /// What to show the approver: "Review the architecture plan before proceeding"
+        prompt: String,
+        /// PersonaId UUIDs or "human" for Joel
+        #[serde(default)]
+        approvers: Vec<String>,
+        /// Auto-approve after this many seconds (optional — None means wait forever)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "timeoutSecs")]
+        timeout_secs: Option<u64>,
+    },
+
+    /// Search the web and extract information. Dispatches to TypeScript
+    /// sentinel/web-research command (LightPanda headless browser).
+    #[serde(rename = "webresearch")]
+    WebResearch {
+        /// Search query — interpolated: "{{steps.2.data.stderr}} fix for rust"
+        query: String,
+        /// Max pages to load (default 3)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "maxPages")]
+        max_pages: Option<u32>,
+        /// What to extract from pages: "code examples", "error solutions", etc.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extract: Option<String>,
+    },
+
     /// Execute an external coding agent (Claude Code, Codex, etc.)
     ///
     /// Provider selection via `provider` param. Delegates entirely to TypeScript
@@ -263,6 +381,14 @@ pub enum PipelineStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(rename = "personaId")]
         persona_id: Option<String>,
+        /// Path to git repo — triggers project worktree workspace (proper git isolation)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "repoPath")]
+        repo_path: Option<String>,
+        /// Branch slug: ai/sentinel-{handle}/{slug} (default: "work")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "taskSlug")]
+        task_slug: Option<String>,
     },
 }
 
@@ -352,7 +478,11 @@ pub struct PipelineContext<'a> {
 
 /// Escalation metadata — owned by Rust, pushed to TypeScript on completion.
 /// This is the single source of truth for sentinel → persona routing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/sentinel/SentinelEscalation.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct SentinelEscalation {
     /// Owning persona for inbox delivery
@@ -365,6 +495,7 @@ pub struct SentinelEscalation {
     pub sentinel_name: String,
     /// Escalation rules (JSON pass-through — TS owns the schema)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Record<string, unknown> | undefined")]
     pub escalation_rules: Option<Value>,
 }
 
@@ -396,6 +527,8 @@ pub fn step_type_name(step: &PipelineStep) -> &'static str {
         PipelineStep::Emit { .. } => "emit",
         PipelineStep::Watch { .. } => "watch",
         PipelineStep::Sentinel { .. } => "sentinel",
+        PipelineStep::Approve { .. } => "approve",
+        PipelineStep::WebResearch { .. } => "webresearch",
         PipelineStep::CodingAgent { .. } => "codingagent",
     }
 }

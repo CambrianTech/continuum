@@ -14,6 +14,8 @@ export interface DevBuildFeatureParams extends CommandParams {
   feature: string;
   /** Working directory (default: cwd) */
   cwd?: string;
+  /** Git repo path — enables workspace isolation via project worktree */
+  repoPath?: string;
   /** Skip collaborative checkpoints */
   autonomous?: boolean;
   /** Chat room for updates */

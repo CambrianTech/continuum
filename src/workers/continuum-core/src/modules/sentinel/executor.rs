@@ -13,9 +13,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use super::checkpoint;
 use super::steps;
 use super::types::{
-    step_type_name, ExecutionContext, Pipeline, PipelineContext, PipelineResult, StepResult,
+    step_type_name, BudgetConsumed, BudgetLimits, ExecutionContext, Pipeline, PipelineCheckpoint,
+    PipelineContext, PipelineResult, PipelineStatus, StepResult,
 };
 use crate::runtime::{self, message_bus::MessageBus, ModuleRegistry};
 
@@ -60,6 +62,29 @@ pub async fn execute_pipeline(
         named_outputs: HashMap::new(),
     };
 
+    // Parse budget limits from pipeline inputs (if provided)
+    let budget_limits = BudgetLimits {
+        max_time_secs: pipeline
+            .inputs
+            .get("budgetMaxTimeSecs")
+            .and_then(|v| v.as_u64()),
+        max_cost_usd: pipeline
+            .inputs
+            .get("budgetMaxCostUsd")
+            .and_then(|v| v.as_f64()),
+        max_tokens: pipeline
+            .inputs
+            .get("budgetMaxTokens")
+            .and_then(|v| v.as_u64()),
+        max_iterations: pipeline
+            .inputs
+            .get("budgetMaxIterations")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+    };
+    let mut budget_consumed = BudgetConsumed::default();
+    let started_at = chrono::Utc::now().to_rfc3339();
+
     // Execute steps
     let mut last_output = String::new();
     let mut failed = false;
@@ -75,10 +100,10 @@ pub async fn execute_pipeline(
             step_type
         ));
 
-        // Emit step progress
+        // Emit step progress via IPC push (replaces TS polling)
         if let Some(ref bus) = bus {
             bus.publish_async_only(
-                &format!("sentinel:{handle_id}:progress"),
+                &format!("sentinel:{handle_id}:step"),
                 json!({
                     "handle": handle_id,
                     "step": i,
@@ -110,6 +135,20 @@ pub async fn execute_pipeline(
                     error_msg = result.error.clone();
                 }
 
+                // Emit step-completed push event
+                if let Some(ref bus) = bus {
+                    bus.publish_async_only(
+                        &format!("sentinel:{handle_id}:step-completed"),
+                        json!({
+                            "handle": handle_id,
+                            "stepIndex": i,
+                            "stepType": step_type,
+                            "success": result.success,
+                            "durationMs": result.duration_ms,
+                        }),
+                    );
+                }
+
                 // Write the top-level step result to steps.jsonl.
                 // Sub-step results (from loops, conditions, parallel branches) are
                 // flushed in real-time by those step executors directly via steps_log_path.
@@ -124,6 +163,74 @@ pub async fn execute_pipeline(
                     }
                 }
                 ctx.step_results.push(result);
+
+                // Update budget consumed
+                budget_consumed.elapsed_secs = start_time.elapsed().as_secs();
+
+                // Write durable checkpoint after each step
+                let cp_status = if failed {
+                    PipelineStatus::Failed
+                } else {
+                    PipelineStatus::Running
+                };
+                let cp = PipelineCheckpoint {
+                    sentinel_handle: handle_id.clone(),
+                    pipeline_name: Some(pipeline_name.to_string()),
+                    step_index: i + 1,
+                    step_results: ctx.step_results.clone(),
+                    budget_consumed: budget_consumed.clone(),
+                    budget_limits: budget_limits.clone(),
+                    started_at: started_at.clone(),
+                    last_checkpoint_at: chrono::Utc::now().to_rfc3339(),
+                    status: cp_status,
+                    pipeline: pipeline.clone(),
+                    working_dir: ctx.working_dir.to_string_lossy().to_string(),
+                    escalation: None,
+                };
+                if let Err(e) = checkpoint::save_checkpoint(&handle_id, &cp) {
+                    log.warn(&format!("[{handle_id}] Failed to save checkpoint: {e}"));
+                }
+
+                // Check budget limits
+                if !failed {
+                    if let Some(max_secs) = budget_limits.max_time_secs {
+                        if budget_consumed.elapsed_secs >= max_secs {
+                            log.warn(&format!(
+                                "[{handle_id}] Budget exhausted: time limit {max_secs}s reached"
+                            ));
+                            failed = true;
+                            error_msg =
+                                Some(format!("Budget exhausted: time limit {max_secs}s reached"));
+                            // Update checkpoint to BudgetExhausted
+                            let mut exhausted_cp = cp;
+                            exhausted_cp.status = PipelineStatus::BudgetExhausted;
+                            let _ = checkpoint::save_checkpoint(&handle_id, &exhausted_cp);
+                            if let Some(ref bus) = bus {
+                                bus.publish_async_only(
+                                    &format!("sentinel:{handle_id}:budget-exhausted"),
+                                    json!({
+                                        "handle": handle_id,
+                                        "reason": "time_limit",
+                                        "consumed": budget_consumed,
+                                        "limits": budget_limits,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    if let Some(max_iters) = budget_limits.max_iterations {
+                        if budget_consumed.iterations >= max_iters {
+                            log.warn(&format!(
+                                "[{handle_id}] Budget exhausted: iteration limit {max_iters}"
+                            ));
+                            failed = true;
+                            error_msg = Some(format!(
+                                "Budget exhausted: iteration limit {max_iters}"
+                            ));
+                        }
+                    }
+                }
+
                 if failed {
                     break;
                 }
@@ -143,6 +250,21 @@ pub async fn execute_pipeline(
                     exit_code: None,
                     data: Value::Null,
                 };
+
+                // Emit step-completed push event (even for errors)
+                if let Some(ref bus) = bus {
+                    bus.publish_async_only(
+                        &format!("sentinel:{handle_id}:step-completed"),
+                        json!({
+                            "handle": handle_id,
+                            "stepIndex": i,
+                            "stepType": step_type,
+                            "success": false,
+                            "error": error_result.error,
+                        }),
+                    );
+                }
+
                 if let Ok(json_line) = serde_json::to_string(&error_result) {
                     if let Ok(mut file) = tokio::fs::OpenOptions::new()
                         .create(true)
@@ -161,8 +283,45 @@ pub async fn execute_pipeline(
 
     let total_duration_ms = start_time.elapsed().as_millis() as u64;
 
-    // Emit pipeline completion
+    // Write final checkpoint
+    let final_status = if failed {
+        PipelineStatus::Failed
+    } else {
+        PipelineStatus::Completed
+    };
+    budget_consumed.elapsed_secs = start_time.elapsed().as_secs();
+    let final_cp = PipelineCheckpoint {
+        sentinel_handle: handle_id.clone(),
+        pipeline_name: Some(pipeline_name.to_string()),
+        step_index: ctx.step_results.len(),
+        step_results: ctx.step_results.clone(),
+        budget_consumed,
+        budget_limits,
+        started_at,
+        last_checkpoint_at: chrono::Utc::now().to_rfc3339(),
+        status: final_status,
+        pipeline: pipeline.clone(),
+        working_dir: ctx.working_dir.to_string_lossy().to_string(),
+        escalation: None,
+    };
+    if let Err(e) = checkpoint::save_checkpoint(&handle_id, &final_cp) {
+        log.warn(&format!("[{handle_id}] Failed to save final checkpoint: {e}"));
+    }
+
+    // Emit pipeline completion (push event — replaces TS polling)
     if let Some(ref bus) = bus {
+        bus.publish_async_only(
+            &format!("sentinel:{handle_id}:pipeline-completed"),
+            json!({
+                "handle": handle_id,
+                "name": pipeline_name,
+                "success": !failed,
+                "stepsCompleted": ctx.step_results.len(),
+                "stepsTotal": pipeline.steps.len(),
+                "durationMs": total_duration_ms,
+            }),
+        );
+        // Also emit the generic completion event for backwards compatibility
         bus.publish_async_only(
             "sentinel:pipeline:complete",
             json!({

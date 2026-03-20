@@ -9,20 +9,98 @@
 //!   3. Changed crate-internal imports (`candle::`, `crate::`) to external crate
 //!      imports (`candle_core::`, `candle_transformers::`) since this is vendored
 //!      outside of candle-transformers.
+//!   4. **CRITICAL FIX**: RoPE convention dispatch based on architecture.
+//!      Upstream always uses `rope_i` (interleaved), which is WRONG for NEOX-style
+//!      models (Qwen2, Falcon, Phi, etc.). These need `rope` (non-interleaved).
+//!      Without this fix, attention patterns are systematically corrupted, causing
+//!      +11.7 logit inflation on special tokens vs llama.cpp reference.
+//!      See: https://github.com/huggingface/candle/issues/3410
+//!   5. Architecture-aware model loading: reads Qwen2 attention biases, handles
+//!      compacted (head-pruned) model dimensions, MoE routing.
 //!
-//! When candle-transformers publishes a release that reads context_length from
-//! GGUF metadata for Llama, this vendored copy can be removed.
+//! Diagnostic env vars:
+//!   CANDLE_MAX_LAYERS=N    — Run only N transformer layers (for A/B testing)
+//!   CANDLE_DEBUG_TOKENS=1  — Log top-10 logits after prefill
+//!   CANDLE_DUMP_LAYERS=1   — Dump per-layer hidden states
+//!   CANDLE_DUMP_LAYER0=1   — Dump layer 0 intermediates (attn_norm, attn_out, etc.)
+//!   CANDLE_DUMP_ATTN=1     — Dump attention internals (Q/K/V after bias+RoPE, kqv_out)
+//!   CANDLE_DUMP_HIDDEN=1   — Dump final hidden state and logits to /tmp/*.bin
 
 use std::collections::HashMap;
 
 use candle_core::quantized::QTensor;
 use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
-use candle_nn::{Embedding, Module};
-use candle_transformers::quantized_nn::RmsNorm;
+use candle_nn::Module;
+
+/// RmsNorm wrapper — delegates to candle_nn::ops::rms_norm.
+/// Stores dequantized weight and eps for use with quantized model loading.
+#[derive(Debug, Clone)]
+pub struct RmsNorm {
+    weight: Tensor,
+    eps: f64,
+}
+
+impl RmsNorm {
+    pub fn from_qtensor(qtensor: QTensor, eps: f64) -> Result<Self> {
+        let weight = qtensor.dequantize(&qtensor.device())?;
+        Ok(Self { weight, eps })
+    }
+}
+
+impl Module for RmsNorm {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        candle_nn::ops::rms_norm(x, &self.weight, self.eps as f32)
+    }
+}
 
 /// Default fallback if GGUF metadata doesn't contain context_length.
 const DEFAULT_CONTEXT_LENGTH: usize = 4096;
+
+/// Zero-overhead quantized embedding lookup via one-hot matmul.
+///
+/// Embedding: F16 table on the same device as the model (Metal).
+/// 1.55 GB in Metal shared memory. Forward: Metal index_select → F32 cast.
+/// Everything stays on GPU. No CPU↔Metal copies.
+#[derive(Debug, Clone)]
+struct DeviceEmbedding {
+    /// F16 embedding table: [vocab_size, hidden_size] on model device
+    table: Tensor,
+    hidden_size: usize,
+}
+
+impl DeviceEmbedding {
+    fn from_gguf<R: std::io::Seek + std::io::Read>(
+        ct: &gguf_file::Content,
+        reader: &mut R,
+        tensor_name: &str,
+        hidden_size: usize,
+        device: &Device,
+    ) -> Result<Self> {
+        // Dequantize to F32 on CPU, then move to device.
+        // Must be F32 (not F16) — F16 loses precision on embedding values,
+        // causing wrong logit distributions for special tokens.
+        let qt_cpu = ct.tensor(reader, tensor_name, &Device::Cpu)?;
+        let table = qt_cpu.dequantize(&Device::Cpu)?.to_device(device)?;
+        Ok(Self { table, hidden_size })
+    }
+
+    fn from_qtensor(qtensor: QTensor, hidden_size: usize, device: &Device) -> Result<Self> {
+        let table = qtensor.dequantize(&Device::Cpu)?.to_device(device)?;
+        Ok(Self { table, hidden_size })
+    }
+
+    fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
+        // Table is already F32 — just index_select
+        let embeddings = self.table.index_select(&token_ids.flatten_all()?, 0)?;
+        let orig_dims = token_ids.dims();
+        if orig_dims.len() == 2 {
+            embeddings.reshape((orig_dims[0], orig_dims[1], self.hidden_size))
+        } else {
+            Ok(embeddings)
+        }
+    }
+}
 
 // QMatMul wrapper adding some tracing.
 #[derive(Debug, Clone)]
@@ -187,12 +265,20 @@ struct LayerWeights {
     attention_wk: QMatMul,
     attention_wv: QMatMul,
     attention_wo: QMatMul,
+    /// Optional Q/K/V biases (Qwen2 has bias on Q, K, V; Llama does not).
+    attention_bq: Option<Tensor>,
+    attention_bk: Option<Tensor>,
+    attention_bv: Option<Tensor>,
     attention_norm: RmsNorm,
     mlp_or_moe: MlpOrMoe,
     ffn_norm: RmsNorm,
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
+    /// RoPE type: true = NEOX (non-interleaved, pairs i with i+d/2),
+    /// false = NORM (interleaved, pairs 2i with 2i+1).
+    /// Qwen2 uses NEOX (type 2), standard Llama uses NORM (type 0).
+    rope_is_neox: bool,
     cos: Tensor,
     sin: Tensor,
     neg_inf: Tensor,
@@ -214,7 +300,13 @@ impl LayerWeights {
         let (_b_sz, _n_head, seq_len, _n_embd) = x.dims4()?;
         let cos = self.cos.narrow(0, index_pos, seq_len)?;
         let sin = self.sin.narrow(0, index_pos, seq_len)?;
-        candle_nn::rotary_emb::rope_i(&x.contiguous()?, &cos, &sin)
+        if self.rope_is_neox {
+            // GPT-NeoX style: pairs (i, i+d/2). Used by Qwen2, CodeLlama, etc.
+            candle_nn::rotary_emb::rope(&x.contiguous()?, &cos, &sin)
+        } else {
+            // Interleaved style: pairs (2i, 2i+1). Used by standard Llama.
+            candle_nn::rotary_emb::rope_i(&x.contiguous()?, &cos, &sin)
+        }
     }
 
     fn forward_attn(
@@ -224,10 +316,41 @@ impl LayerWeights {
         index_pos: usize,
     ) -> Result<Tensor> {
         let _enter = self.span_attn.enter();
-        let (b_sz, seq_len, n_embd) = x.dims3()?;
-        let q = self.attention_wq.forward(x)?;
-        let k = self.attention_wk.forward(x)?;
-        let v = self.attention_wv.forward(x)?;
+        let (b_sz, seq_len, _n_embd) = x.dims3()?;
+        let mut q = self.attention_wq.forward(x)?;
+        let mut k = self.attention_wk.forward(x)?;
+        let mut v = self.attention_wv.forward(x)?;
+
+        let dump_attn = std::env::var("CANDLE_DUMP_ATTN").is_ok() && index_pos == 0;
+
+        // Apply attention biases (Qwen2 has bias on Q, K, V; Llama skips this)
+        if let Some(bq) = &self.attention_bq {
+            q = q.broadcast_add(bq)?;
+        }
+        if let Some(bk) = &self.attention_bk {
+            k = k.broadcast_add(bk)?;
+        }
+        if let Some(bv) = &self.attention_bv {
+            v = v.broadcast_add(bv)?;
+        }
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // Q after bias (before reshape/RoPE) — matches llama.cpp "Qcur-0" first dump
+            if let Ok(vals) = q.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
+            if let Ok(vals) = k.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("K+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
+            if let Ok(vals) = v.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("V+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
+        }
 
         let q = q
             .reshape((b_sz, seq_len, self.n_head, self.head_dim))?
@@ -242,6 +365,28 @@ impl LayerWeights {
 
         let q = self.apply_rotary_emb(&q, index_pos)?;
         let k = self.apply_rotary_emb(&k, index_pos)?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            // Q after RoPE: shape [b, n_head, seq, head_dim]
+            // llama.cpp "Qcur-0" after RoPE: shape [128, 25, 187, 1]
+            // Compare last head's last position
+            let last = seq_len - 1;
+            let n_head = self.n_head;
+            if let Ok(vals) = q.i((0, n_head - 1, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q after RoPE (head {}, last tok): first5=[{}]", n_head - 1, first.join(", "));
+            }
+            // Q head 0 last tok
+            if let Ok(vals) = q.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+            if let Ok(vals) = k.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("K after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+        }
 
         let (k, v) = match &self.kv_cache {
             None => (k, v),
@@ -258,7 +403,9 @@ impl LayerWeights {
         self.kv_cache = Some((k.clone(), v.clone()));
 
         let y = if q.device().is_metal() && seq_len == 1 {
-            // Metal SDPA kernel — fast path for single-token generation.
+            // Metal SDPA vectorized kernel — fast path for single-token generation.
+            // is_causal=true with real quantized weights produces corrupted KV cache
+            // (verified: synthetic tensors pass but real 14B weights produce garbage).
             candle_nn::ops::sdpa(
                 &q,
                 &k,
@@ -269,10 +416,7 @@ impl LayerWeights {
                 1.,
             )?
         } else {
-            // Fallback: manual Q*K^T attention with causal mask.
-            // WARNING: This path creates O(seq_len^2) attention matrices that corrupt
-            // on Metal at ~1000+ tokens. Use token-by-token prefill (via QuantizedBackend
-            // trait) to ensure seq_len==1 for all forward calls, keeping us on the fast path.
+            // Manual attention for batch prefill and CPU/CUDA generation.
             let k = candle_transformers::utils::repeat_kv(k, self.n_head / self.n_kv_head)?;
             let v = candle_transformers::utils::repeat_kv(v, self.n_head / self.n_kv_head)?;
 
@@ -288,8 +432,49 @@ impl LayerWeights {
             att.matmul(&v.contiguous()?)?
         };
 
-        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, n_embd])?;
+        // Reshape from [batch, n_head, seq, head_dim] to [batch, seq, n_head * head_dim].
+        // For compacted models n_head * head_dim != n_embd (e.g. 25*128=3200 vs 5120),
+        // so we must NOT use n_embd here. W_o then projects back to hidden_size.
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // Attention output before reshape (shape: [b, n_head, seq, head_dim])
+            // llama.cpp "__fattn__-0" last head
+            if let Ok(vals) = y.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("attn_out (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+        }
+
+        let y = y
+            .transpose(1, 2)?
+            .reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // kqv_out: reshaped attention output before Wo
+            if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("kqv_out (flat, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_l0_kqv_out.bin", &data).ok();
+            }
+        }
+
         let y = self.attention_wo.forward(&y)?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("attn_wo (Wo output, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_l0_attn_wo.bin", &data).ok();
+            }
+        }
+
         Ok(y)
     }
 }
@@ -345,7 +530,7 @@ fn parse_lora_layer_name(name: &str) -> Option<(usize, Projection)> {
 
 #[derive(Debug, Clone)]
 pub struct ModelWeights {
-    tok_embeddings: Embedding,
+    tok_embeddings: DeviceEmbedding,
     layers: Vec<LayerWeights>,
     norm: RmsNorm,
     output: QMatMul,
@@ -382,8 +567,9 @@ impl ModelWeights {
         let context_length = DEFAULT_CONTEXT_LENGTH; // GGML doesn't store context_length
         let (cos, sin) = precomput_freqs_cis(head_dim, 10000., context_length, &ct.device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, &ct.device)?;
-        let tok_embeddings = ct.remove("tok_embeddings.weight")?;
-        let tok_embeddings = tok_embeddings.dequantize(&ct.device)?;
+        let embedding_length = ct.hparams.n_embd as usize;
+        let tok_embeddings_q = ct.remove("tok_embeddings.weight")?;
+        let tok_embeddings = DeviceEmbedding::from_qtensor(tok_embeddings_q, embedding_length, &ct.device)?;
         let norm = RmsNorm::from_qtensor(ct.remove("norm.weight")?, 1e-5)?;
         let output = ct.remove("output.weight")?;
         let mut layers = Vec::with_capacity(ct.hparams.n_layer as usize);
@@ -413,12 +599,16 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq: None, // GGML format doesn't have bias
+                attention_bk: None,
+                attention_bv: None,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, 1e-5)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, 1e-5)?,
                 n_head: ct.hparams.n_head as usize,
                 n_kv_head: ct.hparams.n_head as usize / gqa,
                 head_dim: (ct.hparams.n_embd / ct.hparams.n_head) as usize,
+                rope_is_neox: false, // GGML format = standard Llama = interleaved
                 cos: cos.clone(),
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
@@ -431,7 +621,7 @@ impl ModelWeights {
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, ct.hparams.n_embd as usize),
+            tok_embeddings,
             layers,
             norm,
             output: QMatMul::from_qtensor(output)?,
@@ -447,47 +637,95 @@ impl ModelWeights {
         reader: &mut R,
         device: &Device,
     ) -> Result<Self> {
+        // Determine architecture prefix (llama, qwen2, etc.) from metadata.
+        // GGUF stores metadata keys as "{arch}.{param}", e.g. "qwen2.block_count".
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_else(|| "llama".to_string());
+
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
 
-        // --- FIX: Read context_length from GGUF metadata (like Qwen2 does) ---
-        // Upstream candle-transformers hardcodes MAX_SEQ_LEN = 4096 here.
-        // The GGUF file knows the model's true context length.
-        let context_length = md_get("llama.context_length")
+        // Architecture-aware metadata key lookup
+        let arch_key = |param: &str| format!("{arch}.{param}");
+
+        let context_length = md_get(&arch_key("context_length"))
             .and_then(|v| v.to_u32())
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_CONTEXT_LENGTH);
 
-        let n_expert = md_get("llama.expert_count")
+        let n_expert = md_get(&arch_key("expert_count"))
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let n_expert_used = md_get("llama.expert_used_count")
+        let n_expert_used = md_get(&arch_key("expert_used_count"))
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let head_count = md_get("llama.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("llama.attention.head_count_kv")?.to_u32()? as usize;
-        let block_count = md_get("llama.block_count")?.to_u32()? as usize;
-        let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
-        let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
-        let rms_norm_eps = md_get("llama.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+        let head_count = md_get(&arch_key("attention.head_count"))?.to_u32()? as usize;
+        let head_count_kv = md_get(&arch_key("attention.head_count_kv"))?.to_u32()? as usize;
+        let block_count = md_get(&arch_key("block_count"))?.to_u32()? as usize;
+        let embedding_length = md_get(&arch_key("embedding_length"))?.to_u32()? as usize;
+        // Head dimension: try explicit metadata first, then derive from K weight shape.
+        // NEVER use embedding_length / head_count — it gives wrong answers for compacted
+        // models where head_count was reduced (e.g. 5120/25=204 instead of 128).
+        let head_dim = md_get(&arch_key("attention.key_length"))
+            .and_then(|v| v.to_u32())
+            .or_else(|_| md_get(&arch_key("attention.value_length")).and_then(|v| v.to_u32()))
+            .or_else(|_| md_get(&arch_key("rope.dimension_count")).and_then(|v| v.to_u32()))
+            .map(|v| v as usize)
+            .unwrap_or_else(|_| {
+                // Last resort: derive from K projection weight shape.
+                // K weight is [embedding_length, kv_heads * head_dim], so:
+                // head_dim = K_weight_dim1 / kv_heads
+                // But we don't have the tensor yet. Use embedding_length / ORIGINAL head_count
+                // approximation: for standard models this is correct, for compacted we need metadata.
+                // Qwen2 always uses 128.
+                if arch == "qwen2" { 128 } else { embedding_length / head_count }
+            });
+        let rope_dim = head_dim;
+        let rms_norm_eps =
+            md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
 
-        let rope_freq_base = md_get("llama.rope.freq_base")
+        let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
+
+        // RoPE convention depends on model architecture (matching llama.cpp).
+        // NEOX (non-interleaved): pairs (i, i+d/2) — Qwen, Qwen2, Falcon, Phi, BERT, etc.
+        // NORM (interleaved): pairs (2i, 2i+1) — Llama, Mistral, DeepSeek, etc.
+        let rope_is_neox = matches!(arch.as_str(),
+            "qwen" | "qwen2" | "qwen2moe" | "qwen3" | "qwen3moe" |
+            "falcon" | "phi" | "phi2" | "phi3" | "stablelm" |
+            "bert" | "nomic-bert" | "plamo" | "grok" | "dbrx" |
+            "olmo2" | "olmoe" | "codeshell" | "starcoder2"
+        );
+
+        {
+            let log = crate::runtime::logger("candle");
+            log.info(&format!("RoPE config: arch={}, rope_is_neox={}, rope_dim={}, freq_base={}",
+                arch, rope_is_neox, rope_dim, rope_freq_base));
+        }
+
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, context_length, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
-        let tok_embeddings_q = ct.tensor(reader, "token_embd.weight", device)?;
-        let tok_embeddings = tok_embeddings_q.dequantize(device)?;
+        // Load embedding directly to CPU — bypasses Metal buffer pool entirely.
+        let tok_embeddings = DeviceEmbedding::from_gguf(
+            &ct, reader, "token_embd.weight", embedding_length, device,
+        )?;
         let norm = RmsNorm::from_qtensor(
             ct.tensor(reader, "output_norm.weight", device)?,
             rms_norm_eps,
         )?;
+        // Output head: use dedicated output.weight if present, otherwise re-read
+        // token_embd.weight (tied embeddings).
         let output = match ct.tensor(reader, "output.weight", device) {
             Ok(tensor) => tensor,
-            Err(_) => tok_embeddings_q,
+            Err(_) => ct.tensor(reader, "token_embd.weight", device)?,
         };
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
@@ -497,6 +735,37 @@ impl ModelWeights {
             let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
             let attention_wo =
                 ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+
+            // Optional attention biases (Qwen2 has Q/K/V bias; Llama does not)
+            let attention_bq = ct
+                .tensor(reader, &format!("{prefix}.attn_q.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+            let attention_bk = ct
+                .tensor(reader, &format!("{prefix}.attn_k.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+            let attention_bv = ct
+                .tensor(reader, &format!("{prefix}.attn_v.bias"), device)
+                .ok()
+                .map(|qt| qt.dequantize(device))
+                .transpose()?;
+
+            // Log shapes for first layer to verify compacted model dimensions
+            if layer_idx == 0 {
+                let log = crate::runtime::logger("candle");
+                log.info(&format!("Layer 0 weight shapes: Q={:?} K={:?} V={:?} O={:?}",
+                    attention_wq.shape(), attention_wk.shape(), attention_wv.shape(), attention_wo.shape()));
+                if let Some(ref bq) = attention_bq {
+                    log.info(&format!("Layer 0 bias shapes: Q={:?} K={:?} V={:?}",
+                        bq.dims(), attention_bk.as_ref().map(|t| t.dims()), attention_bv.as_ref().map(|t| t.dims())));
+                }
+                log.info(&format!("Layer 0 config: n_head={}, n_kv_head={}, head_dim={}, rope_dim={}",
+                    head_count, head_count_kv, head_dim, rope_dim));
+            }
+
             let mlp_or_moe = if n_expert <= 1 {
                 let feed_forward_w1 =
                     ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
@@ -543,12 +812,19 @@ impl ModelWeights {
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_bq,
+                attention_bk,
+                attention_bv,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 mlp_or_moe,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
                 n_head: head_count,
                 n_kv_head: head_count_kv,
-                head_dim: embedding_length / head_count,
+                // Use rope_dim as head_dim: for standard models rope_dim == head_dim,
+                // and for compacted models where embedding_length / head_count is non-integer,
+                // rope_dim (from metadata or defaulting to embedding_length/head_count) is correct.
+                head_dim: rope_dim,
+                rope_is_neox,
                 cos: cos.clone(),
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
@@ -561,7 +837,7 @@ impl ModelWeights {
         let span = tracing::span!(tracing::Level::TRACE, "model");
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
-            tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
+            tok_embeddings,
             layers,
             norm,
             output: QMatMul::from_qtensor(output)?,
@@ -656,7 +932,36 @@ impl ModelWeights {
         Ok((merged, failed))
     }
 
+    /// Reset KV cache for all layers without reloading weights.
+    pub fn clear_kv_cache(&mut self) {
+        for layer in &mut self.layers {
+            layer.kv_cache = None;
+        }
+    }
+
+    /// Forward with optional layer limit for memory debugging.
+    /// Pass max_layers=0 for full forward.
+    pub fn forward_limited(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        max_layers: usize,
+    ) -> Result<Tensor> {
+        self.forward_inner(x, index_pos, if max_layers == 0 { self.layers.len() } else { max_layers })
+    }
+
     pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+        self.forward_inner(x, index_pos, self.layers.len())
+    }
+
+    fn forward_inner(&mut self, x: &Tensor, index_pos: usize, max_layers: usize) -> Result<Tensor> {
+        // Debug: CANDLE_MAX_LAYERS env var limits layer count for memory profiling
+        let effective_max = std::env::var("CANDLE_MAX_LAYERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(max_layers)
+            .min(max_layers);
+
         let (_b_sz, seq_len) = x.dims2()?;
         let mask = if seq_len == 1 {
             None
@@ -664,26 +969,175 @@ impl ModelWeights {
             Some(self.mask(seq_len, x.device())?)
         };
         let _enter = self.span.enter();
+        let device = x.device().clone();
         let mut layer_in = self.tok_embeddings.forward(x)?;
-        for layer in self.layers.iter_mut() {
+
+        // Dump embedding output for divergence debugging
+        if std::env::var("CANDLE_DUMP_LAYERS").is_ok() {
+            device.synchronize()?;
+            if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let n = flat.len().min(10);
+                let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("EMBED    shape={:?} first10=[{}]", layer_in.dims(), first10.join(", "));
+            }
+        }
+
+        // Debug: if CANDLE_MAX_LAYERS=0, return embedding directly (skip all layers)
+        if effective_max == 0 {
+            return self.output.forward(&self.norm.forward(&layer_in)?.i((.., seq_len - 1, ..))?);
+        }
+        for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
+            if layer_idx >= effective_max {
+                break;
+            }
             let x = layer_in;
             let residual = &x;
             let x = layer.attention_norm.forward(&x)?;
+
+            // Dump layer 0 intermediate values for divergence debugging
+            let dump_layer0 = std::env::var("CANDLE_DUMP_LAYER0").is_ok() && layer_idx == 0;
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_norm.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let attn = layer.forward_attn(&x, mask.as_ref(), index_pos)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = attn.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_out.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = (attn + residual)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_resid.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn+resid: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
 
             // MLP
             let _enter = layer.span_mlp.enter();
             let residual = &x;
             let x = layer.ffn_norm.forward(&x)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_ffn_norm.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 ffn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = layer.mlp_or_moe.forward(&x)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_mlp_out.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 mlp_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = (x + residual)?;
-            layer_in = x
+            layer_in = x;
+
+            // Log hidden state stats per layer (CANDLE_DEBUG_LAYERS=1)
+            if layer_idx % 16 == 0 || layer_idx == effective_max - 1 {
+                if std::env::var("CANDLE_DEBUG_LAYERS").is_ok() {
+                    device.synchronize()?;
+                    if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                        let mean = flat.iter().sum::<f32>() / flat.len() as f32;
+                        let max = flat.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let min = flat.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let has_nan = flat.iter().any(|v| v.is_nan());
+                        let has_inf = flat.iter().any(|v| v.is_infinite());
+                        eprintln!(
+                            "  [layer {:>2}] mean={:>8.3} min={:>8.1} max={:>8.1} nan={} inf={}",
+                            layer_idx, mean, min, max, has_nan, has_inf
+                        );
+                    }
+                }
+            }
+
+            // Commit Metal command buffer every 24 layers so the GPU can start
+            // executing early layers while we encode later ones.
+            // Too frequent (8) = CPU waits too much. Never = giant stall at end.
+            if (layer_idx + 1) % 24 == 0 {
+                device.synchronize()?;
+            }
+
+            // Dump hidden state for divergence debugging
+            if std::env::var("CANDLE_DUMP_LAYERS").is_ok() && (layer_idx < 3 || layer_idx == effective_max - 1) {
+                device.synchronize()?;
+                if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                    let n = flat.len().min(10);
+                    let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    let mean: f64 = flat.iter().map(|&v| v as f64).sum::<f64>() / flat.len() as f64;
+                    let absmax = flat.iter().cloned().fold(0f32, |a, b| a.max(b.abs()));
+                    eprintln!("LAYER[{:>2}] mean={:.6} absmax={:.3} first10=[{}]",
+                        layer_idx, mean, absmax, first10.join(", "));
+                }
+            }
         }
         let x = self.norm.forward(&layer_in)?;
         let x = x.i((.., seq_len - 1, ..))?;
+
+        // Dump hidden state (post-norm, pre-lm_head) for comparison with llama.cpp
+        if std::env::var("CANDLE_DUMP_HIDDEN").is_ok() {
+            device.synchronize()?;
+            if let Ok(vals) = x.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let n = vals.len().min(10);
+                let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("HIDDEN (post-norm, pre-lm_head): {} dims, first10=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_hidden.bin", &data).ok();
+                eprintln!("  Written to /tmp/candle_hidden.bin");
+            }
+        }
+
         let _enter = self.span_output.enter();
-        self.output.forward(&x)
+        let logits = self.output.forward(&x)?;
+
+        // Dump full logits for comparison
+        if std::env::var("CANDLE_DUMP_HIDDEN").is_ok() {
+            device.synchronize()?;
+            if let Ok(vals) = logits.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_logits.bin", &data).ok();
+                eprintln!("  Written {} logits to /tmp/candle_logits.bin", vals.len());
+            }
+        }
+
+        Ok(logits)
     }
 }
 

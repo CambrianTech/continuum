@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/sentinel/approve",
+  "version": "1.0.0",
+  "description": "Approve or reject a pending pipeline approval step. Resolves the blocking approval gate in the Rust executor.",
+  "main": "server/SentinelApproveServerCommand.ts",
+  "types": "shared/SentinelApproveTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/SentinelApproveIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "sentinel/approve"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -49,22 +49,27 @@ export type { DatasetMixin as DatasetMixinInterface, DatasetManifest, DatasetMet
 export { VisionCacheMixin } from './vision_cache';
 export type { VisionCacheMixin as VisionCacheMixinInterface, VisionCacheEntry, VisionCacheGetResult, VisionCacheStats, VisionCacheWarmEntry } from './vision_cache';
 
+export { PlasticityMixin } from './plasticity';
+export type { PlasticityMixin as PlasticityMixinInterface, PlasticityAnalyzeParams, PlasticityCompactParams, PlasticityTopologyParams } from './plasticity';
+
 /**
  * Compose all mixins into a single client class.
  * Usage: const Client = composeClient(RustCoreIPCClientBase);
  */
 export function composeClient<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
-	return RuntimeMixin(
-		EmbeddingMixin(
-			AIMixin(
-				ModelsMixin(
-					RagMixin(
-						SearchMixin(
-							CodeMixin(
-								MemoryMixin(
-									ChannelMixin(
-										CognitionMixin(
-											VoiceMixin(Base)
+	return PlasticityMixin(
+		RuntimeMixin(
+			EmbeddingMixin(
+				AIMixin(
+					ModelsMixin(
+						RagMixin(
+							SearchMixin(
+								CodeMixin(
+									MemoryMixin(
+										ChannelMixin(
+											CognitionMixin(
+												VoiceMixin(Base)
+											)
 										)
 									)
 								)

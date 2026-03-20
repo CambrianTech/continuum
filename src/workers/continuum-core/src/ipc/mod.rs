@@ -888,6 +888,13 @@ pub fn start_server(
     // Replaces 784 lines of TypeScript ToolFormatAdapter hierarchy
     runtime.register(Arc::new(ToolParsingModule::new()));
 
+    // PlasticityModule: Adaptive neural plasticity optimization engine
+    // Provides plasticity/analyze, plasticity/compact, plasticity/topology
+    // Per-head utilization-aware pruning, mixed-precision quantization, GQA-aware
+    runtime.register(Arc::new(
+        crate::modules::plasticity::PlasticityModule::new(),
+    ));
+
     // AvatarModule: Bevy 3D avatar snapshots for profile pictures
     // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
     runtime.register(Arc::new(AvatarModule::new()));

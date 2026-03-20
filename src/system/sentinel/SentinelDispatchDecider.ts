@@ -18,7 +18,7 @@
  */
 
 import { TemplateRegistry, type TemplateInfo } from './pipelines/TemplateRegistry';
-import { detectProject } from './ProjectDetector';
+import { ProjectDetector } from '../code/server/ProjectDetector';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -120,12 +120,12 @@ export class SentinelDispatchDecider {
    * @param cwd Working directory for the project
    * @returns Dispatch decision with template, confidence, and extracted config
    */
-  evaluate(
+  async evaluate(
     messageText: string,
     personaId: string,
     personaName: string,
     cwd: string,
-  ): DispatchDecision {
+  ): Promise<DispatchDecision> {
     const text = messageText.trim();
 
     // Short messages are almost never sentinel-worthy
@@ -151,7 +151,7 @@ export class SentinelDispatchDecider {
     }
 
     const templateInfo = TemplateRegistry.info(template);
-    const extractedConfig = this._extractConfig(template, text, personaId, personaName, cwd);
+    const extractedConfig = await this._extractConfig(template, text, personaId, personaName, cwd);
 
     const shouldDispatch = confidence >= this._confidenceThreshold;
 
@@ -241,23 +241,23 @@ export class SentinelDispatchDecider {
     };
   }
 
-  private _extractConfig(
+  private async _extractConfig(
     template: string,
     text: string,
     personaId: string,
     personaName: string,
     cwd: string,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     // Detect project type for build/test commands
-    const project = detectProject(cwd);
+    const project = await ProjectDetector.detect(cwd);
     const base: Record<string, unknown> = {
       personaId,
       personaName,
       cwd,
       autonomous: true, // Default to autonomous for now — collaborative checkpoints come later
-      // Auto-detect build/test commands; null = skip that step
-      ...(project.buildCommand !== null && { buildCommand: project.buildCommand }),
-      ...(project.testCommand !== null && { testCommand: project.testCommand }),
+      // Auto-detect build/test commands; undefined/null = skip that step
+      ...(project.buildCommand && { buildCommand: project.buildCommand }),
+      ...(project.testCommand && { testCommand: project.testCommand }),
     };
 
     switch (template) {

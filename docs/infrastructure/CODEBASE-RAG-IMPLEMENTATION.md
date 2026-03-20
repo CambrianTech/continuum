@@ -56,7 +56,7 @@
 
 ### Phase 1: Foundation (Low-Level)
 1. ✅ `CodeIndexEntity` - Data structure
-2. ✅ `OllamaAdapter.createEmbedding()` - Embedding generation
+2. ✅ Candle embedding generation via Rust IPC
 3. ✅ `ai/embedding/generate` - Command wrapper for embedding generation
 4. ✅ `ai/rag/index/create` - Store single code entry
 5. ⬜ `ai/rag/query-open` - Open similarity search, return handle + first page
@@ -125,7 +125,7 @@ PersonaUser.serviceInbox()
 
 ## Next Steps
 
-1. Implement `ai/embedding/generate` command (wrapper for OllamaAdapter)
+1. Implement `ai/embedding/generate` command (wrapper for Candle Rust IPC)
 2. Implement `ai/rag/index/create` command (store single entry)
 3. Implement `ai/rag/index/query` command (search with embeddings)
 4. Test composition by building `ai/rag/index/file` from primitives

@@ -1,3 +1,5 @@
+**LEGACY**: This document references Ollama which is no longer used. Local inference is now Candle-based (Rust, in-process). This doc is kept for historical reference only.
+
 # Phase 3C-E: Cost-Effective Collaborative AI Ecosystem
 
 > **Mission**: Transform Continuum from proof-of-concept to production-ready collaborative ecosystem where humans and AIs work together with Claude Code-level capabilities at 450× lower cost through local models, LoRA specialization, and intelligent cloud upgrades.

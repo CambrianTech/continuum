@@ -13,8 +13,10 @@
 //! EOS tokens, tokenization, cache management, and LoRA support.
 //! One `generate()` function works with ANY backend.
 
+pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
+pub mod qwen2_safetensors;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,7 +26,6 @@ use std::time::Instant;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use rand::Rng;
 use tokenizers::Tokenizer;
 
 use crate::gpu::memory_manager::{GpuMemoryManager, GpuPriority, GpuSubsystem};
@@ -54,8 +55,11 @@ pub struct GenomeAdapter {
 
 // ─── ModelBackend Trait ──────────────────────────────────────────────────────
 
-/// GPU sync interval during token-by-token prefill and generation.
-const GPU_SYNC_INTERVAL: usize = 16;
+/// GPU sync interval during generation.
+/// Higher = fewer CPU-GPU round trips = faster throughput.
+/// The sampler pulls logits to CPU every token anyway, so this sync
+/// is mainly to prevent Metal command buffer overflow on long sequences.
+const GPU_SYNC_INTERVAL: usize = 64;
 
 /// Check for NaN only on first N generated tokens.
 const NAN_CHECK_TOKENS: usize = 3;
@@ -81,6 +85,14 @@ pub trait ModelBackend: Send + Sync {
     /// EOS token IDs for this model, read from model metadata.
     fn eos_token_ids(&self) -> &[u32];
 
+    /// Token IDs that should NEVER appear in generated output.
+    /// Control/special tokens (e.g., Qwen2's `<|endoftext|>`, `<|im_start|>`) that have
+    /// inflated logits in quantized models. These are set to probability 0 during sampling.
+    /// Default: empty (no suppression). Override per architecture.
+    fn suppress_token_ids(&self) -> &[u32] {
+        &[]
+    }
+
     /// Model identifier (HuggingFace repo ID or filename).
     fn model_id(&self) -> &str;
 
@@ -97,10 +109,8 @@ pub trait ModelBackend: Send + Sync {
 
     /// Prefill: process prompt tokens to build KV cache before generation.
     ///
-    /// Returns logits from the final token position. Each backend chooses
-    /// its own strategy:
-    /// - GGUF: token-by-token (seq_len=1 each, Metal SDPA safe)
-    /// - Safetensors BF16: full-batch (proper causal masking, GPU-efficient)
+    /// Returns logits from the final token position.
+    /// All backends use full-batch prefill via Metal SDPA with is_causal=true.
     fn prefill(&mut self, tokens: &[u32]) -> Result<Tensor, String>;
 
     /// Clear KV cache for a fresh generation.
@@ -149,11 +159,36 @@ pub trait ModelBackend: Send + Sync {
 
 // ─── Unified Text Generation ─────────────────────────────────────────────────
 
+/// Sampling configuration for text generation.
+/// All fields are required — no silent defaults.
+#[derive(Debug, Clone)]
+pub struct SamplingConfig {
+    /// Temperature for softmax sampling. 0.0 = greedy (argmax).
+    pub temperature: f64,
+    /// Repetition penalty applied on logits (llama.cpp style). 1.0 = disabled.
+    pub repeat_penalty: f32,
+    /// Top-k sampling: keep only the k highest-probability tokens. 0 = disabled.
+    pub top_k: usize,
+    /// Top-p (nucleus) sampling: keep smallest set of tokens with cumulative prob >= p. 1.0 = disabled.
+    pub top_p: f64,
+}
+
+impl SamplingConfig {
+    /// Config for code generation: greedy, moderate repeat penalty.
+    pub fn code() -> Self {
+        Self { temperature: 0.0, repeat_penalty: 1.1, top_k: 0, top_p: 1.0 }
+    }
+    /// Config for chat: slight creativity, standard repeat penalty.
+    pub fn chat() -> Self {
+        Self { temperature: 0.6, repeat_penalty: 1.1, top_k: 40, top_p: 0.95 }
+    }
+}
+
 /// Generate text from a prompt using ANY ModelBackend.
 ///
 /// One function for all local models. Handles:
 /// - Context length validation
-/// - Prefill via backend strategy (token-by-token or full-batch)
+/// - Prefill via full-batch Metal SDPA
 /// - Token generation with sampling
 /// - NaN detection and prompt replay on failure
 /// - GPU sync management
@@ -161,10 +196,12 @@ pub fn generate(
     backend: &mut dyn ModelBackend,
     prompt: &str,
     max_tokens: usize,
-    temperature: f64,
+    sampling: &SamplingConfig,
 ) -> Result<(String, usize), String> {
     let log = runtime::logger("candle");
     let start = Instant::now();
+    let rss_before = crate::system_resources::process_rss_mb();
+    log.debug(&format!("generate start: RSS={}MB", rss_before));
 
     // Tokenize
     let prompt_tokens = backend.tokenize(prompt)?;
@@ -201,7 +238,13 @@ pub fn generate(
     backend.clear_cache()?;
 
     // ── Phase 1: Prefill ──
+    let prefill_start = Instant::now();
     let prefill_logits = backend.prefill(&prompt_tokens)?;
+    backend.device().synchronize().map_err(|e| format!("Prefill sync: {e}"))?;
+    let prefill_ms = prefill_start.elapsed().as_millis();
+    log.info(&format!("Prefill: {} tokens in {}ms ({:.1}ms/tok)",
+        prompt_len, prefill_ms, prefill_ms as f64 / prompt_len as f64));
+
     let prefill_logits = extract_last_logits(&prefill_logits)?;
     let (prefill_logits, had_nan) = sanitize_logits_with_flag(&prefill_logits, backend.device())?;
     if had_nan {
@@ -212,16 +255,67 @@ pub fn generate(
         );
     }
 
-    // Setup sampler
-    let seed = rand::thread_rng().gen::<u64>();
-    let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
+    // Setup sampler from config — no hardcoded defaults.
+    let use_greedy = sampling.temperature <= 0.0;
+    let seed = 299792458u64; // deterministic seed
+    let top_p = if sampling.top_p < 1.0 { Some(sampling.top_p) } else { None };
+    let mut logits_processor = if use_greedy {
+        // Greedy: we use our own argmax, but LogitsProcessor still needed as fallback
+        LogitsProcessor::new(seed, Some(0.01), top_p)
+    } else {
+        LogitsProcessor::new(seed, Some(sampling.temperature), top_p)
+    };
+
+    log.info(&format!("Sampling: {:?}", sampling));
+
+    // Debug: log token-level diagnostics if CANDLE_DEBUG_TOKENS is set
+    let debug_tokens = std::env::var("CANDLE_DEBUG_TOKENS").is_ok();
+
+    // Print top-10 logits from prefill for comparison with PyTorch
+    if debug_tokens {
+        let prefill_vec: Vec<f32> = prefill_logits.flatten_all()
+            .and_then(|t| t.to_vec1())
+            .unwrap_or_default();
+        let mut indexed: Vec<(usize, f32)> = prefill_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("Top 10 logits after prefill (Candle GGUF):");
+        for (rank, &(tid, val)) in indexed.iter().take(10).enumerate() {
+            let decoded = backend.decode(&[tid as u32]).unwrap_or_else(|_| "?".into());
+            eprintln!("  {}. token={:>6} logit={:>8.3}  {:?}", rank+1, tid, val, &decoded[..decoded.len().min(20)]);
+        }
+        for &eos_id in backend.eos_token_ids() {
+            if let Some(&val) = prefill_vec.get(eos_id as usize) {
+                eprintln!("  EOS[{}] logit={:.3}", eos_id, val);
+            }
+        }
+        // Print suppressed token logits for comparison with llama.cpp
+        for &sid in backend.suppress_token_ids() {
+            if let Some(&val) = prefill_vec.get(sid as usize) {
+                let name = backend.decode(&[sid]).unwrap_or_else(|_| format!("?{}", sid));
+                eprintln!("  suppress[{}] {:?} logit={:.3}", sid, name, val);
+            }
+        }
+    }
 
     let mut all_tokens = prompt_tokens;
 
+    let _eos_ids = backend.eos_token_ids().to_vec();
+
+    // Tokens to suppress during generation (architecture-specific control tokens).
+    let suppress_ids: Vec<usize> = backend.suppress_token_ids().iter().map(|&t| t as usize).collect();
+
     // Sample first token from prefill logits
-    let first_token = logits_processor
-        .sample(&prefill_logits)
-        .map_err(|e| format!("First token sampling failed: {e}"))?;
+    let mut prefill_vec: Vec<f32> = prefill_logits.to_vec1()
+        .map_err(|e| format!("Prefill logits to vec: {e}"))?;
+    apply_logit_processing(&mut prefill_vec, &suppress_ids, &[], sampling);
+    let first_token = if use_greedy {
+        argmax_f32(&prefill_vec) as u32
+    } else {
+        let t = Tensor::from_slice(&prefill_vec, prefill_vec.len(), backend.device())
+            .map_err(|e| format!("Prefill logits to tensor: {e}"))?;
+        logits_processor.sample(&t)
+            .map_err(|e| format!("First token sampling failed: {e}"))?
+    };
 
     if backend.eos_token_ids().contains(&first_token) {
         return Ok((String::new(), 0));
@@ -286,58 +380,99 @@ pub fn generate(
             logits
         };
 
-        // Sample next token
-        let next_token = match logits_processor.sample(&logits) {
-            Ok(token) => {
-                nan_count = 0;
-                token
-            }
-            Err(e) => {
-                nan_count += 1;
-                if nan_count > 5 {
-                    log.warn(&format!(
-                        "Aborting after {} consecutive NaN errors",
-                        nan_count
-                    ));
-                    save_prompt_replay(
-                        prompt,
-                        &all_tokens[..prompt_len],
-                        &format!("{} consecutive NaN", nan_count),
-                    );
-                    break;
-                }
-                log.warn(&format!("Sampling failed at token {}, retrying: {}", i, e));
-                let (sanitized, _) = sanitize_logits_with_flag(&logits, backend.device())?;
-                logits_processor
-                    .sample(&sanitized)
-                    .map_err(|e| format!("Sampling failed even after sanitization: {e}"))?
-            }
+        // Apply suppress + repetition penalty + top-k on logits, then sample.
+        // For greedy: operate entirely on Vec<f32> (no GPU round-trip).
+        // For non-greedy: rebuild Tensor for LogitsProcessor.
+        let mut logits_vec: Vec<f32> = logits.to_vec1()
+            .map_err(|e| format!("Logits to vec: {e}"))?;
+        apply_logit_processing(&mut logits_vec, &suppress_ids, &all_tokens[prompt_len..], sampling);
+
+        let next_token = sample_token(
+            &logits_vec, use_greedy, &mut logits_processor, &logits, backend.device(),
+            &mut nan_count, i, prompt, &all_tokens[..prompt_len], &log,
+        )?;
+        let next_token = match next_token {
+            Some(t) => t,
+            None => break, // nan_count exceeded
         };
 
+        if debug_tokens {
+            // Log: token ID, decoded text, logit stats, EOS logit rank
+            let decoded = backend.decode(&[next_token]).unwrap_or_else(|_| "?".into());
+            let logits_vec: Vec<f32> = logits
+                .flatten_all()
+                .and_then(|t| t.to_vec1())
+                .unwrap_or_default();
+            let max_logit = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min_logit = logits_vec.iter().cloned().fold(f32::INFINITY, f32::min);
+
+            // Check where EOS tokens rank in logits
+            let mut eos_info = String::new();
+            for &eos_id in backend.eos_token_ids() {
+                if let Some(&eos_logit) = logits_vec.get(eos_id as usize) {
+                    let rank = logits_vec.iter().filter(|&&v| v > eos_logit).count();
+                    eos_info.push_str(&format!(" eos[{}]={:.2}(rank {})", eos_id, eos_logit, rank));
+                }
+            }
+
+            eprintln!(
+                "  tok[{:>3}] id={:<6} {:>20} logits=[{:.1}..{:.1}]{}",
+                i, next_token, format!("{:?}", &decoded[..decoded.len().min(20)]),
+                min_logit, max_logit, eos_info
+            );
+        }
+
         if backend.eos_token_ids().contains(&next_token) {
+            if debug_tokens {
+                eprintln!("  → EOS hit: token {} at iteration {}", next_token, i);
+            }
             break;
         }
         all_tokens.push(next_token);
+        if debug_tokens && i <= 3 {
+            eprintln!("  → generated token {} at pos {}, total tokens {}", next_token, pos, all_tokens.len());
+        }
     }
 
-    // Final GPU sync
+    // Final GPU sync + KV cache cleanup to prevent memory accumulation
+    // across sequential generations (e.g. 98-challenge benchmarks).
     backend
         .device()
         .synchronize()
         .map_err(|e| format!("Final GPU sync failed: {e}"))?;
 
-    // Decode
+    // Decode BEFORE clearing cache (cache not needed for decode)
     let generated_tokens = &all_tokens[prompt_len..];
     let output_text = backend.decode(generated_tokens)?;
 
+    // Clear KV cache immediately after generation to free GPU memory.
+    // Without this, Metal buffer pools accumulate across sequential runs.
+    backend.clear_cache()?;
+
+    // Release unused Metal buffers from the allocation pool.
+    // clear_cache() drops KV tensors (Arc count → 1 = only pool holds ref).
+    // release_unused_buffers() removes those from the pool, freeing the MTLBuffers.
+    // Without this, the pool grows indefinitely across sequential inferences.
+    // See: https://github.com/huggingface/candle/issues/2271
+    if backend.device().is_metal() {
+        if let Ok(metal) = backend.device().as_metal_device() {
+            metal.release_unused_buffers()
+                .map_err(|e| format!("Metal pool cleanup: {e}"))?;
+        }
+    }
+
+    let rss_after = crate::system_resources::process_rss_mb();
     let duration = start.elapsed();
     log.info(&format!(
-        "Generated {} tokens in {:?} (arch={}, format={:?}, prefill={})",
+        "Generated {} tokens in {:?} (arch={}, format={:?}, prefill={}, RSS={}→{}MB Δ{}MB)",
         generated_tokens.len(),
         duration,
         backend.architecture(),
         backend.format(),
-        prompt_len
+        prompt_len,
+        rss_before,
+        rss_after,
+        rss_after as i64 - rss_before as i64
     ));
 
     Ok((output_text, generated_tokens.len()))
@@ -365,9 +500,11 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
         .cloned()
         .unwrap_or_else(|| "llama".to_string());
 
+    // Try architecture-specific key first, then llama fallback
     let context_length = content
         .metadata
         .get(&format!("{architecture}.context_length"))
+        .or_else(|| content.metadata.get("llama.context_length"))
         .and_then(|v| v.to_u32().ok())
         .map(|v| v as usize)
         .unwrap_or(4096);
@@ -431,8 +568,24 @@ pub fn load_gguf_backend(
             ));
             Ok(Box::new(backend))
         }
+        // Qwen2 uses the same GGUF format as Llama (same tensor layout in GGUF).
+        // The architecture metadata is "qwen2" but the model structure is compatible.
+        "qwen2" => {
+            let backend = llama_gguf::LlamaGgufBackend::from_gguf(
+                content,
+                &mut reader,
+                tokenizer,
+                model_id,
+                model_path,
+                device,
+            )?;
+            log.info(&format!(
+                "Loaded Qwen2 via Llama GGUF backend: context_length={}",
+                backend.context_length()
+            ));
+            Ok(Box::new(backend))
+        }
         // Future architectures:
-        // "qwen2" => { llama_gguf or qwen2_gguf::... }
         // "phi3" => { phi3_gguf::... }
         other => Err(format!(
             "Unsupported GGUF architecture: '{other}'. \
@@ -443,6 +596,98 @@ pub fn load_gguf_backend(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Argmax over a float slice — returns index of the largest value.
+fn argmax_f32(data: &[f32]) -> usize {
+    data.iter().enumerate()
+        .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+            if v > bv { (i, v) } else { (bi, bv) }
+        }).0
+}
+
+/// Apply token suppression, repetition penalty, and top-k filtering on a logits vector.
+fn apply_logit_processing(
+    logits: &mut Vec<f32>,
+    suppress_ids: &[usize],
+    generated_tokens: &[u32],
+    sampling: &SamplingConfig,
+) {
+    // Suppress control tokens
+    for &tid in suppress_ids {
+        if tid < logits.len() {
+            logits[tid] = f32::NEG_INFINITY;
+        }
+    }
+    // Repetition penalty (llama.cpp style: divide positive, multiply negative)
+    if sampling.repeat_penalty != 1.0 {
+        for &token_id in generated_tokens {
+            let idx = token_id as usize;
+            if idx < logits.len() {
+                if logits[idx] > 0.0 {
+                    logits[idx] /= sampling.repeat_penalty;
+                } else {
+                    logits[idx] *= sampling.repeat_penalty;
+                }
+            }
+        }
+    }
+    // Top-k: keep only the k highest logits, set rest to -inf.
+    // Uses select_nth_unstable (O(n) average) instead of full sort (O(n log n)).
+    if sampling.top_k > 0 && sampling.top_k < logits.len() {
+        let mut scratch = logits.clone();
+        scratch.select_nth_unstable_by(sampling.top_k, |a, b| {
+            b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let threshold = scratch[sampling.top_k];
+        for v in logits.iter_mut() {
+            if *v < threshold {
+                *v = f32::NEG_INFINITY;
+            }
+        }
+    }
+}
+
+/// Sample a token from processed logits. Returns None if nan_count exceeded (caller should break).
+/// For greedy: scans the Vec directly (no GPU round-trip).
+/// For non-greedy: rebuilds Tensor for LogitsProcessor.
+#[allow(clippy::too_many_arguments)]
+fn sample_token(
+    logits_vec: &[f32],
+    use_greedy: bool,
+    logits_processor: &mut LogitsProcessor,
+    _logits_tensor: &Tensor, // original tensor for device reference
+    device: &Device,
+    nan_count: &mut u32,
+    token_idx: usize,
+    prompt: &str,
+    prompt_tokens: &[u32],
+    log: &std::sync::Arc<crate::runtime::ModuleLogger>,
+) -> Result<Option<u32>, String> {
+    if use_greedy {
+        let token = argmax_f32(logits_vec) as u32;
+        *nan_count = 0;
+        Ok(Some(token))
+    } else {
+        let logits = Tensor::from_slice(logits_vec, logits_vec.len(), device)
+            .map_err(|e| format!("Logits to tensor: {e}"))?;
+        match logits_processor.sample(&logits) {
+            Ok(token) => { *nan_count = 0; Ok(Some(token)) }
+            Err(e) => {
+                *nan_count += 1;
+                if *nan_count > 5 {
+                    log.warn(&format!("Aborting after {} consecutive NaN errors", nan_count));
+                    save_prompt_replay(prompt, prompt_tokens, &format!("{} consecutive NaN", nan_count));
+                    return Ok(None);
+                }
+                log.warn(&format!("Sampling failed at token {}, retrying: {}", token_idx, e));
+                let (sanitized, _) = sanitize_logits_with_flag(&logits, device)?;
+                let token = logits_processor.sample(&sanitized)
+                    .map_err(|e| format!("Sampling failed even after sanitization: {e}"))?;
+                Ok(Some(token))
+            }
+        }
+    }
+}
 
 /// Extract logits for the last token position from model output.
 fn extract_last_logits(logits: &Tensor) -> Result<Tensor, String> {

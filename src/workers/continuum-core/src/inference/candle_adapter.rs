@@ -21,7 +21,9 @@ use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
 
-use super::backends::llama_safetensors::BF16_PRACTICAL_CONTEXT;
+/// Default context window reported before a model is loaded.
+/// Once loaded, the actual model's context_length is used.
+const DEFAULT_CONTEXT_WINDOW: u32 = 131072;
 use super::backends::{self, GenomeAdapter, ModelBackend, ModelFormat};
 use super::lora::{load_lora_adapter, LoadedAdapter};
 use super::model::load_model_by_id;
@@ -101,6 +103,8 @@ impl CandleAdapter {
     pub fn quantized() -> Self {
         let mut adapter = Self::new();
         adapter.use_quantized = true;
+        adapter.config.provider_id = "candle-q".to_string();
+        adapter.config.name = "Candle Local (Quantized)".to_string();
         adapter
     }
 
@@ -355,7 +359,7 @@ fn inference_inner(
     resolved_model: &str,
     prompt: &str,
     max_tokens: usize,
-    temperature: f64,
+    sampling: &backends::SamplingConfig,
 ) -> Result<((String, usize), Option<GpuAllocationGuard>), String> {
     let log = runtime::logger("candle");
 
@@ -368,6 +372,11 @@ fn inference_inner(
         let model: Box<dyn ModelBackend> = if use_quantized {
             load_default_quantized()
                 .map_err(|e| format!("Failed to load quantized model: {e}"))?
+        } else if let Some(local_dir) = find_local_model(resolved_model) {
+            // Local GGUF model found — load from disk (no download needed)
+            log.info(&format!("Found local model: {:?}", local_dir));
+            super::model::load_model_from_dir(&local_dir, resolved_model)
+                .map_err(|e| format!("Failed to load local model {:?}: {e}", local_dir))?
         } else {
             load_model_by_id(resolved_model)
                 .map_err(|e| format!("Failed to load model '{}': {e}", resolved_model))?
@@ -405,7 +414,7 @@ fn inference_inner(
     }
 
     let wrapper = backend_guard.as_mut().expect("just loaded");
-    let gen_result = backends::generate(&mut *wrapper.0, prompt, max_tokens, temperature);
+    let gen_result = backends::generate(&mut *wrapper.0, prompt, max_tokens, sampling);
     gen_result.map(|r| (r, new_model_guard))
 }
 
@@ -420,6 +429,14 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
+        // Query the actual loaded backend for its context window.
+        // Falls back to BF16_PRACTICAL_CONTEXT if backend not yet loaded.
+        let context_window = self
+            .backend
+            .try_read()
+            .and_then(|guard| guard.as_ref().map(|b| b.0.context_length() as u32))
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+
         AdapterCapabilities {
             supports_text_generation: true,
             supports_chat: true,
@@ -430,7 +447,7 @@ impl AIProviderAdapter for CandleAdapter {
             supports_audio: false,
             supports_image_generation: false,
             is_local: true,
-            max_context_window: BF16_PRACTICAL_CONTEXT as u32,
+            max_context_window: context_window,
         }
     }
 
@@ -475,9 +492,20 @@ impl AIProviderAdapter for CandleAdapter {
             self.use_quantized, self as *const _
         ));
 
-        let prompt = build_prompt_from_messages(&request.messages);
-        let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
-        let temperature = request.temperature.unwrap_or(0.7) as f64;
+        let max_tokens = request.max_tokens
+            .ok_or_else(|| "max_tokens is required for local inference".to_string())? as usize;
+        let temperature = request.temperature
+            .ok_or_else(|| "temperature is required for local inference".to_string())? as f64;
+        // Build sampling config — all values from caller, no silent defaults.
+        // top_k=0 and top_p=1.0 mean "disabled" — these are safe defaults
+        // because they don't change behavior (no filtering applied).
+        // repeat_penalty=1.0 means "disabled" — also safe.
+        let sampling = backends::SamplingConfig {
+            temperature,
+            repeat_penalty: request.repeat_penalty.unwrap_or(1.0),
+            top_k: request.top_k.unwrap_or(0) as usize,
+            top_p: request.top_p.unwrap_or(1.0) as f64,
+        };
 
         // Apply LoRA adapters if requested
         let mut applied_adapters: Vec<String> = Vec::new();
@@ -487,15 +515,54 @@ impl AIProviderAdapter for CandleAdapter {
             }
         }
 
-        // Resolve requested model: use request.model if provided, else default
-        let requested_model = request.model.as_deref().unwrap_or(&self.config.default_model);
+        // Resolve requested model — MUST be explicitly provided.
+        // Silent defaults to models that may not exist on the user's machine cause
+        // mysterious failures or wrong-model bugs.
+        let requested_model = request.model.as_deref()
+            .ok_or_else(|| format!(
+                "model is required for local inference. Available: 'coder' (14B GGUF), \
+                 'coder-bf16' (14B BF16). Got no model in request."
+            ))?;
         let model_id = resolve_model_id(requested_model);
+
+        // Build prompt using the correct chat template for this model.
+        // If a system_prompt is provided but not already in messages, prepend it.
+        let chat_template = resolve_chat_template(requested_model);
+        let has_system_msg = request.messages.iter().any(|m| m.role == "system");
+        let messages = if !has_system_msg {
+            if let Some(ref sys) = request.system_prompt {
+                let mut msgs = vec![crate::ai::ChatMessage {
+                    role: "system".to_string(),
+                    content: crate::ai::MessageContent::Text(sys.clone()),
+                    name: None,
+                }];
+                msgs.extend(request.messages.iter().cloned());
+                msgs
+            } else {
+                request.messages.clone()
+            }
+        } else {
+            request.messages.clone()
+        };
+        let prompt = build_prompt_from_messages(&messages, &chat_template);
+        log.info(&format!("Using chat template: {}", chat_template));
 
         let prompt_len = prompt.len();
         log.info(&format!(
             "Prompt length: {} chars, max_tokens: {}, model: {} (requested: {})",
             prompt_len, max_tokens, model_id, requested_model
         ));
+
+        // Dump formatted prompt to file for isolated reproduction (Step 1 of inside-out validation).
+        // Enable with: CANDLE_DUMP_PROMPTS=1
+        if std::env::var("CANDLE_DUMP_PROMPTS").is_ok() {
+            let prompt_file = "/tmp/sentinel_prompt_latest.txt";
+            if let Err(e) = std::fs::write(prompt_file, &prompt) {
+                log.warn(&format!("Failed to dump prompt to {}: {}", prompt_file, e));
+            } else {
+                log.info(&format!("Prompt dumped to {} ({} chars)", prompt_file, prompt.len()));
+            }
+        }
 
         let backend_arc = Arc::clone(&self.backend);
         let resolved_model = model_id.clone();
@@ -541,14 +608,6 @@ impl AIProviderAdapter for CandleAdapter {
                 "⚠️ Memory pressure high — queuing inference for '{}' (will proceed when semaphore available)",
                 model_id
             ));
-            // Reduce max_tokens under pressure to lower peak memory per inference
-            if max_tokens > 256 {
-                log.info(&format!(
-                    "📉 Reducing max_tokens {} → 256 under memory pressure",
-                    max_tokens
-                ));
-                max_tokens = 256;
-            }
         }
 
         // Serialize local inference: only 1 at a time.
@@ -585,7 +644,7 @@ impl AIProviderAdapter for CandleAdapter {
             let pool = unsafe { objc_autoreleasePoolPush() };
 
             let result = inference_inner(
-                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, temperature,
+                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
             );
 
             #[cfg(target_os = "macos")]
@@ -688,7 +747,7 @@ impl AIProviderAdapter for CandleAdapter {
             name: format!("{} ({})", self.config.default_model, format_label),
             provider: "candle".to_string(),
             capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
-            context_window: BF16_PRACTICAL_CONTEXT as u32,
+            context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: Some(4096),
             cost_per_1k_tokens: None,
             supports_streaming: false,
@@ -718,43 +777,201 @@ impl AIProviderAdapter for CandleAdapter {
     }
 }
 
-/// Map Ollama-style model names to HuggingFace repo IDs for Candle loading.
+/// Single source of truth for local model metadata.
 ///
-/// Academy pipelines pass model names in Ollama format (e.g., "smollm2:135m").
-/// Candle needs HuggingFace repo IDs (e.g., "HuggingFaceTB/SmolLM2-135M-Instruct").
-/// If the name is already a HF repo ID (contains '/'), it's returned as-is.
-fn resolve_model_id(requested: &str) -> String {
+/// Model registry entry loaded from model_registry.json (embedded at compile time).
+/// TypeScript gets these types via ts-rs — NO hand-written duplicates.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts")]
+pub struct ModelRegistryEntry {
+    /// HuggingFace repo ID (canonical source)
+    pub repo: String,
+    /// Serialization format: "gguf" or "safetensors"
+    #[ts(optional)]
+    pub format: Option<String>,
+    /// Model architecture: "qwen2", "llama", "phi", etc.
+    #[ts(optional)]
+    pub architecture: Option<String>,
+    /// Human-readable description
+    #[ts(optional)]
+    pub description: Option<String>,
+    /// Minimum GPU memory in GB to run this model
+    #[ts(optional, type = "number")]
+    pub min_memory_gb: Option<f64>,
+    /// Chat template name: "qwen2", "llama3", "chatml"
+    #[ts(optional)]
+    pub chat_template: Option<String>,
+}
+
+/// Full model registry — maps aliases to model entries.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistry.ts")]
+pub struct ModelRegistry {
+    pub models: HashMap<String, ModelRegistryEntry>,
+}
+
+/// Load the model registry from the embedded JSON.
+pub fn load_registry() -> ModelRegistry {
+    let json = include_str!("model_registry.json");
+    serde_json::from_str(json).unwrap_or_else(|e| {
+        runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
+        ModelRegistry { models: HashMap::new() }
+    })
+}
+
+pub fn resolve_model_id(requested: &str) -> String {
     // Already a HuggingFace repo ID
     if requested.contains('/') {
         return requested.to_string();
     }
 
-    // Normalize: lowercase, strip leading/trailing whitespace
     let normalized = requested.trim().to_lowercase();
+    let registry = load_registry();
 
-    // Ollama-style mappings: "model:variant" or just "model"
-    match normalized.as_str() {
-        // SmolLM2 family (tiny models, ~270MB-3GB)
-        "smollm2:135m" | "smollm2-135m" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(),
-        "smollm2:360m" | "smollm2-360m" => "HuggingFaceTB/SmolLM2-360M-Instruct".to_string(),
-        "smollm2:1.7b" | "smollm2-1.7b" | "smollm2:1.7B" => "HuggingFaceTB/SmolLM2-1.7B-Instruct".to_string(),
-        "smollm2" => "HuggingFaceTB/SmolLM2-135M-Instruct".to_string(), // Default to smallest
+    // Look up in registry (supports "coder", "smollm2:1.7b", "llama3.2:3b", etc.)
+    if let Some(entry) = registry.models.get(&normalized) {
+        return entry.repo.clone();
+    }
 
-        // Llama 3.2 family
-        "llama3.2:1b" | "llama3.2-1b" => "unsloth/Llama-3.2-1B-Instruct".to_string(),
-        "llama3.2:3b" | "llama3.2-3b" | "llama3.2" => "unsloth/Llama-3.2-3B-Instruct".to_string(),
+    // Try with common alias patterns: "smollm2-1.7b" → "smollm2:1.7b"
+    let dash_to_colon = normalized.replacen('-', ":", 1);
+    if let Some(entry) = registry.models.get(&dash_to_colon) {
+        return entry.repo.clone();
+    }
 
-        // TinyLlama
-        "tinyllama" | "tinyllama:1.1b" => "TinyLlama/TinyLlama-1.1B-Chat-v1.0".to_string(),
+    // Fallback: treat as HF repo ID
+    runtime::logger("candle").warn(&format!(
+        "Model '{}' not in registry — treating as HuggingFace repo ID", requested
+    ));
+    requested.to_string()
+}
 
-        // Fallback: treat as HF repo ID (will fail gracefully on load if invalid)
-        _ => {
-            runtime::logger("candle").warn(&format!(
-                "Unknown model '{}' — treating as HuggingFace repo ID", requested
-            ));
-            requested.to_string()
+/// Resolve the storage root for large files (models, adapters, datasets).
+/// Checks CONTINUUM_STORAGE_PATH from: env var → ~/.continuum/config.env → fallback ~/.continuum/.
+fn storage_root() -> std::path::PathBuf {
+    // 1. Check env var first
+    if let Ok(storage) = std::env::var("CONTINUUM_STORAGE_PATH") {
+        if !storage.is_empty() {
+            return std::path::PathBuf::from(storage);
         }
     }
+    // 2. Check config.env (Secrets module skips non-secret keys like this)
+    if let Some(home) = dirs::home_dir() {
+        let config_path = home.join(".continuum").join("config.env");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("CONTINUUM_STORAGE_PATH=") {
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        return std::path::PathBuf::from(value);
+                    }
+                }
+            }
+        }
+    }
+    // 3. Default
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home).join(".continuum")
+}
+
+/// Check if a model is available locally as a GGUF.
+/// Searches ~/.continuum/ (internal NVMe, fast) FIRST, then CONTINUUM_STORAGE_PATH (external, slow).
+/// Returns the local directory path if found, None if not cached.
+fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
+    let search_dirs = {
+        let mut dirs = Vec::new();
+        // Internal drive first (NVMe = ~2s load vs external USB = ~105s)
+        let home = std::env::var("HOME").ok()?;
+        let home_models = std::path::PathBuf::from(&home).join(".continuum/genome/models");
+        dirs.push(home_models.clone());
+        // External/overflow storage second
+        let storage_models = storage_root().join("genome/models");
+        if storage_models != home_models {
+            dirs.push(storage_models);
+        }
+        dirs
+    };
+
+    for models_dir in &search_dirs {
+        if !models_dir.exists() {
+            continue;
+        }
+        if let Some(found) = find_model_in_dir(model_id, models_dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !models_dir.exists() {
+        return None;
+    }
+
+    // Check for exact directory match (e.g., model dirs we created)
+    for entry in std::fs::read_dir(&models_dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Check if this directory has a GGUF file + tokenizer
+        let has_gguf = std::fs::read_dir(&path)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext == "gguf")
+                            .unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false);
+
+        let has_tokenizer = path.join("tokenizer.json").exists();
+
+        if has_gguf && has_tokenizer {
+            // Match by directory name containing model ID parts
+            let dir_name = path.file_name()?.to_str()?.to_lowercase();
+            let model_lower = model_id.to_lowercase();
+
+            // Match "continuum-ai/qwen2.5-coder-32b-compacted" against "qwen32b-compacted-v3"
+            // Must also match size indicator (14b, 32b) to avoid confusing 14B and 32B models
+            if model_lower.contains("qwen") && model_lower.contains("compacted")
+                && dir_name.contains("qwen") && dir_name.contains("compacted")
+            {
+                // Extract size indicator from model_id (e.g., "14b", "32b")
+                let size_match = ["14b", "32b", "7b", "3b", "1b"]
+                    .iter()
+                    .find(|s| model_lower.contains(*s));
+                if let Some(size) = size_match {
+                    // If model specifies a size, directory must also contain it
+                    if dir_name.contains(size) {
+                        return Some(path);
+                    }
+                    // Size mismatch — skip this directory
+                } else {
+                    // No size in model_id — accept any match
+                    return Some(path);
+                }
+            }
+
+            // Generic: check if model_id's repo name appears in dir name
+            if let Some(repo_name) = model_id.split('/').last() {
+                let repo_lower = repo_name.to_lowercase().replace('.', "");
+                if dir_name.contains(&repo_lower) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Estimate VRAM usage for a LoRA adapter from its file path.
@@ -769,8 +986,80 @@ fn estimate_adapter_vram(path: &str) -> u64 {
     std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0)
 }
 
-/// Build a prompt string from chat messages using Llama 3 chat template.
-fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
+/// Look up the chat template name for a model from the registry.
+/// Falls back to "llama3" for unknown models.
+pub fn resolve_chat_template(requested_model: &str) -> String {
+    let normalized = requested_model.trim().to_lowercase();
+    let registry = load_registry();
+
+    // Direct registry lookup
+    if let Some(entry) = registry.models.get(&normalized) {
+        if let Some(ref tmpl) = entry.chat_template {
+            return tmpl.clone();
+        }
+    }
+
+    // Infer from model name
+    if normalized.contains("qwen") {
+        return "qwen2".to_string();
+    }
+    if normalized.contains("chatml") || normalized.contains("smollm") {
+        return "chatml".to_string();
+    }
+
+    "llama3".to_string()
+}
+
+/// Extract text content from a chat message.
+fn extract_message_text(msg: &crate::ai::ChatMessage) -> String {
+    match &msg.content {
+        crate::ai::MessageContent::Text(text) => text.clone(),
+        crate::ai::MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| {
+                if let crate::ai::ContentPart::Text { text } = p {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// Build a prompt string from chat messages using the appropriate chat template.
+fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage], template: &str) -> String {
+    match template {
+        "qwen2" | "chatml" => build_prompt_chatml(messages),
+        _ => build_prompt_llama3(messages),
+    }
+}
+
+/// ChatML / Qwen2 template: <|im_start|>role\ncontent<|im_end|>
+fn build_prompt_chatml(messages: &[crate::ai::ChatMessage]) -> String {
+    let mut prompt = String::new();
+
+    let has_system = messages.iter().any(|m| m.role == "system");
+    if !has_system {
+        prompt.push_str("<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>\n");
+    }
+
+    for msg in messages {
+        let role = match msg.role.as_str() {
+            "system" | "user" | "assistant" => msg.role.as_str(),
+            _ => "user",
+        };
+        let content = extract_message_text(msg);
+        prompt.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
+    }
+
+    prompt.push_str("<|im_start|>assistant\n");
+    prompt
+}
+
+/// Llama 3 template: <|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>
+fn build_prompt_llama3(messages: &[crate::ai::ChatMessage]) -> String {
     let mut prompt = String::from("<|begin_of_text|>");
 
     let has_system = messages.iter().any(|m| m.role == "system");
@@ -781,27 +1070,10 @@ fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
 
     for msg in messages {
         let role = match msg.role.as_str() {
-            "system" => "system",
-            "user" => "user",
-            "assistant" => "assistant",
+            "system" | "user" | "assistant" => msg.role.as_str(),
             _ => "user",
         };
-
-        let content = match &msg.content {
-            crate::ai::MessageContent::Text(text) => text.clone(),
-            crate::ai::MessageContent::Parts(parts) => parts
-                .iter()
-                .filter_map(|p| {
-                    if let crate::ai::ContentPart::Text { text } = p {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
-
+        let content = extract_message_text(msg);
         prompt.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n", role));
         prompt.push_str(&content);
         prompt.push_str("<|eot_id|>");
@@ -824,10 +1096,12 @@ mod tests {
         }
     }
 
+    // ── Llama 3 template tests ──
+
     #[test]
-    fn test_prompt_format_simple() {
+    fn test_llama3_prompt_simple() {
         let messages = vec![msg("user", "What is 2+2?")];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.starts_with("<|begin_of_text|>"));
         assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>"));
@@ -838,23 +1112,23 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_format_with_system() {
+    fn test_llama3_prompt_with_system() {
         let messages = vec![msg("system", "You are a pirate."), msg("user", "Hello!")];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.contains("You are a pirate."));
         assert!(!prompt.contains("You are a helpful AI assistant."));
     }
 
     #[test]
-    fn test_prompt_format_multi_turn() {
+    fn test_llama3_prompt_multi_turn() {
         let messages = vec![
             msg("system", "Be concise."),
             msg("user", "Hi"),
             msg("assistant", "Hello!"),
             msg("user", "How are you?"),
         ];
-        let prompt = build_prompt_from_messages(&messages);
+        let prompt = build_prompt_from_messages(&messages, "llama3");
 
         assert!(prompt.starts_with("<|begin_of_text|>"));
         assert!(
@@ -865,5 +1139,58 @@ mod tests {
             prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nHello!<|eot_id|>")
         );
         assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+    }
+
+    // ── Qwen2 / ChatML template tests ──
+
+    #[test]
+    fn test_qwen2_prompt_simple() {
+        let messages = vec![msg("user", "What is 2+2?")];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nWhat is 2+2?<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+        // Must NOT contain Llama tokens
+        assert!(!prompt.contains("<|begin_of_text|>"));
+        assert!(!prompt.contains("<|start_header_id|>"));
+        assert!(!prompt.contains("<|eot_id|>"));
+    }
+
+    #[test]
+    fn test_qwen2_prompt_with_system() {
+        let messages = vec![msg("system", "You are a coding agent."), msg("user", "Write code")];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nYou are a coding agent.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nWrite code<|im_end|>"));
+        assert!(!prompt.contains("You are a helpful AI assistant."));
+    }
+
+    #[test]
+    fn test_qwen2_prompt_multi_turn() {
+        let messages = vec![
+            msg("system", "Be concise."),
+            msg("user", "Hi"),
+            msg("assistant", "Hello!"),
+            msg("user", "How are you?"),
+        ];
+        let prompt = build_prompt_from_messages(&messages, "qwen2");
+
+        assert!(prompt.contains("<|im_start|>system\nBe concise.<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nHi<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>assistant\nHello!<|im_end|>"));
+        assert!(prompt.contains("<|im_start|>user\nHow are you?<|im_end|>"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn test_resolve_chat_template() {
+        assert_eq!(resolve_chat_template("coder"), "qwen2");
+        assert_eq!(resolve_chat_template("coder-14b"), "qwen2");
+        assert_eq!(resolve_chat_template("coder-32b"), "qwen2");
+        assert_eq!(resolve_chat_template("llama3.2:3b"), "llama3");
+        assert_eq!(resolve_chat_template("smollm2"), "chatml");
+        assert_eq!(resolve_chat_template("unknown-model"), "llama3"); // default fallback
     }
 }

@@ -13,8 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-/// Default idle timeout before unloading models (seconds).
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 60;
+/// Grace period before unloading models after last session ends (seconds).
+/// Short — just enough for in-flight async ops to complete.
+/// NOT a "user might rejoin" timer — that's speculative and wastes GB of memory.
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 5;
 
 /// Manages the lifecycle of audio models based on active session count.
 ///
@@ -154,13 +156,13 @@ impl AudioResourceLifecycle {
     /// Spawn a safety-net watchdog that detects orphaned sessions.
     ///
     /// If the session count has been stuck at the same non-zero value for
-    /// longer than the orphan timeout (5 minutes), it means voice/end-session
+    /// longer than the orphan timeout (60s), it means voice/end-session
     /// was never called (browser crash, lost WebSocket, deploy killed the tab).
     /// Force-reset the counter and trigger shutdown.
     pub fn spawn_orphan_watchdog(self: &Arc<Self>) {
         let lifecycle = Arc::clone(self);
-        const ORPHAN_CHECK_INTERVAL_SECS: u64 = 60;
-        const ORPHAN_TIMEOUT_SECS: u64 = 300; // 5 minutes without change = orphaned
+        const ORPHAN_CHECK_INTERVAL_SECS: u64 = 15;
+        const ORPHAN_TIMEOUT_SECS: u64 = 60; // 1 minute without change = orphaned
         const CHECKS_UNTIL_ORPHAN: u64 = ORPHAN_TIMEOUT_SECS / ORPHAN_CHECK_INTERVAL_SECS;
 
         tokio::spawn(async move {

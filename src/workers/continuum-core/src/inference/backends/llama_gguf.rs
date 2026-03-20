@@ -24,19 +24,17 @@ use super::{
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::runtime;
 
-/// GPU sync interval during token-by-token prefill.
-const PREFILL_SYNC_INTERVAL: usize = 64;
-
 /// Llama-family GGUF quantized backend.
 ///
 /// Context length, EOS tokens — all from GGUF metadata.
-/// Token-by-token prefill keeps every forward call at seq_len=1
-/// (Metal SDPA fast path).
+/// Full-batch prefill via Metal SDPA with is_causal=true.
+/// Q/K/V are regular floats after projection — quantization is only in weight matrices.
 pub struct LlamaGgufBackend {
     model: ModelWeights,
     tokenizer: Tokenizer,
     context_length: usize,
     eos_token_ids: Vec<u32>,
+    suppress_token_ids: Vec<u32>,
     model_id: String,
     model_path: PathBuf,
     device: Device,
@@ -56,6 +54,7 @@ impl LlamaGgufBackend {
         device: &Device,
     ) -> Result<Self, String> {
         let eos_token_ids = Self::read_eos_tokens(&ct);
+        let suppress_token_ids = Self::read_suppress_tokens(&ct);
 
         let model = ModelWeights::from_gguf(ct, reader, device)
             .map_err(|e| format!("Llama GGUF load failed: {e}"))?;
@@ -67,6 +66,7 @@ impl LlamaGgufBackend {
             tokenizer,
             context_length,
             eos_token_ids,
+            suppress_token_ids,
             model_id: model_id.to_string(),
             model_path: model_path.to_path_buf(),
             device: device.clone(),
@@ -75,19 +75,60 @@ impl LlamaGgufBackend {
 
     /// Read EOS token IDs from GGUF metadata.
     fn read_eos_tokens(ct: &gguf_file::Content) -> Vec<u32> {
-        if let Some(eos) = ct
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        let base_eos = ct
             .metadata
             .get("tokenizer.ggml.eos_token_id")
-            .and_then(|v| v.to_u32().ok())
-        {
-            if eos == 128001 {
-                // Llama 3 has TWO EOS: <|end_of_text|> (128001) + <|eot_id|> (128009)
-                vec![128001, 128009]
-            } else {
-                vec![eos]
+            .and_then(|v| v.to_u32().ok());
+
+        match arch.as_str() {
+            "qwen2" => {
+                // Qwen2 chat: only <|im_end|> (151645) should stop generation.
+                // <|endoftext|> (151643) has inflated logits in Q3_K_S quantization
+                // and fires prematurely if included as EOS.
+                vec![151645]
             }
-        } else {
-            vec![128009]
+            "llama" => {
+                if let Some(eos) = base_eos {
+                    if eos == 128001 {
+                        vec![128001, 128009] // Llama 3: <|end_of_text|> + <|eot_id|>
+                    } else {
+                        vec![eos]
+                    }
+                } else {
+                    vec![128009]
+                }
+            }
+            _ => {
+                base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009])
+            }
+        }
+    }
+
+    /// Read suppress token IDs from GGUF metadata.
+    /// Architecture-specific control tokens that should never appear in output.
+    fn read_suppress_tokens(ct: &gguf_file::Content) -> Vec<u32> {
+        let arch = ct
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        match arch.as_str() {
+            "qwen2" => {
+                // <|endoftext|> (151643): inflated logits in Q3/Q5_K_S quantization.
+                //   Consistently rank 1 (~18-21 logit) after ChatML prefill.
+                // <|im_start|> (151644): chat control token, never in generated text.
+                vec![151643, 151644]
+            }
+            _ => vec![],
         }
     }
 
@@ -113,6 +154,10 @@ impl LlamaGgufBackend {
 impl ModelBackend for LlamaGgufBackend {
     fn architecture(&self) -> &str {
         "llama"
+    }
+
+    fn suppress_token_ids(&self) -> &[u32] {
+        &self.suppress_token_ids
     }
 
     fn context_length(&self) -> usize {
@@ -145,10 +190,11 @@ impl ModelBackend for LlamaGgufBackend {
         self.model.forward(input, index_pos)
     }
 
-    /// Token-by-token prefill (Metal SDPA safe path).
+    /// Full-batch prefill via Metal SDPA.
     ///
-    /// Each forward call has seq_len=1, which uses the Metal SDPA kernel
-    /// instead of the manual O(n²) attention path that corrupts at >1000 tokens.
+    /// Sends all tokens in a single forward pass. Metal SDPA handles causal
+    /// masking internally (is_causal=true). Q/K/V are regular floats after
+    /// projection — quantization only affects weight matrices, not attention.
     fn prefill(&mut self, tokens: &[u32]) -> Result<Tensor, String> {
         if tokens.is_empty() {
             return Err("Empty token sequence".to_string());
@@ -156,45 +202,28 @@ impl ModelBackend for LlamaGgufBackend {
 
         let log = runtime::logger("candle");
         log.debug(&format!(
-            "Prefilling {} tokens one-at-a-time (Metal SDPA safe path)",
+            "Batch prefilling {} tokens (Metal SDPA)",
             tokens.len()
         ));
 
-        let mut last_logits = None;
-        for (pos, &token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[token], &self.device)
-                .map_err(|e| format!("Tensor creation at pos {pos}: {e}"))?
-                .unsqueeze(0)
-                .map_err(|e| format!("Unsqueeze at pos {pos}: {e}"))?;
+        let input = Tensor::new(tokens, &self.device)
+            .map_err(|e| format!("Tensor creation: {e}"))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Unsqueeze: {e}"))?;
 
-            let logits = self
-                .model
-                .forward(&input, pos)
-                .map_err(|e| format!("Forward at pos {pos}: {e}"))?;
+        let logits = self
+            .model
+            .forward(&input, 0)
+            .map_err(|e| format!("Batch prefill forward: {e}"))?;
 
-            // GPU sync periodically to prevent command buffer explosion
-            if (pos + 1) % PREFILL_SYNC_INTERVAL == 0 {
-                self.device
-                    .synchronize()
-                    .map_err(|e| format!("GPU sync at pos {pos}: {e}"))?;
-            }
-
-            last_logits = Some(logits);
-        }
-
-        // Final sync
-        self.device
-            .synchronize()
-            .map_err(|e| format!("GPU sync after prefill: {e}"))?;
-
-        last_logits.ok_or_else(|| "Empty token sequence".to_string())
+        // Caller (generate()) syncs after prefill — no double sync.
+        Ok(logits)
     }
 
-    /// Clear KV cache by reloading model from disk.
-    /// GGUF ModelWeights has internal per-layer kv_cache with no reset API.
-    /// The GGUF file should be in OS page cache, making this fast (~2-3s).
+    /// Clear KV cache without reloading the entire model.
     fn clear_cache(&mut self) -> Result<(), String> {
-        self.reload_weights()
+        self.model.clear_kv_cache();
+        Ok(())
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, String> {

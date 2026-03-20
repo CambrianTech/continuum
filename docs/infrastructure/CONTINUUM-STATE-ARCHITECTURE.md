@@ -170,7 +170,7 @@ Expertise at multiple granularities:
      ┌─────▼─────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
      │ t2.medium │ │t2.medium│ │t2.medium│ │t2.medium│
      │ continuum │ │continuum│ │continuum│ │continuum│
-     │ + Ollama  │ │+ Ollama │ │+ Ollama │ │+ Ollama │
+     │ + Candle  │ │+ Candle │ │+ Candle │ │+ Candle │
      │   (CPU)   │ │  (CPU)  │ │  (CPU)  │ │  (CPU)  │
      └─────┬─────┘ └────┬────┘ └────┬────┘ └────┬────┘
            │            │            │            │

@@ -285,12 +285,12 @@ const response = await AIProviderDaemon.generateText({
 **2. Queue Priority**
 - Synthesis runs in background (low priority)
 - Chat runs in foreground (high priority)
-- Ollama queue might deprioritize background requests
+- Inference queue might deprioritize background requests
 - **Action**: Check PersonaSubprocess priority settings
 
 **3. Concurrent Request Overload**
 - Multiple personas consolidating simultaneously
-- Ollama queue gets overwhelmed
+- Inference queue gets overwhelmed
 - External APIs have more capacity
 - **Action**: Add rate limiting or batching to consolidation
 

@@ -31,7 +31,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';
 import type { TrainingMetadata } from '../entities/GenomeLayerEntity';
-import type { AdapterPackageManifest, QuantizationInfo, PackResult, ImportResult } from '../shared/AdapterPackageTypes';
+import type { AdapterPackageManifest, QuantizationInfo, CompactionManifest, PackResult, ImportResult } from '../shared/AdapterPackageTypes';
 import { DISTRIBUTABLE_FILES } from '../shared/AdapterPackageTypes';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
@@ -174,6 +174,7 @@ export class AdapterPackage {
     contentHash?: string;
     trainingMetadata: TrainingMetadata;
     quantization?: QuantizationInfo;
+    compaction?: CompactionManifest;
   }): AdapterPackageManifest {
     const safeName = params.personaName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
@@ -195,6 +196,10 @@ export class AdapterPackage {
 
     if (params.quantization) {
       manifest.quantization = params.quantization;
+    }
+
+    if (params.compaction) {
+      manifest.compaction = params.compaction;
     }
 
     return manifest;

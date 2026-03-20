@@ -229,6 +229,9 @@ pub struct TextGenerationRequest {
     pub top_k: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub stop_sequences: Option<Vec<String>>,
 
     // Tool calling (native JSON format)

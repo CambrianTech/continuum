@@ -1,0 +1,37 @@
+{
+  "name": "sentinel/resume",
+  "description": "Resume a pipeline from a durable checkpoint. Only works for pipelines in Interrupted, Paused, or BudgetExhausted status.",
+  "params": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Sentinel handle ID to resume from checkpoint"
+    }
+  ],
+  "results": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "The sentinel handle that was resumed"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "description": "New status after resume (typically 'running')"
+    },
+    {
+      "name": "resumedFromStep",
+      "type": "number",
+      "optional": true,
+      "description": "Step index the pipeline resumed from"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Resume an interrupted pipeline",
+      "command": "./jtag sentinel/resume --handle=abc123",
+      "expectedResult": "{ handle: 'abc123', status: 'running', resumedFromStep: 3 }"
+    }
+  ],
+  "accessLevel": "system"
+}

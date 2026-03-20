@@ -15,12 +15,18 @@
  *
  * Key: Diagnosis BEFORE fix. Team reviews diagnosis to avoid fixing symptoms.
  *
+ * Workspace design:
+ * - When repoPath is set, CodingAgent steps get proper git worktree isolation
+ * - Shell steps for build/test/commit use workspace directory via interpolation
+ * - No manual `git checkout -b` — WorkspaceStrategy handles branch creation
+ *
  * Usage:
  *   const pipeline = buildDevFixBugPipeline({
  *     bug: "Users can't upload avatars larger than 2MB",
  *     personaId: "...",
  *     personaName: "CodeReview AI",
  *     cwd: "/path/to/project",
+ *     repoPath: "/path/to/project",
  *   });
  */
 
@@ -35,6 +41,8 @@ export interface DevFixBugConfig {
   personaName: string;
   /** Project working directory */
   cwd: string;
+  /** Git repo path — enables workspace isolation via project worktree */
+  repoPath?: string;
   /** Chat room for collaborative checkpoints */
   roomId?: string;
   /** Provider for CodingAgent */
@@ -63,6 +71,7 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
     personaId,
     personaName,
     cwd,
+    repoPath,
     roomId = 'general',
     codingProvider = 'claude-code',
     codingModel = 'sonnet',
@@ -77,6 +86,15 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
 
   const runId = `bugfix-${personaId.slice(0, 8)}-${Date.now().toString(36)}`;
   const bugSummary = bug.length > 120 ? bug.slice(0, 120) + '...' : bug;
+  const taskSlug = `bugfix-${Date.now().toString(36)}`;
+  const hasWorkspace = !!repoPath;
+
+  // CodingAgent step for diagnosis is step 0 — shell steps reference its data.workspaceDir
+  const workDir = hasWorkspace ? '{{steps.0.data.workspaceDir}}' : cwd;
+
+  const codingAgentWorkspaceProps = hasWorkspace
+    ? { repoPath, taskSlug }
+    : { workingDir: cwd };
 
   const steps: PipelineStep[] = [
     // Step 0: Investigate — read code, find root cause, DON'T fix yet
@@ -101,12 +119,12 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
       ].join('\n'),
       provider: codingProvider,
       model: codingModel,
-      workingDir: cwd,
       maxTurns: 15,
       maxBudgetUsd: Math.min(maxBudgetUsd, 1.5),
       permissionMode: 'bypassPermissions',
       captureTraining,
       personaId,
+      ...codingAgentWorkspaceProps,
     },
 
     // Step 1-2: Collaborative diagnosis review (if not autonomous)
@@ -154,23 +172,22 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
       ].join('\n'),
       provider: codingProvider,
       model: codingModel,
-      workingDir: cwd,
       maxTurns,
       maxBudgetUsd,
       permissionMode: 'bypassPermissions',
       captureTraining,
       personaId,
+      ...codingAgentWorkspaceProps,
     },
 
-    // Step 4-6: Build, test, and verify (steps skipped if commands are null)
-    ...buildBugVerificationSteps(config, runId, bugSummary, autonomous, roomId),
+    // Build/test verification steps
+    ...buildBugVerificationSteps(config, workDir, runId, bugSummary, autonomous, roomId),
 
-    // Step: Git commit — only modified/new files (avoid committing unrelated changes)
+    // Git commit — only modified/new files (avoid committing unrelated changes)
     {
       type: 'shell',
       cmd: [
-        `cd "${cwd}"`,
-        'git add -u',  // Stage modified tracked files only (not untracked)
+        'git add -u',
         `git diff --cached --quiet && echo "Nothing to commit" || git commit -m "$(cat <<'COMMITMSG'`,
         `fix: ${bugSummary}`,
         '',
@@ -178,12 +195,12 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
         'COMMITMSG',
         `)"`,
       ].join('\n'),
-      workingDir: cwd,
+      workingDir: workDir,
       timeoutSecs: 30,
       allowFailure: true,
     },
 
-    // Step 8: Complete
+    // Complete
     {
       type: 'emit',
       event: `dev:${runId}:complete`,
@@ -213,6 +230,7 @@ export function buildDevFixBugPipeline(config: DevFixBugConfig): Pipeline {
 
 function buildBugVerificationSteps(
   config: DevFixBugConfig,
+  workDir: string,
   runId: string,
   bugSummary: string,
   autonomous: boolean,
@@ -220,7 +238,6 @@ function buildBugVerificationSteps(
 ): PipelineStep[] {
   const {
     personaName = '',
-    cwd,
     buildCommand = 'npm run build:ts 2>&1 | tail -30',
     testCommand = 'npm test 2>&1 | tail -50',
   } = config;
@@ -232,7 +249,7 @@ function buildBugVerificationSteps(
     steps.push({
       type: 'shell',
       cmd: buildCommand,
-      workingDir: cwd,
+      workingDir: workDir,
       timeoutSecs: 180,
       allowFailure: true,
     });
@@ -243,7 +260,7 @@ function buildBugVerificationSteps(
     steps.push({
       type: 'shell',
       cmd: testCommand,
-      workingDir: cwd,
+      workingDir: workDir,
       timeoutSecs: 300,
       allowFailure: true,
     });
@@ -265,7 +282,7 @@ function buildBugVerificationSteps(
           },
         } as PipelineStep]),
       ],
-      else: buildBugfixRetrySteps(config, runId, bugSummary),
+      else: buildBugfixRetrySteps(config, workDir, runId, bugSummary),
     });
   }
 
@@ -274,18 +291,22 @@ function buildBugVerificationSteps(
 
 function buildBugfixRetrySteps(
   config: DevFixBugConfig,
+  workDir: string,
   _runId: string,
   _bugSummary: string,
 ): PipelineStep[] {
   const {
-    cwd,
     personaId,
+    repoPath,
     codingProvider = 'claude-code',
     codingModel = 'sonnet',
     maxBudgetUsd = 3.0,
     captureTraining = true,
     buildCommand = 'npm run build:ts 2>&1 | tail -30',
   } = config;
+
+  const taskSlug = `bugfix-${Date.now().toString(36)}`;
+  const hasWorkspace = !!repoPath;
 
   const steps: PipelineStep[] = [
     {
@@ -299,12 +320,14 @@ function buildBugfixRetrySteps(
       ].join('\n'),
       provider: codingProvider,
       model: codingModel,
-      workingDir: cwd,
       maxTurns: 15,
       maxBudgetUsd: Math.min(maxBudgetUsd, 1.5),
       permissionMode: 'bypassPermissions',
       captureTraining,
       personaId,
+      ...(hasWorkspace
+        ? { repoPath, taskSlug }
+        : { workingDir: workDir }),
     },
   ];
 
@@ -313,7 +336,7 @@ function buildBugfixRetrySteps(
     steps.push({
       type: 'shell',
       cmd: buildCommand,
-      workingDir: cwd,
+      workingDir: workDir,
       timeoutSecs: 180,
       allowFailure: true,
     });

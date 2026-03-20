@@ -632,7 +632,7 @@ if (!isValid) {
 ```
 
 ### Training Data Privacy
-- Training data stays local (Ollama)
+- Training data stays local (Candle)
 - No cloud transmission
 - GitHub repo data only accessible to authorized users
 - Webhook payloads sanitized (future: remove sensitive fields)

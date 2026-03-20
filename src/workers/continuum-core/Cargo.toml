@@ -12,6 +12,10 @@ name = "continuum-core-server"
 path = "src/main.rs"
 
 [[bin]]
+name = "dequantize-gguf"
+path = "src/bin/dequantize_gguf.rs"
+
+[[bin]]
 name = "vrm-convert-textures"
 path = "src/bin/vrm_convert_textures.rs"
 
@@ -33,6 +37,12 @@ toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 async-trait.workspace = true
 chrono.workspace = true
+
+# HTTP server for Anthropic-compatible local inference endpoint
+# Claude Code sends POST /v1/messages — we serve it from Candle
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
 parking_lot.workspace = true
 tokio-stream.workspace = true
 

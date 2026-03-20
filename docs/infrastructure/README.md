@@ -17,8 +17,8 @@
 | [AI-PROVIDER-TESTING-STRATEGY](AI-PROVIDER-TESTING-STRATEGY.md) | Testing approach for AI providers: mocking, integration, provider-specific edge cases |
 | [AI-INFRASTRUCTURE-DASHBOARD](AI-INFRASTRUCTURE-DASHBOARD.md) | Observability dashboard for AI infrastructure: latency, token usage, error rates |
 | [AI-ADAPTER-ARCHITECTURE-REFACTOR](AI-ADAPTER-ARCHITECTURE-REFACTOR.md) | Refactoring AI adapters to clean interface-driven design |
-| [OLLAMA-WORKER-ARCHITECTURE](OLLAMA-WORKER-ARCHITECTURE.md) | Ollama-specific worker design: local model management, GPU sharing |
-| [OLLAMA-QUEUE-COORDINATION](OLLAMA-QUEUE-COORDINATION.md) | Queue coordination for Ollama requests: batching, priority, concurrency limits |
+| [OLLAMA-WORKER-ARCHITECTURE](OLLAMA-WORKER-ARCHITECTURE.md) | **(LEGACY)** Ollama-era worker design: local model management, GPU sharing. Now Candle-based. |
+| [OLLAMA-QUEUE-COORDINATION](OLLAMA-QUEUE-COORDINATION.md) | **(LEGACY)** Ollama-era queue coordination. Now Candle-based inference queue. |
 | [AI-REPORTED-TOOL-ISSUES](AI-REPORTED-TOOL-ISSUES.md) | Catalog of tool-calling issues reported by AI personas during operation |
 | [AI-TOOL-CALLING-TROUBLESHOOTING](AI-TOOL-CALLING-TROUBLESHOOTING.md) | Troubleshooting guide for AI tool-calling failures: parsing, timeouts, schema mismatches |
 

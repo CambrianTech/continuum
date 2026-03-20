@@ -111,7 +111,7 @@ Production → Code works (by construction)
 Claude Opus (Smart) → Creates schemas, templates, patterns
 Claude Sonnet (Mid)  → Uses specs to create modules, learns patterns
 Claude Haiku (Fast)  → Fills in business logic within constraints
-Local Ollama (Basic) → Can safely contribute with full guardrails
+Local Candle (Basic) → Can safely contribute with full guardrails
 ```
 
 ## Module Type Spec Format

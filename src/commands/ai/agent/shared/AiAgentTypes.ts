@@ -56,6 +56,9 @@ export interface AiAgentParams extends CommandParams {
 
   /** Sentinel handle for log correlation */
   sentinelHandle?: string;
+
+  /** Persona UUID — used as callerId for workspace lookup so code tools find the right workspace */
+  personaId?: string;
 }
 
 // ─── Result ──────────────────────────────────────────────────────────
@@ -95,6 +98,17 @@ export interface AiAgentResult extends JTAGPayload {
   readonly durationMs: number;
 
   readonly error?: string;
+
+  /**
+   * Handle ID for async (local inference) execution.
+   * When present, the agent runs in the background.
+   * Subscribe to Events `ai:agent:{handleId}:complete` or `ai:agent:{handleId}:error`
+   * to receive the final result.
+   */
+  readonly handleId?: string;
+
+  /** Lifecycle status for async execution */
+  readonly status?: 'started' | 'complete' | 'error';
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────

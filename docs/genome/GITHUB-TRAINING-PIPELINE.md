@@ -11,7 +11,7 @@ This is what GitHub Copilot Workspace and Cursor AI are trying to build - but th
 - ❌ Expensive ($20-50/month per seat)
 
 **Our system**:
-- ✅ Local-first (runs on your machine via Ollama)
+- ✅ Local-first (runs on your machine via Candle)
 - ✅ Personalized (fine-tuned on YOUR code + YOUR style)
 - ✅ Continuous learning (improves from every PR/issue/review)
 - ✅ Free (open source + local models)
@@ -571,7 +571,7 @@ const trainingFilters = {
 ### **Data Privacy**
 
 **✅ What Stays Local**:
-- All training happens on your machine (Ollama)
+- All training happens on your machine (local Candle inference)
 - Fine-tuned adapters stored locally
 - Training data stored in local `datasets/` directory
 - No data sent to external APIs (except GitHub fetch)

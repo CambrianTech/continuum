@@ -406,7 +406,7 @@ export class PersonaCognition {
 
 ### Pattern 3: Injected Logger (Queue, Singleton, etc.)
 ```typescript
-export class OllamaRequestQueue {
+export class InferenceRequestQueue {
   private log: (message: string) => void;
 
   constructor(maxConcurrent: number, logger?: (message: string) => void) {
@@ -420,7 +420,7 @@ export class OllamaRequestQueue {
 }
 
 // Usage:
-const queue = new OllamaRequestQueue(
+const queue = new InferenceRequestQueue(
   12,
   (msg: string) => this.log(null, 'info', msg) // Inject adapter logger
 );
@@ -666,7 +666,7 @@ Search for patterns with context lines (before/after matches).
 ./jtag logs/search --pattern="ERROR"
 
 # Search for specific pattern with context
-./jtag logs/search --pattern="Ollama.*timeout" --contextBefore=5 --contextAfter=5
+./jtag logs/search --pattern="inference.*timeout" --contextBefore=5 --contextAfter=5
 
 # Case-sensitive search
 ./jtag logs/search --pattern="PersonaCognition" --caseSensitive=true
@@ -853,7 +853,7 @@ await Commands.execute('logs/query', {
 
 // → AI reads log database, returns:
 // "Found 3 errors:
-//  1. Ollama timeout in helper persona at 14:32
+//  1. Inference timeout in helper persona at 14:32
 //  2. PricingManager missing model in deepseek at 14:45
 //  3. WebSocket disconnect in session abc123 at 15:01"
 ```

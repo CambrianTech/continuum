@@ -419,7 +419,7 @@ continuum-hub/
   "compatibility": {
     "min_memory_gb": 8,
     "platforms": ["darwin-arm64", "linux-x86_64", "windows-x86_64"],
-    "inference_backends": ["candle-metal", "candle-cuda", "ollama"]
+    "inference_backends": ["candle-metal", "candle-cuda", "candle-cpu"]
   },
 
   "metrics": {
@@ -2037,7 +2037,7 @@ interface IAdapterProvider {
 }
 
 // Provider implementations
-class LocalAdapterProvider implements IAdapterProvider { }      // Candle/Ollama
+class LocalAdapterProvider implements IAdapterProvider { }      // Candle (Rust)
 class TogetherAdapterProvider implements IAdapterProvider { }   // Together.ai API
 class FireworksAdapterProvider implements IAdapterProvider { }  // Fireworks.ai API
 ```
@@ -2091,7 +2091,7 @@ const adapter = await Commands.execute('adapter/search', {
 
 // Option 1: Route to local persona with adapter
 await Commands.execute('persona/delegate', {
-  to: 'helper-ai',  // Local Ollama persona
+  to: 'helper-ai',  // Local Candle persona
   genome: [{ adapterId: adapter.results[0].id, scale: 1.0 }],
   task: 'Review this code...'
 });
@@ -2113,7 +2113,7 @@ await Commands.execute('adapter/deploy', {
 │                                                                  │
 │  LOCAL FIRST (Free)                                             │
 │  └── If hardware supports base model                            │
-│  └── Use Candle/Ollama with direct LoRA loading                 │
+│  └── Use Candle with direct LoRA loading                        │
 │                                                                  │
 │  CLOUD LORA (Cheap)                                             │
 │  └── Together.ai / Fireworks.ai                                 │

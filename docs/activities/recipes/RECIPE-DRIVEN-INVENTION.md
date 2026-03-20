@@ -359,7 +359,7 @@ export class RecipeExecutor {
     deploymentSpec: Recipe['deployment']
   ): Promise<DeployedSolution> {
     if (deploymentSpec.target === 'local-inference') {
-      // Package for local inference (Ollama compatible)
+      // Package for local inference (Candle compatible)
       return this.packager.packageLocal(solution, deploymentSpec.hardware);
     }
 

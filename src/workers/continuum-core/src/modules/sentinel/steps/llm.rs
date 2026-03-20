@@ -85,11 +85,13 @@ async fn execute_generate_mode(
         .map(|s| interpolation::interpolate(s, ctx));
 
     log.info(&format!(
-        "[{}] LLM step (generate): model={:?}, provider={:?}, prompt_len={}",
+        "[{}] LLM step (generate): model={:?}, provider={:?}, prompt_len={}, max_tokens={:?}, temperature={:?}",
         pipeline_ctx.handle_id,
         params.model,
         params.provider,
-        interpolated_prompt.len()
+        interpolated_prompt.len(),
+        params.max_tokens,
+        params.temperature,
     ));
 
     let mut ai_params = json!({

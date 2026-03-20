@@ -151,8 +151,9 @@ mod tests {
         let mut backend = load_default_quantized().expect("Failed to load");
 
         let prompt = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nSay hello.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n";
+        let sampling = backends::SamplingConfig::chat();
         let (output, tokens) =
-            backends::generate(&mut *backend, prompt, 30, 0.3).expect("Generation failed");
+            backends::generate(&mut *backend, prompt, 30, &sampling).expect("Generation failed");
 
         println!("Generated {} tokens: {}", tokens, output);
         assert!(!output.contains('\u{FFFD}'), "Output contains garbage");
@@ -171,7 +172,8 @@ mod tests {
             filler
         );
 
-        let result = backends::generate(&mut *backend, &prompt, 10, 0.3);
+        let sampling = backends::SamplingConfig::chat();
+        let result = backends::generate(&mut *backend, &prompt, 10, &sampling);
         assert!(result.is_err(), "Should reject oversized prompt");
     }
 }

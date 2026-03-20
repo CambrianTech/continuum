@@ -20,21 +20,10 @@ use super::{
 use crate::inference::model::rebuild_with_stacked_lora;
 use crate::runtime;
 
-/// BF16 full-batch prefill on Metal creates an O(n²) attention matrix.
-/// At 150 tokens → 1s, at 3500 tokens → 55s. Unusable for interactive chat.
-/// Cap to this limit so prefill stays under ~15s and 4 serialized personas
-/// complete within the 180s timeout.
-///
-/// This is NOT the model's theoretical limit (which is 131072 for Llama 3.2 3B).
-/// It's the practical throughput ceiling for BF16 full-batch attention on Metal.
-/// Known at compile time — hardware constraint, not model property.
-pub const BF16_PRACTICAL_CONTEXT: usize = 2048;
-
 /// Llama safetensors (BF16/FP32) backend.
 ///
 /// Full-precision model for LoRA training and high-quality inference.
-/// Context length from `config.max_position_embeddings`, capped to
-/// `BF16_PRACTICAL_CONTEXT` for Metal performance.
+/// Context length from `config.max_position_embeddings` — the model's own definition.
 /// Full-batch prefill (BF16 has proper causal masking, no Metal SDPA issue).
 pub struct LlamaSafetensorsBackend {
     model: Llama,
@@ -67,7 +56,7 @@ impl LlamaSafetensorsBackend {
         eos_token_ids: Vec<u32>,
         weight_paths: Vec<PathBuf>,
     ) -> Self {
-        let context_length = config.max_position_embeddings.min(BF16_PRACTICAL_CONTEXT);
+        let context_length = config.max_position_embeddings;
 
         Self {
             model,

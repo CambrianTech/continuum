@@ -1495,7 +1495,7 @@ Reliable, cost-effective models for high-volume tasks.
 
 ---
 
-### Category 3: Local Models (Ollama - Llama, Phi, CodeLlama, DeepSeek)
+### Category 3: Local Models (Candle - Llama, Phi, CodeLlama, DeepSeek)
 
 Tasks optimized for local inference with smaller models.
 
@@ -1517,7 +1517,7 @@ Tasks optimized for local inference with smaller models.
       "then": [
         { "type": "llm",
           "prompt": "Generate a conventional commit message for this diff. Format: type(scope): description\n\nTypes: feat, fix, docs, style, refactor, test, chore\n\nDiff:\n$stagedDiff",
-          "model": "ollama/deepseek-coder:6.7b",
+          "model": "candle/deepseek-coder:6.7b",
           "temperature": 0.3,
           "outputTo": "commitMessage" },
         { "type": "emit", "event": "sentinel:commit:ready",
@@ -1555,7 +1555,7 @@ Tasks optimized for local inference with smaller models.
       "outputTo": "existingTests" },
     { "type": "llm",
       "prompt": "Compare exports vs existing tests. List functions that need tests.\n\nExports:\n$exports\n\nExisting tests:\n$existingTests",
-      "model": "ollama/codellama:13b",
+      "model": "candle/codellama:13b",
       "outputTo": "untestedFunctions" },
     { "type": "condition", "check": "$untestedFunctions.length > 0",
       "then": [
@@ -1564,7 +1564,7 @@ Tasks optimized for local inference with smaller models.
           "outputTo": "sourceCode" },
         { "type": "llm",
           "prompt": "Write unit tests for: $untestedFunctions[0].name\n\nSource:\n$sourceCode\n\nUse vitest. Test edge cases.",
-          "model": "ollama/codellama:13b",
+          "model": "candle/codellama:13b",
           "tools": ["code/write"],
           "parseToolCalls": true,
           "outputTo": "generatedTest" },
@@ -1598,7 +1598,7 @@ Tasks optimized for local inference with smaller models.
       "outputTo": "recentLogs" },
     { "type": "llm",
       "prompt": "Analyze these logs for anomalies. Categorize each issue:\n- ERROR: Immediate attention\n- WARNING: Monitor closely\n- INFO: Normal operation\n\nLogs:\n$recentLogs",
-      "model": "ollama/phi3:mini",
+      "model": "candle/phi3:mini",
       "temperature": 0.1,
       "outputTo": "analysis" },
     { "type": "condition", "check": "$analysis.hasErrors",
@@ -1977,7 +1977,7 @@ Tasks that validate personas identifying their own weaknesses and creating train
         "steps": [
           { "type": "llm",
             "prompt": "Solve this challenge:\n$currentChallenge.input\n\nThink step by step.",
-            "model": "ollama/llama3.1:8b",
+            "model": "candle/llama3.1:8b",
             "outputTo": "myAnswer" },
           { "type": "llm",
             "prompt": "Grade this answer. Expected: $currentChallenge.expectedOutput\nGot: $myAnswer\n\nScore 0-100. Explain errors if any.",
@@ -2060,11 +2060,11 @@ Tasks that validate the sentinel's ability to orchestrate LoRA training and phen
                 "outputTo": "validationChallenges" },
               { "type": "llm",
                 "prompt": "Solve: $validationChallenges[0].input",
-                "model": "ollama/llama3.1:8b",
+                "model": "candle/llama3.1:8b",
                 "outputTo": "baselineAnswer" },
               { "type": "llm",
                 "prompt": "Solve: $validationChallenges[0].input",
-                "model": "ollama/llama3.1:8b+$trainingResult.adapterPath",
+                "model": "candle/llama3.1:8b+$trainingResult.adapterPath",
                 "outputTo": "trainedAnswer" },
               { "type": "llm",
                 "prompt": "Compare baseline vs trained answers. Which is better? Score improvement 0-100.\n\nBaseline: $baselineAnswer\nTrained: $trainedAnswer\nExpected: $validationChallenges[0].expected",
@@ -2172,7 +2172,7 @@ Tasks that validate the competitive training environment where personas evolve.
             "name": "contestant-a",
             "steps": [
               { "type": "llm", "prompt": "Solve: $challenge.problems",
-                "model": "ollama/llama3.1:8b+persona-a-genome",
+                "model": "candle/llama3.1:8b+persona-a-genome",
                 "outputTo": "solutions" }
             ],
             "loop": { "type": "once" }
@@ -2183,7 +2183,7 @@ Tasks that validate the competitive training environment where personas evolve.
             "name": "contestant-b",
             "steps": [
               { "type": "llm", "prompt": "Solve: $challenge.problems",
-                "model": "ollama/llama3.1:8b+persona-b-genome",
+                "model": "candle/llama3.1:8b+persona-b-genome",
                 "outputTo": "solutions" }
             ],
             "loop": { "type": "once" }
@@ -2484,7 +2484,7 @@ Tasks that validate genome layers can be packaged, shared, and discovered.
             "name": "test-source",
             "steps": [
               { "type": "llm", "prompt": "$testQuestions",
-                "model": "ollama/llama3.1:8b+$sourcePersonaId-genome",
+                "model": "candle/llama3.1:8b+$sourcePersonaId-genome",
                 "outputTo": "sourceAnswers" }
             ],
             "loop": { "type": "once" }
@@ -2495,7 +2495,7 @@ Tasks that validate genome layers can be packaged, shared, and discovered.
             "name": "test-target",
             "steps": [
               { "type": "llm", "prompt": "$testQuestions",
-                "model": "ollama/llama3.1:8b+$targetPersonaId-genome",
+                "model": "candle/llama3.1:8b+$targetPersonaId-genome",
                 "outputTo": "targetAnswers" }
             ],
             "loop": { "type": "once" }

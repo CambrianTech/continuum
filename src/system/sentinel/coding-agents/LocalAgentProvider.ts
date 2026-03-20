@@ -1,18 +1,23 @@
 /**
  * LocalAgentProvider — CodingAgentProvider backed by the universal ai/agent command.
  *
- * Wraps the existing agentic tool loop (any provider × any model × all code tools)
+ * Wraps the existing agentic tool loop (any provider x any model x all code tools)
  * so sentinel CodingAgent steps can run entirely locally or with any cloud provider,
  * not just Claude Code.
  *
  * Provider routing:
- * - 'local-agent'            → Candle (local Llama) — fully offline
- * - 'local-agent:deepseek'   → DeepSeek via cloud
- * - 'local-agent:anthropic'  → Anthropic via API
- * - 'local-agent:groq'       → Groq cloud
+ * - 'local-agent'            -> Candle (local Llama) — fully offline
+ * - 'local-agent:deepseek'   -> DeepSeek via cloud
+ * - 'local-agent:anthropic'  -> Anthropic via API
+ * - 'local-agent:groq'       -> Groq cloud
  * - etc.
  *
- * The model and provider can be overridden per CodingAgentConfig.
+ * Tool resolution is fully delegated to ai/agent:
+ * - config.allowedTools set   -> passes that subset to ai/agent
+ * - config.allowedTools unset -> passes tools=undefined, ai/agent resolves all public tools
+ *
+ * System prompt is minimal — just identity + workspace. Tool formatting, group selection,
+ * and budget management are handled by AiAgentServerCommand + ToolGroupRegistry.
  */
 
 import type {
@@ -23,26 +28,12 @@ import type {
   CodingAgentResult,
   CodingAgentToolCall,
 } from './CodingAgentProvider';
+import { LocalContextBuilder } from './LocalContextBuilder';
+import { LocalModelRouter } from './LocalModelRouter';
 import { Commands } from '@system/core/shared/Commands';
+import { Events } from '@system/core/shared/Events';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
-
-/** Code tools available to the agent — mirrors what Claude Code can do */
-const CODE_TOOLS = [
-  'code/read',
-  'code/write',
-  'code/edit',
-  'code/search',
-  'code/tree',
-  'code/diff',
-  'code/undo',
-  'code/history',
-  'code/verify',
-  'code/git',
-  'code/shell/execute',
-  'code/shell/watch',
-  'code/shell/status',
-  'code/shell/kill',
-];
+import type { AiAgentResult } from '../../../commands/ai/agent/shared/AiAgentTypes';
 
 export class LocalAgentProvider implements CodingAgentProvider {
   readonly providerId = 'local-agent';
@@ -77,6 +68,7 @@ export class LocalAgentProvider implements CodingAgentProvider {
     // Resolve provider (can be overridden in config.model as 'provider:model')
     let provider = this._defaultProvider;
     let model = this._defaultModel;
+    const modelExplicitlySet = !!config.model;
 
     if (config.model) {
       if (config.model.includes(':')) {
@@ -89,17 +81,47 @@ export class LocalAgentProvider implements CodingAgentProvider {
       }
     }
 
-    // Build system prompt — coding-focused with workspace context
-    const systemPrompt = this.buildSystemPrompt(config);
+    const isLocal = provider === 'candle' || provider === 'candle-q';
 
-    // Determine tools — use config.allowedTools or default code tools
-    const tools = config.allowedTools && config.allowedTools.length > 0
-      ? config.allowedTools
-      : CODE_TOOLS;
+    // For local providers without an explicit model override: route based on VRAM.
+    // This determines whether we get BF16 batch prefill (800 token budget) or
+    // GGUF token-by-token (350 token budget). The Rust side does the actual
+    // model selection — the router just informs budget math here.
+    let maxSystemTokens = 350;
+    let usesBatchPrefill = false;
+    if (isLocal && !modelExplicitlySet) {
+      const gpuStats = await this.fetchGpuStats();
+      const routing = LocalModelRouter.sharedInstance().route(gpuStats.totalVramMb);
+      model = routing.model;
+      maxSystemTokens = routing.maxSystemTokens;
+      usesBatchPrefill = routing.usesBatchPrefill;
+    }
+
+    // Build dynamic system prompt using colon-shorthand tool format.
+    // LocalContextBuilder selects task-relevant tools and formats them compactly
+    // with colon-shorthand examples — the native output format of the 14B coder model.
+    // tools=[] prevents AiAgentServerCommand from injecting its own verbose tool docs.
+    // Cloud providers use full ToolGroupRegistry (undefined = all public tools).
+    let systemPrompt: string;
+    let tools: string[] | undefined;
+    if (isLocal) {
+      const ctxResult = await LocalContextBuilder.sharedInstance().build({
+        cwd: config.cwd,
+        taskPrompt: config.prompt,
+        maxSystemTokens,
+        customSystemPrompt: config.systemPrompt,
+      });
+      systemPrompt = ctxResult.systemPrompt;
+      tools = []; // Compact format is in systemPrompt; don't let ai/agent add verbose docs
+    } else {
+      systemPrompt = config.systemPrompt ?? `You are a coding agent working in: ${config.cwd}`;
+      tools = config.allowedTools ?? undefined;
+    }
 
     try {
-      // Call ai/agent — the universal agentic loop
-      const result = await Commands.execute('ai/agent', {
+      // Start agent — local providers return a handle immediately and run in background.
+      // Cloud providers block until complete (fast enough for request/response).
+      const agentResponse = await Commands.execute('ai/agent', {
         prompt: config.prompt,
         systemPrompt,
         provider,
@@ -107,25 +129,19 @@ export class LocalAgentProvider implements CodingAgentProvider {
         tools,
         maxIterations: config.maxTurns || 10,
         sentinelHandle: config.sentinelHandle,
-        temperature: 0.3,
+        personaId: config.personaId,
+        // GGUF: greedy decoding (temperature=0) — quantized models get stuck in repetition
+      // loops under multinomial sampling at any temperature. BF16 batch prefill path
+      // can handle temperature > 0 since the model is more coherent.
+      temperature: isLocal && !usesBatchPrefill ? 0 : 0.3,
         maxTokens: 4096,
-      } as Record<string, unknown>) as unknown as {
-        success: boolean;
-        text: string;
-        toolCalls: Array<{
-          toolName: string;
-          params: Record<string, string>;
-          success: boolean;
-          content?: string;
-          error?: string;
-          durationMs: number;
-        }>;
-        iterations: number;
-        model?: string;
-        provider?: string;
-        durationMs: number;
-        error?: string;
-      };
+      } as Record<string, unknown>) as unknown as AiAgentResult;
+
+      // Local providers return { handleId, status: 'started' } immediately.
+      // Subscribe to the completion event and wait — no IPC timeout, no 300s cliff.
+      const result = agentResponse.handleId
+        ? await this.waitForCompletion(agentResponse.handleId, onProgress)
+        : agentResponse;
 
       const durationMs = Date.now() - startTime;
 
@@ -204,29 +220,46 @@ export class LocalAgentProvider implements CodingAgentProvider {
     }
   }
 
-  private buildSystemPrompt(config: CodingAgentConfig): string {
-    const parts: string[] = [
-      `You are a coding agent working in: ${config.cwd}`,
-      '',
-      'You have access to code tools for reading, writing, editing, searching, and executing shell commands.',
-      'Use them to accomplish the task. Be methodical:',
-      '1. Read relevant files first to understand the codebase',
-      '2. Plan your changes',
-      '3. Make edits using code/edit (preferred) or code/write',
-      '4. Verify your work with code/verify or code/shell/execute',
-      '5. Fix any errors before reporting completion',
-      '',
-      'Important:',
-      '- Always read a file before editing it',
-      '- Use code/edit for modifications (not code/write which overwrites)',
-      '- Run code/verify after changes to check compilation',
-      '- Be concise in your responses — show what you did, not what you plan to do',
-    ];
-
-    if (config.systemPrompt) {
-      parts.push('', '--- Additional Context ---', '', config.systemPrompt);
+  /**
+   * Fetch GPU stats for model routing decisions.
+   * Returns zero VRAM on failure (routes to GGUF path, safe default).
+   */
+  private async fetchGpuStats(): Promise<{ totalVramMb: number }> {
+    try {
+      const stats = await Commands.execute('gpu/stats') as { totalVramMb?: number };
+      return { totalVramMb: stats.totalVramMb ?? 0 };
+    } catch {
+      return { totalVramMb: 0 };
     }
+  }
 
-    return parts.join('\n');
+  /**
+   * Wait for a background ai/agent session to complete via events.
+   * No request timeout — the caller's context (e.g. Sentinel step timeout) controls lifetime.
+   */
+  private waitForCompletion(
+    handleId: string,
+    onProgress?: (event: CodingAgentProgressEvent) => void,
+  ): Promise<AiAgentResult> {
+    return new Promise((resolve, reject) => {
+      const unsubComplete = Events.subscribe(`ai:agent:${handleId}:complete`, (data) => {
+        unsubComplete();
+        unsubError();
+        resolve(data as AiAgentResult);
+      });
+
+      const unsubError = Events.subscribe(`ai:agent:${handleId}:error`, (data) => {
+        unsubComplete();
+        unsubError();
+        const msg = (data as { error?: string }).error ?? 'Agent failed';
+        reject(new Error(msg));
+      });
+
+      onProgress?.({
+        type: 'status',
+        message: `Running (handle: ${handleId})`,
+        timestamp: Date.now(),
+      });
+    });
   }
 }
