@@ -26,6 +26,26 @@ const WORKERS_DIR = path.join(ROOT, 'workers');
 const GENERATED_DIR = path.join(ROOT, 'shared', 'generated');
 
 /**
+ * Detect GPU features for cargo commands — mirrors scripts/shared/cargo-features.sh.
+ * Returns args like ['--features', 'metal,accelerate'] or ['--features', 'cuda'] or [].
+ */
+function detectGpuFeatures(): string[] {
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    return ['--features', 'metal,accelerate'];
+  }
+  if (platform === 'linux') {
+    // Check for NVIDIA GPU (standard path + WSL path)
+    const hasCuda = fs.existsSync('/usr/lib/wsl/lib/nvidia-smi') ||
+      spawnSync('which', ['nvidia-smi'], { stdio: 'pipe' }).status === 0;
+    if (hasCuda) {
+      return ['--features', 'cuda'];
+    }
+  }
+  return []; // CPU-only
+}
+
+/**
  * Rust packages that export TypeScript types via ts-rs.
  * Each entry maps a cargo package name to its generated output subdirectories.
  */
@@ -51,9 +71,12 @@ function generateBindings(pkg: string, description: string): boolean {
 
   // --release: livekit's webrtc-sys native library only builds in release mode
   // --lib: only lib tests (export_bindings live there), avoids webrtc-sys cleanup hangs
+  // GPU features: must match the build features (metal on macOS, cuda on Linux)
+  const gpuFeatures = detectGpuFeatures();
+  const args = ['test', '--package', pkg, '--lib', 'export_bindings', '--release', ...gpuFeatures];
   const result = spawnSync(
     'cargo',
-    ['test', '--package', pkg, '--lib', 'export_bindings', '--release'],
+    args,
     {
       cwd: WORKERS_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
