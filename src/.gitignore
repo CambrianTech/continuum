@@ -77,7 +77,7 @@ widgets/**/*.styles.ts
 
 # Cargo build outputs
 **/target/
-Cargo.lock
+# Cargo.lock committed — consistent dep resolution across platforms
 
 # Rust debug symbols
 *.dSYM/
