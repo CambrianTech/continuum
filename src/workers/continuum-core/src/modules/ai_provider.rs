@@ -226,6 +226,7 @@ impl AIProviderModule {
             max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
             top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
             top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
+            repeat_penalty: p.f32_opt("repeat_penalty").or_else(|| p.f32_opt("repeatPenalty")),
             stop_sequences: p
                 .json_opt("stop_sequences")
                 .or_else(|| p.json_opt("stopSequences")),

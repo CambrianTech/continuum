@@ -624,6 +624,7 @@ async fn call_llm(
         max_tokens: Some(4000),
         top_p: None,
         top_k: None,
+        repeat_penalty: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,

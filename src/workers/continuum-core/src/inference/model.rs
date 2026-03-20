@@ -693,9 +693,10 @@ mod tests {
         // Generate a short coding completion
         let prompt = "<|im_start|>user\nWrite a Python function called is_prime that checks if a number is prime.<|im_end|>\n<|im_start|>assistant\n";
 
-        eprintln!("Generating (max 256 tokens, temp 0.1)...");
+        let sampling = backends::SamplingConfig::code();
+        eprintln!("Generating (max 256 tokens, {:?})...", sampling);
         let gen_start = Instant::now();
-        let (output, token_count) = backends::generate(backend.as_mut(), prompt, 256, 0.1)
+        let (output, token_count) = backends::generate(backend.as_mut(), prompt, 256, &sampling)
             .expect("Generation failed");
         let gen_time = gen_start.elapsed();
 

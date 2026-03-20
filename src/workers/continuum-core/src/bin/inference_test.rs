@@ -68,22 +68,16 @@ fn main() {
     device.synchronize().ok();
     eprintln!("Model loaded in {:.1}s (ctx={})", load_start.elapsed().as_secs_f32(), backend.context_length());
 
-    // EXACT QAT training prompt (from diagnose_prefill.rs)
-    let system = "You are a coding agent working in a project directory. You have these tools:\n\n\
-        - code/write: Create a NEW file. Params: {filePath: string, content: string}\n\
-        - code/read: Read an existing file. Params: {filePath: string}\n\
-        - code/edit: Modify an existing file. Params: {filePath: string, oldString: string, newString: string}\n\
-        - code/shell/execute: Run a shell command. Params: {command: string}\n\
-        - code/tree: List directory structure. Params: {path: string}\n\
-        - code/search: Search for text in files. Params: {query: string, path: string}\n\n\
-        Use <tool_use> XML format to call tools. Always use code/write for NEW files, code/edit for MODIFYING existing files, code/read before editing.";
-
-    let user_msg = "Create hello.py with a Flask hello world app";
-
-    // Build chat-template prompt (Qwen2 format)
-    let prompt = format!(
-        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
-    );
+    // Read prompt from PROMPT env var, or PROMPT_FILE, or use default
+    let prompt = if let Ok(p) = std::env::var("PROMPT") {
+        format!("<|im_start|>user\n{p}<|im_end|>\n<|im_start|>assistant\n")
+    } else if let Ok(f) = std::env::var("PROMPT_FILE") {
+        std::fs::read_to_string(&f).expect(&format!("Failed to read {f}"))
+    } else {
+        let system = "You are a coding agent. Use <tool_use> XML to call tools.";
+        let user_msg = "Create hello.py with a Flask hello world app";
+        format!("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n")
+    };
 
     eprintln!("\n=== Prompt ({} chars) ===", prompt.len());
 
@@ -91,11 +85,14 @@ fn main() {
     let max_tokens = std::env::var("MAX_TOKENS")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
 
+    let sampling = continuum_core::inference::backends::SamplingConfig::code();
+    eprintln!("Sampling: {:?}", sampling);
+
     let (output, token_count) = continuum_core::inference::backends::generate(
         backend.as_mut(),
         &prompt,
         max_tokens,
-        0.1,
+        &sampling,
     ).expect("generate");
 
     eprintln!("\n=== Output ({} tokens) ===", token_count);

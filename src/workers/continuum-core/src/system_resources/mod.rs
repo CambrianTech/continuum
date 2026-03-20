@@ -22,3 +22,40 @@ pub use memory_pressure::{
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,
 };
+
+/// Get current process RSS in MB. Reads directly from OS (no caching).
+pub fn process_rss_mb() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::mem::MaybeUninit;
+        let mut info = MaybeUninit::<libc::mach_task_basic_info_data_t>::uninit();
+        let mut count = (std::mem::size_of::<libc::mach_task_basic_info_data_t>()
+            / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+        #[allow(deprecated)]
+        let task = unsafe { libc::mach_task_self() };
+        let ret = unsafe {
+            libc::task_info(
+                task,
+                libc::MACH_TASK_BASIC_INFO,
+                info.as_mut_ptr() as *mut _,
+                &mut count,
+            )
+        };
+        if ret == libc::KERN_SUCCESS {
+            let info = unsafe { info.assume_init() };
+            return info.resident_size as u64 / (1024 * 1024);
+        }
+        0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(rss_pages) = statm.split_whitespace().nth(1) {
+                if let Ok(pages) = rss_pages.parse::<u64>() {
+                    return pages * 4096 / (1024 * 1024);
+                }
+            }
+        }
+        0
+    }
+}

@@ -9,9 +9,22 @@
 //!   3. Changed crate-internal imports (`candle::`, `crate::`) to external crate
 //!      imports (`candle_core::`, `candle_transformers::`) since this is vendored
 //!      outside of candle-transformers.
+//!   4. **CRITICAL FIX**: RoPE convention dispatch based on architecture.
+//!      Upstream always uses `rope_i` (interleaved), which is WRONG for NEOX-style
+//!      models (Qwen2, Falcon, Phi, etc.). These need `rope` (non-interleaved).
+//!      Without this fix, attention patterns are systematically corrupted, causing
+//!      +11.7 logit inflation on special tokens vs llama.cpp reference.
+//!      See: https://github.com/huggingface/candle/issues/3410
+//!   5. Architecture-aware model loading: reads Qwen2 attention biases, handles
+//!      compacted (head-pruned) model dimensions, MoE routing.
 //!
-//! When candle-transformers publishes a release that reads context_length from
-//! GGUF metadata for Llama, this vendored copy can be removed.
+//! Diagnostic env vars:
+//!   CANDLE_MAX_LAYERS=N    — Run only N transformer layers (for A/B testing)
+//!   CANDLE_DEBUG_TOKENS=1  — Log top-10 logits after prefill
+//!   CANDLE_DUMP_LAYERS=1   — Dump per-layer hidden states
+//!   CANDLE_DUMP_LAYER0=1   — Dump layer 0 intermediates (attn_norm, attn_out, etc.)
+//!   CANDLE_DUMP_ATTN=1     — Dump attention internals (Q/K/V after bias+RoPE, kqv_out)
+//!   CANDLE_DUMP_HIDDEN=1   — Dump final hidden state and logits to /tmp/*.bin
 
 use std::collections::HashMap;
 
@@ -20,55 +33,8 @@ use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::Module;
 
-// Toggle: use original Candle RmsNorm for A/B testing
-const USE_ORIGINAL_RMSNORM: bool = true;
-
-/// Softmax with f64 sum accumulation (matching llama.cpp's ggml_float).
-///
-/// Candle's softmax_last_dim accumulates exp() sum in f32. llama.cpp uses f64.
-/// With 187 tokens × 48 layers × 25 heads = 1200 softmax calls during prefill,
-/// the f32 error compounds and shifts attention patterns enough to cause divergence.
-fn softmax_f64(xs: &Tensor) -> Result<Tensor> {
-    let device = xs.device();
-    let dims = xs.dims();
-    let last_dim = *dims.last().unwrap();
-
-    let xs_f32 = xs.to_dtype(DType::F32)?;
-    let flat = xs_f32.flatten_all()?;
-    let data: Vec<f32> = flat.to_vec1()?;
-
-    let mut result = vec![0f32; data.len()];
-    for chunk in 0..(data.len() / last_dim) {
-        let start = chunk * last_dim;
-        let end = start + last_dim;
-        let row = &data[start..end];
-
-        // Max for numerical stability
-        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-
-        // Accumulate exp() sum in f64 (matching llama.cpp)
-        let mut sum: f64 = 0.0;
-        for i in 0..last_dim {
-            let e = ((row[i] - max) as f64).exp();
-            result[start + i] = e as f32;
-            sum += e;
-        }
-
-        // Normalize
-        let inv_sum = (1.0 / sum) as f32;
-        for i in 0..last_dim {
-            result[start + i] *= inv_sum;
-        }
-    }
-
-    Tensor::from_vec(result, dims, device)
-}
-
-/// RmsNorm with f64 sum-of-squares accumulation (matching llama.cpp).
-///
-/// Candle's built-in RmsNorm uses f32 accumulation, which loses precision
-/// for hidden_size=5120 and compounds across 48 layers, causing token-level
-/// divergence from llama.cpp's output. See: https://github.com/huggingface/candle/issues/3410
+/// RmsNorm wrapper — delegates to candle_nn::ops::rms_norm.
+/// Stores dequantized weight and eps for use with quantized model loading.
 #[derive(Debug, Clone)]
 pub struct RmsNorm {
     weight: Tensor,
@@ -84,24 +50,7 @@ impl RmsNorm {
 
 impl Module for RmsNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        if USE_ORIGINAL_RMSNORM {
-            // Use original Candle RmsNorm for A/B testing
-            candle_nn::ops::rms_norm(x, &self.weight, self.eps as f32)
-        } else {
-            // f64 accumulation matching llama.cpp
-            let device = x.device();
-            let x_f32 = x.to_dtype(DType::F32)?;
-            let dim = *x_f32.dims().last().unwrap();
-            let x_sq = (&x_f32 * &x_f32)?;
-            let sum_sq = x_sq.sum_keepdim(candle_core::D::Minus1)?
-                .to_device(&Device::Cpu)?;
-            let sum_vec: Vec<f32> = sum_sq.flatten_all()?.to_vec1()?;
-            let rms_vec: Vec<f32> = sum_vec.iter()
-                .map(|&s| ((s as f64 / dim as f64 + self.eps).sqrt()) as f32)
-                .collect();
-            let rms = Tensor::from_vec(rms_vec, sum_sq.dims().to_vec(), device)?;
-            x_f32.broadcast_div(&rms)?.broadcast_mul(&self.weight)
-        }
+        candle_nn::ops::rms_norm(x, &self.weight, self.eps as f32)
     }
 }
 
@@ -326,6 +275,10 @@ struct LayerWeights {
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
+    /// RoPE type: true = NEOX (non-interleaved, pairs i with i+d/2),
+    /// false = NORM (interleaved, pairs 2i with 2i+1).
+    /// Qwen2 uses NEOX (type 2), standard Llama uses NORM (type 0).
+    rope_is_neox: bool,
     cos: Tensor,
     sin: Tensor,
     neg_inf: Tensor,
@@ -347,7 +300,13 @@ impl LayerWeights {
         let (_b_sz, _n_head, seq_len, _n_embd) = x.dims4()?;
         let cos = self.cos.narrow(0, index_pos, seq_len)?;
         let sin = self.sin.narrow(0, index_pos, seq_len)?;
-        candle_nn::rotary_emb::rope_i(&x.contiguous()?, &cos, &sin)
+        if self.rope_is_neox {
+            // GPT-NeoX style: pairs (i, i+d/2). Used by Qwen2, CodeLlama, etc.
+            candle_nn::rotary_emb::rope(&x.contiguous()?, &cos, &sin)
+        } else {
+            // Interleaved style: pairs (2i, 2i+1). Used by standard Llama.
+            candle_nn::rotary_emb::rope_i(&x.contiguous()?, &cos, &sin)
+        }
     }
 
     fn forward_attn(
@@ -362,6 +321,8 @@ impl LayerWeights {
         let mut k = self.attention_wk.forward(x)?;
         let mut v = self.attention_wv.forward(x)?;
 
+        let dump_attn = std::env::var("CANDLE_DUMP_ATTN").is_ok() && index_pos == 0;
+
         // Apply attention biases (Qwen2 has bias on Q, K, V; Llama skips this)
         if let Some(bq) = &self.attention_bq {
             q = q.broadcast_add(bq)?;
@@ -371,6 +332,24 @@ impl LayerWeights {
         }
         if let Some(bv) = &self.attention_bv {
             v = v.broadcast_add(bv)?;
+        }
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // Q after bias (before reshape/RoPE) — matches llama.cpp "Qcur-0" first dump
+            if let Ok(vals) = q.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
+            if let Ok(vals) = k.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("K+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
+            if let Ok(vals) = v.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("V+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+            }
         }
 
         let q = q
@@ -386,6 +365,28 @@ impl LayerWeights {
 
         let q = self.apply_rotary_emb(&q, index_pos)?;
         let k = self.apply_rotary_emb(&k, index_pos)?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            // Q after RoPE: shape [b, n_head, seq, head_dim]
+            // llama.cpp "Qcur-0" after RoPE: shape [128, 25, 187, 1]
+            // Compare last head's last position
+            let last = seq_len - 1;
+            let n_head = self.n_head;
+            if let Ok(vals) = q.i((0, n_head - 1, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q after RoPE (head {}, last tok): first5=[{}]", n_head - 1, first.join(", "));
+            }
+            // Q head 0 last tok
+            if let Ok(vals) = q.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("Q after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+            if let Ok(vals) = k.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("K after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+        }
 
         let (k, v) = match &self.kv_cache {
             None => (k, v),
@@ -434,10 +435,46 @@ impl LayerWeights {
         // Reshape from [batch, n_head, seq, head_dim] to [batch, seq, n_head * head_dim].
         // For compacted models n_head * head_dim != n_embd (e.g. 25*128=3200 vs 5120),
         // so we must NOT use n_embd here. W_o then projects back to hidden_size.
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // Attention output before reshape (shape: [b, n_head, seq, head_dim])
+            // llama.cpp "__fattn__-0" last head
+            if let Ok(vals) = y.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("attn_out (head 0, last tok): first5=[{}]", first.join(", "));
+            }
+        }
+
         let y = y
             .transpose(1, 2)?
             .reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            // kqv_out: reshaped attention output before Wo
+            if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("kqv_out (flat, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_l0_kqv_out.bin", &data).ok();
+            }
+        }
+
         let y = self.attention_wo.forward(&y)?;
+
+        if dump_attn {
+            x.device().synchronize().ok();
+            let last = seq_len - 1;
+            if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("attn_wo (Wo output, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_l0_attn_wo.bin", &data).ok();
+            }
+        }
+
         Ok(y)
     }
 }
@@ -571,6 +608,7 @@ impl ModelWeights {
                 n_head: ct.hparams.n_head as usize,
                 n_kv_head: ct.hparams.n_head as usize / gqa,
                 head_dim: (ct.hparams.n_embd / ct.hparams.n_head) as usize,
+                rope_is_neox: false, // GGML format = standard Llama = interleaved
                 cos: cos.clone(),
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
@@ -655,6 +693,23 @@ impl ModelWeights {
         let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
+
+        // RoPE convention depends on model architecture (matching llama.cpp).
+        // NEOX (non-interleaved): pairs (i, i+d/2) — Qwen, Qwen2, Falcon, Phi, BERT, etc.
+        // NORM (interleaved): pairs (2i, 2i+1) — Llama, Mistral, DeepSeek, etc.
+        let rope_is_neox = matches!(arch.as_str(),
+            "qwen" | "qwen2" | "qwen2moe" | "qwen3" | "qwen3moe" |
+            "falcon" | "phi" | "phi2" | "phi3" | "stablelm" |
+            "bert" | "nomic-bert" | "plamo" | "grok" | "dbrx" |
+            "olmo2" | "olmoe" | "codeshell" | "starcoder2"
+        );
+
+        {
+            let log = crate::runtime::logger("candle");
+            log.info(&format!("RoPE config: arch={}, rope_is_neox={}, rope_dim={}, freq_base={}",
+                arch, rope_is_neox, rope_dim, rope_freq_base));
+        }
+
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, context_length, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
@@ -769,6 +824,7 @@ impl ModelWeights {
                 // and for compacted models where embedding_length / head_count is non-integer,
                 // rope_dim (from metadata or defaulting to embedding_length/head_count) is correct.
                 head_dim: rope_dim,
+                rope_is_neox,
                 cos: cos.clone(),
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
@@ -937,14 +993,80 @@ impl ModelWeights {
             let x = layer_in;
             let residual = &x;
             let x = layer.attention_norm.forward(&x)?;
+
+            // Dump layer 0 intermediate values for divergence debugging
+            let dump_layer0 = std::env::var("CANDLE_DUMP_LAYER0").is_ok() && layer_idx == 0;
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_norm.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let attn = layer.forward_attn(&x, mask.as_ref(), index_pos)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = attn.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_out.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = (attn + residual)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_attn_resid.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 attn+resid: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
 
             // MLP
             let _enter = layer.span_mlp.enter();
             let residual = &x;
             let x = layer.ffn_norm.forward(&x)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_ffn_norm.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 ffn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = layer.mlp_or_moe.forward(&x)?;
+
+            if dump_layer0 {
+                device.synchronize()?;
+                let last = seq_len - 1;
+                if let Ok(vals) = x.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
+                    let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    std::fs::write("/tmp/candle_l0_mlp_out.bin", &data).ok();
+                    let n = vals.len().min(5);
+                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!("L0 mlp_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                }
+            }
+
             let x = (x + residual)?;
             layer_in = x;
 
@@ -988,8 +1110,34 @@ impl ModelWeights {
         }
         let x = self.norm.forward(&layer_in)?;
         let x = x.i((.., seq_len - 1, ..))?;
+
+        // Dump hidden state (post-norm, pre-lm_head) for comparison with llama.cpp
+        if std::env::var("CANDLE_DUMP_HIDDEN").is_ok() {
+            device.synchronize()?;
+            if let Ok(vals) = x.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let n = vals.len().min(10);
+                let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                eprintln!("HIDDEN (post-norm, pre-lm_head): {} dims, first10=[{}]", vals.len(), first.join(", "));
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_hidden.bin", &data).ok();
+                eprintln!("  Written to /tmp/candle_hidden.bin");
+            }
+        }
+
         let _enter = self.span_output.enter();
-        self.output.forward(&x)
+        let logits = self.output.forward(&x)?;
+
+        // Dump full logits for comparison
+        if std::env::var("CANDLE_DUMP_HIDDEN").is_ok() {
+            device.synchronize()?;
+            if let Ok(vals) = logits.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+                std::fs::write("/tmp/candle_logits.bin", &data).ok();
+                eprintln!("  Written {} logits to /tmp/candle_logits.bin", vals.len());
+            }
+        }
+
+        Ok(logits)
     }
 }
 

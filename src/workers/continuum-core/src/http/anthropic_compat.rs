@@ -23,6 +23,8 @@ pub struct MessagesRequest {
     #[serde(default)]
     pub top_k: Option<u32>,
     #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    #[serde(default)]
     pub stop_sequences: Option<Vec<String>>,
     #[serde(default)]
     pub tools: Option<Vec<Value>>,

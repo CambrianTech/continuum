@@ -359,7 +359,7 @@ fn inference_inner(
     resolved_model: &str,
     prompt: &str,
     max_tokens: usize,
-    temperature: f64,
+    sampling: &backends::SamplingConfig,
 ) -> Result<((String, usize), Option<GpuAllocationGuard>), String> {
     let log = runtime::logger("candle");
 
@@ -414,7 +414,7 @@ fn inference_inner(
     }
 
     let wrapper = backend_guard.as_mut().expect("just loaded");
-    let gen_result = backends::generate(&mut *wrapper.0, prompt, max_tokens, temperature);
+    let gen_result = backends::generate(&mut *wrapper.0, prompt, max_tokens, sampling);
     gen_result.map(|r| (r, new_model_guard))
 }
 
@@ -492,8 +492,20 @@ impl AIProviderAdapter for CandleAdapter {
             self.use_quantized, self as *const _
         ));
 
-        let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
-        let temperature = request.temperature.unwrap_or(0.7) as f64;
+        let max_tokens = request.max_tokens
+            .ok_or_else(|| "max_tokens is required for local inference".to_string())? as usize;
+        let temperature = request.temperature
+            .ok_or_else(|| "temperature is required for local inference".to_string())? as f64;
+        // Build sampling config — all values from caller, no silent defaults.
+        // top_k=0 and top_p=1.0 mean "disabled" — these are safe defaults
+        // because they don't change behavior (no filtering applied).
+        // repeat_penalty=1.0 means "disabled" — also safe.
+        let sampling = backends::SamplingConfig {
+            temperature,
+            repeat_penalty: request.repeat_penalty.unwrap_or(1.0),
+            top_k: request.top_k.unwrap_or(0) as usize,
+            top_p: request.top_p.unwrap_or(1.0) as f64,
+        };
 
         // Apply LoRA adapters if requested
         let mut applied_adapters: Vec<String> = Vec::new();
@@ -503,13 +515,36 @@ impl AIProviderAdapter for CandleAdapter {
             }
         }
 
-        // Resolve requested model: use request.model if provided, else default
-        let requested_model = request.model.as_deref().unwrap_or(&self.config.default_model);
+        // Resolve requested model — MUST be explicitly provided.
+        // Silent defaults to models that may not exist on the user's machine cause
+        // mysterious failures or wrong-model bugs.
+        let requested_model = request.model.as_deref()
+            .ok_or_else(|| format!(
+                "model is required for local inference. Available: 'coder' (14B GGUF), \
+                 'coder-bf16' (14B BF16). Got no model in request."
+            ))?;
         let model_id = resolve_model_id(requested_model);
 
-        // Build prompt using the correct chat template for this model
+        // Build prompt using the correct chat template for this model.
+        // If a system_prompt is provided but not already in messages, prepend it.
         let chat_template = resolve_chat_template(requested_model);
-        let prompt = build_prompt_from_messages(&request.messages, &chat_template);
+        let has_system_msg = request.messages.iter().any(|m| m.role == "system");
+        let messages = if !has_system_msg {
+            if let Some(ref sys) = request.system_prompt {
+                let mut msgs = vec![crate::ai::ChatMessage {
+                    role: "system".to_string(),
+                    content: crate::ai::MessageContent::Text(sys.clone()),
+                    name: None,
+                }];
+                msgs.extend(request.messages.iter().cloned());
+                msgs
+            } else {
+                request.messages.clone()
+            }
+        } else {
+            request.messages.clone()
+        };
+        let prompt = build_prompt_from_messages(&messages, &chat_template);
         log.info(&format!("Using chat template: {}", chat_template));
 
         let prompt_len = prompt.len();
@@ -517,6 +552,17 @@ impl AIProviderAdapter for CandleAdapter {
             "Prompt length: {} chars, max_tokens: {}, model: {} (requested: {})",
             prompt_len, max_tokens, model_id, requested_model
         ));
+
+        // Dump formatted prompt to file for isolated reproduction (Step 1 of inside-out validation).
+        // Enable with: CANDLE_DUMP_PROMPTS=1
+        if std::env::var("CANDLE_DUMP_PROMPTS").is_ok() {
+            let prompt_file = "/tmp/sentinel_prompt_latest.txt";
+            if let Err(e) = std::fs::write(prompt_file, &prompt) {
+                log.warn(&format!("Failed to dump prompt to {}: {}", prompt_file, e));
+            } else {
+                log.info(&format!("Prompt dumped to {} ({} chars)", prompt_file, prompt.len()));
+            }
+        }
 
         let backend_arc = Arc::clone(&self.backend);
         let resolved_model = model_id.clone();
@@ -562,14 +608,6 @@ impl AIProviderAdapter for CandleAdapter {
                 "⚠️ Memory pressure high — queuing inference for '{}' (will proceed when semaphore available)",
                 model_id
             ));
-            // Reduce max_tokens under pressure to lower peak memory per inference
-            if max_tokens > 256 {
-                log.info(&format!(
-                    "📉 Reducing max_tokens {} → 256 under memory pressure",
-                    max_tokens
-                ));
-                max_tokens = 256;
-            }
         }
 
         // Serialize local inference: only 1 at a time.
@@ -606,7 +644,7 @@ impl AIProviderAdapter for CandleAdapter {
             let pool = unsafe { objc_autoreleasePoolPush() };
 
             let result = inference_inner(
-                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, temperature,
+                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
             );
 
             #[cfg(target_os = "macos")]

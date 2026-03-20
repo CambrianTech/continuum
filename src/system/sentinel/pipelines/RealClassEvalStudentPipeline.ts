@@ -59,10 +59,16 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
   const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
   const reexamIterEvt = (action: string) => `${academyEvent(sessionId, `reexam:${action}`)}:{{input.iteration}}`;
 
-  // LLM config — only pass model/provider when explicitly set to avoid
-  // "Model Not Exist" errors with cloud providers.
+  // LLM config — pass model and provider based on what's explicitly set.
+  // Cloud providers (deepseek, etc.): omit model unless studentModel is explicitly set,
+  //   because sending baseModel="coder" to DeepSeek causes "Model Not Exist".
+  // Local providers (candle): always need model to know which GGUF to load.
   const llmConfig = {
-    ...(academyConfig.studentModel ? { model: academyConfig.studentModel } : !academyConfig.studentProvider ? { model: baseModel } : {}),
+    ...(academyConfig.studentModel
+      ? { model: academyConfig.studentModel }
+      : academyConfig.studentProvider
+        ? {} // cloud provider without explicit studentModel — let the provider use its default
+        : { model: baseModel }), // no studentProvider — local inference, use baseModel
     ...(academyConfig.studentProvider && { provider: academyConfig.studentProvider }),
   };
 
@@ -88,10 +94,11 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
       timeoutSecs: 60,
     },
 
-    // Step 3: Condition — training data available? Train + re-exam if so.
+    // Step 3: Condition — training data available AND training enabled?
+    // epochs=0 means benchmark-only mode (no training, no re-exam).
     {
       type: 'condition',
-      if: '{{steps.2.data.payload.datasetPath}}',
+      if: academyConfig.epochs > 0 ? '{{steps.2.data.payload.datasetPath}}' : '',
       then: [
         // Then sub-step 0: Train on the full remediation dataset
         {
@@ -190,8 +197,9 @@ function buildInitialChallengeSteps(
     // loop.1: LLM — Implement the Python class
     {
       type: 'llm',
+      systemPrompt: 'You are a Python coding agent. Output ONLY valid Python code. No markdown, no explanations, no commentary.',
       prompt: [
-        'You are an expert Python developer. Implement the following class based on the skeleton and tests.',
+        'Implement the following class based on the skeleton and tests.',
         '',
         '=== CLASS SKELETON ===',
         '{{loop.0.data.payload.skeleton}}',
@@ -235,10 +243,11 @@ function buildInitialChallengeSteps(
       timeoutSecs: 600,
     },
 
-    // loop.4: Condition — did we get remediation data? (datasetPath truthy)
+    // loop.4: Condition — did we get remediation data AND training is enabled?
+    // epochs=0 means benchmark-only mode (no training).
     {
       type: 'condition',
-      if: '{{loop.3.data.payload.datasetPath}}',
+      if: academyConfig.epochs > 0 ? '{{loop.3.data.payload.datasetPath}}' : '',
       then: [
         // Train on remediation data
         {
@@ -312,8 +321,9 @@ function buildReexamChallengeSteps(
     // can reference it as {{named.reexam_training.data.adapterPath}}.
     {
       type: 'llm',
+      systemPrompt: 'You are a Python coding agent. Output ONLY valid Python code. No markdown, no explanations, no commentary.',
       prompt: [
-        'You are an expert Python developer. Implement the following class based on the skeleton and tests.',
+        'Implement the following class based on the skeleton and tests.',
         '',
         '=== CLASS SKELETON ===',
         '{{loop.0.data.payload.skeleton}}',

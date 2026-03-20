@@ -49,11 +49,12 @@ fn main() {
         ),
     ];
 
+    let sampling = continuum_core::inference::backends::SamplingConfig::code();
     for (name, prompt) in &prompts {
         eprintln!("=== {} ===", name);
         let start = Instant::now();
         match continuum_core::inference::backends::generate(
-            backend.as_mut(), prompt, max_tokens, 0.1,
+            backend.as_mut(), prompt, max_tokens, &sampling,
         ) {
             Ok((output, count)) => {
                 let elapsed = start.elapsed();
