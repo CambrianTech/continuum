@@ -33,7 +33,13 @@ use crate::modules::plasticity::topology;
 use crate::runtime;
 
 /// Select best available compute device.
+/// Set CANDLE_FORCE_CPU=1 to bypass GPU for A/B testing.
 pub fn select_best_device() -> Device {
+    if std::env::var("CANDLE_FORCE_CPU").is_ok() {
+        runtime::logger("candle").info("  CANDLE_FORCE_CPU set — using CPU (for A/B testing)");
+        return Device::Cpu;
+    }
+
     #[cfg(feature = "cuda")]
     {
         if let Ok(device) = Device::new_cuda(0) {

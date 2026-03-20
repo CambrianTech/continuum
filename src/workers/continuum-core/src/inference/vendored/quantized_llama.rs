@@ -19,7 +19,52 @@ use candle_core::quantized::QTensor;
 use candle_core::quantized::{ggml_file, gguf_file};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::Module;
-use candle_transformers::quantized_nn::RmsNorm;
+
+/// RmsNorm with f64 sum-of-squares accumulation (matching llama.cpp).
+///
+/// Candle's built-in RmsNorm uses f32 accumulation, which loses precision
+/// for hidden_size=5120 and compounds across 48 layers, causing token-level
+/// divergence from llama.cpp's output. See: https://github.com/huggingface/candle/issues/3410
+#[derive(Debug, Clone)]
+pub struct RmsNorm {
+    weight: Tensor,
+    eps: f64,
+}
+
+impl RmsNorm {
+    pub fn from_qtensor(qtensor: QTensor, eps: f64) -> Result<Self> {
+        let weight = qtensor.dequantize(&qtensor.device())?;
+        Ok(Self { weight, eps })
+    }
+}
+
+impl Module for RmsNorm {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // f64 accumulation for sum-of-squares, matching llama.cpp's ggml_float (double).
+        // Metal doesn't support f64, so we compute the norm scalar on CPU.
+        let device = x.device();
+        let x_f32 = x.to_dtype(DType::F32)?;
+        let dims = x_f32.dims();
+        let dim = *dims.last().unwrap();
+
+        // Compute sum-of-squares on CPU in f64 (matching llama.cpp)
+        let x_sq = (&x_f32 * &x_f32)?;
+        let sum_sq = x_sq.sum_keepdim(candle_core::D::Minus1)?
+            .to_device(&Device::Cpu)?;
+        let sum_vec: Vec<f32> = sum_sq.flatten_all()?.to_vec1()?;
+        let rms_vec: Vec<f32> = sum_vec.iter()
+            .map(|&s| {
+                let s64 = s as f64;
+                ((s64 / dim as f64) + self.eps).sqrt() as f32
+            })
+            .collect();
+        let rms_shape = sum_sq.dims().to_vec();
+        let rms = Tensor::from_vec(rms_vec, rms_shape, device)?;
+
+        let normalized = x_f32.broadcast_div(&rms)?;
+        normalized.broadcast_mul(&self.weight)
+    }
+}
 
 /// Default fallback if GGUF metadata doesn't contain context_length.
 const DEFAULT_CONTEXT_LENGTH: usize = 4096;
