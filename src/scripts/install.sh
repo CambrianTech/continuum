@@ -126,6 +126,8 @@ install_system_deps() {
       command -v cmake &>/dev/null || needed+=("cmake")
       # libclang needed by bindgen (whisper-rs-sys, livekit FFI)
       [ -f /usr/lib/llvm-*/lib/libclang.so ] || needed+=("libclang-dev")
+      # protobuf compiler needed by tonic-prost (gRPC code gen)
+      command -v protoc &>/dev/null || needed+=("protobuf-compiler")
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
