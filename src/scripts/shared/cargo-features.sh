@@ -22,13 +22,17 @@ case "$(uname -s)" in
     # CUDA: check for nvidia-smi in standard and WSL paths
     if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
       CARGO_GPU_FEATURES="--features cuda"
-      # Ensure CUDA toolkit is in PATH (nvcc needed by cudarc build script)
+      # Ensure CUDA toolkit + nvidia-smi are in PATH
       for cuda_dir in /usr/local/cuda /opt/cuda; do
         if [ -d "$cuda_dir/bin" ] && ! command -v nvcc &>/dev/null; then
           export PATH="$cuda_dir/bin:$PATH"
           export LD_LIBRARY_PATH="${cuda_dir}/lib64:${LD_LIBRARY_PATH:-}"
         fi
       done
+      # WSL2: nvidia-smi lives in /usr/lib/wsl/lib, not standard PATH
+      if [ -d /usr/lib/wsl/lib ] && ! command -v nvidia-smi &>/dev/null; then
+        export PATH="/usr/lib/wsl/lib:$PATH"
+      fi
     # ROCm (AMD): future support
     # elif command -v rocminfo &>/dev/null; then
     #   CARGO_GPU_FEATURES="--features rocm"
