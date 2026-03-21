@@ -104,8 +104,8 @@ echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-
 # Build GPU-aware crates individually (workspace --features only applies to focused package).
 # Non-GPU crates (archive, jtag-mcp) build normally.
 GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or ""
-# GPU backend feature only (no accelerate — that's continuum-core only)
-GPU_BACKEND=$(echo "$GPU_FEAT" | sed 's/,accelerate//;s/accelerate,//;s/accelerate//')
+# GPU backend feature only (no accelerate or load-dynamic-ort — those are continuum-core only)
+GPU_BACKEND=$(echo "$GPU_FEAT" | sed 's/,accelerate//;s/accelerate,//;s/accelerate//' | sed 's/,load-dynamic-ort//;s/load-dynamic-ort,//;s/load-dynamic-ort//')
 BUILD_OUTPUT=""
 RESULT=0
 for pkg in archive-worker jtag-mcp; do
