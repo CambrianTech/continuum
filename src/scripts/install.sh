@@ -268,6 +268,39 @@ CONFIG_DIR="$HOME/.continuum"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 mkdir -p "$CONFIG_DIR"
 
+# ============================================================================
+# PostgreSQL
+# ============================================================================
+
+echo -e "${YELLOW}[6/6] PostgreSQL${NC}"
+
+install_postgres() {
+  if command -v psql &>/dev/null; then
+    echo -e "  ${GREEN}✅ PostgreSQL already installed${NC}"
+  else
+    case "$PLATFORM" in
+      macos) brew install postgresql@16 && brew services start postgresql@16 ;;
+      linux|wsl)
+        sudo apt-get install -y postgresql postgresql-client
+        sudo service postgresql start 2>/dev/null || sudo pg_ctlcluster 16 main start 2>/dev/null || true
+        ;;
+    esac
+    echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
+  fi
+
+  # Create user and database if they don't exist
+  local pg_user="${USER:-joel}"
+  if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
+    sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
+  fi
+  if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+    createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
+  fi
+  echo -e "  ${GREEN}✅ Database 'continuum' ready${NC}"
+}
+
+install_postgres
+
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\n${YELLOW}Creating default config at $CONFIG_FILE${NC}"
   cat > "$CONFIG_FILE" << 'ENVEOF'
@@ -282,6 +315,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
 
 # Storage path for models, adapters, datasets (default: ~/.continuum)
 # CONTINUUM_STORAGE_PATH=/path/to/storage
+
+# PostgreSQL (auto-configured by install script)
+DATABASE_URL=postgres://${USER:-joel}@localhost:5432/continuum
 ENVEOF
   echo -e "  ${YELLOW}Edit $CONFIG_FILE to add your API keys${NC}"
 fi
