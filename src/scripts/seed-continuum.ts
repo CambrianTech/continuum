@@ -302,12 +302,57 @@ async function seedViaJTAG() {
       throw new Error('❌ JTAG system not ready - commands not registered yet');
     }
 
-    // Hardware-aware persona selection: only create personas we can actually run
-    const { personas: activePersonas, summary: personaSummary, gpu } = getAvailablePersonas();
-    const localModel = selectLocalModel(gpu.vramGB);
-    console.log('🔍 Hardware-aware persona selection:');
-    for (const line of personaSummary) {
-      console.log(`   ${line}`);
+    // Hardware-aware persona selection via Rust PersonaAllocator (single source of truth)
+    let activePersonas: PersonaConfig[];
+    let localModel: string;
+
+    try {
+      // Collect available API keys from environment
+      const knownKeyVars = [
+        'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY',
+        'XAI_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'DASHSCOPE_API_KEY',
+        'GOOGLE_API_KEY', 'HF_TOKEN', 'SENTINEL_PATH',
+      ];
+      const availableApiKeys = knownKeyVars.filter(k => !!process.env[k]);
+      const keysJson = JSON.stringify(availableApiKeys);
+
+      const { stdout: allocStdout } = await execAsync(
+        `./jtag persona/allocate --availableApiKeys='${keysJson}'`
+      );
+      const allocResponse = JSON.parse(allocStdout);
+
+      if (allocResponse.success !== false && allocResponse.allocations) {
+        // Map Rust allocations back to PersonaConfig format for compatibility
+        activePersonas = allocResponse.allocations.map((a: any) => ({
+          uniqueId: a.uniqueId,
+          displayName: a.displayName,
+          provider: a.provider,
+          type: a.personaType,
+          voiceId: a.voiceId,
+          modelId: a.resolvedModel || a.modelId,
+          isAudioNative: a.isAudioNative,
+          apiKeyEnv: a.apiKeyEnv,
+          minVramGB: a.vramBudgetGb,
+        }));
+        localModel = allocResponse.localModel || selectLocalModel(allocResponse.totalVramGb || 0);
+
+        console.log('🔍 Rust PersonaAllocator (single source of truth):');
+        for (const line of allocResponse.summary || []) {
+          console.log(`   ${line}`);
+        }
+      } else {
+        throw new Error('Rust allocator returned no allocations');
+      }
+    } catch (allocError) {
+      // Fallback to TS allocator if Rust IPC not available (shouldn't happen)
+      console.warn('⚠️ Rust persona/allocate failed, falling back to TS allocator:', allocError instanceof Error ? allocError.message : allocError);
+      const tsResult = getAvailablePersonas();
+      activePersonas = tsResult.personas;
+      localModel = selectLocalModel(tsResult.gpu.vramGB);
+      console.log('🔍 TS fallback persona selection:');
+      for (const line of tsResult.summary) {
+        console.log(`   ${line}`);
+      }
     }
 
     // BULK LOAD: One subprocess call replaces N individual lookups

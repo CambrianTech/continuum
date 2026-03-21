@@ -1,0 +1,31 @@
+{
+  "name": "ai/key/remove",
+  "description": "Remove an API key for a cloud AI provider. Removes from ~/.continuum/config.env, clears process.env, and emits system:config:key-removed event to deactivate personas.",
+  "params": [
+    {
+      "name": "provider",
+      "type": "string",
+      "description": "The config key name (e.g., 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY')"
+    }
+  ],
+  "results": [
+    {
+      "name": "removed",
+      "type": "boolean",
+      "description": "Whether the key was removed successfully"
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "description": "The config key name that was removed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Remove an Anthropic API key",
+      "command": "./jtag ai/key/remove --provider=ANTHROPIC_API_KEY",
+      "expectedResult": "{ removed: true, provider: 'ANTHROPIC_API_KEY' }"
+    }
+  ],
+  "accessLevel": "owner-only"
+}

@@ -70,7 +70,15 @@ detect_gpu() {
   esac
 
   if $HAS_CUDA; then
-    echo -e "  GPU:      ${GREEN}${GPU_NAME} (CUDA)${NC}"
+    # Re-derive smi path for VRAM query (local was scoped to case block)
+    local smi_path="nvidia-smi"
+    [ -f /usr/lib/wsl/lib/nvidia-smi ] && smi_path="/usr/lib/wsl/lib/nvidia-smi"
+    local vram=$($smi_path --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+    echo -e "  GPU:      ${GREEN}${GPU_NAME} (CUDA, ${vram}MiB VRAM)${NC}"
+    # Check for nvcc (CUDA compiler — needed for training, not inference)
+    if ! command -v nvcc &>/dev/null; then
+      echo -e "  CUDA:     ${YELLOW}nvcc not found — inference works, training needs CUDA toolkit${NC}"
+    fi
   elif $HAS_METAL; then
     echo -e "  GPU:      ${GREEN}${GPU_NAME}${NC}"
   else
@@ -267,6 +275,12 @@ bash scripts/setup-rust.sh 2>&1 | tail -5
 CONFIG_DIR="$HOME/.continuum"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 mkdir -p "$CONFIG_DIR"
+
+# Auto-create persona SQLite directories (personas store state in per-persona SQLite DBs)
+mkdir -p "$CONFIG_DIR/personas"
+
+# Ensure bin directory exists (LiveKit binary, future CLI tools)
+mkdir -p "$CONFIG_DIR/bin"
 
 # ============================================================================
 # PostgreSQL

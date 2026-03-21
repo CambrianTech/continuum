@@ -24,6 +24,7 @@ pub mod logger;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod persona_allocator;
 pub mod plasticity;
 pub mod python_adapter;
 pub mod rag;

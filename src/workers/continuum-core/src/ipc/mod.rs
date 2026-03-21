@@ -11,6 +11,7 @@ use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::health::HealthModule;
+use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::logger::LoggerModule;
 use crate::modules::memory::{MemoryModule, MemoryState};
@@ -783,6 +784,9 @@ pub fn start_server(
 
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
+
+    // Phase 1: PersonaAllocatorModule (hardware-aware persona allocation)
+    runtime.register(Arc::new(PersonaAllocatorModule::new(gpu_manager.clone())));
 
     // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
     let system_monitor = Arc::new(SystemResourceMonitor::new());

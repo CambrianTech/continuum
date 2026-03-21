@@ -1,0 +1,36 @@
+{
+  "name": "ai/key/save",
+  "description": "Save an API key for a cloud AI provider. Persists to ~/.continuum/config.env, sets process.env, and emits system:config:key-added event to trigger persona creation.",
+  "params": [
+    {
+      "name": "provider",
+      "type": "string",
+      "description": "The config key name (e.g., 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY')"
+    },
+    {
+      "name": "value",
+      "type": "string",
+      "description": "The API key value to save"
+    }
+  ],
+  "results": [
+    {
+      "name": "saved",
+      "type": "boolean",
+      "description": "Whether the key was saved successfully"
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "description": "The config key name that was saved"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Save an Anthropic API key",
+      "command": "./jtag ai/key/save --provider=ANTHROPIC_API_KEY --value=sk-ant-xxx",
+      "expectedResult": "{ saved: true, provider: 'ANTHROPIC_API_KEY' }"
+    }
+  ],
+  "accessLevel": "owner-only"
+}
