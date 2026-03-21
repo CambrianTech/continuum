@@ -112,6 +112,10 @@ install_system_deps() {
       command -v jq &>/dev/null || needed+=("jq")
       command -v curl &>/dev/null || needed+=("curl")
       command -v git &>/dev/null || needed+=("git")
+      # wslu provides wslview for opening URLs in Windows browser from WSL
+      if [ "$PLATFORM" = "wsl" ] && ! command -v wslview &>/dev/null; then
+        needed+=("wslu")
+      fi
       # Python venv support
       if ! python3 -m venv --help &>/dev/null 2>&1; then
         # Detect python version for correct package name
@@ -358,3 +362,12 @@ echo -e "  ${YELLOW}Start:${NC}  cd src && npm start"
 echo -e "  ${YELLOW}Test:${NC}   ./jtag ping"
 echo -e "  ${YELLOW}Config:${NC} $CONFIG_FILE"
 echo ""
+
+# ============================================================================
+# Auto-launch if called from bootstrap (CONTINUUM_AUTO_LAUNCH=1)
+# ============================================================================
+
+if [ "${CONTINUUM_AUTO_LAUNCH:-0}" = "1" ]; then
+  echo -e "${YELLOW}Auto-launching system...${NC}"
+  npm start
+fi

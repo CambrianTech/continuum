@@ -341,7 +341,7 @@ cd src
 npm start                    # DEPLOYS code changes, takes 130s or so
 
 ./jtag ping #check for server and browser connection
-./jtag screenshot            # Verify any visual changes
+./jtag interface/screenshot            # Verify any visual changes
 ./jtag collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
 ./jtag collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
 ```
@@ -1099,7 +1099,7 @@ Never guess - logs tell the truth
 
 ### 2. USE VISUAL VERIFICATION
 ```bash
-./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="debug.png"
 ```
 Screenshots don't lie - don't trust success messages
 
@@ -1129,7 +1129,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 # STEP 2: Wait 5-10 seconds for responses
 
 # STEP 3: View responses in chat widget
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # STEP 4: Export conversation to markdown (coming soon - see workflow below)
 ```
@@ -1149,7 +1149,7 @@ sleep 10
   --orderBy='[{"field":"timestamp","direction":"asc"}]'
 
 # 4. View in browser
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 ```
 
 ### Future Workflow (Planned)

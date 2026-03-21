@@ -75,8 +75,19 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
       });
     }
 
-    // No browser info yet - delegate to browser to collect it
-    return await this.remoteExecute({ ...pingParams, server, aiStatus });
+    // Try to collect browser info — but don't block if no browser is connected.
+    // In headless or CLI mode, there's no browser to respond — return server-only.
+    try {
+      return await this.remoteExecute({ ...pingParams, server, aiStatus });
+    } catch {
+      // No browser connected (headless/CLI/WSL without browser) — return server-only result
+      return transformPayload(pingParams, {
+        success: true,
+        server,
+        aiStatus,
+        timestamp: new Date().toISOString()
+      });
+    }
   }
 
   private async getServerInfo(): Promise<ServerEnvironmentInfo> {

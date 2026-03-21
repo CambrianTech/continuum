@@ -104,7 +104,16 @@ export class InterfaceLaunchUrlServerCommand extends CommandBase<InterfaceLaunch
     try {
       const version = readFileSync('/proc/version', 'utf-8');
       if (version.toLowerCase().includes('microsoft')) {
-        return `cmd.exe /c start "" "${escapedUrl}"`;
+        // wslview (wslu package) is the reliable way to open URLs from WSL.
+        // cmd.exe /c start fails because WSL path translation mangles the URL protocol.
+        try {
+          const { execSync } = require('child_process');
+          execSync('command -v wslview', { stdio: 'ignore' });
+          return `wslview "${escapedUrl}"`;
+        } catch {
+          // powershell.exe handles URLs reliably from WSL
+          return `powershell.exe -NoProfile -Command "Start-Process '${escapedUrl}'"`;
+        }
       }
     } catch { /* not WSL */ }
     return `xdg-open "${escapedUrl}"`;

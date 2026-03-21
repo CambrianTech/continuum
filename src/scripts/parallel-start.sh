@@ -288,17 +288,17 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     exit 1
   fi
 
-  # Try ping — check for BOTH server AND browser connection.
-  # This ensures we don't exit before the orchestrator finishes browser detection.
+  # Try ping — server success is sufficient (browser may not exist in headless/CLI mode).
   PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
+    HEALTHY=true
     HAS_BROWSER=$(echo "$PING_OUTPUT" | grep -c '"browser"' 2>/dev/null || echo "0")
     if [ "$HAS_BROWSER" -gt 0 ]; then
-      HEALTHY=true
-      break
+      echo -e "  ${GREEN}Server + browser connected${NC}"
     else
-      echo -e "  ⏳ Server up, waiting for browser... (${ELAPSED}s / ${MAX_WAIT}s)"
+      echo -e "  ${GREEN}Server up (no browser — headless/CLI mode OK)${NC}"
     fi
+    break
   else
     echo -e "  ⏳ Waiting for server... (${ELAPSED}s / ${MAX_WAIT}s)"
   fi
@@ -316,21 +316,11 @@ if [ "$HEALTHY" = false ]; then
   fi
 fi
 
-# Phase 5.5: Auto-seed if database was just created or data is missing
-# Check if essential data exists (rooms). If not, seed the database.
-if [ "${NEEDS_SEED:-false}" = true ]; then
-  echo -e "\n${YELLOW}Phase 5.5: Seeding freshly created database...${NC}"
-  npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-  echo -e "  ${GREEN}✅ Database seeded${NC}"
-else
-  # Even if DB existed, verify it has data (rooms table might be empty after corruption)
-  ROOM_CHECK=$(./jtag data/list --collection=rooms --limit=1 2>/dev/null || echo '{"items":[]}')
-  if echo "$ROOM_CHECK" | grep -q '"items":\[\]' 2>/dev/null || echo "$ROOM_CHECK" | grep -q '"items": \[\]' 2>/dev/null; then
-    echo -e "\n${YELLOW}Phase 5.5: No rooms found — seeding database...${NC}"
-    npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-    echo -e "  ${GREEN}✅ Database seeded${NC}"
-  fi
-fi
+# Phase 5.5: Ensure database is seeded (always runs — idempotent, skips existing records)
+# This handles: fresh installs, tower deploys with no personas, config updates, model changes.
+echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
+npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
+echo -e "  ${GREEN}✅ Seed complete${NC}"
 
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))
