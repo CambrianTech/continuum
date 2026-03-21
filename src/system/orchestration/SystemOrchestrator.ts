@@ -8,11 +8,30 @@
  */
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess, exec } from 'child_process';
+import { spawn, spawnSync, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
+import { readFileSync } from 'fs';
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
+
+/** Platform-aware browser open command. */
+function openBrowserCommand(url: string): { cmd: string; args: string[] } {
+  if (process.platform === 'darwin') {
+    return { cmd: 'open', args: [url] };
+  }
+  if (process.platform === 'win32') {
+    return { cmd: 'cmd.exe', args: ['/c', 'start', '', url] };
+  }
+  // Linux — check for WSL (can open Windows browser via cmd.exe)
+  try {
+    const version = readFileSync('/proc/version', 'utf-8');
+    if (version.toLowerCase().includes('microsoft')) {
+      return { cmd: 'cmd.exe', args: ['/c', 'start', '', url] };
+    }
+  } catch { /* not WSL */ }
+  return { cmd: 'xdg-open', args: [url] };
+}
 import { SystemReadySignaler } from '../../scripts/signal-system-ready';
 import { 
   SYSTEM_MILESTONES, 
@@ -790,7 +809,8 @@ export class SystemOrchestrator extends EventEmitter {
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
 
     try {
-      spawn('open', [browserUrl], {
+      const { cmd, args } = openBrowserCommand(browserUrl);
+      spawn(cmd, args, {
         detached: true,
         stdio: 'ignore'
       }).unref();
