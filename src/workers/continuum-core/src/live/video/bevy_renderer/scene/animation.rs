@@ -164,18 +164,19 @@ impl Default for AnimationConfig {
 
 impl AnimationConfig {
     pub fn portrait(slot: u8) -> Self {
+        let mut rng = crate::live::video::bevy_renderer::animation::prng::SlotRng::new(slot as f32 * 197.0, slot);
         Self {
             profile: PORTRAIT_PROFILE,
-            // Deterministic per-slot variation: ±30% frequency spread.
-            freq_variation: 1.0 + (slot as f32 * 0.37).sin() * 0.3,
+            freq_variation: 0.7 + rng.range(0.0, 0.6),
         }
     }
 
     #[allow(dead_code)]
     pub fn full_body(slot: u8) -> Self {
+        let mut rng = crate::live::video::bevy_renderer::animation::prng::SlotRng::new(slot as f32 * 197.0, slot);
         Self {
             profile: FULL_BODY_PROFILE,
-            freq_variation: 1.0 + (slot as f32 * 0.37).sin() * 0.3,
+            freq_variation: 0.7 + rng.range(0.0, 0.6),
         }
     }
 

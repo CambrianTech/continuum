@@ -102,8 +102,9 @@ pub struct BlinkAnimation {
 
 impl BlinkAnimation {
     pub fn new(elapsed: f32, seed: u8) -> Self {
+        let mut rng = SlotRng::new(elapsed, seed);
         Self {
-            next_blink_time: elapsed + 1.0 + (seed as f32 * 0.73) % 4.0,
+            next_blink_time: elapsed + 0.5 + rng.range(0.0, 4.0),
             blink_frames_remaining: 0,
         }
     }
@@ -113,6 +114,15 @@ impl BlinkAnimation {
 #[derive(Component)]
 pub struct BreathingAnimation {
     pub phase_offset: f32,
+}
+
+impl BreathingAnimation {
+    pub fn new(seed: u8) -> Self {
+        let mut rng = SlotRng::new(seed as f32 * 137.0, seed);
+        Self {
+            phase_offset: rng.range(0.0, 20.0),
+        }
+    }
 }
 
 /// Idle micro-movements (neck tilt, shoulder shift, head-turn toward speaker).
@@ -125,8 +135,9 @@ pub struct IdleMotion {
 
 impl IdleMotion {
     pub fn new(seed: u8) -> Self {
+        let mut rng = SlotRng::new(seed as f32 * 251.0, seed);
         Self {
-            phase: seed as f32 * 2.37,
+            phase: rng.range(0.0, 30.0),
             head_turn_current: 0.0,
             head_turn_target: 0.0,
         }
@@ -237,8 +248,9 @@ pub struct EyeGaze {
 
 impl EyeGaze {
     pub fn new(seed: u8) -> Self {
+        let mut rng = SlotRng::new(seed as f32 * 311.0, seed);
         Self {
-            phase: seed as f32 * 2.73,
+            phase: rng.range(0.0, 40.0),
         }
     }
 }

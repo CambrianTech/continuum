@@ -130,7 +130,7 @@ pub(super) fn process_commands(
                             AnimationConfig::portrait(slot),
                             ModelPath(load_path.clone()),
                             // Animation components — entity IS the animated object
-                            BreathingAnimation { phase_offset: slot as f32 * 1.1 },
+                            BreathingAnimation::new(slot),
                             IdleMotion::new(slot),
                         ))
                         .id();

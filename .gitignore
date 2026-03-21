@@ -180,3 +180,6 @@ src/commands/**/*.d.ts
 _archive/
 src/.continuum/sessions/validation/
 /src/widgets/live/public/live-widget.css
+
+# Downloaded model binaries (Whisper, Piper, Silero VAD, etc.)
+src/workers/models/
