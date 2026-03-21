@@ -75,12 +75,16 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
       });
     }
 
-    // Try to collect browser info — but don't block if no browser is connected.
-    // In headless or CLI mode, there's no browser to respond — return server-only.
+    // Try to collect browser info with a 3s timeout.
+    // In headless or CLI mode, there's no browser — return server-only immediately.
     try {
-      return await this.remoteExecute({ ...pingParams, server, aiStatus });
+      const browserPromise = this.remoteExecute<PingParams, PingResult>({ ...pingParams, server, aiStatus });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('browser timeout')), 3000)
+      );
+      return await Promise.race([browserPromise, timeoutPromise]);
     } catch {
-      // No browser connected (headless/CLI/WSL without browser) — return server-only result
+      // No browser connected or timed out — return server-only result
       return transformPayload(pingParams, {
         success: true,
         server,

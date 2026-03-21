@@ -314,6 +314,41 @@ install_postgres() {
 
 install_postgres
 
+# ============================================================================
+# LiveKit SFU server (voice/video calls)
+# ============================================================================
+
+echo -e "${YELLOW}[7/7] LiveKit SFU${NC}"
+
+install_livekit() {
+  if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
+    echo -e "  ${GREEN}✅ LiveKit already installed${NC}"
+    return
+  fi
+
+  if [ -f "$SCRIPT_DIR/install-livekit.sh" ]; then
+    echo -e "  Installing LiveKit..."
+    bash "$SCRIPT_DIR/install-livekit.sh" 2>&1 | tail -3
+    echo -e "  ${GREEN}✅ LiveKit installed${NC}"
+  else
+    echo -e "  ${YELLOW}⚠️ install-livekit.sh not found — voice/video calls will not work${NC}"
+  fi
+}
+
+install_livekit
+
+# ============================================================================
+# Platform-specific config.env entries
+# ============================================================================
+
+# Linux/WSL: protobuf conflict with LiveKit requires SKIP_TSRS during build
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+  if [ -f "$CONFIG_FILE" ] && ! grep -q "SKIP_TSRS" "$CONFIG_FILE" 2>/dev/null; then
+    echo "SKIP_TSRS=1" >> "$CONFIG_FILE"
+    echo -e "  ${GREEN}Added SKIP_TSRS=1 to config.env (protobuf conflict workaround)${NC}"
+  fi
+fi
+
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\n${YELLOW}Creating default config at $CONFIG_FILE${NC}"
   cat > "$CONFIG_FILE" << 'ENVEOF'
