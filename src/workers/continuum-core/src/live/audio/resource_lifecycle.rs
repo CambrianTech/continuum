@@ -143,12 +143,13 @@ impl AudioResourceLifecycle {
                     continue;
                 }
 
-                // Still zero sessions — shut down all audio models + avatar renderer
+                // Still zero sessions — shut down audio models only.
+                // Bevy renderer stays alive — restart cost is too high (~5s)
+                // and the orphan watchdog was killing it mid-conversation.
                 clog_info!(
-                    "AudioResourceLifecycle: idle timeout expired with 0 sessions — shutting down audio models + avatars"
+                    "AudioResourceLifecycle: idle timeout expired with 0 sessions — shutting down audio models (renderer stays alive)"
                 );
                 Self::shutdown_all_adapters().await;
-                Self::unload_avatar_models();
             }
         });
     }
@@ -184,13 +185,14 @@ impl AudioResourceLifecycle {
                     stale_ticks += 1;
                     if stale_ticks >= CHECKS_UNTIL_ORPHAN {
                         clog_warn!(
-                            "AudioResourceLifecycle: {} sessions stuck for {}s — orphaned, force-resetting",
+                            "AudioResourceLifecycle: {} sessions stuck for {}s — orphaned, force-resetting session count",
                             current,
                             stale_ticks * ORPHAN_CHECK_INTERVAL_SECS
                         );
                         lifecycle.active_sessions.store(0, Ordering::SeqCst);
                         Self::shutdown_all_adapters().await;
-                        Self::unload_avatar_models();
+                        // Do NOT kill the Bevy renderer — it was being destroyed
+                        // mid-conversation, freezing all animation.
                         stale_count = 0;
                         stale_ticks = 0;
                     }

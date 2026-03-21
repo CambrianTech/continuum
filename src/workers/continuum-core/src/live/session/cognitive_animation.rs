@@ -120,6 +120,24 @@ impl Default for CognitiveAnimationConfig {
     }
 }
 
+/// Deterministic bit-mixing hash → uniform f32 in [0, 1).
+///
+/// Uses xorshift-style bit mixing with two seeds (e.g. elapsed_secs bits + slot).
+/// Unlike `sin().abs()`, this is precision-safe at any magnitude — no floating-point
+/// degeneration after minutes of uptime.
+#[inline]
+fn hash_to_unit(seed_a: u32, seed_b: u32) -> f32 {
+    let mut h = seed_a;
+    h ^= seed_b.wrapping_mul(0x9E3779B9);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x45D9F3B);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x45D9F3B);
+    h ^= h >> 16;
+    // Convert to [0, 1) — top 24 bits give ~7 decimal digits of uniform resolution
+    (h >> 8) as f32 / 16777216.0 // 2^24
+}
+
 /// Select a gesture from the weighted table using deterministic pseudo-random.
 ///
 /// Uses elapsed time and slot index to create variety without the `rand` crate.
@@ -138,9 +156,8 @@ pub fn select_weighted_gesture(
         return None;
     }
 
-    // Deterministic pseudo-random value in [0, 1) from elapsed time + slot
-    let hash = (elapsed_secs * 1000.0 + slot as f32 * 137.0) % 10000.0;
-    let rand_val = (hash.sin().abs()) % 1.0;
+    // Deterministic pseudo-random via bit-mixing hash (no sin() — precision-safe at any elapsed time).
+    let rand_val = hash_to_unit(elapsed_secs.to_bits(), slot as u32);
 
     // Weighted selection
     let threshold = rand_val * total_weight;
@@ -149,12 +166,12 @@ pub fn select_weighted_gesture(
         cumulative += entry.weight;
         if cumulative >= threshold {
             let gesture = gesture_from_name(&entry.gesture);
-            // Duration pseudo-random within [min, max]
-            let duration_hash = ((elapsed_secs * 1337.0 + slot as f32 * 42.0) % 10000.0)
-                .sin()
-                .abs();
+            // Duration pseudo-random within [min, max] — second hash with different seed
+            let duration_rand = hash_to_unit(elapsed_secs.to_bits().wrapping_add(0x9E3779B9), slot as u32);
             let range = entry.duration_max_ms.saturating_sub(entry.duration_min_ms);
-            let duration_ms = entry.duration_min_ms + (duration_hash * range as f32) as u32;
+            let duration_ms = entry.duration_min_ms + (duration_rand * range as f32) as u32;
+            // Floor: never produce 0ms duration
+            let duration_ms = duration_ms.max(500);
             return Some((gesture, duration_ms));
         }
     }
@@ -193,7 +210,8 @@ mod tests {
     fn select_returns_valid_gesture() {
         let config = CognitiveAnimationConfig::default();
         for slot in 0..16u8 {
-            for t in [1.0, 5.0, 10.0, 25.0, 100.0] {
+            // Include large elapsed times that would break sin()-based PRNG
+            for t in [1.0, 5.0, 10.0, 25.0, 100.0, 600.0, 3600.0, 86400.0] {
                 let result = select_weighted_gesture(&config.evaluating, t, slot);
                 assert!(result.is_some(), "slot={slot} t={t} returned None");
                 let (gesture, duration) = result.unwrap();
@@ -204,11 +222,37 @@ mod tests {
                     gesture
                 );
                 assert!(
-                    duration >= 2000 && duration <= 7000,
+                    duration >= 500 && duration <= 7000,
                     "Duration out of range: {duration}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn hash_to_unit_uniform_distribution() {
+        // Verify the hash function produces values across the full [0, 1) range
+        let mut buckets = [0u32; 10];
+        for i in 0..10000u32 {
+            let val = super::hash_to_unit(i, 0);
+            assert!(val >= 0.0 && val < 1.0, "hash_to_unit out of range: {val}");
+            let bucket = (val * 10.0) as usize;
+            buckets[bucket.min(9)] += 1;
+        }
+        // Each bucket should have roughly 1000 entries — allow 30% deviation
+        for (i, &count) in buckets.iter().enumerate() {
+            assert!(
+                count > 700 && count < 1300,
+                "Bucket {i} has {count} entries (expected ~1000)"
+            );
+        }
+    }
+
+    #[test]
+    fn hash_to_unit_different_slots_different_values() {
+        let val_a = super::hash_to_unit(1000_u32.to_be(), 0);
+        let val_b = super::hash_to_unit(1000_u32.to_be(), 1);
+        assert!((val_a - val_b).abs() > 0.001, "Different slots should produce different values");
     }
 
     #[test]

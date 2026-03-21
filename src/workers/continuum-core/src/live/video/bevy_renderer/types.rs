@@ -553,10 +553,7 @@ impl Default for RenderSchedule {
     }
 }
 
-/// HD render target resolution.
-pub(super) const HD_WIDTH: u32 = 1280;
-pub(super) const HD_HEIGHT: u32 = 720;
-pub(super) const MAX_HD_SLOTS: usize = 3;
+// HD render target constants live in parent mod.rs (HD_WIDTH, HD_HEIGHT, MAX_HD_SLOTS).
 
 /// Pre-allocated pool of HD render targets.
 #[derive(Resource)]

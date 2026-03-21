@@ -21,7 +21,7 @@
 //! - `builder` — SceneConfig, build_scene(), marker components
 
 pub mod animation;
-mod avatar;
+pub(crate) mod avatar;
 mod builder;
 mod lighting;
 mod object;
