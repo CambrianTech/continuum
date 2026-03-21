@@ -288,6 +288,15 @@ install_postgres() {
     echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
   fi
 
+  # Set trust auth for local connections (no password needed for development)
+  local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
+  if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
+    if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
+      sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
+      sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
+    fi
+  fi
+
   # Create user and database if they don't exist
   local pg_user="${USER:-joel}"
   if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
