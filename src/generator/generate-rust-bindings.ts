@@ -344,12 +344,14 @@ async function main() {
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
   // Skip cargo test if Rust source hasn't changed since last generation.
-  // Also skip on platforms where cargo test crashes (e.g., protobuf descriptor conflict on Linux).
-  // Bindings are generated on macOS and committed — secondary towers use committed files.
-  const skipTsrs = process.env.SKIP_TSRS === '1' || process.env.SKIP_TSRS === 'true';
+  // Bindings are generated on macOS and committed — Linux/WSL towers use committed files.
+  // On Linux, cargo test crashes due to protobuf descriptor conflict (LiveKit).
+  // Instead of a hack env var, detect the platform and skip on Linux when bindings exist.
+  const isLinux = process.platform === 'linux';
+  const bindingsExist = fs.existsSync(GENERATED_DIR) && fs.readdirSync(GENERATED_DIR).length > 0;
   const forceRegen = process.argv.includes('--force');
-  if (skipTsrs) {
-    console.log('  ⏭️  SKIP_TSRS set — using committed bindings\n');
+  if (isLinux && bindingsExist && !forceRegen) {
+    console.log('  ✅ Linux: using committed bindings (cargo test skipped — protobuf conflict)\n');
   } else if (!forceRegen && bindingsUpToDate()) {
     console.log('  ✅ Bindings up to date (no Rust changes since last generation)');
     console.log('     Use --force to regenerate anyway\n');
