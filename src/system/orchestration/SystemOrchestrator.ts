@@ -23,21 +23,13 @@ function openBrowserCommand(url: string): { cmd: string; args: string[] } {
   if (process.platform === 'win32') {
     return { cmd: 'cmd.exe', args: ['/c', 'start', '', url] };
   }
-  // Linux — check for WSL (open Windows browser from WSL)
+  // Linux — check for WSL (open Windows default browser via explorer.exe)
   try {
     const version = readFileSync('/proc/version', 'utf-8');
     if (version.toLowerCase().includes('microsoft')) {
-      // wslview (from wslu package) is the reliable way to open URLs from WSL.
-      // cmd.exe /c start fails for URLs because WSL path translation mangles the protocol.
-      // powershell.exe is the fallback if wslu is not installed.
-      try {
-        const { execSync } = require('child_process');
-        execSync('command -v wslview', { stdio: 'ignore' });
-        return { cmd: 'wslview', args: [url] };
-      } catch {
-        // wslview not available — use powershell.exe which handles URLs reliably
-        return { cmd: 'powershell.exe', args: ['-NoProfile', '-Command', `Start-Process "${url}"`] };
-      }
+      // explorer.exe is always available on WSL and opens the user's DEFAULT browser.
+      // No extra packages needed. Works with Edge, Chrome, Firefox — whatever they've set.
+      return { cmd: '/mnt/c/Windows/explorer.exe', args: [url] };
     }
   } catch { /* not WSL */ }
   return { cmd: 'xdg-open', args: [url] };

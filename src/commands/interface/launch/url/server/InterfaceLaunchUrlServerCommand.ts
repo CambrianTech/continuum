@@ -100,20 +100,11 @@ export class InterfaceLaunchUrlServerCommand extends CommandBase<InterfaceLaunch
     if (process.platform === 'win32') {
       return `start "" "${escapedUrl}"`;
     }
-    // Linux — detect WSL and use Windows browser
+    // Linux — detect WSL and open user's default Windows browser via explorer.exe
     try {
       const version = readFileSync('/proc/version', 'utf-8');
       if (version.toLowerCase().includes('microsoft')) {
-        // wslview (wslu package) is the reliable way to open URLs from WSL.
-        // cmd.exe /c start fails because WSL path translation mangles the URL protocol.
-        try {
-          const { execSync } = require('child_process');
-          execSync('command -v wslview', { stdio: 'ignore' });
-          return `wslview "${escapedUrl}"`;
-        } catch {
-          // powershell.exe handles URLs reliably from WSL
-          return `powershell.exe -NoProfile -Command "Start-Process '${escapedUrl}'"`;
-        }
+        return `/mnt/c/Windows/explorer.exe "${escapedUrl}"`;
       }
     } catch { /* not WSL */ }
     return `xdg-open "${escapedUrl}"`;

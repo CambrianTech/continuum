@@ -112,10 +112,6 @@ install_system_deps() {
       command -v jq &>/dev/null || needed+=("jq")
       command -v curl &>/dev/null || needed+=("curl")
       command -v git &>/dev/null || needed+=("git")
-      # wslu provides wslview for opening URLs in Windows browser from WSL
-      if [ "$PLATFORM" = "wsl" ] && ! command -v wslview &>/dev/null; then
-        needed+=("wslu")
-      fi
       # Python venv support
       if ! python3 -m venv --help &>/dev/null 2>&1; then
         # Detect python version for correct package name
