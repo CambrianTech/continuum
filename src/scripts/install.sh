@@ -317,8 +317,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
 # CONTINUUM_STORAGE_PATH=/path/to/storage
 
 # PostgreSQL (auto-configured by install script)
-DATABASE_URL=postgres://${USER:-joel}@localhost:5432/continuum
+# DATABASE_URL is appended below with the actual username
 ENVEOF
+  # Append DATABASE_URL with actual username (can't use heredoc single-quotes for this)
+  echo "DATABASE_URL=postgres://${USER}@localhost:5432/continuum" >> "$CONFIG_FILE"
   echo -e "  ${YELLOW}Edit $CONFIG_FILE to add your API keys${NC}"
 fi
 
