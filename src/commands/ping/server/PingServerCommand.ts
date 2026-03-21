@@ -78,11 +78,11 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
     // Try to collect browser info with a 3s timeout.
     // In headless or CLI mode, there's no browser — return server-only immediately.
     try {
-      const browserPromise = this.remoteExecute<PingParams, PingResult>({ ...pingParams, server, aiStatus });
+      const browserPromise = this.remoteExecute({ ...pingParams, server, aiStatus } as PingParams);
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('browser timeout')), 3000)
       );
-      return await Promise.race([browserPromise, timeoutPromise]);
+      return await Promise.race([browserPromise, timeoutPromise]) as PingResult;
     } catch {
       // No browser connected or timed out — return server-only result
       return transformPayload(pingParams, {
