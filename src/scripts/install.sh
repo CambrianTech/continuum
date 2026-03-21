@@ -337,17 +337,6 @@ install_livekit() {
 
 install_livekit
 
-# ============================================================================
-# Platform-specific config.env entries
-# ============================================================================
-
-# Linux/WSL: protobuf conflict with LiveKit requires SKIP_TSRS during build
-if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
-  if [ -f "$CONFIG_FILE" ] && ! grep -q "SKIP_TSRS" "$CONFIG_FILE" 2>/dev/null; then
-    echo "SKIP_TSRS=1" >> "$CONFIG_FILE"
-    echo -e "  ${GREEN}Added SKIP_TSRS=1 to config.env (protobuf conflict workaround)${NC}"
-  fi
-fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\n${YELLOW}Creating default config at $CONFIG_FILE${NC}"
