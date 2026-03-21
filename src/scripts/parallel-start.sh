@@ -207,7 +207,7 @@ if [ -n "$PSQL" ]; then
   CREATEDB="$(dirname "$PSQL")/createdb"
 
   # Check if Postgres is accepting connections (start it if not)
-  if ! "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+  if ! "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     echo -e "  ${YELLOW}⚠️ Postgres not responding — attempting to start...${NC}"
     # Try Homebrew service start (macOS)
     if command -v brew >/dev/null 2>&1; then
@@ -215,7 +215,7 @@ if [ -n "$PSQL" ]; then
       sleep 2
     fi
   fi
-  if "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+  if "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     # Check if continuum database exists
     if "$PSQL" -h localhost -p 5432 -U joel -lqt 2>/dev/null | grep -qw continuum; then
       echo -e "  ${GREEN}✅ Database 'continuum' exists${NC}"
