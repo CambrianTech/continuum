@@ -22,6 +22,11 @@ ulimit -n 65536 2>/dev/null || true
 # Ensure nvm is in PATH (for Linux/WSL installs via nvm)
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+# Source config.env — API keys, DATABASE_URL, storage paths.
+# Must happen before BOTH workers (start-workers.sh) AND the TS orchestrator.
+if [ -f "$HOME/.continuum/config.env" ]; then
+  set -a; source "$HOME/.continuum/config.env"; set +a
+fi
 
 cd "$PROJECT_DIR"
 
