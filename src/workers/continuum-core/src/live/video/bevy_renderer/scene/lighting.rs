@@ -36,34 +36,34 @@ pub fn spawn_light_rig(parent: &mut ChildSpawnerCommands, layer: &RenderLayers, 
 
 /// 3-point portrait lighting: key (upper-left), fill (lower-right), rim (behind).
 fn spawn_portrait_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers) {
-    // Key light — upper-left, strong primary illumination
+    // Key light — upper-right-front, strong primary illumination
     parent.spawn((
         DirectionalLight {
-            illuminance: 25000.0,
+            illuminance: 30000.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.4,                             // 23° down
-            std::f32::consts::PI + 0.3,       // slightly left of camera
+            -0.5,                             // 29° down from above
+            std::f32::consts::PI - 0.4,       // from the right side
             0.0,
         )),
         layer.clone(),
         SceneLight,
     ));
 
-    // Fill light — lower-right, softer to reduce harsh shadows
+    // Fill light — front-left, softer to balance
     parent.spawn((
         DirectionalLight {
-            illuminance: 10000.0,
+            illuminance: 15000.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.1,                             // nearly level
-            std::f32::consts::PI - 0.4,       // from the right
+            -0.2,                             // slight downward
+            std::f32::consts::PI + 0.4,       // from the left
             0.0,
         )),
         layer.clone(),
