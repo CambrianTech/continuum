@@ -21,7 +21,7 @@ case "$(uname -s)" in
   Linux)
     # CUDA: check for nvidia-smi in standard and WSL paths
     if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
-      CARGO_GPU_FEATURES="--features cuda"
+      CARGO_GPU_FEATURES="--features cuda,load-dynamic-ort"
       # Ensure CUDA toolkit + nvidia-smi are in PATH
       for cuda_dir in /usr/local/cuda /opt/cuda; do
         if [ -d "$cuda_dir/bin" ] && ! command -v nvcc &>/dev/null; then
