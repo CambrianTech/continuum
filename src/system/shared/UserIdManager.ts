@@ -87,7 +87,7 @@ export class UserIdManager {
     }
 
     // Fallback: Generate a persistent User ID and store it
-    this.currentUserId = 'user-joel-12345' as UUID; // Use the same ID as in fake-users.json
+    this.currentUserId = 'user-owner-00001' as UUID; // Use the same ID as in fake-users.json
     this.storeCurrentUserId(this.currentUserId);
     console.log(`🔧 CLAUDE-USER-ID-DEBUG: Generated fallback persistent User ID: ${this.currentUserId}`);
     return this.currentUserId;

@@ -425,7 +425,7 @@ export async function resolveRoomIdentifier(identifier: string): Promise<Resolve
  * THIS IS THE SINGLE SOURCE OF TRUTH for user resolution.
  * DO NOT write custom resolution logic in commands - use this function.
  *
- * @param identifier - User uniqueId (e.g., "joel"), UUID, or name
+ * @param identifier - User uniqueId (e.g., "owner"), UUID, or name
  * @returns ResolvedEntity with id (UUID), uniqueId, displayName, or null if not found
  */
 export async function resolveUserIdentifier(identifier: string): Promise<ResolvedEntity | null> {

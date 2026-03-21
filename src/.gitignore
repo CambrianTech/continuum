@@ -87,3 +87,4 @@ widgets/**/*.styles.ts
 **/*.rs.bk
 **/*.rs.bk.*
 .fastembed_cache/
+examples/widget-ui/.continuum/

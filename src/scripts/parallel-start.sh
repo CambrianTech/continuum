@@ -104,18 +104,25 @@ echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-
 # Build GPU-aware crates individually (workspace --features only applies to focused package).
 # Non-GPU crates (archive, jtag-mcp) build normally.
 GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or ""
+# GPU backend feature only (no accelerate — that's continuum-core only)
+GPU_BACKEND=$(echo "$GPU_FEAT" | sed 's/,accelerate//;s/accelerate,//;s/accelerate//')
 BUILD_OUTPUT=""
+RESULT=0
 for pkg in archive-worker jtag-mcp; do
   OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 done
-for pkg in continuum-core inference-grpc; do
-  if [ -n "$GPU_FEAT" ]; then
-    OUT=$(cargo build --release -p $pkg --features "$GPU_FEAT" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
-  else
-    OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
-  fi
-done
-RESULT=${RESULT:-0}
+# continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
+if [ -n "$GPU_FEAT" ]; then
+  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+else
+  OUT=$(cargo build --release -p continuum-core --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+fi
+# inference-grpc: GPU backend only (metal or cuda, no accelerate)
+if [ -n "$GPU_BACKEND" ]; then
+  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+else
+  OUT=$(cargo build --release -p inference-grpc --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+fi
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
 if [ $RESULT -eq 0 ]; then
@@ -222,11 +229,11 @@ if [ -n "$PSQL" ]; then
   fi
   if "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     # Check if continuum database exists
-    if "$PSQL" -h localhost -p 5432 -U joel -lqt 2>/dev/null | grep -qw continuum; then
+    if "$PSQL" -h localhost -p 5432 -U "${USER}" -lqt 2>/dev/null | grep -qw continuum; then
       echo -e "  ${GREEN}✅ Database 'continuum' exists${NC}"
     else
       echo -e "  ${YELLOW}⚠️ Database 'continuum' missing — creating...${NC}"
-      if "$CREATEDB" -h localhost -p 5432 -U joel continuum 2>&1; then
+      if "$CREATEDB" -h localhost -p 5432 -U "${USER}" continuum 2>&1; then
         echo -e "  ${GREEN}✅ Database 'continuum' created${NC}"
         # Flag that we need to seed after system is healthy
         NEEDS_SEED=true

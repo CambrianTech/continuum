@@ -147,7 +147,7 @@ fn build_timeline_events() -> Vec<CorpusTimelineEvent> {
                 context_id: "room-academy".into(),
                 context_name: "Academy".into(),
                 event_type: "discussion".into(),
-                actor_id: "joel".into(),
+                actor_id: "test-user".into(),
                 actor_name: "Joel".into(),
                 content: "Deep discussion about Rust ownership patterns and memory management strategies".into(),
                 importance: 0.8,

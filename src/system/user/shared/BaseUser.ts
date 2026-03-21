@@ -304,7 +304,7 @@ export abstract class BaseUser {
    *
    * Examples:
    * - PersonaUser: SystemPaths.personas.dir(uniqueId) → '$HOME/.continuum/personas/helper'
-   * - HumanUser: SystemPaths.users.dir(uniqueId) → '$HOME/.continuum/users/joel'
+   * - HumanUser: SystemPaths.users.dir(uniqueId) → '$HOME/.continuum/users/owner'
    * - AgentUser: SystemPaths.agents.dir(uniqueId) → '$HOME/.continuum/agents/claude-code'
    *
    * ALL user-specific paths (logs, memory, sessions, databases) MUST be built from this.

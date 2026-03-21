@@ -298,7 +298,7 @@ install_postgres() {
   fi
 
   # Create user and database if they don't exist
-  local pg_user="${USER:-joel}"
+  local pg_user="${USER:-postgres}"
   if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
     sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
   fi

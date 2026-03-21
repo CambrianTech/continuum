@@ -666,7 +666,7 @@ mod tests {
     #[ignore]
     fn test_qwen32b_compacted_gguf_inference() {
         let model_dir = Path::new(
-            &std::env::var("HOME").unwrap_or_else(|_| "/Users/joel".to_string()),
+            &std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
         )
         .join(".continuum/genome/models/qwen32b-compacted-v2");
 

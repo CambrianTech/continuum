@@ -32,7 +32,7 @@ echo "=================="
 echo ""
 echo "1. Creating Joel (Human User - Creator)..."
 ./jtag data/create --collection=users --data='{
-  "id": "user-joel-12345",
+  "id": "user-owner-00001",
   "name": "Joel",
   "displayName": "Joel - Creator",
   "userType": "human",
@@ -138,7 +138,7 @@ echo "1. Creating 'general' room (Public)..."
   "isArchived": false,
   "metadata": {
     "purpose": "main-chat",
-    "createdBy": "user-joel-12345"
+    "createdBy": "user-owner-00001"
   }
 }'
 
@@ -156,7 +156,7 @@ echo "2. Creating 'academy' room (Private)..."
   "isArchived": false,
   "metadata": {
     "purpose": "training",
-    "createdBy": "user-joel-12345"
+    "createdBy": "user-owner-00001"
   }
 }'
 
@@ -174,7 +174,7 @@ echo "3. Creating 'development' room (Public)..."
   "isArchived": false,
   "metadata": {
     "purpose": "development",
-    "createdBy": "user-joel-12345"
+    "createdBy": "user-owner-00001"
   }
 }'
 
@@ -191,7 +191,7 @@ echo "1. Welcome message in general..."
 ./jtag data/create --collection=chat_messages --data='{
   "id": "msg-welcome-11111",
   "roomId": "room-general-11111",
-  "senderId": "user-joel-12345",
+  "senderId": "user-owner-00001",
   "content": "Welcome to the general discussion room! 🎉",
   "type": "text",
   "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'"
@@ -229,8 +229,8 @@ echo "===================================="
 echo ""
 echo "1. Joel joins all rooms (as admin)..."
 ./jtag data/create --collection=participations --data='{
-  "id": "participation-joel-general",
-  "userId": "user-joel-12345",
+  "id": "participation-owner-general",
+  "userId": "user-owner-00001",
   "roomId": "room-general-11111",
   "role": "admin",
   "joinedAt": "'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'",
@@ -240,8 +240,8 @@ echo "1. Joel joins all rooms (as admin)..."
 }'
 
 ./jtag data/create --collection=participations --data='{
-  "id": "participation-joel-academy",
-  "userId": "user-joel-12345",
+  "id": "participation-owner-academy",
+  "userId": "user-owner-00001",
   "roomId": "room-academy-22222",
   "role": "admin",
   "joinedAt": "'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'",

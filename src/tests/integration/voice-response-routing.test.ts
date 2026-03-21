@@ -24,7 +24,7 @@ import type { InboxMessage } from '../../system/user/server/modules/QueueItemTyp
 const MOCK_PERSONA_ID: UUID = 'persona-helper-ai' as UUID;
 const MOCK_SESSION_ID: UUID = 'voice-session-001' as UUID;
 const MOCK_ROOM_ID: UUID = 'room-general-001' as UUID;
-const MOCK_SPEAKER_ID: UUID = 'user-joel-001' as UUID;
+const MOCK_SPEAKER_ID: UUID = 'user-test-001' as UUID;
 const MOCK_MESSAGE_ID: UUID = generateUUID();
 
 // Mock InboxMessage factory

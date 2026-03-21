@@ -159,7 +159,7 @@ export class UserIdentityResolver {
           return this.sanitizeForId(username); // Matches seed: generateUniqueId('Joel')
         }
         // Fallback to primary human
-        return 'joel'; // Matches seed: generateUniqueId('Joel')
+        return 'owner'; // Matches seed: generateUniqueId('Joel')
       }
 
       case 'ci':

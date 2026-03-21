@@ -7,7 +7,7 @@
  * 
  * Features:
  * - Clear all data collections
- * - Seed users (joel + AI agents)
+ * - Seed users (primary human + AI agents)
  * - Seed chat rooms (general, academy)
  * - Verify seeding worked
  * - Crash and burn error handling - no fallbacks

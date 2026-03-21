@@ -111,7 +111,7 @@ export class ActivityEntity extends BaseEntity {
   }
 
   /**
-   * Human-readable unique identifier (e.g., 'general', 'settings-joel-123')
+   * Human-readable unique identifier (e.g., 'general', 'settings-owner-123')
    */
   @TextField({ maxLength: TEXT_LENGTH.DEFAULT, index: true, unique: true })
   uniqueId!: string;

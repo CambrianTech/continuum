@@ -65,7 +65,7 @@ export interface StorageConfig {
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   strategy: 'sql',
   backend: 'postgres',
-  connectionString: 'postgres://joel@localhost:5432/continuum',
+  connectionString: 'postgres://localhost:5432/continuum',
   paths: {
     data: '.continuum/data',
     backups: '.continuum/data/backups'

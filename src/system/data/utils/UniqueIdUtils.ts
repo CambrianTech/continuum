@@ -2,7 +2,7 @@
  * Unique ID Utilities
  *
  * Generates short, simple, valid uniqueId formats for users
- * Format: username (e.g., joel, sentinel, helper)
+ * Format: username (e.g., owner, sentinel, helper)
  *
  * NOTE: @ symbol is ONLY for UI mentions, NOT part of uniqueId!
  */
@@ -20,7 +20,7 @@
  * @returns Valid uniqueId as clean slug
  *
  * @example
- * generateUniqueId('Joel') → 'joel'
+ * generateUniqueId('Owner') → 'joel'
  * generateUniqueId('Helper AI') → 'helperai'
  * generateUniqueId('Code Review AI') → 'codereviewai'
  * generateUniqueId('Sentinel') → 'sentinel'

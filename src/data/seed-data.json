@@ -5,8 +5,8 @@
   "users": {
     "humans": [
       {
-        "userId": "joel-human-12345",
-        "sessionId": "joel-session-67890",
+        "userId": "owner-human-00001",
+        "sessionId": "owner-session-00001",
         "displayName": "Joel",
         "citizenType": "human",
         "capabilities": ["chat", "human_interaction", "authentication", "admin"],
@@ -171,7 +171,7 @@
       "type": "public",
       "createdAt": "2025-09-17T00:00:00.000Z",
       "members": [
-        "joel-human-12345",
+        "owner-human-00001",
         "claude-code-agent-12345",
         "code-ai-agent-12345",
         "planner-ai-agent-12345",
@@ -191,7 +191,7 @@
       "type": "private",
       "createdAt": "2025-09-17T00:00:00.000Z",
       "members": [
-        "joel-human-12345",
+        "owner-human-00001",
         "claude-code-agent-12345",
         "general-ai-persona-12345"
       ],
@@ -206,7 +206,7 @@
     {
       "messageId": "welcome-general-12345",
       "roomId": "general-room-12345",
-      "userId": "joel-human-12345",
+      "userId": "owner-human-00001",
       "content": "Welcome to the Continuum system! This is the main discussion room.",
       "type": "text",
       "createdAt": "2025-09-17T00:01:00.000Z",

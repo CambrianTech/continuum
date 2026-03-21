@@ -63,7 +63,7 @@
   "examples": [
     {
       "description": "Migrate SQLite to PostgreSQL",
-      "command": "./jtag migration/start --source=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://joel@localhost:5432/continuum\"",
+      "command": "./jtag migration/start --source=\"$HOME/.continuum/data/database.sqlite\" --target=\"postgres://$USER@localhost:5432/continuum\"",
       "expectedResult": "{ total: 50000, migrated: 50000, failed: 0, paused: false }"
     },
     {

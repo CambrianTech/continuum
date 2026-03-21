@@ -77,7 +77,7 @@ async function testFullEndToEndIntegration() {
     // Send message via CLI command  
     const sendResult = await client.commands['collaboration/chat/send']({
       message: testMessage,
-      userId: 'user-joel-12345',
+      userId: 'user-owner-00001',
       roomId: 'general',
       senderType: 'user'
     });

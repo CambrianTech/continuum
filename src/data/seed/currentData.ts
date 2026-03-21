@@ -195,7 +195,7 @@ export const currentSeedData = {
         "updatedAt": "2025-09-18T06:42:13.448Z",
         "version": 1,
         "roomId": "general",
-        "senderId": "user-joel-12345",
+        "senderId": "user-owner-00001",
         "content": {
           "text": "Test message with fixed MessageContent format! 🔧",
           "attachments": [],
@@ -288,7 +288,7 @@ export const currentSeedData = {
       },
       {
         "roomId": "general",
-        "senderId": "user-joel-12345",
+        "senderId": "user-owner-00001",
         "content": {
           "text": "FIRST MESSAGE - should not be doubled",
           "attachments": [],
@@ -309,7 +309,7 @@ export const currentSeedData = {
       },
       {
         "roomId": "general",
-        "senderId": "user-joel-12345",
+        "senderId": "user-owner-00001",
         "content": {
           "text": "SECOND MESSAGE - check if doubled",
           "attachments": [],
@@ -330,7 +330,7 @@ export const currentSeedData = {
       },
       {
         "roomId": "general",
-        "senderId": "user-joel-12345",
+        "senderId": "user-owner-00001",
         "content": {
           "text": "THIRD MESSAGE - doubling pattern test",
           "attachments": [],

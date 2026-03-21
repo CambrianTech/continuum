@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 fn main() {
-    let home = std::env::var("HOME").unwrap_or("/Users/joel".into());
+    let home = std::env::var("HOME").unwrap_or("/tmp".into());
     let default_dir = format!("{home}/.continuum/genome/models/qwen32b-compacted-v3");
     let model_dir = std::env::args()
         .skip_while(|a| a != "--model-dir")

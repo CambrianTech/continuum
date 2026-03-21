@@ -13,12 +13,12 @@ import { generateUniqueId } from '../utils/UniqueIdUtils';
  * These are used with user/create --uniqueId parameter
  *
  * Format: @username (short, simple, no spaces)
- * Examples: @joel, @claude, @helper, @sentinel
+ * Examples: @owner, @claude, @helper, @sentinel
  *
  * RESERVED for P2P network - these uniqueIds cannot be claimed by other users
  */
 export const DEFAULT_USER_UNIQUE_IDS = {
-  PRIMARY_HUMAN: generateUniqueId('Joel'),           // @joel
+  PRIMARY_HUMAN: generateUniqueId('Owner'),           // @owner
   CLI_CLIENT: generateUniqueId('CLI'),               // @cli
   CLAUDE_CODE: generateUniqueId('Claude'),           // @claude
   GENERAL_AI: generateUniqueId('General'),           // @general

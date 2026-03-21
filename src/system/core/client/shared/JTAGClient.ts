@@ -127,7 +127,7 @@ export interface JTAGClientConnectOptions {
 
 export interface JTAGConnectionContextInput {
   // Citizen identity (single source of truth for user lookup)
-  uniqueId?: string;  // Human-readable citizen identifier (e.g., "joelteply@yahoo.com", "claude-code")
+  uniqueId?: string;  // Human-readable citizen identifier (e.g., "user@example.com", "claude-code")
 
   // Agent detection context
   agentInfo?: {

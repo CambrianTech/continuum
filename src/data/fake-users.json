@@ -4,9 +4,9 @@
   "description": "Fake users for testing bidirectional chat functionality",
   "users": [
     {
-      "userId": "user-joel-12345",
+      "userId": "user-owner-00001",
       "displayName": "Joel",
-      "email": "joel@example.com",
+      "email": "owner@continuum.local",
       "role": "admin",
       "isOnline": true,
       "createdAt": "2025-08-01T10:00:00.000Z",
@@ -85,7 +85,7 @@
     }
   ],
   "defaultCurrentUser": {
-    "userId": "user-joel-12345",
+    "userId": "user-owner-00001",
     "note": "This represents the persistent User ID for 'me' across sessions"
   }
 }
