@@ -343,9 +343,14 @@ async function main() {
   // Ensure output directory exists
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
-  // Skip cargo test if Rust source hasn't changed since last generation
+  // Skip cargo test if Rust source hasn't changed since last generation.
+  // Also skip on platforms where cargo test crashes (e.g., protobuf descriptor conflict on Linux).
+  // Bindings are generated on macOS and committed — secondary towers use committed files.
+  const skipTsrs = process.env.SKIP_TSRS === '1' || process.env.SKIP_TSRS === 'true';
   const forceRegen = process.argv.includes('--force');
-  if (!forceRegen && bindingsUpToDate()) {
+  if (skipTsrs) {
+    console.log('  ⏭️  SKIP_TSRS set — using committed bindings\n');
+  } else if (!forceRegen && bindingsUpToDate()) {
     console.log('  ✅ Bindings up to date (no Rust changes since last generation)');
     console.log('     Use --force to regenerate anyway\n');
   } else {
