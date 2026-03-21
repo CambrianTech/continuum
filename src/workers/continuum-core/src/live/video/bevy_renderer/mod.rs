@@ -511,6 +511,13 @@ fn spawn_readback_entity_opt(
 
                 let frame_n = FRAME_COUNTER[slot_id as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+                // Skip early frames — GPU readback often returns corrupted data
+                // (green/noise) before the render pipeline is fully warmed up.
+                // Wait for the model to render a few frames before publishing.
+                if frame_n < 30 {
+                    return;
+                }
+
                 if frame_n == 150 || frame_n == 300 {
                     let test_frame = crate::live::avatar::RgbaFrame {
                         width: slot_w,
