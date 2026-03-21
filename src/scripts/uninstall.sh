@@ -231,6 +231,28 @@ else
 fi
 
 # ============================================================================
+# Step 4b: Drop PostgreSQL database
+# ============================================================================
+
+echo -e "${YELLOW}[4b/6] PostgreSQL database${NC}"
+
+if command -v psql &>/dev/null; then
+  if psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+    echo -e "  Found: database 'continuum'"
+    if confirm "Drop database 'continuum'? (PostgreSQL server will NOT be removed)"; then
+      dropdb continuum 2>/dev/null || sudo -u postgres dropdb continuum 2>/dev/null || true
+      echo -e "  ${GREEN}Database dropped${NC}"
+    else
+      echo -e "  ${YELLOW}Skipped${NC}"
+    fi
+  else
+    echo -e "  ${GREEN}Database 'continuum' does not exist${NC}"
+  fi
+else
+  echo -e "  ${GREEN}psql not found — no database to clean${NC}"
+fi
+
+# ============================================================================
 # Step 5: Offer to uninstall Rust (rustup)
 # ============================================================================
 
@@ -314,7 +336,7 @@ fi
 echo ""
 echo -e "  ${YELLOW}Not removed (shared/external):${NC}"
 echo -e "    - System packages (build-essential, jq, cmake, etc.)"
-echo -e "    - PostgreSQL and database 'continuum'"
+echo -e "    - PostgreSQL server (database 'continuum' was dropped if you confirmed)"
 echo -e "    - CUDA / NVIDIA drivers"
 echo ""
 echo -e "  To reinstall: ${GREEN}cd src && bash scripts/install.sh${NC}"
