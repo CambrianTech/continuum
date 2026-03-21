@@ -32,8 +32,8 @@ pub(super) fn run_bevy_app(
         .to_string_lossy()
         .to_string();
 
-    App::new()
-        .insert_resource(CommandChannel(command_rx))
+    let mut app = App::new();
+    app.insert_resource(CommandChannel(command_rx))
         .insert_resource(FrameChannels(frame_senders))
         .insert_resource(FrameNotifiers(frame_notifiers))
         .insert_resource(ReadyFlag(ready_flag))
@@ -64,8 +64,12 @@ pub(super) fn run_bevy_app(
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / AVATAR_FPS,
         )))
-        .add_plugins(super::super::metal_gpu_convert::GpuConvertPlugin)
-        .register_type::<bevy::transform::components::TransformTreeChanged>()
+        ;
+        // GPU bridge: Metal compute shader for zero-copy RGBA→NV12 on macOS.
+        // Non-macOS uses CPU readback path (ReadbackComplete observer).
+        #[cfg(target_os = "macos")]
+        app.add_plugins(super::super::metal_gpu_convert::GpuConvertPlugin);
+        app.register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(
             Update,
