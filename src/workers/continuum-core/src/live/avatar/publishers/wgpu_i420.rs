@@ -51,6 +51,16 @@ impl FramePublisher for WgpuI420Publisher {
                 let h = frame.height;
                 let mut buffer = I420Buffer::new(w, h);
 
+                // Log strides on first frame to diagnose green bars
+                if self.frame_count == 0 {
+                    let (sy, su, sv) = buffer.strides();
+                    let cw = (w + 1) / 2;
+                    clog_info!(
+                        "📹 WgpuI420Publisher: I420Buffer strides: Y={} (w={}), U={} V={} (cw={}), data_len={}",
+                        sy, w, su, sv, cw, frame.data.len()
+                    );
+                }
+
                 // Copy pre-converted I420 planes from GPU output
                 copy_i420_planes(&frame.data, &mut buffer, w, h);
 
