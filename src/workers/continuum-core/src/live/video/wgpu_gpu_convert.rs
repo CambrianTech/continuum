@@ -68,7 +68,8 @@ fn rgb_to_v(r: f32, g: f32, b: f32) -> u32 {
 }
 
 // Each thread processes 4 consecutive X pixels → packs 4 Y values into one u32.
-// Each thread also handles 0-2 UV pairs for even rows.
+// For UV: each thread on even rows packs a full u32 (4 UV bytes = 8 source pixels).
+// Thread gid.x maps to UV word index directly — no read-modify-write race.
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let w = dims.x;
@@ -90,24 +91,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     y_plane[(y_coord * w + base_x) / 4u] = packed_y;
 
-    // UV planes: only even rows, process 2x2 blocks
+    // UV planes: only even rows. Each thread packs a FULL u32 (4 UV bytes)
+    // to avoid read-modify-write races between adjacent threads.
+    // 4 UV bytes = 4 chroma columns = 8 source pixels in X.
+    // So UV thread coverage = gid.x * 4 chroma cols = gid.x * 8 source pixels.
     if (y_coord % 2u == 0u) {
         let cw = (w + 1u) / 2u;
         let cy = y_coord / 2u;
+        let uv_word_idx = (cy * cw + gid.x * 4u) / 4u;
 
-        for (var bi: u32 = 0u; bi < 2u; bi = bi + 1u) {
-            let px = base_x + bi * 2u;
-            if (px >= w) { break; }
-            let cx = px / 2u;
+        // Pack 4 UV bytes into one u32
+        var packed_u: u32 = 0u;
+        var packed_v: u32 = 0u;
+        for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+            let cx = gid.x * 4u + i;
+            if (cx >= cw) { break; }
+            let px = cx * 2u;
             let pixel = textureLoad(input_tex, vec2<i32>(i32(px), i32(y_coord)), 0);
+            packed_u = packed_u | (rgb_to_u(pixel.r, pixel.g, pixel.b) << (i * 8u));
+            packed_v = packed_v | (rgb_to_v(pixel.r, pixel.g, pixel.b) << (i * 8u));
+        }
 
-            let uv_byte_idx = cy * cw + cx;
-            let uv_word_idx = uv_byte_idx / 4u;
-            let uv_shift = (uv_byte_idx % 4u) * 8u;
-
-            // Each UV byte position is unique per 2x2 block — no race
-            u_plane[uv_word_idx] = u_plane[uv_word_idx] | (rgb_to_u(pixel.r, pixel.g, pixel.b) << uv_shift);
-            v_plane[uv_word_idx] = v_plane[uv_word_idx] | (rgb_to_v(pixel.r, pixel.g, pixel.b) << uv_shift);
+        // Single write per thread — no race
+        if (gid.x * 4u < cw) {
+            u_plane[uv_word_idx] = packed_u;
+            v_plane[uv_word_idx] = packed_v;
         }
     }
 }
