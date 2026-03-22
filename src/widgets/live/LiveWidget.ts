@@ -332,13 +332,19 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           if (resolved?.id) {
             this.entityId = resolved.id;
             ContentLifecycle.register(this.entityId, this);
-            if (!this.isJoined) {
-              console.log('LiveWidget: Auto-joining after resolving uniqueId:', this.entityId);
-              this.handleJoin();
-            }
+          }
+          // Always join — even if resolution returned null, server resolves uniqueIds
+          if (!this.isJoined) {
+            console.log('LiveWidget: Auto-joining after resolving uniqueId:', this.entityId);
+            this.handleJoin();
+          }
+        }).catch(err => {
+          console.warn('LiveWidget: resolveRoom failed, joining with uniqueId:', this.entityId, err);
+          if (!this.isJoined) {
+            this.handleJoin();
           }
         });
-        return; // Don't join yet — wait for resolution
+        return; // Don't join yet — wait for resolution attempt
       }
 
       // Register for content lifecycle now that entityId is known
@@ -457,6 +463,10 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
       const result = await Commands.execute<LiveJoinParams, LiveJoinResult>(COMMANDS.COLLABORATION_LIVE_JOIN, {
         entityId: this.entityId,
       });
+
+      if (!result.success) {
+        console.error('LiveWidget: Join failed:', result.message, 'entityId:', this.entityId);
+      }
 
       if (result.success && result.callId) {
         this.sessionId = result.callId;
