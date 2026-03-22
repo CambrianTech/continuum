@@ -66,9 +66,28 @@ download_vroid_zip() {
     wget -q --show-progress -O "$tmpzip" "$url"
   fi
 
+  # Verify download is a valid zip (must be > 10KB and start with PK signature)
+  local filesize=$(wc -c < "$tmpzip" 2>/dev/null || echo 0)
+  if [ "$filesize" -lt 10000 ]; then
+    echo -e "  ${RED}Downloaded file too small (${filesize} bytes) for ${name} — likely a 404 or empty response${NC}"
+    rm -rf "$tmpzip" "$tmpdir"
+    return
+  fi
+
+  # Check unzip is available
+  if ! command -v unzip &>/dev/null; then
+    echo -e "  ${RED}unzip not installed — cannot extract ${name}. Run install.sh first.${NC}"
+    rm -rf "$tmpzip" "$tmpdir"
+    return
+  fi
+
   # Extract and find the .vrm file
-  unzip -q -o "$tmpzip" -d "$tmpdir" 2>/dev/null || true
-  local vrm_file=$(find "$tmpdir" -name "*.vrm" -type f | head -1)
+  if ! unzip -q -o "$tmpzip" -d "$tmpdir"; then
+    echo -e "  ${RED}Failed to extract ${name}: file may be corrupt or not a zip${NC}"
+    rm -rf "$tmpzip" "$tmpdir"
+    return
+  fi
+  local vrm_file=$(find "$tmpdir" -iname "*.vrm" -type f | head -1)
 
   if [ -n "$vrm_file" ] && [ -f "$vrm_file" ]; then
     mv "$vrm_file" "$dest"

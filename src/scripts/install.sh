@@ -138,6 +138,14 @@ install_system_deps() {
       command -v protoc &>/dev/null || needed+=("protobuf-compiler")
       # libva needed by webrtc-sys (LiveKit video)
       pkg-config --exists libva 2>/dev/null || needed+=("libva-dev")
+      # Vulkan (required for Bevy GPU rendering — without it wgpu falls back to llvmpipe)
+      dpkg -l libvulkan1 2>/dev/null | grep -q '^ii' || needed+=("libvulkan1")
+      # NVIDIA Vulkan ICD (maps Vulkan → NVIDIA driver)
+      if command -v nvidia-smi &>/dev/null; then
+        [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ] || needed+=("nvidia-vulkan-icd")
+      fi
+      # unzip needed for VRoid avatar model extraction
+      command -v unzip &>/dev/null || needed+=("unzip")
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
