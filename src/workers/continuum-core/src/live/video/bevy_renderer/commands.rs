@@ -97,8 +97,12 @@ pub(super) fn process_commands(
                         if !std::path::Path::new(&glb_path).exists()
                             && std::path::Path::new(&model_path).exists()
                         {
+                            // Symlink target must be relative to the link's directory (just the filename)
+                            let vrm_filename = std::path::Path::new(&model_path)
+                                .file_name()
+                                .unwrap_or_default();
                             #[cfg(unix)]
-                            { let _ = std::os::unix::fs::symlink(&model_path, &glb_path); }
+                            { let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path); }
                             #[cfg(not(unix))]
                             { let _ = std::fs::copy(&model_path, &glb_path); }
                         }

@@ -55,6 +55,8 @@ if (command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]) && \
   echo -e "${RED}   Bevy will fall back to software rendering (unusable).${NC}"
   echo -e "${RED}   Fix: run 'bash scripts/install.sh' to install libnvidia-gl.${NC}"
 fi
+# Clean up stale user-space ICD (previous versions created one that confused the loader)
+rm -rf "$CONTINUUM_ROOT/vulkan" 2>/dev/null
 
 echo -e "${YELLOW}📋 Loading worker config: $CONFIG_FILE${NC}"
 
