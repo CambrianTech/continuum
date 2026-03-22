@@ -94,10 +94,9 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   LIVEKIT_NODE_IP="127.0.0.1"
   if grep -qi microsoft /proc/version 2>/dev/null; then
     # WSL2 mirrored networking: shares the host's network stack, so UDP works.
-    # Bind to 0.0.0.0 and use LAN IP for ICE candidates (browsers filter loopback).
-    LIVEKIT_NODE_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "127.0.0.1")
+    # Bind to 0.0.0.0, node-ip stays 127.0.0.1 (localhost pages accept loopback ICE).
     LIVEKIT_BIND="0.0.0.0"
-    echo -e "${YELLOW}   WSL2 mirrored networking — node-ip=${LIVEKIT_NODE_IP}${NC}"
+    echo -e "${YELLOW}   WSL2 mirrored networking — bind=0.0.0.0, node-ip=127.0.0.1${NC}"
   fi
 
   LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
