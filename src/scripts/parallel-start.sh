@@ -243,11 +243,14 @@ if [ -n "$PSQL" ]; then
   # Check if Postgres is accepting connections (start it if not)
   if ! "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     echo -e "  ${YELLOW}⚠️ Postgres not responding — attempting to start...${NC}"
-    # Try Homebrew service start (macOS)
     if command -v brew >/dev/null 2>&1; then
+      # macOS: Homebrew service
       brew services start postgresql@17 2>/dev/null || true
-      sleep 2
+    else
+      # Linux/WSL2: service command (WSL2 doesn't auto-start services after reboot)
+      sudo -n service postgresql start 2>/dev/null || sudo service postgresql start 2>/dev/null || true
     fi
+    sleep 2
   fi
   if "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     # Check if continuum database exists
