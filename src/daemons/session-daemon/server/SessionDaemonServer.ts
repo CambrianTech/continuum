@@ -611,65 +611,28 @@ export class SessionDaemonServer extends SessionDaemon {
           const deviceId = enhancedContext?.identity?.deviceId;
 
 
-          // For browser-ui: Use deviceId to find existing session (server owns user identity)
+          // For browser-ui: Single-owner system. Browser = the seeded human owner.
+          // Always resolve to the owner, regardless of deviceId or existing sessions.
           if (clientType === 'browser-ui') {
-            if (deviceId) {
-              // Look for existing session with this deviceId
+            const seededOwner = await this.findSeededHumanOwner();
+            if (seededOwner) {
+              // Find or create a session for the owner
               const existingSession = this.sessions.find(s =>
-                s.isShared &&
-                s.isActive &&
-                s.deviceId === deviceId  // Session stores deviceId
+                s.isShared && s.isActive && s.userId === seededOwner.id
               );
-
               if (existingSession) {
-                // CRITICAL: Verify the session's user is a HUMAN, not an AI agent
-                // This can happen if the session was created when Claude Code was detected
-                try {
-                  const sessionUser = await this.getUserById(existingSession.userId);
-                  const userType = sessionUser?.entity?.type;  // FIX: was 'userType', field is 'type'
-
-                  // If user is an AI agent (not human), discard session and create new
-                  if (userType === 'agent' || userType === 'persona' || userType === 'system') {
-                    this.log.warn(`⚠️ SessionDaemon: Session for device ${deviceId.slice(0, 12)}... has AI user (${sessionUser.displayName}) - discarding and creating human session`);
-                    // Mark old session as inactive
-                    existingSession.isActive = false;
-                    // Fall through to create new session
-                  } else if (sessionUser?.entity?.uniqueId?.startsWith('anon-')) {
-                    // Anonymous user - check if seeded owner exists and prefer them
-                    const seededOwner = await this.findSeededHumanOwner();
-                    if (seededOwner) {
-                      this.log.info(`✅ SessionDaemon: Upgrading anonymous user to seeded owner: ${seededOwner.displayName}`);
-                      existingSession.userId = seededOwner.id;
-                      existingSession.user = seededOwner;
-                      // Save updated session
-                      await this.saveSessionsToFile();
-                    } else {
-                      existingSession.user = sessionUser;
-                    }
-                    return createPayload(params.context, existingSession.sessionId, {
-                      success: true,
-                      timestamp: new Date().toISOString(),
-                      operation: 'get',
-                      session: existingSession
-                    });
-                  } else {
-                    this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}... with human user ${sessionUser.displayName}`);
-                    existingSession.user = sessionUser;
-
-                    return createPayload(params.context, existingSession.sessionId, {
-                      success: true,
-                      timestamp: new Date().toISOString(),
-                      operation: 'get',
-                      session: existingSession
-                    });
-                  }
-                } catch (error) {
-                  this.log.warn(`Failed to verify user for session: ${error} - creating new session`);
-                }
+                existingSession.user = seededOwner;
+                this.log.info(`✅ SessionDaemon: Browser → existing session for ${seededOwner.displayName}`);
+                return createPayload(params.context, existingSession.sessionId, {
+                  success: true,
+                  timestamp: new Date().toISOString(),
+                  operation: 'get',
+                  session: existingSession
+                });
               }
             }
-            // No valid existing session for this device - create new with human identity
-            this.log.info(`🆕 SessionDaemon: Creating new human session for device ${deviceId?.slice(0, 12) || 'unknown'}...`);
+            // No owner session found — create new
+            this.log.info(`🆕 SessionDaemon: Creating new session for browser`);
             return await this.createSession(params);
           }
 
