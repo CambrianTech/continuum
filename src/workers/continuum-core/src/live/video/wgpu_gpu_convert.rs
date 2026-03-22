@@ -288,7 +288,7 @@ fn dispatch_compute(
             })
         };
 
-        let stor = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        let stor = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
         let y_buffer = mk_buf(&format!("y_slot_{slot_id}"), y_size, stor);
         let u_buffer = mk_buf(&format!("u_slot_{slot_id}"), u_size, stor);
         let v_buffer = mk_buf(&format!("v_slot_{slot_id}"), v_size, stor);
