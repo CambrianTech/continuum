@@ -314,8 +314,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
     HEALTHY=true
-    HAS_BROWSER=$(echo "$PING_OUTPUT" | grep -c '"browser"' 2>/dev/null || echo "0")
-    if [ "$HAS_BROWSER" -gt 0 ]; then
+    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
       echo -e "  ${GREEN}Server + browser connected${NC}"
     else
       echo -e "  ${GREEN}Server up (no browser — headless/CLI mode OK)${NC}"
@@ -327,7 +326,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
 done
 
 BROWSER_CONNECTED=false
-if [ "$HAS_BROWSER" -gt 0 ] 2>/dev/null; then
+if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
   BROWSER_CONNECTED=true
 fi
 
