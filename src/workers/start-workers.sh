@@ -87,16 +87,10 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   : > "$LIVEKIT_LOG"
 
   # WSL2: force TCP-only mode — UDP doesn't traverse the WSL2→Windows boundary,
-  # so WebRTC media must use TCP/TURN. On native platforms UDP works fine.
+  # so WebRTC media must use TCP. On native platforms UDP works fine.
   LIVEKIT_EXTRA_ARGS=""
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit.yaml"
-    cat > "$LIVEKIT_CONFIG" << 'LKEOF'
-rtc:
-  force_tcp: true
-  tcp_fallback_port: 7881
-LKEOF
-    LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
+    LIVEKIT_EXTRA_ARGS="--rtc.force_tcp --rtc.allow_tcp_fallback"
     echo -e "${YELLOW}   WSL2 detected — forcing TCP mode (no UDP)${NC}"
   fi
 
