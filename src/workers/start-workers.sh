@@ -47,31 +47,13 @@ if [ -f "$HOME/.continuum/config.env" ]; then
   echo -e "${GREEN}✅ Loaded config.env (HF_TOKEN, API keys)${NC}"
 fi
 
-# Vulkan ICD for NVIDIA on WSL2 — the Windows driver exposes libnvwgf2umx.so
-# (the D3D/Vulkan usermode driver) but no Linux ICD JSON manifest for it.
-# Without the manifest, the Vulkan loader only finds llvmpipe → software rendering.
-# We create a user-space ICD JSON pointing to the real driver.
-nvidia_wsl_driver=$(find /usr/lib/wsl -name 'libnvwgf2umx.so' 2>/dev/null | head -1)
-if [ -n "$nvidia_wsl_driver" ] && [ ! -f "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_wsl_icd.json" ]; then
-  mkdir -p "$CONTINUUM_ROOT/vulkan/icd.d"
-  cat > "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_wsl_icd.json" << VKEOF
-{
-  "file_format_version": "1.0.0",
-  "ICD": {
-    "library_path": "${nvidia_wsl_driver}",
-    "api_version": "1.3.0"
-  }
-}
-VKEOF
-  echo -e "${GREEN}✅ Created NVIDIA Vulkan ICD → ${nvidia_wsl_driver}${NC}"
-fi
-# Point Vulkan loader at our user-space ICD (NVIDIA) + system ICDs
-if [ -d "$CONTINUUM_ROOT/vulkan/icd.d" ]; then
-  export VK_ICD_FILENAMES=$(find "$CONTINUUM_ROOT/vulkan/icd.d" -name '*.json' | tr '\n' ':')
-  if [ -d /usr/share/vulkan/icd.d ]; then
-    VK_ICD_FILENAMES="${VK_ICD_FILENAMES}$(find /usr/share/vulkan/icd.d -name '*.json' | tr '\n' ':')"
-  fi
-  echo -e "${GREEN}✅ VK_ICD_FILENAMES set for Vulkan${NC}"
+# Vulkan sanity check — warn if NVIDIA GPU present but no Vulkan ICD installed.
+# install.sh handles installing libnvidia-gl; this is a safety net for manual setups.
+if (command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]) && \
+   ! [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then
+  echo -e "${RED}⚠️  NVIDIA GPU detected but no Vulkan ICD found!${NC}"
+  echo -e "${RED}   Bevy will fall back to software rendering (unusable).${NC}"
+  echo -e "${RED}   Fix: run 'bash scripts/install.sh' to install libnvidia-gl.${NC}"
 fi
 
 echo -e "${YELLOW}📋 Loading worker config: $CONFIG_FILE${NC}"

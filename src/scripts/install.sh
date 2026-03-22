@@ -140,8 +140,19 @@ install_system_deps() {
       pkg-config --exists libva 2>/dev/null || needed+=("libva-dev")
       # Vulkan (required for Bevy GPU rendering — without it wgpu falls back to llvmpipe)
       dpkg -l libvulkan1 2>/dev/null | grep -q '^ii' || needed+=("libvulkan1")
-      # Note: nvidia-vulkan-icd handled at runtime in start-workers.sh (user-space ICD JSON)
-      # Note: unzip not needed — download-avatar-models.sh uses python3 zipfile
+      # NVIDIA Vulkan ICD — the GL package provides the Vulkan driver + ICD manifest.
+      # Must match the installed compute driver version (e.g. libnvidia-gl-535).
+      if command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]; then
+        if ! [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then
+          # Detect installed compute driver version to get the matching GL package
+          local nv_ver=$(dpkg -l 'libnvidia-compute-*' 2>/dev/null | awk '/^ii/{print $2}' | grep -oP '\d+' | head -1)
+          if [ -n "$nv_ver" ]; then
+            needed+=("libnvidia-gl-${nv_ver}")
+          else
+            needed+=("libnvidia-gl-535")
+          fi
+        fi
+      fi
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"
