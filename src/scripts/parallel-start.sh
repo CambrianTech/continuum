@@ -92,11 +92,16 @@ fi
 # followed by parallel TS+VRM is actually FASTER than the broken parallel approach.
 echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 
-# Voice models download + scene generation in parallel with cargo build
-# Voice download is NON-FATAL — system starts without STT/TTS, downloads in background
+# Model downloads + scene generation in parallel with cargo build
+# All downloads are NON-FATAL — system starts without them, downloads continue
 (
-  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /' || {
-    echo -e "  [Models] ${YELLOW}⚠️ Voice model download failed — system will start without STT/TTS${NC}"
+  # Avatar models (VRM) — required for 3D live mode
+  ./scripts/download-avatar-models.sh 2>&1 | sed 's/^/  [Avatars] /' || {
+    echo -e "  [Avatars] ${YELLOW}⚠️ Avatar model download failed — live mode will have no avatars${NC}"
+  }
+  # Voice models (TTS/STT)
+  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Voice] /' || {
+    echo -e "  [Voice] ${YELLOW}⚠️ Voice model download failed — system will start without STT/TTS${NC}"
   }
   # Generate scene environment GLBs (idempotent — skips existing)
   npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /' || {
