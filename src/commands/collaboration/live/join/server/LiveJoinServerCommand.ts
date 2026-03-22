@@ -425,7 +425,17 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    *
    * Runs concurrently with a small stagger to avoid thundering herd.
    */
+  /** Track which calls have already had AI personas auto-joined (prevents duplicates on re-navigate) */
+  private static readonly autoJoinedCalls = new Set<string>();
+
   private async autoJoinAIPersonas(call: CallEntity, humanUserId: UUID, params: LiveJoinParams): Promise<void> {
+    // Only auto-join once per call — prevents duplicate LiveKit agents on page reload/re-navigate
+    if (LiveJoinServerCommand.autoJoinedCalls.has(call.id)) {
+      console.log(`🎙️ LiveJoin: AI personas already joined call ${call.id.slice(0, 8)}, skipping`);
+      return;
+    }
+    LiveJoinServerCommand.autoJoinedCalls.add(call.id);
+
     const aiParticipants = call.getActiveParticipants().filter(p => p.userId !== humanUserId);
     if (aiParticipants.length === 0) return;
 
