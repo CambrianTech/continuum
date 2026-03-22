@@ -85,7 +85,22 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   echo -e "${YELLOW}🔊 Starting LiveKit SFU server...${NC}"
   # Truncate log on startup (prevents multi-MB bloat) and reduce log level
   : > "$LIVEKIT_LOG"
-  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind 127.0.0.1 --node-ip 127.0.0.1 >> "$LIVEKIT_LOG" 2>&1 &
+
+  # WSL2: force TCP-only mode — UDP doesn't traverse the WSL2→Windows boundary,
+  # so WebRTC media must use TCP/TURN. On native platforms UDP works fine.
+  LIVEKIT_EXTRA_ARGS=""
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit.yaml"
+    cat > "$LIVEKIT_CONFIG" << 'LKEOF'
+rtc:
+  force_tcp: true
+  tcp_fallback_port: 7881
+LKEOF
+    LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
+    echo -e "${YELLOW}   WSL2 detected — forcing TCP mode (no UDP)${NC}"
+  fi
+
+  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind 127.0.0.1 --node-ip 127.0.0.1 $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 
