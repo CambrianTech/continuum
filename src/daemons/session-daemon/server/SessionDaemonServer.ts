@@ -613,6 +613,7 @@ export class SessionDaemonServer extends SessionDaemon {
 
           // For browser-ui: Single-owner system. Browser = the seeded human owner.
           // Always resolve to the owner, regardless of deviceId or existing sessions.
+          console.error(`🔑 SessionDaemon createOrGetSession: clientType=${clientType}, isShared=${params.isShared}`);
           if (clientType === 'browser-ui') {
             const seededOwner = await this.findSeededHumanOwner();
             if (seededOwner) {
