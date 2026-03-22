@@ -326,15 +326,49 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   fi
 done
 
+BROWSER_CONNECTED=false
+if [ "$HAS_BROWSER" -gt 0 ] 2>/dev/null; then
+  BROWSER_CONNECTED=true
+fi
+
 if [ "$HEALTHY" = false ]; then
-  # If server is up but browser never connected, still report success
-  # (user may have closed the tab intentionally)
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
-    echo -e "\n${YELLOW}⚠️ Server is UP but no browser detected. Open manually or run: npm start${NC}"
+    HEALTHY=true
+    echo -e "  ${GREEN}Server up (no browser — headless/CLI mode OK)${NC}"
   else
     echo -e "${RED}❌ System did not become healthy within ${MAX_WAIT}s${NC}"
     echo -e "${RED}   Check log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log${NC}"
     exit 1
+  fi
+fi
+
+# Open browser if none connected, then wait for it
+if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
+  PLATFORM=$(preflight_detect_platform)
+  URL="http://localhost:9000"
+  echo -e "  ${YELLOW}Opening browser...${NC}"
+  case "$PLATFORM" in
+    macos)  open "$URL" 2>/dev/null & ;;
+    wsl)    cmd.exe /c start "$URL" 2>/dev/null & ;;
+    linux)  xdg-open "$URL" 2>/dev/null & ;;
+  esac
+
+  # Wait for browser to connect (up to 30s)
+  BWAIT=0
+  while [ $BWAIT -lt 30 ]; do
+    sleep 3
+    BWAIT=$((BWAIT + 3))
+    PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser connected${NC}"
+      break
+    fi
+    echo -e "  ⏳ Waiting for browser... (${BWAIT}s)"
+  done
+
+  if [ "$BROWSER_CONNECTED" = false ]; then
+    echo -e "  ${YELLOW}Browser didn't connect — open ${URL} manually${NC}"
   fi
 fi
 
@@ -346,8 +380,10 @@ echo -e "  ${GREEN}✅ Seed complete${NC}"
 
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))
-if [ "$HOT_RESTART" = true ]; then
+if [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s) — browser refreshed${NC}"
+elif [ "$HOT_RESTART" = true ]; then
+  echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s)${NC}"
 else
   echo -e "\n${GREEN}🎉 System is UP! Total startup time: ${TOTAL_ELAPSED}s${NC}"
 fi
