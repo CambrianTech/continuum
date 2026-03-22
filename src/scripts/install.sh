@@ -150,7 +150,7 @@ install_system_deps() {
       # The ort crate finds it via ORT_DYLIB_PATH env var (set in start scripts)
       local ORT_LIB_DIR="$HOME/.continuum/lib"
       if [ ! -f "$ORT_LIB_DIR/libonnxruntime.so" ]; then
-        local ORT_VERSION="1.22.0"
+        local ORT_VERSION="1.23.0"
         local ORT_ARCH
         case "$(uname -m)" in
           x86_64)  ORT_ARCH="x64" ;;
