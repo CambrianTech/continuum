@@ -465,12 +465,12 @@ function createTestContext(numProposals: number): RatingContext {
   return {
     originalMessage: {
       senderId: generateUUID(),
-      senderName: 'Joel',
+      senderName: 'test-user',
       content: 'What is the best way to implement X?',
       timestamp: Date.now()
     },
     recentMessages: [
-      { senderName: 'Joel', content: 'Previous context', timestamp: Date.now() - 10000 }
+      { senderName: 'test-user', content: 'Previous context', timestamp: Date.now() - 10000 }
     ],
     proposals: Array.from({ length: numProposals }, (_, i) =>
       createProposal({ proposerName: `AI ${i + 1}` })

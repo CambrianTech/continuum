@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_query_builder_basic() {
         let query = QueryBuilder::new("users")
-            .filter_eq("name", "Joel")
+            .filter_eq("name", "test-user")
             .sort_desc("createdAt")
             .limit(10)
             .build();

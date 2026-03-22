@@ -31,7 +31,7 @@ const MOCK_PERSONA_CODE_ID: UUID = 'persona-code-ai' as UUID;
 function createUtterance(
   transcript: string,
   speakerId: UUID = MOCK_HUMAN_ID,
-  speakerName: string = 'Joel'
+  speakerName: string = 'test-user'
 ): {
   sessionId: UUID;
   speakerId: UUID;

@@ -101,7 +101,7 @@ export type SessionOperation = 'create' | 'get' | 'list' | 'destroy';
 export interface SessionIdentity {
   category: SessionCategory; // user | persona | agent | system
   userId?: UUID; // Optional - server resolves from connectionContext for browser-ui clients
-  displayName: string; // "Claude", "Joel", etc. - passed from connect()
+  displayName: string; // "Claude", "test-user", etc. - passed from connect()
 }
 
 /**

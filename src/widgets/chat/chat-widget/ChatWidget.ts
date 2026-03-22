@@ -101,6 +101,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private get currentRoomName(): string { return this._signals.state.roomName; }
   private set currentRoomName(v: string) { this._signals.set('roomName', v); }
 
+  /** Human user's display name from room members (resolved at runtime, never hardcoded) */
+  private get humanDisplayName(): string {
+    return this.roomMembers.get(DEFAULT_USERS.HUMAN)?.displayName || 'User';
+  }
+
   private get totalMessageCount(): number { return this._signals.state.totalMessageCount; }
   private set totalMessageCount(v: number) { this._signals.set('totalMessageCount', v); }
 
@@ -1830,7 +1835,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this._isTyping = true;
       Events.emit(PRESENCE_EVENTS.TYPING_START, {
         userId: DEFAULT_USERS.HUMAN,
-        displayName: 'Joel',
+        displayName: this.humanDisplayName,
         roomId: this.currentRoomId,
       });
     }
@@ -1856,7 +1861,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     Events.emit(PRESENCE_EVENTS.TYPING_STOP, {
       userId: DEFAULT_USERS.HUMAN,
-      displayName: 'Joel',
+      displayName: this.humanDisplayName,
       roomId: this.currentRoomId,
     });
   }
@@ -1913,7 +1918,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const messageEntity = new ChatMessageEntity();
     messageEntity.roomId = this.currentRoomId;
     messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
-    messageEntity.senderName = 'Joel';
+    messageEntity.senderName = this.humanDisplayName;
     messageEntity.senderType = 'human';
     messageEntity.content = {
       text,
@@ -1998,7 +2003,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const messageEntity = new ChatMessageEntity();
     messageEntity.roomId = this.currentRoomId;
     messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
-    messageEntity.senderName = 'Joel';
+    messageEntity.senderName = this.humanDisplayName;
     messageEntity.senderType = 'human';
     messageEntity.content = { text, media };
     messageEntity.status = 'sent';

@@ -40,7 +40,7 @@ function createInboxMessage(
     roomId: MOCK_ROOM_ID,
     content,
     senderId: MOCK_SPEAKER_ID,
-    senderName: 'Joel',
+    senderName: 'test-user',
     senderType: 'human',
     timestamp: Date.now(),
     priority: sourceModality === 'voice' ? 0.75 : 0.5,

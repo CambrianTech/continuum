@@ -84,7 +84,7 @@ export class HumanUser extends BaseUser {
     userEntity.sessionsActive = [];
 
     // Use deterministic UUID for known system users (single source of truth)
-    // This ensures DEFAULT_USERS.HUMAN matches the seeded Joel user
+    // This ensures DEFAULT_USERS.HUMAN matches the seeded human user
     if (params.uniqueId === DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) {
       userEntity.id = DEFAULT_USERS.HUMAN;
     }

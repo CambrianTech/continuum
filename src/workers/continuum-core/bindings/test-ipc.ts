@@ -38,7 +38,7 @@ async function main() {
 	await client.voiceRegisterSession(sessionId, roomId, [
 		{
 			user_id: '550e8400-e29b-41d4-a716-446655440002',
-			display_name: 'Joel',
+			display_name: 'test-user',
 			participant_type: 'human',
 			expertise: [],
 		},
@@ -64,7 +64,7 @@ async function main() {
 	const responder = await client.voiceOnUtterance({
 		session_id: sessionId,
 		speaker_id: '550e8400-e29b-41d4-a716-446655440002',
-		speaker_name: 'Joel',
+		speaker_name: 'test-user',
 		speaker_type: 'human',
 		transcript: 'How do I implement priority queues in Rust?',
 		confidence: 0.95,
@@ -80,7 +80,7 @@ async function main() {
 	const noResponder = await client.voiceOnUtterance({
 		session_id: sessionId,
 		speaker_id: '550e8400-e29b-41d4-a716-446655440002',
-		speaker_name: 'Joel',
+		speaker_name: 'test-user',
 		speaker_type: 'human',
 		transcript: 'The weather is nice today.',
 		confidence: 0.95,

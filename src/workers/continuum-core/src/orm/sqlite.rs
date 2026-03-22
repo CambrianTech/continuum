@@ -1202,7 +1202,7 @@ mod tests {
         let record = DataRecord {
             id: "test-123".to_string(),
             collection: "users".to_string(),
-            data: json!({"name": "Joel"}),
+            data: json!({"name": "test-user"}),
             metadata: RecordMetadata::default(),
         };
 
@@ -1212,7 +1212,7 @@ mod tests {
         let read_result = adapter.read("users", &"test-123".to_string()).await;
         assert!(read_result.success, "Read failed: {:?}", read_result.error);
         let data = read_result.data.unwrap();
-        assert_eq!(data.data["name"], "Joel");
+        assert_eq!(data.data["name"], "test-user");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

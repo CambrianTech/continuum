@@ -87,7 +87,7 @@ export class DatabaseSeeder {
     // Always include key users for consistent testing
     const keyUsers = [
       {
-        name: 'Joel',
+        name: 'test-user',
         displayName: 'Joel - Creator',
         userType: 'human' as const,
         email: 'joel@continuum.dev',

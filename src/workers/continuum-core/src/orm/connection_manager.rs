@@ -508,7 +508,7 @@ mod tests {
         let record = DataRecord {
             id: "user-123".to_string(),
             collection: "users".to_string(),
-            data: serde_json::json!({"name": "Joel"}),
+            data: serde_json::json!({"name": "test-user"}),
             metadata: super::super::types::RecordMetadata::default(),
         };
 
@@ -521,7 +521,7 @@ mod tests {
             .await;
         assert!(read_result.success);
         let data = read_result.data.unwrap();
-        assert_eq!(data.data["name"], "Joel");
+        assert_eq!(data.data["name"], "test-user");
 
         manager.close_all().await.unwrap();
     }

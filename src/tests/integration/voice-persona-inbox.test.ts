@@ -44,7 +44,7 @@ function createDirectedEvent(
   return {
     sessionId,
     speakerId: MOCK_SPEAKER_ID,
-    speakerName: 'Joel',
+    speakerName: 'test-user',
     transcript,
     confidence: 0.95,
     language: 'en',
@@ -291,7 +291,7 @@ describe('PersonaUser Voice Inbox Integration Tests', () => {
       expect(timelineEvents[0]).toMatchObject({
         contextType: 'room',
         eventType: 'message_received',
-        actorName: 'Joel',
+        actorName: 'test-user',
         content: 'Explain TypeScript generics',
         importance: 0.7
       });

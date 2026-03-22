@@ -63,7 +63,7 @@ export function createMessage(textOrOptions: string | EasyMessageOptions, option
   // Sender - support aliases and infer senderType
   if (opts.sender === 'owner' || !opts.sender) {
     message.senderId = DEFAULT_USERS.HUMAN as UUID;
-    message.senderName = opts.senderName || 'Joel';
+    message.senderName = opts.senderName || 'User';
     message.senderType = opts.senderType || 'human'; // Denormalized from UserEntity
   } else if (opts.sender === 'claude' || opts.sender === 'ai') {
     message.senderId = DEFAULT_USERS.CLAUDE_CODE as UUID;

@@ -878,7 +878,7 @@ mod tests {
         let handle_ai = Handle::new();
 
         let mut stream_human =
-            ParticipantStream::new(handle_human, "user-human".into(), "Joel".into());
+            ParticipantStream::new(handle_human, "user-human".into(), "test-user".into());
         let stream_ai =
             ParticipantStream::new_ai(handle_ai, "ai-helper".into(), "Helper AI".into());
 

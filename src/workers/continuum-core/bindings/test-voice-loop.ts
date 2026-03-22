@@ -39,7 +39,7 @@ async function main() {
 	await client.voiceRegisterSession(sessionId, roomId, [
 		{
 			user_id: '550e8400-e29b-41d4-a716-446655440002',
-			display_name: 'Joel',
+			display_name: 'test-user',
 			participant_type: 'human',
 			expertise: [],
 		},
@@ -103,7 +103,7 @@ async function main() {
 		const responderId = await client.voiceOnUtterance({
 			session_id: sessionId,
 			speaker_id: '550e8400-e29b-41d4-a716-446655440002',
-			speaker_name: 'Joel',
+			speaker_name: 'test-user',
 			speaker_type: 'human',
 			transcript: test.transcript,
 			confidence: 0.95,

@@ -17,7 +17,7 @@ async fn test_human_speech_routes_to_all_models() {
 
     // Add participants
     router
-        .add_participant(RoutedParticipant::human("human-1".into(), "Joel".into()))
+        .add_participant(RoutedParticipant::human("human-1".into(), "test-user".into()))
         .await;
 
     router
@@ -65,7 +65,7 @@ async fn test_human_speech_routes_to_all_models() {
 
     // Route transcription for text-only models
     router
-        .route_transcription("human-1", "Joel", "Hello, can you hear me?", true)
+        .route_transcription("human-1", "test-user", "Hello, can you hear me?", true)
         .await;
 
     let event = tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv()).await;
