@@ -729,39 +729,16 @@ export class SessionDaemonServer extends SessionDaemon {
 
       switch (clientType) {
         case 'browser-ui': {
-          // Browser identity: Use deviceId to find/create user
-          // Server is source of truth - browser doesn't send userId
-          this.log.info(`Browser-ui session: resolving human identity from deviceId`);
-
-          const deviceId = identity?.deviceId;
-
-          if (deviceId) {
-            // Look for existing user associated with this device
-            const existingUser = await this.findUserByDeviceId(deviceId);
-            if (existingUser) {
-              user = existingUser;
-              this.log.info(`Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
-            } else {
-              // New device - check for seeded owner (human without anon- prefix)
-              const seededOwner = await this.findSeededHumanOwner();
-              if (seededOwner) {
-                user = seededOwner;
-                this.log.info(`Associating new device with seeded owner: ${user.displayName}`);
-              } else {
-                this.log.info(`New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
-                user = await this.createAnonymousHuman(params, deviceId);
-              }
-            }
+          // Browser = the human owner. Server resolves identity from DB,
+          // not from browser-sent data. Single-owner system: any browser
+          // connection IS the seeded human owner.
+          const seededOwner = await this.findSeededHumanOwner();
+          if (seededOwner) {
+            user = seededOwner;
+            this.log.info(`✅ Browser session → seeded owner: ${user.displayName}`);
           } else {
-            // No deviceId - check for seeded owner first
-            const seededOwner = await this.findSeededHumanOwner();
-            if (seededOwner) {
-              user = seededOwner;
-              this.log.info(`Using seeded owner: ${user.displayName} (no deviceId)`);
-            } else {
-              this.log.info(`No deviceId - creating anonymous human`);
-              user = await this.createAnonymousHuman(params, undefined);
-            }
+            this.log.info(`No seeded owner found — creating anonymous human`);
+            user = await this.createAnonymousHuman(params, identity?.deviceId);
           }
           break;
         }
