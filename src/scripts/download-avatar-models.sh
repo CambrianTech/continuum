@@ -100,7 +100,7 @@ except (zipfile.BadZipFile, Exception) as e:
   rm -rf "$tmpzip" "$tmpdir"
 }
 
-echo -e "${YELLOW}Checking VRM avatar models (14 CC0 models)...${NC}"
+echo -e "${YELLOW}Checking VRM avatar models (8 CC0 models)...${NC}"
 
 # ============================================================================
 # VRoid Studio CC0 Models (anime style, full VRM features)
@@ -133,30 +133,8 @@ download_vroid_zip "vroid-sample-e" \
 download_vroid_zip "vroid-sample-f" \
   "https://opengameart.org/sites/default/files/avatarsample_f.zip"
 
-# ============================================================================
-# 100Avatars by Polygonal Mind (low-poly stylized, CC0)
-# Source: https://github.com/ToxSam/open-source-avatars
-# ============================================================================
-
-echo -e "${YELLOW}100Avatars stylized models (6 models):${NC}"
-
-download_vrm "100av-rose" \
-  "https://arweave.net/Ea1KXujzJatQgCFSMzGOzp_UtHqB1pyia--U3AtkMAY"
-
-download_vrm "100av-robert" \
-  "https://arweave.net/gwG7w4bY-A5c3R6A6GOz3xBCgbPvkFQmqPIDtvnNsYI"
-
-download_vrm "100av-olivia" \
-  "https://arweave.net/MgsNlTetzAoVEC6E-lswj65vp7StkOZXXd5OjjqzYZI"
-
-download_vrm "100av-mikel" \
-  "https://arweave.net/-eJyDjujQRvakRImdvulg-1dKQkPwMeQv-55IbKqLh4"
-
-download_vrm "100av-amazonas" \
-  "https://arweave.net/fqZDwToo41u1a7VnHhZX1BTK5lktXpK_H6H20MVbPqQ"
-
-download_vrm "100av-dinokid" \
-  "https://arweave.net/T1gkB95XKXAZl_VmU1ozg5Txm--o9nY0Nge3s8zNoBs"
+# 100Avatars REMOVED — 2D flat models, look terrible next to 3D VRoid models.
+# Need proper 3D CC0 models to expand the catalog beyond 8.
 
 # ============================================================================
 # Summary
@@ -164,9 +142,9 @@ download_vrm "100av-dinokid" \
 
 TOTAL=$((DOWNLOADED + EXISTING))
 if [ "$DOWNLOADED" -gt 0 ]; then
-  echo -e "${GREEN}Avatar models: ${DOWNLOADED} downloaded, ${EXISTING} already existed (${TOTAL}/14 total)${NC}"
-elif [ "$EXISTING" -eq 14 ]; then
-  echo -e "${GREEN}All 14 avatar models already exist${NC}"
+  echo -e "${GREEN}Avatar models: ${DOWNLOADED} downloaded, ${EXISTING} already existed (${TOTAL}/8 total)${NC}"
+elif [ "$EXISTING" -eq 8 ]; then
+  echo -e "${GREEN}All 8 avatar models already exist${NC}"
 else
-  echo -e "${YELLOW}Avatar models: ${TOTAL}/14 present${NC}"
+  echo -e "${YELLOW}Avatar models: ${TOTAL}/8 present${NC}"
 fi
