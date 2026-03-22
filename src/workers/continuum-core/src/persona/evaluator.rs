@@ -591,7 +591,7 @@ mod tests {
             message_id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".into(),
+            sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             content: "Hello everyone".into(),
             timestamp: now_ms(),

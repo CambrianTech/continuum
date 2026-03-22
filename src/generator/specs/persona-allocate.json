@@ -1,0 +1,61 @@
+{
+  "name": "persona/allocate",
+  "description": "Hardware-aware persona allocation via Rust PersonaAllocator. Returns optimal persona assignments based on GPU VRAM and available API keys. Single source of truth for which personas should exist on this machine.",
+  "params": [
+    {
+      "name": "availableApiKeys",
+      "type": "string[]",
+      "description": "List of API key env var names that are currently set (e.g., ['ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY'])"
+    }
+  ],
+  "results": [
+    {
+      "name": "allocations",
+      "type": "object[]",
+      "description": "Array of persona allocations to create"
+    },
+    {
+      "name": "skipped",
+      "type": "object[]",
+      "description": "Array of personas skipped (with reasons)"
+    },
+    {
+      "name": "summary",
+      "type": "string[]",
+      "description": "Human-readable summary lines of the allocation decision"
+    },
+    {
+      "name": "gpuName",
+      "type": "string",
+      "description": "Detected GPU hardware name"
+    },
+    {
+      "name": "totalVramGb",
+      "type": "number",
+      "description": "Total detected VRAM in GB"
+    },
+    {
+      "name": "gpuType",
+      "type": "string",
+      "description": "GPU type: 'cuda', 'metal', or 'cpu'"
+    },
+    {
+      "name": "localModel",
+      "type": "string",
+      "description": "Recommended local model for this hardware"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Allocate with no API keys (local only)",
+      "command": "./jtag persona/allocate --availableApiKeys='[]'",
+      "expectedResult": "{ allocations: [{uniqueId:'helper', provider:'candle', ...}], gpuName: 'Apple M1 Pro', localModel: 'coder' }"
+    },
+    {
+      "description": "Allocate with Anthropic key",
+      "command": "./jtag persona/allocate --availableApiKeys='[\"ANTHROPIC_API_KEY\"]'",
+      "expectedResult": "{ allocations: [...candle personas..., {uniqueId:'claude', provider:'anthropic'}], ... }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -22,7 +22,7 @@ import * as readline from 'readline';
  * Old uniqueId formats that should be cleaned up
  */
 const OLD_BROKEN_UNIQUE_IDS = [
-  'human-joel',
+  'human-owner',
   'primary-human',
   'claude-code',
   'general-ai',

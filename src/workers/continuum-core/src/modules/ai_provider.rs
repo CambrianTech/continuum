@@ -146,15 +146,14 @@ impl AIProviderModule {
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
         }
 
-        // Check if Candle local inference is enabled (INFERENCE_MODE=local, candle, or hybrid)
-        let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
-        let enable_candle = inference_mode.eq_ignore_ascii_case("local")
-            || inference_mode.eq_ignore_ascii_case("candle")
-            || inference_mode.eq_ignore_ascii_case("hybrid");
-
-        if enable_candle {
+        // Candle local inference — ALWAYS registered. No API key needed.
+        // It's the foundational provider: every machine can run local inference.
+        // INFERENCE_MODE controls priority: "local"/"candle" = primary, otherwise fallback.
+        {
+            let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
             let is_primary = inference_mode.eq_ignore_ascii_case("local")
-                || inference_mode.eq_ignore_ascii_case("candle");
+                || inference_mode.eq_ignore_ascii_case("candle")
+                || registry.available().is_empty(); // Primary if no cloud providers
 
             // Register quantized adapter (GGUF) — larger context, lower VRAM, no LoRA.
             // Best for coding agent sessions where context window matters most.

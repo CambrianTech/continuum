@@ -26,6 +26,26 @@ const WORKERS_DIR = path.join(ROOT, 'workers');
 const GENERATED_DIR = path.join(ROOT, 'shared', 'generated');
 
 /**
+ * Detect GPU features for cargo commands — mirrors scripts/shared/cargo-features.sh.
+ * Returns args like ['--features', 'metal,accelerate'] or ['--features', 'cuda'] or [].
+ */
+function detectGpuFeatures(): string[] {
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    return ['--features', 'metal,accelerate'];
+  }
+  if (platform === 'linux') {
+    // Check for NVIDIA GPU (standard path + WSL path)
+    const hasCuda = fs.existsSync('/usr/lib/wsl/lib/nvidia-smi') ||
+      spawnSync('which', ['nvidia-smi'], { stdio: 'pipe' }).status === 0;
+    if (hasCuda) {
+      return ['--features', 'cuda'];
+    }
+  }
+  return []; // CPU-only
+}
+
+/**
  * Rust packages that export TypeScript types via ts-rs.
  * Each entry maps a cargo package name to its generated output subdirectories.
  */
@@ -51,9 +71,12 @@ function generateBindings(pkg: string, description: string): boolean {
 
   // --release: livekit's webrtc-sys native library only builds in release mode
   // --lib: only lib tests (export_bindings live there), avoids webrtc-sys cleanup hangs
+  // GPU features: must match the build features (metal on macOS, cuda on Linux)
+  const gpuFeatures = detectGpuFeatures();
+  const args = ['test', '--package', pkg, '--lib', 'export_bindings', '--release', ...gpuFeatures];
   const result = spawnSync(
     'cargo',
-    ['test', '--package', pkg, '--lib', 'export_bindings', '--release'],
+    args,
     {
       cwd: WORKERS_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -320,9 +343,16 @@ async function main() {
   // Ensure output directory exists
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
-  // Skip cargo test if Rust source hasn't changed since last generation
+  // Skip cargo test if Rust source hasn't changed since last generation.
+  // Bindings are generated on macOS and committed — Linux/WSL towers use committed files.
+  // On Linux, cargo test crashes due to protobuf descriptor conflict (LiveKit).
+  // Instead of a hack env var, detect the platform and skip on Linux when bindings exist.
+  const isLinux = process.platform === 'linux';
+  const bindingsExist = fs.existsSync(GENERATED_DIR) && fs.readdirSync(GENERATED_DIR).length > 0;
   const forceRegen = process.argv.includes('--force');
-  if (!forceRegen && bindingsUpToDate()) {
+  if (isLinux && bindingsExist && !forceRegen) {
+    console.log('  ✅ Linux: using committed bindings (cargo test skipped — protobuf conflict)\n');
+  } else if (!forceRegen && bindingsUpToDate()) {
     console.log('  ✅ Bindings up to date (no Rust changes since last generation)');
     console.log('     Use --force to regenerate anyway\n');
   } else {

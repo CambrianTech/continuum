@@ -11,6 +11,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { InterfaceLaunchUrlParams, InterfaceLaunchUrlResult } from '../shared/InterfaceLaunchUrlTypes';
 import { createInterfaceLaunchUrlResultFromParams } from '../shared/InterfaceLaunchUrlTypes';
 import { exec } from 'child_process';
+import { readFileSync } from 'fs';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -93,14 +94,19 @@ export class InterfaceLaunchUrlServerCommand extends CommandBase<InterfaceLaunch
     // Escape URL for shell (handle special characters)
     const escapedUrl = url.replace(/"/g, '\\"');
 
-    switch (process.platform) {
-      case 'darwin':
-        return `open "${escapedUrl}"`;
-      case 'win32':
-        return `start "" "${escapedUrl}"`;
-      case 'linux':
-      default:
-        return `xdg-open "${escapedUrl}"`;
+    if (process.platform === 'darwin') {
+      return `open "${escapedUrl}"`;
     }
+    if (process.platform === 'win32') {
+      return `start "" "${escapedUrl}"`;
+    }
+    // Linux — detect WSL and open user's default Windows browser via explorer.exe
+    try {
+      const version = readFileSync('/proc/version', 'utf-8');
+      if (version.toLowerCase().includes('microsoft')) {
+        return `/mnt/c/Windows/explorer.exe "${escapedUrl}"`;
+      }
+    } catch { /* not WSL */ }
+    return `xdg-open "${escapedUrl}"`;
   }
 }

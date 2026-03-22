@@ -22,7 +22,7 @@ import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 // Mock UUIDs for testing
 const MOCK_SESSION_ID: UUID = 'voice-session-001' as UUID;
 const MOCK_ROOM_ID: UUID = 'room-general-001' as UUID;
-const MOCK_HUMAN_ID: UUID = 'user-joel-001' as UUID;
+const MOCK_HUMAN_ID: UUID = 'user-test-001' as UUID;
 const MOCK_PERSONA_HELPER_ID: UUID = 'persona-helper-ai' as UUID;
 const MOCK_PERSONA_TEACHER_ID: UUID = 'persona-teacher-ai' as UUID;
 const MOCK_PERSONA_CODE_ID: UUID = 'persona-code-ai' as UUID;
@@ -31,7 +31,7 @@ const MOCK_PERSONA_CODE_ID: UUID = 'persona-code-ai' as UUID;
 function createUtterance(
   transcript: string,
   speakerId: UUID = MOCK_HUMAN_ID,
-  speakerName: string = 'Joel'
+  speakerName: string = 'test-user'
 ): {
   sessionId: UUID;
   speakerId: UUID;
@@ -73,7 +73,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       vi.spyOn(Commands.Commands, 'execute').mockResolvedValue({
         success: true,
         items: [
-          { id: MOCK_HUMAN_ID, displayName: 'Joel', uniqueId: 'joel', type: 'human' },
+          { id: MOCK_HUMAN_ID, displayName: 'TestUser', uniqueId: 'test-user', type: 'human' },
           { id: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', uniqueId: 'helper-ai', type: 'persona' },
           { id: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', uniqueId: 'teacher-ai', type: 'persona' }
         ]
@@ -100,7 +100,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
       // Mock session with participants
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' },
         { userId: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', type: 'persona' }
       ]);
@@ -132,7 +132,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       const utterance = createUtterance('@teacher-ai can you explain closures?');
 
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human', uniqueId: 'joel' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human', uniqueId: 'test-user' },
         { userId: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', type: 'persona', uniqueId: 'teacher-ai' }
       ]);
 
@@ -158,7 +158,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       const utterance = createUtterance('Helper AI, what is a closure?'); // Both mention AND question
 
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' },
         { userId: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', type: 'persona' }
       ]);
@@ -188,7 +188,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       const utterance = createUtterance('How do I refactor this TypeScript code?');
 
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         {
           userId: MOCK_PERSONA_CODE_ID,
           displayName: 'CodeReview AI',
@@ -228,7 +228,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       const utterance = createUtterance('What is the best way to handle errors?');
 
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' },
         { userId: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', type: 'persona' }
       ]);
@@ -263,7 +263,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
       for (const text of utterances) {
         (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-          { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+          { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
           { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' }
         ]);
 
@@ -290,7 +290,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
     it('should broadcast to ALL AIs on each question', async () => {
       const participants = [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' as const },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' as const },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' as const },
         { userId: MOCK_PERSONA_TEACHER_ID, displayName: 'Teacher AI', type: 'persona' as const },
         { userId: MOCK_PERSONA_CODE_ID, displayName: 'CodeReview AI', type: 'persona' as const }
@@ -331,7 +331,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
       for (const text of statements) {
         (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-          { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+          { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
           { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' }
         ]);
 
@@ -356,7 +356,7 @@ describe('Voice Orchestrator Integration Tests', () => {
       const utterance = createUtterance('Helper AI, the weather is nice today');
 
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' }
       ]);
 
@@ -394,7 +394,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
     it('should handle sessions with no AI participants', async () => {
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: 'user-alice-001' as UUID, displayName: 'Alice', type: 'human' }
       ]);
 
@@ -443,7 +443,7 @@ describe('Voice Orchestrator Integration Tests', () => {
   describe('Conversation Context Tracking', () => {
     it('should track recent utterances in context', async () => {
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' }
       ]);
 
@@ -473,7 +473,7 @@ describe('Voice Orchestrator Integration Tests', () => {
 
     it('should maintain only last 20 utterances', async () => {
       (orchestrator as any).sessionParticipants.set(MOCK_SESSION_ID, [
-        { userId: MOCK_HUMAN_ID, displayName: 'Joel', type: 'human' },
+        { userId: MOCK_HUMAN_ID, displayName: 'TestUser', type: 'human' },
         { userId: MOCK_PERSONA_HELPER_ID, displayName: 'Helper AI', type: 'persona' }
       ]);
 
@@ -514,7 +514,7 @@ describe('Voice Orchestrator Success Criteria', () => {
     vi.spyOn(Commands.Commands, 'execute').mockResolvedValue({
       success: true,
       items: [
-        { id: MOCK_HUMAN_ID, displayName: 'Joel', uniqueId: 'joel', type: 'human' }
+        { id: MOCK_HUMAN_ID, displayName: 'TestUser', uniqueId: 'test-user', type: 'human' }
       ]
     } as any);
 

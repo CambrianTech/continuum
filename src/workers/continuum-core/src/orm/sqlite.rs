@@ -41,8 +41,15 @@ fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
         (path.to_string(), flags)
     };
 
+    // Ensure parent directory exists (persona data dirs may not exist on fresh installs)
+    if effective_path != "file::memory:?cache=shared" {
+        if let Some(parent) = std::path::Path::new(&effective_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
     let conn = Connection::open_with_flags(&effective_path, effective_flags)
-        .map_err(|e| format!("SQLite open failed: {}", e))?;
+        .map_err(|e| format!("SQLite open failed: unable to open database file: {}", e))?;
 
     // Performance PRAGMAs — applied to every connection.
     // mmap_size=0: disabled. On macOS, mmap'd pages count toward RSS.
@@ -1195,7 +1202,7 @@ mod tests {
         let record = DataRecord {
             id: "test-123".to_string(),
             collection: "users".to_string(),
-            data: json!({"name": "Joel"}),
+            data: json!({"name": "test-user"}),
             metadata: RecordMetadata::default(),
         };
 
@@ -1205,7 +1212,7 @@ mod tests {
         let read_result = adapter.read("users", &"test-123".to_string()).await;
         assert!(read_result.success, "Read failed: {:?}", read_result.error);
         let data = read_result.data.unwrap();
-        assert_eq!(data.data["name"], "Joel");
+        assert_eq!(data.data["name"], "test-user");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

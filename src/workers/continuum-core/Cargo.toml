@@ -125,12 +125,6 @@ wgpu-hal = "27"
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 
-# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
-# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.32"
-objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
-
 # Dataset module — CSV parsing for training data import
 csv = "1"
 
@@ -144,10 +138,20 @@ rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
 
+# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
+# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+
 [features]
-default = ["metal"]
+default = []
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+# Linux: swap ORT from static (download-binaries) to dynamic loading.
+# Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
+load-dynamic-ort = ["ort/load-dynamic"]
 
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.

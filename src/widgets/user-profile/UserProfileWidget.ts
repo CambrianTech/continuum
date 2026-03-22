@@ -377,12 +377,12 @@ export class UserProfileWidget extends ReactiveWidget {
     if (!this.user) return;
 
     try {
-      const roomId = await this.ensureDmRoom();
-      if (!roomId) return;
+      const dmRoom = await this.ensureDmRoom();
+      if (!dmRoom) return;
 
-      ContentService.open('chat', roomId, {
+      ContentService.open('chat', dmRoom.id, {
         title: `DM - ${this.user.displayName}`,
-        uniqueId: `dm-${this.user.uniqueId || this.user.id}`
+        uniqueId: dmRoom.uniqueId || `dm-${this.user.uniqueId || this.user.id}`
       });
     } catch (err) {
       console.error('UserProfile: Failed to create DM room:', err);
@@ -413,11 +413,12 @@ export class UserProfileWidget extends ReactiveWidget {
     // Ensure DM room exists, then navigate to live view for that room
     // Same pattern as chat widget's call button — navigate:live handles the join
     try {
-      const dmRoomId = await this.ensureDmRoom();
-      if (!dmRoomId) return;
+      const dmRoom = await this.ensureDmRoom();
+      if (!dmRoom) return;
 
       Events.emit('navigate:live', {
-        entityId: dmRoomId,
+        entityId: dmRoom.id,
+        uniqueId: dmRoom.uniqueId || undefined,
         entityType: 'room',
         displayName: `Call - ${this.user.displayName}`,
         video: true
@@ -427,14 +428,14 @@ export class UserProfileWidget extends ReactiveWidget {
     }
   }
 
-  /** Get or create the DM room for this user, return roomId */
-  private async ensureDmRoom(): Promise<string | null> {
-    if (this.dmRoomId) return this.dmRoomId;
+  /** Get or create the DM room for this user, return room info */
+  private async ensureDmRoom(): Promise<{ id: string; uniqueId?: string } | null> {
+    if (this.dmRoomId) return { id: this.dmRoomId };
 
     const result = await Dm.execute({ participants: this.user!.id });
     if (result?.success && result.roomId) {
       this.dmRoomId = result.roomId as string;
-      return this.dmRoomId;
+      return { id: this.dmRoomId, uniqueId: result.room?.uniqueId };
     }
     return null;
   }

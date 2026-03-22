@@ -199,7 +199,7 @@ mod old_tests {
         let event = UtteranceEvent {
             session_id,
             speaker_id,
-            speaker_name: "Joel".to_string(),
+            speaker_name: "test-user".to_string(),
             speaker_type: SpeakerType::Human,
             transcript: "This is a statement".to_string(),
             confidence: 0.95,
@@ -244,7 +244,7 @@ mod old_tests {
         let event = UtteranceEvent {
             session_id,
             speaker_id,
-            speaker_name: "Joel".to_string(),
+            speaker_name: "test-user".to_string(),
             speaker_type: SpeakerType::Human,
             transcript: "This is a statement, not a question".to_string(),
             confidence: 0.95,

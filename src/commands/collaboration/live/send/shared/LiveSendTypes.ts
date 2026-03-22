@@ -5,7 +5,7 @@
  *
  * Usage:
  *   ./jtag collaboration/live/send --message="Hello everyone!"
- *   ./jtag collaboration/live/send --message="How are you?" --speakerName="Joel"
+ *   ./jtag collaboration/live/send --message="How are you?" --speakerName="test-user"
  */
 
 import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';

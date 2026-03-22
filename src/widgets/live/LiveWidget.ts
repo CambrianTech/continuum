@@ -20,6 +20,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { RoutingService } from '../../system/routing/RoutingService';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
@@ -316,11 +317,35 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
       }
 
       const cleanEntityId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
-      this.entityId = cleanEntityId;
 
       const meta = metadata as { room?: { id?: string; displayName?: string }; session?: { id: string } } | undefined;
       if (meta?.room?.id) {
         this.entityId = meta.room.id;
+      } else {
+        this.entityId = cleanEntityId;
+      }
+
+      // If entityId looks like a uniqueId (not a UUID), resolve it to UUID first
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(this.entityId);
+      if (!isUUID && this.entityId) {
+        RoutingService.resolveRoom(this.entityId).then(resolved => {
+          if (resolved?.id) {
+            this.entityId = resolved.id;
+            ContentLifecycle.register(this.entityId, this);
+          } else {
+          }
+          // Always join — even if resolution returned null, server resolves uniqueIds
+          if (!this.isJoined) {
+            console.log('LiveWidget: Auto-joining after resolving uniqueId:', this.entityId);
+            this.handleJoin();
+          }
+        }).catch(err => {
+          console.warn('LiveWidget: resolveRoom failed, joining with uniqueId:', this.entityId, err);
+          if (!this.isJoined) {
+            this.handleJoin();
+          }
+        });
+        return; // Don't join yet — wait for resolution attempt
       }
 
       // Register for content lifecycle now that entityId is known
@@ -439,6 +464,10 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
       const result = await Commands.execute<LiveJoinParams, LiveJoinResult>(COMMANDS.COLLABORATION_LIVE_JOIN, {
         entityId: this.entityId,
       });
+
+      if (!result.success) {
+        console.error('LiveWidget: Join failed:', result.message, 'entityId:', this.entityId);
+      }
 
       if (result.success && result.callId) {
         this.sessionId = result.callId;
@@ -584,7 +613,16 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          await this.audioClient.join(result.callId, myUserId, myDisplayName, result.livekitUrl, result.livekitToken);
+          // Rewrite LiveKit URL to use the browser's hostname — critical for WSL2
+          // where server sends ws://127.0.0.1:7880 but the browser (on Windows)
+          // may need ws://localhost:7880 for WSL2 localhost forwarding to work.
+          const livekitUrl = result.livekitUrl.replace(
+            /ws:\/\/127\.0\.0\.1:/,
+            `ws://${window.location.hostname}:`
+          );
+          console.log('LiveWidget: Connecting to LiveKit at', livekitUrl);
+          // Diagnostic: tell server we're about to attempt LiveKit connection
+          await this.audioClient.join(result.callId, myUserId, myDisplayName, livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
 
           // Merge participants already in the LiveKit room into our grid.

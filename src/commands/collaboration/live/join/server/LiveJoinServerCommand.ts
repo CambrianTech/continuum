@@ -122,6 +122,14 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     // DEBUG: Log what we're returning to browser
     console.error(`🎙️ LiveJoin RESULT: callId=${call.id.slice(0, 8)}, existed=${existed}, participants=${call.getActiveParticipants().length}, myParticipant=${myParticipant.displayName}, livekitToken=${livekitToken.slice(0, 20)}...`);
 
+    // 9. Auto-join AI personas — fire-and-forget so human join returns immediately.
+    // Only trigger when a human joins to prevent recursive auto-joins.
+    if (user.type === 'human') {
+      this.autoJoinAIPersonas(call, user.id, params).catch(err => {
+        console.error(`🎙️ LiveJoin: AI auto-join failed:`, err);
+      });
+    }
+
     return transformPayload(params, result);
   }
 
@@ -403,6 +411,50 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     if (addedCount > 0) {
       console.log(`🎙️ LiveJoin: Synced ${addedCount} late joiner(s) to existing call ${call.id.slice(0, 8)}`);
+    }
+  }
+
+  /**
+   * Auto-join AI personas into the LiveKit call.
+   * When a human joins, AI participants are added to the CallEntity data but
+   * never actually connect to LiveKit. This iterates the call's AI participants
+   * and executes `collaboration/live/join` for each, which triggers:
+   *   1. LiveKit agent creation (Rust get_or_create_agent)
+   *   2. Bevy avatar video publish
+   *   3. Proper live:participant:joined event for VoiceOrchestrator
+   *
+   * Runs concurrently with a small stagger to avoid thundering herd.
+   */
+  /** Track which calls have already had AI personas auto-joined (prevents duplicates on re-navigate) */
+  private static readonly autoJoinedCalls = new Set<string>();
+
+  private async autoJoinAIPersonas(call: CallEntity, humanUserId: UUID, params: LiveJoinParams): Promise<void> {
+    // Only auto-join once per call — prevents duplicate LiveKit agents on page reload/re-navigate
+    if (LiveJoinServerCommand.autoJoinedCalls.has(call.id)) {
+      console.log(`🎙️ LiveJoin: AI personas already joined call ${call.id.slice(0, 8)}, skipping`);
+      return;
+    }
+    LiveJoinServerCommand.autoJoinedCalls.add(call.id);
+
+    const aiParticipants = call.getActiveParticipants().filter(p => p.userId !== humanUserId);
+    if (aiParticipants.length === 0) return;
+
+    console.log(`🎙️ LiveJoin: Auto-joining ${aiParticipants.length} AI persona(s) into call ${call.id.slice(0, 8)}`);
+
+    for (const participant of aiParticipants) {
+      try {
+        await Commands.execute('collaboration/live/join', {
+          entityId: call.roomId,
+          userId: participant.userId,
+          context: params.context,
+          sessionId: params.sessionId,
+        });
+        console.log(`🎙️ LiveJoin: AI persona ${participant.displayName} joined LiveKit`);
+      } catch (err) {
+        console.error(`🎙️ LiveJoin: Failed to auto-join ${participant.displayName}:`, err);
+      }
+      // Small stagger to avoid thundering herd on LiveKit
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 

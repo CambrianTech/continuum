@@ -154,7 +154,9 @@ export class AudioStreamClient {
     this.audioContainer.setAttribute('data-livekit-audio', callId);
     document.body.appendChild(this.audioContainer);
 
-    await this.room.connect(livekitUrl, token);
+    await this.room.connect(livekitUrl, token, {
+      peerConnectionTimeout: 30_000,
+    });
     console.log(`AudioStreamClient: Connected to LiveKit room (call=${callId}, identity=${userId})`);
 
     // Process participants already in the room when we join.

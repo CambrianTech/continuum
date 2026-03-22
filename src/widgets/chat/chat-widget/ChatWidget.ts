@@ -87,6 +87,9 @@ interface MemberChipData {
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLTextAreaElement;
 
+  /** The authenticated human user's ID — resolved from session at init, NEVER hardcoded */
+  private _myUserId: UUID = '' as UUID; // resolved from session at init
+
   // === SIGNAL-BASED STATE (React-like reactivity) ===
   private _signals: WidgetSignalState<ChatSignalState>;
   private _signalDisposers: Dispose[] = []; // Cleanup for watch/effect subscriptions
@@ -100,6 +103,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   private get currentRoomName(): string { return this._signals.state.roomName; }
   private set currentRoomName(v: string) { this._signals.set('roomName', v); }
+
+  /** Human user's display name from room members (resolved at runtime, never hardcoded) */
+  private get humanDisplayName(): string {
+    return this.roomMembers.get(this._myUserId)?.displayName || 'User';
+  }
 
   private get totalMessageCount(): number { return this._signals.state.totalMessageCount; }
   private set totalMessageCount(v: number) { this._signals.set('totalMessageCount', v); }
@@ -368,9 +376,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       // Notify server: human user is now viewing this room (presence awareness for personas)
-      const humanUser = this.roomMembers.get(DEFAULT_USERS.HUMAN);
+      const humanUser = this.roomMembers.get(this._myUserId);
       Events.emit(PRESENCE_EVENTS.ROOM_ACTIVE, {
-        userId: DEFAULT_USERS.HUMAN,
+        userId: this._myUserId,
         displayName: humanUser?.displayName || 'User',
         roomId,
         roomName,
@@ -412,13 +420,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   // Required by EntityScrollerWidget - render function for individual messages
   protected getRenderFunction(): RenderFn<ChatMessageEntity> {
     return (message: ChatMessageEntity, _context) => {
-      const isCurrentUser = message.senderId === DEFAULT_USERS.HUMAN;
+      const isCurrentUser = message.senderId === this._myUserId;
       const senderName = message.senderName || 'Unknown';
 
       // Select adapter based on message content (text, image, video, etc.)
       const adapter = this.adapterRegistry.selectAdapter(message);
       const contentHtml = adapter
-        ? adapter.renderMessage(message, DEFAULT_USERS.HUMAN)
+        ? adapter.renderMessage(message, this._myUserId)
         : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
@@ -695,6 +703,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Initialize a dynamic (non-pinned) widget from pageState or fallbacks
    */
   private async initializeDynamicWidget(): Promise<void> {
+    // Resolve current user from session — this is WHO we are
+    try {
+      const sessionResult = await SessionGetUser.execute({});
+      if (sessionResult?.success && sessionResult.user?.id) {
+        this._myUserId = sessionResult.user.id as UUID;
+        console.log(`📨 ChatWidget: Resolved user from session: ${sessionResult.user.displayName} (${this._myUserId.slice(0, 8)})`);
+      } else {
+        console.error(`📨 ChatWidget: SessionGetUser failed — messages will show as "User"`);
+      }
+    } catch (err) {
+      console.error(`📨 ChatWidget: SessionGetUser error:`, err);
+    }
+
     // Determine initial room from multiple sources (priority order):
     // 1. pageState (SINGLE SOURCE OF TRUTH - set by MainWidget before creating widget)
     // 2. entity-id attribute (legacy fallback)
@@ -1169,7 +1190,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Get the other participant in a DM room (not the current user)
-   * Uses room ownerId to identify "self" since DEFAULT_USERS.HUMAN may not match runtime ID
+   * Uses room ownerId to identify "self" since this._myUserId may not match runtime ID
    */
   private get dmRecipient(): UserEntity | null {
     if (!this.isDM() || !this.currentRoom) return null;
@@ -1668,6 +1689,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Emit navigation event to switch to live view
       Events.emit('navigate:live', {
         entityId: this.currentRoomId,
+        uniqueId: this.currentRoomUniqueId || undefined,
         entityType: 'room',
         displayName: this.currentRoomName || 'Live Call'
       });
@@ -1687,6 +1709,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       console.log(`📹 ChatWidget: Starting video call in room ${this.currentRoomId} (${this.currentRoomName})`);
       Events.emit('navigate:live', {
         entityId: this.currentRoomId,
+        uniqueId: this.currentRoomUniqueId || undefined,
         entityType: 'room',
         displayName: this.currentRoomName || 'Video Call',
         video: true
@@ -1827,8 +1850,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (!this._isTyping) {
       this._isTyping = true;
       Events.emit(PRESENCE_EVENTS.TYPING_START, {
-        userId: DEFAULT_USERS.HUMAN,
-        displayName: 'Joel',
+        userId: this._myUserId,
+        displayName: this.humanDisplayName,
         roomId: this.currentRoomId,
       });
     }
@@ -1853,8 +1876,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     Events.emit(PRESENCE_EVENTS.TYPING_STOP, {
-      userId: DEFAULT_USERS.HUMAN,
-      displayName: 'Joel',
+      userId: this._myUserId,
+      displayName: this.humanDisplayName,
       roomId: this.currentRoomId,
     });
   }
@@ -1910,8 +1933,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Create message entity
     const messageEntity = new ChatMessageEntity();
     messageEntity.roomId = this.currentRoomId;
-    messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
-    messageEntity.senderName = 'Joel';
+    messageEntity.senderId = this._myUserId as UUID;
+    messageEntity.senderName = this.humanDisplayName;
     messageEntity.senderType = 'human';
     messageEntity.content = {
       text,
@@ -1951,7 +1974,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     ChatSend.execute({
       message: text,
       room: this.currentRoomId,
-      senderId: DEFAULT_USERS.HUMAN as UUID,  // Explicitly send as Joel, not browser session identity
+      senderId: this._myUserId as UUID,  // Explicitly send as Joel, not browser session identity
       mediaItems: savedAttachments,
     }).then((result) => {
       console.log(`📤 ChatWidget: chat/send response:`, JSON.stringify(result, null, 2));
@@ -1995,8 +2018,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Create message entity
     const messageEntity = new ChatMessageEntity();
     messageEntity.roomId = this.currentRoomId;
-    messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
-    messageEntity.senderName = 'Joel';
+    messageEntity.senderId = this._myUserId as UUID;
+    messageEntity.senderName = this.humanDisplayName;
     messageEntity.senderType = 'human';
     messageEntity.content = { text, media };
     messageEntity.status = 'sent';
@@ -2095,7 +2118,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       mimeType: file.type,
       size: file.size,
       uploadedAt: Date.now(),
-      uploadedBy: DEFAULT_USERS.HUMAN as UUID
+      uploadedBy: this._myUserId as UUID
     };
   }
 

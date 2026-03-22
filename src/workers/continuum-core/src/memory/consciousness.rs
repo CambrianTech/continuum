@@ -211,7 +211,7 @@ mod tests {
             context_name: "academy".into(),
             event_type: "message_sent".into(),
             actor_id: "u1".into(),
-            actor_name: "Joel".into(),
+            actor_name: "test-user".into(),
             content: "Teaching a new concept".into(),
             importance: 0.7,
             topics: vec![],

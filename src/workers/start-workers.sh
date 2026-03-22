@@ -47,6 +47,17 @@ if [ -f "$HOME/.continuum/config.env" ]; then
   echo -e "${GREEN}✅ Loaded config.env (HF_TOKEN, API keys)${NC}"
 fi
 
+# Vulkan sanity check — warn if NVIDIA GPU present but no Vulkan ICD installed.
+# install.sh handles installing libnvidia-gl; this is a safety net for manual setups.
+if (command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]) && \
+   ! [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then
+  echo -e "${RED}⚠️  NVIDIA GPU detected but no Vulkan ICD found!${NC}"
+  echo -e "${RED}   Bevy will fall back to software rendering (unusable).${NC}"
+  echo -e "${RED}   Fix: run 'bash scripts/install.sh' to install libnvidia-gl.${NC}"
+fi
+# Clean up stale user-space ICD (previous versions created one that confused the loader)
+rm -rf "$CONTINUUM_ROOT/vulkan" 2>/dev/null
+
 echo -e "${YELLOW}📋 Loading worker config: $CONFIG_FILE${NC}"
 
 # Check if jq is available
@@ -74,7 +85,36 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   echo -e "${YELLOW}🔊 Starting LiveKit SFU server...${NC}"
   # Truncate log on startup (prevents multi-MB bloat) and reduce log level
   : > "$LIVEKIT_LOG"
-  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind 127.0.0.1 --node-ip 127.0.0.1 >> "$LIVEKIT_LOG" 2>&1 &
+
+  LIVEKIT_EXTRA_ARGS=""
+  LIVEKIT_CONFIG=""
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    # WSL2: use YAML config with enable_loopback_candidate (not available as CLI flag).
+    # This makes LiveKit generate 127.0.0.1 ICE candidates so the browser on
+    # localhost can actually connect. force_tcp because WSL2 Hyper-V firewall
+    # blocks inbound UDP (known WSL2 bug, unfixed since 2023).
+    LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit-wsl2.yaml"
+    cat > "$LIVEKIT_CONFIG" << 'YAML'
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  node_ip: 127.0.0.1
+  enable_loopback_candidate: true
+  force_tcp: true
+  use_ice_lite: true
+  use_external_ip: false
+keys:
+  devkey: secret
+YAML
+    LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
+    echo -e "${YELLOW}   WSL2 — YAML config with loopback ICE + TCP${NC}"
+  else
+    LIVEKIT_EXTRA_ARGS="--dev --bind 127.0.0.1 --node-ip 127.0.0.1"
+  fi
+
+  LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 
@@ -166,11 +206,16 @@ while read -r worker; do
   echo -e "   ${description}"
   echo -e "   Memory limit: ${mem_limit:-$DEFAULT_MEM_LIMIT} (${MEM_LIMIT_KB} KB)"
 
+  # ulimit -v: only enforce on macOS. Linux enforces strictly and CUDA/WebRTC
+  # need far more virtual memory than the configured limit allows.
+  ULIMIT_CMD=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    ULIMIT_CMD="ulimit -v $MEM_LIMIT_KB 2>/dev/null || true;"
+  fi
+
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
-    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
-    # Each TCP worker gets its own log file for better segregation
-    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+    (eval "$ULIMIT_CMD" exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -189,16 +234,15 @@ while read -r worker; do
     done
   else
     # Unix socket worker - each gets its own log file for better segregation
-    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+      (eval "$ULIMIT_CMD" exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+      (eval "$ULIMIT_CMD" exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     fi
 
     WORKER_PID=$!

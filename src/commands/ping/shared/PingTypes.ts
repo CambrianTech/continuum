@@ -8,6 +8,7 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 export interface PingParams extends CommandParams {
   server?: ServerEnvironmentInfo;
   browser?: BrowserEnvironmentInfo;
+  aiStatus?: Record<string, unknown>;
 
   /**
    * Include detailed AI persona health status

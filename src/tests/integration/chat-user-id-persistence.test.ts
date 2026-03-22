@@ -37,7 +37,7 @@ class UserIdPersistenceValidator {
   private jtag: JTAGClient | null = null;
   private factory: JTAGClientFactory;
   private testRoomId: string = 'user-id-test-room';
-  private expectedUserId: string = 'user-joel-12345'; // The persistent User ID we implemented
+  private expectedUserId: string = 'user-owner-00001'; // The persistent User ID we implemented
   
   constructor() {
     this.factory = JTAGClientFactory.getInstance();

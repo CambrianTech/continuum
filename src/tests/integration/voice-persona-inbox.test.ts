@@ -23,7 +23,7 @@ import type { InboxMessage } from '../../system/user/server/modules/QueueItemTyp
 // Mock UUIDs for testing
 const MOCK_PERSONA_ID: UUID = 'persona-helper-ai' as UUID;
 const MOCK_SESSION_ID: UUID = 'voice-session-001' as UUID;
-const MOCK_SPEAKER_ID: UUID = 'user-joel-001' as UUID;
+const MOCK_SPEAKER_ID: UUID = 'user-test-001' as UUID;
 const MOCK_ROOM_ID: UUID = 'room-general-001' as UUID;
 
 // Mock directed event factory
@@ -44,7 +44,7 @@ function createDirectedEvent(
   return {
     sessionId,
     speakerId: MOCK_SPEAKER_ID,
-    speakerName: 'Joel',
+    speakerName: 'test-user',
     transcript,
     confidence: 0.95,
     language: 'en',
@@ -291,7 +291,7 @@ describe('PersonaUser Voice Inbox Integration Tests', () => {
       expect(timelineEvents[0]).toMatchObject({
         contextType: 'room',
         eventType: 'message_received',
-        actorName: 'Joel',
+        actorName: 'test-user',
         content: 'Explain TypeScript generics',
         importance: 0.7
       });

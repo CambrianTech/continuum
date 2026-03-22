@@ -14,7 +14,7 @@ import type { UserType } from '../entities/UserEntity';
 export interface EasyMessageOptions {
   text: string;
   room?: UUID | 'general' | 'academy';
-  sender?: UUID | 'joel' | 'claude' | 'ai';
+  sender?: UUID | 'owner' | 'claude' | 'ai';
   senderName?: string;
   senderType?: UserType; // Optional - inferred from sender alias if not provided
   status?: 'sending' | 'sent' | 'failed';
@@ -61,9 +61,9 @@ export function createMessage(textOrOptions: string | EasyMessageOptions, option
   }
 
   // Sender - support aliases and infer senderType
-  if (opts.sender === 'joel' || !opts.sender) {
+  if (opts.sender === 'owner' || !opts.sender) {
     message.senderId = DEFAULT_USERS.HUMAN as UUID;
-    message.senderName = opts.senderName || 'Joel';
+    message.senderName = opts.senderName || 'User';
     message.senderType = opts.senderType || 'human'; // Denormalized from UserEntity
   } else if (opts.sender === 'claude' || opts.sender === 'ai') {
     message.senderId = DEFAULT_USERS.CLAUDE_CODE as UUID;
@@ -95,5 +95,5 @@ export function createAIMessage(text: string, options?: Omit<EasyMessageOptions,
  * Create a message from human
  */
 export function createHumanMessage(text: string, options?: Omit<EasyMessageOptions, 'text' | 'sender'>): ChatMessageEntity {
-  return createMessage(text, { ...options, sender: 'joel' });
+  return createMessage(text, { ...options, sender: 'owner' });
 }

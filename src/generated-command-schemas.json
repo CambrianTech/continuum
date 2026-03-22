@@ -2623,6 +2623,11 @@
           "required": false,
           "description": "browser parameter"
         },
+        "aiStatus": {
+          "type": "object",
+          "required": false,
+          "description": "aiStatus parameter"
+        },
         "verbose": {
           "type": "boolean",
           "required": false,
@@ -2929,6 +2934,17 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/allocate",
+      "description": "Hardware-aware persona allocation via Rust PersonaAllocator. Returns optimal persona assignments based on GPU VRAM and available API keys. Single source of truth for which personas should exist on this machine.",
+      "params": {
+        "availableApiKeys": {
+          "type": "array",
+          "required": true,
+          "description": "availableApiKeys parameter"
         }
       }
     },
@@ -6980,7 +6996,7 @@
     },
     {
       "name": "collaboration/live/send",
-      "description": "Live Send Command Send a text message into the active live voice session. Auto-discovers the active session — no session ID needed. Usage: ./jtag collaboration/live/send --message=\"Hello everyone!\" ./jtag collaboration/live/send --message=\"How are you?\" --speakerName=\"Joel\"",
+      "description": "Live Send Command Send a text message into the active live voice session. Auto-discovers the active session — no session ID needed. Usage: ./jtag collaboration/live/send --message=\"Hello everyone!\" ./jtag collaboration/live/send --message=\"How are you?\" --speakerName=\"test-user\"",
       "params": {
         "message": {
           "type": "string",
@@ -8949,6 +8965,33 @@
           "type": "boolean",
           "required": false,
           "description": "useStored parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/key/save",
+      "description": "Save an API key for a cloud AI provider. Persists to ~/.continuum/config.env, sets process.env, and emits system:config:key-added event to trigger persona creation.",
+      "params": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
+        },
+        "value": {
+          "type": "string",
+          "required": true,
+          "description": "value parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/key/remove",
+      "description": "Remove an API key for a cloud AI provider. Removes from ~/.continuum/config.env, clears process.env, and emits system:config:key-removed event to deactivate personas.",
+      "params": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
         }
       }
     },

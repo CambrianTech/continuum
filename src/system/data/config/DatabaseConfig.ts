@@ -25,7 +25,7 @@ import { PATHS } from '../../shared/Constants';
  */
 export const DATABASE_PATHS = {
   /** Default Postgres connection (system Postgres, database 'continuum') */
-  POSTGRES: 'postgres://joel@localhost:5432/continuum',
+  POSTGRES: `postgres://${process.env.USER || 'postgres'}@localhost:5432/continuum`,
 
   /** Main database directory (server-only) - SINGULAR DEFAULT */
   DATA_DIR: '$HOME/.continuum/data',

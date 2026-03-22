@@ -15,10 +15,35 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$SCRIPT_DIR/shared/preflight.sh"
 
+# Ensure cargo is in PATH (rustup installs to ~/.cargo/bin, not always in non-interactive shells)
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+# Raise open file limit (default 1024 on Linux/WSL is too low for rayon + tokio thread pools)
+ulimit -n 65536 2>/dev/null || true
+# Ensure nvm is in PATH (for Linux/WSL installs via nvm)
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+# Source config.env — API keys, DATABASE_URL, storage paths.
+# Must happen before BOTH workers (start-workers.sh) AND the TS orchestrator.
+if [ -f "$HOME/.continuum/config.env" ]; then
+  set -a; source "$HOME/.continuum/config.env"; set +a
+fi
+# ONNX Runtime — tell ort crate where to find libonnxruntime.so (user-space install)
+if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
+  export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+fi
+
 cd "$PROJECT_DIR"
 
 # All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
 CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
+
+# ── Ensure system dependencies are installed (idempotent — skips what exists) ──
+# Runs only the dependency-check portion of install.sh. On repeat runs this
+# completes in <1s (everything already installed). First run prompts for
+# sudo password if system packages are needed.
+if [ -f "$SCRIPT_DIR/install.sh" ]; then
+  CONTINUUM_DEPS_ONLY=1 bash "$SCRIPT_DIR/install.sh"
+fi
 
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
@@ -75,19 +100,51 @@ fi
 # followed by parallel TS+VRM is actually FASTER than the broken parallel approach.
 echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 
-# Voice models download + scene generation in parallel with cargo build
+# Model downloads + scene generation in parallel with cargo build
+# All downloads are NON-FATAL — system starts without them, downloads continue
 (
-  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /'
+  # Avatar models (VRM) — required for 3D live mode
+  ./scripts/download-avatar-models.sh 2>&1 | sed 's/^/  [Avatars] /' || {
+    echo -e "  [Avatars] ${YELLOW}⚠️ Avatar model download failed — live mode will have no avatars${NC}"
+  }
+  # Voice models (TTS/STT)
+  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Voice] /' || {
+    echo -e "  [Voice] ${YELLOW}⚠️ Voice model download failed — system will start without STT/TTS${NC}"
+  }
   # Generate scene environment GLBs (idempotent — skips existing)
-  npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /'
+  npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /' || {
+    echo -e "  [Scenes] ${YELLOW}⚠️ Scene generation failed — non-fatal${NC}"
+  }
 ) &
 MODELS_PID=$!
 
 # Rust: cargo build (exclusive access to target directory)
-# Suppress ts-rs serde parse warnings (harmless, just noisy)
+# GPU features selected by platform: Metal (macOS), CUDA (Linux+NVIDIA), CPU-only (fallback).
 cd workers
-echo -e "  [Rust] Building workers (cargo incremental)..."
-BUILD_OUTPUT=$(cargo build --release --quiet 2>&1) && RESULT=0 || RESULT=$?
+source "$SCRIPT_DIR/shared/cargo-features.sh"
+echo -e "  [Rust] Building workers (cargo incremental)... ${CARGO_GPU_FEATURES:-[cpu-only]}"
+# Build GPU-aware crates individually (workspace --features only applies to focused package).
+# Non-GPU crates (archive, jtag-mcp) build normally.
+GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or ""
+# GPU backend feature only (no accelerate or load-dynamic-ort — those are continuum-core only)
+GPU_BACKEND=$(echo "$GPU_FEAT" | sed 's/,accelerate//;s/accelerate,//;s/accelerate//' | sed 's/,load-dynamic-ort//;s/load-dynamic-ort,//;s/load-dynamic-ort//')
+BUILD_OUTPUT=""
+RESULT=0
+for pkg in archive-worker jtag-mcp; do
+  OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+done
+# continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
+if [ -n "$GPU_FEAT" ]; then
+  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+else
+  OUT=$(cargo build --release -p continuum-core --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+fi
+# inference-grpc: GPU backend only (metal or cuda, no accelerate)
+if [ -n "$GPU_BACKEND" ]; then
+  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+else
+  OUT=$(cargo build --release -p inference-grpc --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+fi
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
 if [ $RESULT -eq 0 ]; then
@@ -184,21 +241,27 @@ if [ -n "$PSQL" ]; then
   CREATEDB="$(dirname "$PSQL")/createdb"
 
   # Check if Postgres is accepting connections (start it if not)
-  if ! "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+  if ! "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     echo -e "  ${YELLOW}⚠️ Postgres not responding — attempting to start...${NC}"
-    # Try Homebrew service start (macOS)
     if command -v brew >/dev/null 2>&1; then
+      # macOS: Homebrew service
       brew services start postgresql@17 2>/dev/null || true
-      sleep 2
+    elif sudo -n true 2>/dev/null; then
+      # Linux/WSL2: passwordless sudo available
+      sudo -n service postgresql start 2>/dev/null || true
+    else
+      # Can't start without password — tell user
+      echo -e "  ${RED}Postgres is down. Run: sudo service postgresql start${NC}"
     fi
+    sleep 2
   fi
-  if "$PSQL" -h localhost -p 5432 -U joel -c "SELECT 1" postgres >/dev/null 2>&1; then
+  if "$PSQL" -h localhost -p 5432 -U "${USER}" -c "SELECT 1" postgres >/dev/null 2>&1; then
     # Check if continuum database exists
-    if "$PSQL" -h localhost -p 5432 -U joel -lqt 2>/dev/null | grep -qw continuum; then
+    if "$PSQL" -h localhost -p 5432 -U "${USER}" -lqt 2>/dev/null | grep -qw continuum; then
       echo -e "  ${GREEN}✅ Database 'continuum' exists${NC}"
     else
       echo -e "  ${YELLOW}⚠️ Database 'continuum' missing — creating...${NC}"
-      if "$CREATEDB" -h localhost -p 5432 -U joel continuum 2>&1; then
+      if "$CREATEDB" -h localhost -p 5432 -U "${USER}" continuum 2>&1; then
         echo -e "  ${GREEN}✅ Database 'continuum' created${NC}"
         # Flag that we need to seed after system is healthy
         NEEDS_SEED=true
@@ -253,27 +316,30 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     exit 1
   fi
 
-  # Try ping — check for BOTH server AND browser connection.
-  # This ensures we don't exit before the orchestrator finishes browser detection.
+  # Try ping — server success is sufficient (browser may not exist in headless/CLI mode).
   PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
-    HAS_BROWSER=$(echo "$PING_OUTPUT" | grep -c '"browser"' 2>/dev/null || echo "0")
-    if [ "$HAS_BROWSER" -gt 0 ]; then
-      HEALTHY=true
-      break
+    HEALTHY=true
+    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+      echo -e "  ${GREEN}Server + browser connected${NC}"
     else
-      echo -e "  ⏳ Server up, waiting for browser... (${ELAPSED}s / ${MAX_WAIT}s)"
+      echo -e "  ${GREEN}Server up (no browser — headless/CLI mode OK)${NC}"
     fi
+    break
   else
     echo -e "  ⏳ Waiting for server... (${ELAPSED}s / ${MAX_WAIT}s)"
   fi
 done
 
+BROWSER_CONNECTED=false
+if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+  BROWSER_CONNECTED=true
+fi
+
 if [ "$HEALTHY" = false ]; then
-  # If server is up but browser never connected, still report success
-  # (user may have closed the tab intentionally)
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
-    echo -e "\n${YELLOW}⚠️ Server is UP but no browser detected. Open manually or run: npm start${NC}"
+    HEALTHY=true
+    echo -e "  ${GREEN}Server up (no browser — headless/CLI mode OK)${NC}"
   else
     echo -e "${RED}❌ System did not become healthy within ${MAX_WAIT}s${NC}"
     echo -e "${RED}   Check log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log${NC}"
@@ -281,26 +347,48 @@ if [ "$HEALTHY" = false ]; then
   fi
 fi
 
-# Phase 5.5: Auto-seed if database was just created or data is missing
-# Check if essential data exists (rooms). If not, seed the database.
-if [ "${NEEDS_SEED:-false}" = true ]; then
-  echo -e "\n${YELLOW}Phase 5.5: Seeding freshly created database...${NC}"
-  npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-  echo -e "  ${GREEN}✅ Database seeded${NC}"
-else
-  # Even if DB existed, verify it has data (rooms table might be empty after corruption)
-  ROOM_CHECK=$(./jtag data/list --collection=rooms --limit=1 2>/dev/null || echo '{"items":[]}')
-  if echo "$ROOM_CHECK" | grep -q '"items":\[\]' 2>/dev/null || echo "$ROOM_CHECK" | grep -q '"items": \[\]' 2>/dev/null; then
-    echo -e "\n${YELLOW}Phase 5.5: No rooms found — seeding database...${NC}"
-    npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-    echo -e "  ${GREEN}✅ Database seeded${NC}"
+# Open browser if none connected, then wait for it
+if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
+  PLATFORM=$(preflight_detect_platform)
+  URL="http://localhost:9000"
+  echo -e "  ${YELLOW}Opening browser...${NC}"
+  case "$PLATFORM" in
+    macos)  open "$URL" 2>/dev/null & ;;
+    wsl)    cmd.exe /c start "$URL" 2>/dev/null & ;;
+    linux)  xdg-open "$URL" 2>/dev/null & ;;
+  esac
+
+  # Wait for browser to connect (up to 30s)
+  BWAIT=0
+  while [ $BWAIT -lt 30 ]; do
+    sleep 3
+    BWAIT=$((BWAIT + 3))
+    PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser connected${NC}"
+      break
+    fi
+    echo -e "  ⏳ Waiting for browser... (${BWAIT}s)"
+  done
+
+  if [ "$BROWSER_CONNECTED" = false ]; then
+    echo -e "  ${YELLOW}Browser didn't connect — open ${URL} manually${NC}"
   fi
 fi
 
+# Phase 5.5: Ensure database is seeded (always runs — idempotent, skips existing records)
+# This handles: fresh installs, tower deploys with no personas, config updates, model changes.
+echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
+npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
+echo -e "  ${GREEN}✅ Seed complete${NC}"
+
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))
-if [ "$HOT_RESTART" = true ]; then
+if [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s) — browser refreshed${NC}"
+elif [ "$HOT_RESTART" = true ]; then
+  echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s)${NC}"
 else
   echo -e "\n${GREEN}🎉 System is UP! Total startup time: ${TOTAL_ELAPSED}s${NC}"
 fi

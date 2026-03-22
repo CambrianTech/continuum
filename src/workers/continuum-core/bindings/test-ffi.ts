@@ -48,7 +48,7 @@ const roomId = '550e8400-e29b-41d4-a716-446655440001';
 orchestrator.registerSession(sessionId, roomId, [
 	{
 		user_id: '550e8400-e29b-41d4-a716-446655440002',
-		display_name: 'Joel',
+		display_name: 'test-user',
 		participant_type: 'human',
 		expertise: [],
 	},
@@ -73,7 +73,7 @@ console.log('4. Testing utterance processing (question)...');
 const responder = orchestrator.onUtterance({
 	session_id: sessionId,
 	speaker_id: '550e8400-e29b-41d4-a716-446655440002',
-	speaker_name: 'Joel',
+	speaker_name: 'test-user',
 	speaker_type: 'human',
 	transcript: 'How do I implement priority queues in Rust?',
 	confidence: 0.95,
@@ -87,7 +87,7 @@ console.log('5. Testing utterance processing (statement)...');
 const noResponder = orchestrator.onUtterance({
 	session_id: sessionId,
 	speaker_id: '550e8400-e29b-41d4-a716-446655440002',
-	speaker_name: 'Joel',
+	speaker_name: 'test-user',
 	speaker_type: 'human',
 	transcript: 'The weather is nice today.',
 	confidence: 0.95,

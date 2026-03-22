@@ -323,11 +323,37 @@ export async function createUserViaCommand(
       }
     }
 
+    // "Record already exists" means the user is there — load it instead of failing
+    if (err.stdout && err.stdout.includes('already exists')) {
+      console.log(`✅ User ${displayName} already exists — loading`);
+      if (uniqueId) {
+        return await loadUserByUniqueId(uniqueId);
+      }
+      // Try loading by type if no uniqueId match (human user may have different uniqueId)
+      if (type === 'human') {
+        return await loadFirstUserByType('human');
+      }
+    }
+
     console.error(`❌ Failed to create user ${displayName}: ${err.message}`);
     if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}`);
     if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}`);
     return null;
   }
+}
+
+/**
+ * Load the first user of a given type (e.g., 'human')
+ */
+async function loadFirstUserByType(type: string): Promise<UserEntity | null> {
+  try {
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"type":"${type}"}' --limit=1`);
+    const response = JSON.parse(stdout);
+    if (response.success && response.items?.length > 0) {
+      return response.items[0] as UserEntity;
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 /**

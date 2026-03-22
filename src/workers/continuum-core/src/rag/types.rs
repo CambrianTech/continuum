@@ -119,7 +119,7 @@ mod tests {
         let msg = LlmMessage {
             role: MessageRole::User,
             content: "Hello".to_string(),
-            name: Some("Joel".to_string()),
+            name: Some("test-user".to_string()),
             timestamp: Some(1234567890),
         };
 

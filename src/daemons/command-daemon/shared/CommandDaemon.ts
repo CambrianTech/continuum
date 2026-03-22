@@ -144,9 +144,15 @@ export abstract class CommandDaemon extends DaemonBase {
       // Check if timeout is specified in command params
       const timeout = (message.payload as CommandParams).timeout;
 
+      // Resolve userId: use payload's userId if present and real, otherwise resolve from session
+      let resolvedUserId: UUID = (message.payload as CommandParams).userId ?? SYSTEM_SCOPES.SYSTEM;
+      if (resolvedUserId === SYSTEM_SCOPES.SYSTEM && requestSessionId) {
+        resolvedUserId = await this.resolveUserIdFromSession(requestSessionId) ?? SYSTEM_SCOPES.SYSTEM;
+      }
+
       // Execute command with session context for dual logging
       const executionPromise = globalSessionContext.withSession(requestSessionId, async () => {
-        return await command.execute({ userId: SYSTEM_SCOPES.SYSTEM, ...message.payload } as CommandParams);
+        return await command.execute({ userId: resolvedUserId, ...message.payload } as CommandParams);
       });
 
       // Apply timeout if specified
@@ -184,6 +190,43 @@ export abstract class CommandDaemon extends DaemonBase {
     }
 
     throw new Error(`Command '${commandName}' not available in ${this.context.environment} context`);
+  }
+
+  /**
+   * Resolve userId from session via SessionDaemon.
+   * Returns null if session not found or no user associated.
+   * Cached per session to avoid repeated lookups on the hot path.
+   */
+  private _sessionUserCache = new Map<string, UUID>();
+
+  private async resolveUserIdFromSession(sessionId: UUID): Promise<UUID | null> {
+    // Check cache first
+    const cached = this._sessionUserCache.get(sessionId);
+    if (cached) return cached;
+
+    try {
+      const sessionDaemon = this.router.getSubscriber('session-daemon');
+      if (!sessionDaemon) return null;
+
+      const { JTAGMessageFactory } = await import('../../../system/core/types/JTAGTypes');
+      const message = JTAGMessageFactory.createRequest(
+        this.context,
+        'server/command-daemon',
+        'session-daemon/get',
+        { sessionId, operation: 'get', context: this.context } as unknown as import('../../../system/core/types/JTAGTypes').JTAGPayload,
+        JTAGMessageFactory.generateCorrelationId()
+      );
+
+      const response = await sessionDaemon.handleMessage(message) as { success?: boolean; session?: { userId?: UUID } };
+      if (response?.success && response.session?.userId) {
+        this._sessionUserCache.set(sessionId, response.session.userId);
+        return response.session.userId;
+      }
+    } catch {
+      // Session lookup failed — not fatal, caller falls back to SYSTEM
+    }
+
+    return null;
   }
 
   /**

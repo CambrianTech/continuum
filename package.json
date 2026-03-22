@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "start": "cd src && npm start",
+    "stop": "cd src && npm stop",
+    "install": "cd src && bash scripts/install.sh"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
     "@anthropic-ai/claude-code": "^2.1.76"

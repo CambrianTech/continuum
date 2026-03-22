@@ -156,10 +156,10 @@ export class UserIdentityResolver {
         // Use environment username if available
         const username = process.env.USER ?? process.env.USERNAME;
         if (username) {
-          return this.sanitizeForId(username); // Matches seed: generateUniqueId('Joel')
+          return this.sanitizeForId(username); // Matches seed: generateUniqueId (system username)
         }
         // Fallback to primary human
-        return 'joel'; // Matches seed: generateUniqueId('Joel')
+        return 'owner'; // Matches seed: generateUniqueId (system username)
       }
 
       case 'ci':

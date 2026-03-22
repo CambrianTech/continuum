@@ -188,7 +188,7 @@ describe('RecipePromptBuilder', () => {
           conversationHistory: [{
             role: 'user',
             content: 'What is TypeScript?',
-            name: 'Joel',
+            name: 'test-user',
             timestamp
           }]
         })
@@ -197,7 +197,7 @@ describe('RecipePromptBuilder', () => {
       const prompt = RecipePromptBuilder.buildGatingPrompt(strategy, context);
 
       expect(prompt).toContain('[14:30]');
-      expect(prompt).toContain('Joel:');
+      expect(prompt).toContain('test-user:');
       expect(prompt).toContain('What is TypeScript?');
     });
 

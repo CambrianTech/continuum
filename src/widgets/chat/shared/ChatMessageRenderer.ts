@@ -26,7 +26,7 @@ export class ChatMessageRenderer {
     const content = message.content?.text || '';
 
     // TEMPORARY FIX: Hardcode current user for alignment testing
-    const tempCurrentUserId = 'user-joel-12345';
+    const tempCurrentUserId = 'user-owner-00001';
     const tempIsCurrentUser = message.senderId === tempCurrentUserId;
     const tempAlignment = tempIsCurrentUser ? 'right' : 'left';
 

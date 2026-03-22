@@ -146,42 +146,35 @@ export class HardwareProfile {
    * Detect what hardware is available
    */
   private detectHardware(): { accelerator: 'cuda' | 'metal' | 'cpu'; device: string; memoryGB: number } {
-    // Try CUDA first (NVIDIA)
-    try {
-      const nvidiaSmi = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader', { encoding: 'utf-8' });
-      const [name, memStr] = nvidiaSmi.trim().split(',').map(s => s.trim());
-      const memoryGB = parseInt(memStr) / 1024;  // Convert MiB to GB
-      return { accelerator: 'cuda', device: name, memoryGB };
-    } catch (e) {
-      // No NVIDIA GPU
-    }
+    const run = (cmd: string): string | null => {
+      try { return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim(); } catch { return null; }
+    };
 
-    // Try Metal (Apple Silicon)
-    try {
-      const chip = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf-8' }).trim();
-      const memBytes = parseInt(execSync('sysctl -n hw.memsize', { encoding: 'utf-8' }).trim());
-      const memoryGB = memBytes / (1024 * 1024 * 1024);
-
-      if (chip.includes('Apple')) {
-        return { accelerator: 'metal', device: chip, memoryGB };
-      }
-    } catch (e) {
-      // Not macOS or error
-    }
-
-    // Fallback to CPU
-    let cpuInfo = 'Unknown CPU';
-    try {
-      cpuInfo = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf-8' }).trim();
-    } catch (e) {
-      try {
-        cpuInfo = execSync('cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2', { encoding: 'utf-8' }).trim();
-      } catch (e2) {
-        // Give up
+    // CUDA (NVIDIA) — check both standard and WSL paths
+    for (const smi of ['nvidia-smi', '/usr/lib/wsl/lib/nvidia-smi']) {
+      const csv = run(`${smi} --query-gpu=name,memory.total --format=csv,noheader`);
+      if (csv) {
+        const [name, memStr] = csv.split(',').map(s => s.trim());
+        const memoryGB = Math.floor(parseInt(memStr) / 1024);
+        return { accelerator: 'cuda', device: name, memoryGB };
       }
     }
 
-    return { accelerator: 'cpu', device: cpuInfo, memoryGB: 16 };
+    // Apple Silicon (Metal) — unified memory, GPU uses all of it
+    const chip = run('sysctl -n machdep.cpu.brand_string');
+    if (chip && chip.includes('Apple')) {
+      const memBytes = run('sysctl -n hw.memsize');
+      const memoryGB = memBytes ? Math.floor(parseInt(memBytes) / (1024 * 1024 * 1024)) : 8;
+      return { accelerator: 'metal', device: chip, memoryGB };
+    }
+
+    // CPU fallback — detect actual RAM
+    const cpuInfo = run('sysctl -n machdep.cpu.brand_string')
+      ?? run('cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2')
+      ?? 'Unknown CPU';
+    const memKB = run('grep MemTotal /proc/meminfo | awk \'{print $2}\'');
+    const memoryGB = memKB ? Math.floor(parseInt(memKB) / (1024 * 1024)) : 8;
+    return { accelerator: 'cpu', device: cpuInfo.trim(), memoryGB };
   }
 
   /**

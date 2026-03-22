@@ -19,9 +19,8 @@ import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEn
 import { ActivityEntity } from '../system/data/entities/ActivityEntity';
 import { ActivityDataSeed } from '../api/data-seed/ActivityDataSeed';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
-import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
+import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel, type PersonaConfig } from './seed/personas';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
-import { LOCAL_MODELS } from '../system/shared/Constants';
 import {
   createRoom,
   createDefaultContentTypes,
@@ -148,13 +147,13 @@ function createMessage(id: string, roomId: string, senderId: string, senderName:
  * This replaces getMissingUsers() + N individual loadUserByUniqueId() calls
  * with a SINGLE subprocess spawn.
  */
-async function loadAllUsers(): Promise<{
+async function loadAllUsers(personaConfigs: PersonaConfig[]): Promise<{
   usersByUniqueId: Map<string, UserEntity>;
   missingUniqueIds: string[];
 }> {
   const requiredUsers = [
     DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
-    ...PERSONA_CONFIGS.map(p => p.uniqueId)
+    ...personaConfigs.map(p => p.uniqueId)
   ];
 
   const usersByUniqueId = new Map<string, UserEntity>();
@@ -167,6 +166,11 @@ async function loadAllUsers(): Promise<{
       for (const user of response.items) {
         if (user.uniqueId) {
           usersByUniqueId.set(user.uniqueId, user);
+        }
+        // Also map human users by the PRIMARY_HUMAN key so we find them
+        // even when the DB has uniqueId="joel" but we look for "owner"
+        if (user.type === 'human' && !usersByUniqueId.has(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
+          usersByUniqueId.set(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN, user);
         }
       }
     }
@@ -298,8 +302,61 @@ async function seedViaJTAG() {
       throw new Error('❌ JTAG system not ready - commands not registered yet');
     }
 
+    // Hardware-aware persona selection via Rust PersonaAllocator (single source of truth)
+    let activePersonas: PersonaConfig[];
+    let localModel: string;
+
+    try {
+      // Collect available API keys from environment
+      const knownKeyVars = [
+        'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY',
+        'XAI_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'DASHSCOPE_API_KEY',
+        'GOOGLE_API_KEY', 'HF_TOKEN', 'SENTINEL_PATH',
+      ];
+      const availableApiKeys = knownKeyVars.filter(k => !!process.env[k]);
+      const keysJson = JSON.stringify(availableApiKeys);
+
+      const { stdout: allocStdout } = await execAsync(
+        `./jtag persona/allocate --availableApiKeys='${keysJson}'`
+      );
+      const allocResponse = JSON.parse(allocStdout);
+
+      if (allocResponse.success !== false && allocResponse.allocations) {
+        // Map Rust allocations back to PersonaConfig format for compatibility
+        activePersonas = allocResponse.allocations.map((a: any) => ({
+          uniqueId: a.uniqueId,
+          displayName: a.displayName,
+          provider: a.provider,
+          type: a.personaType,
+          voiceId: a.voiceId,
+          modelId: a.resolvedModel || a.modelId,
+          isAudioNative: a.isAudioNative,
+          apiKeyEnv: a.apiKeyEnv,
+          minVramGB: a.vramBudgetGb,
+        }));
+        localModel = allocResponse.localModel || selectLocalModel(allocResponse.totalVramGb || 0);
+
+        console.log('🔍 Rust PersonaAllocator (single source of truth):');
+        for (const line of allocResponse.summary || []) {
+          console.log(`   ${line}`);
+        }
+      } else {
+        throw new Error('Rust allocator returned no allocations');
+      }
+    } catch (allocError) {
+      // Fallback to TS allocator if Rust IPC not available (shouldn't happen)
+      console.warn('⚠️ Rust persona/allocate failed, falling back to TS allocator:', allocError instanceof Error ? allocError.message : allocError);
+      const tsResult = getAvailablePersonas();
+      activePersonas = tsResult.personas;
+      localModel = selectLocalModel(tsResult.gpu.vramGB);
+      console.log('🔍 TS fallback persona selection:');
+      for (const line of tsResult.summary) {
+        console.log(`   ${line}`);
+      }
+    }
+
     // BULK LOAD: One subprocess call replaces N individual lookups
-    const { usersByUniqueId, missingUniqueIds } = await loadAllUsers();
+    const { usersByUniqueId, missingUniqueIds } = await loadAllUsers(activePersonas);
 
     if (missingUniqueIds.length === 0) {
       console.log('⚡ All required users exist - no seeding needed');
@@ -372,11 +429,11 @@ async function seedViaJTAG() {
     // Step 3: Create missing personas (must be sequential — each triggers auto-join)
     console.log(`📝 Creating ${missingUniqueIds.length - (missingUniqueIds.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) ? 0 : 1)} remaining users...`);
 
-    for (const persona of PERSONA_CONFIGS) {
+    for (const persona of activePersonas) {
       if (!missingUniqueIds.includes(persona.uniqueId)) continue;
 
+      // Sentinel check already handled by getAvailablePersonas(), but double-check
       if (persona.provider === 'sentinel' && !process.env.SENTINEL_PATH) {
-        console.log(`⏭️  Skipping Sentinel (SENTINEL_PATH not configured)`);
         continue;
       }
 
@@ -393,7 +450,7 @@ async function seedViaJTAG() {
     // Step 4: PARALLEL update existing users (provider + metadata)
     // This replaces N sequential subprocess spawns with one parallel batch
     const updatePromises: Promise<boolean>[] = [];
-    for (const persona of PERSONA_CONFIGS) {
+    for (const persona of activePersonas) {
       if (missingUniqueIds.includes(persona.uniqueId)) continue;
       const existingUser = usersByUniqueId.get(persona.uniqueId);
       if (!existingUser) continue;
@@ -490,16 +547,21 @@ async function seedViaJTAG() {
 
     // ===== FIRST-TIME SEED (rooms were just created) =====
 
-    if (!humanUser || !claudeUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
-      throw new Error('❌ Failed to create core required users');
+    if (!humanUser) {
+      throw new Error('❌ Failed to create human user');
     }
+    // On low-resource machines, some personas may not be created (no API key / no GPU).
+    // That's OK — the system works with whatever personas are available.
 
     // Seed persona profiles (bios, accent colors, specialities)
     await ensurePersonaProfiles(usersByUniqueId);
 
     // System room helper setup (parallel — using rooms we just created)
-    console.log('🏠 Adding Helper AI to system rooms...');
+    // Only add Helper AI to rooms if it was created
     const systemRoomHelperUpdates: Promise<void>[] = [];
+    if (!helperPersona) {
+      console.log('⏭️  No Helper AI available — skipping room membership setup');
+    } else {
     for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
       systemRoomHelperUpdates.push(
         (async () => {
@@ -529,39 +591,48 @@ async function seedViaJTAG() {
         })()
       );
     }
+    } // end if (helperPersona)
     await Promise.all(systemRoomHelperUpdates);
 
-    // Configure persona AI response settings (parallel)
+    // Configure persona AI response settings (parallel) — only for personas that exist
     console.log('🔧 Configuring persona AI response settings...');
-    await Promise.all([
-      updatePersonaConfig(helperPersona.id, {
+    const personaConfigPromises: Promise<boolean>[] = [];
+    if (helperPersona) {
+      personaConfigPromises.push(updatePersonaConfig(helperPersona.id, {
         domainKeywords: ['help', 'question', 'what', 'how', 'why', 'explain', 'support', 'assist'],
         responseThreshold: 50,
         alwaysRespondToMentions: true,
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: LOCAL_MODELS.DEFAULT
-      }),
-      updatePersonaConfig(teacherPersona.id, {
+        responseModel: localModel
+      }));
+    }
+    if (teacherPersona) {
+      personaConfigPromises.push(updatePersonaConfig(teacherPersona.id, {
         domainKeywords: ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson', 'tutorial', 'guide'],
         responseThreshold: 50,
         alwaysRespondToMentions: true,
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: LOCAL_MODELS.DEFAULT
-      }),
-      updatePersonaConfig(codeReviewPersona.id, {
+        responseModel: localModel
+      }));
+    }
+    if (codeReviewPersona) {
+      personaConfigPromises.push(updatePersonaConfig(codeReviewPersona.id, {
         domainKeywords: ['code', 'programming', 'function', 'bug', 'typescript', 'javascript', 'review', 'refactor'],
         responseThreshold: 50,
         alwaysRespondToMentions: true,
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: LOCAL_MODELS.DEFAULT
-      })
-    ]);
+        responseModel: localModel
+      }));
+    }
+    if (personaConfigPromises.length > 0) {
+      await Promise.all(personaConfigPromises);
+    }
     console.log('✅ Persona configurations applied');
 
     // Seed messages
@@ -600,7 +671,7 @@ async function seedViaJTAG() {
       {
         id: 'ts-js-fundamentals',
         roomId: ROOM_IDS.ACADEMY,
-        teacherUserId: claudeUser.id,
+        teacherUserId: claudeUser?.id ?? humanUser.id,
         studentUserId: humanUser.id,
         sessionName: 'JavaScript Fundamentals',
         description: 'Learn core JavaScript concepts through interactive exercises',
@@ -664,7 +735,7 @@ async function seedViaJTAG() {
 
     // Seed remaining data
     await seedRecords(ChatMessageEntity.collection, messages,
-      (msg) => msg.senderId === humanUser!.id ? humanUser!.displayName : msg.senderId === claudeUser.id ? claudeUser.displayName : 'System',
+      (msg) => msg.senderId === humanUser!.id ? humanUser!.displayName : (claudeUser && msg.senderId === claudeUser.id) ? claudeUser.displayName : 'System',
       (msg) => msg.senderId
     );
     await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);

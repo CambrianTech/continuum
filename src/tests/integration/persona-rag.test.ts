@@ -24,7 +24,7 @@ describe('ChatRAGBuilder Integration Tests', () => {
 
   test('should build complete RAG context for persona', async () => {
     // Setup: Create test room with members and message history
-    const testRoom = await createTestRoom('rag-test-room', ['Joel', 'TestPersona']);
+    const testRoom = await createTestRoom('rag-test-room', ['test-user', 'TestPersona']);
     const testPersona = await createTestPersona('TestPersona', {
       displayName: 'Test AI',
       bio: 'A helpful AI assistant for testing'
@@ -32,15 +32,15 @@ describe('ChatRAGBuilder Integration Tests', () => {
 
     // Seed conversation history (10 messages)
     await seedConversationHistory(testRoom.id, [
-      { sender: 'Joel', text: 'Hello everyone!' },
+      { sender: 'test-user', text: 'Hello everyone!' },
       { sender: 'TestPersona', text: 'Hi Joel, how can I help?' },
-      { sender: 'Joel', text: 'Can you explain RAG?' },
+      { sender: 'test-user', text: 'Can you explain RAG?' },
       { sender: 'TestPersona', text: 'RAG stands for Retrieval-Augmented Generation...' },
-      { sender: 'Joel', text: 'How does it improve AI responses?' },
+      { sender: 'test-user', text: 'How does it improve AI responses?' },
       { sender: 'TestPersona', text: 'It provides relevant context from conversations...' },
-      { sender: 'Joel', text: 'That makes sense!' },
+      { sender: 'test-user', text: 'That makes sense!' },
       { sender: 'TestPersona', text: 'Glad I could help clarify!' },
-      { sender: 'Joel', text: 'Thanks for the explanation' },
+      { sender: 'test-user', text: 'Thanks for the explanation' },
       { sender: 'TestPersona', text: 'You\'re welcome!' }
     ]);
 
@@ -61,13 +61,13 @@ describe('ChatRAGBuilder Integration Tests', () => {
     expect(context.identity.name).toBe('Test AI');
     expect(context.identity.bio).toBe('A helpful AI assistant for testing');
     expect(context.identity.systemPrompt).toContain('Test AI');
-    expect(context.identity.systemPrompt).toContain('Joel'); // Room members
+    expect(context.identity.systemPrompt).toContain('test-user'); // Room members
 
     // Verify: Conversation history (chronological order, oldest first)
     expect(context.conversationHistory).toHaveLength(10);
     expect(context.conversationHistory[0].content).toBe('Hello everyone!');
     expect(context.conversationHistory[0].role).toBe('user');
-    expect(context.conversationHistory[0].name).toBe('Joel');
+    expect(context.conversationHistory[0].name).toBe('test-user');
 
     expect(context.conversationHistory[1].content).toBe('Hi Joel, how can I help?');
     expect(context.conversationHistory[1].role).toBe('assistant'); // Persona's own message
@@ -80,7 +80,7 @@ describe('ChatRAGBuilder Integration Tests', () => {
 
   test('system prompt should include all room members', async () => {
     const testRoom = await createTestRoom('member-test-room', [
-      'Joel',
+      'test-user',
       'Alice',
       'Bob',
       'TestPersona'
@@ -91,7 +91,7 @@ describe('ChatRAGBuilder Integration Tests', () => {
     const context = await ragBuilder.buildContext(testRoom.id, testPersona.id);
 
     // Verify: System prompt mentions all members
-    expect(context.identity.systemPrompt).toContain('Joel');
+    expect(context.identity.systemPrompt).toContain('test-user');
     expect(context.identity.systemPrompt).toContain('Alice');
     expect(context.identity.systemPrompt).toContain('Bob');
 
@@ -108,7 +108,7 @@ describe('ChatRAGBuilder Integration Tests', () => {
     await seedConversationHistory(
       testRoom.id,
       Array(50).fill(null).map((_, i) => ({
-        sender: i % 2 === 0 ? 'Joel' : 'TestPersona',
+        sender: i % 2 === 0 ? 'test-user' : 'TestPersona',
         text: `Message ${i + 1}`
       }))
     );
@@ -133,9 +133,9 @@ describe('ChatRAGBuilder Integration Tests', () => {
     // Seed messages with explicit timestamps
     const now = Date.now();
     await seedConversationHistory(testRoom.id, [
-      { sender: 'Joel', text: 'Test 1', timestamp: now - 10000 },
-      { sender: 'Joel', text: 'Test 2', timestamp: now - 5000 },
-      { sender: 'Joel', text: 'Test 3', timestamp: now }
+      { sender: 'test-user', text: 'Test 1', timestamp: now - 10000 },
+      { sender: 'test-user', text: 'Test 2', timestamp: now - 5000 },
+      { sender: 'test-user', text: 'Test 3', timestamp: now }
     ]);
 
     const ragBuilder = new ChatRAGBuilder();
@@ -164,12 +164,12 @@ describe('ChatRAGBuilder Integration Tests', () => {
 
   test('should handle persona not in room members', async () => {
     // Create room without persona as member
-    const testRoom = await createTestRoom('non-member-room', ['Joel', 'Alice']);
+    const testRoom = await createTestRoom('non-member-room', ['test-user', 'Alice']);
     const testPersona = await createTestPersona('OutsidePersona');
 
     // Seed some conversation
     await seedConversationHistory(testRoom.id, [
-      { sender: 'Joel', text: 'Hello Alice!' },
+      { sender: 'test-user', text: 'Hello Alice!' },
       { sender: 'Alice', text: 'Hi Joel!' }
     ]);
 
@@ -181,7 +181,7 @@ describe('ChatRAGBuilder Integration Tests', () => {
     expect(context.identity.name).toBe('OutsidePersona');
 
     // Verify: System prompt mentions actual members
-    expect(context.identity.systemPrompt).toContain('Joel');
+    expect(context.identity.systemPrompt).toContain('test-user');
     expect(context.identity.systemPrompt).toContain('Alice');
   });
 });
@@ -204,13 +204,13 @@ describe('PersonaUser RAG Response Tests', () => {
 
     // Seed conversation about TypeScript
     await seedConversationHistory(testRoom.id, [
-      { sender: 'Joel', text: 'I love TypeScript for its strict typing' },
+      { sender: 'test-user', text: 'I love TypeScript for its strict typing' },
       { sender: 'Alice', text: 'Yeah, the type safety catches so many bugs' },
       { sender: 'Bob', text: 'But the generics can be confusing sometimes' }
     ]);
 
     // Execute: Send new message mentioning "types"
-    const newMessage = await sendMessage(testRoom.id, 'Joel', '@ContextAwareAI What are your thoughts on types?');
+    const newMessage = await sendMessage(testRoom.id, 'test-user', '@ContextAwareAI What are your thoughts on types?');
 
     // Trigger persona response (simulates Postmaster routing decision)
     const response = await executePersonaResponse(testPersona.id, testRoom.id, newMessage.id);
@@ -246,10 +246,10 @@ describe('PersonaUser RAG Response Tests', () => {
     // Seed messages with specific timestamps
     const baseTime = Date.now();
     await seedConversationHistory(testRoom.id, [
-      { sender: 'Joel', text: 'Message 1', timestamp: baseTime },
-      { sender: 'Joel', text: 'Message 2', timestamp: baseTime + 1000 },
-      { sender: 'Joel', text: 'Message 3', timestamp: baseTime + 2000 },
-      { sender: 'Joel', text: 'Message 4', timestamp: baseTime + 3000 }
+      { sender: 'test-user', text: 'Message 1', timestamp: baseTime },
+      { sender: 'test-user', text: 'Message 2', timestamp: baseTime + 1000 },
+      { sender: 'test-user', text: 'Message 3', timestamp: baseTime + 2000 },
+      { sender: 'test-user', text: 'Message 4', timestamp: baseTime + 3000 }
     ]);
 
     // Build context with cutoff at baseTime + 2000

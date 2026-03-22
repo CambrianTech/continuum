@@ -1,5 +1,6 @@
 # Voice/ML Models (downloaded automatically, too large for git)
-models/
+# Use /models/ (root-relative) to avoid catching Rust source dirs like continuum-core/src/models/
+/models/
 
 # Python Training Environment
 .continuum/genome/python/envs/
@@ -77,7 +78,7 @@ widgets/**/*.styles.ts
 
 # Cargo build outputs
 **/target/
-Cargo.lock
+# Cargo.lock committed — consistent dep resolution across platforms
 
 # Rust debug symbols
 *.dSYM/
@@ -86,3 +87,4 @@ Cargo.lock
 **/*.rs.bk
 **/*.rs.bk.*
 .fastembed_cache/
+examples/widget-ui/.continuum/

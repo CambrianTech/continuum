@@ -102,34 +102,41 @@ pub fn spawn_global_lights(commands: &mut Commands, max_slots: u8) {
     let all_layers: Vec<usize> = (1..=(max_slots as usize)).collect();
     let layers = bevy::camera::visibility::RenderLayers::from_layers(&all_layers);
 
-    // Key light — upper-left, strong
+    // Ambient light — base illumination so no face is completely dark
+    commands.spawn(AmbientLight {
+        color: Color::WHITE,
+        brightness: 500.0,
+        affects_lightmapped_meshes: false,
+    });
+
+    // Key light — upper-right-front, strong primary illumination
     commands.spawn((
         DirectionalLight {
-            illuminance: 25000.0,
+            illuminance: 30000.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.4,
-            std::f32::consts::PI + 0.3,
+            -0.5,                             // 29° down from above
+            std::f32::consts::PI - 0.4,       // from the right side
             0.0,
         )),
         layers.clone(),
         SceneLight,
     ));
 
-    // Fill light — lower-right, softer
+    // Fill light — front-left, softer to balance
     commands.spawn((
         DirectionalLight {
-            illuminance: 10000.0,
+            illuminance: 15000.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.1,
-            std::f32::consts::PI - 0.4,
+            -0.2,                             // slight downward angle
+            std::f32::consts::PI + 0.4,       // from the left
             0.0,
         )),
         layers.clone(),

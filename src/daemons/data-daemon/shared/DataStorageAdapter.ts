@@ -211,7 +211,7 @@ export type JoinSpec = IncludeSpec;
  *   limit: 50
  * });
  *
- * // Result: { ...message, sender: { displayName: 'Joel', userType: 'human' } }
+ * // Result: { ...message, sender: { displayName: 'test-user', userType: 'human' } }
  * ```
  */
 export interface StorageQueryWithInclude extends StorageQuery {

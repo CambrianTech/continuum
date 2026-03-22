@@ -24,6 +24,7 @@ import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { SystemPaths } from '../../../system/core/config/SystemPaths';
 import { UserEntityCache } from '../../../system/user/server/UserEntityCache';
+import { PersonaLifecycleManager } from '../../../system/user/server/PersonaLifecycleManager';
 
 export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
@@ -88,6 +89,9 @@ export class UserDaemonServer extends UserDaemon {
     await this.ensurePersonaClients().catch((error: Error) => {
       this.log.error('❌ UserDaemon: Failed to initialize persona clients in deferred:', error);
     });
+
+    // Start PersonaLifecycleManager — listens for API key add/remove events
+    PersonaLifecycleManager.instance.subscribe();
 
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ UserDaemonServer: DEFERRED init complete (${deferredMs}ms)`);

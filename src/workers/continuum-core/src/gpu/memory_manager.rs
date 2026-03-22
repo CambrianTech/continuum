@@ -451,6 +451,36 @@ impl GpuMemoryManager {
         self.subsystems[subsystem.index()].set_budget(bytes);
     }
 
+    /// Simulated GPU for tests — just name + total VRAM, default budget split.
+    #[cfg(test)]
+    pub fn simulated(gpu_name: &str, total_vram_bytes: u64) -> Self {
+        let reserve_bytes = (total_vram_bytes as f64 * RESERVE_PCT) as u64;
+        let usable = total_vram_bytes.saturating_sub(reserve_bytes);
+        let inference_budget = (usable as f64 * INFERENCE_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
+        let tts_budget = (usable as f64 * TTS_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
+        let rendering_budget = (usable as f64 * RENDERING_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
+        let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
+        Self {
+            total_vram_bytes,
+            gpu_name: gpu_name.to_string(),
+            subsystems: [
+                SubsystemBudget::new(rendering_budget),
+                SubsystemBudget::new(inference_budget),
+                SubsystemBudget::new(tts_budget),
+            ],
+            reserve_bytes,
+            pressure_tx,
+            pressure_rx,
+            allocation_counts: [
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+            ],
+            eviction_registry: EvictionRegistry::new(),
+        }
+    }
+
     /// Test-only constructor for creating managers with known budgets.
     #[cfg(test)]
     pub fn new_for_test(

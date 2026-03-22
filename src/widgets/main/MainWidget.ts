@@ -172,10 +172,22 @@ export class MainWidget extends ReactiveWidget {
     const { type, entityId } = parseContentPath(initialPath);
     this.log(`Initial route: ${type}/${entityId || 'default'}`);
 
-    // Delay slightly to let the DOM render first
+    // Wait for JTAG client to be connected before resolving routes.
+    // On page reload, the WebSocket needs time to reconnect. Without this,
+    // RoutingService.resolve() fails silently because Commands can't execute.
+    const waitForClient = async () => {
+      for (let i = 0; i < 50; i++) {
+        if ((globalThis as any).jtag) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+    };
     setTimeout(async () => {
-      // Use ContentService for centralized content/tab/URL management
-      await this.openContentFromUrl(type, entityId);
+      await waitForClient();
+      try {
+        await this.openContentFromUrl(type, entityId);
+      } catch (err) {
+        console.error(`❌ MainWidget: openContentFromUrl failed for ${type}/${entityId}:`, err);
+      }
     }, 100);
   }
 
@@ -201,21 +213,34 @@ export class MainWidget extends ReactiveWidget {
     }
 
     // 1. Resolve identifier to canonical UUID, uniqueId, displayName
-    const resolved = identifier
-      ? await RoutingService.resolve(contentType, identifier)
-      : undefined;
+    // Resolve can fail after page reload if the command system isn't ready yet.
+    // Fall through with identifier as-is — the widget can resolve later.
+    let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | undefined;
+    try {
+      resolved = identifier
+        ? (await RoutingService.resolve(contentType, identifier)) ?? undefined
+        : undefined;
+    } catch {
+      console.warn(`⚠️ MainWidget: RoutingService.resolve failed for ${contentType}/${identifier}, using identifier as-is`);
+    }
 
     const canonicalEntityId = resolved?.id || identifier;
 
-    // 2. Check for existing tab with this entityId
+    // 2. Check for existing tab with this entityId (match by UUID or uniqueId)
     const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType && item.entityId === canonicalEntityId
+      item => item.type === contentType && (
+        item.entityId === canonicalEntityId ||
+        item.uniqueId === identifier ||
+        item.uniqueId === resolved?.uniqueId ||
+        item.entityId === identifier
+      )
     );
 
     if (existingTab) {
-      // Tab exists - just switch to it via ContentService
+      // Tab exists - switch to it, using the resolved UUID for the widget
+      const entityForWidget = resolved?.id || existingTab.entityId || canonicalEntityId;
       ContentService.switchTo(existingTab.id);
-      this.switchContentView(contentType, canonicalEntityId);
+      this.switchContentView(contentType, entityForWidget);
       return;
     }
 
@@ -505,13 +530,15 @@ export class MainWidget extends ReactiveWidget {
 
     // Handle navigate:live events from chat/user widgets
     this.createMountEffect(() => {
-      const unsubscribe = Events.subscribe('navigate:live', (data: { entityId: string; entityType: string; displayName?: string }) => {
-        this.log(`Navigate to live: ${data.entityType}/${data.entityId}`);
+      const unsubscribe = Events.subscribe('navigate:live', (data: { entityId: string; uniqueId?: string; entityType: string; displayName?: string }) => {
+        this.log(`Navigate to live: ${data.entityType}/${data.uniqueId || data.entityId}`);
         const userId = this.userState?.userId;
         if (userId) {
           ContentService.setUserId(userId);
         }
+        // Use uniqueId for clean URLs (/live/general not /live/5e71a0c8-...)
         ContentService.open('live', data.entityId, {
+          uniqueId: data.uniqueId || data.entityId,
           title: data.displayName || 'Live Call',
           setAsCurrent: true
         });

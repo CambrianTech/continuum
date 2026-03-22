@@ -259,7 +259,7 @@ export function createDefaultUserStates(humanUserId: string, claudeUserId: strin
 
   return [
     {
-      id: 'us-joel-chat',
+      id: 'us-owner-chat',
       userId: humanUserId,
       deviceId: 'browser-main',
       contentState: {

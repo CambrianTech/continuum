@@ -128,8 +128,9 @@ export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
     const secrets = SecretManager.getInstance();
 
     const providers: ProviderStatus[] = PROVIDER_CONFIG.map(config => {
-      const isConfigured = secrets.has(config.key);
-      const rawKey = isConfigured ? secrets.get(config.key) : undefined;
+      // Candle is always available — it's local inference, no API key needed
+      const isConfigured = config.category === 'local' ? true : secrets.has(config.key);
+      const rawKey = isConfigured && config.category !== 'local' ? secrets.get(config.key) : undefined;
 
       return {
         provider: config.provider,

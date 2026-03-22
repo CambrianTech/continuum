@@ -35,8 +35,9 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "runtime",   // RuntimeModule: metrics and control
     "mcp",       // MCP server: dynamic tool discovery
     "system",    // System resources: CPU, memory, process monitoring
-    "avatar",    // Avatar snapshots: Bevy 3D renders → PNG
-    "dataset",   // Dataset import/management for Academy training
+    "avatar",              // Avatar snapshots: Bevy 3D renders → PNG
+    "dataset",             // Dataset import/management for Academy training
+    "persona_allocator",   // Hardware-aware persona allocation decisions
 ];
 
 pub struct Runtime {

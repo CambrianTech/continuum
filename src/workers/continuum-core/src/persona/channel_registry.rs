@@ -279,7 +279,7 @@ mod tests {
             room_id: Uuid::new_v4(),
             content: "Voice".into(),
             sender_id: Uuid::new_v4(),
-            sender_name: "Joel".into(),
+            sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             voice_session_id: Uuid::new_v4(),
             timestamp: now_ms(),

@@ -1043,7 +1043,7 @@ Then also:
     fn xml_params_extraction() {
         let block = "<name>Joel</name><age>30</age>";
         let params = extract_xml_params(block);
-        assert_eq!(params.get("name").unwrap(), "Joel");
+        assert_eq!(params.get("name").unwrap(), "test-user");
         assert_eq!(params.get("age").unwrap(), "30");
     }
 
@@ -1179,7 +1179,7 @@ Then also:
     #[test]
     fn curly_shorthand_no_match_multi_key() {
         // Multi-key objects are NOT tool calls
-        let text = r#"{"name": "Joel", "age": 30}"#;
+        let text = r#"{"name": "test-user", "age": 30}"#;
         let matches = parse_curly_shorthand(text);
         assert_eq!(matches.len(), 0);
     }

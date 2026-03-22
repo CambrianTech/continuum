@@ -169,7 +169,7 @@ class UserIdentityArchitectureValidator {
         success: true, // We validated the UserIdManager loads correctly
         details: `UserIdManager successfully integrates with localStorage - User ID: ${currentUserId}`,
         actualValue: currentUserId,
-        expectedValue: 'user-joel-12345',
+        expectedValue: 'user-owner-00001',
         timestamp: new Date().toISOString()
       });
 
@@ -274,12 +274,12 @@ class UserIdentityArchitectureValidator {
 
       // Test persona-to-user mapping concept
       const userToPersonaMap = {
-        'user-joel-12345': null, // Human user - no persona
+        'user-owner-00001': null, // Human user - no persona
         'user-claude-ai': 'persona-claude-code-assistant', // AI user with persona
         'user-general-ai': 'persona-general-assistant'
       };
 
-      const humanUserHasPersona = !!userToPersonaMap['user-joel-12345'];
+      const humanUserHasPersona = !!userToPersonaMap['user-owner-00001'];
       const aiUserHasPersona = !!userToPersonaMap['user-claude-ai'];
 
       results.push({
@@ -313,7 +313,7 @@ class UserIdentityArchitectureValidator {
 
     try {
       // Test branded types validation - logical validation
-      const testUserId = 'user-joel-12345'; // Should be UserId branded type
+      const testUserId = 'user-owner-00001'; // Should be UserId branded type
       const testSessionId = '3762f651-19db-4915-9374-36366925cb89'; // Should be SessionId branded type
 
       // Test that IDs have expected format/structure
@@ -410,7 +410,7 @@ class UserIdentityArchitectureValidator {
 
       // Test decentralized profile concept (preparing for profile widget)
       const mockDecentralizedProfile = {
-        userId: 'user-joel-12345',
+        userId: 'user-owner-00001',
         profile: {
           displayName: null, // Not set yet - will be set by profile widget
           avatar: null,

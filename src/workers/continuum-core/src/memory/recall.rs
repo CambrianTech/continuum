@@ -656,7 +656,7 @@ mod tests {
             context_name: "Academy".into(),
             event_type: "message_sent".into(),
             actor_id: "user-1".into(),
-            actor_name: "Joel".into(),
+            actor_name: "test-user".into(),
             content: "Teaching something".into(),
             importance: 0.8,
             topics: vec!["teaching".into()],

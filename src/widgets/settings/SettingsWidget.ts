@@ -16,6 +16,7 @@ import {
 } from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import type { AIProvidersStatusParams, AIProvidersStatusResult } from '../../commands/ai/providers/status/shared/AIProvidersStatusTypes';
+import type { AiKeySaveParams, AiKeySaveResult } from '../../commands/ai/key/save/shared/AiKeySaveTypes';
 import { styles as SETTINGS_STYLES } from './styles/settings.styles';
 import type { ConfigEntry } from './components/ProviderEntry';
 import { ProviderStatusTester, type ProviderTestResult } from './components/ProviderStatusTester';
@@ -350,8 +351,10 @@ export class SettingsWidget extends ReactiveWidget {
         return;
       }
 
-      // TODO: Implement system/config/save command
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Save each key via ai/key/save command (persists to config.env + triggers persona creation)
+      for (const [key, value] of Object.entries(config)) {
+        await this.executeCommand<AiKeySaveParams, AiKeySaveResult>('ai/key/save', { provider: key, value });
+      }
 
       this.pendingChanges.clear();
 
