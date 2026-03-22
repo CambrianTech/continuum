@@ -86,24 +86,35 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   # Truncate log on startup (prevents multi-MB bloat) and reduce log level
   : > "$LIVEKIT_LOG"
 
-  # WSL2 mirrored networking: UDP works, but use ICE Lite + TURN for reliability.
-  # TURN over TCP properly frames DTLS packets (raw TCP ICE causes DTLS timeouts).
   LIVEKIT_EXTRA_ARGS=""
-  LIVEKIT_BIND="127.0.0.1"
-  LIVEKIT_NODE_IP="127.0.0.1"
+  LIVEKIT_CONFIG=""
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL2 mirrored networking: keep everything on 127.0.0.1 / localhost.
-    # The browser is on localhost:9000 so WebRTC must also use 127.0.0.1.
-    # --bind 127.0.0.1 ensures HTTP, TCP, and UDP all bind to loopback.
-    # ICE Lite simplifies negotiation. No force_tcp (UDP works in mirrored mode).
-    # UDP can't bind to 127.0.0.1 (LiveKit binds to detected interfaces).
-    # TCP port 7881 IS on 0.0.0.0, so force TCP + ICE Lite for reliable
-    # DTLS negotiation over TCP.
-    LIVEKIT_EXTRA_ARGS="--rtc.use_ice_lite --rtc.force_tcp"
-    echo -e "${YELLOW}   WSL2 mirrored — 127.0.0.1, ICE Lite + TCP${NC}"
+    # WSL2: use YAML config with enable_loopback_candidate (not available as CLI flag).
+    # This makes LiveKit generate 127.0.0.1 ICE candidates so the browser on
+    # localhost can actually connect. force_tcp because WSL2 Hyper-V firewall
+    # blocks inbound UDP (known WSL2 bug, unfixed since 2023).
+    LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit-wsl2.yaml"
+    cat > "$LIVEKIT_CONFIG" << 'YAML'
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  node_ip: 127.0.0.1
+  enable_loopback_candidate: true
+  force_tcp: true
+  use_ice_lite: true
+  use_external_ip: false
+keys:
+  devkey: secret
+YAML
+    LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
+    echo -e "${YELLOW}   WSL2 — YAML config with loopback ICE + TCP${NC}"
+  else
+    LIVEKIT_EXTRA_ARGS="--dev --bind 127.0.0.1 --node-ip 127.0.0.1"
   fi
 
-  LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
+  LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 
