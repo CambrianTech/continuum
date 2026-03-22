@@ -345,11 +345,6 @@ fi
 if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
   PLATFORM=$(preflight_detect_platform)
   URL="http://localhost:9000"
-  # WSL2: use LAN IP so WebRTC ICE candidates match the page origin
-  if [ "$PLATFORM" = "wsl" ]; then
-    WSL_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+')
-    [ -n "$WSL_IP" ] && URL="http://${WSL_IP}:9000"
-  fi
   echo -e "  ${YELLOW}Opening browser...${NC}"
   case "$PLATFORM" in
     macos)  open "$URL" 2>/dev/null & ;;
