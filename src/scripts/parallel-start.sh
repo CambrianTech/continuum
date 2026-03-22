@@ -27,6 +27,10 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 if [ -f "$HOME/.continuum/config.env" ]; then
   set -a; source "$HOME/.continuum/config.env"; set +a
 fi
+# ONNX Runtime — tell ort crate where to find libonnxruntime.so (user-space install)
+if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
+  export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+fi
 
 cd "$PROJECT_DIR"
 

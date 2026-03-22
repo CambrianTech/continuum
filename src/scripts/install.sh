@@ -146,8 +146,10 @@ install_system_deps() {
       fi
 
       # ONNX Runtime — required for Silero VAD (voice activity detection)
-      # No apt package; download from GitHub releases and install to /usr/local/lib
-      if ! ldconfig -p 2>/dev/null | grep -q libonnxruntime; then
+      # Installed to ~/.continuum/lib/ (no sudo needed, user-space only)
+      # The ort crate finds it via ORT_DYLIB_PATH env var (set in start scripts)
+      local ORT_LIB_DIR="$HOME/.continuum/lib"
+      if [ ! -f "$ORT_LIB_DIR/libonnxruntime.so" ]; then
         local ORT_VERSION="1.22.0"
         local ORT_ARCH
         case "$(uname -m)" in
@@ -155,23 +157,18 @@ install_system_deps() {
           aarch64) ORT_ARCH="aarch64" ;;
           *)       ORT_ARCH="x64" ;;
         esac
-        # Use GPU build if CUDA is available, CPU-only otherwise
-        local ORT_VARIANT="linux-x64"
+        local ORT_VARIANT="linux-${ORT_ARCH}"
         if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
           ORT_VARIANT="linux-${ORT_ARCH}-gpu"
-        else
-          ORT_VARIANT="linux-${ORT_ARCH}"
         fi
         local ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ORT_VARIANT}-${ORT_VERSION}.tgz"
-        echo -e "  Installing ONNX Runtime ${ORT_VERSION} (${ORT_VARIANT})..."
+        echo -e "  Installing ONNX Runtime ${ORT_VERSION} (${ORT_VARIANT}) to ~/.continuum/lib/..."
         local ORT_TMP="/tmp/onnxruntime-install"
         rm -rf "$ORT_TMP"
-        mkdir -p "$ORT_TMP"
+        mkdir -p "$ORT_TMP" "$ORT_LIB_DIR"
         if curl -sSL "$ORT_URL" | tar xz -C "$ORT_TMP" --strip-components=1; then
-          $SUDO cp -a "$ORT_TMP"/lib/libonnxruntime* /usr/local/lib/
-          $SUDO cp -a "$ORT_TMP"/include/* /usr/local/include/ 2>/dev/null || true
-          $SUDO ldconfig
-          echo -e "  ${GREEN}✅ ONNX Runtime installed${NC}"
+          cp -a "$ORT_TMP"/lib/libonnxruntime* "$ORT_LIB_DIR/"
+          echo -e "  ${GREEN}✅ ONNX Runtime installed to ~/.continuum/lib/${NC}"
         else
           echo -e "  ${YELLOW}⚠️ ONNX Runtime download failed — VAD will be unavailable${NC}"
         fi
