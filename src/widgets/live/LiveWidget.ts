@@ -20,6 +20,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { RoutingService } from '../../system/routing/RoutingService';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
@@ -316,11 +317,28 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
       }
 
       const cleanEntityId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
-      this.entityId = cleanEntityId;
 
       const meta = metadata as { room?: { id?: string; displayName?: string }; session?: { id: string } } | undefined;
       if (meta?.room?.id) {
         this.entityId = meta.room.id;
+      } else {
+        this.entityId = cleanEntityId;
+      }
+
+      // If entityId looks like a uniqueId (not a UUID), resolve it to UUID first
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(this.entityId);
+      if (!isUUID && this.entityId) {
+        RoutingService.resolveRoom(this.entityId).then(resolved => {
+          if (resolved?.id) {
+            this.entityId = resolved.id;
+            ContentLifecycle.register(this.entityId, this);
+            if (!this.isJoined) {
+              console.log('LiveWidget: Auto-joining after resolving uniqueId:', this.entityId);
+              this.handleJoin();
+            }
+          }
+        });
+        return; // Don't join yet — wait for resolution
       }
 
       // Register for content lifecycle now that entityId is known

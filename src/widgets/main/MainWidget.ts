@@ -207,15 +207,21 @@ export class MainWidget extends ReactiveWidget {
 
     const canonicalEntityId = resolved?.id || identifier;
 
-    // 2. Check for existing tab with this entityId
+    // 2. Check for existing tab with this entityId (match by UUID or uniqueId)
     const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType && item.entityId === canonicalEntityId
+      item => item.type === contentType && (
+        item.entityId === canonicalEntityId ||
+        item.uniqueId === identifier ||
+        item.uniqueId === resolved?.uniqueId ||
+        item.entityId === identifier
+      )
     );
 
     if (existingTab) {
-      // Tab exists - just switch to it via ContentService
+      // Tab exists - switch to it, using the resolved UUID for the widget
+      const entityForWidget = resolved?.id || existingTab.entityId || canonicalEntityId;
       ContentService.switchTo(existingTab.id);
-      this.switchContentView(contentType, canonicalEntityId);
+      this.switchContentView(contentType, entityForWidget);
       return;
     }
 
