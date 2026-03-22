@@ -505,13 +505,15 @@ export class MainWidget extends ReactiveWidget {
 
     // Handle navigate:live events from chat/user widgets
     this.createMountEffect(() => {
-      const unsubscribe = Events.subscribe('navigate:live', (data: { entityId: string; entityType: string; displayName?: string }) => {
-        this.log(`Navigate to live: ${data.entityType}/${data.entityId}`);
+      const unsubscribe = Events.subscribe('navigate:live', (data: { entityId: string; uniqueId?: string; entityType: string; displayName?: string }) => {
+        this.log(`Navigate to live: ${data.entityType}/${data.uniqueId || data.entityId}`);
         const userId = this.userState?.userId;
         if (userId) {
           ContentService.setUserId(userId);
         }
+        // Use uniqueId for clean URLs (/live/general not /live/5e71a0c8-...)
         ContentService.open('live', data.entityId, {
+          uniqueId: data.uniqueId || data.entityId,
           title: data.displayName || 'Live Call',
           setAsCurrent: true
         });

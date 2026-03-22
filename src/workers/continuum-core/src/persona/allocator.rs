@@ -6,9 +6,10 @@
 //! This replaces the TS-side getAvailablePersonas() + detectGpu() + selectLocalModel().
 //! Rust owns the decision; TypeScript calls `persona/allocate` IPC and uses the result.
 //!
-//! Allocation strategy (inference budget = 75% of total VRAM):
-//!   32GB+ CUDA (5090):      CodeReview(14B/9GB) + Teacher(8B/5GB) + Helper(3B/3GB) + Local(3B/3GB)
-//!   16-31GB Metal (M1 Pro):  Teacher(8B/5GB) + Helper(3B/3GB) + Local(3B/3GB)
+//! Allocation strategy — per-persona tiered model selection:
+//!   32GB+ CUDA (5090):       CodeReview(32B/20GB) + Teacher(14B/9GB) + Helper(8B/5GB) + Local(3B/3GB)
+//!   24-31GB Metal (M-Max):   Teacher(14B/9GB) + Helper(8B/5GB) + Local(3B/3GB)
+//!   16-23GB Metal (M-Pro):   Teacher(8B/5GB) + Helper(3B/3GB) + Local(3B/3GB)
 //!   8-15GB (MacBook Air):    Helper(3B/3GB)
 //!   <8GB / CPU:              Helper(3B/3GB, CPU mode)
 //!   + per cloud API key:     One persona per key (0GB VRAM)
@@ -21,6 +22,20 @@ use crate::gpu::GpuMemoryManager;
 // =============================================================================
 // CATALOG TYPES
 // =============================================================================
+
+/// Model preference for a specific VRAM tier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPreference {
+    /// Minimum total VRAM (GB) for this preference to apply
+    #[serde(default)]
+    pub min_vram_gb: f64,
+    /// Model alias from model_registry.json
+    pub model: String,
+    /// VRAM budget this persona needs when using this model
+    #[serde(default)]
+    pub vram_budget_gb: f64,
+}
 
 /// A persona definition from the catalog (data, not code).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +62,10 @@ pub struct PersonaCatalogEntry {
     pub speciality: Option<String>,
     #[serde(default)]
     pub accent_color: Option<String>,
+    /// Per-VRAM-tier model preferences (highest minVramGb first in catalog).
+    /// The allocator picks the first preference whose minVramGb <= total VRAM.
+    #[serde(default)]
+    pub model_preferences: Vec<ModelPreference>,
 }
 
 // =============================================================================
@@ -111,11 +130,13 @@ pub struct AllocationResult {
 /// System reserve in GB for Bevy renderer, TTS, etc.
 const SYSTEM_RESERVE_GB: f64 = 2.0;
 
-/// Select the best local model given total VRAM.
+/// Select the best local model given total VRAM (system-wide default).
 pub fn select_local_model(vram_gb: f64) -> &'static str {
     if vram_gb >= 32.0 {
-        "coder" // 14B compacted
+        "coder-32b" // 32B compacted — SOTA for 5090/A100
     } else if vram_gb >= 16.0 {
+        "coder" // 14B compacted — fits MacBook Pro 16GB+
+    } else if vram_gb >= 8.0 {
         "unsloth/Llama-3.1-8B-Instruct"
     } else {
         "unsloth/Llama-3.2-3B-Instruct"
@@ -208,15 +229,12 @@ pub fn allocate(
 
         // Local candle inference: check VRAM budget
         if entry.provider == "candle" {
-            let needed_gb = entry.min_vram_gb.unwrap_or(4.0);
+            let resolved = resolve_model_for_persona(entry, total_vram_gb, &local_model);
+            let needed_gb = resolved.vram_budget_gb;
 
             if vram_allocated_gb + needed_gb <= usable_vram_gb {
                 allocation.vram_budget_gb = needed_gb;
-                allocation.resolved_model = Some(resolve_model_for_persona(
-                    entry,
-                    total_vram_gb,
-                    &local_model,
-                ));
+                allocation.resolved_model = Some(resolved.model);
                 allocation.reason = format!("{:.0}GB VRAM allocated", needed_gb);
                 vram_allocated_gb += needed_gb;
                 any_candle_allocated = true;
@@ -279,23 +297,53 @@ pub fn allocate(
 }
 
 /// Resolve the best model for a specific persona based on its config and available VRAM.
+///
+/// Priority:
+/// 1. `model_preferences` — tiered list, pick best that fits
+/// 2. `model_id` — explicit model for this persona
+/// 3. `default_local_model` — system-wide default from select_local_model()
 fn resolve_model_for_persona(
     entry: &PersonaCatalogEntry,
     total_vram_gb: f64,
     default_local_model: &str,
-) -> String {
-    // If persona has explicit model_id, use it (unless it's 'coder' which is a size class)
-    if let Some(ref model_id) = entry.model_id {
-        if model_id == "coder" && total_vram_gb >= 32.0 {
-            return "coder".to_string();
+) -> ResolvedModel {
+    // Check tiered model preferences (sorted highest-tier-first in catalog)
+    if !entry.model_preferences.is_empty() {
+        for pref in &entry.model_preferences {
+            if total_vram_gb >= pref.min_vram_gb {
+                return ResolvedModel {
+                    model: pref.model.clone(),
+                    vram_budget_gb: pref.vram_budget_gb,
+                };
+            }
         }
-        if model_id != "coder" {
-            return model_id.clone();
-        }
+        // If no preference matches, use last entry (lowest tier)
+        let last = entry.model_preferences.last().unwrap();
+        return ResolvedModel {
+            model: last.model.clone(),
+            vram_budget_gb: last.vram_budget_gb,
+        };
     }
 
-    // Fall back to the default model for this VRAM tier
-    default_local_model.to_string()
+    // Legacy: explicit model_id
+    if let Some(ref model_id) = entry.model_id {
+        return ResolvedModel {
+            model: model_id.clone(),
+            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+        };
+    }
+
+    // System-wide default
+    ResolvedModel {
+        model: default_local_model.to_string(),
+        vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+    }
+}
+
+/// Result of model resolution — model alias + VRAM it needs.
+struct ResolvedModel {
+    model: String,
+    vram_budget_gb: f64,
 }
 
 /// Load the persona catalog from the embedded JSON.
@@ -315,9 +363,11 @@ mod tests {
 
     #[test]
     fn test_select_local_model() {
-        assert_eq!(select_local_model(32.0), "coder");
-        assert_eq!(select_local_model(16.0), "unsloth/Llama-3.1-8B-Instruct");
-        assert_eq!(select_local_model(8.0), "unsloth/Llama-3.2-3B-Instruct");
+        assert_eq!(select_local_model(32.0), "coder-32b");
+        assert_eq!(select_local_model(48.0), "coder-32b");
+        assert_eq!(select_local_model(24.0), "coder");
+        assert_eq!(select_local_model(16.0), "coder");
+        assert_eq!(select_local_model(8.0), "unsloth/Llama-3.1-8B-Instruct");
         assert_eq!(select_local_model(4.0), "unsloth/Llama-3.2-3B-Instruct");
     }
 
@@ -362,5 +412,131 @@ mod tests {
             a.api_key_env.as_deref() == Some("ANTHROPIC_API_KEY")
         }).count();
         assert!(anthropic_count >= 1, "Should create at least one Anthropic persona");
+    }
+
+    #[test]
+    fn test_resolve_model_with_preferences() {
+        let entry = PersonaCatalogEntry {
+            unique_id: "codereview".to_string(),
+            display_name: "CodeReview AI".to_string(),
+            provider: "candle".to_string(),
+            persona_type: "persona".to_string(),
+            voice_id: None,
+            model_id: Some("coder".to_string()),
+            is_audio_native: false,
+            api_key_env: None,
+            min_vram_gb: Some(9.0),
+            bio: None,
+            speciality: None,
+            accent_color: None,
+            model_preferences: vec![
+                ModelPreference { min_vram_gb: 32.0, model: "coder-32b".to_string(), vram_budget_gb: 20.0 },
+                ModelPreference { min_vram_gb: 16.0, model: "coder".to_string(), vram_budget_gb: 9.0 },
+            ],
+        };
+
+        // 32GB → gets 32B model
+        let r = resolve_model_for_persona(&entry, 32.0, "coder-32b");
+        assert_eq!(r.model, "coder-32b");
+        assert_eq!(r.vram_budget_gb, 20.0);
+
+        // 24GB → gets 14B model (32B doesn't fit tier)
+        let r = resolve_model_for_persona(&entry, 24.0, "coder");
+        assert_eq!(r.model, "coder");
+        assert_eq!(r.vram_budget_gb, 9.0);
+
+        // 8GB → falls to lowest preference
+        let r = resolve_model_for_persona(&entry, 8.0, "unsloth/Llama-3.1-8B-Instruct");
+        assert_eq!(r.model, "coder");
+        assert_eq!(r.vram_budget_gb, 9.0);
+    }
+
+    #[test]
+    fn test_resolve_model_legacy_model_id() {
+        let entry = PersonaCatalogEntry {
+            unique_id: "helper".to_string(),
+            display_name: "Helper AI".to_string(),
+            provider: "candle".to_string(),
+            persona_type: "persona".to_string(),
+            voice_id: None,
+            model_id: Some("unsloth/Llama-3.2-3B-Instruct".to_string()),
+            is_audio_native: false,
+            api_key_env: None,
+            min_vram_gb: Some(3.0),
+            bio: None,
+            speciality: None,
+            accent_color: None,
+            model_preferences: vec![], // No preferences → legacy path
+        };
+
+        let r = resolve_model_for_persona(&entry, 32.0, "coder-32b");
+        assert_eq!(r.model, "unsloth/Llama-3.2-3B-Instruct");
+        assert_eq!(r.vram_budget_gb, 3.0);
+    }
+
+    /// Verify catalog model_preferences are correctly parsed from catalog.json
+    #[test]
+    fn test_catalog_has_model_preferences() {
+        let catalog = load_catalog();
+
+        let codereview = catalog.iter().find(|e| e.unique_id == "codereview").unwrap();
+        assert!(!codereview.model_preferences.is_empty(),
+            "CodeReview should have model_preferences in catalog.json");
+
+        // Verify highest tier is first
+        let first = &codereview.model_preferences[0];
+        assert!(first.min_vram_gb >= 32.0,
+            "First preference should be for 32GB+ (was {}GB)", first.min_vram_gb);
+    }
+
+    /// Simulate 5090 allocation: CodeReview=32B, Teacher=14B, Helper=8B, Local=3B
+    #[test]
+    fn test_allocate_5090_tier() {
+        use crate::gpu::GpuMemoryManager;
+
+        let manager = GpuMemoryManager::simulated("NVIDIA RTX 5090", 32 * 1024 * 1024 * 1024);
+        let catalog = load_catalog();
+        let result = allocate(&manager, &[], &catalog);
+
+        // Find candle personas
+        let candle: Vec<_> = result.allocations.iter()
+            .filter(|a| a.provider == "candle")
+            .collect();
+
+        assert!(!candle.is_empty(), "Should have candle personas");
+
+        // CodeReview should get coder-32b on 5090
+        if let Some(cr) = candle.iter().find(|a| a.unique_id == "codereview") {
+            assert_eq!(cr.resolved_model.as_deref(), Some("coder-32b"),
+                "CodeReview on 5090 should get coder-32b, got {:?}", cr.resolved_model);
+        }
+
+        // Teacher should get coder (14B)
+        if let Some(t) = candle.iter().find(|a| a.unique_id == "teacher") {
+            assert_eq!(t.resolved_model.as_deref(), Some("coder"),
+                "Teacher on 5090 should get coder (14B), got {:?}", t.resolved_model);
+        }
+    }
+
+    /// Simulate M1 Pro (16GB) allocation: Teacher=8B, Helper=3B, Local=3B
+    #[test]
+    fn test_allocate_m1_pro_tier() {
+        use crate::gpu::GpuMemoryManager;
+
+        let manager = GpuMemoryManager::simulated("Apple M1 Pro", 16 * 1024 * 1024 * 1024);
+        let catalog = load_catalog();
+        let result = allocate(&manager, &[], &catalog);
+
+        let candle: Vec<_> = result.allocations.iter()
+            .filter(|a| a.provider == "candle")
+            .collect();
+
+        // CodeReview needs too much VRAM for 16GB — should be skipped
+        let cr = candle.iter().find(|a| a.unique_id == "codereview");
+        if let Some(cr) = cr {
+            // If it was allocated, it should NOT have the 32B model
+            assert_ne!(cr.resolved_model.as_deref(), Some("coder-32b"),
+                "CodeReview on 16GB should NOT get coder-32b");
+        }
     }
 }

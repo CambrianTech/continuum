@@ -28,10 +28,15 @@
     "type": "persona",
     "voiceId": "50",
     "minVramGB": 3,
-    "modelId": "unsloth/Llama-3.2-3B-Instruct",
     "bio": "A friendly, concise assistant who provides quick practical help and actionable solutions",
     "speciality": "practical-assistance",
-    "accentColor": "#00d4ff"
+    "accentColor": "#00d4ff",
+    "modelPreferences": [
+      { "minVramGb": 32, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
+      { "minVramGb": 24, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
+      { "minVramGb": 8,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 },
+      { "minVramGb": 0,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+    ]
   },
   {
     "uniqueId": "teacher",
@@ -40,10 +45,15 @@
     "type": "persona",
     "voiceId": "75",
     "minVramGB": 5,
-    "modelId": "unsloth/Llama-3.1-8B-Instruct",
     "bio": "An educational mentor who explains concepts thoroughly with examples and patient guidance",
     "speciality": "education-mentoring",
-    "accentColor": "#ff9800"
+    "accentColor": "#ff9800",
+    "modelPreferences": [
+      { "minVramGb": 32, "model": "coder",                         "vramBudgetGb": 9 },
+      { "minVramGb": 24, "model": "coder",                         "vramBudgetGb": 9 },
+      { "minVramGb": 16, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
+      { "minVramGb": 8,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+    ]
   },
   {
     "uniqueId": "codereview",
@@ -52,10 +62,13 @@
     "type": "persona",
     "voiceId": "100",
     "minVramGB": 9,
-    "modelId": "coder",
     "bio": "A critical analyst who evaluates code quality, security, and best practices with constructive feedback",
     "speciality": "code-analysis",
-    "accentColor": "#e91e63"
+    "accentColor": "#e91e63",
+    "modelPreferences": [
+      { "minVramGb": 32, "model": "coder-32b", "vramBudgetGb": 20 },
+      { "minVramGb": 16, "model": "coder",     "vramBudgetGb": 9 }
+    ]
   },
   {
     "uniqueId": "deepseek",
@@ -140,10 +153,13 @@
     "provider": "candle",
     "type": "persona",
     "voiceId": "90",
-    "minVramGB": 4,
+    "minVramGB": 3,
     "bio": "Local Candle inference — runs entirely on your hardware, no cloud dependency",
     "speciality": "general",
-    "accentColor": "#8bc34a"
+    "accentColor": "#8bc34a",
+    "modelPreferences": [
+      { "minVramGb": 0, "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+    ]
   },
   {
     "uniqueId": "sentinel",

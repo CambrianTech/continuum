@@ -89,10 +89,15 @@ fi
 echo -e "\n${YELLOW}Phase 2a: Rust build + voice models${NC}"
 
 # Voice models download + scene generation in parallel with cargo build
+# Voice download is NON-FATAL — system starts without STT/TTS, downloads in background
 (
-  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /'
+  ./scripts/download-voice-models.sh 2>&1 | sed 's/^/  [Models] /' || {
+    echo -e "  [Models] ${YELLOW}⚠️ Voice model download failed — system will start without STT/TTS${NC}"
+  }
   # Generate scene environment GLBs (idempotent — skips existing)
-  npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /'
+  npx tsx scripts/generate-scene-models.ts 2>&1 | sed 's/^/  [Scenes] /' || {
+    echo -e "  [Scenes] ${YELLOW}⚠️ Scene generation failed — non-fatal${NC}"
+  }
 ) &
 MODELS_PID=$!
 

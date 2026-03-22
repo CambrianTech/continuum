@@ -66,9 +66,12 @@ pub(super) fn run_bevy_app(
         )))
         ;
         // GPU bridge: Metal compute shader for zero-copy RGBA→NV12 on macOS.
-        // Non-macOS uses CPU readback path (ReadbackComplete observer).
         #[cfg(target_os = "macos")]
         app.add_plugins(super::super::metal_gpu_convert::GpuConvertPlugin);
+        // wgpu compute shader for GPU RGBA→I420 conversion (cross-platform: Vulkan/DX12/Metal).
+        // On macOS this is a fallback behind the Metal IOSurface path.
+        // On Windows/Linux this is the PRIMARY GPU path.
+        app.add_plugins(super::super::wgpu_gpu_convert::WgpuGpuConvertPlugin);
         app.register_type::<bevy::transform::components::TransformTreeChanged>()
         .add_systems(Startup, (setup_render_slots, signal_ready).chain())
         .add_systems(

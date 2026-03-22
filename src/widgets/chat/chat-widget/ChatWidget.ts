@@ -1668,6 +1668,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Emit navigation event to switch to live view
       Events.emit('navigate:live', {
         entityId: this.currentRoomId,
+        uniqueId: this.currentRoomUniqueId || undefined,
         entityType: 'room',
         displayName: this.currentRoomName || 'Live Call'
       });
@@ -1687,6 +1688,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       console.log(`📹 ChatWidget: Starting video call in room ${this.currentRoomId} (${this.currentRoomName})`);
       Events.emit('navigate:live', {
         entityId: this.currentRoomId,
+        uniqueId: this.currentRoomUniqueId || undefined,
         entityType: 'room',
         displayName: this.currentRoomName || 'Video Call',
         video: true

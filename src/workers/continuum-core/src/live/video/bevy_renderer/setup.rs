@@ -19,7 +19,7 @@ pub(super) fn setup_render_slots(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut registry: ResMut<SlotRegistry>,
-    _frame_channels: Res<FrameChannels>,
+    frame_channels: Res<FrameChannels>,
 ) {
     // Ambient light — low baseline so nothing is pure black.
     commands.insert_resource(GlobalAmbientLight {
@@ -52,6 +52,20 @@ pub(super) fn setup_render_slots(
 
         let readback_entity =
             spawn_readback_entity_opt(&mut commands, rt_handle.clone(), slot, false);
+
+        // Register slot for wgpu GPU compute (RGBA→I420 on GPU).
+        // On macOS, Metal IOSurface bridge takes priority (readback.rs handles exclusion).
+        // On non-macOS (Windows/Linux), this is the PRIMARY GPU path.
+        #[cfg(not(target_os = "macos"))]
+        if let Some(sender) = frame_channels.0.get(slot as usize) {
+            crate::live::video::wgpu_gpu_convert::register_slot(
+                slot,
+                rt_handle.id(),
+                sender.clone(),
+                AVATAR_WIDTH,
+                AVATAR_HEIGHT,
+            );
+        }
 
         registry.slots.insert(
             slot,

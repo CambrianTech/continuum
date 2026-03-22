@@ -18,9 +18,12 @@ pub(super) fn ensure_continuous_readback(
 ) {
     // Remove Readback from bridge slots — if Readback was inserted before the bridge
     // was registered, it must be removed to prevent dual-writing.
+    // Checks BOTH Metal IOSurface bridge (macOS) and wgpu compute bridge (cross-platform).
     // EXCEPTION: keep Readback alive for one frame if this slot has a pending snapshot.
     for (entity, slot_id) in &query_with_readback {
-        if crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0) {
+        let has_any_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0)
+            || crate::live::video::wgpu_gpu_convert::has_bridge(slot_id.0);
+        if has_any_bridge {
             if snapshots.pending_readback_slot != Some(slot_id.0) {
                 commands.entity(entity).remove::<Readback>();
             }
@@ -35,7 +38,8 @@ pub(super) fn ensure_continuous_readback(
                 continue;
             }
 
-            let is_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0);
+            let is_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot_id.0)
+                || crate::live::video::wgpu_gpu_convert::has_bridge(slot_id.0);
             let is_snapshot_target = snapshots.pending_readback_slot == Some(slot_id.0);
 
             if is_bridge && !is_snapshot_target {
@@ -85,7 +89,9 @@ pub(super) fn request_snapshot_readback(
     }
 
     for (&slot, _slot_data) in &registry.slots {
-        if !crate::live::avatar::publishers::gpu_bridge::has_bridge(slot) {
+        let has_any_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot)
+            || crate::live::video::wgpu_gpu_convert::has_bridge(slot);
+        if !has_any_bridge {
             continue;
         }
         if let Some(identity) = health.identities.get(&slot) {
