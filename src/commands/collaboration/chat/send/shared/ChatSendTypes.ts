@@ -24,6 +24,9 @@ export interface ChatSendParams extends CommandParams {
   /** Mark as system test (AIs will ignore) */
   isSystemTest?: boolean;
 
+  /** Route through browser WebSocket (uses browser session userId, not CLI userId) */
+  viaBrowser?: boolean;
+
   /** Array of file paths to attach as media (CLI/server usage) */
   media?: string[];
 
