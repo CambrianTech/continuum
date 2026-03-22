@@ -213,16 +213,9 @@ export class MainWidget extends ReactiveWidget {
     }
 
     // 1. Resolve identifier to canonical UUID, uniqueId, displayName
-    console.error(`🔍 MainWidget: resolving ${contentType}/${identifier}`);
-    let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | undefined;
-    try {
-      resolved = identifier
-        ? await RoutingService.resolve(contentType, identifier) ?? undefined
-        : undefined;
-    } catch (err) {
-      console.error(`❌ MainWidget: RoutingService.resolve failed:`, err);
-    }
-    console.error(`🔍 MainWidget: resolved=${resolved?.id?.slice(0, 8) ?? 'null'} uniqueId=${resolved?.uniqueId ?? 'null'}`);
+    const resolved = identifier
+      ? await RoutingService.resolve(contentType, identifier)
+      : undefined;
 
     const canonicalEntityId = resolved?.id || identifier;
 
