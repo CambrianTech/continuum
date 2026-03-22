@@ -172,10 +172,18 @@ export class MainWidget extends ReactiveWidget {
     const { type, entityId } = parseContentPath(initialPath);
     this.log(`Initial route: ${type}/${entityId || 'default'}`);
 
-    // Delay slightly to let the DOM render first
+    // Wait for JTAG client to be connected before resolving routes.
+    // On page reload, the WebSocket needs time to reconnect. Without this,
+    // RoutingService.resolve() fails silently because Commands can't execute.
+    const waitForClient = async () => {
+      for (let i = 0; i < 50; i++) {
+        if ((globalThis as any).jtag) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+    };
     setTimeout(async () => {
+      await waitForClient();
       try {
-        // Use ContentService for centralized content/tab/URL management
         await this.openContentFromUrl(type, entityId);
       } catch (err) {
         console.error(`❌ MainWidget: openContentFromUrl failed for ${type}/${entityId}:`, err);
