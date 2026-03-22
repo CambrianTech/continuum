@@ -96,8 +96,11 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
     # The browser is on localhost:9000 so WebRTC must also use 127.0.0.1.
     # --bind 127.0.0.1 ensures HTTP, TCP, and UDP all bind to loopback.
     # ICE Lite simplifies negotiation. No force_tcp (UDP works in mirrored mode).
-    LIVEKIT_EXTRA_ARGS="--rtc.use_ice_lite"
-    echo -e "${YELLOW}   WSL2 mirrored — 127.0.0.1, ICE Lite${NC}"
+    # UDP can't bind to 127.0.0.1 (LiveKit binds to detected interfaces).
+    # TCP port 7881 IS on 0.0.0.0, so force TCP + ICE Lite for reliable
+    # DTLS negotiation over TCP.
+    LIVEKIT_EXTRA_ARGS="--rtc.use_ice_lite --rtc.force_tcp"
+    echo -e "${YELLOW}   WSL2 mirrored — 127.0.0.1, ICE Lite + TCP${NC}"
   fi
 
   LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
