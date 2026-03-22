@@ -92,10 +92,12 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   LIVEKIT_BIND="127.0.0.1"
   LIVEKIT_NODE_IP="127.0.0.1"
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    LIVEKIT_NODE_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "127.0.0.1")
+    # WSL2 mirrored networking: page served from localhost, so keep node-ip=127.0.0.1.
+    # Browser WebRTC accepts loopback ICE candidates for localhost pages.
+    # Use ICE Lite for simpler negotiation.
     LIVEKIT_BIND="0.0.0.0"
     LIVEKIT_EXTRA_ARGS="--rtc.use_ice_lite"
-    echo -e "${YELLOW}   WSL2 — ICE Lite, node-ip=${LIVEKIT_NODE_IP}${NC}"
+    echo -e "${YELLOW}   WSL2 — ICE Lite, node-ip=127.0.0.1${NC}"
   fi
 
   LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
