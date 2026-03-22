@@ -515,10 +515,10 @@ mod tests {
                 "CodeReview on 5090 should get coder-32b, got {:?}", cr.resolved_model);
         }
 
-        // Teacher should get coder (14B)
+        // Teacher should get 8B (14B budget goes to CodeReview's 32B model)
         if let Some(t) = candle.iter().find(|a| a.unique_id == "teacher") {
-            assert_eq!(t.resolved_model.as_deref(), Some("coder"),
-                "Teacher on 5090 should get coder (14B), got {:?}", t.resolved_model);
+            assert_eq!(t.resolved_model.as_deref(), Some("unsloth/Llama-3.1-8B-Instruct"),
+                "Teacher on 5090 should get Llama-3.1-8B, got {:?}", t.resolved_model);
         }
     }
 
