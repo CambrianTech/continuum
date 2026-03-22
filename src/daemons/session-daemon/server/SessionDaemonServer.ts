@@ -604,6 +604,7 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
+        console.error(`🔑 createOrGetSession ENTRY: isShared=${params.isShared}, userId=${params.userId}, category=${(params as any).category}`);
         if (params.isShared) {
           // Extract identity from enhanced connection context
           const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
