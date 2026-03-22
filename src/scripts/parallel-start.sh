@@ -246,9 +246,12 @@ if [ -n "$PSQL" ]; then
     if command -v brew >/dev/null 2>&1; then
       # macOS: Homebrew service
       brew services start postgresql@17 2>/dev/null || true
+    elif sudo -n true 2>/dev/null; then
+      # Linux/WSL2: passwordless sudo available
+      sudo -n service postgresql start 2>/dev/null || true
     else
-      # Linux/WSL2: service command (WSL2 doesn't auto-start services after reboot)
-      sudo -n service postgresql start 2>/dev/null || sudo service postgresql start 2>/dev/null || true
+      # Can't start without password — tell user
+      echo -e "  ${RED}Postgres is down. Run: sudo service postgresql start${NC}"
     fi
     sleep 2
   fi
