@@ -10,7 +10,7 @@
 # Installs: Node.js, Rust, Python venv (with ML packages if GPU detected), system deps
 # Idempotent: safe to run multiple times (skips what's already installed)
 
-set -e
+set -eo pipefail
 
 # Don't run as root — the script uses sudo only where needed (apt install).
 # Running as root puts config/venv under /root instead of $HOME.
@@ -128,6 +128,8 @@ install_system_deps() {
       command -v jq &>/dev/null || needed+=("jq")
       command -v curl &>/dev/null || needed+=("curl")
       command -v git &>/dev/null || needed+=("git")
+      # Python3 (may be missing on minimal images)
+      command -v python3 &>/dev/null || needed+=("python3")
       # Python venv support
       if ! python3 -m venv --help &>/dev/null 2>&1; then
         # Detect python version for correct package name
@@ -308,7 +310,12 @@ install_python_ml() {
   fi
 
   echo -e "  Installing ML packages..."
-  $pip install -q transformers peft accelerate datasets trl bitsandbytes pytest
+  local ml_pkgs="transformers peft accelerate datasets trl pytest"
+  # bitsandbytes is CUDA-only — fails on macOS/MPS
+  if $HAS_CUDA; then
+    ml_pkgs="$ml_pkgs bitsandbytes"
+  fi
+  $pip install -q $ml_pkgs
 
   echo -e "  ${GREEN}✅ Python ML environment ready${NC}"
 }
