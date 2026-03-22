@@ -55,7 +55,7 @@ impl FramePublisher for WgpuI420Publisher {
                 if self.frame_count == 0 {
                     let (sy, su, sv) = buffer.strides();
                     let cw = (w + 1) / 2;
-                    clog_info!(
+                    crate::clog_info!(
                         "📹 WgpuI420Publisher: I420Buffer strides: Y={} (w={}), U={} V={} (cw={}), data_len={}",
                         sy, w, su, sv, cw, frame.data.len()
                     );
