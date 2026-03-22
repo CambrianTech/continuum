@@ -602,7 +602,14 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          await this.audioClient.join(result.callId, myUserId, myDisplayName, result.livekitUrl, result.livekitToken);
+          // Rewrite LiveKit URL to use the browser's hostname — critical for WSL2
+          // where server sends ws://127.0.0.1:7880 but the browser (on Windows)
+          // may need ws://localhost:7880 for WSL2 localhost forwarding to work.
+          const livekitUrl = result.livekitUrl.replace(
+            /ws:\/\/127\.0\.0\.1:/,
+            `ws://${window.location.hostname}:`
+          );
+          await this.audioClient.join(result.callId, myUserId, myDisplayName, livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
 
           // Merge participants already in the LiveKit room into our grid.
