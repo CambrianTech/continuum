@@ -115,10 +115,10 @@ install_system_deps() {
         SUDO=""  # already root
       elif sudo -n true 2>/dev/null; then
         SUDO="sudo"  # passwordless sudo available
-      elif [ -t 0 ] || [ -e /dev/tty ]; then
-        SUDO="sudo"  # interactive — sudo will prompt via terminal
+      elif [ -t 0 ]; then
+        SUDO="sudo"  # stdin is a real terminal — sudo can prompt
       else
-        CAN_SUDO=false  # headless/piped with no terminal — can't prompt
+        CAN_SUDO=false  # non-interactive (SSH pipe, CI, curl|bash without /dev/tty)
       fi
 
       # Essential build tools + deps
