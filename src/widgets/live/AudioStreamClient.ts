@@ -154,7 +154,15 @@ export class AudioStreamClient {
     this.audioContainer.setAttribute('data-livekit-audio', callId);
     document.body.appendChild(this.audioContainer);
 
-    await this.room.connect(livekitUrl, token);
+    await this.room.connect(livekitUrl, token, {
+      peerConnectionTimeout: 30_000,
+      rtcConfig: {
+        // Force TURN relay — direct ICE candidates get DTLS timeouts
+        // in WSL2. LiveKit --dev mode includes a built-in TURN server
+        // on the signaling port (7880).
+        iceTransportPolicy: 'relay',
+      },
+    });
     console.log(`AudioStreamClient: Connected to LiveKit room (call=${callId}, identity=${userId})`);
 
     // Process participants already in the room when we join.
