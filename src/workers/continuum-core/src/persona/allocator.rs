@@ -131,10 +131,12 @@ pub struct AllocationResult {
 const SYSTEM_RESERVE_GB: f64 = 2.0;
 
 /// Select the best local model given total VRAM (system-wide default).
+/// Thresholds use 0.5GB margin — GPUs report slightly less than nominal
+/// (e.g. RTX 5090 "32GB" reports 31.84GB).
 pub fn select_local_model(vram_gb: f64) -> &'static str {
-    if vram_gb >= 32.0 {
+    if vram_gb >= 31.0 {
         "coder-32b" // 32B compacted — SOTA for 5090/A100
-    } else if vram_gb >= 16.0 {
+    } else if vram_gb >= 15.0 {
         "coder" // 14B compacted — fits MacBook Pro 16GB+
     } else if vram_gb >= 8.0 {
         "unsloth/Llama-3.1-8B-Instruct"
@@ -365,8 +367,10 @@ mod tests {
     fn test_select_local_model() {
         assert_eq!(select_local_model(32.0), "coder-32b");
         assert_eq!(select_local_model(48.0), "coder-32b");
+        assert_eq!(select_local_model(31.84), "coder-32b"); // RTX 5090 reports 31.84
         assert_eq!(select_local_model(24.0), "coder");
         assert_eq!(select_local_model(16.0), "coder");
+        assert_eq!(select_local_model(15.5), "coder");
         assert_eq!(select_local_model(8.0), "unsloth/Llama-3.1-8B-Instruct");
         assert_eq!(select_local_model(4.0), "unsloth/Llama-3.2-3B-Instruct");
     }
@@ -485,8 +489,8 @@ mod tests {
 
         // Verify highest tier is first
         let first = &codereview.model_preferences[0];
-        assert!(first.min_vram_gb >= 32.0,
-            "First preference should be for 32GB+ (was {}GB)", first.min_vram_gb);
+        assert!(first.min_vram_gb >= 31.0,
+            "First preference should be for 31GB+ (was {}GB)", first.min_vram_gb);
     }
 
     /// Simulate 5090 allocation: CodeReview=32B, Teacher=14B, Helper=8B, Local=3B
