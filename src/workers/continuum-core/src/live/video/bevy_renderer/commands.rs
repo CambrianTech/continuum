@@ -90,8 +90,15 @@ pub(super) fn process_commands(
                     slot_data.scene_root = Some(scene_root);
                     slot_data.camera_entity = Some(camera_entity);
 
+                    // Prefer .glb (converted by vrm-convert-textures) but fall back to .vrm
+                    // (Bevy can load VRM directly — it's glTF with extensions)
                     let load_path = if model_path.ends_with(".vrm") {
-                        model_path.replacen(".vrm", ".glb", 1)
+                        let glb_path = model_path.replacen(".vrm", ".glb", 1);
+                        if std::path::Path::new(&glb_path).exists() {
+                            glb_path
+                        } else {
+                            model_path.clone() // Load .vrm directly
+                        }
                     } else {
                         model_path.clone()
                     };
