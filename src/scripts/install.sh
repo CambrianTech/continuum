@@ -144,6 +144,39 @@ install_system_deps() {
         $SUDO apt-get update -qq
         $SUDO apt-get install -y "${needed[@]}"
       fi
+
+      # ONNX Runtime — required for Silero VAD (voice activity detection)
+      # No apt package; download from GitHub releases and install to /usr/local/lib
+      if ! ldconfig -p 2>/dev/null | grep -q libonnxruntime; then
+        local ORT_VERSION="1.22.0"
+        local ORT_ARCH
+        case "$(uname -m)" in
+          x86_64)  ORT_ARCH="x64" ;;
+          aarch64) ORT_ARCH="aarch64" ;;
+          *)       ORT_ARCH="x64" ;;
+        esac
+        # Use GPU build if CUDA is available, CPU-only otherwise
+        local ORT_VARIANT="linux-x64"
+        if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
+          ORT_VARIANT="linux-${ORT_ARCH}-gpu"
+        else
+          ORT_VARIANT="linux-${ORT_ARCH}"
+        fi
+        local ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ORT_VARIANT}-${ORT_VERSION}.tgz"
+        echo -e "  Installing ONNX Runtime ${ORT_VERSION} (${ORT_VARIANT})..."
+        local ORT_TMP="/tmp/onnxruntime-install"
+        rm -rf "$ORT_TMP"
+        mkdir -p "$ORT_TMP"
+        if curl -sSL "$ORT_URL" | tar xz -C "$ORT_TMP" --strip-components=1; then
+          $SUDO cp -a "$ORT_TMP"/lib/libonnxruntime* /usr/local/lib/
+          $SUDO cp -a "$ORT_TMP"/include/* /usr/local/include/ 2>/dev/null || true
+          $SUDO ldconfig
+          echo -e "  ${GREEN}✅ ONNX Runtime installed${NC}"
+        else
+          echo -e "  ${YELLOW}⚠️ ONNX Runtime download failed — VAD will be unavailable${NC}"
+        fi
+        rm -rf "$ORT_TMP"
+      fi
       ;;
   esac
   echo -e "  ${GREEN}✅ System deps OK${NC}"
