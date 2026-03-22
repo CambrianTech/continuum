@@ -47,31 +47,27 @@ if [ -f "$HOME/.continuum/config.env" ]; then
   echo -e "${GREEN}✅ Loaded config.env (HF_TOKEN, API keys)${NC}"
 fi
 
-# Vulkan ICD for NVIDIA on WSL2 — the Windows-side driver exposes a Vulkan
-# library but no system ICD JSON. Create one in user-space so wgpu finds it.
-if [ -f /usr/lib/wsl/lib/libvulkan.so.1 ] && [ ! -f "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json" ]; then
+# Vulkan ICD for NVIDIA on WSL2 — the Windows driver exposes libnvwgf2umx.so
+# (the D3D/Vulkan usermode driver) but no Linux ICD JSON manifest for it.
+# Without the manifest, the Vulkan loader only finds llvmpipe → software rendering.
+# We create a user-space ICD JSON pointing to the real driver.
+nvidia_wsl_driver=$(find /usr/lib/wsl -name 'libnvwgf2umx.so' 2>/dev/null | head -1)
+if [ -n "$nvidia_wsl_driver" ] && [ ! -f "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_wsl_icd.json" ]; then
   mkdir -p "$CONTINUUM_ROOT/vulkan/icd.d"
-  # Find the actual NVIDIA ICD lib exposed by WSL
-  local_nvidia_icd=$(find /usr/lib/wsl/lib -name 'libvulkan_*.so' 2>/dev/null | head -1)
-  if [ -z "$local_nvidia_icd" ]; then
-    # Fallback: WSL2 exposes the ICD at a standard path
-    local_nvidia_icd="/usr/lib/wsl/lib/libvulkan.so.1"
-  fi
-  cat > "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json" << VKEOF
+  cat > "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_wsl_icd.json" << VKEOF
 {
   "file_format_version": "1.0.0",
   "ICD": {
-    "library_path": "${local_nvidia_icd}",
+    "library_path": "${nvidia_wsl_driver}",
     "api_version": "1.3.0"
   }
 }
 VKEOF
-  echo -e "${GREEN}✅ Created NVIDIA Vulkan ICD at $CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json${NC}"
+  echo -e "${GREEN}✅ Created NVIDIA Vulkan ICD → ${nvidia_wsl_driver}${NC}"
 fi
-# Point Vulkan loader at our user-space ICD if it exists
+# Point Vulkan loader at our user-space ICD (NVIDIA) + system ICDs
 if [ -d "$CONTINUUM_ROOT/vulkan/icd.d" ]; then
   export VK_ICD_FILENAMES=$(find "$CONTINUUM_ROOT/vulkan/icd.d" -name '*.json' | tr '\n' ':')
-  # Also include system ICDs
   if [ -d /usr/share/vulkan/icd.d ]; then
     VK_ICD_FILENAMES="${VK_ICD_FILENAMES}$(find /usr/share/vulkan/icd.d -name '*.json' | tr '\n' ':')"
   fi
