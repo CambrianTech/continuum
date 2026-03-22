@@ -86,20 +86,19 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   # Truncate log on startup (prevents multi-MB bloat) and reduce log level
   : > "$LIVEKIT_LOG"
 
-  # WSL2: force TCP-only mode — UDP doesn't traverse the WSL2→Windows boundary,
-  # so WebRTC media must use TCP. Also use LAN IP as node-ip so ICE candidates
-  # aren't filtered as loopback by the Windows browser's WebRTC stack.
+  # WSL2 mirrored networking: UDP works, but use ICE Lite + TURN for reliability.
+  # TURN over TCP properly frames DTLS packets (raw TCP ICE causes DTLS timeouts).
   LIVEKIT_EXTRA_ARGS=""
   LIVEKIT_BIND="127.0.0.1"
   LIVEKIT_NODE_IP="127.0.0.1"
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    # WSL2 mirrored networking: shares the host's network stack, so UDP works.
-    # Bind to 0.0.0.0, node-ip stays 127.0.0.1 (localhost pages accept loopback ICE).
+    LIVEKIT_NODE_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "127.0.0.1")
     LIVEKIT_BIND="0.0.0.0"
-    echo -e "${YELLOW}   WSL2 mirrored networking — bind=0.0.0.0, node-ip=127.0.0.1${NC}"
+    LIVEKIT_EXTRA_ARGS="--rtc.use-ice-lite --turn.enabled --turn.tcp-port 3478"
+    echo -e "${YELLOW}   WSL2 — ICE Lite + TURN TCP, node-ip=${LIVEKIT_NODE_IP}${NC}"
   fi
 
-  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
+  LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 
