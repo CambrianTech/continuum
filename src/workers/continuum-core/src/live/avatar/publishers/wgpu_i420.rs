@@ -100,34 +100,72 @@ impl FramePublisher for WgpuI420Publisher {
 
 /// Copy I420 planes from a flat byte buffer into LiveKit's I420Buffer.
 /// Layout: [Y: w*h bytes] [U: cw*ch bytes] [V: cw*ch bytes]
+/// Must respect I420Buffer strides — the buffer may have padded rows.
 fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, height: u32) {
     let w = width as usize;
     let h = height as usize;
     let cw = (w + 1) / 2;
     let ch = (h + 1) / 2;
 
-    let y_size = w * h;
-    let uv_size = cw * ch;
+    let src_y_size = w * h;
+    let src_uv_size = cw * ch;
+
+    let (stride_y, stride_u, stride_v) = buffer.strides();
+    let stride_y = stride_y as usize;
+    let stride_u = stride_u as usize;
+    let stride_v = stride_v as usize;
 
     let (data_y, data_u, data_v) = buffer.data_mut();
 
-    // Copy Y plane
-    let y_end = y_size.min(i420_data.len()).min(data_y.len());
-    data_y[..y_end].copy_from_slice(&i420_data[..y_end]);
+    // Copy Y plane (row by row to handle stride != width)
+    if stride_y == w {
+        // Fast path: no padding
+        let end = src_y_size.min(i420_data.len()).min(data_y.len());
+        data_y[..end].copy_from_slice(&i420_data[..end]);
+    } else {
+        for row in 0..h {
+            let src_off = row * w;
+            let dst_off = row * stride_y;
+            let copy_len = w.min(i420_data.len().saturating_sub(src_off)).min(data_y.len().saturating_sub(dst_off));
+            if copy_len > 0 {
+                data_y[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+            }
+        }
+    }
 
     // Copy U plane
-    let u_start = y_size;
-    let u_end = (u_start + uv_size).min(i420_data.len());
-    let u_copy = (u_end - u_start).min(data_u.len());
-    if u_copy > 0 {
-        data_u[..u_copy].copy_from_slice(&i420_data[u_start..u_start + u_copy]);
+    let u_src_start = src_y_size;
+    if stride_u == cw {
+        let u_end = src_uv_size.min(i420_data.len().saturating_sub(u_src_start)).min(data_u.len());
+        if u_end > 0 {
+            data_u[..u_end].copy_from_slice(&i420_data[u_src_start..u_src_start + u_end]);
+        }
+    } else {
+        for row in 0..ch {
+            let src_off = u_src_start + row * cw;
+            let dst_off = row * stride_u;
+            let copy_len = cw.min(i420_data.len().saturating_sub(src_off)).min(data_u.len().saturating_sub(dst_off));
+            if copy_len > 0 {
+                data_u[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+            }
+        }
     }
 
     // Copy V plane
-    let v_start = y_size + uv_size;
-    let v_end = (v_start + uv_size).min(i420_data.len());
-    let v_copy = (v_end - v_start).min(data_v.len());
-    if v_copy > 0 {
-        data_v[..v_copy].copy_from_slice(&i420_data[v_start..v_start + v_copy]);
+    let v_src_start = src_y_size + src_uv_size;
+    if stride_v == cw {
+        let v_end = src_uv_size.min(i420_data.len().saturating_sub(v_src_start)).min(data_v.len());
+        if v_end > 0 {
+            data_v[..v_end].copy_from_slice(&i420_data[v_src_start..v_src_start + v_end]);
+        }
+    } else {
+        for row in 0..ch {
+            let src_off = v_src_start + row * cw;
+            let dst_off = row * stride_v;
+            let copy_len = cw.min(i420_data.len().saturating_sub(src_off)).min(data_v.len().saturating_sub(dst_off));
+            if copy_len > 0 {
+                data_v[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+            }
+        }
     }
 }
