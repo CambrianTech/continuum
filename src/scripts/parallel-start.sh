@@ -37,6 +37,14 @@ cd "$PROJECT_DIR"
 # All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
 CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
 
+# ── Ensure system dependencies are installed (idempotent — skips what exists) ──
+# Runs only the dependency-check portion of install.sh. On repeat runs this
+# completes in <1s (everything already installed). First run prompts for
+# sudo password if system packages are needed.
+if [ -f "$SCRIPT_DIR/install.sh" ]; then
+  CONTINUUM_DEPS_ONLY=1 bash "$SCRIPT_DIR/install.sh"
+fi
+
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
 

@@ -108,11 +108,19 @@ install_system_deps() {
       done
       ;;
     linux|wsl)
-      # Check if we need sudo
+      # ── Tiered sudo: auto if root/passwordless, prompt if interactive, skip if headless ──
       local SUDO=""
-      if [ "$(id -u)" -ne 0 ]; then
-        SUDO="sudo"
+      local CAN_SUDO=true
+      if [ "$(id -u)" -eq 0 ]; then
+        SUDO=""  # already root
+      elif sudo -n true 2>/dev/null; then
+        SUDO="sudo"  # passwordless sudo available
+      elif [ -t 0 ] || [ -e /dev/tty ]; then
+        SUDO="sudo"  # interactive — sudo will prompt via terminal
+      else
+        CAN_SUDO=false  # headless/piped with no terminal — can't prompt
       fi
+
       # Essential build tools + deps
       local needed=()
       command -v gcc &>/dev/null || needed+=("build-essential")
@@ -144,7 +152,6 @@ install_system_deps() {
       # Must match the installed compute driver version (e.g. libnvidia-gl-535).
       if command -v nvidia-smi &>/dev/null || [ -d /usr/lib/wsl/lib ]; then
         if ! [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then
-          # Detect installed compute driver version to get the matching GL package
           local nv_ver=$(dpkg -l 'libnvidia-compute-*' 2>/dev/null | awk '/^ii/{print $2}' | grep -oP '\d+' | head -1)
           if [ -n "$nv_ver" ]; then
             needed+=("libnvidia-gl-${nv_ver}")
@@ -155,9 +162,18 @@ install_system_deps() {
       fi
 
       if [ ${#needed[@]} -gt 0 ]; then
-        echo -e "  Installing: ${needed[*]}"
-        $SUDO apt-get update -qq
-        $SUDO apt-get install -y "${needed[@]}"
+        if $CAN_SUDO; then
+          echo -e "  Installing: ${needed[*]}"
+          echo -e "  ${YELLOW}System packages need to be installed (one-time). You may be prompted for your password.${NC}"
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y "${needed[@]}"
+        else
+          echo -e "  ${RED}Missing system packages: ${needed[*]}${NC}"
+          echo -e "  ${RED}Cannot prompt for password (no terminal). Run this in a terminal:${NC}"
+          echo -e "  ${YELLOW}  sudo apt-get install -y ${needed[*]}${NC}"
+          echo -e "  ${RED}Then re-run this script.${NC}"
+          exit 1
+        fi
       fi
 
       # ONNX Runtime — required for Silero VAD (voice activity detection)
@@ -195,6 +211,11 @@ install_system_deps() {
 }
 
 install_system_deps
+
+# CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full install
+if [ "${CONTINUUM_DEPS_ONLY:-0}" = "1" ]; then
+  exit 0
+fi
 
 # ============================================================================
 # Step 2: Node.js
