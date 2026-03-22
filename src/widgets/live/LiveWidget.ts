@@ -332,6 +332,9 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           if (resolved?.id) {
             this.entityId = resolved.id;
             ContentLifecycle.register(this.entityId, this);
+            Events.emit('live:browser:debug', { phase: 'resolveRoom-ok', resolved: resolved.id });
+          } else {
+            Events.emit('live:browser:debug', { phase: 'resolveRoom-null', original: this.entityId });
           }
           // Always join — even if resolution returned null, server resolves uniqueIds
           if (!this.isJoined) {
@@ -340,6 +343,7 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           }
         }).catch(err => {
           console.warn('LiveWidget: resolveRoom failed, joining with uniqueId:', this.entityId, err);
+          Events.emit('live:browser:error', { phase: 'resolveRoom-error', error: String(err), entityId: this.entityId });
           if (!this.isJoined) {
             this.handleJoin();
           }
@@ -619,8 +623,11 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
             /ws:\/\/127\.0\.0\.1:/,
             `ws://${window.location.hostname}:`
           );
+          console.log('LiveWidget: Connecting to LiveKit at', livekitUrl);
           await this.audioClient.join(result.callId, myUserId, myDisplayName, livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
+          // Report success back to server (browser console isn't visible server-side)
+          Events.emit('live:browser:connected', { callId: result.callId, livekitUrl });
 
           // Merge participants already in the LiveKit room into our grid.
           // ParticipantConnected events handle incremental arrivals, but for
@@ -651,10 +658,13 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           console.log(`LiveWidget: State applied from saved (mic=${this._micIntent}, speaker=${this._speakerIntent}, volume=${this.speakerVolume})`);
         } catch (audioError) {
           console.warn('LiveWidget: Audio stream failed:', audioError);
+          // Report failure back to server (browser console isn't visible server-side)
+          Events.emit('live:browser:error', { callId: result.callId, error: String(audioError) });
         }
       }
     } catch (error) {
       console.error('LiveWidget: Failed to join:', error);
+      Events.emit('live:browser:error', { error: String(error), phase: 'join-command' });
     }
   }
 
