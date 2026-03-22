@@ -174,8 +174,12 @@ export class MainWidget extends ReactiveWidget {
 
     // Delay slightly to let the DOM render first
     setTimeout(async () => {
-      // Use ContentService for centralized content/tab/URL management
-      await this.openContentFromUrl(type, entityId);
+      try {
+        // Use ContentService for centralized content/tab/URL management
+        await this.openContentFromUrl(type, entityId);
+      } catch (err) {
+        console.error(`❌ MainWidget: openContentFromUrl failed for ${type}/${entityId}:`, err);
+      }
     }, 100);
   }
 
@@ -201,9 +205,16 @@ export class MainWidget extends ReactiveWidget {
     }
 
     // 1. Resolve identifier to canonical UUID, uniqueId, displayName
-    const resolved = identifier
-      ? await RoutingService.resolve(contentType, identifier)
-      : undefined;
+    console.error(`🔍 MainWidget: resolving ${contentType}/${identifier}`);
+    let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | undefined;
+    try {
+      resolved = identifier
+        ? await RoutingService.resolve(contentType, identifier) ?? undefined
+        : undefined;
+    } catch (err) {
+      console.error(`❌ MainWidget: RoutingService.resolve failed:`, err);
+    }
+    console.error(`🔍 MainWidget: resolved=${resolved?.id?.slice(0, 8) ?? 'null'} uniqueId=${resolved?.uniqueId ?? 'null'}`);
 
     const canonicalEntityId = resolved?.id || identifier;
 
