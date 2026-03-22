@@ -74,15 +74,16 @@ download_vroid_zip() {
     return
   fi
 
-  # Check unzip is available
-  if ! command -v unzip &>/dev/null; then
-    echo -e "  ${RED}unzip not installed — cannot extract ${name}. Run install.sh first.${NC}"
-    rm -rf "$tmpzip" "$tmpdir"
-    return
-  fi
-
-  # Extract and find the .vrm file
-  if ! unzip -q -o "$tmpzip" -d "$tmpdir"; then
+  # Extract zip — use python3 (always available) so we don't need unzip installed
+  if ! python3 -c "
+import zipfile, sys
+try:
+    with zipfile.ZipFile('$tmpzip', 'r') as z:
+        z.extractall('$tmpdir')
+except (zipfile.BadZipFile, Exception) as e:
+    print(f'Extract failed: {e}', file=sys.stderr)
+    sys.exit(1)
+"; then
     echo -e "  ${RED}Failed to extract ${name}: file may be corrupt or not a zip${NC}"
     rm -rf "$tmpzip" "$tmpdir"
     return

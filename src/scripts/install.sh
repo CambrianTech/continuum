@@ -140,12 +140,8 @@ install_system_deps() {
       pkg-config --exists libva 2>/dev/null || needed+=("libva-dev")
       # Vulkan (required for Bevy GPU rendering — without it wgpu falls back to llvmpipe)
       dpkg -l libvulkan1 2>/dev/null | grep -q '^ii' || needed+=("libvulkan1")
-      # NVIDIA Vulkan ICD (maps Vulkan → NVIDIA driver)
-      if command -v nvidia-smi &>/dev/null; then
-        [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ] || needed+=("nvidia-vulkan-icd")
-      fi
-      # unzip needed for VRoid avatar model extraction
-      command -v unzip &>/dev/null || needed+=("unzip")
+      # Note: nvidia-vulkan-icd handled at runtime in start-workers.sh (user-space ICD JSON)
+      # Note: unzip not needed — download-avatar-models.sh uses python3 zipfile
 
       if [ ${#needed[@]} -gt 0 ]; then
         echo -e "  Installing: ${needed[*]}"

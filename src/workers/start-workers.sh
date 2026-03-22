@@ -47,6 +47,37 @@ if [ -f "$HOME/.continuum/config.env" ]; then
   echo -e "${GREEN}✅ Loaded config.env (HF_TOKEN, API keys)${NC}"
 fi
 
+# Vulkan ICD for NVIDIA on WSL2 — the Windows-side driver exposes a Vulkan
+# library but no system ICD JSON. Create one in user-space so wgpu finds it.
+if [ -f /usr/lib/wsl/lib/libvulkan.so.1 ] && [ ! -f "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json" ]; then
+  mkdir -p "$CONTINUUM_ROOT/vulkan/icd.d"
+  # Find the actual NVIDIA ICD lib exposed by WSL
+  local_nvidia_icd=$(find /usr/lib/wsl/lib -name 'libvulkan_*.so' 2>/dev/null | head -1)
+  if [ -z "$local_nvidia_icd" ]; then
+    # Fallback: WSL2 exposes the ICD at a standard path
+    local_nvidia_icd="/usr/lib/wsl/lib/libvulkan.so.1"
+  fi
+  cat > "$CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json" << VKEOF
+{
+  "file_format_version": "1.0.0",
+  "ICD": {
+    "library_path": "${local_nvidia_icd}",
+    "api_version": "1.3.0"
+  }
+}
+VKEOF
+  echo -e "${GREEN}✅ Created NVIDIA Vulkan ICD at $CONTINUUM_ROOT/vulkan/icd.d/nvidia_icd.json${NC}"
+fi
+# Point Vulkan loader at our user-space ICD if it exists
+if [ -d "$CONTINUUM_ROOT/vulkan/icd.d" ]; then
+  export VK_ICD_FILENAMES=$(find "$CONTINUUM_ROOT/vulkan/icd.d" -name '*.json' | tr '\n' ':')
+  # Also include system ICDs
+  if [ -d /usr/share/vulkan/icd.d ]; then
+    VK_ICD_FILENAMES="${VK_ICD_FILENAMES}$(find /usr/share/vulkan/icd.d -name '*.json' | tr '\n' ':')"
+  fi
+  echo -e "${GREEN}✅ VK_ICD_FILENAMES set for Vulkan${NC}"
+fi
+
 echo -e "${YELLOW}📋 Loading worker config: $CONFIG_FILE${NC}"
 
 # Check if jq is available
