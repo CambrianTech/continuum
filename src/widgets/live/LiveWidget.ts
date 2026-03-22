@@ -332,9 +332,7 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           if (resolved?.id) {
             this.entityId = resolved.id;
             ContentLifecycle.register(this.entityId, this);
-            (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] resolveRoom OK: ${resolved.id.slice(0, 8)}` }).catch(() => {});
           } else {
-            (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] resolveRoom returned null for: ${this.entityId}` }).catch(() => {});
           }
           // Always join — even if resolution returned null, server resolves uniqueIds
           if (!this.isJoined) {
@@ -343,7 +341,6 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           }
         }).catch(err => {
           console.warn('LiveWidget: resolveRoom failed, joining with uniqueId:', this.entityId, err);
-          (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] resolveRoom FAILED: ${String(err)}` }).catch(() => {});
           if (!this.isJoined) {
             this.handleJoin();
           }
@@ -625,10 +622,8 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           );
           console.log('LiveWidget: Connecting to LiveKit at', livekitUrl);
           // Diagnostic: tell server we're about to attempt LiveKit connection
-          (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] LiveWidget attempting LiveKit connect: ${livekitUrl} callId=${result.callId.slice(0, 8)}` }).catch(() => {});
           await this.audioClient.join(result.callId, myUserId, myDisplayName, livekitUrl, result.livekitToken);
           console.log('LiveWidget: Connected to audio stream');
-          (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] LiveKit connected successfully!` }).catch(() => {});
 
           // Merge participants already in the LiveKit room into our grid.
           // ParticipantConnected events handle incremental arrivals, but for
@@ -659,12 +654,10 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           console.log(`LiveWidget: State applied from saved (mic=${this._micIntent}, speaker=${this._speakerIntent}, volume=${this.speakerVolume})`);
         } catch (audioError) {
           console.warn('LiveWidget: Audio stream failed:', audioError);
-          (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] LiveKit FAILED: ${String(audioError)}` }).catch(() => {});
         }
       }
     } catch (error) {
       console.error('LiveWidget: Failed to join:', error);
-      (Commands.execute as any)('collaboration/chat/send', { room: 'general', message: `[DIAG] Join command FAILED: ${String(error)}` }).catch(() => {});
     }
   }
 
