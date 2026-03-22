@@ -94,8 +94,8 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   if grep -qi microsoft /proc/version 2>/dev/null; then
     LIVEKIT_NODE_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "127.0.0.1")
     LIVEKIT_BIND="0.0.0.0"
-    LIVEKIT_EXTRA_ARGS="--rtc.use-ice-lite --turn.enabled --turn.tcp-port 3478"
-    echo -e "${YELLOW}   WSL2 — ICE Lite + TURN TCP, node-ip=${LIVEKIT_NODE_IP}${NC}"
+    LIVEKIT_EXTRA_ARGS="--rtc.use_ice_lite"
+    echo -e "${YELLOW}   WSL2 — ICE Lite, node-ip=${LIVEKIT_NODE_IP}${NC}"
   fi
 
   LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
