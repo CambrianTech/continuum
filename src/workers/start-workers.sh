@@ -87,14 +87,21 @@ if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   : > "$LIVEKIT_LOG"
 
   # WSL2: force TCP-only mode — UDP doesn't traverse the WSL2→Windows boundary,
-  # so WebRTC media must use TCP. On native platforms UDP works fine.
+  # so WebRTC media must use TCP. Also use LAN IP as node-ip so ICE candidates
+  # aren't filtered as loopback by the Windows browser's WebRTC stack.
   LIVEKIT_EXTRA_ARGS=""
+  LIVEKIT_BIND="127.0.0.1"
+  LIVEKIT_NODE_IP="127.0.0.1"
   if grep -qi microsoft /proc/version 2>/dev/null; then
     LIVEKIT_EXTRA_ARGS="--rtc.force_tcp --rtc.allow_tcp_fallback"
-    echo -e "${YELLOW}   WSL2 detected — forcing TCP mode (no UDP)${NC}"
+    # In mirrored networking mode, WSL2 shares the host's LAN IP.
+    # Use it for node-ip so WebRTC ICE candidates use a non-loopback address.
+    LIVEKIT_NODE_IP=$(ip -4 addr show eth1 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "127.0.0.1")
+    LIVEKIT_BIND="0.0.0.0"
+    echo -e "${YELLOW}   WSL2 detected — forcing TCP mode, node-ip=${LIVEKIT_NODE_IP}${NC}"
   fi
 
-  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind 127.0.0.1 --node-ip 127.0.0.1 $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
+  LIVEKIT_LOG_LEVEL=warn "$LIVEKIT_BIN" --dev --bind "$LIVEKIT_BIND" --node-ip "$LIVEKIT_NODE_IP" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
   LIVEKIT_PID=$!
   disown $LIVEKIT_PID
 
