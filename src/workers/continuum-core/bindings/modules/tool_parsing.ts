@@ -15,11 +15,14 @@ import type {
 
 export interface ToolParsingMixin {
 	/**
-	 * Parse tool calls from AI response text using all 5 format adapters.
+	 * Parse tool calls from AI response text using all format adapters.
 	 * Returns parsed+corrected tool calls and cleaned text with tool blocks stripped.
 	 * Sub-microsecond in Rust.
+	 *
+	 * @param modelFamily Optional model family hint for prioritized parsing.
+	 *   Values: 'deepseek' | 'llama' | 'mistral' | 'hermes' | 'qwen' | 'generic'
 	 */
-	toolParsingParse(responseText: string): Promise<ToolParseResult>;
+	toolParsingParse(responseText: string, modelFamily?: string): Promise<ToolParseResult>;
 
 	/**
 	 * Correct a single tool call: name mapping + parameter mapping + content cleaning.
@@ -46,10 +49,11 @@ export interface ToolParsingMixin {
 
 export function ToolParsingMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
 	return class extends Base implements ToolParsingMixin {
-		async toolParsingParse(responseText: string): Promise<ToolParseResult> {
+		async toolParsingParse(responseText: string, modelFamily?: string): Promise<ToolParseResult> {
 			const response = await this.request({
 				command: 'tool-parsing/parse',
 				response_text: responseText,
+				...(modelFamily ? { model_family: modelFamily } : {}),
 			});
 
 			if (!response.success) {

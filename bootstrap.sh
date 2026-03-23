@@ -15,6 +15,7 @@
 #   3. Runs npm start (builds, seeds, creates personas, opens browser)
 #
 # Works on: macOS (Apple Silicon), Ubuntu/Debian (x86_64), WSL2
+# Windows: Use bootstrap.ps1 instead — it installs WSL2 then calls this script.
 
 set -e
 

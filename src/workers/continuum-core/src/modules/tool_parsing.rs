@@ -58,7 +58,11 @@ impl ServiceModule for ToolParsingModule {
         match command {
             "tool-parsing/parse" => {
                 let response_text = p.str("response_text")?;
-                let result = tool_parsing::parse_and_correct(response_text);
+                let model_family = p.str_opt("model_family");
+                let result = tool_parsing::parse_and_correct_with_family(
+                    response_text,
+                    model_family,
+                );
                 CommandResult::json(&result)
             }
 
@@ -211,6 +215,41 @@ mod tests {
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             assert_eq!(json["encoded"], "collaboration_chat_send");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_with_model_family() {
+        let module = ToolParsingModule::new();
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
+        let params = serde_json::json!({
+            "response_text": text,
+            "model_family": "hermes"
+        });
+        let result = module.handle_command("tool-parsing/parse", params).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            let calls = json["tool_calls"].as_array().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["format"], "hermes");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_deepseek_via_ipc() {
+        let module = ToolParsingModule::new();
+        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"test.ts\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+        let params = serde_json::json!({
+            "response_text": text,
+            "model_family": "deepseek"
+        });
+        let result = module.handle_command("tool-parsing/parse", params).await;
+        assert!(result.is_ok());
+        if let Ok(CommandResult::Json(json)) = result {
+            let calls = json["tool_calls"].as_array().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["tool_name"], "code/read");
+            assert_eq!(calls[0]["format"], "deepseek");
         }
     }
 

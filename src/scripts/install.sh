@@ -36,6 +36,21 @@ PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
 # ============================================================================
+# Warm sudo cache once (Linux/WSL only)
+# ============================================================================
+# Prompt for password NOW so it's cached for all later steps (Postgres,
+# Tailscale, etc.). Without this, steps that need sudo on repeat runs
+# fail silently or re-prompt unexpectedly.
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+  if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
+    if [ -t 0 ]; then
+      echo -e "  ${YELLOW}Some install steps need admin access.${NC}"
+      sudo -v
+    fi
+  fi
+fi
+
+# ============================================================================
 # GPU detection
 # ============================================================================
 
@@ -93,7 +108,7 @@ echo ""
 # Step 1: System dependencies
 # ============================================================================
 
-echo -e "${YELLOW}[1/5] System dependencies${NC}"
+echo -e "${YELLOW}[1/8] System dependencies${NC}"
 
 install_system_deps() {
   case "$PLATFORM" in
@@ -214,16 +229,21 @@ install_system_deps() {
 
 install_system_deps
 
-# CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full install
+# CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full build.
+# Still installs all infrastructure (Node, Rust, Python, Postgres, LiveKit, Tailscale)
+# but skips the build step (npm install, tsc, cargo build).
 if [ "${CONTINUUM_DEPS_ONLY:-0}" = "1" ]; then
-  exit 0
+  # Jump past the build step to continue with infrastructure installs
+  SKIP_BUILD=1
+else
+  SKIP_BUILD=0
 fi
 
 # ============================================================================
 # Step 2: Node.js
 # ============================================================================
 
-echo -e "${YELLOW}[2/5] Node.js${NC}"
+echo -e "${YELLOW}[2/8] Node.js${NC}"
 
 install_node() {
   if command -v node &>/dev/null; then
@@ -257,7 +277,7 @@ install_node
 # Step 3: Rust
 # ============================================================================
 
-echo -e "${YELLOW}[3/5] Rust${NC}"
+echo -e "${YELLOW}[3/8] Rust${NC}"
 
 install_rust() {
   if command -v rustc &>/dev/null; then
@@ -278,7 +298,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Step 4: Python ML environment (if GPU detected)
 # ============================================================================
 
-echo -e "${YELLOW}[4/5] Python ML environment${NC}"
+echo -e "${YELLOW}[4/8] Python ML environment${NC}"
 
 VENV_DIR="$HOME/.continuum/venv"
 
@@ -330,16 +350,18 @@ fi
 # Step 5: npm install + Rust build
 # ============================================================================
 
-echo -e "${YELLOW}[5/5] Building Continuum${NC}"
+if [ "$SKIP_BUILD" = "0" ]; then
+  echo -e "${YELLOW}[5/8] Building Continuum${NC}"
 
-echo -e "  Installing npm dependencies..."
-npm install --silent 2>&1 | tail -3
+  echo -e "  Installing npm dependencies..."
+  npm install --silent 2>&1 | tail -3
 
-echo -e "  Building TypeScript..."
-npm run build:ts 2>&1 | tail -1
+  echo -e "  Building TypeScript..."
+  npm run build:ts 2>&1 | tail -1
 
-echo -e "  Building Rust workers..."
-bash scripts/setup-rust.sh 2>&1 | tail -5
+  echo -e "  Building Rust workers..."
+  bash scripts/setup-rust.sh 2>&1 | tail -5
+fi
 
 # ============================================================================
 # Config
@@ -359,9 +381,26 @@ mkdir -p "$CONFIG_DIR/bin"
 # PostgreSQL
 # ============================================================================
 
-echo -e "${YELLOW}[6/6] PostgreSQL${NC}"
+echo -e "${YELLOW}[6/8] PostgreSQL${NC}"
 
 install_postgres() {
+  # macOS: keg-only postgres may not be in PATH — find it
+  if [ "$PLATFORM" = "macos" ] && ! command -v psql &>/dev/null; then
+    for keg in /opt/homebrew/opt/postgresql@{16,17,15}/bin; do
+      if [ -x "$keg/psql" ]; then
+        export PATH="$keg:$PATH"
+        break
+      fi
+    done
+  fi
+
+  # Fast path: if we can already connect to the continuum database, skip everything.
+  # No sudo, no brew upgrade, no postgres user switch, no trust auth check.
+  if psql -d continuum -c "SELECT 1" &>/dev/null; then
+    echo -e "  ${GREEN}✅ PostgreSQL ready (continuum database accessible)${NC}"
+    return
+  fi
+
   if command -v psql &>/dev/null; then
     echo -e "  ${GREEN}✅ PostgreSQL already installed${NC}"
   else
@@ -401,7 +440,7 @@ install_postgres
 # LiveKit SFU server (voice/video calls)
 # ============================================================================
 
-echo -e "${YELLOW}[7/7] LiveKit SFU${NC}"
+echo -e "${YELLOW}[7/8] LiveKit SFU${NC}"
 
 install_livekit() {
   if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
@@ -420,6 +459,76 @@ install_livekit() {
 
 install_livekit
 
+# ============================================================================
+# Tailscale mesh VPN (multi-tower networking)
+# ============================================================================
+
+echo -e "${YELLOW}[8/8] Tailscale${NC}"
+
+install_tailscale() {
+  # Fast path: already connected → done (works on all platforms)
+  local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+  if [ -n "$ts_ip" ]; then
+    echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    return
+  fi
+
+  case "$PLATFORM" in
+    macos)
+      if [ -d "/Applications/Tailscale.app" ]; then
+        open -a Tailscale 2>/dev/null || true
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
+      else
+        echo -e "  Installing Tailscale..."
+        brew install --cask tailscale
+        open -a Tailscale 2>/dev/null || true
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
+      fi
+      return
+      ;;
+    linux|wsl)
+      if ! command -v tailscale &>/dev/null; then
+        echo -e "  Installing Tailscale..."
+        curl -fsSL https://tailscale.com/install.sh | sh
+      fi
+      ;;
+  esac
+
+  # Linux/WSL: ensure daemon is running
+  if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+    if ! pgrep -x tailscaled &>/dev/null; then
+      sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+      sleep 1
+    fi
+
+    # Check if already authenticated (has a stored key from previous tailscale up)
+    local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"' 2>/dev/null || echo "NoState")
+    if [ "$ts_status" = "Running" ]; then
+      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "connected")
+      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+      return
+    fi
+
+    # First time only: need interactive auth. NEVER block npm start.
+    if [ -t 0 ]; then
+      # Interactive terminal — auth now (one-time)
+      echo -e "  ${YELLOW}First-time Tailscale auth — click the URL below:${NC}"
+      sudo tailscale up 2>&1
+      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
+      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    else
+      # Non-interactive (npm start, CI, etc.) — skip auth, don't block
+      echo -e "  ${YELLOW}⚠️ Tailscale installed but needs auth. Run once: sudo tailscale up${NC}"
+    fi
+  fi
+}
+
+install_tailscale
+
+# DEPS_ONLY mode: all infrastructure installed, skip config/summary/auto-launch
+if [ "$SKIP_BUILD" = "1" ]; then
+  exit 0
+fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\n${YELLOW}Creating default config at $CONFIG_FILE${NC}"
@@ -463,6 +572,10 @@ echo -e "  Node:      $(node --version)"
 echo -e "  Rust:      $(rustc --version 2>/dev/null | awk '{print $2}' || echo 'not found')"
 if [ -f "$VENV_DIR/bin/python3" ]; then
   echo -e "  Python ML: $VENV_DIR"
+fi
+if command -v tailscale &>/dev/null; then
+  ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+  echo -e "  Tailscale: ${ts_ip}"
 fi
 echo ""
 echo -e "  ${YELLOW}Start:${NC}  cd src && npm start"

@@ -481,9 +481,11 @@ ${result.error || 'Unknown error'}
    * Parse + correct + strip in ONE Rust IPC call.
    * Returns both tool calls (already corrected) and cleaned text.
    * Replaces separate parseToolCalls() + stripToolBlocks() calls.
+   *
+   * @param modelFamily Optional model family hint for prioritized parsing.
    */
-  async parseResponse(responseText: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
-    return this.agentExecutor.parseResponse(responseText);
+  async parseResponse(responseText: string, modelFamily?: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
+    return this.agentExecutor.parseResponse(responseText, modelFamily);
   }
 
   /**
