@@ -13,6 +13,7 @@ import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { globalSessionContext, SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
+import { Commands } from '../../../system/core/shared/Commands';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import type { CommandErrorResponse, CommandSuccessResponse } from './CommandResponseTypes';
 
@@ -148,6 +149,19 @@ export abstract class CommandDaemon extends DaemonBase {
       let resolvedUserId: UUID = (message.payload as CommandParams).userId ?? SYSTEM_SCOPES.SYSTEM;
       if (resolvedUserId === SYSTEM_SCOPES.SYSTEM && requestSessionId) {
         resolvedUserId = await this.resolveUserIdFromSession(requestSessionId) ?? SYSTEM_SCOPES.SYSTEM;
+      }
+
+      // Grid routing: check if this command should execute on a remote node.
+      // Uses the same interceptor registered on Commands (server-side only).
+      // Skip for grid/* commands to avoid infinite recursion.
+      if (!commandName.startsWith('grid/')) {
+        const interceptor = (Commands as unknown as { _gridInterceptor: { tryRouteRemote: (cmd: string, params: unknown) => Promise<unknown> } | null })._gridInterceptor;
+        if (interceptor) {
+          const remoteResult = await interceptor.tryRouteRemote(commandName, message.payload);
+          if (remoteResult !== null) {
+            return createCommandSuccessResponse(remoteResult as CommandResult, requestContext, undefined, requestSessionId);
+          }
+        }
       }
 
       // Execute command with session context for dual logging

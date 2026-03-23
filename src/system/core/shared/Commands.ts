@@ -56,13 +56,33 @@ export interface TrackedCommandExecutor {
   ): Promise<U>;
 }
 
+/**
+ * Grid routing interceptor — registered at server startup.
+ * Checks if a command should execute on a remote Grid node.
+ * Returns the remote result if routed, or null if the command should execute locally.
+ */
+export interface GridRoutingInterceptor {
+  tryRouteRemote<T extends CommandParams, U extends CommandResult>(
+    command: string,
+    params: Partial<T> | undefined,
+  ): Promise<U | null>;
+}
+
 export class Commands {
   /** Server-side tracked executor (registered by ServerCommands at startup) */
   private static _trackedExecutor: TrackedCommandExecutor | null = null;
 
+  /** Server-side grid routing interceptor (registered at startup) */
+  private static _gridInterceptor: GridRoutingInterceptor | null = null;
+
   /** Register the server-side tracked executor (called by ServerCommands.initialize()) */
   static registerTrackedExecutor(executor: TrackedCommandExecutor): void {
     this._trackedExecutor = executor;
+  }
+
+  /** Register the grid routing interceptor (called at server startup) */
+  static registerGridInterceptor(interceptor: GridRoutingInterceptor): void {
+    this._gridInterceptor = interceptor;
   }
 
   /**
@@ -146,6 +166,17 @@ export class Commands {
     command: string,
     params?: Partial<T>,
   ): Promise<U> {
+    // Grid routing: check if this command should execute on a remote node.
+    // The interceptor is registered at server startup — null in browser.
+    // Returns the remote result if routed, null if should execute locally.
+    // Skip grid routing for grid/* commands themselves (avoid infinite recursion).
+    if (this._gridInterceptor && !command.startsWith('grid/')) {
+      const remoteResult = await this._gridInterceptor.tryRouteRemote<T, U>(command, params);
+      if (remoteResult !== null) {
+        return remoteResult;
+      }
+    }
+
     // Server-side optimization: If we're already in a server context with a CommandDaemon,
     // route internally instead of creating a new client connection
     interface GlobalWithJTAG {

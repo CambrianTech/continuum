@@ -40,6 +40,14 @@ export class ServerCommands implements TrackedCommandExecutor {
     if (this._instance) return; // Idempotent
     this._instance = new ServerCommands();
     Commands.registerTrackedExecutor(this._instance);
+
+    // Register Grid routing interceptor — makes Commands.execute() Grid-aware.
+    // Transparent: calling code doesn't change. Commands auto-route to capable nodes.
+    import('../../grid/server/GridInterceptor').then(({ GridInterceptor }) => {
+      Commands.registerGridInterceptor(new GridInterceptor());
+    }).catch(() => {
+      // Grid module not available — all commands execute locally (fine)
+    });
   }
 
   /**
