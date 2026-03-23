@@ -428,30 +428,44 @@ echo -e "${YELLOW}[8/8] Tailscale${NC}"
 
 install_tailscale() {
   if command -v tailscale &>/dev/null; then
-    local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"' 2>/dev/null || echo "installed")
-    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
-    echo -e "  ${GREEN}✅ Tailscale already installed (${ts_status}, ${ts_ip})${NC}"
-    return
+    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+    if [ -n "$ts_ip" ]; then
+      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+      return
+    fi
+    echo -e "  Tailscale installed but not connected — authenticating..."
+  else
+    case "$PLATFORM" in
+      macos)
+        if [ -d "/Applications/Tailscale.app" ]; then
+          echo -e "  Tailscale.app installed but not running"
+        else
+          echo -e "  Installing via Homebrew..."
+          brew install --cask tailscale
+        fi
+        # macOS Tailscale runs as a GUI app — open it to trigger auth
+        open -a Tailscale 2>/dev/null || true
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
+        return
+        ;;
+      linux|wsl)
+        echo -e "  Installing Tailscale..."
+        curl -fsSL https://tailscale.com/install.sh | sh
+        ;;
+    esac
   fi
 
-  case "$PLATFORM" in
-    macos)
-      if [ -d "/Applications/Tailscale.app" ]; then
-        echo -e "  ${GREEN}✅ Tailscale.app installed (open it to connect)${NC}"
-        return
-      fi
-      echo -e "  Installing via Homebrew..."
-      brew install --cask tailscale
-      echo -e "  ${GREEN}✅ Tailscale installed — open Tailscale.app to connect${NC}"
-      ;;
-    linux|wsl)
-      echo -e "  Installing Tailscale..."
-      curl -fsSL https://tailscale.com/install.sh | sh
-      echo -e "  ${GREEN}✅ Tailscale installed${NC}"
-      # Don't auto-run tailscale up — user needs to authenticate interactively
-      echo -e "  ${YELLOW}Run 'sudo tailscale up' to connect this tower to your mesh${NC}"
-      ;;
-  esac
+  # Linux/WSL: start daemon and authenticate in one shot.
+  # sudo is already cached from system deps (step 1).
+  # tailscale up prints a URL — user clicks it once, done forever.
+  if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+    sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+    sleep 1
+    echo -e "  ${YELLOW}Connecting to Tailscale mesh — click the URL below to authenticate:${NC}"
+    sudo tailscale up 2>&1
+    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
+    echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+  fi
 }
 
 install_tailscale
