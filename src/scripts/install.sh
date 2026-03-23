@@ -36,6 +36,21 @@ PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
 # ============================================================================
+# Warm sudo cache once (Linux/WSL only)
+# ============================================================================
+# Prompt for password NOW so it's cached for all later steps (Postgres,
+# Tailscale, etc.). Without this, steps that need sudo on repeat runs
+# fail silently or re-prompt unexpectedly.
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+  if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
+    if [ -t 0 ]; then
+      echo -e "  ${YELLOW}Some install steps need admin access.${NC}"
+      sudo -v
+    fi
+  fi
+fi
+
+# ============================================================================
 # GPU detection
 # ============================================================================
 
