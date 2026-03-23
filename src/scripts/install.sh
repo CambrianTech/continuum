@@ -466,35 +466,33 @@ install_livekit
 echo -e "${YELLOW}[8/8] Tailscale${NC}"
 
 install_tailscale() {
-  # Fast path: already connected → done
-  if command -v tailscale &>/dev/null; then
-    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-    if [ -n "$ts_ip" ]; then
-      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
-      return
-    fi
+  # Fast path: already connected → done (works on all platforms)
+  local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+  if [ -n "$ts_ip" ]; then
+    echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    return
   fi
 
-  # Install if missing
-  if ! command -v tailscale &>/dev/null; then
-    case "$PLATFORM" in
-      macos)
-        if [ ! -d "/Applications/Tailscale.app" ]; then
-          echo -e "  ${YELLOW}Opening Mac App Store — click 'Get' to install Tailscale...${NC}"
-          curl -fsSL https://tailscale.com/install.sh | sh
-          echo -e "  ${YELLOW}After installing, click the Tailscale icon in your menu bar to sign in.${NC}"
-        else
-          open -a Tailscale 2>/dev/null || true
-          echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
-        fi
-        return
-        ;;
-      linux|wsl)
+  case "$PLATFORM" in
+    macos)
+      # macOS: App Store version, not brew CLI
+      if [ -d "/Applications/Tailscale.app" ]; then
+        open -a Tailscale 2>/dev/null || true
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
+      else
+        echo -e "  ${YELLOW}Opening Mac App Store — click 'Get' to install Tailscale...${NC}"
+        curl -fsSL https://tailscale.com/install.sh | sh
+        echo -e "  ${YELLOW}After installing, click the Tailscale icon in your menu bar to sign in.${NC}"
+      fi
+      return
+      ;;
+    linux|wsl)
+      if ! command -v tailscale &>/dev/null; then
         echo -e "  Installing Tailscale..."
         curl -fsSL https://tailscale.com/install.sh | sh
-        ;;
-    esac
-  fi
+      fi
+      ;;
+  esac
 
   # Linux/WSL: ensure daemon is running
   if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
