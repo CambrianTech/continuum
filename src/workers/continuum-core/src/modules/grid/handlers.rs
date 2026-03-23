@@ -103,8 +103,11 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
 pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
     let node_id = params.get("nodeId").and_then(|v| v.as_str())
         .ok_or("nodeId parameter required")?;
-    let remote_command = params.get("command").and_then(|v| v.as_str())
-        .ok_or("command parameter required")?;
+    // TS mixin sends as 'remoteCommand' to avoid collision with IPC 'command' field.
+    // Also accept 'command' for direct Rust callers.
+    let remote_command = params.get("remoteCommand").and_then(|v| v.as_str())
+        .or_else(|| params.get("command").and_then(|v| v.as_str()))
+        .ok_or("command or remoteCommand parameter required")?;
     let remote_params = params.get("params").cloned().unwrap_or(json!({}));
 
     let node = state.registry.get(node_id)
@@ -269,8 +272,9 @@ pub async fn handle_audit(state: &Arc<GridState>, params: Value) -> Result<Comma
 
 /// grid/route — dry-run routing check.
 pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let command = params.get("command").and_then(|v| v.as_str())
-        .ok_or("command parameter required")?;
+    let command = params.get("targetCommand").and_then(|v| v.as_str())
+        .or_else(|| params.get("command").and_then(|v| v.as_str()))
+        .ok_or("command or targetCommand parameter required")?;
 
     let decision = state.router.route(command, &params, &state.registry);
 

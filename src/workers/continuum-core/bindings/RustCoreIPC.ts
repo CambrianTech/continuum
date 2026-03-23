@@ -62,6 +62,7 @@ import { AvatarMixin } from './modules/avatar';
 import { DatasetMixin } from './modules/dataset';
 import { VisionCacheMixin } from './modules/vision_cache';
 import { PlasticityMixin } from './modules/plasticity';
+import { GridMixin } from './modules/grid';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -114,7 +115,7 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  * Compose all mixins into the full client class.
  * Order matters for TypeScript type inference.
  */
-const ComposedClient = PlasticityMixin(VisionCacheMixin(DatasetMixin(
+const ComposedClient = GridMixin(PlasticityMixin(VisionCacheMixin(DatasetMixin(
 	AvatarMixin(
 		ToolParsingMixin(
 			SentinelMixin(
@@ -146,7 +147,7 @@ const ComposedClient = PlasticityMixin(VisionCacheMixin(DatasetMixin(
 			)
 		)
 	)
-)));
+))));
 
 /**
  * Full RustCoreIPCClient with all domain methods.
