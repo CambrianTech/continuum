@@ -456,23 +456,23 @@ install_livekit
 echo -e "${YELLOW}[8/8] Tailscale${NC}"
 
 install_tailscale() {
+  # Fast path: already connected → done
   if command -v tailscale &>/dev/null; then
     local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
     if [ -n "$ts_ip" ]; then
       echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
       return
     fi
-    echo -e "  Tailscale installed but not connected — authenticating..."
-  else
+  fi
+
+  # Install if missing
+  if ! command -v tailscale &>/dev/null; then
     case "$PLATFORM" in
       macos)
-        if [ -d "/Applications/Tailscale.app" ]; then
-          echo -e "  Tailscale.app installed but not running"
-        else
+        if [ ! -d "/Applications/Tailscale.app" ]; then
           echo -e "  Installing via Homebrew..."
           brew install --cask tailscale
         fi
-        # macOS Tailscale runs as a GUI app — open it to trigger auth
         open -a Tailscale 2>/dev/null || true
         echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
         return
@@ -484,16 +484,32 @@ install_tailscale() {
     esac
   fi
 
-  # Linux/WSL: start daemon and authenticate in one shot.
-  # sudo is already cached from system deps (step 1).
-  # tailscale up prints a URL — user clicks it once, done forever.
+  # Linux/WSL: ensure daemon is running
   if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
-    sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
-    sleep 1
-    echo -e "  ${YELLOW}Connecting to Tailscale mesh — click the URL below to authenticate:${NC}"
-    sudo tailscale up 2>&1
-    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
-    echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    if ! pgrep -x tailscaled &>/dev/null; then
+      sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+      sleep 1
+    fi
+
+    # Check if already authenticated (has a stored key from previous tailscale up)
+    local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"' 2>/dev/null || echo "NoState")
+    if [ "$ts_status" = "Running" ]; then
+      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "connected")
+      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+      return
+    fi
+
+    # First time only: need interactive auth. NEVER block npm start.
+    if [ -t 0 ]; then
+      # Interactive terminal — auth now (one-time)
+      echo -e "  ${YELLOW}First-time Tailscale auth — click the URL below:${NC}"
+      sudo tailscale up 2>&1
+      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
+      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    else
+      # Non-interactive (npm start, CI, etc.) — skip auth, don't block
+      echo -e "  ${YELLOW}⚠️ Tailscale installed but needs auth. Run once: sudo tailscale up${NC}"
+    fi
   fi
 }
 
