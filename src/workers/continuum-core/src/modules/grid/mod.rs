@@ -41,6 +41,7 @@ use crate::runtime::{
 use audit::AuditLog;
 use dashmap::DashMap;
 use frame::GridFrame;
+use node::NodeCapability;
 use registry::NodeRegistry;
 use router::GridRouter;
 use transport::GridTransport;
@@ -53,7 +54,7 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 // ============================================================================
 // GridState — shared state for all grid operations
@@ -69,6 +70,9 @@ pub struct GridState {
     pub(crate) grid_dir: PathBuf,
     pub(crate) runtime_registry: Mutex<Option<Arc<crate::runtime::ModuleRegistry>>>,
     pub(crate) bus: Mutex<Option<Arc<crate::runtime::MessageBus>>>,
+    /// This node's capabilities (GPU, storage, inference, training).
+    /// Populated at init from constructor params, enriched after GpuModule responds.
+    pub(crate) local_capabilities: RwLock<Vec<NodeCapability>>,
 }
 
 // ============================================================================
@@ -88,6 +92,16 @@ impl GridModule {
         let tailscale: Arc<dyn GridTransport> = Arc::new(TailscaleTransport::with_default_port());
         let reticulum: Arc<dyn GridTransport> = Arc::new(ReticulumTransport::new(grid_dir.clone()));
 
+        // Build initial capabilities from constructor params.
+        // Enriched with GPU name after GpuModule responds (in initialize).
+        let mut caps = Vec::new();
+        if local_has_gpu {
+            caps.push(NodeCapability::Compute {
+                gpu: None, // Enriched later with actual GPU name
+                vram_mb: Some(local_vram_mb),
+            });
+        }
+
         Self {
             state: Arc::new(GridState {
                 transports: vec![tailscale, reticulum],
@@ -98,6 +112,7 @@ impl GridModule {
                 grid_dir,
                 runtime_registry: Mutex::new(None),
                 bus: Mutex::new(None),
+                local_capabilities: RwLock::new(caps),
             }),
         }
     }
@@ -121,6 +136,33 @@ impl ServiceModule for GridModule {
         *self.state.runtime_registry.lock().await = Some(ctx.registry.clone());
         *self.state.bus.lock().await = Some(ctx.bus.clone());
 
+        // Enrich local capabilities by querying GPU module for hardware details
+        if let Some((module, cmd)) = ctx.registry.route_command("gpu/stats") {
+            if let Ok(CommandResult::Json(gpu_json)) = module.handle_command(&cmd, serde_json::json!({})).await {
+                let gpu_name = gpu_json.get("gpu_name")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let vram = gpu_json.get("total_vram_mb")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as u64);
+
+                if gpu_name.is_some() || vram.is_some() {
+                    let mut caps = self.state.local_capabilities.write().await;
+                    // Replace the placeholder Compute capability with enriched data
+                    caps.retain(|c| !matches!(c, NodeCapability::Compute { .. }));
+                    if vram.unwrap_or(0) > 0 || gpu_name.is_some() {
+                        caps.push(NodeCapability::Compute {
+                            gpu: gpu_name.clone(),
+                            vram_mb: vram,
+                        });
+                    }
+                    eprintln!("[grid] Local capabilities: GPU={}, VRAM={}MB",
+                        gpu_name.as_deref().unwrap_or("none"),
+                        vram.unwrap_or(0));
+                }
+            }
+        }
+
         for transport in &self.state.transports {
             match transport.start().await {
                 Ok(()) => {
@@ -135,8 +177,13 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // Announce our capabilities on each started transport
+        let caps = self.state.local_capabilities.read().await.clone();
         for transport in &self.state.transports {
             if transport.local_address().is_some() {
+                let _ = transport.announce(&caps).await;
+
+                // Spawn accept loop for incoming connections
                 let transport = transport.clone();
                 let state = self.state.clone();
                 tokio::spawn(async move {

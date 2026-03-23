@@ -28,12 +28,14 @@ pub async fn handle_status(state: &Arc<GridState>) -> Result<CommandResult, Stri
 
     let nodes = state.registry.all_nodes();
     let online = state.registry.online_nodes();
+    let local_caps = state.local_capabilities.read().await.clone();
 
     Ok(CommandResult::Json(json!({
         "transports": transport_status,
         "totalNodes": nodes.len(),
         "onlineNodes": online.len(),
         "gridDir": state.grid_dir.to_string_lossy(),
+        "localCapabilities": local_caps,
     })))
 }
 
@@ -214,7 +216,7 @@ pub async fn handle_discover(state: &Arc<GridState>) -> Result<CommandResult, St
     })))
 }
 
-/// grid/pair — register a new node with trust level.
+/// grid/pair — register a new node with trust level and optional capabilities.
 pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
     let address_str = params.get("address").and_then(|v| v.as_str())
         .ok_or("address parameter required")?;
@@ -223,6 +225,18 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
 
     let trust = parse_trust_level(trust_str)?;
 
+    // Parse optional capabilities: gpu name and vram
+    let gpu = params.get("gpu").and_then(|v| v.as_str()).map(String::from);
+    let vram_mb = params.get("vramMb").and_then(|v| v.as_u64());
+
+    let mut capabilities = Vec::new();
+    if gpu.is_some() || vram_mb.is_some() {
+        capabilities.push(super::node::NodeCapability::Compute {
+            gpu,
+            vram_mb,
+        });
+    }
+
     let address = TransportAddress::tailscale(address_str, name.map(String::from));
     let node_id = address_str.to_string();
 
@@ -230,7 +244,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         node_id: node_id.clone(),
         node_name: name.map(String::from),
         addresses: vec![address],
-        capabilities: vec![],
+        capabilities: capabilities.clone(),
         trust_level: trust,
         last_seen: frame::now_millis(),
         latency_ms: None,
@@ -243,6 +257,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         "paired": true,
         "nodeId": node_id,
         "trustLevel": trust_str,
+        "capabilities": capabilities,
     })))
 }
 

@@ -11,6 +11,8 @@ export interface GridPairParams extends CommandParams {
 	address: string;
 	name?: string;
 	trust?: string;
+	gpu?: string;
+	vramMb?: number;
 }
 
 export interface GridPairResult extends CommandResult {

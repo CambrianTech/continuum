@@ -91,10 +91,10 @@ impl GridRouter {
 
                 // node:<name> — route to a named node
                 _ if hint.starts_with("node:") => {
-                    let name = &hint[5..];
+                    let name = hint[5..].to_lowercase();
                     let nodes = registry.all_nodes();
                     if let Some(node) = nodes.into_iter().find(|n| {
-                        n.node_name.as_deref() == Some(name)
+                        n.node_name.as_deref().map(|s| s.to_lowercase()) == Some(name.clone())
                             && n.trust_level >= TrustLevel::Provisional
                     }) {
                         return RouteDecision::Remote {

@@ -72,7 +72,7 @@ export interface GridMixin {
 	gridPing(nodeId: string): Promise<GridPingResponse>;
 	gridSend(nodeId: string, command: string, params?: Record<string, unknown>): Promise<unknown>;
 	gridDiscover(): Promise<GridDiscoverResponse>;
-	gridPair(address: string, name?: string, trust?: string): Promise<GridPairResponse>;
+	gridPair(address: string, name?: string, trust?: string, gpu?: string, vramMb?: number): Promise<GridPairResponse>;
 	gridTrust(nodeId: string, trust: string): Promise<{ nodeId: string; trustLevel: string }>;
 	gridAudit(limit?: number): Promise<unknown[]>;
 	gridRoute(command: string, routingHint?: string): Promise<GridRouteResponse>;
@@ -114,8 +114,8 @@ export function GridMixin<T extends new (...args: any[]) => RustCoreIPCClientBas
 			return response.result as GridDiscoverResponse;
 		}
 
-		async gridPair(address: string, name?: string, trust?: string): Promise<GridPairResponse> {
-			const response = await this.request({ command: 'grid/pair', address, name, trust });
+		async gridPair(address: string, name?: string, trust?: string, gpu?: string, vramMb?: number): Promise<GridPairResponse> {
+			const response = await this.request({ command: 'grid/pair', address, name, trust, gpu, vramMb });
 			if (!response.success) throw new Error(response.error || 'grid/pair failed');
 			return response.result as GridPairResponse;
 		}

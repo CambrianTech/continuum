@@ -19,7 +19,7 @@ export class GridPairServerCommand extends CommandBase<GridPairParams, GridPairR
 
 	async execute(params: GridPairParams): Promise<GridPairResult> {
 		await this.rustClient.connect();
-		const result = await this.rustClient.gridPair(params.address, params.name, params.trust);
+		const result = await this.rustClient.gridPair(params.address, params.name, params.trust, params.gpu, params.vramMb);
 		return result as unknown as GridPairResult;
 	}
 }
