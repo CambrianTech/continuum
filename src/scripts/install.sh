@@ -369,6 +369,13 @@ mkdir -p "$CONFIG_DIR/bin"
 echo -e "${YELLOW}[6/8] PostgreSQL${NC}"
 
 install_postgres() {
+  # Fast path: if we can already connect to the continuum database, skip everything.
+  # No sudo, no postgres user switch, no trust auth check.
+  if psql -d continuum -c "SELECT 1" &>/dev/null; then
+    echo -e "  ${GREEN}✅ PostgreSQL ready (continuum database accessible)${NC}"
+    return
+  fi
+
   if command -v psql &>/dev/null; then
     echo -e "  ${GREEN}✅ PostgreSQL already installed${NC}"
   else
