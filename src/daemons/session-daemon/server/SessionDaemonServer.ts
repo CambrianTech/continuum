@@ -428,7 +428,7 @@ export class SessionDaemonServer extends SessionDaemon {
         // CRITICAL: Validate userId exists before loading user
         // Previous failed session creation may have stored session with undefined userId
         if (!existingSession.userId) {
-          console.error(`❌ findUserByDeviceId: Found session with deviceId ${deviceId} but userId is undefined - clearing stale session`);
+          this.log.error(`findUserByDeviceId: Found session with deviceId ${deviceId} but userId is undefined - clearing stale session`);
           // Remove the broken session from memory
           const index = this.sessions.indexOf(existingSession);
           if (index > -1) {
@@ -604,17 +604,15 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
-        console.error(`🔑 createOrGetSession ENTRY: isShared=${params.isShared}, userId=${params.userId}, category=${(params as any).category}`);
         if (params.isShared) {
           // Extract identity from enhanced connection context
           const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
           const clientType = enhancedContext?.clientType;
           const deviceId = enhancedContext?.identity?.deviceId;
 
-
           // For browser-ui: Single-owner system. Browser = the seeded human owner.
           // Always resolve to the owner, regardless of deviceId or existing sessions.
-          console.error(`🔑 SessionDaemon createOrGetSession: clientType=${clientType}, isShared=${params.isShared}`);
+          this.log.info(`Session create: clientType=${clientType}, isShared=${params.isShared}`);
           if (clientType === 'browser-ui') {
             const seededOwner = await this.findSeededHumanOwner();
             if (seededOwner) {
@@ -796,8 +794,8 @@ export class SessionDaemonServer extends SessionDaemon {
       // This should NEVER happen, but if it does, fail loudly rather than creating broken session
       if (!user || !user.id) {
         const errorMsg = `FATAL: User resolution failed for clientType=${clientType}. This is a bug in SessionDaemonServer.`;
-        console.error(`❌❌❌ ${errorMsg}`);
-        console.error(`Debug info: clientType=${clientType}, identity=${JSON.stringify(identity)}, params.userId=${params.userId}`);
+        this.log.error(errorMsg);
+        this.log.error(`Debug info: clientType=${clientType}, identity=${JSON.stringify(identity)}, params.userId=${params.userId}`);
         throw new Error(errorMsg);
       }
 
