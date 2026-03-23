@@ -245,7 +245,7 @@ export async function runAgentLoop(
 
       if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
         ctx.log(`⚠️  ${ctx.personaName}: [AGENT-LOOP] Empty response from ${ctx.provider} after ${toolIterations} tool iteration(s), using cleaned previous text`);
-        const fallback = await ctx.toolExecutor.parseResponse(aiResponse.text);
+        const fallback = await ctx.toolExecutor.parseResponse(aiResponse.text, ctx.modelFamily);
         aiResponse.text = fallback.cleanedText;
         break;
       }
@@ -270,7 +270,7 @@ export async function runAgentLoop(
     } catch (regenerateError) {
       const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
       ctx.log(`❌ ${ctx.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
-      aiResponse.text = (await ctx.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
+      aiResponse.text = (await ctx.toolExecutor.parseResponse(aiResponse.text, ctx.modelFamily)).cleanedText;
       break;
     }
   }
@@ -281,7 +281,7 @@ export async function runAgentLoop(
 
   // Always strip any remaining tool call text from the final response
   if (toolIterations > 0 && aiResponse.text) {
-    const finalCleaned = await ctx.toolExecutor.parseResponse(aiResponse.text);
+    const finalCleaned = await ctx.toolExecutor.parseResponse(aiResponse.text, ctx.modelFamily);
     if (finalCleaned.toolCalls.length > 0) {
       ctx.log(`🧹 ${ctx.personaName}: [AGENT-LOOP] Stripped ${finalCleaned.toolCalls.length} residual tool call(s) from final response`);
       aiResponse.text = finalCleaned.cleanedText;

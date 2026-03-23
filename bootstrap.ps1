@@ -28,6 +28,12 @@ Write-Host ""
 Write-Host "  Mode: $Mode" -ForegroundColor Green
 Write-Host ""
 
+# Clean up RunOnce continuation script if this is a post-restart run
+$continuationPath = "$env:USERPROFILE\.continuum-bootstrap-continue.ps1"
+if (Test-Path $continuationPath) {
+    Remove-Item $continuationPath -Force
+}
+
 # ============================================================================
 # Step 1: Check if WSL2 + Ubuntu are ready
 # ============================================================================
