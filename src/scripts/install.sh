@@ -214,9 +214,14 @@ install_system_deps() {
 
 install_system_deps
 
-# CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full install
+# CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full build.
+# Still installs all infrastructure (Node, Rust, Python, Postgres, LiveKit, Tailscale)
+# but skips the build step (npm install, tsc, cargo build).
 if [ "${CONTINUUM_DEPS_ONLY:-0}" = "1" ]; then
-  exit 0
+  # Jump past the build step to continue with infrastructure installs
+  SKIP_BUILD=1
+else
+  SKIP_BUILD=0
 fi
 
 # ============================================================================
@@ -330,16 +335,18 @@ fi
 # Step 5: npm install + Rust build
 # ============================================================================
 
-echo -e "${YELLOW}[5/8] Building Continuum${NC}"
+if [ "$SKIP_BUILD" = "0" ]; then
+  echo -e "${YELLOW}[5/8] Building Continuum${NC}"
 
-echo -e "  Installing npm dependencies..."
-npm install --silent 2>&1 | tail -3
+  echo -e "  Installing npm dependencies..."
+  npm install --silent 2>&1 | tail -3
 
-echo -e "  Building TypeScript..."
-npm run build:ts 2>&1 | tail -1
+  echo -e "  Building TypeScript..."
+  npm run build:ts 2>&1 | tail -1
 
-echo -e "  Building Rust workers..."
-bash scripts/setup-rust.sh 2>&1 | tail -5
+  echo -e "  Building Rust workers..."
+  bash scripts/setup-rust.sh 2>&1 | tail -5
+fi
 
 # ============================================================================
 # Config
@@ -470,6 +477,10 @@ install_tailscale() {
 
 install_tailscale
 
+# DEPS_ONLY mode: all infrastructure installed, skip config/summary/auto-launch
+if [ "$SKIP_BUILD" = "1" ]; then
+  exit 0
+fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo -e "\n${YELLOW}Creating default config at $CONFIG_FILE${NC}"
@@ -515,7 +526,7 @@ if [ -f "$VENV_DIR/bin/python3" ]; then
   echo -e "  Python ML: $VENV_DIR"
 fi
 if command -v tailscale &>/dev/null; then
-  local ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+  ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
   echo -e "  Tailscale: ${ts_ip}"
 fi
 echo ""
