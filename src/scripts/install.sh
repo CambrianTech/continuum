@@ -497,7 +497,14 @@ install_tailscale() {
   # Linux/WSL: ensure daemon is running
   if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
     if ! pgrep -x tailscaled &>/dev/null; then
-      sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+      # Prefer system service manager; fall back to direct spawn only if needed
+      if command -v systemctl &>/dev/null; then
+        sudo systemctl start tailscaled 2>/dev/null || true
+      elif command -v service &>/dev/null; then
+        sudo service tailscaled start 2>/dev/null || true
+      else
+        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+      fi
       sleep 1
     fi
 
