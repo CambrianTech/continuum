@@ -22,7 +22,7 @@ import type { SessionGetUserParams, SessionGetUserResult } from '../../../comman
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
-import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
+import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
 import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
 import { MessageEventDelegator } from '../adapters/MessageEventDelegator';

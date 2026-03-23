@@ -347,7 +347,14 @@ if [ "$HEALTHY" = false ]; then
   fi
 fi
 
-# Open browser if none connected, then wait for it
+# Phase 5.5: Seed database BEFORE opening browser
+# Critical: Browser must connect AFTER seeding so findSeededHumanOwner() finds Joel.
+# Without this, browser connects → anonymous user created → wrong userId in session.
+echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
+npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
+echo -e "  ${GREEN}✅ Seed complete${NC}"
+
+# Phase 6: Open browser (after seed — so Joel exists when browser connects)
 if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
   PLATFORM=$(preflight_detect_platform)
   URL="http://localhost:9000"
@@ -376,12 +383,6 @@ if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
     echo -e "  ${YELLOW}Browser didn't connect — open ${URL} manually${NC}"
   fi
 fi
-
-# Phase 5.5: Ensure database is seeded (always runs — idempotent, skips existing records)
-# This handles: fresh installs, tower deploys with no personas, config updates, model changes.
-echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
-npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-echo -e "  ${GREEN}✅ Seed complete${NC}"
 
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))

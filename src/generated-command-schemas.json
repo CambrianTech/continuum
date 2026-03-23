@@ -7350,6 +7350,11 @@
           "required": false,
           "description": "isSystemTest parameter"
         },
+        "viaBrowser": {
+          "type": "boolean",
+          "required": false,
+          "description": "viaBrowser parameter"
+        },
         "media": {
           "type": "array",
           "required": false,
