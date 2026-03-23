@@ -475,14 +475,14 @@ install_tailscale() {
 
   case "$PLATFORM" in
     macos)
-      # macOS: App Store version, not brew CLI
       if [ -d "/Applications/Tailscale.app" ]; then
         open -a Tailscale 2>/dev/null || true
         echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
       else
-        echo -e "  ${YELLOW}Opening Mac App Store — click 'Get' to install Tailscale...${NC}"
-        curl -fsSL https://tailscale.com/install.sh | sh
-        echo -e "  ${YELLOW}After installing, click the Tailscale icon in your menu bar to sign in.${NC}"
+        echo -e "  Installing Tailscale..."
+        brew install --cask tailscale
+        open -a Tailscale 2>/dev/null || true
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
       fi
       return
       ;;
