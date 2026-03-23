@@ -119,9 +119,12 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
 
     let start = std::time::Instant::now();
 
-    // Execute the command locally via the module registry
+    // Execute the command locally.
+    // Try Rust module registry first, then fall back to TypeScript command layer
+    // via execute_ts_json (for commands like genome/train that live in TS).
     let result = if let Some(registry) = state.runtime_registry.lock().await.as_ref() {
         if let Some(result) = registry.route_command(command) {
+            // Command found in Rust module registry
             let (module, full_cmd) = result;
             match module.handle_command(&full_cmd, params).await {
                 Ok(CommandResult::Json(value)) => {
@@ -133,7 +136,12 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
                 Err(e) => GridFrame::error_response(request, e),
             }
         } else {
-            GridFrame::error_response(request, format!("Unknown command: {command}"))
+            // Not a Rust command — forward to TypeScript command layer.
+            // This handles genome/train, ai/generate, and other TS-only commands.
+            match crate::runtime::command_executor::execute_ts_json(command, params).await {
+                Ok(ts_result) => GridFrame::success_response(request, ts_result),
+                Err(e) => GridFrame::error_response(request, e),
+            }
         }
     } else {
         GridFrame::error_response(request, "Module registry not available".into())
