@@ -1,0 +1,122 @@
+//! Grid command name constants — the ONE place command paths are defined.
+//!
+//! Every reference to a grid command name MUST use these constants.
+//! If a command moves or gets renamed, change it HERE and the compiler
+//! catches every broken reference.
+//!
+//! This pattern should be adopted by EVERY module in the codebase.
+//! Long-term: generate these from command specs (like generate-command-constants.ts does for TS).
+
+use crate::runtime::{CommandSchema, ParamSchema};
+
+// ============================================================================
+// Command name constants
+// ============================================================================
+
+pub const STATUS:   &str = "grid/status";
+pub const NODES:    &str = "grid/nodes";
+pub const PING:     &str = "grid/ping";
+pub const SEND:     &str = "grid/send";
+pub const DISCOVER: &str = "grid/discover";
+pub const PAIR:     &str = "grid/pair";
+pub const TRUST:    &str = "grid/trust";
+pub const AUDIT:    &str = "grid/audit";
+pub const ROUTE:    &str = "grid/route";
+
+// ============================================================================
+// Command schemas (defined alongside their names — no duplication)
+// ============================================================================
+
+/// All grid command schemas. Used by command_schemas() in the ServiceModule impl
+/// and by MCP for dynamic tool discovery.
+pub fn schemas() -> Vec<CommandSchema> {
+    vec![
+        CommandSchema {
+            name: STATUS,
+            description: "Grid transport status and local node identity",
+            params: vec![],
+        },
+        CommandSchema {
+            name: NODES,
+            description: "List known Grid nodes with capabilities and trust levels",
+            params: vec![],
+        },
+        CommandSchema {
+            name: PING,
+            description: "Measure round-trip latency to a remote node",
+            params: vec![ParamSchema {
+                name: "nodeId",
+                param_type: "string",
+                required: true,
+                description: "Node ID to ping",
+            }],
+        },
+        CommandSchema {
+            name: SEND,
+            description: "Execute a command on a remote Grid node",
+            params: vec![
+                ParamSchema { name: "nodeId",  param_type: "string", required: true,  description: "Target node ID" },
+                ParamSchema { name: "command", param_type: "string", required: true,  description: "Command to execute remotely" },
+                ParamSchema { name: "params",  param_type: "object", required: false, description: "Command parameters" },
+            ],
+        },
+        CommandSchema {
+            name: DISCOVER,
+            description: "Trigger transport-level node discovery",
+            params: vec![],
+        },
+        CommandSchema {
+            name: PAIR,
+            description: "Pair with a new node by address",
+            params: vec![
+                ParamSchema { name: "address", param_type: "string", required: true,  description: "Transport address (e.g., Tailscale IP)" },
+                ParamSchema { name: "name",    param_type: "string", required: false, description: "Friendly name for the node" },
+                ParamSchema { name: "trust",   param_type: "string", required: false, description: "Trust level: blocked, provisional, trusted, owner" },
+            ],
+        },
+        CommandSchema {
+            name: TRUST,
+            description: "Update trust level for a known node",
+            params: vec![
+                ParamSchema { name: "nodeId", param_type: "string", required: true, description: "Node ID to update" },
+                ParamSchema { name: "trust",  param_type: "string", required: true, description: "New trust level: blocked, provisional, trusted, owner" },
+            ],
+        },
+        CommandSchema {
+            name: AUDIT,
+            description: "View remote command audit trail",
+            params: vec![ParamSchema { name: "limit", param_type: "number", required: false, description: "Number of entries (default 50)" }],
+        },
+        CommandSchema {
+            name: ROUTE,
+            description: "Check where a command would be routed (dry run)",
+            params: vec![
+                ParamSchema { name: "command",     param_type: "string", required: true,  description: "Command to check routing for" },
+                ParamSchema { name: "routingHint", param_type: "string", required: false, description: "Routing hint to test" },
+            ],
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_commands_have_grid_prefix() {
+        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE];
+        for cmd in &all {
+            assert!(cmd.starts_with("grid/"), "Command {cmd} missing grid/ prefix");
+        }
+    }
+
+    #[test]
+    fn test_schemas_match_constants() {
+        let schemas = schemas();
+        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE];
+        assert_eq!(schemas.len(), all.len(), "Schema count mismatch");
+        for (schema, constant) in schemas.iter().zip(all.iter()) {
+            assert_eq!(schema.name, *constant, "Schema name doesn't match constant");
+        }
+    }
+}

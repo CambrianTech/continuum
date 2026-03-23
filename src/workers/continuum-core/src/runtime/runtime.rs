@@ -32,6 +32,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "logger",    // Phase 4a: structured logging
     "search",    // Phase 4b: BM25, TF-IDF, vector search
     "embedding", // Phase 4c: fastembed vector generation
+    "grid",      // Grid transport: inter-node routing (Tailscale, Reticulum)
     "runtime",   // RuntimeModule: metrics and control
     "mcp",       // MCP server: dynamic tool discovery
     "system",    // System resources: CPU, memory, process monitoring

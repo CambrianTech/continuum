@@ -18,6 +18,7 @@ pub mod data;
 pub mod dataset;
 pub mod embedding;
 pub mod gpu;
+pub mod grid;
 pub mod health;
 pub mod live;
 pub mod logger;
