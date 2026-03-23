@@ -405,7 +405,7 @@ install_postgres() {
     echo -e "  ${GREEN}✅ PostgreSQL already installed${NC}"
   else
     case "$PLATFORM" in
-      macos) HOMEBREW_NO_AUTO_UPDATE=1 brew install postgresql@16 && brew services start postgresql@16 ;;
+      macos) brew install postgresql@16 && brew services start postgresql@16 ;;
       linux|wsl)
         sudo apt-get install -y postgresql postgresql-client
         sudo service postgresql start 2>/dev/null || sudo pg_ctlcluster 16 main start 2>/dev/null || true
@@ -480,14 +480,9 @@ install_tailscale() {
     case "$PLATFORM" in
       macos)
         if [ ! -d "/Applications/Tailscale.app" ]; then
-          # Use Mac App Store CLI if available, otherwise direct download.
-          # brew --cask requires sudo for pkg installer which fails non-interactively.
-          if command -v mas &>/dev/null; then
-            echo -e "  Installing from Mac App Store..."
-            mas install 1475387142 2>/dev/null || true
-          else
-            echo -e "  ${YELLOW}⚠️ Install Tailscale from the Mac App Store: https://apps.apple.com/app/tailscale/id1475387142${NC}"
-          fi
+          echo -e "  Installing Tailscale..."
+          # Tailscale's own install script handles macOS correctly
+          curl -fsSL https://tailscale.com/install.sh | sh
         fi
         open -a Tailscale 2>/dev/null || true
         echo -e "  ${GREEN}✅ Tailscale — sign in via the menu bar icon${NC}"
