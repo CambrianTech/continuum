@@ -93,7 +93,7 @@ echo ""
 # Step 1: System dependencies
 # ============================================================================
 
-echo -e "${YELLOW}[1/5] System dependencies${NC}"
+echo -e "${YELLOW}[1/8] System dependencies${NC}"
 
 install_system_deps() {
   case "$PLATFORM" in
@@ -223,7 +223,7 @@ fi
 # Step 2: Node.js
 # ============================================================================
 
-echo -e "${YELLOW}[2/5] Node.js${NC}"
+echo -e "${YELLOW}[2/8] Node.js${NC}"
 
 install_node() {
   if command -v node &>/dev/null; then
@@ -257,7 +257,7 @@ install_node
 # Step 3: Rust
 # ============================================================================
 
-echo -e "${YELLOW}[3/5] Rust${NC}"
+echo -e "${YELLOW}[3/8] Rust${NC}"
 
 install_rust() {
   if command -v rustc &>/dev/null; then
@@ -278,7 +278,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Step 4: Python ML environment (if GPU detected)
 # ============================================================================
 
-echo -e "${YELLOW}[4/5] Python ML environment${NC}"
+echo -e "${YELLOW}[4/8] Python ML environment${NC}"
 
 VENV_DIR="$HOME/.continuum/venv"
 
@@ -330,7 +330,7 @@ fi
 # Step 5: npm install + Rust build
 # ============================================================================
 
-echo -e "${YELLOW}[5/5] Building Continuum${NC}"
+echo -e "${YELLOW}[5/8] Building Continuum${NC}"
 
 echo -e "  Installing npm dependencies..."
 npm install --silent 2>&1 | tail -3
@@ -359,7 +359,7 @@ mkdir -p "$CONFIG_DIR/bin"
 # PostgreSQL
 # ============================================================================
 
-echo -e "${YELLOW}[6/6] PostgreSQL${NC}"
+echo -e "${YELLOW}[6/8] PostgreSQL${NC}"
 
 install_postgres() {
   if command -v psql &>/dev/null; then
@@ -401,7 +401,7 @@ install_postgres
 # LiveKit SFU server (voice/video calls)
 # ============================================================================
 
-echo -e "${YELLOW}[7/7] LiveKit SFU${NC}"
+echo -e "${YELLOW}[7/8] LiveKit SFU${NC}"
 
 install_livekit() {
   if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
@@ -419,6 +419,42 @@ install_livekit() {
 }
 
 install_livekit
+
+# ============================================================================
+# Tailscale mesh VPN (multi-tower networking)
+# ============================================================================
+
+echo -e "${YELLOW}[8/8] Tailscale${NC}"
+
+install_tailscale() {
+  if command -v tailscale &>/dev/null; then
+    local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"' 2>/dev/null || echo "installed")
+    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+    echo -e "  ${GREEN}✅ Tailscale already installed (${ts_status}, ${ts_ip})${NC}"
+    return
+  fi
+
+  case "$PLATFORM" in
+    macos)
+      if [ -d "/Applications/Tailscale.app" ]; then
+        echo -e "  ${GREEN}✅ Tailscale.app installed (open it to connect)${NC}"
+        return
+      fi
+      echo -e "  Installing via Homebrew..."
+      brew install --cask tailscale
+      echo -e "  ${GREEN}✅ Tailscale installed — open Tailscale.app to connect${NC}"
+      ;;
+    linux|wsl)
+      echo -e "  Installing Tailscale..."
+      curl -fsSL https://tailscale.com/install.sh | sh
+      echo -e "  ${GREEN}✅ Tailscale installed${NC}"
+      # Don't auto-run tailscale up — user needs to authenticate interactively
+      echo -e "  ${YELLOW}Run 'sudo tailscale up' to connect this tower to your mesh${NC}"
+      ;;
+  esac
+}
+
+install_tailscale
 
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -463,6 +499,10 @@ echo -e "  Node:      $(node --version)"
 echo -e "  Rust:      $(rustc --version 2>/dev/null | awk '{print $2}' || echo 'not found')"
 if [ -f "$VENV_DIR/bin/python3" ]; then
   echo -e "  Python ML: $VENV_DIR"
+fi
+if command -v tailscale &>/dev/null; then
+  local ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+  echo -e "  Tailscale: ${ts_ip}"
 fi
 echo ""
 echo -e "  ${YELLOW}Start:${NC}  cd src && npm start"
