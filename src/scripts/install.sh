@@ -480,12 +480,13 @@ install_tailscale() {
     case "$PLATFORM" in
       macos)
         if [ ! -d "/Applications/Tailscale.app" ]; then
-          echo -e "  Installing Tailscale..."
-          # Tailscale's own install script handles macOS correctly
+          echo -e "  ${YELLOW}Opening Mac App Store — click 'Get' to install Tailscale...${NC}"
           curl -fsSL https://tailscale.com/install.sh | sh
+          echo -e "  ${YELLOW}After installing, click the Tailscale icon in your menu bar to sign in.${NC}"
+        else
+          open -a Tailscale 2>/dev/null || true
+          echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
         fi
-        open -a Tailscale 2>/dev/null || true
-        echo -e "  ${GREEN}✅ Tailscale — sign in via the menu bar icon${NC}"
         return
         ;;
       linux|wsl)
