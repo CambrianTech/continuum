@@ -334,6 +334,19 @@ done
 BROWSER_CONNECTED=false
 if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
   BROWSER_CONNECTED=true
+elif [ "$HOT_RESTART" = true ]; then
+  # Hot restart: browser is reconnecting — give it time before declaring it absent.
+  # The existing tab's WebSocket reconnects once the new server is up.
+  echo -e "  ⏳ Waiting for browser to reconnect..."
+  for i in 1 2 3 4 5; do
+    sleep 3
+    PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser reconnected${NC}"
+      break
+    fi
+  done
 fi
 
 if [ "$HEALTHY" = false ]; then
@@ -354,8 +367,10 @@ echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
 npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
 echo -e "  ${GREEN}✅ Seed complete${NC}"
 
-# Phase 6: Open browser (after seed — so Joel exists when browser connects)
-if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ]; then
+# Phase 6: Open browser (COLD START only — hot restart reuses existing tab)
+# On hot restart the existing browser tab reconnects via WebSocket automatically.
+# Opening a new tab would create duplicates.
+if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ] && [ "$HOT_RESTART" = false ]; then
   PLATFORM=$(preflight_detect_platform)
   URL="http://localhost:9000"
   echo -e "  ${YELLOW}Opening browser...${NC}"
