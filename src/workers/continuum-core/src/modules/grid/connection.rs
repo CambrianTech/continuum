@@ -90,10 +90,12 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
         }
     };
 
-    // Look up the requesting node's trust level
+    // Look up the requesting node's trust level.
+    // source_node may include port (e.g., "100.1.2.3:7117") — strip it for registry lookup.
+    let source_ip = request.source_node.split(':').next().unwrap_or(&request.source_node);
     let trust = state
         .registry
-        .get(&request.source_node)
+        .get(source_ip)
         .map(|n| n.trust_level)
         .unwrap_or(TrustLevel::Blocked);
 
