@@ -735,6 +735,403 @@ pub fn parse_json_params(json_str: &str) -> HashMap<String, String> {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Model-family parsers — prioritized by model_family hint
+// ═══════════════════════════════════════════════════════════════════════
+
+use crate::tool_parsing::types::ModelFamily;
+
+/// Parse tool calls with model-family-specific parser first, then generic fallback.
+/// When model_family is Generic or None, falls through to all 10 generic parsers.
+pub fn parse_with_model_family(text: &str, family: ModelFamily) -> Vec<RawToolMatch> {
+    // Try model-family-specific parser first
+    let family_results = match family {
+        ModelFamily::DeepSeek => parse_deepseek(text),
+        ModelFamily::Llama => parse_llama(text),
+        ModelFamily::Mistral => parse_mistral(text),
+        ModelFamily::Hermes => parse_hermes(text),
+        ModelFamily::Qwen => parse_qwen(text),
+        ModelFamily::Generic => Vec::new(),
+    };
+
+    if !family_results.is_empty() {
+        return family_results;
+    }
+
+    // Fall through to all generic parsers
+    parse_all_formats(text)
+}
+
+// ─── DeepSeek ──────────────────────────────────────────────────────
+//
+// DeepSeek v3/R1/Coder uses Unicode fullwidth delimiters:
+//   ＜｜tool▁calls▁begin｜＞
+//   {"name": "code_search", "arguments": {"pattern": "test"}}
+//   ＜｜tool▁calls▁end｜＞
+//
+// Characters:
+//   ＜ = U+FF1C (fullwidth less-than)
+//   ＞ = U+FF1E (fullwidth greater-than)
+//   ｜ = U+FF5C (fullwidth vertical line)
+//   ▁ = U+2581 (lower one eighth block, used as word separator)
+
+static RE_DEEPSEEK_BLOCK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?s)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}(.*?)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}")
+        .unwrap()
+});
+
+/// Parse a single DeepSeek tool call JSON object.
+/// Handles both `arguments` as object and `arguments` as double-encoded string.
+fn parse_deepseek_tool_json(value: &serde_json::Value) -> Option<(String, HashMap<String, String>)> {
+    let obj = value.as_object()?;
+    let name = obj.get("name").and_then(|v| v.as_str())?.to_string();
+    let params = match obj.get("arguments").or_else(|| obj.get("parameters")) {
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                };
+                (k.clone(), s)
+            })
+            .collect(),
+        Some(serde_json::Value::String(s)) => {
+            // Double-encoded: arguments is a JSON string
+            parse_json_params(s)
+        }
+        _ => HashMap::new(),
+    };
+    Some((name, params))
+}
+
+fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
+    let mut results = Vec::new();
+
+    for block_match in RE_DEEPSEEK_BLOCK.find_iter(text) {
+        let inner = RE_DEEPSEEK_BLOCK
+            .captures(block_match.as_str())
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim())
+            .unwrap_or("");
+
+        // Try parsing as JSON array first
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(inner) {
+            for item in &arr {
+                if let Some((raw_name, params)) = parse_deepseek_tool_json(item) {
+                    let name = unsanitize_tool_name(&raw_name);
+                    results.push(RawToolMatch {
+                        tool_name: name,
+                        parameters: params,
+                        format: "deepseek",
+                        start: block_match.start(),
+                        end: block_match.end(),
+                    });
+                }
+            }
+        } else {
+            // Try line-by-line JSON objects
+            for line in inner.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !trimmed.starts_with('{') {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some((raw_name, params)) = parse_deepseek_tool_json(&val) {
+                        let name = unsanitize_tool_name(&raw_name);
+                        results.push(RawToolMatch {
+                            tool_name: name,
+                            parameters: params,
+                            format: "deepseek",
+                            start: block_match.start(),
+                            end: block_match.end(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// ─── Llama ─────────────────────────────────────────────────────────
+//
+// Llama 3.1+ uses `<|python_tag|>` prefix followed by JSON:
+//   <|python_tag|>{"name": "code_search", "arguments": {"pattern": "test"}}
+//
+// Also handles the function-call wrapper format:
+//   <|python_tag|>{"type": "function", "function": {"name": "...", "arguments": {...}}}
+
+static RE_LLAMA_BLOCK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)")
+        .unwrap()
+});
+
+fn parse_llama(text: &str) -> Vec<RawToolMatch> {
+    let mut results = Vec::new();
+
+    for cap in RE_LLAMA_BLOCK.captures_iter(text) {
+        let full_match = cap.get(0).unwrap();
+        let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+
+        // Try parsing the body as JSON
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+            match &val {
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        if let Some(tm) = parse_llama_tool_json(item, full_match.start(), full_match.end()) {
+                            results.push(tm);
+                        }
+                    }
+                }
+                serde_json::Value::Object(_) => {
+                    if let Some(tm) = parse_llama_tool_json(&val, full_match.start(), full_match.end()) {
+                        results.push(tm);
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            // Try line-by-line
+            for line in body.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || !trimmed.starts_with('{') {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(tm) = parse_llama_tool_json(&val, full_match.start(), full_match.end()) {
+                        results.push(tm);
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn parse_llama_tool_json(val: &serde_json::Value, start: usize, end: usize) -> Option<RawToolMatch> {
+    let obj = val.as_object()?;
+
+    // Check for nested function wrapper: {"type": "function", "function": {"name": "...", "arguments": {...}}}
+    if obj.get("type").and_then(|v| v.as_str()) == Some("function") {
+        if let Some(func) = obj.get("function").and_then(|v| v.as_object()) {
+            let name = func.get("name").and_then(|v| v.as_str())?.to_string();
+            let params = extract_arguments_field(func);
+            return Some(RawToolMatch {
+                tool_name: unsanitize_tool_name(&name),
+                parameters: params,
+                format: "llama",
+                start,
+                end,
+            });
+        }
+    }
+
+    // Direct format: {"name": "...", "arguments": {...}}
+    let name = obj.get("name").and_then(|v| v.as_str())?.to_string();
+    let params = extract_arguments_field(obj);
+    Some(RawToolMatch {
+        tool_name: unsanitize_tool_name(&name),
+        parameters: params,
+        format: "llama",
+        start,
+        end,
+    })
+}
+
+/// Extract `arguments` (or `parameters`) from a tool call JSON object.
+/// Handles both object and double-encoded string forms.
+fn extract_arguments_field(obj: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, String> {
+    match obj.get("arguments").or_else(|| obj.get("parameters")) {
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => v.to_string(),
+                };
+                (k.clone(), s)
+            })
+            .collect(),
+        Some(serde_json::Value::String(s)) => parse_json_params(s),
+        _ => HashMap::new(),
+    }
+}
+
+// ─── Mistral ───────────────────────────────────────────────────────
+//
+// Mistral/Mixtral uses `[TOOL_CALLS]` prefix followed by JSON array:
+//   [TOOL_CALLS] [{"name": "code_search", "arguments": {"pattern": "test"}}]
+
+static RE_MISTRAL_BLOCK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])")
+        .unwrap()
+});
+
+fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
+    let mut results = Vec::new();
+
+    for cap in RE_MISTRAL_BLOCK.captures_iter(text) {
+        let full_match = cap.get(0).unwrap();
+        let arr_str = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(arr_str) {
+            for item in &arr {
+                if let Some(obj) = item.as_object() {
+                    if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                        let params = extract_arguments_field(obj);
+                        results.push(RawToolMatch {
+                            tool_name: unsanitize_tool_name(name),
+                            parameters: params,
+                            format: "mistral",
+                            start: full_match.start(),
+                            end: full_match.end(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// ─── Hermes ────────────────────────────────────────────────────────
+//
+// Hermes-tuned (Nous Research) uses `<tool_call>` tags with JSON body:
+//   <tool_call>
+//   {"name": "code_search", "arguments": {"pattern": "test"}}
+//   </tool_call>
+
+static RE_HERMES_BLOCK: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>")
+        .unwrap()
+});
+
+fn parse_hermes(text: &str) -> Vec<RawToolMatch> {
+    let mut results = Vec::new();
+
+    for cap in RE_HERMES_BLOCK.captures_iter(text) {
+        let full_match = cap.get(0).unwrap();
+        let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(obj) = val.as_object() {
+                if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                    let params = extract_arguments_field(obj);
+                    results.push(RawToolMatch {
+                        tool_name: unsanitize_tool_name(name),
+                        parameters: params,
+                        format: "hermes",
+                        start: full_match.start(),
+                        end: full_match.end(),
+                    });
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// ─── Qwen ──────────────────────────────────────────────────────────
+//
+// Qwen/Qwen3-Coder uses same `<tool_call>` tags as Hermes, but with a
+// key quirk: `arguments` is sometimes a double-encoded JSON STRING:
+//   <tool_call>
+//   {"name": "code_search", "arguments": "{\"pattern\": \"test\"}"}
+//   </tool_call>
+
+fn parse_qwen(text: &str) -> Vec<RawToolMatch> {
+    // Same regex as Hermes — the difference is in argument handling
+    let mut results = Vec::new();
+
+    for cap in RE_HERMES_BLOCK.captures_iter(text) {
+        let full_match = cap.get(0).unwrap();
+        let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(obj) = val.as_object() {
+                if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                    // Qwen-specific: handle double-encoded arguments
+                    let params = extract_arguments_field(obj);
+                    results.push(RawToolMatch {
+                        tool_name: unsanitize_tool_name(name),
+                        parameters: params,
+                        format: "qwen",
+                        start: full_match.start(),
+                        end: full_match.end(),
+                    });
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// ─── Truncation Recovery ───────────────────────────────────────────
+//
+// When LLM responses are truncated mid-output (max tokens hit), attempt
+// to recover partial tool calls by closing unclosed tags/braces.
+
+/// Attempt to recover tool calls from truncated text.
+/// Tries to close unclosed XML tags and JSON braces before parsing.
+pub fn parse_with_truncation_recovery(text: &str, family: ModelFamily) -> Vec<RawToolMatch> {
+    // Try normal parsing first
+    let results = parse_with_model_family(text, family);
+    if !results.is_empty() {
+        return results;
+    }
+
+    // Check for truncated tool_call block (Hermes/Qwen)
+    if text.contains("<tool_call>") && !text.contains("</tool_call>") {
+        let recovered = format!("{}\n</tool_call>", text);
+        let results = parse_with_model_family(&recovered, family);
+        if !results.is_empty() {
+            return results;
+        }
+    }
+
+    // Check for truncated tool_use block (Anthropic)
+    if text.contains("<tool_use>") && !text.contains("</tool_use>") {
+        let mut recovered = text.to_string();
+        // Close open parameter tags
+        if recovered.contains("<parameters>") && !recovered.contains("</parameters>") {
+            recovered.push_str("</parameters>");
+        }
+        recovered.push_str("</tool_use>");
+        let results = parse_with_model_family(&recovered, family);
+        if !results.is_empty() {
+            return results;
+        }
+    }
+
+    // Check for truncated DeepSeek block
+    let deepseek_begin = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}";
+    let deepseek_end = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+    if text.contains(deepseek_begin) && !text.contains(deepseek_end) {
+        // Try to close any open JSON and add the end marker
+        let mut recovered = text.to_string();
+        let trimmed = recovered.trim_end();
+        // Count unclosed braces
+        let open = trimmed.chars().filter(|c| *c == '{').count();
+        let close = trimmed.chars().filter(|c| *c == '}').count();
+        for _ in 0..(open.saturating_sub(close)) {
+            recovered.push('}');
+        }
+        recovered.push_str(&format!("\n{}", deepseek_end));
+        let results = parse_with_model_family(&recovered, family);
+        if !results.is_empty() {
+            return results;
+        }
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,7 +1440,7 @@ Then also:
     fn xml_params_extraction() {
         let block = "<name>Joel</name><age>30</age>";
         let params = extract_xml_params(block);
-        assert_eq!(params.get("name").unwrap(), "test-user");
+        assert_eq!(params.get("name").unwrap(), "Joel");
         assert_eq!(params.get("age").unwrap(), "30");
     }
 
@@ -1416,5 +1813,258 @@ Then also:
         let params = parse_colon_params(r#"query: "flask", path: "./src""#);
         assert_eq!(params.get("query").unwrap(), "flask");
         assert_eq!(params.get("path").unwrap(), "./src");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Model-family parsers
+    // ═══════════════════════════════════════════════════════════════
+
+    // ─── DeepSeek ──────────────────────────────────────────────────
+
+    #[test]
+    fn deepseek_single_tool() {
+        let text = "Let me search for that.\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"memory clustering\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}\nDone.";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "memory clustering");
+        assert_eq!(matches[0].format, "deepseek");
+    }
+
+    #[test]
+    fn deepseek_multiple_tools() {
+        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"main.ts\"}}\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"TODO\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].tool_name, "code/read");
+        assert_eq!(matches[1].tool_name, "code/search");
+    }
+
+    #[test]
+    fn deepseek_json_array() {
+        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n[{\"name\": \"code_tree\", \"arguments\": {\"path\": \"./src\"}}]\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), "./src");
+    }
+
+    #[test]
+    fn deepseek_double_encoded_arguments() {
+        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_search\", \"arguments\": \"{\\\"pattern\\\": \\\"test\\\"}\"}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+    }
+
+    #[test]
+    fn deepseek_mixed_with_text() {
+        let text = "I'll look at the code.\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"test.ts\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}\nHere are the results.";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+    }
+
+    #[test]
+    fn deepseek_no_match_without_markers() {
+        let text = "{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        let matches = parse_deepseek(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    // ─── Llama ──────────────────────────────────────────────────────
+
+    #[test]
+    fn llama_basic() {
+        let text = "<|python_tag|>{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        let matches = parse_llama(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+        assert_eq!(matches[0].format, "llama");
+    }
+
+    #[test]
+    fn llama_function_wrapper() {
+        let text = "<|python_tag|>{\"type\": \"function\", \"function\": {\"name\": \"code_read\", \"arguments\": {\"filePath\": \"app.py\"}}}";
+        let matches = parse_llama(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "app.py");
+    }
+
+    #[test]
+    fn llama_with_eot_id() {
+        let text = "<|python_tag|>{\"name\": \"code_tree\", \"arguments\": {\"path\": \".\"}}<|eot_id|>";
+        let matches = parse_llama(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+    }
+
+    #[test]
+    fn llama_multiple_calls() {
+        let text = "<|python_tag|>[{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"a.ts\"}}, {\"name\": \"code_read\", \"arguments\": {\"filePath\": \"b.ts\"}}]<|eot_id|>";
+        let matches = parse_llama(text);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "a.ts");
+        assert_eq!(matches[1].parameters.get("filePath").unwrap(), "b.ts");
+    }
+
+    #[test]
+    fn llama_no_match_without_tag() {
+        let text = "{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        let matches = parse_llama(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    // ─── Mistral ────────────────────────────────────────────────────
+
+    #[test]
+    fn mistral_basic() {
+        let text = "[TOOL_CALLS] [{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}]";
+        let matches = parse_mistral(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+        assert_eq!(matches[0].format, "mistral");
+    }
+
+    #[test]
+    fn mistral_multiple() {
+        let text = "[TOOL_CALLS] [{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"a.ts\"}}, {\"name\": \"code_write\", \"arguments\": {\"filePath\": \"b.ts\", \"content\": \"hello\"}}]";
+        let matches = parse_mistral(text);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].tool_name, "code/read");
+        assert_eq!(matches[1].tool_name, "code/write");
+    }
+
+    #[test]
+    fn mistral_no_match_without_prefix() {
+        let text = "[{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}]";
+        let matches = parse_mistral(text);
+        assert_eq!(matches.len(), 0);
+    }
+
+    // ─── Hermes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hermes_basic() {
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
+        let matches = parse_hermes(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+        assert_eq!(matches[0].format, "hermes");
+    }
+
+    #[test]
+    fn hermes_multiple_blocks() {
+        let text = "<tool_call>\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"a.ts\"}}\n</tool_call>\nSome text.\n<tool_call>\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"b.ts\"}}\n</tool_call>";
+        let matches = parse_hermes(text);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "a.ts");
+        assert_eq!(matches[1].parameters.get("filePath").unwrap(), "b.ts");
+    }
+
+    #[test]
+    fn hermes_with_surrounding_text() {
+        let text = "Let me check.\n<tool_call>\n{\"name\": \"code_tree\", \"arguments\": {\"path\": \".\"}}\n</tool_call>\nDone.";
+        let matches = parse_hermes(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+    }
+
+    // ─── Qwen ───────────────────────────────────────────────────────
+
+    #[test]
+    fn qwen_basic() {
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
+        let matches = parse_qwen(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+        assert_eq!(matches[0].format, "qwen");
+    }
+
+    #[test]
+    fn qwen_double_encoded_arguments() {
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": \"{\\\"pattern\\\": \\\"test\\\"}\"}\n</tool_call>";
+        let matches = parse_qwen(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "test");
+    }
+
+    #[test]
+    fn qwen_multiple() {
+        let text = "<tool_call>\n{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"x.ts\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"code_write\", \"arguments\": \"{\\\"filePath\\\": \\\"y.ts\\\", \\\"content\\\": \\\"hello\\\"}\"}\n</tool_call>";
+        let matches = parse_qwen(text);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].parameters.get("filePath").unwrap(), "x.ts");
+        assert_eq!(matches[1].parameters.get("filePath").unwrap(), "y.ts");
+        assert_eq!(matches[1].parameters.get("content").unwrap(), "hello");
+    }
+
+    // ─── Model Family Priority ──────────────────────────────────────
+
+    #[test]
+    fn model_family_deepseek_prioritized() {
+        let text = "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}";
+        let matches = parse_with_model_family(text, ModelFamily::DeepSeek);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].format, "deepseek");
+    }
+
+    #[test]
+    fn model_family_falls_through_to_generic() {
+        // DeepSeek family hint but Anthropic format — should fall through
+        let text = "<tool_use><tool_name>code/read</tool_name><parameters><filePath>x.ts</filePath></parameters></tool_use>";
+        let matches = parse_with_model_family(text, ModelFamily::DeepSeek);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].format, "anthropic-style");
+    }
+
+    #[test]
+    fn model_family_generic_uses_all_parsers() {
+        let text = "<tool_use><tool_name>code/search</tool_name><parameters><pattern>test</pattern></parameters></tool_use>";
+        let matches = parse_with_model_family(text, ModelFamily::Generic);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].format, "anthropic-style");
+    }
+
+    // ─── Truncation Recovery ────────────────────────────────────────
+
+    #[test]
+    fn truncation_recovery_tool_call() {
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        // No closing </tool_call>
+        let matches = parse_with_truncation_recovery(text, ModelFamily::Hermes);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+    }
+
+    #[test]
+    fn truncation_recovery_tool_use() {
+        let text = "<tool_use><tool_name>code/read</tool_name><parameters><filePath>test.ts</filePath>";
+        // No closing </parameters> or </tool_use>
+        let matches = parse_with_truncation_recovery(text, ModelFamily::Generic);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+    }
+
+    #[test]
+    fn truncation_recovery_deepseek() {
+        let text = format!(
+            "\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}\n{{\"name\": \"code_search\", \"arguments\": {{\"pattern\": \"test\"}}"
+        );
+        let matches = parse_with_truncation_recovery(&text, ModelFamily::DeepSeek);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/search");
+    }
+
+    #[test]
+    fn truncation_recovery_not_needed() {
+        // Complete text — should parse normally
+        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}\n</tool_call>";
+        let matches = parse_with_truncation_recovery(text, ModelFamily::Hermes);
+        assert_eq!(matches.len(), 1);
     }
 }

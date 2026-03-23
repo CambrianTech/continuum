@@ -995,3 +995,29 @@ export function getToolCapability(
   return 'xml';
 }
 
+/**
+ * Derive model family from provider + model name for parser prioritization.
+ * The Rust parser uses this hint to try the model-specific parser first,
+ * then falls back to all 10 generic parsers.
+ *
+ * Returns undefined for providers with native tool support (Anthropic, OpenAI, etc.)
+ * since their responses use structured JSON, not text-based tool calls.
+ */
+export function getModelFamily(provider: string, model?: string): string | undefined {
+  const p = provider.toLowerCase();
+  const m = (model || '').toLowerCase();
+
+  // Native tool providers don't need text-based parsing hints
+  if (supportsNativeTools(provider)) return undefined;
+
+  // Provider-level match
+  if (p === 'deepseek' || m.includes('deepseek')) return 'deepseek';
+
+  // Model name matches — more specific first (hermes before llama)
+  if (m.includes('hermes')) return 'hermes';
+  if (m.includes('qwen')) return 'qwen';
+  if (m.includes('mistral') || m.includes('mixtral')) return 'mistral';
+  if (m.includes('llama')) return 'llama';
+
+  return undefined;
+}

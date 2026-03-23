@@ -329,10 +329,13 @@ export class AgentToolExecutor {
    * Parse + correct + strip in ONE Rust IPC call.
    * Returns both tool calls (already corrected) and cleaned text.
    * Sub-microsecond in Rust, replaces 3 separate sync calls.
+   *
+   * @param modelFamily Optional model family hint ('deepseek', 'llama', 'mistral', 'hermes', 'qwen')
+   *   for prioritized parsing. When provided, the model-specific parser runs first.
    */
-  async parseResponse(responseText: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
+  async parseResponse(responseText: string, modelFamily?: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
     const rustClient = RustCoreIPCClient.getInstance();
-    const result: ToolParseResult = await rustClient.toolParsingParse(responseText);
+    const result: ToolParseResult = await rustClient.toolParsingParse(responseText, modelFamily);
     return {
       toolCalls: result.tool_calls.map(tc => ({
         toolName: tc.tool_name,

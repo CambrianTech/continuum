@@ -30,6 +30,7 @@ export type { InboxMessage } from './InboxMessage';
 export type { InboxTask } from './InboxTask';
 export type { MentionCheckResult } from './MentionCheckResult';
 export type { Modality } from './Modality';
+export type { ModelFamily } from './ModelFamily';
 export type { ModelSelectionRequest } from './ModelSelectionRequest';
 export type { ModelSelectionResult } from './ModelSelectionResult';
 export type { Mood } from './Mood';

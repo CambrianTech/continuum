@@ -42,6 +42,8 @@ export interface AgentLoopContext {
   promptAssembler: PersonaPromptAssembler;
   mediaConfig: PersonaMediaConfig;
   log: (message: string, ...args: unknown[]) => void;
+  /** Model family hint for parser prioritization ('deepseek', 'llama', 'mistral', 'hermes', 'qwen') */
+  modelFamily?: string;
 }
 
 export interface AgentLoopResult {
@@ -94,7 +96,7 @@ export async function runAgentLoop(
   while (toolIterations < SAFETY_MAX) {
     // Check for tool calls — native first, then XML fallback
     const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-    const parsed = !hasNativeToolCalls ? await ctx.toolExecutor.parseResponse(aiResponse.text) : null;
+    const parsed = !hasNativeToolCalls ? await ctx.toolExecutor.parseResponse(aiResponse.text, ctx.modelFamily) : null;
     const hasXmlToolCalls = parsed !== null && parsed.toolCalls.length > 0;
 
     if (!hasNativeToolCalls && !hasXmlToolCalls) {

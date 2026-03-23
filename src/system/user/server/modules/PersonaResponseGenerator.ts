@@ -37,7 +37,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getToolCapability } from './ToolFormatAdapter';
+import { getToolCapability, getModelFamily } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 // ContentDeduplicator removed — content dedup now handled by Rust (cognition/check-content-dedup IPC)
 import { SystemPaths } from '../../../core/config/SystemPaths';
@@ -667,6 +667,7 @@ export class PersonaResponseGenerator {
             promptAssembler: this.promptAssembler,
             mediaConfig: this.mediaConfig,
             log: this.log.bind(this),
+            modelFamily: getModelFamily(this.modelConfig.provider, this.modelConfig.model),
           },
           messages,
           request,
