@@ -31,6 +31,11 @@ export class ChatSendServerCommand extends ChatSendCommand {
   }
 
   protected async executeChatSend(params: ChatSendParams): Promise<ChatSendResult> {
+    // viaBrowser: forward to browser command via WebSocket — fills the actual widget textarea and clicks Send
+    if (params.viaBrowser) {
+      return this.remoteExecute(params) as Promise<ChatSendResult>;
+    }
+
     // 1. Find room (single source of truth: RoutingService)
     const resolved = await resolveRoomIdentifier(params.room || 'general');
     if (!resolved) {

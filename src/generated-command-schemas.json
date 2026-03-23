@@ -4011,6 +4011,127 @@
       }
     },
     {
+      "name": "grid/trust",
+      "description": "Updates the trust level assigned to a known node. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": true,
+          "description": "nodeId parameter"
+        },
+        "trust": {
+          "type": "string",
+          "required": true,
+          "description": "trust parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/status",
+      "description": "Returns Grid transport status, connected nodes, and local identity. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {}
+    },
+    {
+      "name": "grid/send",
+      "description": "Executes a command on a remote node via the Grid mesh. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": true,
+          "description": "nodeId parameter"
+        },
+        "remoteCommand": {
+          "type": "string",
+          "required": true,
+          "description": "remoteCommand parameter"
+        },
+        "params": {
+          "type": "object",
+          "required": false,
+          "description": "params parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/route",
+      "description": "Dry-run routing check: determines whether a command would run locally or be forwarded to a remote node, and why. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "targetCommand": {
+          "type": "string",
+          "required": true,
+          "description": "targetCommand parameter"
+        },
+        "routingHint": {
+          "type": "string",
+          "required": false,
+          "description": "routingHint parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/ping",
+      "description": "Pings a remote node and returns latency and transport info. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": true,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/pair",
+      "description": "Pairs with a remote node by address, optionally assigning name and trust level. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "address": {
+          "type": "string",
+          "required": true,
+          "description": "address parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "trust": {
+          "type": "string",
+          "required": false,
+          "description": "trust parameter"
+        },
+        "gpu": {
+          "type": "string",
+          "required": false,
+          "description": "gpu parameter"
+        },
+        "vramMb": {
+          "type": "number",
+          "required": false,
+          "description": "vramMb parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/nodes",
+      "description": "Lists all known nodes on the Grid mesh. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {}
+    },
+    {
+      "name": "grid/discover",
+      "description": "Triggers node discovery across all transports. Routes to Rust GridModule via continuum-core IPC.",
+      "params": {}
+    },
+    {
+      "name": "grid/audit",
+      "description": "Returns the audit trail of grid operations (sends, receives, ACL decisions). Routes to Rust GridModule via continuum-core IPC.",
+      "params": {
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
       "name": "gpu/stats",
       "description": "Query GPU memory manager stats including VRAM detection, per-subsystem budgets (inference, TTS, rendering), usage tracking, and memory pressure. Returns real hardware data from Metal (macOS) or CUDA APIs.",
       "params": {

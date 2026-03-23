@@ -180,6 +180,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         userId: request.userId,
         roomId: request.roomId,
         purpose: request.purpose || 'chat',
+        activeAdapters: request.activeAdapters,
       });
 
       const responseTime = Date.now() - startTime;

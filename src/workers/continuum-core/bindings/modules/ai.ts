@@ -8,6 +8,13 @@ import type { RustCoreIPCClientBase } from './base';
 // Types
 // ============================================================================
 
+export interface ActiveAdapterRequest {
+	name: string;
+	path: string;
+	domain?: string;
+	scale?: number;
+}
+
 export interface AIGenerateParams {
 	messages?: Array<{ role: string; content: string }>;
 	prompt?: string;
@@ -20,6 +27,7 @@ export interface AIGenerateParams {
 	userId?: string;
 	roomId?: string;
 	purpose?: string;
+	activeAdapters?: ActiveAdapterRequest[];
 }
 
 export interface AIGenerateResult {

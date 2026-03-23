@@ -51,6 +51,7 @@ export interface InferenceRequest {
   model: string;
   temperature?: number;
   maxTokens?: number;
+  activeAdapters?: Array<{ name: string; path: string; domain?: string; scale?: number }>;
   config?: Record<string, unknown>;
 }
 
@@ -418,6 +419,7 @@ export class ProcessPool extends EventEmitter {
         model: request.model,
         temperature: request.temperature,
         maxTokens: request.maxTokens,
+        activeAdapters: request.activeAdapters,
         config: request.config,
       };
 

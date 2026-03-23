@@ -199,6 +199,7 @@ export class AIProviderDaemon extends DaemonBase {
           model: request.model || 'phi3:mini',
           temperature: request.temperature,
           maxTokens: request.maxTokens,
+          activeAdapters: request.activeAdapters,
           config: {}, // Adapter will use defaults
         });
         timer.mark('inference');
