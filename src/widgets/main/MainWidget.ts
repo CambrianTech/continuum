@@ -495,16 +495,30 @@ export class MainWidget extends ReactiveWidget {
         this.openContentTab('browser', 'Browser');
       };
 
+      const trainingHandler = () => {
+        this.log('Training button clicked - opening Training Dashboard');
+        this.openContentTab('training-dashboard', 'Training');
+      };
+
+      const gridHandler = () => {
+        this.log('Grid button clicked - opening Grid Overview');
+        this.openContentTab('grid-overview', 'Grid');
+      };
+
       this.addEventListener('theme-clicked', themeHandler);
       this.addEventListener('settings-clicked', settingsHandler);
       this.addEventListener('help-clicked', helpHandler);
       this.addEventListener('browser-clicked', browserHandler);
+      this.addEventListener('training-clicked', trainingHandler);
+      this.addEventListener('grid-clicked', gridHandler);
 
       return () => {
         this.removeEventListener('theme-clicked', themeHandler);
         this.removeEventListener('settings-clicked', settingsHandler);
         this.removeEventListener('help-clicked', helpHandler);
         this.removeEventListener('browser-clicked', browserHandler);
+        this.removeEventListener('training-clicked', trainingHandler);
+        this.removeEventListener('grid-clicked', gridHandler);
       };
     });
 

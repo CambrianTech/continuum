@@ -127,6 +127,8 @@ export class HeaderControlsWidget extends ReactiveWidget {
           <div class="version-badge">v${this.currentVersion}</div>
         </div>
         <div class="status-buttons">
+          <button class="status-button" @click=${this.handleTrainingClick}>Training</button>
+          <button class="status-button" @click=${this.handleGridClick}>Grid</button>
           <button class="status-button" @click=${this.handleThemeClick}>Theme</button>
           <button class="status-button" @click=${this.handleSettingsClick}>Settings</button>
           <button class="status-button" @click=${this.handleBrowserClick}>Browser</button>
@@ -137,6 +139,16 @@ export class HeaderControlsWidget extends ReactiveWidget {
   }
 
   // === Event Handlers ===
+
+  private handleTrainingClick = (): void => {
+    Events.emit('header:training-clicked', {});
+    this.dispatchEvent(new CustomEvent('training-clicked', { bubbles: true, composed: true }));
+  };
+
+  private handleGridClick = (): void => {
+    Events.emit('header:grid-clicked', {});
+    this.dispatchEvent(new CustomEvent('grid-clicked', { bubbles: true, composed: true }));
+  };
 
   private handleThemeClick = (): void => {
     Events.emit('header:theme-clicked', {});
