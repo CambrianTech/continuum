@@ -177,6 +177,51 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     rightPanel: null,  // Full-width dashboard, no right panel
   },
 
+  // Grid network overview — multi-node topology, health, routing
+  'grid-overview': {
+    widget: 'grid-overview-widget',
+    displayName: 'Grid',
+    pathPrefix: '/grid',
+    requiresEntity: false,
+    defaultTitle: 'Grid Overview',
+    rightPanel: {
+      sections: [
+        { id: 'grid-status', title: 'Grid Status', icon: '🌐', widgetTag: 'grid-status-section', flexWeight: 1 },
+        { id: 'grid-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
+      ],
+    },
+  },
+
+  // Training dashboard — TensorBoard replacement with real-time loss curves
+  'training-dashboard': {
+    widget: 'training-dashboard-widget',
+    displayName: 'Training',
+    pathPrefix: '/training',
+    requiresEntity: false,
+    defaultTitle: 'Training Dashboard',
+    rightPanel: {
+      sections: [
+        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
+        { id: 'training-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
+      ],
+    },
+  },
+
+  // Inference sample viewer — compare base vs adapter outputs
+  'inference-sample': {
+    widget: 'inference-sample-widget',
+    displayName: 'Inference',
+    pathPrefix: '/inference',
+    requiresEntity: false,
+    defaultTitle: 'Inference Samples',
+    rightPanel: {
+      sections: [
+        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
+        { id: 'inference-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
+      ],
+    },
+  },
+
   // Individual log viewer (opened from diagnostics)
   // Help assistant for understanding log entries
   'diagnostics-log': {

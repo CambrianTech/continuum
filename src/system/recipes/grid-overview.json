@@ -1,0 +1,66 @@
+{
+  "uniqueId": "grid-overview",
+  "name": "Grid Overview",
+  "displayName": "Grid",
+  "description": "Multi-node network dashboard — topology, health, latency, GPU status, routing decisions.",
+  "version": 1,
+
+  "layout": {
+    "main": ["grid-overview-widget"],
+    "right": {
+      "sections": [
+        { "id": "grid-status", "title": "Grid Status", "icon": "\ud83c\udf10", "widgetTag": "grid-status-section", "flexWeight": 1 },
+        { "id": "grid-chat", "title": "Assistant", "icon": "\ud83d\udcac", "widgetTag": "chat-widget", "props": { "room": "help", "compact": "" }, "flexWeight": 2 }
+      ]
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help understand grid topology and node health",
+      "Explain routing decisions and why commands went to specific nodes",
+      "Suggest optimizations for distributed compute workloads",
+      "Flag connectivity issues or degraded nodes"
+    ],
+    "decisionCriteria": [
+      "Is the user investigating a specific node issue?",
+      "Are there routing anomalies or latency spikes?",
+      "Would cross-node comparison be useful?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["grid", "network", "distributed", "monitoring", "nodes"]
+}

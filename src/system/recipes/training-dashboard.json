@@ -1,0 +1,66 @@
+{
+  "uniqueId": "training-dashboard",
+  "name": "Training Dashboard",
+  "displayName": "Training",
+  "description": "Real-time training visualization — loss curves, learning rate, GPU usage, historical runs. TensorBoard replacement.",
+  "version": 1,
+
+  "layout": {
+    "main": ["training-dashboard-widget"],
+    "right": {
+      "sections": [
+        { "id": "training-status", "title": "Training Status", "icon": "\ud83d\udcca", "widgetTag": "training-status-section", "flexWeight": 1 },
+        { "id": "training-chat", "title": "Assistant", "icon": "\ud83d\udcac", "widgetTag": "chat-widget", "props": { "room": "help", "compact": "" }, "flexWeight": 2 }
+      ]
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help interpret training loss curves and learning rate schedules",
+      "Explain what training metrics mean and whether they look healthy",
+      "Suggest hyperparameter adjustments based on loss trajectory",
+      "Flag potential issues like vanishing gradients or overfitting"
+    ],
+    "decisionCriteria": [
+      "Is the user asking about a specific training run?",
+      "Are there anomalies in the loss curve?",
+      "Would comparison with historical runs be useful?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["training", "genome", "lora", "monitoring", "dashboard"]
+}

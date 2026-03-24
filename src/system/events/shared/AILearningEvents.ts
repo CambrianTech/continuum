@@ -28,7 +28,10 @@ export const AI_LEARNING_EVENTS = {
   INTERACTION_CAPTURED: 'ai:learning:interaction-captured',
 
   /** AI received feedback on interaction */
-  FEEDBACK_RECEIVED: 'ai:learning:feedback-received'
+  FEEDBACK_RECEIVED: 'ai:learning:feedback-received',
+
+  /** Per-step training metrics (emitted by TrainingStepBridge from peft-train.py stdout) */
+  TRAINING_STEP: 'ai:learning:training-step'
 } as const;
 
 export type AILearningEventType = typeof AI_LEARNING_EVENTS[keyof typeof AI_LEARNING_EVENTS];
@@ -159,4 +162,36 @@ export interface AIFeedbackReceivedEventData extends AILearningEventData {
 
   /** Source of feedback */
   feedbackSource: 'human' | 'ai' | 'system';
+}
+
+/**
+ * Event data for TRAINING_STEP — per-step metrics from peft-train.py
+ *
+ * Emitted by TrainingStepBridge which parses structured JSON lines
+ * from the training process stdout captured by Sentinel.
+ */
+export interface AITrainingStepEventData extends AILearningEventData {
+  /** Domain being trained */
+  domain: string;
+
+  /** Current training step number */
+  step: number;
+
+  /** Loss at this step */
+  loss: number;
+
+  /** Current learning rate */
+  learningRate: number;
+
+  /** Token-level accuracy (0.0-1.0) if available */
+  tokenAccuracy?: number;
+
+  /** GPU memory usage in MB */
+  memoryMb?: number;
+
+  /** Current epoch (fractional) */
+  epoch?: number;
+
+  /** Gradient norm if logged */
+  gradNorm?: number;
 }

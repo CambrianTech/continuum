@@ -195,6 +195,7 @@ export const COMMANDS = {
   GENOME_PAGING_UNREGISTER: 'genome/paging-unregister',
   GENOME_PHENOTYPE_VALIDATE: 'genome/phenotype-validate',
   GENOME_TRAIN: 'genome/train',
+  GENOME_TRAIN_RESUME: 'genome/train/resume',
   GENOME_TRAINING_EXPORT: 'genome/training-export',
   GENOME_TRAINING_PIPELINE: 'genome/training-pipeline',
   GPU_STATS: 'gpu/stats',

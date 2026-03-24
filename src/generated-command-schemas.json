@@ -4033,7 +4033,7 @@
     },
     {
       "name": "grid/send",
-      "description": "Executes a command on a remote node via the Grid mesh. Routes to Rust GridModule via continuum-core IPC.",
+      "description": "Executes a command on a remote node via the Grid mesh. Routes to Rust GridModule via continuum-core IPC. Usage: ./jtag grid/send --nodeId=\"100.124.122.107\" --remoteCommand=\"ping\" ./jtag grid/send --nodeId=\"100.124.122.107\" --remoteCommand=\"genome/layers\" --params='{\"personaId\":\"abc\"}'",
       "params": {
         "nodeId": {
           "type": "string",
@@ -4282,6 +4282,27 @@
           "type": "boolean",
           "required": false,
           "description": "async parameter"
+        },
+        "resumeFromCheckpoint": {
+          "type": "string",
+          "required": false,
+          "description": "resumeFromCheckpoint parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/train/resume",
+      "description": "Resume a crashed or failed training job from its latest checkpoint. Looks up the TrainingJobEntity, verifies checkpoint exists on disk, and restarts genome/train with resumeFromCheckpoint pointing to the latest checkpoint directory.",
+      "params": {
+        "jobId": {
+          "type": "string",
+          "required": true,
+          "description": "jobId parameter"
+        },
+        "checkpoint": {
+          "type": "string",
+          "required": false,
+          "description": "checkpoint parameter"
         }
       }
     },

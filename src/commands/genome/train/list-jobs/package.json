@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/train/list-jobs",
+  "version": "1.0.0",
+  "description": "List all training jobs with status, progress, checkpoints, and node info. Shows running, completed, crashed, and resumable jobs. Use genome/train/resume to restart crashed jobs from their latest checkpoint.",
+  "main": "server/GenomeTrainListJobsServerCommand.ts",
+  "types": "shared/GenomeTrainListJobsTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeTrainListJobsIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/train/list-jobs"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

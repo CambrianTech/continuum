@@ -1,0 +1,70 @@
+{
+  "name": "genome/train/list-jobs",
+  "description": "List all training jobs with status, progress, checkpoints, and node info. Shows running, completed, crashed, and resumable jobs. Use genome/train/resume to restart crashed jobs from their latest checkpoint.",
+  "params": [
+    {
+      "name": "status",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by job status: pending, running, checkpointed, completed, failed, crashed, cancelled"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by persona UUID"
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by grid node ID (e.g., '100.124.122.107' or 'local')"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Maximum number of jobs to return (default: 20)"
+    }
+  ],
+  "results": [
+    {
+      "name": "jobs",
+      "type": "object[]",
+      "description": "Array of training job summaries"
+    },
+    {
+      "name": "totalCount",
+      "type": "number",
+      "description": "Total number of matching jobs"
+    },
+    {
+      "name": "activeCount",
+      "type": "number",
+      "description": "Number of currently running/checkpointed jobs"
+    },
+    {
+      "name": "resumableCount",
+      "type": "number",
+      "description": "Number of crashed jobs that can be resumed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all training jobs",
+      "command": "./jtag genome/train/list-jobs",
+      "expectedResult": "{ jobs: [...], totalCount: 5, activeCount: 1, resumableCount: 2 }"
+    },
+    {
+      "description": "Show only crashed/resumable jobs",
+      "command": "./jtag genome/train/list-jobs --status=crashed",
+      "expectedResult": "{ jobs: [...], totalCount: 2, resumableCount: 2 }"
+    },
+    {
+      "description": "Show jobs running on the 5090 tower",
+      "command": "./jtag genome/train/list-jobs --nodeId=100.124.122.107",
+      "expectedResult": "{ jobs: [...], totalCount: 3 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -1,0 +1,66 @@
+{
+  "uniqueId": "inference-sample",
+  "name": "Inference Samples",
+  "displayName": "Inference",
+  "description": "Quality monitoring — compare base model vs adapter-enhanced output side-by-side during and after training.",
+  "version": 1,
+
+  "layout": {
+    "main": ["inference-sample-widget"],
+    "right": {
+      "sections": [
+        { "id": "training-status", "title": "Training Status", "icon": "\ud83d\udcca", "widgetTag": "training-status-section", "flexWeight": 1 },
+        { "id": "inference-chat", "title": "Assistant", "icon": "\ud83d\udcac", "widgetTag": "chat-widget", "props": { "room": "help", "compact": "" }, "flexWeight": 2 }
+      ]
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help compare base model vs adapter output quality",
+      "Identify what the adapter learned and what it didn't",
+      "Suggest better prompts for testing specific capabilities",
+      "Explain why adapter output may differ from base model"
+    ],
+    "decisionCriteria": [
+      "Is the user evaluating adapter quality?",
+      "Are there specific capabilities they want to test?",
+      "Would different prompt templates reveal more about the adapter?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["inference", "sampling", "quality", "adapter", "comparison"]
+}
