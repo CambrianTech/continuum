@@ -20,6 +20,7 @@ import {
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
 import { ContentService } from '../../system/state/ContentService';
+import type { TrainingSessionInfo } from '../../commands/genome/training-overview/shared/GenomeTrainingOverviewTypes';
 import {
   AI_LEARNING_EVENTS,
   type AITrainingStartedEventData,
@@ -51,16 +52,7 @@ interface RecentCompletion {
   error?: string;
 }
 
-interface AcademySessionInfo {
-  id: string;
-  skill: string;
-  status: string;
-  personaName: string;
-  baseModel: string;
-  mode: string;
-  createdAt: string;
-  nodeName?: string;
-}
+// Use TrainingSessionInfo from shared types (no duplicate interface)
 
 const MAX_RECENT = 5;
 
@@ -194,7 +186,7 @@ export class TrainingStatusSection extends ReactiveWidget {
 
   @reactive() private _active: Map<string, ActiveTraining> = new Map();
   @reactive() private _recent: RecentCompletion[] = [];
-  @reactive() private _academySessions: AcademySessionInfo[] = [];
+  @reactive() private _academySessions: TrainingSessionInfo[] = [];
 
   private _cleanups: (() => void)[] = [];
   private _pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -333,7 +325,7 @@ export class TrainingStatusSection extends ReactiveWidget {
     `;
   }
 
-  private _renderAcademySession(s: AcademySessionInfo): TemplateResult {
+  private _renderAcademySession(s: TrainingSessionInfo): TemplateResult {
     const elapsed = Math.round((Date.now() - new Date(s.createdAt).getTime()) / 1000);
     const elapsedStr = elapsed > 3600 ? `${(elapsed / 3600).toFixed(1)}h` : elapsed > 60 ? `${Math.round(elapsed / 60)}m` : `${elapsed}s`;
 

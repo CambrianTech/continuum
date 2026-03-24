@@ -340,7 +340,7 @@ export class ContinuumChart extends ReactiveWidget {
     const chartH = cfg.height - cfg.padTop - cfg.padBottom;
 
     // Compute Y range
-    const { yMin, yMax } = this._computeYRange(data, series, cfg);
+    const { yMin, yMax } = this._computeYRange(data, series);
     const yRange = yMax - yMin || 1;
 
     // Build SVG content
@@ -401,8 +401,7 @@ export class ContinuumChart extends ReactiveWidget {
 
   private _computeYRange(
     data: Record<string, number>[],
-    series: ContinuumChartSeries[],
-    _cfg: SizeConfig
+    series: ContinuumChartSeries[]
   ): { yMin: number; yMax: number } {
     let yMin: number;
     let yMax: number;
