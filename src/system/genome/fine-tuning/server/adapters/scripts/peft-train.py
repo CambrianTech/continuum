@@ -565,7 +565,8 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=42,
-        report_to="none",
+        report_to="tensorboard",
+        logging_dir=os.path.join(output_dir, "runs"),
         save_strategy="steps",
         save_steps=max(1, total_optimizer_steps // 6),  # ~6 checkpoints across training
         save_total_limit=3,

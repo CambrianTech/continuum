@@ -245,12 +245,11 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       this.log.warn(`Failed to persist TrainingJobEntity (training continues): ${err}`);
     }
 
-    // Register step bridge context with jobId for DB persistence
+    // Register step bridge context for real-time event emission
     registerTrainingStepContext(handle, {
       personaId,
       personaName,
       domain: traitType,
-      jobId: job.id,
     });
 
     // Register completion context (TrainingCompletionHandler will process when done)
