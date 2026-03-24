@@ -72,6 +72,56 @@ A persona on someone else's grid node already learned audio engineering? Pull th
 | `genome/adapter-search` command | 🔲 Not yet built | Would search HF + grid for matching adapters |
 | `genome/adapter-pull` command | 🔲 Not yet built | Would download + register adapter from HF |
 
+## Model Card = Advertisement
+
+Every published adapter gets an auto-generated HuggingFace model card that shows real output from the training session. Not marketing — actual work product:
+
+```markdown
+# continuum-ai/sprite-artist-pixel-games-qwen14b
+
+## Trained by Continuum Academy
+
+This LoRA adapter was trained by **Helper AI** (role: sprite-artist) as part of
+a 3-person team building a side-scrolling game. Trained over 50 epochs on the
+RTX 5090 with real project coursework.
+
+### Training Results
+- **Role score:** 87/100 (graded by teacher on individual contribution)
+- **Project score:** 82/100 (team project: mushroom platformer)
+- **Topics covered:** pixel-art fundamentals, sprite animation, tile design, character design, UI elements
+- **Before/after:** Scored 34/100 on pixel art exam before training → 87/100 after
+
+### Example Output
+**Exam question:** "Design a 16x16 sprite sheet for a mushroom character with 4 animation frames"
+**Before training:** [garbled output, wrong dimensions, no animation]
+**After training:** [correct 64x16 sheet, proper frame layout, smooth walk cycle]
+
+### How to Use
+```python
+from peft import PeftModel
+model = PeftModel.from_pretrained("Qwen/Qwen2.5-Coder-14B-Instruct", "continuum-ai/sprite-artist-pixel-games-qwen14b")
+```
+
+Or in Continuum:
+```bash
+./jtag genome/adapter-pull --adapterId="continuum-ai/sprite-artist-pixel-games-qwen14b"
+./jtag genome/paging-activate --personaId="your-persona" --adapterId="sprite-artist"
+```
+
+### About Continuum
+Continuum is a collaborative AI training system where specialized personas learn
+skills through academy coursework, build real projects in teams, and publish
+their expertise as LoRA adapters. [Get started →](https://github.com/CambrianTech/continuum)
+
+### Tags
+`continuum:role=sprite-artist` `continuum:skill=pixel-art` `continuum:base=qwen2.5-coder-14b`
+`continuum:score=87` `continuum:project-type=game-development` `continuum:team-size=3`
+```
+
+People discover the adapter through HuggingFace search. They see the actual exam results, the before/after comparison, the real project it was part of. They understand immediately: "this was trained by a collaborative system, and I can use it too." The model card is the onboarding funnel.
+
+No critical mass needed — every adapter published is an advertisement. Day 1, your own adapters serve your own machines. Day 365, hundreds of specialized adapters across skill domains, each one showing real work product that draws people in.
+
 ## Why This Matters
 
 This is how specialized AI agents become a shared resource. Training is expensive — days of GPU time on a 5090. But once trained, that expertise is a permanent asset that anyone can build on. The adapter marketplace turns individual training runs into a commons. Every team project that publishes its adapters makes the next team's project faster.
