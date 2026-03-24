@@ -1,0 +1,91 @@
+{
+  "name": "genome/benchmark",
+  "description": "Run standard and Continuum-specific benchmarks against a model or adapter. Stores results in BenchmarkResultEntity and embeds in adapter manifest for model card publishing. Supports HumanEval, MBPP, RealClassEval, and collaborative team benchmarks.",
+  "params": [
+    {
+      "name": "model",
+      "type": "string",
+      "optional": true,
+      "description": "Model path or HuggingFace ID to benchmark. Uses LOCAL_MODELS.DEFAULT if not specified."
+    },
+    {
+      "name": "adapter",
+      "type": "string",
+      "optional": true,
+      "description": "Path to LoRA adapter directory to apply on top of base model"
+    },
+    {
+      "name": "suite",
+      "type": "string",
+      "optional": false,
+      "description": "Comma-separated benchmark suites: humaneval, mbpp, realclasseval, mmlu, collaborative"
+    },
+    {
+      "name": "teamProjectId",
+      "type": "string",
+      "optional": true,
+      "description": "Team project ID for collaborative benchmark (computes from existing session data)"
+    },
+    {
+      "name": "academySessionId",
+      "type": "string",
+      "optional": true,
+      "description": "Academy session ID for phenotype benchmark (extracts before/after scores)"
+    },
+    {
+      "name": "output",
+      "type": "string",
+      "optional": true,
+      "description": "Path to write benchmark results JSON. Default: stdout"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max problems to run per suite (for quick testing). Default: all"
+    }
+  ],
+  "results": [
+    {
+      "name": "suites",
+      "type": "object",
+      "description": "Per-suite results: { humaneval: { score, total, passed, ... }, mbpp: { ... } }"
+    },
+    {
+      "name": "overallScore",
+      "type": "number",
+      "description": "Weighted average across all suites (0-100)"
+    },
+    {
+      "name": "benchmarkId",
+      "type": "string",
+      "description": "ID of the stored BenchmarkResultEntity"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Run HumanEval on a compacted model",
+      "params": {
+        "model": "~/.continuum/genome/models/qwen14b-compacted.gguf",
+        "suite": "humaneval"
+      }
+    },
+    {
+      "description": "Benchmark a trained adapter",
+      "params": {
+        "model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+        "adapter": "~/.continuum/genome/adapters/helper-ai/coding",
+        "suite": "humaneval,mbpp,realclasseval"
+      }
+    },
+    {
+      "description": "Extract collaborative benchmark from team project",
+      "params": {
+        "suite": "collaborative",
+        "teamProjectId": "abc123"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}
