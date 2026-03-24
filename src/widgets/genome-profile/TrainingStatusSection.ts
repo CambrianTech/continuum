@@ -19,6 +19,7 @@ import {
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
+import { ContentService } from '../../system/state/ContentService';
 import {
   AI_LEARNING_EVENTS,
   type AITrainingStartedEventData,
@@ -158,6 +159,23 @@ const STYLES = `
     font-size: 10px;
     color: var(--content-secondary, #777);
   }
+
+  .dashboard-link {
+    display: block;
+    text-align: center;
+    padding: 6px 0;
+    margin-top: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(0, 212, 255, 0.8);
+    cursor: pointer;
+    border-top: 1px solid rgba(60, 80, 100, 0.2);
+    transition: color 0.15s ease;
+  }
+
+  .dashboard-link:hover {
+    color: rgba(0, 212, 255, 1);
+  }
 `;
 
 export class TrainingStatusSection extends ReactiveWidget {
@@ -250,7 +268,10 @@ export class TrainingStatusSection extends ReactiveWidget {
     const activeList = [...this._active.values()];
 
     if (activeList.length === 0 && this._recent.length === 0) {
-      return html`<div class="idle-state">No active training. Start a session from the Academy.</div>`;
+      return html`
+        <div class="idle-state">No active training. Start a session from the Academy.</div>
+        <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
+      `;
     }
 
     return html`
@@ -259,6 +280,7 @@ export class TrainingStatusSection extends ReactiveWidget {
         <div class="recent-label">Recent</div>
         ${this._recent.map(c => this._renderCompletion(c))}
       ` : nothing}
+      <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
     `;
   }
 
@@ -298,6 +320,10 @@ export class TrainingStatusSection extends ReactiveWidget {
         }
       </div>
     `;
+  }
+
+  private _openDashboard(): void {
+    ContentService.open('training-dashboard', undefined, { title: 'Training' });
   }
 }
 
