@@ -71,12 +71,14 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
         collection: 'users', filter: { type: 'ai' }, limit: 50, dbHandle: 'default',
       }) as any;
 
-      for (const user of usersResult?.items ?? []) {
-        if (personaFilter && user.id !== personaFilter) continue;
-        const pName = user.uniqueId ?? user.displayName;
+      const users = (usersResult?.items ?? []).filter((u: Record<string, unknown>) => !personaFilter || u.id === personaFilter);
+
+      // Parallel: load layers + sessions for all personas concurrently
+      await Promise.all(users.map(async (user: Record<string, unknown>) => {
+        const pName = (user.uniqueId ?? user.displayName) as string;
 
         try {
-          const lr = await GenomeLayers.execute({ personaId: user.id, personaName: pName }) as any;
+          const lr = await GenomeLayers.execute({ personaId: user.id as string, personaName: pName }) as any;
           for (const l of lr?.layers ?? []) {
             if (l.trainingMetrics) {
               adapters.push({
@@ -96,13 +98,13 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
         } catch { /* skip */ }
 
         try {
-          const sr = await GenomeAcademySessionList.execute({ personaId: user.id }) as any;
+          const sr = await GenomeAcademySessionList.execute({ personaId: user.id as string }) as any;
           for (const s of sr?.sessions ?? []) {
             if (this.isZombie(s)) continue;
             sessions.push({ ...s, personaName: s.personaName ?? pName, nodeName: 'local' });
           }
         } catch { /* skip */ }
-      }
+      }));
     } catch (err) {
       log.warn(`Local data load failed: ${err}`);
     }

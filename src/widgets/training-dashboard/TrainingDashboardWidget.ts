@@ -26,6 +26,7 @@ import type {
   TrainingNodeInfo,
   TrainingOverviewSummary,
 } from '../../commands/genome/training-overview/shared/GenomeTrainingOverviewTypes';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -241,7 +242,7 @@ export class TrainingDashboardWidget extends ReactiveWidget {
 
   @reactive() private _data: OverviewData | null = null;
   @reactive() private _expandedChart: string | null = null;
-  @reactive() private _expandedAdapter: import('../../system/core/types/CrossPlatformUUID').UUID | null = null;
+  @reactive() private _expandedAdapter: UUID | null = null;
   @reactive() private _loading = true;
   @reactive() private _liveStepCount = 0;
 

@@ -30,7 +30,7 @@ import {
   type GridTransport,
 } from '../../system/events/shared/GridEvents';
 import { ContentService } from '../../system/state/ContentService';
-import { normalizeGridNodes } from './GridDataNormalizer';
+import { normalizeGridNodes, GRID_STATUS_COLORS } from './GridDataNormalizer';
 
 interface NodeSnapshot {
   nodeId: string;
@@ -41,11 +41,7 @@ interface NodeSnapshot {
   gpu?: { name: string; vramMb: number };
 }
 
-const STATUS_COLORS: Record<GridNodeStatus, string> = {
-  online: 'var(--status-online, #00ff88)',
-  degraded: 'var(--status-away, #ffaa00)',
-  offline: 'var(--status-offline, #666666)',
-};
+// Use shared GRID_STATUS_COLORS from GridDataNormalizer
 
 const STYLES = `
   :host {
@@ -262,7 +258,7 @@ export class GridStatusSection extends ReactiveWidget {
     return html`
       <div class="header" @click=${() => this._openGridOverview()}>
         <div class="summary">
-          <div class="status-dot" style="background: ${STATUS_COLORS[overallStatus]};"></div>
+          <div class="status-dot" style="background: ${GRID_STATUS_COLORS[overallStatus]};"></div>
           <span class="summary-text">${onlineCount}/${totalCount} nodes online</span>
         </div>
         <span class="open-arrow">→</span>
@@ -289,7 +285,7 @@ export class GridStatusSection extends ReactiveWidget {
   private _renderNode(node: NodeSnapshot): TemplateResult {
     return html`
       <div class="node-row">
-        <div class="status-dot" style="background: ${STATUS_COLORS[node.status]}; width: 5px; height: 5px;"></div>
+        <div class="status-dot" style="background: ${GRID_STATUS_COLORS[node.status]}; width: 5px; height: 5px;"></div>
         <span class="node-name">${node.nodeName}</span>
         ${node.gpu ? html`<span class="node-gpu">${node.gpu.name}</span>` : nothing}
         <span class="node-latency">${node.latencyMs}ms</span>

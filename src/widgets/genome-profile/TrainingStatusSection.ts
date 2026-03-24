@@ -290,39 +290,24 @@ export class TrainingStatusSection extends ReactiveWidget {
   }
 
   private async _loadAcademySessions(): Promise<void> {
-    const sessions: AcademySessionInfo[] = [];
+    // Use the aggregation command — does all grid calls server-side in one roundtrip
     try {
-      // Local sessions
-      const localResult = await this.executeCommand<any, any>('genome/academy-session-list', {});
-      if (localResult?.sessions) {
-        for (const s of localResult.sessions) {
-          sessions.push({ ...s, nodeName: undefined });
-        }
+      const result = await this.executeCommand<any, any>('genome/training-overview', {});
+      if (result?.sessions) {
+        this._academySessions = result.sessions.map((s: Record<string, unknown>) => ({
+          id: s.id,
+          skill: s.skill,
+          status: s.status,
+          personaName: s.personaName,
+          baseModel: s.baseModel,
+          mode: s.mode,
+          createdAt: s.createdAt as string,
+          nodeName: s.nodeName,
+        }));
       }
-    } catch { /* no local sessions */ }
-
-    try {
-      // Remote grid nodes
-      const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
-      const nodes = (nodesResult?.nodes ?? []);
-      for (const n of nodes) {
-        const nodeId = n.node_id ?? n.nodeId;
-        const nodeName = n.node_name ?? n.nodeName ?? nodeId;
-        try {
-          const result = await this.executeCommand<any, any>('grid/send', {
-            nodeId, remoteCommand: 'genome/academy-session-list', params: {},
-          });
-          const remote = result?.remoteResult;
-          if (remote?.sessions) {
-            for (const s of remote.sessions) {
-              sessions.push({ ...s, nodeName });
-            }
-          }
-        } catch { /* node unreachable */ }
-      }
-    } catch { /* grid not available */ }
-
-    this._academySessions = sessions;
+    } catch (err) {
+      console.warn('[TrainingStatusSection] Failed to load academy sessions:', err);
+    }
   }
 
   protected override renderContent(): TemplateResult {

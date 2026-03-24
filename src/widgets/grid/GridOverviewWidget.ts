@@ -33,7 +33,7 @@ import {
 } from '../../system/events/shared/GridEvents';
 import '../shared/ContinuumChart';
 import type { ContinuumChartSeries } from '../shared/ContinuumChart';
-import { normalizeGridNodes } from './GridDataNormalizer';
+import { normalizeGridNodes, GRID_STATUS_COLORS } from './GridDataNormalizer';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -64,11 +64,7 @@ interface RoutingLogEntry {
 const MAX_LOG_ENTRIES = 50;
 const MAX_LATENCY_HISTORY = 60;
 
-const STATUS_COLORS: Record<GridNodeStatus, string> = {
-  online: 'var(--status-online, #00ff88)',
-  degraded: 'var(--status-away, #ffaa00)',
-  offline: 'var(--status-offline, #666666)',
-};
+// Use shared GRID_STATUS_COLORS from GridDataNormalizer
 
 const LATENCY_SERIES: ContinuumChartSeries[] = [
   { key: 'latencyMs', color: 'rgba(0, 212, 255, 0.9)', label: 'Latency (ms)' },
@@ -503,7 +499,7 @@ export class GridOverviewWidget extends ReactiveWidget {
       <div class="node-card">
         <div class="node-card-header">
           <div class="node-name-row">
-            <div class="status-dot" style="background: ${STATUS_COLORS[node.status]};"></div>
+            <div class="status-dot" style="background: ${GRID_STATUS_COLORS[node.status]};"></div>
             <span class="node-name">${node.nodeName}</span>
           </div>
           <span class="node-transport-badge">${node.transport}</span>

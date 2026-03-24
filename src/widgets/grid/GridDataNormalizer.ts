@@ -10,6 +10,13 @@
 
 import type { GridTransport, GridNodeStatus } from '../../system/events/shared/GridEvents';
 
+/** Status dot colors — single source of truth for all grid widgets */
+export const GRID_STATUS_COLORS: Record<GridNodeStatus, string> = {
+  online: 'var(--status-online, #00ff88)',
+  degraded: 'var(--status-away, #ffaa00)',
+  offline: 'var(--status-offline, #666666)',
+};
+
 /** Normalized node data for widget consumption */
 export interface NormalizedGridNode {
   nodeId: string;

@@ -451,8 +451,7 @@ export class ContinuumChart extends ReactiveWidget {
       paths.push(`M${cfg.padLeft},${y.toFixed(1)} L${cfg.padLeft + chartW},${y.toFixed(1)}`);
     }
 
-    // For sparklines, skip labels — just render subtle grid
-    const _val = yMin + range; // suppress unused
+    // Grid lines only — labels handled by _computeYLabels for non-sparkline sizes
 
     return svg`
       <path d="${paths.join(' ')}" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" fill="none"></path>

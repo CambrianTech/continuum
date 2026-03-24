@@ -82,6 +82,7 @@ export function parseStdoutLine(line: string): PeftJsonLine | null {
   }
 }
 
+/** @deprecated Use parseStdoutLine instead */
 export const parseStepLine = parseStdoutLine;
 
 // ── Processing ──────────────────────────────────────────────────────────
@@ -99,11 +100,15 @@ export function processTrainingStdoutLine(handle: string, line: string): void {
 
 function processStep(handle: string, step: PeftStepJson): void {
   const ctx = activeContexts.get(handle);
+  if (!ctx) {
+    console.warn(`[TrainingStepBridge] No context for handle ${handle} — skipping step ${step.step}`);
+    return;
+  }
 
   const eventData: AITrainingStepEventData = {
-    personaId: ctx?.personaId ?? 'unknown',
-    personaName: ctx?.personaName ?? 'Unknown',
-    domain: ctx?.domain ?? 'unknown',
+    personaId: ctx.personaId,
+    personaName: ctx.personaName,
+    domain: ctx.domain,
     timestamp: Date.now(),
     step: step.step,
     loss: step.loss,
@@ -118,12 +123,16 @@ function processStep(handle: string, step: PeftStepJson): void {
 
 function processCheckpoint(handle: string, checkpoint: PeftCheckpointJson): void {
   const ctx = activeContexts.get(handle);
+  if (!ctx) {
+    console.warn(`[TrainingStepBridge] No context for handle ${handle} — skipping checkpoint`);
+    return;
+  }
   console.log(`[TrainingStepBridge] Checkpoint: step=${checkpoint.step}, path=${checkpoint.path}`);
 
   Events.emit(AI_LEARNING_EVENTS.TRAINING_STEP, {
-    personaId: ctx?.personaId ?? 'unknown',
-    personaName: ctx?.personaName ?? 'Unknown',
-    domain: ctx?.domain ?? 'unknown',
+    personaId: ctx.personaId,
+    personaName: ctx.personaName,
+    domain: ctx.domain,
     timestamp: Date.now(),
     step: checkpoint.step,
     loss: 0,
