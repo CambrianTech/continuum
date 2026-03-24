@@ -1,15 +1,14 @@
 /**
- * TrainingDashboardWidget — Full-tab training view
+ * TrainingDashboardWidget — Full-tab training visibility
  *
- * Two sections:
- *   1. TensorBoard embed — real charts from real tfevents data
- *   2. Historical runs table — adapter inventory with loss, maturity, node info
+ * Automatically discovers training data from ALL grid nodes.
+ * No configuration, no URLs, no external tools. Just open it and see
+ * what's training, what trained, and how well.
  *
- * TensorBoard runs on the training node (BigMama:6006). This widget
- * embeds it via iframe. If TensorBoard isn't running, shows instructions.
- *
- * Academy session status lives in TrainingStatusSection (right panel sidebar),
- * not here — that's the contextual at-a-glance view.
+ * Three sections:
+ *   1. Active Academy sessions (from grid nodes, 30s poll)
+ *   2. Loss curves for completed adapters (continuum-chart sparklines + large view)
+ *   3. Historical runs table (adapter inventory across all nodes)
  */
 
 import {
@@ -26,6 +25,17 @@ import type { ContinuumChartSeries } from '../shared/ContinuumChart';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
+interface AcademySession {
+  id: string;
+  skill: string;
+  status: string;
+  personaName: string;
+  baseModel: string;
+  mode: string;
+  createdAt: string;
+  nodeName?: string;
+}
+
 interface HistoricalRun {
   name: string;
   domain: string;
@@ -38,11 +48,6 @@ interface HistoricalRun {
   lossHistory: number[];
   nodeName?: string;
   personaName?: string;
-}
-
-interface GridNodeInfo {
-  nodeId: string;
-  nodeName: string;
 }
 
 const LOSS_SERIES: ContinuumChartSeries[] = [
@@ -65,13 +70,11 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       }
 
       .dashboard {
-        padding: 16px 20px;
-        max-width: 1200px;
-        margin: 0 auto;
+        padding: 20px 24px;
       }
 
       .dashboard-title {
-        font-size: 18px;
+        font-size: 20px;
         font-weight: 700;
         margin-bottom: 4px;
       }
@@ -79,7 +82,7 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       .dashboard-subtitle {
         font-size: 11px;
         color: var(--content-secondary, #8a92a5);
-        margin-bottom: 20px;
+        margin-bottom: 24px;
       }
 
       .section-label {
@@ -89,94 +92,118 @@ export class TrainingDashboardWidget extends ReactiveWidget {
         text-transform: uppercase;
         letter-spacing: 0.8px;
         margin-bottom: 10px;
-        margin-top: 24px;
+        margin-top: 28px;
       }
 
-      /* TensorBoard embed */
-      .tb-container {
-        border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+      .section-label:first-of-type { margin-top: 0; }
+
+      /* Academy session cards */
+      .session-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 12px;
+      }
+
+      .session-card {
+        background: rgba(0, 255, 200, 0.04);
+        border: 1px solid rgba(0, 255, 200, 0.15);
         border-radius: 6px;
-        overflow: hidden;
-        margin-bottom: 20px;
+        padding: 12px 14px;
       }
 
-      .tb-header {
+      .session-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 12px;
-        background: rgba(15, 20, 25, 0.8);
-        border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+        margin-bottom: 6px;
       }
 
-      .tb-label {
-        font-size: 11px;
+      .session-skill {
         font-weight: 700;
-        color: rgba(0, 212, 255, 0.9);
+        font-size: 14px;
+        color: rgba(0, 255, 200, 0.9);
       }
 
-      .tb-url-input {
-        background: var(--input-background, rgba(40, 45, 55, 0.8));
-        border: 1px solid var(--input-border, rgba(255, 255, 255, 0.15));
-        border-radius: 3px;
-        color: var(--input-text, #fff);
-        font-family: var(--font-mono, monospace);
-        font-size: 10px;
-        padding: 3px 6px;
-        width: 250px;
-      }
-
-      .tb-connect-btn {
-        padding: 3px 10px;
+      .session-status {
         font-size: 10px;
         font-weight: 600;
+        padding: 2px 8px;
         border-radius: 3px;
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        background: rgba(0, 212, 255, 0.08);
-        color: rgba(0, 212, 255, 0.9);
-        cursor: pointer;
       }
 
-      .tb-connect-btn:hover {
-        background: rgba(0, 212, 255, 0.15);
-      }
-
-      iframe.tb-frame {
-        width: 100%;
-        height: 500px;
-        border: none;
-        background: #1a1a2e;
-      }
-
-      .tb-placeholder {
-        padding: 30px 20px;
-        text-align: center;
-        color: var(--content-secondary, #8a92a5);
-        font-size: 12px;
-      }
-
-      .tb-placeholder code {
-        display: block;
-        margin: 8px auto;
-        padding: 6px 12px;
-        background: rgba(0, 0, 0, 0.3);
-        border-radius: 4px;
-        font-family: var(--font-mono, monospace);
+      .session-meta {
+        display: flex;
+        gap: 16px;
         font-size: 11px;
-        color: rgba(0, 255, 200, 0.8);
-        max-width: 500px;
+        color: var(--content-secondary, #8a92a5);
       }
+
+      .meta-value {
+        color: rgba(0, 212, 255, 0.9);
+        font-family: var(--font-mono, monospace);
+        font-weight: 600;
+      }
+
+      /* Selected run detail */
+      .detail-panel {
+        background: rgba(15, 20, 25, 0.6);
+        border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+        border-radius: 6px;
+        padding: 16px;
+        margin-bottom: 20px;
+      }
+
+      .detail-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .detail-name {
+        font-size: 16px;
+        font-weight: 700;
+        color: rgba(0, 255, 200, 0.9);
+      }
+
+      .detail-stats {
+        display: flex;
+        gap: 24px;
+        margin-bottom: 16px;
+      }
+
+      .stat-block {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .stat-label {
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--content-secondary, #8a92a5);
+      }
+
+      .stat-big {
+        font-size: 24px;
+        font-weight: 700;
+        font-family: var(--font-mono, monospace);
+        color: rgba(0, 255, 200, 0.9);
+      }
+
+      .stat-big.cyan { color: rgba(0, 212, 255, 0.9); }
 
       /* Historical runs table */
-      .history-table {
+      .runs-table {
         width: 100%;
         border-collapse: collapse;
         font-size: 11px;
       }
 
-      .history-table th {
+      .runs-table th {
         text-align: left;
-        padding: 6px 8px;
+        padding: 8px 10px;
         font-weight: 700;
         color: var(--content-secondary, #8a92a5);
         text-transform: uppercase;
@@ -185,20 +212,31 @@ export class TrainingDashboardWidget extends ReactiveWidget {
         border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
       }
 
-      .history-table td {
-        padding: 6px 8px;
+      .runs-table td {
+        padding: 8px 10px;
         color: var(--content-primary, #e0e6ed);
         border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        cursor: pointer;
       }
 
-      .history-table tr:hover td {
+      .runs-table tr:hover td {
         background: rgba(0, 212, 255, 0.04);
+      }
+
+      .runs-table tr.selected td {
+        background: rgba(0, 255, 200, 0.06);
+        border-color: rgba(0, 255, 200, 0.1);
       }
 
       .loss-badge {
         font-family: var(--font-mono, monospace);
         font-weight: 600;
         color: rgba(0, 255, 200, 0.9);
+      }
+
+      .node-badge {
+        font-size: 10px;
+        color: rgba(0, 212, 255, 0.8);
       }
 
       .maturity-bar {
@@ -217,26 +255,45 @@ export class TrainingDashboardWidget extends ReactiveWidget {
         border-radius: 2px;
       }
 
-      .mini-sparkline {
-        width: 80px;
-        height: 24px;
+      .sparkline-cell {
+        width: 100px;
+        height: 30px;
       }
 
       .empty-state {
         text-align: center;
-        padding: 20px;
+        padding: 40px 20px;
+        color: var(--content-secondary, #8a92a5);
+      }
+
+      .empty-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      .empty-hint {
+        font-size: 12px;
+        font-style: italic;
+      }
+
+      .loading-indicator {
+        font-size: 11px;
         color: var(--content-secondary, #8a92a5);
         font-style: italic;
-        font-size: 12px;
+        padding: 8px 0;
       }
     `,
   ] as CSSResultGroup;
 
   // ── State ───────────────────────────────────────────────────────────────
 
+  @reactive() private _academySessions: AcademySession[] = [];
   @reactive() private _historicalRuns: HistoricalRun[] = [];
-  @reactive() private _tbUrl: string = 'http://localhost:6006';
-  @reactive() private _tbConnected: boolean = false;
+  @reactive() private _selectedRun: HistoricalRun | null = null;
+  @reactive() private _loading: boolean = true;
+
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({ widgetName: 'TrainingDashboardWidget' });
@@ -244,161 +301,255 @@ export class TrainingDashboardWidget extends ReactiveWidget {
 
   protected override onFirstRender(): void {
     super.onFirstRender();
-    this._loadHistoricalRuns();
+    this._loadAll();
+
+    this._pollTimer = setInterval(() => {
+      if (this._academySessions.some(s => !['completed', 'failed', 'cancelled'].includes(s.status))) {
+        this._loadAcademySessions();
+      }
+    }, 30_000);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+  }
+
+  private async _loadAll(): Promise<void> {
+    this._loading = true;
+    await Promise.all([
+      this._loadAcademySessions(),
+      this._loadHistoricalRuns(),
+    ]);
+    this._loading = false;
   }
 
   // ── Data loading ────────────────────────────────────────────────────────
 
-  private async _loadHistoricalRuns(): Promise<void> {
-    const allRuns: HistoricalRun[] = [];
-    await this._loadRunsFromLocal(allRuns);
-    await this._loadRunsFromGrid(allRuns);
-    allRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    this._historicalRuns = allRuns;
-  }
+  private async _loadAcademySessions(): Promise<void> {
+    const sessions: AcademySession[] = [];
 
-  private async _loadRunsFromLocal(allRuns: HistoricalRun[]): Promise<void> {
+    // Local
     try {
-      const usersResult = await this.executeCommand<any, any>('data/list', {
-        collection: 'users', filter: { type: 'ai' }, limit: 50,
-      });
-      if (!usersResult.success || !usersResult.items) return;
-      for (const user of usersResult.items) {
-        await this._loadPersonaLayers(allRuns, user.id, user.uniqueId ?? user.displayName, undefined);
-      }
-    } catch (err) {
-      console.warn('[TrainingDashboard] Failed to load local runs:', err);
-    }
-  }
+      const r = await this.executeCommand<any, any>('genome/academy-session-list', {});
+      if (r?.sessions) sessions.push(...r.sessions.map((s: any) => ({ ...s, nodeName: undefined })));
+    } catch { /* ok */ }
 
-  private async _loadRunsFromGrid(allRuns: HistoricalRun[]): Promise<void> {
+    // Grid nodes
     try {
       const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
-      const nodes: GridNodeInfo[] = (nodesResult.nodes ?? []).map((n: any) => ({
-        nodeId: n.node_id ?? n.nodeId,
-        nodeName: n.node_name ?? n.nodeName ?? n.node_id ?? n.nodeId,
-      }));
-      for (const node of nodes) {
+      for (const n of nodesResult?.nodes ?? []) {
+        const nodeId = n.node_id ?? n.nodeId;
+        const nodeName = n.node_name ?? n.nodeName ?? nodeId;
         try {
-          const result = await this.executeCommand<any, any>('grid/send', {
-            nodeId: node.nodeId, remoteCommand: 'genome/adapter-list', params: {},
+          const r = await this.executeCommand<any, any>('grid/send', {
+            nodeId, remoteCommand: 'genome/academy-session-list', params: {},
           });
-          // adapter-list gives us basic info; for full training metrics we need genome/layers per persona
-          // but adapter-list is one call vs N calls per persona
-          const remote = result?.remoteResult;
-          if (remote?.adapters) {
-            for (const a of remote.adapters) {
-              if (a.loss != null) {
-                allRuns.push({
-                  name: a.name,
-                  domain: a.domain,
-                  baseModel: a.baseModel ?? '',
-                  finalLoss: a.loss ?? 0,
-                  epochs: a.epochs ?? 0,
-                  examplesProcessed: 0,
-                  maturity: 0,
-                  createdAt: a.createdAt ?? '',
-                  lossHistory: [],
-                  nodeName: node.nodeName,
-                  personaName: a.personaName,
-                });
-              }
-            }
+          if (r?.remoteResult?.sessions) {
+            sessions.push(...r.remoteResult.sessions.map((s: any) => ({ ...s, nodeName })));
           }
-        } catch (err) {
-          console.warn(`[TrainingDashboard] Failed to load from ${node.nodeName}:`, err);
+        } catch { /* node unreachable */ }
+      }
+    } catch { /* grid unavailable */ }
+
+    this._academySessions = sessions;
+  }
+
+  private async _loadHistoricalRuns(): Promise<void> {
+    const runs: HistoricalRun[] = [];
+
+    // Local personas
+    try {
+      const users = await this.executeCommand<any, any>('data/list', {
+        collection: 'users', filter: { type: 'ai' }, limit: 50,
+      });
+      if (users?.items) {
+        for (const u of users.items) {
+          await this._loadLayers(runs, u.id, u.uniqueId ?? u.displayName, undefined);
         }
       }
-    } catch (err) {
-      console.warn('[TrainingDashboard] Grid not available:', err);
+    } catch (e) { console.warn('[TrainingDashboard] Local load failed:', e); }
+
+    // Grid nodes — use genome/layers per persona for full loss history
+    try {
+      const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
+      for (const n of nodesResult?.nodes ?? []) {
+        const nodeId = n.node_id ?? n.nodeId;
+        const nodeName = n.node_name ?? n.nodeName ?? nodeId;
+        try {
+          const usersResult = await this.executeCommand<any, any>('grid/send', {
+            nodeId, remoteCommand: 'user/list', params: { limit: 50 },
+          });
+          const users = usersResult?.remoteResult?.users ?? [];
+          for (const u of users) {
+            if (u.type !== 'ai') continue;
+            try {
+              const lr = await this.executeCommand<any, any>('grid/send', {
+                nodeId, remoteCommand: 'genome/layers',
+                params: { personaId: u.id, personaName: u.uniqueId ?? u.displayName },
+              });
+              const layers = lr?.remoteResult?.layers ?? [];
+              for (const l of layers) {
+                if (l.trainingMetrics) {
+                  runs.push({
+                    name: l.name,
+                    domain: l.domain,
+                    baseModel: l.baseModel,
+                    finalLoss: l.trainingMetrics.finalLoss ?? 0,
+                    epochs: l.trainingMetrics.epochs ?? 0,
+                    examplesProcessed: l.trainingMetrics.examplesProcessed ?? 0,
+                    maturity: l.maturity ?? 0,
+                    createdAt: l.createdAt ?? '',
+                    lossHistory: l.trainingMetrics.lossHistory ?? [],
+                    nodeName,
+                    personaName: u.uniqueId ?? u.displayName,
+                  });
+                }
+              }
+            } catch { /* skip persona */ }
+          }
+        } catch (e) { console.warn(`[TrainingDashboard] Grid node ${nodeName} failed:`, e); }
+      }
+    } catch { /* grid unavailable */ }
+
+    runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    this._historicalRuns = runs;
+
+    // Auto-select best run
+    if (runs.length > 0 && !this._selectedRun) {
+      const best = runs.reduce((a, b) => (a.lossHistory.length > b.lossHistory.length ? a : b));
+      if (best.lossHistory.length > 2) this._selectedRun = best;
     }
   }
 
-  private async _loadPersonaLayers(
-    allRuns: HistoricalRun[], personaId: string, personaName: string, nodeName: string | undefined,
-  ): Promise<void> {
+  private async _loadLayers(runs: HistoricalRun[], personaId: string, personaName: string, nodeName: string | undefined): Promise<void> {
     try {
-      const result = await this.executeCommand<any, any>('genome/layers', { personaId, personaName });
-      if (result.success && result.layers) {
-        for (const layer of result.layers) {
-          if (layer.trainingMetrics) {
-            allRuns.push({
-              name: layer.name,
-              domain: layer.domain,
-              baseModel: layer.baseModel,
-              finalLoss: layer.trainingMetrics.finalLoss ?? 0,
-              epochs: layer.trainingMetrics.epochs ?? 0,
-              examplesProcessed: layer.trainingMetrics.examplesProcessed ?? 0,
-              maturity: layer.maturity ?? 0,
-              createdAt: layer.createdAt ?? '',
-              lossHistory: layer.trainingMetrics.lossHistory ?? [],
-              nodeName,
-              personaName,
+      const r = await this.executeCommand<any, any>('genome/layers', { personaId, personaName });
+      if (r?.layers) {
+        for (const l of r.layers) {
+          if (l.trainingMetrics) {
+            runs.push({
+              name: l.name, domain: l.domain, baseModel: l.baseModel,
+              finalLoss: l.trainingMetrics.finalLoss ?? 0,
+              epochs: l.trainingMetrics.epochs ?? 0,
+              examplesProcessed: l.trainingMetrics.examplesProcessed ?? 0,
+              maturity: l.maturity ?? 0,
+              createdAt: l.createdAt ?? '',
+              lossHistory: l.trainingMetrics.lossHistory ?? [],
+              nodeName, personaName,
             });
           }
         }
       }
-    } catch (err) {
-      console.warn(`[TrainingDashboard] Failed to load layers for ${personaName}:`, err);
-    }
+    } catch { /* skip */ }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
 
   protected override renderContent(): TemplateResult {
+    const activeSessions = this._academySessions.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status));
+    const hasAnything = this._academySessions.length > 0 || this._historicalRuns.length > 0;
+
     return html`
       <div class="dashboard">
-        <div class="dashboard-title">Training Dashboard</div>
-        <div class="dashboard-subtitle">${this._historicalRuns.length} historical runs</div>
+        <div class="dashboard-title">Training</div>
+        <div class="dashboard-subtitle">
+          ${activeSessions.length > 0 ? `${activeSessions.length} active` : ''}
+          ${activeSessions.length > 0 && this._historicalRuns.length > 0 ? ' · ' : ''}
+          ${this._historicalRuns.length > 0 ? `${this._historicalRuns.length} completed runs` : ''}
+          ${!hasAnything && !this._loading ? 'No training activity' : ''}
+          ${this._loading ? 'Loading from grid...' : ''}
+        </div>
 
-        ${this._renderTensorBoard()}
-        ${this._historicalRuns.length > 0 ? this._renderHistoricalTable() : html`
-          <div class="empty-state">No completed training runs yet.</div>
-        `}
+        ${activeSessions.length > 0 ? this._renderActiveSessions(activeSessions) : nothing}
+        ${this._selectedRun ? this._renderSelectedRun(this._selectedRun) : nothing}
+        ${this._historicalRuns.length > 0 ? this._renderHistoricalTable() : nothing}
+        ${!hasAnything && !this._loading ? this._renderEmpty() : nothing}
       </div>
     `;
   }
 
-  // ── TensorBoard embed ───────────────────────────────────────────────────
+  private _renderActiveSessions(sessions: AcademySession[]): TemplateResult {
+    const statusColors: Record<string, string> = {
+      curriculum: 'rgba(0, 212, 255, 0.9)',
+      teaching: 'rgba(0, 255, 200, 0.9)',
+      examining: 'rgba(255, 170, 0, 0.9)',
+      training: 'rgba(255, 107, 53, 0.9)',
+    };
 
-  private _renderTensorBoard(): TemplateResult {
     return html`
-      <div class="section-label">TensorBoard</div>
-      <div class="tb-container">
-        <div class="tb-header">
-          <span class="tb-label">TensorBoard</span>
-          <div style="display: flex; gap: 6px; align-items: center;">
-            <input class="tb-url-input"
-              .value=${this._tbUrl}
-              @input=${(e: Event) => { this._tbUrl = (e.target as HTMLInputElement).value; }}
-              placeholder="http://host:6006" />
-            <button class="tb-connect-btn" @click=${() => { this._tbConnected = true; }}>
-              ${this._tbConnected ? 'Refresh' : 'Connect'}
-            </button>
+      <div class="section-label">Active Sessions</div>
+      <div class="session-grid">
+        ${sessions.map(s => {
+          const color = statusColors[s.status] ?? 'var(--content-secondary)';
+          const elapsed = Math.round((Date.now() - new Date(s.createdAt).getTime()) / 1000);
+          const elapsedStr = elapsed > 3600 ? `${(elapsed / 3600).toFixed(1)}h` : `${Math.round(elapsed / 60)}m`;
+          return html`
+            <div class="session-card">
+              <div class="session-header">
+                <span class="session-skill">${s.skill}</span>
+                <span class="session-status" style="background: ${color}22; color: ${color}; border: 1px solid ${color}44;">
+                  ${s.status}
+                </span>
+              </div>
+              <div class="session-meta">
+                <span>${s.personaName}${s.nodeName ? html` <span class="node-badge">@ ${s.nodeName}</span>` : nothing}</span>
+                <span>Model: <span class="meta-value">${this._shortModel(s.baseModel)}</span></span>
+                <span><span class="meta-value">${elapsedStr}</span></span>
+              </div>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private _renderSelectedRun(run: HistoricalRun): TemplateResult {
+    return html`
+      <div class="section-label">Loss Curve — ${run.name}</div>
+      <div class="detail-panel">
+        <div class="detail-header">
+          <span class="detail-name">${run.name}</span>
+          <span class="node-badge">${run.nodeName ?? 'local'} · ${run.personaName ?? ''}</span>
+        </div>
+        <div class="detail-stats">
+          <div class="stat-block">
+            <span class="stat-label">Final Loss</span>
+            <span class="stat-big">${run.finalLoss.toFixed(4)}</span>
+          </div>
+          <div class="stat-block">
+            <span class="stat-label">Epochs</span>
+            <span class="stat-big cyan">${run.epochs}</span>
+          </div>
+          <div class="stat-block">
+            <span class="stat-label">Examples</span>
+            <span class="stat-big cyan">${run.examplesProcessed}</span>
+          </div>
+          <div class="stat-block">
+            <span class="stat-label">Model</span>
+            <span style="font-size: 13px; font-family: var(--font-mono); color: var(--content-primary);">${this._shortModel(run.baseModel)}</span>
           </div>
         </div>
-        ${this._tbConnected ? html`
-          <iframe class="tb-frame"
-            src="${this._tbUrl}"
-            sandbox="allow-scripts allow-same-origin allow-popups"
-          ></iframe>
-        ` : html`
-          <div class="tb-placeholder">
-            Start TensorBoard on your training node to see live charts:
-            <code>tensorboard --logdir ~/.continuum/training/runs --bind_all --port 6006</code>
-            Then click Connect above. Training data is written as tfevents by peft-train.py.
-          </div>
-        `}
+        <continuum-chart
+          .data=${run.lossHistory.map((loss, i) => ({ step: i, loss }))}
+          .series=${LOSS_SERIES}
+          .xKey=${'step'}
+          .size=${'full'}
+          .yRange=${[0, 'auto'] as [number, 'auto']}
+          .formatY=${(v: number) => v.toFixed(3)}
+          .formatX=${(v: number) => `Step ${Math.round(v)}`}
+        ></continuum-chart>
       </div>
     `;
   }
-
-  // ── Historical runs table ───────────────────────────────────────────────
 
   private _renderHistoricalTable(): TemplateResult {
     return html`
-      <div class="section-label">Historical Runs</div>
-      <table class="history-table">
+      <div class="section-label">All Training Runs</div>
+      <table class="runs-table">
         <thead>
           <tr>
             <th>Adapter</th>
@@ -414,12 +565,11 @@ export class TrainingDashboardWidget extends ReactiveWidget {
         </thead>
         <tbody>
           ${this._historicalRuns.map(run => html`
-            <tr>
+            <tr class="${this._selectedRun === run ? 'selected' : ''}"
+                @click=${() => { this._selectedRun = run.lossHistory.length > 2 ? run : this._selectedRun; }}>
               <td>${run.name}</td>
               <td style="font-size: 10px;">${run.personaName ?? '--'}</td>
-              <td style="font-size: 10px; color: ${run.nodeName ? 'rgba(0, 212, 255, 0.8)' : 'var(--content-secondary)'};">
-                ${run.nodeName ?? 'local'}
-              </td>
+              <td><span class="node-badge">${run.nodeName ?? 'local'}</span></td>
               <td>${run.domain}</td>
               <td style="font-size: 10px; font-family: var(--font-mono);">${this._shortModel(run.baseModel)}</td>
               <td><span class="loss-badge">${run.finalLoss.toFixed(4)}</span></td>
@@ -428,19 +578,18 @@ export class TrainingDashboardWidget extends ReactiveWidget {
                 <div class="maturity-bar">
                   <div class="maturity-fill" style="width: ${run.maturity * 100}%;"></div>
                 </div>
-                <span style="font-size: 10px; margin-left: 4px;">${(run.maturity * 100).toFixed(0)}%</span>
               </td>
               <td>
                 ${run.lossHistory.length > 2 ? html`
                   <continuum-chart
-                    class="mini-sparkline"
+                    class="sparkline-cell"
                     .data=${run.lossHistory.map((loss, i) => ({ step: i, loss }))}
                     .series=${LOSS_SERIES}
                     .xKey=${'step'}
                     .size=${'sparkline'}
                     .yRange=${[0, 'auto'] as [number, 'auto']}
                   ></continuum-chart>
-                ` : html`<span style="color: var(--content-secondary);">--</span>`}
+                ` : html`<span style="color: var(--content-secondary); font-size: 10px;">--</span>`}
               </td>
             </tr>
           `)}
@@ -449,10 +598,22 @@ export class TrainingDashboardWidget extends ReactiveWidget {
     `;
   }
 
+  private _renderEmpty(): TemplateResult {
+    return html`
+      <div class="empty-state">
+        <div class="empty-title">No Training Activity</div>
+        <div class="empty-hint">
+          Start an Academy session or run genome/train to begin training.
+          Data from all grid nodes appears here automatically.
+        </div>
+      </div>
+    `;
+  }
+
   private _shortModel(model: string): string {
+    if (!model) return '--';
     const parts = model.split('/');
-    const name = parts[parts.length - 1];
-    return name.replace(/-Instruct$/, '').replace(/-Chat$/, '');
+    return parts[parts.length - 1].replace(/-Instruct$/, '').replace(/-Chat$/, '');
   }
 }
 
