@@ -1,0 +1,58 @@
+{
+  "name": "model/download",
+  "description": "Download a base model from HuggingFace to a local or remote grid node. Routes to GPU-capable node if needed. Wraps huggingface_hub snapshot_download with progress reporting via chat.",
+  "params": [
+    {
+      "name": "modelId",
+      "type": "string",
+      "optional": false,
+      "description": "HuggingFace model ID (e.g., 'Qwen/Qwen3.5-27B')"
+    },
+    {
+      "name": "node",
+      "type": "string",
+      "optional": true,
+      "description": "Target grid node IP or name. Default: local machine, or GPU node if model requires GPU."
+    },
+    {
+      "name": "revision",
+      "type": "string",
+      "optional": true,
+      "description": "Specific revision/branch/tag to download. Default: main."
+    }
+  ],
+  "results": [
+    {
+      "name": "downloadPath",
+      "type": "string",
+      "description": "Local path where the model was downloaded"
+    },
+    {
+      "name": "sizeGb",
+      "type": "number",
+      "description": "Total download size in GB"
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Which grid node the model was downloaded to"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Download Qwen 3.5 27B to the 5090 tower",
+      "params": {
+        "modelId": "Qwen/Qwen3.5-27B",
+        "node": "100.124.122.107"
+      }
+    },
+    {
+      "description": "Download a model locally",
+      "params": {
+        "modelId": "Qwen/Qwen3.5-9B"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "model"
+}

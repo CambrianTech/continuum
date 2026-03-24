@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/search",
+  "version": "1.0.0",
+  "description": "Search HuggingFace for base models by name, architecture, or size. Used to find compaction targets (e.g., 'Qwen 3.5 27B'). Different from adapter/search which finds LoRA adapters.",
+  "main": "server/ModelSearchServerCommand.ts",
+  "types": "shared/ModelSearchTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelSearchIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/search"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
