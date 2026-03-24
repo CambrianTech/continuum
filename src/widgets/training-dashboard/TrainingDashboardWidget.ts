@@ -18,6 +18,8 @@ import {
 import { nothing } from 'lit';
 import '../shared/ContinuumChart';
 import type { ContinuumChartSeries } from '../shared/ContinuumChart';
+import { Events } from '../../system/core/shared/Events';
+import { AI_LEARNING_EVENTS, type AITrainingStepEventData } from '../../system/events/shared/AILearningEvents';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -201,6 +203,10 @@ export class TrainingDashboardWidget extends ReactiveWidget {
   @reactive() private _data: OverviewData | null = null;
   @reactive() private _expandedChart: string | null = null;
   @reactive() private _loading = true;
+  @reactive() private _liveStepCount = 0;
+
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
+  private _cleanups: (() => void)[] = [];
 
   constructor() {
     super({ widgetName: 'TrainingDashboardWidget' });
@@ -209,6 +215,39 @@ export class TrainingDashboardWidget extends ReactiveWidget {
   protected override onFirstRender(): void {
     super.onFirstRender();
     this._load();
+
+    // Subscribe to local training step events (real-time, no polling needed)
+    this._cleanups.push(
+      Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STEP, (_data: AITrainingStepEventData) => {
+        this._liveStepCount++;
+        // Refresh overview data every 20 local steps to pick up new loss values
+        if (this._liveStepCount % 20 === 0) {
+          this._load();
+        }
+      }),
+
+      Events.subscribe(AI_LEARNING_EVENTS.TRAINING_COMPLETE, () => {
+        this._load(); // Refresh when training finishes
+      }),
+    );
+
+    // Poll for remote grid data every 30s (events don't cross grid yet)
+    this._pollTimer = setInterval(() => {
+      const hasActive = this._data?.summary?.activeSessions ?? 0;
+      if (hasActive > 0) {
+        this._load();
+      }
+    }, 30_000);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this._cleanups.forEach(fn => fn());
+    this._cleanups = [];
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
   }
 
   private async _load(): Promise<void> {
