@@ -189,6 +189,45 @@ export class TrainingDashboardWidget extends ReactiveWidget {
 
       .sparkline-cell { width: 100px; height: 28px; }
 
+      /* Expanded adapter detail */
+      .adapter-detail {
+        grid-column: 1 / -1;
+        background: rgba(0, 255, 200, 0.03);
+        border: 1px solid rgba(0, 255, 200, 0.12);
+        border-radius: 6px;
+        padding: 16px;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      @media (max-width: 800px) {
+        .detail-grid { grid-template-columns: 1fr; }
+      }
+
+      .detail-config {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 12px;
+        font-size: 11px;
+      }
+
+      .config-label {
+        color: var(--content-secondary, #8a92a5);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 9px;
+        letter-spacing: 0.3px;
+      }
+
+      .config-value {
+        color: var(--content-primary, #e0e6ed);
+        font-family: var(--font-mono, monospace);
+      }
+
       .empty-state {
         text-align: center;
         padding: 60px 20px;
@@ -202,6 +241,7 @@ export class TrainingDashboardWidget extends ReactiveWidget {
 
   @reactive() private _data: OverviewData | null = null;
   @reactive() private _expandedChart: string | null = null;
+  @reactive() private _expandedAdapter: import('../../system/core/types/CrossPlatformUUID').UUID | null = null;
   @reactive() private _loading = true;
   @reactive() private _liveStepCount = 0;
 
@@ -502,37 +542,123 @@ export class TrainingDashboardWidget extends ReactiveWidget {
           </tr>
         </thead>
         <tbody>
-          ${d.adapters.map(a => html`
-            <tr>
-              <td>${a.name}</td>
-              <td style="font-size: 10px;">${a.personaName ?? '--'}</td>
-              <td><span class="node-badge">${a.nodeName}</span></td>
-              <td>${a.domain}</td>
-              <td style="font-size: 10px; font-family: var(--font-mono);">${this._shortModel(a.baseModel)}</td>
-              <td><span class="loss-badge">${a.finalLoss > 0 ? a.finalLoss.toFixed(4) : '--'}</span></td>
-              <td>${a.epochs || '--'}</td>
-              <td>${a.examplesProcessed || '--'}</td>
-              <td>
-                ${a.lossHistory?.length > 2 ? html`
-                  <continuum-chart
-                    class="sparkline-cell"
-                    .data=${a.lossHistory.map((loss: number, i: number) => ({ step: i, loss }))}
-                    .series=${LOSS_SERIES}
-                    .xKey=${'step'}
-                    .size=${'sparkline'}
-                    .yRange=${[0, 'auto'] as [number, 'auto']}
-                  ></continuum-chart>
-                ` : html`<span style="color: var(--content-secondary); font-size: 10px;">--</span>`}
-              </td>
-            </tr>
-          `)}
+          ${d.adapters.map(a => {
+            const isExpanded = this._expandedAdapter === a.id;
+            return html`
+              <tr style="cursor: pointer;" @click=${() => this._toggleAdapter(a.id)}>
+                <td style="color: ${isExpanded ? 'rgba(0, 255, 200, 0.9)' : 'inherit'};">
+                  ${isExpanded ? '▾' : '▸'} ${a.name}
+                </td>
+                <td style="font-size: 10px;">${a.personaName}</td>
+                <td><span class="node-badge">${a.nodeName}</span></td>
+                <td>${a.domain}</td>
+                <td style="font-size: 10px; font-family: var(--font-mono);">${this._shortModel(a.baseModel)}</td>
+                <td><span class="loss-badge">${a.finalLoss > 0 ? a.finalLoss.toFixed(4) : '--'}</span></td>
+                <td>${a.epochs || '--'}</td>
+                <td>${a.examplesProcessed || '--'}</td>
+                <td>
+                  ${a.lossHistory?.length > 2 ? html`
+                    <continuum-chart
+                      class="sparkline-cell"
+                      .data=${a.lossHistory.map((loss: number, i: number) => ({ step: i, loss }))}
+                      .series=${LOSS_SERIES}
+                      .xKey=${'step'}
+                      .size=${'sparkline'}
+                      .yRange=${[0, 'auto'] as [number, 'auto']}
+                    ></continuum-chart>
+                  ` : html`<span style="color: var(--content-secondary); font-size: 10px;">--</span>`}
+                </td>
+              </tr>
+              ${isExpanded ? html`
+                <tr>
+                  <td colspan="9" style="padding: 0;">
+                    ${this._renderAdapterDetail(a)}
+                  </td>
+                </tr>
+              ` : nothing}
+            `;
+          })}
         </tbody>
       </table>
     `;
   }
 
+  private _renderAdapterDetail(a: TrainingAdapterInfo): TemplateResult {
+    const durationStr = a.trainingDurationMs > 0
+      ? a.trainingDurationMs > 60000 ? `${(a.trainingDurationMs / 60000).toFixed(1)}m` : `${(a.trainingDurationMs / 1000).toFixed(0)}s`
+      : '--';
+
+    return html`
+      <div class="adapter-detail">
+        <div class="detail-grid">
+          <!-- Left: Loss curve (full size) -->
+          <div>
+            <div class="cell-title">Loss Curve — ${a.lossHistory.length} steps</div>
+            ${a.lossHistory.length > 2 ? html`
+              <continuum-chart
+                .data=${a.lossHistory.map((loss: number, i: number) => ({ step: i, loss }))}
+                .series=${LOSS_SERIES}
+                .xKey=${'step'}
+                .size=${'large'}
+                .yRange=${[0, 'auto'] as [number, 'auto']}
+                .formatY=${(v: number) => v.toFixed(3)}
+                .formatX=${(v: number) => `Step ${Math.round(v)}`}
+              ></continuum-chart>
+            ` : html`<div style="color: var(--content-secondary); font-style: italic;">No step data</div>`}
+          </div>
+
+          <!-- Right: Config details -->
+          <div>
+            <div class="cell-title">Training Configuration</div>
+            <div class="detail-config">
+              <span class="config-label">Base Model</span>
+              <span class="config-value">${a.baseModel}</span>
+
+              <span class="config-label">Domain</span>
+              <span class="config-value">${a.domain}</span>
+
+              <span class="config-label">Persona</span>
+              <span class="config-value">${a.personaName}</span>
+
+              <span class="config-label">Node</span>
+              <span class="config-value">${a.nodeName}</span>
+
+              <span class="config-label">Final Loss</span>
+              <span class="config-value" style="color: rgba(0, 255, 200, 0.9);">${a.finalLoss.toFixed(4)}</span>
+
+              <span class="config-label">Epochs</span>
+              <span class="config-value">${a.epochs}</span>
+
+              <span class="config-label">Examples</span>
+              <span class="config-value">${a.examplesProcessed}</span>
+
+              <span class="config-label">Duration</span>
+              <span class="config-value">${durationStr}</span>
+
+              <span class="config-label">Maturity</span>
+              <span class="config-value">${(a.maturity * 100).toFixed(0)}%</span>
+
+              <span class="config-label">Size</span>
+              <span class="config-value">${a.sizeMB > 0 ? `${a.sizeMB.toFixed(1)} MB` : '--'}</span>
+
+              <span class="config-label">Created</span>
+              <span class="config-value">${a.createdAt ? new Date(a.createdAt).toLocaleDateString() : '--'}</span>
+
+              <span class="config-label">Steps</span>
+              <span class="config-value">${a.lossHistory.length}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private _toggleExpand(id: string): void {
     this._expandedChart = this._expandedChart === id ? null : id;
+  }
+
+  private _toggleAdapter(id: string): void {
+    this._expandedAdapter = this._expandedAdapter === id ? null : id;
   }
 
   private _shortModel(model: string): string {

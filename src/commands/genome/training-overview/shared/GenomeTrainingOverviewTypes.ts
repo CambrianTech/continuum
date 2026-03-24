@@ -15,11 +15,12 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /** Adapter with training metrics and provenance */
 export interface TrainingAdapterInfo {
+  id: UUID;
   name: string;
   domain: string;
   baseModel: string;
   personaName: string;
-  personaId: string;
+  personaId: UUID;
   nodeName: string;
   finalLoss: number;
   epochs: number;
@@ -33,7 +34,7 @@ export interface TrainingAdapterInfo {
 
 /** Academy session summary */
 export interface TrainingSessionInfo {
-  id: string;
+  id: UUID;
   skill: string;
   status: string;
   personaName: string;

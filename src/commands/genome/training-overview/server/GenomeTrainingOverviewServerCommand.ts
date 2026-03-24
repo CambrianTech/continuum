@@ -80,6 +80,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
           for (const l of lr?.layers ?? []) {
             if (l.trainingMetrics) {
               adapters.push({
+                id: l.id ?? user.id,
                 name: l.name, domain: l.domain, baseModel: l.baseModel,
                 personaName: pName, personaId: user.id, nodeName: 'local',
                 finalLoss: l.trainingMetrics.finalLoss ?? 0,
@@ -131,6 +132,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
               for (const l of lr?.layers ?? []) {
                 if (l.trainingMetrics) {
                   adapters.push({
+                    id: l.id ?? user.id, // layer UUID, fallback to persona UUID
                     name: l.name, domain: l.domain, baseModel: l.baseModel,
                     personaName: pName, personaId: user.id, nodeName,
                     finalLoss: l.trainingMetrics.finalLoss ?? 0,
