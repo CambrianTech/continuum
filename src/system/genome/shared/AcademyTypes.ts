@@ -19,7 +19,7 @@ import type { AdapterManifest } from './AdapterPackageTypes';
 // ============================================================================
 
 /** All supported Academy session modes */
-export type AcademySessionMode = 'knowledge' | 'coding' | 'project' | 'realclasseval' | 'recipe';
+export type AcademySessionMode = 'knowledge' | 'coding' | 'project' | 'realclasseval' | 'recipe' | 'team';
 
 /** Display labels for each mode — eliminates string comparison chains */
 export const ACADEMY_MODE_LABELS: Record<AcademySessionMode, string> = {
@@ -28,6 +28,7 @@ export const ACADEMY_MODE_LABELS: Record<AcademySessionMode, string> = {
   project: 'Project',
   realclasseval: 'RealClassEval',
   recipe: 'Recipe',
+  team: 'Team Project',
 } as const;
 
 /** Sentinel name prefixes per mode */
@@ -37,6 +38,7 @@ export const ACADEMY_MODE_PREFIXES: Record<AcademySessionMode, string> = {
   project: 'project-',
   realclasseval: 'realclasseval-',
   recipe: 'recipe-',
+  team: 'team-',
 } as const;
 
 // ============================================================================

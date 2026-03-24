@@ -1,0 +1,103 @@
+{
+  "name": "genome/academy-team",
+  "description": "Start a collaborative team training project. Decomposes a project description into roles, trains each student for their role, then orchestrates collaborative building. Teacher grades both the overall project and individual role performance. Students communicate via the academy chat room.",
+  "params": [
+    {
+      "name": "projectDescription",
+      "type": "string",
+      "optional": false,
+      "description": "What the team should build (e.g., 'side-scrolling game with mushroom people afraid of sunlight')"
+    },
+    {
+      "name": "skill",
+      "type": "string",
+      "optional": false,
+      "description": "Skill domain (e.g., 'game-development', 'web-app', 'music-production')"
+    },
+    {
+      "name": "team",
+      "type": "object",
+      "optional": true,
+      "description": "Explicit team members: [{ personaId, personaName, role, roleDescription }]. If omitted, teacher LLM decomposes project into roles and RecipeAssembler matches available personas."
+    },
+    {
+      "name": "recipeId",
+      "type": "string",
+      "optional": true,
+      "description": "Recipe with pre-defined roles (e.g., 'coding'). Roles extracted from recipe, personas matched by RecipeAssembler."
+    },
+    {
+      "name": "baseModel",
+      "type": "string",
+      "optional": true,
+      "description": "Base model for student training (default: LOCAL_MODELS.DEFAULT)"
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "optional": false,
+      "description": "Teacher LLM model (required — teacher must be a capable cloud model)"
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "optional": false,
+      "description": "Teacher LLM provider (required — e.g., 'deepseek', 'anthropic')"
+    },
+    {
+      "name": "epochs",
+      "type": "number",
+      "optional": true,
+      "description": "Training epochs per topic (default: 3)"
+    },
+    {
+      "name": "buildMilestones",
+      "type": "number",
+      "optional": true,
+      "description": "Number of build milestones (default: 3)"
+    }
+  ],
+  "results": [
+    {
+      "name": "teamProjectId",
+      "type": "string",
+      "description": "The created team project entity ID"
+    },
+    {
+      "name": "teacherHandle",
+      "type": "string",
+      "description": "Sentinel handle for the teacher pipeline"
+    },
+    {
+      "name": "memberHandles",
+      "type": "object",
+      "description": "Array of { personaId, personaName, role, studentHandle, sessionId } for each team member"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Build a game with an auto-assembled team",
+      "params": {
+        "projectDescription": "Side-scrolling game with mushroom people who are afraid of sunlight",
+        "skill": "game-development",
+        "model": "deepseek-chat",
+        "provider": "deepseek"
+      }
+    },
+    {
+      "description": "Build a web app with explicit team",
+      "params": {
+        "projectDescription": "URL shortener with analytics dashboard",
+        "skill": "web-development",
+        "model": "deepseek-chat",
+        "provider": "deepseek",
+        "team": [
+          { "personaId": "uuid1", "personaName": "Helper AI", "role": "backend-engineer", "roleDescription": "API and database" },
+          { "personaId": "uuid2", "personaName": "Teacher AI", "role": "frontend-engineer", "roleDescription": "Dashboard UI" }
+        ]
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}
