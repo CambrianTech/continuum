@@ -34,37 +34,67 @@ def load_manifest(adapter_path: str) -> dict:
         return json.load(f)
 
 
+def normalize_tag_value(value: str) -> str:
+    """Normalize tag value to lowercase kebab-case.
+    Matches AdapterPublishSchema.ts normalizeTagValue() exactly.
+    "Sprite Artist" → "sprite-artist", "sprite_artist" → "sprite-artist"
+    """
+    import re
+    # camelCase → kebab-case
+    value = re.sub(r'([a-z0-9])([A-Z])', r'\1-\2', value)
+    # underscores and spaces → hyphens
+    value = re.sub(r'[_\s]+', '-', value)
+    # lowercase
+    value = value.lower()
+    # collapse multiple hyphens
+    value = re.sub(r'-{2,}', '-', value)
+    # trim
+    return value.strip('-')
+
+
+def normalize_base_model(model_id: str) -> str:
+    """Strip org prefix, normalize. Matches AdapterPublishSchema.ts."""
+    name = model_id.split('/')[-1] if '/' in model_id else model_id
+    return normalize_tag_value(name)
+
+
+# Schema version — must match CONTINUUM_TAG_SCHEMA_VERSION in AdapterPublishSchema.ts
+SCHEMA_VERSION = 1
+
+
 def build_tags(manifest: dict, project_type: str | None = None) -> list[str]:
-    """Build standardized continuum:* tags from adapter manifest."""
-    tags = ['peft', 'lora', 'continuum']
+    """Build standardized continuum:* tags from adapter manifest.
+    Tag format defined in AdapterPublishSchema.ts — this MUST match exactly.
+    """
+    tags = ['peft', 'lora', 'continuum', f'continuum:schema={SCHEMA_VERSION}']
 
-    # Core metadata
-    if manifest.get('traitType'):
-        tags.append(f"continuum:role={manifest['traitType']}")
+    # Base model — both HF native format and our normalized format
     if manifest.get('baseModel'):
-        tags.append(f"continuum:base={manifest['baseModel']}")
         tags.append(f"base_model:{manifest['baseModel']}")
+        tags.append(f"continuum:base={normalize_base_model(manifest['baseModel'])}")
 
-    # Training performance
+    # Role (from traitType)
+    if manifest.get('traitType'):
+        tags.append(f"continuum:role={normalize_tag_value(manifest['traitType'])}")
+
+    # Training performance — integers only
     meta = manifest.get('trainingMetadata', {})
     if meta.get('performance') is not None:
         tags.append(f"continuum:score={int(meta['performance'])}")
-    if meta.get('phenotypeScore') is not None:
-        tags.append(f"continuum:phenotype-score={int(meta['phenotypeScore'])}")
     if meta.get('epochs'):
-        tags.append(f"continuum:epochs={meta['epochs']}")
+        tags.append(f"continuum:epochs={int(meta['epochs'])}")
 
     # Persona
     if manifest.get('personaName'):
-        tags.append(f"continuum:persona={manifest['personaName']}")
+        tags.append(f"continuum:persona={normalize_tag_value(manifest['personaName'])}")
 
     # Project type
     if project_type:
-        tags.append(f"continuum:project-type={project_type}")
+        tags.append(f"continuum:project-type={normalize_tag_value(project_type)}")
 
     # Rank
     if manifest.get('rank'):
-        tags.append(f"continuum:rank={manifest['rank']}")
+        tags.append(f"continuum:rank={int(manifest['rank'])}")
 
     return tags
 
