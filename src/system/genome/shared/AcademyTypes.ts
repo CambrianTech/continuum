@@ -143,7 +143,8 @@ export interface AcademyConfig {
 }
 
 /**
- * Default Academy configuration
+ * Default Academy configuration — quick iterations for development/testing.
+ * For production training, use PRODUCTION_ACADEMY_CONFIG.
  */
 export const DEFAULT_ACADEMY_CONFIG: AcademyConfig = {
   maxTopicAttempts: 3,
@@ -156,6 +157,86 @@ export const DEFAULT_ACADEMY_CONFIG: AcademyConfig = {
   questionsPerExam: 10,
   topicsPerSession: 3,
 };
+
+/**
+ * Production Academy configuration — real training on 5090 tower.
+ *
+ * Multi-hour/multi-day sessions producing models for complex real-world
+ * software engineering (full apps, AR engines, video games).
+ *
+ * - 50 epochs — enough to learn complex patterns
+ * - 100 examples/topic — diverse data prevents overfitting
+ * - 25 exam questions — thorough mastery evaluation
+ * - 5 topics/session — broader skill coverage
+ * - 5 retry attempts — more remediation before failing
+ * - rank 64 — more adapter capacity for complex skills
+ * - passing score 80 — higher bar, better models
+ */
+export const PRODUCTION_ACADEMY_CONFIG: AcademyConfig = {
+  maxTopicAttempts: 5,
+  passingScore: 80,
+  epochs: 50,
+  rank: 64,
+  learningRate: 0.00005,
+  batchSize: 4,
+  examplesPerTopic: 100,
+  questionsPerExam: 25,
+  topicsPerSession: 5,
+};
+
+// ============================================================================
+// LLM Config Resolvers — EVERY LLM step MUST have model/provider
+// ============================================================================
+
+/**
+ * Resolve teacher LLM config. Teacher needs a CAPABLE model for curriculum
+ * design, data synthesis, exam generation, and grading. A local 3B cannot
+ * do this work — it will hallucinate garbage curricula and grade randomly.
+ *
+ * Resolution order:
+ *   1. Explicit teacherModel/teacherProvider from config
+ *   2. Error if neither is set — caller must specify a capable model
+ *
+ * Why no fallback: CLAUDE.md rule — "never code fallbacks. 100% of claude
+ * fallbacks fire 100% of the time." A local 3B teacher produces worthless
+ * training data. Better to fail loudly than train on garbage.
+ */
+export function resolveTeacherLlmConfig(academyConfig: AcademyConfig): { model: string; provider: string } {
+  if (!academyConfig.teacherModel || !academyConfig.teacherProvider) {
+    throw new Error(
+      'Academy teacher requires explicit model and provider. '
+      + 'A local 3B model CANNOT design curriculum or grade exams. '
+      + 'Pass --model and --provider to genome/academy-session '
+      + '(e.g., --model="deepseek-chat" --provider="deepseek"). '
+      + 'Available providers: deepseek, anthropic, openai, groq, together, fireworks, xai, google.'
+    );
+  }
+  return { model: academyConfig.teacherModel, provider: academyConfig.teacherProvider };
+}
+
+/**
+ * Resolve student LLM config. Student uses the LOCAL model because that's
+ * what LoRA training improves. The whole point of the student pipeline is
+ * to prove that training made the local model better.
+ *
+ * For modes where the student needs cloud inference (e.g., RealClassEval
+ * where 3B can't implement Python classes), studentModel/studentProvider
+ * can override to use a cloud model.
+ */
+export function resolveStudentLlmConfig(
+  baseModel: string,
+  academyConfig: AcademyConfig,
+): { model: string; provider: string } {
+  if (academyConfig.studentModel && academyConfig.studentProvider) {
+    return { model: academyConfig.studentModel, provider: academyConfig.studentProvider };
+  }
+  if (academyConfig.studentProvider) {
+    // Cloud provider without explicit model — let provider use its default
+    return { provider: academyConfig.studentProvider, model: '' };
+  }
+  // Default: local inference — the whole point of training
+  return { model: baseModel, provider: 'candle' };
+}
 
 // ============================================================================
 // Academy Session Status

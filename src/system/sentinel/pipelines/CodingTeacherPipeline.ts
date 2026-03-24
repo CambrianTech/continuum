@@ -18,7 +18,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { CodingTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 
 const E = ACADEMY_EVENTS;
 
@@ -56,6 +56,7 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
   } = config;
 
   const testCommand = config.testCommand ?? `npx tsx ${testFile}`;
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   const evt = (action: string) => academyEvent(sessionId, action);
   /** Iteration-scoped event: prevents watch from matching previous iteration's events */
   const iterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.iteration}}`;
@@ -117,8 +118,8 @@ export function buildCodingTeacherPipeline(config: CodingTeacherPipelineConfig):
         '  "summary": "Brief summary of what debugging skills are needed"',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.3,
       maxTokens: 2048,
     },
@@ -201,6 +202,7 @@ function buildChallengeRetrySteps(
   testFile: string,
   testCommand: string,
 ): PipelineStep[] {
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   return [
     // loop.0: Synthesize debugging training data
     // Grounding context = bug analysis from step 3 + any prior remediation feedback
@@ -222,8 +224,8 @@ function buildChallengeRetrySteps(
           '{{loop.6.output}}',
           '{{/if}}',
         ].join('\n'),
-        ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-        ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+        model: teacherLlm.model,
+        provider: teacherLlm.provider,
       },
     },
 
@@ -245,7 +247,7 @@ function buildChallengeRetrySteps(
     {
       type: 'watch',
       event: iterEvt(E.TRAINING_COMPLETE),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — training runs for hours
     },
 
     // loop.3: Emit challenge:ready — tell student to attempt the fix (iteration-scoped)
@@ -265,7 +267,7 @@ function buildChallengeRetrySteps(
     {
       type: 'watch',
       event: iterEvt(E.CHALLENGE_ATTEMPTED),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — student fix attempt can take time
     },
 
     // loop.5: LLM — Evaluate the student's test output
@@ -304,8 +306,8 @@ function buildChallengeRetrySteps(
         '  "failedTests": ["description of each failed test"]',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.2,
       maxTokens: 2048,
     },
@@ -326,6 +328,21 @@ function buildChallengeRetrySteps(
             score: '{{loop.5.output.score}}',
           },
         },
+        // Teacher posts grade report — other students can see and learn from this
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `✅ **${personaName} passed the coding challenge!** (round {{input.iteration}})`,
+              '',
+              `**Score: {{loop.5.output.score}}%** — {{loop.5.output.feedback}}`,
+              '',
+              `_${skill} debugging challenge complete._`,
+            ].join('\n'),
+          },
+        },
       ],
       else: [
         // Student failed — emit topic:remediate with feedback
@@ -338,6 +355,25 @@ function buildChallengeRetrySteps(
             round: '{{input.iteration}}',
             feedback: '{{loop.5.output.feedback}}',
             weakAreas: '{{loop.5.output.weakAreas}}',
+          },
+        },
+        // Teacher posts feedback — visible to all students for peer learning
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `📋 **Teacher feedback for ${personaName}** (round {{input.iteration}})`,
+              '',
+              `**Score: {{loop.5.output.score}}%** — needs more work`,
+              '',
+              '**What went wrong:** {{loop.5.output.feedback}}',
+              '',
+              '**Areas to study:** {{loop.5.output.weakAreas}}',
+              '',
+              '_Generating targeted training material..._',
+            ].join('\n'),
           },
         },
       ],

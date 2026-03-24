@@ -22,6 +22,7 @@ import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
+import { routeForTask, getAvailableCloudProviders } from './TaskAwareProviderRouter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -437,17 +438,35 @@ export class PersonaResponseGenerator {
         }
       }
 
-      // 🎰 PHASE 3.3a: Request inference slot from coordinator
-      // This prevents thundering herd - only N personas can generate simultaneously per provider
-      const provider = this.modelConfig.provider;
-
       // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
       const toolMeta = fullRAGContext.metadata?.toolDefinitions;
-      if (toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0) {
+      const hasTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
+      if (hasTools) {
         request.tools = toolMeta.nativeToolSpecs as NativeToolSpec[];
         request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
         this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
       }
+
+      // PER-TASK MODEL ROUTING (#371): If the persona uses a local model and the task
+      // requires cloud capabilities (coding, tool use), upgrade to best available cloud provider.
+      // The persona's identity (system prompt, LoRA adapters) stays the same — only compute changes.
+      const availableCloud = await getAvailableCloudProviders();
+      const routing = routeForTask(
+        request.model ?? effectiveModel,
+        request.provider ?? this.modelConfig.provider,
+        currentDomain,
+        hasTools,
+        availableCloud,
+      );
+      if (routing.upgraded) {
+        request.model = routing.model;
+        request.provider = routing.provider;
+        this.log(`🔄 ${this.personaName}: Task routing — ${routing.reason}`);
+      }
+
+      // 🎰 PHASE 3.3a: Request inference slot from coordinator
+      // This prevents thundering herd - only N personas can generate simultaneously per provider
+      const provider = request.provider!;
       pipelineTiming['3.2_format'] = Date.now() - phase32Start;
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
 

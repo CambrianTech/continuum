@@ -66,14 +66,14 @@ export function buildProjectStudentPipeline(config: ProjectStudentPipelineConfig
     {
       type: 'watch',
       event: evt(E.CURRICULUM_READY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // Step 1: Wait for project working directory to be ready
     {
       type: 'watch',
       event: evt(E.PROJECT_SETUP_COMPLETE),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // Step 2: Milestone loop
@@ -93,9 +93,30 @@ export function buildProjectStudentPipeline(config: ProjectStudentPipelineConfig
         personaId,
         baseModel,
         name: `${personaName}-project-${sessionId.slice(0, 8)}`,
-        layers: '{{steps.2.iterations.*.8.data.layerId}}',
+        layers: '{{steps.2.iterations.*.9.data.layerId}}',
         strategy: 'weighted-merge',
         activate: true,
+      },
+    },
+
+    // Step 4: Plasticity compaction — prune dead heads using training gate gradients
+    {
+      type: 'command',
+      command: 'plasticity/pipeline',
+      params: {
+        capturePath: '{{steps.3.data.composedAdapterPath}}',
+        modelPath: baseModel,
+      },
+    },
+
+    // Step 5: Compress to target-device GGUF
+    {
+      type: 'command',
+      command: 'plasticity/compress',
+      params: {
+        capturePath: '{{steps.4.data.topologyPath}}',
+        modelPath: '{{steps.4.data.modelPath}}',
+        deviceSpec: '32gb',
       },
     },
   ];
@@ -134,7 +155,7 @@ function buildMilestoneStudentSteps(
     {
       type: 'watch',
       event: iterEvt(E.MILESTONE_READY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.1: Read current project state (file tree + key source files)
@@ -262,11 +283,33 @@ function buildMilestoneStudentSteps(
       },
     },
 
+    // Post cold attempt to chat — the student's first try at this milestone
+    {
+      type: 'command',
+      command: 'collaboration/chat/send',
+      params: {
+        room: 'academy',
+        message: [
+          `🏗️ **${personaName}** — Milestone {{input.iteration}} first attempt (before training)`,
+          '',
+          '**Project files:**',
+          '```',
+          '{{loop.4.output}}',
+          '```',
+          '',
+          '**Build + test output:**',
+          '```',
+          '{{loop.3.output}}',
+          '```',
+        ].join('\n'),
+      },
+    },
+
     // loop.6: Watch for training data from teacher (iteration-scoped)
     {
       type: 'watch',
       event: iterEvt(E.DATASET_READY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.7: Emit training:started (iteration-scoped)
@@ -277,7 +320,7 @@ function buildMilestoneStudentSteps(
         sessionId,
         personaId,
         topicIndex: '{{input.iteration}}',
-        datasetPath: '{{loop.6.data.payload.datasetPath}}',
+        datasetPath: '{{loop.7.data.payload.datasetPath}}',
         round: '{{input.iteration}}',
       },
     },
@@ -291,7 +334,7 @@ function buildMilestoneStudentSteps(
         personaName,
         traitType: `project-${sessionId.slice(0, 8)}-milestone-{{input.iteration}}`,
         baseModel,
-        datasetPath: '{{loop.6.data.payload.datasetPath}}',
+        datasetPath: '{{loop.7.data.payload.datasetPath}}',
         rank: academyConfig.rank,
         epochs: academyConfig.epochs,
         learningRate: academyConfig.learningRate,
@@ -307,12 +350,12 @@ function buildMilestoneStudentSteps(
         sessionId,
         personaId,
         topicIndex: '{{input.iteration}}',
-        layerId: '{{loop.8.data.layerId}}',
+        layerId: '{{loop.9.data.layerId}}',
         metrics: {
-          finalLoss: '{{loop.8.data.metrics.finalLoss}}',
-          trainingTime: '{{loop.8.data.metrics.trainingTime}}',
-          examplesProcessed: '{{loop.8.data.metrics.examplesProcessed}}',
-          epochs: '{{loop.8.data.metrics.epochs}}',
+          finalLoss: '{{loop.9.data.metrics.finalLoss}}',
+          trainingTime: '{{loop.9.data.metrics.trainingTime}}',
+          examplesProcessed: '{{loop.9.data.metrics.examplesProcessed}}',
+          epochs: '{{loop.9.data.metrics.epochs}}',
         },
       },
     },
@@ -321,7 +364,7 @@ function buildMilestoneStudentSteps(
     {
       type: 'watch',
       event: iterEvt(E.MILESTONE_RETRY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.11: LLM (baseModel) — WARM attempt: fix code using feedback + trained LoRA
@@ -332,7 +375,7 @@ function buildMilestoneStudentSteps(
         `You are building a project step by step. Milestone {{input.iteration}} — RETRY with feedback.`,
         '',
         '=== TEACHER FEEDBACK ===',
-        '{{loop.10.data.payload}}',
+        '{{loop.11.data.payload}}',
         '',
         '=== YOUR PREVIOUS ATTEMPT (current state) ===',
         '{{loop.4.output}}',
@@ -357,8 +400,8 @@ function buildMilestoneStudentSteps(
       temperature: 0.3,
       maxTokens: 8192,
       activeAdapters: [{
-        name: '{{loop.8.data.layerId}}',
-        path: '{{loop.8.data.adapterPath}}',
+        name: '{{loop.9.data.layerId}}',
+        path: '{{loop.9.data.adapterPath}}',
         domain: `project-${sessionId.slice(0, 8)}`,
         scale: 1.0,
       }],
@@ -384,7 +427,7 @@ function buildMilestoneStudentSteps(
         `    console.log('Wrote: ' + fp);`,
         `  }`,
         `} catch(e) { console.error('JSON parse error: ' + e.message); }`,
-        `" '{{loop.11.output}}'`,
+        `" '{{loop.12.output}}'`,
         '',
         `# Compile check`,
         `echo "=== COMPILATION ==="`,
@@ -428,10 +471,34 @@ function buildMilestoneStudentSteps(
         milestoneIndex: '{{input.iteration}}',
         attemptType: 'warm',
         round: 0,
-        sourceFiles: '{{loop.13.output}}',
-        compilationOutput: '{{loop.12.output}}',
-        testOutput: '{{loop.12.output}}',
-        fileTree: '{{loop.13.output}}',
+        sourceFiles: '{{loop.14.output}}',
+        compilationOutput: '{{loop.13.output}}',
+        testOutput: '{{loop.13.output}}',
+        fileTree: '{{loop.14.output}}',
+      },
+    },
+
+    // Post warm attempt to chat — the student's improved version after training
+    {
+      type: 'command',
+      command: 'collaboration/chat/send',
+      params: {
+        room: 'academy',
+        message: [
+          `🔄 **${personaName}** — Milestone {{input.iteration}} retry (after training + feedback)`,
+          '',
+          '**Improved project files:**',
+          '```',
+          '{{loop.14.output}}',
+          '```',
+          '',
+          '**Build + test output:**',
+          '```',
+          '{{loop.13.output}}',
+          '```',
+          '',
+          '_Teacher is reviewing the improved submission..._',
+        ].join('\n'),
       },
     },
   ];

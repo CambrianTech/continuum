@@ -7,6 +7,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { PlasticityCompressParams, PlasticityCompressResult } from '../shared/PlasticityCompressTypes';
 import { createPlasticityCompressResultFromParams } from '../shared/PlasticityCompressTypes';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class PlasticityCompressServerCommand extends CommandBase<PlasticityCompressParams, PlasticityCompressResult> {
 
@@ -15,14 +16,23 @@ export class PlasticityCompressServerCommand extends CommandBase<PlasticityCompr
   }
 
   async execute(params: PlasticityCompressParams): Promise<PlasticityCompressResult> {
-    // TODO: Route to Rust IPC when plasticity/compress is fully wired
+    const client = RustCoreIPCClient.getInstance();
+
+    const result = await client.plasticityCompress({
+      capturePath: params.capturePath,
+      modelPath: params.modelPath,
+      deviceSpec: params.deviceSpec,
+      outputPath: params.outputPath,
+      architecture: params.architecture,
+    });
+
     return createPlasticityCompressResultFromParams(params, {
-      success: false,
-      ggufPath: '',
-      outputSizeGb: 0,
-      compressionRatio: 0,
-      quantDistribution: {},
-      verified: false,
+      success: true,
+      ggufPath: result.ggufPath,
+      outputSizeGb: result.outputSizeBytes / (1024 * 1024 * 1024),
+      compressionRatio: result.compressionRatio,
+      quantDistribution: result.recipe,
+      verified: result.verified,
     });
   }
 }

@@ -25,13 +25,16 @@ pub async fn execute(
     let start = Instant::now();
 
     let interpolated_pattern = interpolation::interpolate(event_pattern, ctx);
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_WATCH_TIMEOUT_SECS));
+    let raw_timeout = timeout_secs.unwrap_or(DEFAULT_WATCH_TIMEOUT_SECS);
+    // 0 means no timeout — wait indefinitely (critical for long-running training)
+    let has_timeout = raw_timeout > 0;
+    let timeout = Duration::from_secs(if has_timeout { raw_timeout } else { u64::MAX });
 
     log.info(&format!(
-        "[{}] Watch step: waiting for event '{}' (timeout={}s)",
+        "[{}] Watch step: waiting for event '{}' (timeout={})",
         pipeline_ctx.handle_id,
         interpolated_pattern,
-        timeout.as_secs()
+        if has_timeout { format!("{}s", raw_timeout) } else { "none".to_string() }
     ));
 
     let bus = pipeline_ctx.bus.ok_or_else(|| step_err(pipeline_ctx.handle_id, "Watch step", "requires MessageBus"))?;

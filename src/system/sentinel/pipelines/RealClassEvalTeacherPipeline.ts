@@ -133,7 +133,7 @@ export function buildRealClassEvalTeacherPipeline(config: RealClassEvalTeacherPi
         {
           type: 'watch',
           event: evt(E.REEXAM_READY),
-          timeoutSecs: 1800,
+          timeoutSecs: 0,  // No timeout — training runs for hours/days
         },
 
         // Then.1: Re-exam loop — same challenges, writes reexam-results.jsonl
@@ -256,7 +256,7 @@ function buildChallengeSteps(
     {
       type: 'watch',
       event: iterEvt(E.CHALLENGE_ATTEMPTED),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — student implementation takes time
     },
 
     // loop.2: Write student code to module file + run tests.
@@ -320,6 +320,22 @@ function buildChallengeSteps(
             testsPassed: '{{loop.3.output.testsPassed}}',
           },
         },
+        // Post the student's work + verdict to chat
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `✅ **Challenge {{input.iteration}}** — {{loop.3.output.testsPassed}}/{{loop.3.output.totalTests}} tests passed ({{loop.3.output.score}}%)`,
+              '',
+              '**Student\'s implementation:**',
+              '```python',
+              '{{loop.1.data.payload.implementation}}',
+              '```',
+            ].join('\n'),
+          },
+        },
       ],
       else: [
         {
@@ -334,6 +350,27 @@ function buildChallengeSteps(
             testsPassed: '{{loop.3.output.testsPassed}}',
             testsFailed: '{{loop.3.output.testsFailed}}',
             pytestOutput: '{{loop.2.output}}',
+          },
+        },
+        // Post the student's work + failure details to chat — everyone learns from mistakes
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `❌ **Challenge {{input.iteration}}** — {{loop.3.output.testsPassed}}/{{loop.3.output.totalTests}} tests passed ({{loop.3.output.score}}%)`,
+              '',
+              '**Student\'s implementation:**',
+              '```python',
+              '{{loop.1.data.payload.implementation}}',
+              '```',
+              '',
+              '**Failed tests:**',
+              '```',
+              '{{loop.2.output}}',
+              '```',
+            ].join('\n'),
           },
         },
       ],

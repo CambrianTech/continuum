@@ -483,7 +483,7 @@ export class GridOverviewWidget extends ReactiveWidget {
           const active = activeTransports.has(t);
           return html`
             <div class="transport-status ${active ? 'transport-active' : 'transport-inactive'}">
-              <div class="transport-dot" style="background: ${active ? STATUS_COLORS.online : STATUS_COLORS.offline};"></div>
+              <div class="transport-dot" style="background: ${active ? GRID_STATUS_COLORS.online : GRID_STATUS_COLORS.offline};"></div>
               ${t.charAt(0).toUpperCase() + t.slice(1)}
             </div>
           `;

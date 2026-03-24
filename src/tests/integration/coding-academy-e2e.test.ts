@@ -38,6 +38,12 @@ const PERSONA_NAME = 'test-student';
 const SKILL = 'debugging';
 const BASE_MODEL = 'smollm2:135m';
 
+const TEST_ACADEMY_CONFIG = {
+  ...DEFAULT_ACADEMY_CONFIG,
+  teacherModel: 'deepseek-chat',
+  teacherProvider: 'deepseek',
+};
+
 const TEACHER_CONFIG: CodingTeacherPipelineConfig = {
   sessionId: SESSION_ID,
   skill: SKILL,
@@ -47,7 +53,7 @@ const TEACHER_CONFIG: CodingTeacherPipelineConfig = {
   sourceFile: 'task-manager.ts',
   testFile: 'task-manager.test.ts',
   testCommand: 'npx tsx task-manager.test.ts',
-  config: DEFAULT_ACADEMY_CONFIG,
+  config: TEST_ACADEMY_CONFIG,
 };
 
 const STUDENT_CONFIG: CodingStudentPipelineConfig = {
@@ -59,7 +65,7 @@ const STUDENT_CONFIG: CodingStudentPipelineConfig = {
   sourceFile: 'task-manager.ts',
   testFile: 'task-manager.test.ts',
   testCommand: 'npx tsx task-manager.test.ts',
-  config: DEFAULT_ACADEMY_CONFIG,
+  config: TEST_ACADEMY_CONFIG,
 };
 
 // ─── Test Phases ─────────────────────────────────────────────────────────────
@@ -151,16 +157,19 @@ async function main() {
     console.log(`  Pipeline name: ${studentPipeline.name}`);
     console.log(`  Top-level steps: ${studentPipeline.steps.length}`);
 
-    // Expected: 3 top-level steps
-    // 0: watch (curriculum:ready), 1: loop (challenge attempts), 2: command (compose)
+    // Expected: 5 top-level steps
+    // 0: watch (curriculum:ready), 1: loop (challenge attempts), 2: command (compose),
+    // 3: command (plasticity/pipeline), 4: command (plasticity/compress)
     const studentTopSteps = studentPipeline.steps.map(s => s.type);
     console.log(`  Top-level types: ${studentTopSteps.join(', ')}`);
 
     const studentStructureValid =
-      studentPipeline.steps.length === 3 &&
+      studentPipeline.steps.length === 5 &&
       studentTopSteps[0] === 'watch' &&
       studentTopSteps[1] === 'loop' &&
-      studentTopSteps[2] === 'command';
+      studentTopSteps[2] === 'command' &&
+      studentTopSteps[3] === 'command' &&
+      studentTopSteps[4] === 'command';
 
     results.push({
       phase: 'Student Pipeline Structure',
@@ -171,17 +180,17 @@ async function main() {
     // Verify student inner loop
     const studentLoop = studentPipeline.steps[1] as any;
     const studentInnerSteps = studentLoop.steps as any[];
-    console.log(`  Inner loop steps: ${studentInnerSteps.length} (expected 11)`);
+    console.log(`  Inner loop steps: ${studentInnerSteps.length} (expected 12)`);
 
     // inner: 0=watch(dataset:ready), 1=emit(training:started), 2=command(genome/train),
     // 3=emit(training:complete), 4=watch(challenge:ready), 5=shell(read source),
     // 6=shell(read tests), 7=shell(run buggy tests), 8=llm(fix code),
-    // 9=shell(write fix + run tests), 10=emit(challenge:attempted)
+    // 9=shell(write fix + run tests), 10=emit(challenge:attempted), 11=command(chat/send)
     const studentInnerTypes = studentInnerSteps.map((s: any) => s.type);
     console.log(`  Inner step types: ${studentInnerTypes.join(', ')}`);
 
     const studentInnerValid =
-      studentInnerSteps.length === 11 &&
+      studentInnerSteps.length === 12 &&
       studentInnerTypes[0] === 'watch' &&
       studentInnerTypes[1] === 'emit' &&
       studentInnerTypes[2] === 'command' &&
@@ -192,7 +201,8 @@ async function main() {
       studentInnerTypes[7] === 'shell' &&
       studentInnerTypes[8] === 'llm' &&
       studentInnerTypes[9] === 'shell' &&
-      studentInnerTypes[10] === 'emit';
+      studentInnerTypes[10] === 'emit' &&
+      studentInnerTypes[11] === 'command';  // chat/send — student work visibility
 
     results.push({
       phase: 'Student Inner Loop',

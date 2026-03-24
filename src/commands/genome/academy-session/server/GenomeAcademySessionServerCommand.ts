@@ -17,7 +17,7 @@ import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../
 import { createGenomeAcademySessionResultFromParams } from '../shared/GenomeAcademySessionTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { AcademySessionEntity } from '@system/genome/entities/AcademySessionEntity';
-import { DEFAULT_ACADEMY_CONFIG, ACADEMY_MODE_LABELS, ACADEMY_MODE_PREFIXES } from '@system/genome/shared/AcademyTypes';
+import { DEFAULT_ACADEMY_CONFIG, ACADEMY_MODE_LABELS, ACADEMY_MODE_PREFIXES, resolveTeacherLlmConfig } from '@system/genome/shared/AcademyTypes';
 import type { AcademyConfig, AcademySessionMode, ProjectSpec } from '@system/genome/shared/AcademyTypes';
 import { buildTeacherPipeline } from '@system/sentinel/pipelines/TeacherPipeline';
 import { buildStudentPipeline } from '@system/sentinel/pipelines/StudentPipeline';
@@ -34,6 +34,7 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
 import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
 import { LOCAL_MODELS } from '@system/shared/Constants';
 import { GenomeDatasetImport } from '@commands/genome/dataset-import/shared/GenomeDatasetImportTypes';
@@ -115,6 +116,24 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.studentProvider ? { studentProvider: params.studentProvider } : params.provider ? { studentProvider: params.provider } : {}),
     };
 
+    // Validate teacher model/provider BEFORE creating session.
+    // Fail fast with a clear error instead of spawning sentinels that die immediately.
+    try {
+      resolveTeacherLlmConfig(config);
+    } catch (e: unknown) {
+      return createGenomeAcademySessionResultFromParams(params, {
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+        academySessionId: '' as UUID,
+        teacherHandle: '',
+        studentHandle: '',
+      });
+    }
+
+    // Clean up zombie sessions: mark any stuck sessions (pending/curriculum/training/examining)
+    // for this persona as 'failed'. Prevents zombie accumulation from crashed sentinels.
+    await this.cleanupZombieSessions(personaId);
+
     // 1. Create AcademySessionEntity (instantiate for auto-generated id)
     const entity = new AcademySessionEntity();
     entity.personaId = personaId;
@@ -174,13 +193,15 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     // 3. Submit teacher sentinel
     // PipelineStep[] (Rust bindings) → SentinelStep[] (TS definitions) — structurally compatible wire types
     const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
-    // Academy sessions run multiple topics (curriculum → synthesize → train → exam per topic).
-    // Each topic takes ~30-60s for deterministic grading, longer if training is needed.
-    // Scale timeout: base 600s + 120s per challenge (initial + re-exam) + training buffer.
-    // Post-benchmark training on N examples × E epochs × ~15s each can take significant time.
-    const trainingBuffer = config.questionsPerExam * (config.epochs ?? 3) * 15;
-    const topicMultiplier = config.topicsPerSession ?? 3;
-    const pipelineTimeout = Math.max(1800, 600 + (config.questionsPerExam * 120 + trainingBuffer) * topicMultiplier);
+    // Academy sessions are long-running: curriculum design → data synthesis → training →
+    // exam → remediation per topic, repeated across multiple topics. Real training runs
+    // for hours to days on the 5090 tower. Use timeout=0 for no timeout — the sentinel
+    // runs until completion or explicit cancellation.
+    //
+    // With epochs=100 and complex tasks, a single topic's training step alone can take
+    // hours. Timeouts that kill the pipeline mid-training waste GPU time and produce
+    // zombie sessions (issue #365).
+    const pipelineTimeout = 0; // No timeout — run to completion
     const modePrefix = ACADEMY_MODE_PREFIXES[mode];
     const modeLabel = ACADEMY_MODE_LABELS[mode];
     const teacherName = teacherPipeline.name ?? `academy-${modePrefix}teacher-${skill}`;
@@ -490,5 +511,49 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
 
     console.log(`   Auto-imported ${importResult.totalExamples} examples to ${datasetDir}`);
     return { ...params, datasetDir };
+  }
+
+  /**
+   * Mark any stuck sessions for this persona as 'failed'.
+   * Sessions in pending/curriculum/training/examining that have been running
+   * for more than 1 hour are considered zombies from crashed sentinels.
+   */
+  private async cleanupZombieSessions(personaId: UUID): Promise<void> {
+    const ZOMBIE_STATUSES: string[] = ['pending', 'curriculum', 'training', 'examining'];
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+
+    const listResult = await DataList.execute({
+      dbHandle: 'default',
+      collection: AcademySessionEntity.collection,
+      filter: { personaId },
+    });
+
+    if (!listResult.success || !listResult.items?.length) return;
+
+    const now = Date.now();
+    let cleanedCount = 0;
+
+    for (const session of listResult.items) {
+      const status = (session as Record<string, unknown>).status as string;
+      const createdAt = (session as Record<string, unknown>).createdAt as string;
+      const id = (session as Record<string, unknown>).id as string;
+
+      if (!ZOMBIE_STATUSES.includes(status)) continue;
+
+      const ageMs = now - new Date(createdAt).getTime();
+      if (ageMs < ONE_HOUR_MS) continue;
+
+      await DataUpdate.execute({
+        dbHandle: 'default',
+        collection: AcademySessionEntity.collection,
+        id: id as UUID,
+        data: { status: 'failed' },
+      });
+      cleanedCount++;
+    }
+
+    if (cleanedCount > 0) {
+      console.log(`   🧹 Cleaned up ${cleanedCount} zombie academy session(s) for persona ${personaId}`);
+    }
   }
 }

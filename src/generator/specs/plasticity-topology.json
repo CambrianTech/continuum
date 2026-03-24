@@ -1,0 +1,39 @@
+{
+  "name": "plasticity/topology",
+  "description": "Read the head topology of a compacted model. Returns per-layer head precision assignments showing which heads were pruned, quantized to different levels, or kept at full precision. Use this to inspect what compaction did to a model.",
+  "params": [
+    {
+      "name": "topologyPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to head_topology.json file (produced by plasticity/compact or plasticity/pipeline)"
+    }
+  ],
+  "results": [
+    {
+      "name": "layers",
+      "type": "object",
+      "description": "Per-layer topology: head precision assignments"
+    },
+    {
+      "name": "parameterReduction",
+      "type": "number",
+      "description": "Overall parameter reduction ratio (0-1)"
+    },
+    {
+      "name": "precisionProfile",
+      "type": "object",
+      "description": "Count of heads at each precision tier: { removed, ternary, q2, q4, q8, bf16 }"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Inspect a compacted model's topology",
+      "params": {
+        "topologyPath": "~/.continuum/genome/models/qwen14b-compacted/head_topology.json"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}

@@ -1,0 +1,61 @@
+{
+  "name": "plasticity/analyze",
+  "description": "Dry-run analysis of what compaction would do to a model. Reads gate_gradients.json from the adapter directory, computes per-head utilization scores, and returns a topology showing which heads would be pruned/compressed/kept. Does NOT modify any files.",
+  "params": [
+    {
+      "name": "adapterPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to adapter directory containing gate_gradients.json (output from training with GateGradientCallback)"
+    },
+    {
+      "name": "config",
+      "type": "object",
+      "optional": true,
+      "description": "Compaction config overrides: { minHeadsPerLayer, minKvHeadsPerLayer, deadThreshold, lowThreshold, highThreshold, saturatedThreshold, enableQuantization }"
+    }
+  ],
+  "results": [
+    {
+      "name": "topology",
+      "type": "object",
+      "description": "HeadTopology: per-layer head precision assignments (prune/Q2/Q4/Q8/BF16)"
+    },
+    {
+      "name": "layerSummaries",
+      "type": "object",
+      "description": "Per-layer summary: head counts by precision tier, parameter reduction %"
+    },
+    {
+      "name": "estimatedSavingsBytes",
+      "type": "number",
+      "description": "Estimated memory savings in bytes from compaction"
+    },
+    {
+      "name": "saturatedHeads",
+      "type": "object",
+      "description": "Heads with utilization > saturatedThreshold that may benefit from higher rank LoRA"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Analyze a trained adapter's gate gradients",
+      "params": {
+        "adapterPath": "~/.continuum/genome/adapters/helper-ai/coding-expertise"
+      }
+    },
+    {
+      "description": "Analyze with custom thresholds",
+      "params": {
+        "adapterPath": "/path/to/adapter",
+        "config": {
+          "deadThreshold": 0.05,
+          "lowThreshold": 0.2,
+          "minHeadsPerLayer": 4
+        }
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}
