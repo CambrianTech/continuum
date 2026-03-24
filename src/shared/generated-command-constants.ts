@@ -198,6 +198,7 @@ export const COMMANDS = {
   GENOME_TRAIN_LIST_JOBS: 'genome/train/list-jobs',
   GENOME_TRAIN_RESUME: 'genome/train/resume',
   GENOME_TRAINING_EXPORT: 'genome/training-export',
+  GENOME_TRAINING_OVERVIEW: 'genome/training-overview',
   GENOME_TRAINING_PIPELINE: 'genome/training-pipeline',
   GPU_STATS: 'gpu/stats',
   GRID_AUDIT: 'grid/audit',

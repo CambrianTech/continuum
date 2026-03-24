@@ -4194,6 +4194,22 @@
       }
     },
     {
+      "name": "genome/training-overview",
+      "description": "Aggregate all training data across local and grid nodes in one call. Returns adapters with loss histories, academy sessions, and per-node stats. Used by the training dashboard to avoid sequential grid/send chains from the browser.",
+      "params": {
+        "includeGrid": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGrid parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "genome/training-export",
       "description": "Export accumulated training data from a PersonaUser's in-memory buffer to a JSONL file.",
       "params": {

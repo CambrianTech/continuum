@@ -1,0 +1,48 @@
+{
+  "name": "genome/training-overview",
+  "description": "Aggregate all training data across local and grid nodes in one call. Returns adapters with loss histories, academy sessions, and per-node stats. Used by the training dashboard to avoid sequential grid/send chains from the browser.",
+  "params": [
+    {
+      "name": "includeGrid",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include data from remote grid nodes (default: true)"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Filter to a specific persona UUID"
+    }
+  ],
+  "results": [
+    {
+      "name": "adapters",
+      "type": "object[]",
+      "description": "All adapters with training metrics, loss histories, and node info"
+    },
+    {
+      "name": "sessions",
+      "type": "object[]",
+      "description": "All academy sessions (active and recent completed)"
+    },
+    {
+      "name": "nodes",
+      "type": "object[]",
+      "description": "Grid node summary (name, GPU, adapter count)"
+    },
+    {
+      "name": "summary",
+      "type": "object",
+      "description": "Aggregate stats: total adapters, total sessions, best loss, avg maturity"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Get all training data across grid",
+      "command": "./jtag genome/training-overview",
+      "expectedResult": "{ adapters: [...], sessions: [...], nodes: [...], summary: {...} }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}
