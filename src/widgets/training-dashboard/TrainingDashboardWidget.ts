@@ -603,23 +603,26 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       console.warn('[TrainingDashboard] Failed to load local academy sessions:', err);
     }
 
-    // Remote grid nodes
+    // Remote grid nodes — fetch academy sessions directly (skip user list hop)
     try {
       const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
-      const nodes = (nodesResult.nodes ?? []).map((n: any) => ({
+      const rawNodes = nodesResult.nodes ?? [];
+      const nodes: GridNodeInfo[] = rawNodes.map((n: any) => ({
         nodeId: n.node_id ?? n.nodeId,
         nodeName: n.node_name ?? n.nodeName ?? n.node_id ?? n.nodeId,
       }));
 
       for (const node of nodes) {
         try {
-          const remoteUsers = await this.executeCommand<any, any>('grid/send', {
-            nodeId: node.nodeId, remoteCommand: 'user/list', params: { limit: 50 },
+          // Fetch ALL academy sessions from the node in one call (no personaId filter)
+          const result = await this.executeCommand<any, any>('grid/send', {
+            nodeId: node.nodeId, remoteCommand: 'genome/academy-session-list', params: {},
           });
-          const users = remoteUsers?.remoteResult?.users ?? remoteUsers?.remoteResult?.items ?? [];
-          for (const user of users) {
-            if (user.type !== 'ai') continue;
-            await this._loadRemoteAcademySessions(allSessions, node, user.id, user.uniqueId ?? user.displayName);
+          const remote = result?.remoteResult;
+          if (remote?.sessions) {
+            for (const s of remote.sessions) {
+              allSessions.push({ ...s, nodeName: node.nodeName });
+            }
           }
         } catch (err) {
           console.warn(`[TrainingDashboard] Failed to load academy sessions from ${node.nodeName}:`, err);
