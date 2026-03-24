@@ -427,6 +427,67 @@ class GateGradientCallback(TrainerCallback):
         return None
 
 
+class StepMetricsCallback(TrainerCallback):
+    """Emit structured JSON per training step for real-time dashboard streaming.
+
+    Prints a single JSON line to stdout per optimizer step:
+        {"event":"step","step":42,"loss":0.234,"lr":0.0001,"tokenAccuracy":0.73,"memMb":3200,"epoch":1.5}
+
+    TrainingStepBridge (TypeScript) parses these lines from sentinel stdout
+    and re-emits as AI_LEARNING_EVENTS.TRAINING_STEP for widget consumption.
+    """
+
+    def __init__(self, device: str):
+        self.device = device
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Called after each logging step. `logs` contains the metrics dict."""
+        if logs is None or 'loss' not in logs:
+            return
+
+        step_data = {
+            "event": "step",
+            "step": state.global_step,
+            "loss": round(logs.get("loss", 0), 4),
+            "lr": logs.get("learning_rate", 0),
+            "epoch": round(logs.get("epoch", 0), 2) if "epoch" in logs else None,
+            "gradNorm": round(logs["grad_norm"], 4) if "grad_norm" in logs else None,
+        }
+
+        # GPU memory
+        mem_mb = None
+        if self.device == "cuda":
+            mem_mb = round(torch.cuda.memory_allocated() / (1024 * 1024))
+        elif self.device == "mps" and hasattr(torch.mps, "current_allocated_memory"):
+            mem_mb = round(torch.mps.current_allocated_memory() / (1024 * 1024))
+        if mem_mb is not None:
+            step_data["memMb"] = mem_mb
+
+        # Remove None values for cleaner JSON
+        step_data = {k: v for k, v in step_data.items() if v is not None}
+
+        print(json.dumps(step_data), flush=True)
+
+    def on_save(self, args, state, control, **kwargs):
+        """Called when a checkpoint is saved. Emit structured JSON for TrainingStepBridge."""
+        # Find the checkpoint that was just saved
+        checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        size_mb = 0
+        if os.path.isdir(checkpoint_dir):
+            for f in os.listdir(checkpoint_dir):
+                fp = os.path.join(checkpoint_dir, f)
+                if os.path.isfile(fp):
+                    size_mb += os.path.getsize(fp) / (1024 * 1024)
+
+        checkpoint_data = {
+            "event": "checkpoint",
+            "step": state.global_step,
+            "path": checkpoint_dir,
+            "sizeMb": round(size_mb, 1),
+        }
+        print(json.dumps(checkpoint_data), flush=True)
+
+
 def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume_from: str = None):
     """Execute LoRA training."""
     num_examples = len(dataset)
@@ -504,7 +565,8 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=42,
-        report_to="none",
+        report_to="tensorboard",
+        logging_dir=os.path.join(output_dir, "runs"),
         save_strategy="steps",
         save_steps=max(1, total_optimizer_steps // 6),  # ~6 checkpoints across training
         save_total_limit=3,
@@ -513,6 +575,9 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
     # Plasticity: capture per-head gradient magnitudes for optimization engine
     gate_callback = GateGradientCallback(model.config, config['baseModel'])
 
+    # Real-time step metrics for dashboard streaming
+    step_callback = StepMetricsCallback(device)
+
     # SFT Trainer (TRL 0.24+ simplified API)
     trainer = SFTTrainer(
         model=model,
@@ -520,7 +585,7 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str, resume
         train_dataset=dataset,
         formatting_func=formatting_func,
         args=training_args,
-        callbacks=[gate_callback],
+        callbacks=[gate_callback, step_callback],
     )
 
     # Train! Resume from checkpoint if available.

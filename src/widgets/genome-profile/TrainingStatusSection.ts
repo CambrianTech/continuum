@@ -19,6 +19,8 @@ import {
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
+import { ContentService } from '../../system/state/ContentService';
+import type { TrainingSessionInfo } from '../../commands/genome/training-overview/shared/GenomeTrainingOverviewTypes';
 import {
   AI_LEARNING_EVENTS,
   type AITrainingStartedEventData,
@@ -49,6 +51,8 @@ interface RecentCompletion {
   completedAt: number;
   error?: string;
 }
+
+// Use TrainingSessionInfo from shared types (no duplicate interface)
 
 const MAX_RECENT = 5;
 
@@ -158,6 +162,23 @@ const STYLES = `
     font-size: 10px;
     color: var(--content-secondary, #777);
   }
+
+  .dashboard-link {
+    display: block;
+    text-align: center;
+    padding: 6px 0;
+    margin-top: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(0, 212, 255, 0.8);
+    cursor: pointer;
+    border-top: 1px solid rgba(60, 80, 100, 0.2);
+    transition: color 0.15s ease;
+  }
+
+  .dashboard-link:hover {
+    color: rgba(0, 212, 255, 1);
+  }
 `;
 
 export class TrainingStatusSection extends ReactiveWidget {
@@ -165,8 +186,10 @@ export class TrainingStatusSection extends ReactiveWidget {
 
   @reactive() private _active: Map<string, ActiveTraining> = new Map();
   @reactive() private _recent: RecentCompletion[] = [];
+  @reactive() private _academySessions: TrainingSessionInfo[] = [];
 
   private _cleanups: (() => void)[] = [];
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({ widgetName: 'TrainingStatusSection' });
@@ -238,27 +261,86 @@ export class TrainingStatusSection extends ReactiveWidget {
         }, ...this._recent].slice(0, MAX_RECENT);
       }),
     );
+
+    // Load Academy sessions from grid nodes
+    this._loadAcademySessions();
+    this._pollTimer = setInterval(() => {
+      if (this._academySessions.some(s => !['completed', 'failed', 'cancelled'].includes(s.status))) {
+        this._loadAcademySessions();
+      }
+    }, 30_000);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._cleanups.forEach(fn => fn());
     this._cleanups = [];
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+  }
+
+  private async _loadAcademySessions(): Promise<void> {
+    // Use the aggregation command — does all grid calls server-side in one roundtrip
+    try {
+      const result = await this.executeCommand<any, any>('genome/training-overview', {});
+      if (result?.sessions) {
+        this._academySessions = result.sessions.map((s: Record<string, unknown>) => ({
+          id: s.id,
+          skill: s.skill,
+          status: s.status,
+          personaName: s.personaName,
+          baseModel: s.baseModel,
+          mode: s.mode,
+          createdAt: s.createdAt as string,
+          nodeName: s.nodeName,
+        }));
+      }
+    } catch (err) {
+      console.warn('[TrainingStatusSection] Failed to load academy sessions:', err);
+    }
   }
 
   protected override renderContent(): TemplateResult {
     const activeList = [...this._active.values()];
+    const activeSessions = this._academySessions.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status));
+    const hasAnything = activeList.length > 0 || this._recent.length > 0 || activeSessions.length > 0;
 
-    if (activeList.length === 0 && this._recent.length === 0) {
-      return html`<div class="idle-state">No active training. Start a session from the Academy.</div>`;
+    if (!hasAnything) {
+      return html`
+        <div class="idle-state">No active training. Start a session from the Academy.</div>
+        <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
+      `;
     }
 
     return html`
+      ${activeSessions.map(s => this._renderAcademySession(s))}
       ${activeList.map(t => this._renderActive(t))}
       ${this._recent.length > 0 ? html`
         <div class="recent-label">Recent</div>
         ${this._recent.map(c => this._renderCompletion(c))}
       ` : nothing}
+      <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
+    `;
+  }
+
+  private _renderAcademySession(s: TrainingSessionInfo): TemplateResult {
+    const elapsed = Math.round((Date.now() - new Date(s.createdAt).getTime()) / 1000);
+    const elapsedStr = elapsed > 3600 ? `${(elapsed / 3600).toFixed(1)}h` : elapsed > 60 ? `${Math.round(elapsed / 60)}m` : `${elapsed}s`;
+
+    return html`
+      <div class="active-training" style="border-color: rgba(0, 212, 255, 0.15);">
+        <div class="training-header">
+          <span class="training-domain">${s.skill}</span>
+          <span class="training-persona">${s.personaName}${s.nodeName ? ` @ ${s.nodeName}` : ''}</span>
+        </div>
+        <div class="training-stats">
+          <span class="stat-highlight">${s.status}</span>
+          <span>${s.mode}</span>
+          <span>${elapsedStr}</span>
+        </div>
+      </div>
     `;
   }
 
@@ -298,6 +380,10 @@ export class TrainingStatusSection extends ReactiveWidget {
         }
       </div>
     `;
+  }
+
+  private _openDashboard(): void {
+    ContentService.open('training-dashboard', undefined, { title: 'Training' });
   }
 }
 

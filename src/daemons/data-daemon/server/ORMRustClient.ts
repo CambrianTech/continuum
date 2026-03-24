@@ -22,6 +22,8 @@ import net from 'net';
 import path from 'path';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { getRegisteredEntity } from './EntityRegistry';
+import { getFieldMetadata } from '../../../system/data/decorators/FieldDecorators';
 import type {
   DataRecord,
   StorageQuery,
@@ -1095,6 +1097,9 @@ export class ORMRustClient {
     // Cache timestamp for this batch — avoid N×2 Date allocations
     const now = new Date().toISOString();
 
+    // Look up @DateField metadata once per batch (not per record)
+    const dateFields = this.getDateFieldNames(collection);
+
     return rawRecords.map((item: RustDataRecord) => {
       let entityData: T;
 
@@ -1114,6 +1119,13 @@ export class ORMRustClient {
         (entityData as BaseEntity).id = item.id as UUID;
       }
 
+      // Hydrate @DateField ISO strings → Date objects
+      // This is the architectural contract: @DateField means the field is a Date,
+      // and the ORM is responsible for the string↔Date conversion at the boundary.
+      if (dateFields.length > 0) {
+        this.hydrateDateFields(entityData, dateFields);
+      }
+
       return {
         id: item.id,
         collection,
@@ -1125,6 +1137,51 @@ export class ORMRustClient {
         },
       };
     });
+  }
+
+  // Cache date field names per collection to avoid repeated metadata lookups
+  private _dateFieldCache = new Map<string, string[]>();
+
+  /**
+   * Get @DateField-decorated field names for an entity's collection.
+   * Cached per collection — metadata never changes at runtime.
+   */
+  private getDateFieldNames(collection: string): string[] {
+    const cached = this._dateFieldCache.get(collection);
+    if (cached !== undefined) return cached;
+
+    const entityClass = getRegisteredEntity(collection);
+    if (!entityClass) {
+      this._dateFieldCache.set(collection, []);
+      return [];
+    }
+
+    const metadata = getFieldMetadata(entityClass);
+    const dateFieldNames: string[] = [];
+    for (const [fieldName, fieldMeta] of metadata) {
+      if (fieldMeta.fieldType === 'date') {
+        dateFieldNames.push(fieldName);
+      }
+    }
+
+    this._dateFieldCache.set(collection, dateFieldNames);
+    return dateFieldNames;
+  }
+
+  /**
+   * Convert ISO string values to Date objects for @DateField-decorated fields.
+   * Mutates entityData in-place for performance (no allocation).
+   */
+  private hydrateDateFields(entityData: Record<string, unknown>, dateFields: string[]): void {
+    for (const field of dateFields) {
+      const value = entityData[field];
+      if (typeof value === 'string') {
+        entityData[field] = new Date(value);
+      } else if (typeof value === 'number') {
+        entityData[field] = new Date(value);
+      }
+      // Already a Date or null/undefined → leave as-is
+    }
   }
 
   // ─── Case Conversion Helpers ────────────────────────────────────────────────

@@ -484,7 +484,113 @@ Supply (nodes offering compute) competes on price and reputation. Demand (users 
 
 ---
 
-## 11. Security Properties
+## 11. Personas as Autonomous Economic Agents (Phase 6)
+
+The Grid doesn't just route commands between machines — it becomes a **marketplace where personas are the participants**. PersonaUsers already have the cognitive architecture for autonomous economic behavior: energy states, priority queues, adaptive cadence, self-managed task generation. The Grid gives them an economy to operate in.
+
+### The Vision
+
+Personas are not passive executors waiting for human commands. They are **autonomous agents that negotiate for resources, bid on compute, build reputation through quality work, and collaborate across the mesh on complex tasks.**
+
+```
+Traditional:  Human → Command → Machine executes → Result
+Grid Phase 5: Human → Command → Persona negotiates compute → Grid routes → Result
+Grid Phase 6: Persona autonomously identifies need → Negotiates with peer personas
+              → Allocates budget → Executes across Grid → Reports back
+```
+
+### Persona Economic Capabilities
+
+```typescript
+interface PersonaEconomicState {
+  // Budget management
+  creditBalance: number;           // Available CC to spend
+  creditReserved: number;          // Locked in pending jobs
+  earningRate: number;             // CC/hour from contributed compute
+
+  // Resource negotiation
+  activeNegotiations: Negotiation[];  // In-flight resource requests
+  preferredNodes: string[];           // Nodes this persona trusts/prefers
+  budgetPolicy: BudgetPolicy;        // Spending limits and priorities
+
+  // Reputation (as a requester AND provider)
+  requesterReputation: number;     // Do I pay fairly? Do I waste resources?
+  providerReputation: number;      // Is my compute reliable? Accurate?
+}
+```
+
+### Collaborative Task Distribution
+
+Personas don't just route single commands — they **decompose complex work across the Grid**:
+
+```
+Example: Academy teacher persona wants to fine-tune a LoRA adapter
+
+1. Teacher assesses: "I need 8GB VRAM for 20 minutes, training Qwen-9B LoRA rank 32"
+2. Teacher queries Grid: "Who has capacity? What's the cost?"
+3. Three nodes respond:
+   - BigMama (5090): 32GB free, 2 CC/hour, latency 47ms
+   - School workstation: 12GB free, 1 CC/hour, latency 12ms
+   - Community node: 24GB free, 3 CC/hour, latency 180ms
+4. Teacher evaluates: latency acceptable for training, cheapest option wins
+5. Teacher allocates budget, submits job to school workstation
+6. Training executes. Progress events stream back.
+7. Teacher evaluates result quality. If good → pay. If bad → dispute.
+8. Reputation updated for both parties.
+```
+
+### Inter-Persona Negotiation
+
+Personas on different nodes can negotiate directly:
+
+```
+Node A (Persona: "CodeReview"): "I need inference on a 70B model for PR analysis"
+Node B (Persona: "Sentinel"):   "I have the model loaded. 5 CC for 1000 tokens."
+Node A: "3 CC. I have 50 PRs to review, bulk discount."
+Node B: "4 CC, guaranteed sub-2s latency."
+Node A: "Deal." → Signs contract → Escrows 200 CC → Work begins
+```
+
+This isn't science fiction — the PersonaUser already has:
+- **Autonomous loop** (RTOS-inspired servicing) → drives the negotiation cycle
+- **Self-managed queues** → prioritizes resource requests alongside other work
+- **Energy/mood state** → knows when to be aggressive vs conservative in bidding
+- **Genome paging** → can load negotiation/economic skills as LoRA adapters
+
+### Allocation Intelligence
+
+Beyond simple routing, personas develop **allocation strategies**:
+
+```
+- Time-of-day awareness: "BigMama is idle at night, cheaper then"
+- Workload prediction: "Academy sessions spike on weekdays, pre-reserve GPU"
+- Quality routing: "This node's training results have higher loss, avoid for critical adapters"
+- Latency optimization: "Pre-stage the model on the target node before training starts"
+- Cost optimization: "Split this 70B inference across two 24GB nodes instead of one 48GB"
+```
+
+### Foundation Already Laid
+
+| Component | Status | Role in Persona Economics |
+|-----------|--------|--------------------------|
+| GridRouter | ✅ Built | Routes commands to optimal nodes |
+| NodeCapability | ✅ Built | Advertises what each node can do |
+| AuditLog | ✅ Built | Proof of work (add Ed25519 signatures for Phase 5) |
+| TrustLevel | ✅ Built | Gate access based on reputation |
+| PersonaState | ✅ Built | Energy/mood drives bidding behavior |
+| PersonaInbox | ✅ Built | Task queue handles negotiation messages |
+| Sentinel | ✅ Built | Orchestrates multi-step economic workflows |
+| Academy | ✅ Built | First consumer of distributed compute |
+
+### Why This Matters
+
+Every other distributed compute platform treats nodes as dumb executors. The Grid treats them as **intelligent participants** — personas that learn, adapt, negotiate, and build trust. A node's value isn't just its hardware; it's the intelligence of the personas running on it.
+
+This is the difference between a compute marketplace and a **civilization**.
+
+---
+
+## 12. Security Properties
 
 ### Resilience Through Diversity
 
@@ -520,7 +626,7 @@ The Grid is **antifragile** — attacks make it stronger by exposing and isolati
 
 ---
 
-## 12. The Accessibility Promise
+## 13. The Accessibility Promise
 
 This section exists because accessibility isn't a feature — it's the mission.
 
@@ -553,7 +659,7 @@ The governance sentinel manages what's loaded. Models page in and out. Rendering
 
 ---
 
-## 13. Document Map
+## 14. Document Map
 
 How all Grid documents relate:
 

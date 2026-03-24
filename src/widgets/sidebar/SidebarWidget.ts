@@ -24,6 +24,8 @@ import {
 } from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LAYOUTS, getWidgetsForPosition, getLayoutForContentType, GLOBAL_LAYOUT } from '../../system/layout';
+// Import grid status section — triggers customElements.define() for sidebar global widget
+import '../grid/GridStatusSection';
 import { styles as SIDE_PANEL_STYLES } from '../shared/styles/side-panel.styles';
 import { styles as SIDEBAR_STYLES } from './public/sidebar-widget.styles';
 

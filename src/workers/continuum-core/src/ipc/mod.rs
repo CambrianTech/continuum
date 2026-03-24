@@ -10,6 +10,7 @@ use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::gpu::GpuModule;
+use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::live::{VoiceModule, VoiceState};
@@ -911,6 +912,15 @@ pub fn start_server(
     // Provides vision/description-get, vision/description-put, vision/description-status,
     // vision/cache-stats, vision/cache-warm, vision/cache-evict
     runtime.register(Arc::new(VisionModule::new()));
+
+    // GridModule: inter-node transport + routing (Tailscale, Reticulum)
+    let grid_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".continuum")
+        .join("grid");
+    let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
+    let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
+    runtime.register(Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb)));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

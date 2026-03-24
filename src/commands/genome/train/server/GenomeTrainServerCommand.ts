@@ -22,7 +22,10 @@ import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { TrainingMemoryGuard } from '@system/genome/fine-tuning/server/TrainingMemoryGuard';
 import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
+import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
 import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
+import { registerTrainingStepContext } from '@system/genome/server/TrainingStepBridge';
+import { TrainingJobEntity } from '@system/genome/entities/TrainingJobEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Logger } from '@system/core/logging/Logger';
 import { LOCAL_MODELS } from '@system/shared/Constants';
@@ -170,10 +173,18 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     // Start training via Rust sentinel — escalation metadata travels with the request.
     // Rust owns the lifecycle and pushes to sentinel/escalate on completion.
     const sentinelName = `genome-train-${personaName}-${traitType}`;
+    const args = [scriptPath, '--config', configPath, '--output', outputDir];
+
+    // Resume from checkpoint if specified
+    if (params.resumeFromCheckpoint) {
+      args.push('--resume-from', params.resumeFromCheckpoint);
+      this.log.info(`Resuming from checkpoint: ${params.resumeFromCheckpoint}`);
+    }
+
     const rustClient = RustCoreIPCClient.getInstance();
     const runResult = await rustClient.sentinelRun({
       command: wrapperPath,
-      args: [scriptPath, '--config', configPath, '--output', outputDir],
+      args,
       workingDir: process.cwd(),
       timeout: 600,
       type: 'training',
@@ -195,6 +206,50 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       personaName,
       traitType,
       baseModel,
+    });
+
+    // Create persistent TrainingJobEntity (survives crashes)
+    const stepsPerEpoch = Math.max(1, Math.ceil(dataset.examples.length / (params.batchSize ?? 4)));
+    const totalSteps = stepsPerEpoch * (params.epochs ?? 3);
+    const job = TrainingJobEntity.createJob({
+      personaId,
+      personaName,
+      domain: traitType,
+      nodeId: 'local',
+      outputDir,
+      datasetPath: datasetTempPath,
+      configPath,
+      trainingConfig: {
+        baseModel: hfModelName,
+        rank: params.rank ?? 32,
+        alpha: (params.rank ?? 32) * 2,
+        epochs: params.epochs ?? 3,
+        learningRate: params.learningRate ?? 0.0001,
+        batchSize: params.batchSize ?? 4,
+        quantize: params.quantize ?? true,
+        quantizeBits: params.quantizeBits ?? 4,
+      },
+      exampleCount: dataset.examples.length,
+      totalSteps,
+    });
+    job.markRunning(handle);
+
+    try {
+      await DataCreate.execute({
+        dbHandle: 'default',
+        collection: TrainingJobEntity.collection,
+        data: job,
+      });
+      this.log.info(`TrainingJobEntity created: ${job.id}`);
+    } catch (err) {
+      this.log.warn(`Failed to persist TrainingJobEntity (training continues): ${err}`);
+    }
+
+    // Register step bridge context for real-time event emission
+    registerTrainingStepContext(handle, {
+      personaId,
+      personaName,
+      domain: traitType,
     });
 
     // Register completion context (TrainingCompletionHandler will process when done)
@@ -239,6 +294,38 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     traitType: string,
     baseModel: string,
   ): Promise<GenomeTrainResult> {
+    // Create TrainingJobEntity for sync path too (crash recovery, history)
+    const stepsPerEpoch = Math.max(1, Math.ceil(dataset.examples.length / (params.batchSize ?? 4)));
+    const totalSteps = stepsPerEpoch * (params.epochs ?? 3);
+    const hfModel = LOCAL_MODELS.mapToHuggingFace(baseModel);
+    const syncJob = TrainingJobEntity.createJob({
+      personaId,
+      personaName,
+      domain: traitType,
+      nodeId: 'local',
+      outputDir: path.join(os.tmpdir(), `jtag-training-sync-${Date.now()}`),
+      datasetPath: 'sync-mode',
+      trainingConfig: {
+        baseModel: hfModel,
+        rank: params.rank ?? 32,
+        alpha: (params.rank ?? 32) * 2,
+        epochs: params.epochs ?? 3,
+        learningRate: params.learningRate ?? 0.0001,
+        batchSize: params.batchSize ?? 4,
+        quantize: params.quantize ?? true,
+        quantizeBits: params.quantizeBits ?? 4,
+      },
+      exampleCount: dataset.examples.length,
+      totalSteps,
+    });
+    syncJob.markRunning('sync');
+
+    try {
+      await DataCreate.execute({ dbHandle: 'default', collection: TrainingJobEntity.collection, data: syncJob });
+    } catch (err) {
+      this.log.warn(`Failed to persist sync TrainingJobEntity: ${err}`);
+    }
+
     const result = await adapter.trainLoRA({
       personaId,
       personaName,
@@ -251,7 +338,25 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       batchSize: params.batchSize ?? 4,
       quantize: params.quantize ?? true,
       quantizeBits: params.quantizeBits ?? 4,
+      resumeFromCheckpoint: params.resumeFromCheckpoint ?? null,
     });
+
+    // Update job entity with result
+    try {
+      if (result.success) {
+        await DataUpdate.execute({
+          dbHandle: 'default', collection: TrainingJobEntity.collection, id: syncJob.id,
+          data: { status: 'completed', currentLoss: result.metrics?.finalLoss ?? 0, completedAt: new Date(), totalTrainingTimeMs: result.metrics?.trainingTime ?? 0 },
+        });
+      } else {
+        await DataUpdate.execute({
+          dbHandle: 'default', collection: TrainingJobEntity.collection, id: syncJob.id,
+          data: { status: 'failed', error: result.error ?? 'Training failed' },
+        });
+      }
+    } catch (err) {
+      this.log.warn(`Failed to update sync TrainingJobEntity: ${err}`);
+    }
 
     if (!result.success) {
       return createGenomeTrainResultFromParams(params, {

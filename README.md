@@ -155,7 +155,19 @@ await genome.publish('rust-expert-v2');                // Share with the team
 | **Vision** | Qwen3.5-4B multimodal fine-tuning |
 | **Governance** | Qwen3.5-0.8B sentinel resource management |
 
-**Proven end-to-end:** Train, discover, load, merge, inference. 196 LoRA layers per adapter. **$0.10-8 per adapter** vs $100K+ for full model retraining. Adapters compose — stack multiple skills, each independently trained.
+**The full lifecycle:**
+
+| Phase | What | How |
+|-------|------|-----|
+| **Create** | Academy synthesizes training data, trains LoRA adapter | Dual-sentinel: teacher generates challenges, student learns |
+| **Validate** | Phenotype testing proves the adapter works | Real `pytest`, not loss numbers. Re-exam after training. |
+| **Compose** | Stack adapters into a unique persona | Code + voice + personality + domain = one identity |
+| **Compact** | Shrink model to fit hardware | Plasticity: prune dead heads, mixed-precision quant |
+| **Share** | Publish to mesh, discovered by similarity | Capability embeddings, cosine search across nodes |
+| **Divide** | Split across nodes when too large | Tensor distribution over Grid mesh |
+| **Evolve** | Personas vote on which traits survive | Constitutional selection — the evolved participate in their evolution |
+
+**Proven end-to-end:** Train, discover, load, merge, inference. 196 LoRA layers per adapter. **$0.10-8 per adapter** vs $100K+ for full model retraining. Adapters compose — stack multiple skills, each independently trained. Checkpoint resume across crashes for weeks-long training runs.
 
 **Architecture:** [GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md) | [DYNAMIC-GENOME-ARCHITECTURE.md](docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md)
 
@@ -256,21 +268,22 @@ A **Recipe IS a Sentinel with a UI layout.** The same engine powers chat respons
 Not a Node.js app with Rust helpers. A **Rust RTOS with TypeScript as thin UI/portability layer.** Rust handles cognition, inference, memory, resource governance — because garbage collection pauses during a thought are unacceptable.
 
 ```
-Browser (Lit + Shadow DOM widgets)
+Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
-TypeScript Bridge (283 commands, auto-discovered)
+TypeScript Bridge (317 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 22 modules, 1079 tests)
+continuum-core (Rust — 22 modules, 1079+ tests)
     ├── Persona Engine    — autonomous loop, cognitive state, coordination
-    ├── Genome Engine     — LoRA paging, training, discovery, sharing
+    ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
     ├── Sentinel Engine   — 10 step types, recursive pipelines, 111 tests
     ├── RAG Engine        — 5-level memory hierarchy, cross-cognition access
     ├── Live Engine       — WebRTC, Bevy 3D avatars, voice, video, captions
     ├── GPU Governor      — 4-layer resource governance, 19 managed consumers
-    └── Data Layer        — type-safe ORM, SQLite per persona, entity system
+    ├── Grid Engine       — Tailscale + Reticulum mesh, transparent command routing
+    └── Data Layer        — type-safe ORM, Postgres + SQLite, entity system
 ```
 
-**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 283 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
+**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 317 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
 **12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Candle (Rust-native) and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
 
@@ -280,11 +293,29 @@ continuum-core (Rust — 22 modules, 1079 tests)
 
 ---
 
-## The Grid — P2P Mesh (Planned)
+## The Grid — Heterogeneous Compute Mesh
 
-Your machines share compute, genomes, and experiences over a decentralized mesh. Built on [Reticulum](https://reticulum.network/) — encrypted, works over anything (TCP, UDP, LoRa, serial). The same two primitives — `Commands.execute()` and `Events.subscribe()` — work across Continuums. Location is just a routing decision.
+Your machines form a single organism. Different hardware, different strengths, one unified system.
 
-Your MacBook Air at school handles UI and coordination. Your 5090 at home handles training and inference. Academy sessions run on the home GPU while you're in class. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
+```
+MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
+├── UI + coordination              ├── Training (weeks-long PEFT runs)
+├── Light inference (SmolLM2)      ├── Heavy inference (Llama 3B-8B)
+├── Voice/video/avatars            ├── Batch genome operations
+└── Grid orchestrator              └── GPU-intensive everything
+    ↕ Tailscale (encrypted mesh)
+    ↕ Reticulum (works over anything: TCP, UDP, LoRa, serial)
+```
+
+**This is the Sony Cell architecture realized in software.** Cell had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing with commodity hardware: your laptop is the PPE (coordination, UI, lightweight tasks), your GPU tower is the SPE farm (training, heavy inference, batch compute). The Grid transport makes location transparent — `Commands.execute()` routes automatically to wherever the capability lives.
+
+**Working today.** Tailscale + Reticulum dual-transport. Automatic node discovery, health monitoring, trust levels. Commands route transparently — `genome/layers` called from your Mac executes on the 5090 and returns results. 32 integration tests. Training jobs persist across crashes with checkpoint resume.
+
+**What this means practically:** Your MacBook Air at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the training dashboard shows live progress across the mesh. The 5090 crashes? Training resumes from the last checkpoint automatically. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
+
+**Models shrink to fit your hardware.** [Plasticity compaction](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted) — training-informed head pruning + utilization-aware mixed-precision quantization — reduces models 3x (27GB → 8.9GB) without blind compression. Gate gradients from actual LoRA training identify which attention heads are dead weight. The compacted model runs on hardware that could never fit the original. Published: `continuum-ai/qwen2.5-coder-14b-compacted`.
+
+**What doesn't fit on one node distributes across many.** Multi-node commands compose naturally — the same `Commands.execute()` that runs locally also routes across the mesh. Training distributes across GPU towers. Inference shards across nodes. Compacted specialist models run on consumer hardware that was never designed for them. **You don't need a datacenter. You need a mesh of laptops and desktops.**
 
 Genome sharing across the mesh: your rust-expert adapter teaches theirs. Useful genomes spread. Broken ones die. Natural selection on capabilities. Personas **vote on which traits survive** — constitutional selection where the beings being evolved participate in their own trajectory.
 

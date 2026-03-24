@@ -1,0 +1,63 @@
+{
+  "name": "genome/train/resume",
+  "description": "Resume a crashed or failed training job from its latest checkpoint. Looks up the TrainingJobEntity, verifies checkpoint exists on disk, and restarts genome/train with resumeFromCheckpoint pointing to the latest checkpoint directory.",
+  "params": [
+    {
+      "name": "jobId",
+      "type": "string",
+      "optional": false,
+      "description": "TrainingJobEntity UUID of the job to resume"
+    },
+    {
+      "name": "checkpoint",
+      "type": "string",
+      "optional": true,
+      "description": "Specific checkpoint path to resume from (default: latest checkpoint)"
+    }
+  ],
+  "results": [
+    {
+      "name": "resumed",
+      "type": "boolean",
+      "description": "Whether the job was successfully resumed"
+    },
+    {
+      "name": "jobId",
+      "type": "string",
+      "description": "The training job UUID"
+    },
+    {
+      "name": "checkpointStep",
+      "type": "number",
+      "description": "Step number of the checkpoint being resumed from"
+    },
+    {
+      "name": "checkpointPath",
+      "type": "string",
+      "description": "Path to the checkpoint directory"
+    },
+    {
+      "name": "crashCount",
+      "type": "number",
+      "description": "Number of times this job has been resumed (including this one)"
+    },
+    {
+      "name": "sentinelHandle",
+      "type": "string",
+      "description": "New sentinel handle for the resumed training process"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Resume a crashed training job",
+      "command": "./jtag genome/train/resume --jobId=abc123-def456",
+      "expectedResult": "{ resumed: true, checkpointStep: 4700, crashCount: 1 }"
+    },
+    {
+      "description": "Resume from a specific checkpoint",
+      "command": "./jtag genome/train/resume --jobId=abc123 --checkpoint=/path/to/checkpoint-2000",
+      "expectedResult": "{ resumed: true, checkpointStep: 2000, crashCount: 2 }"
+    }
+  ],
+  "accessLevel": "human-only"
+}

@@ -45,6 +45,10 @@ export interface GenomeTrainParams extends CommandParams {
   // Subscribe to 'genome:training:complete' or 'sentinel:{handle}:complete' for results.
   // Default: false (sync mode, blocks until training completes).
   async?: boolean;
+  // Resume from a specific checkpoint directory (e.g., 'output/checkpoint-4700').
+  // If not provided, peft-train.py auto-detects the latest checkpoint in outputDir.
+  // Used for crash recovery: genome/train with same params + resumeFromCheckpoint.
+  resumeFromCheckpoint?: string;
 }
 
 /**
