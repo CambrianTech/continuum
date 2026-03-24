@@ -51,6 +51,17 @@ interface RecentCompletion {
   error?: string;
 }
 
+interface AcademySessionInfo {
+  id: string;
+  skill: string;
+  status: string;
+  personaName: string;
+  baseModel: string;
+  mode: string;
+  createdAt: string;
+  nodeName?: string;
+}
+
 const MAX_RECENT = 5;
 
 const STYLES = `
@@ -183,8 +194,10 @@ export class TrainingStatusSection extends ReactiveWidget {
 
   @reactive() private _active: Map<string, ActiveTraining> = new Map();
   @reactive() private _recent: RecentCompletion[] = [];
+  @reactive() private _academySessions: AcademySessionInfo[] = [];
 
   private _cleanups: (() => void)[] = [];
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({ widgetName: 'TrainingStatusSection' });
@@ -256,18 +269,68 @@ export class TrainingStatusSection extends ReactiveWidget {
         }, ...this._recent].slice(0, MAX_RECENT);
       }),
     );
+
+    // Load Academy sessions from grid nodes
+    this._loadAcademySessions();
+    this._pollTimer = setInterval(() => {
+      if (this._academySessions.some(s => !['completed', 'failed', 'cancelled'].includes(s.status))) {
+        this._loadAcademySessions();
+      }
+    }, 30_000);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._cleanups.forEach(fn => fn());
     this._cleanups = [];
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+  }
+
+  private async _loadAcademySessions(): Promise<void> {
+    const sessions: AcademySessionInfo[] = [];
+    try {
+      // Local sessions
+      const localResult = await this.executeCommand<any, any>('genome/academy-session-list', {});
+      if (localResult?.sessions) {
+        for (const s of localResult.sessions) {
+          sessions.push({ ...s, nodeName: undefined });
+        }
+      }
+    } catch { /* no local sessions */ }
+
+    try {
+      // Remote grid nodes
+      const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
+      const nodes = (nodesResult?.nodes ?? []);
+      for (const n of nodes) {
+        const nodeId = n.node_id ?? n.nodeId;
+        const nodeName = n.node_name ?? n.nodeName ?? nodeId;
+        try {
+          const result = await this.executeCommand<any, any>('grid/send', {
+            nodeId, remoteCommand: 'genome/academy-session-list', params: {},
+          });
+          const remote = result?.remoteResult;
+          if (remote?.sessions) {
+            for (const s of remote.sessions) {
+              sessions.push({ ...s, nodeName });
+            }
+          }
+        } catch { /* node unreachable */ }
+      }
+    } catch { /* grid not available */ }
+
+    this._academySessions = sessions;
   }
 
   protected override renderContent(): TemplateResult {
     const activeList = [...this._active.values()];
+    const activeSessions = this._academySessions.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status));
+    const hasAnything = activeList.length > 0 || this._recent.length > 0 || activeSessions.length > 0;
 
-    if (activeList.length === 0 && this._recent.length === 0) {
+    if (!hasAnything) {
       return html`
         <div class="idle-state">No active training. Start a session from the Academy.</div>
         <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
@@ -275,12 +338,32 @@ export class TrainingStatusSection extends ReactiveWidget {
     }
 
     return html`
+      ${activeSessions.map(s => this._renderAcademySession(s))}
       ${activeList.map(t => this._renderActive(t))}
       ${this._recent.length > 0 ? html`
         <div class="recent-label">Recent</div>
         ${this._recent.map(c => this._renderCompletion(c))}
       ` : nothing}
       <div class="dashboard-link" @click=${this._openDashboard}>View Training Dashboard →</div>
+    `;
+  }
+
+  private _renderAcademySession(s: AcademySessionInfo): TemplateResult {
+    const elapsed = Math.round((Date.now() - new Date(s.createdAt).getTime()) / 1000);
+    const elapsedStr = elapsed > 3600 ? `${(elapsed / 3600).toFixed(1)}h` : elapsed > 60 ? `${Math.round(elapsed / 60)}m` : `${elapsed}s`;
+
+    return html`
+      <div class="active-training" style="border-color: rgba(0, 212, 255, 0.15);">
+        <div class="training-header">
+          <span class="training-domain">${s.skill}</span>
+          <span class="training-persona">${s.personaName}${s.nodeName ? ` @ ${s.nodeName}` : ''}</span>
+        </div>
+        <div class="training-stats">
+          <span class="stat-highlight">${s.status}</span>
+          <span>${s.mode}</span>
+          <span>${elapsedStr}</span>
+        </div>
+      </div>
     `;
   }
 
