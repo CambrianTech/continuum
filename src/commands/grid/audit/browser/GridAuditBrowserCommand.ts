@@ -13,7 +13,7 @@ export class GridAuditBrowserCommand extends CommandBase<GridAuditParams, GridAu
 		super('grid/audit', context, subpath, commander);
 	}
 
-	async execute(_params: GridAuditParams): Promise<GridAuditResult> {
-		return {} as GridAuditResult;
+	async execute(params: GridAuditParams): Promise<GridAuditResult> {
+		return await this.remoteExecute(params);
 	}
 }

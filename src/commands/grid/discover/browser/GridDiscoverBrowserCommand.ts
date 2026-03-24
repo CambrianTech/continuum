@@ -13,7 +13,7 @@ export class GridDiscoverBrowserCommand extends CommandBase<GridDiscoverParams, 
 		super('grid/discover', context, subpath, commander);
 	}
 
-	async execute(_params: GridDiscoverParams): Promise<GridDiscoverResult> {
-		return {} as GridDiscoverResult;
+	async execute(params: GridDiscoverParams): Promise<GridDiscoverResult> {
+		return await this.remoteExecute(params);
 	}
 }

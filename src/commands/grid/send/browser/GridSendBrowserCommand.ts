@@ -13,7 +13,7 @@ export class GridSendBrowserCommand extends CommandBase<GridSendParams, GridSend
 		super('grid/send', context, subpath, commander);
 	}
 
-	async execute(_params: GridSendParams): Promise<GridSendResult> {
-		return {} as GridSendResult;
+	async execute(params: GridSendParams): Promise<GridSendResult> {
+		return await this.remoteExecute(params);
 	}
 }

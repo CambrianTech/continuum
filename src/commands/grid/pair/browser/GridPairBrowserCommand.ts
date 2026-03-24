@@ -13,7 +13,7 @@ export class GridPairBrowserCommand extends CommandBase<GridPairParams, GridPair
 		super('grid/pair', context, subpath, commander);
 	}
 
-	async execute(_params: GridPairParams): Promise<GridPairResult> {
-		return {} as GridPairResult;
+	async execute(params: GridPairParams): Promise<GridPairResult> {
+		return await this.remoteExecute(params);
 	}
 }

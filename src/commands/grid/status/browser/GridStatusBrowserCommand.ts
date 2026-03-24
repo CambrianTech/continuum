@@ -13,7 +13,7 @@ export class GridStatusBrowserCommand extends CommandBase<GridStatusParams, Grid
 		super('grid/status', context, subpath, commander);
 	}
 
-	async execute(_params: GridStatusParams): Promise<GridStatusResult> {
-		return {} as GridStatusResult;
+	async execute(params: GridStatusParams): Promise<GridStatusResult> {
+		return await this.remoteExecute(params);
 	}
 }

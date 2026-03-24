@@ -4307,6 +4307,32 @@
       }
     },
     {
+      "name": "genome/train/list-jobs",
+      "description": "List all training jobs with status, progress, checkpoints, and node info. Shows running, completed, crashed, and resumable jobs. Use genome/train/resume to restart crashed jobs from their latest checkpoint.",
+      "params": {
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
       "name": "genome/activate",
       "description": "Activate adapter for persona Loads adapter into memory, evicting others if needed.",
       "params": {

@@ -13,7 +13,7 @@ export class GridNodesBrowserCommand extends CommandBase<GridNodesParams, GridNo
 		super('grid/nodes', context, subpath, commander);
 	}
 
-	async execute(_params: GridNodesParams): Promise<GridNodesResult> {
-		return {} as GridNodesResult;
+	async execute(params: GridNodesParams): Promise<GridNodesResult> {
+		return await this.remoteExecute(params);
 	}
 }

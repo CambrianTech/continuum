@@ -13,7 +13,7 @@ export class GridTrustBrowserCommand extends CommandBase<GridTrustParams, GridTr
 		super('grid/trust', context, subpath, commander);
 	}
 
-	async execute(_params: GridTrustParams): Promise<GridTrustResult> {
-		return {} as GridTrustResult;
+	async execute(params: GridTrustParams): Promise<GridTrustResult> {
+		return await this.remoteExecute(params);
 	}
 }

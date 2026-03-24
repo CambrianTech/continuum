@@ -13,7 +13,7 @@ export class GridPingBrowserCommand extends CommandBase<GridPingParams, GridPing
 		super('grid/ping', context, subpath, commander);
 	}
 
-	async execute(_params: GridPingParams): Promise<GridPingResult> {
-		return {} as GridPingResult;
+	async execute(params: GridPingParams): Promise<GridPingResult> {
+		return await this.remoteExecute(params);
 	}
 }

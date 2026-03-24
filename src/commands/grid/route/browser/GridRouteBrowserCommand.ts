@@ -13,7 +13,7 @@ export class GridRouteBrowserCommand extends CommandBase<GridRouteParams, GridRo
 		super('grid/route', context, subpath, commander);
 	}
 
-	async execute(_params: GridRouteParams): Promise<GridRouteResult> {
-		return {} as GridRouteResult;
+	async execute(params: GridRouteParams): Promise<GridRouteResult> {
+		return await this.remoteExecute(params);
 	}
 }

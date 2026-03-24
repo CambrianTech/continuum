@@ -79,6 +79,25 @@ interface GridNodeInfo {
   nodeName: string;
 }
 
+/** Active Academy session from genome/academy-session-list */
+interface AcademySession {
+  id: string;
+  personaId: string;
+  personaName: string;
+  skill: string;
+  status: string;
+  baseModel: string;
+  mode: string;
+  createdAt: string;
+  teacherHandle: string;
+  studentHandle: string;
+  nodeName?: string;
+  /** Detail fields (loaded on demand) */
+  curricula?: any[];
+  examinations?: any[];
+  adapterIds?: string[];
+}
+
 // ── Chart series configs ────────────────────────────────────────────────────
 
 const LOSS_SERIES: ContinuumChartSeries[] = [
@@ -322,8 +341,10 @@ export class TrainingDashboardWidget extends ReactiveWidget {
   @reactive() private _activeSessions: Map<string, ActiveSession> = new Map();
   @reactive() private _historicalRuns: HistoricalRun[] = [];
   @reactive() private _selectedSessionId: string | null = null;
+  @reactive() private _academySessions: AcademySession[] = [];
 
   private _cleanups: (() => void)[] = [];
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({ widgetName: 'TrainingDashboardWidget' });
@@ -402,14 +423,26 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       }),
     );
 
-    // Load historical runs
+    // Load all data
     this._loadHistoricalRuns();
+    this._loadAcademySessions();
+
+    // Poll for active academy sessions every 30s
+    this._pollTimer = setInterval(() => {
+      if (this._academySessions.some(s => !['completed', 'failed', 'cancelled'].includes(s.status))) {
+        this._loadAcademySessions();
+      }
+    }, 30_000);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._cleanups.forEach(fn => fn());
     this._cleanups = [];
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
   }
 
   // ── Data loading ────────────────────────────────────────────────────────
@@ -551,6 +584,83 @@ export class TrainingDashboardWidget extends ReactiveWidget {
     }
   }
 
+  // ── Academy session loading ──────────────────────────────────────────
+
+  private async _loadAcademySessions(): Promise<void> {
+    const allSessions: AcademySession[] = [];
+
+    // Local sessions
+    try {
+      const usersResult = await this.executeCommand<any, any>('data/list', {
+        collection: 'users', filter: { type: 'ai' }, limit: 50,
+      });
+      if (usersResult.success && usersResult.items) {
+        for (const user of usersResult.items) {
+          await this._loadPersonaAcademySessions(allSessions, user.id, user.uniqueId ?? user.displayName, undefined);
+        }
+      }
+    } catch (err) {
+      console.warn('[TrainingDashboard] Failed to load local academy sessions:', err);
+    }
+
+    // Remote grid nodes
+    try {
+      const nodesResult = await this.executeCommand<any, any>('grid/nodes', {});
+      const nodes = (nodesResult.nodes ?? []).map((n: any) => ({
+        nodeId: n.node_id ?? n.nodeId,
+        nodeName: n.node_name ?? n.nodeName ?? n.node_id ?? n.nodeId,
+      }));
+
+      for (const node of nodes) {
+        try {
+          const remoteUsers = await this.executeCommand<any, any>('grid/send', {
+            nodeId: node.nodeId, remoteCommand: 'user/list', params: { limit: 50 },
+          });
+          const users = remoteUsers?.remoteResult?.users ?? remoteUsers?.remoteResult?.items ?? [];
+          for (const user of users) {
+            if (user.type !== 'ai') continue;
+            await this._loadRemoteAcademySessions(allSessions, node, user.id, user.uniqueId ?? user.displayName);
+          }
+        } catch (err) {
+          console.warn(`[TrainingDashboard] Failed to load academy sessions from ${node.nodeName}:`, err);
+        }
+      }
+    } catch (err) {
+      console.warn('[TrainingDashboard] Failed to load grid for academy sessions:', err);
+    }
+
+    this._academySessions = allSessions;
+  }
+
+  private async _loadPersonaAcademySessions(
+    allSessions: AcademySession[], personaId: string, personaName: string, nodeName: string | undefined
+  ): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>('genome/academy-session-list', { personaId });
+      if (result.success && result.sessions) {
+        for (const s of result.sessions) {
+          allSessions.push({ ...s, personaName: s.personaName ?? personaName, nodeName });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  private async _loadRemoteAcademySessions(
+    allSessions: AcademySession[], node: GridNodeInfo, personaId: string, personaName: string
+  ): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>('grid/send', {
+        nodeId: node.nodeId, remoteCommand: 'genome/academy-session-list', params: { personaId },
+      });
+      const remote = result?.remoteResult;
+      if (remote?.success && remote?.sessions) {
+        for (const s of remote.sessions) {
+          allSessions.push({ ...s, personaName: s.personaName ?? personaName, nodeName: node.nodeName });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────
 
   protected override renderContent(): TemplateResult {
@@ -559,7 +669,7 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       ? this._activeSessions.get(this._selectedSessionId)
       : activeSessions[0] ?? null;
 
-    const hasAnything = activeSessions.length > 0 || this._historicalRuns.length > 0;
+    const hasAnything = activeSessions.length > 0 || this._historicalRuns.length > 0 || this._academySessions.length > 0;
 
     if (!hasAnything) {
       return html`
@@ -588,9 +698,62 @@ export class TrainingDashboardWidget extends ReactiveWidget {
           </div>
         </div>
 
+        ${this._academySessions.length > 0 ? this._renderAcademySessions() : nothing}
         ${activeSessions.length > 0 ? this._renderActiveSessions(activeSessions) : nothing}
         ${selected && selected.steps.length > 0 ? this._renderCharts(selected) : nothing}
         ${this._historicalRuns.length > 0 ? this._renderHistoricalTable() : nothing}
+      </div>
+    `;
+  }
+
+  // ── Academy sessions ─────────────────────────────────────────────────────
+
+  private _renderAcademySessions(): TemplateResult {
+    const active = this._academySessions.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status));
+    const completed = this._academySessions.filter(s => ['completed', 'failed', 'cancelled'].includes(s.status));
+
+    return html`
+      <div class="active-section">
+        <div class="section-label">Academy Sessions${active.length > 0 ? ` (${active.length} active)` : ''}</div>
+        ${active.map(s => this._renderAcademyCard(s, true))}
+        ${completed.slice(0, 5).map(s => this._renderAcademyCard(s, false))}
+      </div>
+    `;
+  }
+
+  private _renderAcademyCard(session: AcademySession, isActive: boolean): TemplateResult {
+    const statusColors: Record<string, string> = {
+      curriculum: 'rgba(0, 212, 255, 0.9)',
+      teaching: 'rgba(0, 255, 200, 0.9)',
+      examining: 'rgba(255, 170, 0, 0.9)',
+      training: 'rgba(255, 107, 53, 0.9)',
+      completed: 'var(--content-success, #00ff88)',
+      failed: 'var(--content-error, #ff5050)',
+    };
+    const statusColor = statusColors[session.status] ?? 'var(--content-secondary)';
+    const elapsed = Math.round((Date.now() - new Date(session.createdAt).getTime()) / 1000);
+    const elapsedStr = elapsed > 3600 ? `${(elapsed / 3600).toFixed(1)}h` : elapsed > 60 ? `${Math.round(elapsed / 60)}m` : `${elapsed}s`;
+
+    return html`
+      <div class="active-card" style="${isActive ? '' : 'opacity: 0.6;'}">
+        <div class="card-header">
+          <span class="card-title" style="display: flex; align-items: center; gap: 8px;">
+            ${session.skill}
+            <span style="font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px; background: ${statusColor}22; color: ${statusColor}; border: 1px solid ${statusColor}44;">
+              ${session.status}
+            </span>
+          </span>
+          <span class="card-persona">
+            ${session.personaName}${session.nodeName ? html` <span style="color: rgba(0, 212, 255, 0.7);">@ ${session.nodeName}</span>` : nothing}
+          </span>
+        </div>
+        <div class="card-stats">
+          <span>Model: <span class="stat-value">${this._shortModel(session.baseModel)}</span></span>
+          <span>Mode: <span class="stat-value">${session.mode}</span></span>
+          <span>Elapsed: <span class="stat-value">${elapsedStr}</span></span>
+          ${session.examinations?.length ? html`<span>Exams: <span class="stat-value">${session.examinations.length}</span></span>` : nothing}
+          ${session.adapterIds?.length ? html`<span>Adapters: <span class="stat-value">${session.adapterIds.length}</span></span>` : nothing}
+        </div>
       </div>
     `;
   }
