@@ -85,9 +85,17 @@ export class TrainingDashboardWidget extends ReactiveWidget {
       /* Chart grid */
       .chart-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
         margin-bottom: 20px;
+      }
+
+      @media (max-width: 1000px) {
+        .chart-grid { grid-template-columns: repeat(2, 1fr); }
+      }
+
+      @media (max-width: 600px) {
+        .chart-grid { grid-template-columns: 1fr; }
       }
 
       .chart-cell {
@@ -95,7 +103,7 @@ export class TrainingDashboardWidget extends ReactiveWidget {
         border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
         border-radius: 6px;
         padding: 12px;
-        min-height: 140px;
+        min-height: 120px;
         cursor: pointer;
         transition: border-color 0.15s ease;
       }
