@@ -11,13 +11,67 @@ import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
+// ── Typed data structures ──────────────────────────────────────────────
+
+/** Adapter with training metrics and provenance */
+export interface TrainingAdapterInfo {
+  name: string;
+  domain: string;
+  baseModel: string;
+  personaName: string;
+  personaId: string;
+  nodeName: string;
+  finalLoss: number;
+  epochs: number;
+  examplesProcessed: number;
+  maturity: number;
+  sizeMB: number;
+  createdAt: string;
+  lossHistory: number[];
+  trainingDurationMs: number;
+}
+
+/** Academy session summary */
+export interface TrainingSessionInfo {
+  id: string;
+  skill: string;
+  status: string;
+  personaName: string;
+  baseModel: string;
+  mode: string;
+  createdAt: string;
+  nodeName: string;
+}
+
+/** Grid node summary for training context */
+export interface TrainingNodeInfo {
+  nodeId: string;
+  nodeName: string;
+  adapterCount: number;
+  sessionCount: number;
+  gpu?: string;
+  vramMb?: number;
+}
+
+/** Aggregate training stats */
+export interface TrainingOverviewSummary {
+  totalAdapters: number;
+  totalSessions: number;
+  activeSessions: number;
+  bestLoss: number;
+  avgMaturity: number;
+  totalExamples: number;
+  totalTrainingTimeMs: number;
+  domains: Record<string, number>;
+}
+
 /**
  * Genome Training Overview Command Parameters
  */
 export interface GenomeTrainingOverviewParams extends CommandParams {
-  // Include data from remote grid nodes (default: true)
+  /** Include data from remote grid nodes (default: true) */
   includeGrid?: boolean;
-  // Filter to a specific persona UUID
+  /** Filter to a specific persona UUID */
   personaId?: string;
 }
 
@@ -45,14 +99,10 @@ export const createGenomeTrainingOverviewParams = (
  */
 export interface GenomeTrainingOverviewResult extends CommandResult {
   success: boolean;
-  // All adapters with training metrics, loss histories, and node info
-  adapters: object[];
-  // All academy sessions (active and recent completed)
-  sessions: object[];
-  // Grid node summary (name, GPU, adapter count)
-  nodes: object[];
-  // Aggregate stats: total adapters, total sessions, best loss, avg maturity
-  summary: object;
+  adapters: TrainingAdapterInfo[];
+  sessions: TrainingSessionInfo[];
+  nodes: TrainingNodeInfo[];
+  summary: TrainingOverviewSummary;
   error?: JTAGError;
 }
 
@@ -64,21 +114,17 @@ export const createGenomeTrainingOverviewResult = (
   sessionId: UUID,
   data: {
     success: boolean;
-    // All adapters with training metrics, loss histories, and node info
-    adapters?: object[];
-    // All academy sessions (active and recent completed)
-    sessions?: object[];
-    // Grid node summary (name, GPU, adapter count)
-    nodes?: object[];
-    // Aggregate stats: total adapters, total sessions, best loss, avg maturity
-    summary?: object;
+    adapters?: TrainingAdapterInfo[];
+    sessions?: TrainingSessionInfo[];
+    nodes?: TrainingNodeInfo[];
+    summary?: TrainingOverviewSummary;
     error?: JTAGError;
   }
 ): GenomeTrainingOverviewResult => createPayload(context, sessionId, {
   adapters: data.adapters ?? [],
   sessions: data.sessions ?? [],
   nodes: data.nodes ?? [],
-  summary: data.summary ?? {},
+  summary: data.summary ?? { totalAdapters: 0, totalSessions: 0, activeSessions: 0, bestLoss: 0, avgMaturity: 0, totalExamples: 0, totalTrainingTimeMs: 0, domains: {} },
   ...data
 });
 

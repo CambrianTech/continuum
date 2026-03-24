@@ -20,20 +20,20 @@ import '../shared/ContinuumChart';
 import type { ContinuumChartSeries } from '../shared/ContinuumChart';
 import { Events } from '../../system/core/shared/Events';
 import { AI_LEARNING_EVENTS, type AITrainingStepEventData } from '../../system/events/shared/AILearningEvents';
+import type {
+  TrainingAdapterInfo,
+  TrainingSessionInfo,
+  TrainingNodeInfo,
+  TrainingOverviewSummary,
+} from '../../commands/genome/training-overview/shared/GenomeTrainingOverviewTypes';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
 interface OverviewData {
-  adapters: any[];
-  sessions: any[];
-  nodes: any[];
-  summary: {
-    totalAdapters: number;
-    totalSessions: number;
-    activeSessions: number;
-    bestLoss: number;
-    avgMaturity: number;
-  };
+  adapters: TrainingAdapterInfo[];
+  sessions: TrainingSessionInfo[];
+  nodes: TrainingNodeInfo[];
+  summary: TrainingOverviewSummary;
 }
 
 const LOSS_SERIES: ContinuumChartSeries[] = [

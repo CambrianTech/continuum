@@ -8,7 +8,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { GenomeTrainingOverviewParams, GenomeTrainingOverviewResult } from '../shared/GenomeTrainingOverviewTypes';
+import type { GenomeTrainingOverviewParams, GenomeTrainingOverviewResult, TrainingAdapterInfo, TrainingSessionInfo, TrainingNodeInfo } from '../shared/GenomeTrainingOverviewTypes';
 import { createGenomeTrainingOverviewResultFromParams } from '../shared/GenomeTrainingOverviewTypes';
 import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { GenomeLayers } from '@commands/genome/layers/shared/GenomeLayersTypes';
@@ -20,19 +20,15 @@ const log = Logger.create('genome/training-overview', 'genome');
 const ZOMBIE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h in curriculum = dead
 
 export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrainingOverviewParams, GenomeTrainingOverviewResult> {
-  private _debugLog: string[] = [];
-
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('genome/training-overview', context, subpath, commander);
   }
 
   async execute(params: GenomeTrainingOverviewParams): Promise<GenomeTrainingOverviewResult> {
     const includeGrid = params.includeGrid !== false;
-    const adapters: any[] = [];
-    const sessions: any[] = [];
-    const nodes: any[] = [];
-    this._debugLog = [];
-
+    const adapters: TrainingAdapterInfo[] = [];
+    const sessions: TrainingSessionInfo[] = [];
+    const nodes: TrainingNodeInfo[] = [];
     // 1. Local data
     await this.loadLocal(adapters, sessions, params.personaId);
     nodes.push({ nodeId: 'local', nodeName: 'local', adapterCount: adapters.length, sessionCount: sessions.length });
@@ -44,24 +40,32 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
 
     // 3. Summary
     const withLoss = adapters.filter(a => a.finalLoss > 0);
+    const totalExamples = adapters.reduce((s, a) => s + (a.examplesProcessed ?? 0), 0);
+    const totalTrainingTime = adapters.reduce((s, a) => s + (a.trainingDurationMs ?? 0), 0);
+    const domains = new Map<string, number>();
+    for (const a of adapters) domains.set(a.domain, (domains.get(a.domain) ?? 0) + 1);
+
     const summary = {
       totalAdapters: adapters.length,
       totalSessions: sessions.length,
       activeSessions: sessions.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status)).length,
       bestLoss: withLoss.length > 0 ? Math.min(...withLoss.map(a => a.finalLoss)) : 0,
       avgMaturity: adapters.length > 0 ? adapters.reduce((s, a) => s + (a.maturity ?? 0), 0) / adapters.length : 0,
+      totalExamples,
+      totalTrainingTimeMs: totalTrainingTime,
+      domains: Object.fromEntries(domains),
     };
 
     return createGenomeTrainingOverviewResultFromParams(params, {
       success: true,
-      adapters: adapters as any,
-      sessions: sessions as any,
-      nodes: nodes as any,
-      summary: { ...summary, _debug: this._debugLog } as any,
+      adapters,
+      sessions,
+      nodes,
+      summary,
     });
   }
 
-  private async loadLocal(adapters: any[], sessions: any[], personaFilter?: string): Promise<void> {
+  private async loadLocal(adapters: TrainingAdapterInfo[], sessions: TrainingSessionInfo[], personaFilter?: string): Promise<void> {
     try {
       const usersResult = await DataList.execute({
         collection: 'users', filter: { type: 'ai' }, limit: 50, dbHandle: 'default',
@@ -103,7 +107,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
     }
   }
 
-  private async loadGrid(adapters: any[], sessions: any[], nodes: any[], personaFilter?: string): Promise<void> {
+  private async loadGrid(adapters: TrainingAdapterInfo[], sessions: TrainingSessionInfo[], nodes: TrainingNodeInfo[], personaFilter?: string): Promise<void> {
     try {
       const rustClient = RustCoreIPCClient.getInstance();
       const nodesResult = await rustClient.gridNodes() as any;
@@ -117,9 +121,6 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
 
         try {
           const usersResult = await rustClient.gridSend(nodeId, 'user/list', { limit: 50 }) as any;
-          const userKeys = Object.keys(usersResult || {}).slice(0, 8).join(',');
-          const userCount = (usersResult?.users ?? []).length;
-          this._debugLog.push(`${nodeName}: keys=[${userKeys}] users=${userCount}`);
           for (const user of usersResult?.users ?? []) {
             if (user.type === 'human') continue;
             if (personaFilter && user.id !== personaFilter) continue;
@@ -127,7 +128,6 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
 
             try {
               const lr = await rustClient.gridSend(nodeId, 'genome/layers', { personaId: user.id, personaName: pName }) as any;
-              this._debugLog.push(`${pName} layers=${(lr?.layers ?? []).length} keys=[${Object.keys(lr || {}).slice(0,5).join(',')}]`);
               for (const l of lr?.layers ?? []) {
                 if (l.trainingMetrics) {
                   adapters.push({
@@ -144,7 +144,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
                   nodeAdapters++;
                 }
               }
-            } catch (err) { this._debugLog.push(`${pName} layers ERROR: ${err}`); }
+            } catch { /* skip persona */ }
           }
 
           try {
