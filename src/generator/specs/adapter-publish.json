@@ -1,0 +1,78 @@
+{
+  "name": "adapter/publish",
+  "description": "Publish a trained LoRA adapter to HuggingFace with auto-generated model card and continuum:* tags. The adapter manifest metadata (role, skill, scores, base model) becomes discoverable via adapter/search. Every published adapter is an advertisement for the Continuum ecosystem.",
+  "params": [
+    {
+      "name": "adapterPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to the adapter directory containing adapter_model.safetensors and manifest.json"
+    },
+    {
+      "name": "repoId",
+      "type": "string",
+      "optional": false,
+      "description": "HuggingFace repo ID to publish to (e.g., 'continuum-ai/sprite-artist-pixel-games-qwen14b')"
+    },
+    {
+      "name": "projectType",
+      "type": "string",
+      "optional": true,
+      "description": "Project type tag (e.g., 'game-development', 'web-app', 'music-production')"
+    },
+    {
+      "name": "academySessionId",
+      "type": "string",
+      "optional": true,
+      "description": "Academy session ID to pull exam scores and before/after data for the model card"
+    },
+    {
+      "name": "teamProjectId",
+      "type": "string",
+      "optional": true,
+      "description": "Team project ID to pull project context and role grades for the model card"
+    },
+    {
+      "name": "private",
+      "type": "boolean",
+      "optional": true,
+      "description": "Publish as private repo (default: false)"
+    },
+    {
+      "name": "update",
+      "type": "boolean",
+      "optional": true,
+      "description": "Update existing repo instead of creating new (default: false). Pushes new weights + regenerates model card with latest training data."
+    }
+  ],
+  "results": [
+    {
+      "name": "repoUrl",
+      "type": "string",
+      "description": "Full HuggingFace URL to the published adapter"
+    },
+    {
+      "name": "tags",
+      "type": "object",
+      "description": "Array of continuum:* tags applied to the repo"
+    },
+    {
+      "name": "modelCardGenerated",
+      "type": "boolean",
+      "description": "Whether a model card with training data was auto-generated"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Publish an adapter trained by academy",
+      "params": {
+        "adapterPath": "~/.continuum/genome/adapters/helper-ai/coding-expertise",
+        "repoId": "continuum-ai/coding-expertise-qwen14b",
+        "projectType": "software-development",
+        "academySessionId": "abc123"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}
