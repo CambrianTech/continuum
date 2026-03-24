@@ -13,14 +13,15 @@ import { createGenomeTrainingOverviewResultFromParams } from '../shared/GenomeTr
 import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { GenomeLayers } from '@commands/genome/layers/shared/GenomeLayersTypes';
 import { GenomeAcademySessionList } from '@commands/genome/academy-session-list/shared/GenomeAcademySessionListTypes';
-import { Commands } from '@system/core/shared/Commands';
-import type { CommandParams } from '@system/core/types/JTAGTypes';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { Logger } from '@system/core/logging/Logger';
 
 const log = Logger.create('genome/training-overview', 'genome');
 const ZOMBIE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h in curriculum = dead
 
 export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrainingOverviewParams, GenomeTrainingOverviewResult> {
+  private _debugLog: string[] = [];
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('genome/training-overview', context, subpath, commander);
   }
@@ -30,6 +31,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
     const adapters: any[] = [];
     const sessions: any[] = [];
     const nodes: any[] = [];
+    this._debugLog = [];
 
     // 1. Local data
     await this.loadLocal(adapters, sessions, params.personaId);
@@ -55,7 +57,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
       adapters: adapters as any,
       sessions: sessions as any,
       nodes: nodes as any,
-      summary: summary as any,
+      summary: { ...summary, _debug: this._debugLog } as any,
     });
   }
 
@@ -103,26 +105,29 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
 
   private async loadGrid(adapters: any[], sessions: any[], nodes: any[], personaFilter?: string): Promise<void> {
     try {
-      // Use Commands.execute which goes through the full command pipeline (works from CLI)
-      const nodesResult = await Commands.execute('grid/nodes', {}) as any;
+      const rustClient = RustCoreIPCClient.getInstance();
+      const nodesResult = await rustClient.gridNodes() as any;
+      const gridNodesList = Array.isArray(nodesResult) ? nodesResult : nodesResult?.nodes ?? [];
 
-      for (const n of nodesResult?.nodes ?? []) {
+      for (const n of gridNodesList) {
         const nodeId = n.node_id ?? n.nodeId;
         const nodeName = n.node_name ?? n.nodeName ?? nodeId;
         const gpuCap = (n.capabilities ?? []).find((c: any) => c.gpu);
         let nodeAdapters = 0, nodeSessions = 0;
 
         try {
-          const sendResult = await Commands.execute('grid/send', { nodeId, remoteCommand: 'user/list', params: { limit: 50 } } as any) as any;
-          const usersResult = sendResult?.remoteResult ?? sendResult;
+          const usersResult = await rustClient.gridSend(nodeId, 'user/list', { limit: 50 }) as any;
+          const userKeys = Object.keys(usersResult || {}).slice(0, 8).join(',');
+          const userCount = (usersResult?.users ?? []).length;
+          this._debugLog.push(`${nodeName}: keys=[${userKeys}] users=${userCount}`);
           for (const user of usersResult?.users ?? []) {
-            if (user.type !== 'ai') continue;
+            if (user.type === 'human') continue;
             if (personaFilter && user.id !== personaFilter) continue;
             const pName = user.uniqueId ?? user.displayName;
 
             try {
-              const layerSend = await Commands.execute('grid/send', { nodeId, remoteCommand: 'genome/layers', params: { personaId: user.id, personaName: pName } } as any) as any;
-              const lr = layerSend?.remoteResult ?? layerSend;
+              const lr = await rustClient.gridSend(nodeId, 'genome/layers', { personaId: user.id, personaName: pName }) as any;
+              this._debugLog.push(`${pName} layers=${(lr?.layers ?? []).length} keys=[${Object.keys(lr || {}).slice(0,5).join(',')}]`);
               for (const l of lr?.layers ?? []) {
                 if (l.trainingMetrics) {
                   adapters.push({
@@ -139,12 +144,11 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
                   nodeAdapters++;
                 }
               }
-            } catch { /* skip persona */ }
+            } catch (err) { this._debugLog.push(`${pName} layers ERROR: ${err}`); }
           }
 
           try {
-            const sessSend = await Commands.execute('grid/send', { nodeId, remoteCommand: 'genome/academy-session-list', params: {} } as any) as any;
-            const sr = sessSend?.remoteResult ?? sessSend;
+            const sr = await rustClient.gridSend(nodeId, 'genome/academy-session-list', {}) as any;
             for (const s of sr?.sessions ?? []) {
               if (this.isZombie(s)) continue;
               sessions.push({ ...s, nodeName });
