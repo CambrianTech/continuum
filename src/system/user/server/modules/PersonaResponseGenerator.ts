@@ -22,7 +22,7 @@ import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
-import { routeForTask, getAvailableCloudProviders } from './TaskAwareProviderRouter';
+import { routeForTask, getAvailableCloudProviders, recordUpgradeCost } from './TaskAwareProviderRouter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -577,6 +577,11 @@ export class PersonaResponseGenerator {
           inputTokenEstimate,
           outputTokenEstimate
         );
+
+        // Track cloud upgrade costs for daily budget enforcement
+        if (routing.upgraded && cost > 0) {
+          recordUpgradeCost(cost);
+        }
 
         CognitionLogger.logResponseGeneration(
           this.personaId,
