@@ -127,14 +127,14 @@ This document is the **single source of truth** for remaining work before open-s
 |---|-------|--------|------|
 | [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | DONE (Rust) | 6 families in Rust (DeepSeek, Llama, Mistral, Hermes, Qwen, Generic) + Native protocol upstream. Closed. |
 | [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | DONE (PR #400) | Fixed param serialization, agent loop cap, double correction, loop detection side-effect, tool group bias. |
-| [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | TODO | CodingAgent, tools, quality, full loop all broken. |
+| [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | PARTIAL | Sub-issues #367, #368, #371 done. Routing works. Remaining: #370 (e2e pipeline), #369 (quality gate). |
 | [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | DONE (tested e2e) | Works — 3 workspace strategies, error handling, training capture. Closed. |
 | [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
 | [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
 | [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | DONE (PR #401) | Fixed hasTools false for XML providers — local personas now upgrade to cloud for tool use. |
 | [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
 | [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | TODO | Personas see screenshots, live visual context. |
-| [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | TODO | Track and limit spend per persona/provider. |
+| [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
 
 **Done when**: Local 14B model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
 
