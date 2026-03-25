@@ -13,7 +13,7 @@ import { OrbStateManager, type ConnectionStatus, type HealthState } from './OrbS
 import { TRANSPORT_EVENTS } from '../../system/transports/shared/TransportEvents';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: ConnectionStatus = 'initializing';

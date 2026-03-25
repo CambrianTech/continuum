@@ -9,7 +9,7 @@ import type { ChatMessageEntity, MediaItem } from '../../../system/data/entities
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 interface ImageContentData {
   readonly images: readonly MediaItem[];  // Support multiple images

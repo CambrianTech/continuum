@@ -11,7 +11,7 @@ import { getDataEventName, type CrudOperation } from '../../../system/core/share
 // Verbose logging helper (works in both browser and server)
 const verbose = () => {
   if (typeof window !== 'undefined') {
-    return (window as any).JTAG_VERBOSE === true;
+    return window.JTAG_VERBOSE === true;
   }
   if (typeof process !== 'undefined') {
     return process.env.JTAG_VERBOSE === '1';

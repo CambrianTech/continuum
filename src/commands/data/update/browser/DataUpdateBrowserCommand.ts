@@ -21,7 +21,7 @@ export class DataUpdateBrowserCommand extends DataUpdateCommand<BaseEntity> {
   }
 
   async execute(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
-    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    const verbose = typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
     // 1. Update localStorage immediately
     const localResult = await this.updateLocal(params);

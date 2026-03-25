@@ -34,9 +34,9 @@ export class CompileTypescriptBrowserCommand extends CompileTypescriptCommand {
     try {
       //TODO : USE proper import for monaco/typescript
       // Check if monaco/typescript is available in browser
-      const monaco = (window as any).monaco;
+      const monaco = window.monaco;
       
-      if (monaco && monaco.languages.typescript) {
+      if (monaco?.languages?.typescript) {
         console.log(`🔨 BROWSER: Using Monaco TypeScript service`);
         
         // Use monaco for client-side compilation

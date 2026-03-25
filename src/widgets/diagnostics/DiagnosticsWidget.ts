@@ -24,7 +24,7 @@ import { CodeTree, type CodeTreeResult } from '../../commands/code/tree/shared/C
 import type { TreeNode } from '../../shared/generated/code/TreeNode';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 // Log category classification based on filename
 const LOG_CATEGORY_MAP: Record<string, LogFileInfo['category']> = {

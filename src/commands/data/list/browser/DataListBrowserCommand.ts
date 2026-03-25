@@ -25,7 +25,7 @@ export class DataListBrowserCommand<T extends BaseEntity> extends CommandBase<Da
   }
 
   async execute(params: DataListParams): Promise<DataListResult<T>> {
-    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    const verbose = typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
     const startTime = performance.now();
     const backend = params.backend ?? 'auto';
 

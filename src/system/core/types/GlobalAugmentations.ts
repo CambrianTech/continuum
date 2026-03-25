@@ -41,6 +41,16 @@ export interface JTAGWindowProperties {
 
   /** Debug verbosity flag */
   JTAG_VERBOSE?: boolean;
+
+  /** Theme registry singleton (set by ThemeWidget init) */
+  ThemeRegistry?: { themes?: Map<string, unknown>; currentTheme?: string; [key: string]: unknown };
+
+  /** Monaco editor instance (if loaded) */
+  monaco?: { languages?: { typescript?: unknown; [key: string]: unknown }; [key: string]: unknown };
+
+  /** requestIdleCallback (not in all TS lib targets) */
+  requestIdleCallback?: (callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
 }
 
 /**
@@ -75,3 +85,20 @@ export const jtagWindow = (typeof window !== 'undefined' ? window : undefined) a
   (Window & JTAGWindowProperties) | undefined;
 
 export const jtagGlobal = globalThis as typeof globalThis & JTAGGlobalProperties;
+
+/**
+ * Global augmentation — extends Window and globalThis so that
+ * `window.JTAG_VERBOSE`, `window.ThemeRegistry`, etc. are type-safe
+ * without importing anything or casting to `any`.
+ */
+declare global {
+  interface Window extends JTAGWindowProperties {}
+  // eslint-disable-next-line no-var
+  var JTAG_VERBOSE: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __JTAG_COMMAND_DAEMON__: JTAGGlobalProperties['__JTAG_COMMAND_DAEMON__'];
+  // eslint-disable-next-line no-var
+  var __JTAG_CONTEXT__: string | undefined;
+  // eslint-disable-next-line no-var
+  var __JTAG_SESSION_ID__: string | undefined;
+}
