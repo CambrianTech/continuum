@@ -146,7 +146,10 @@ export class SentinelDispatchDecider {
     if (signals.isQuestion && !signals.isFeature && !signals.isBugFix && !signals.isReview) {
       return this._noDispatch('Message is a question, not a task');
     }
-    if (signals.isSimpleCommand) {
+    // Simple commands are rejected UNLESS they also contain feature/bug/review signals.
+    // "read the bug report and fix it" starts with "read" (simple) but IS a bug fix task.
+    // Suggested by Fireworks AI during code review of PR #419.
+    if (signals.isSimpleCommand && !signals.isFeature && !signals.isBugFix && !signals.isReview) {
       return this._noDispatch('Message is a simple command');
     }
 
