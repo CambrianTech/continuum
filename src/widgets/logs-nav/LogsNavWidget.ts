@@ -188,7 +188,7 @@ export class LogsNavWidget extends ReactiveWidget {
     try {
       const result = await LogsList.execute({
         includeStats: true
-      } as any) as LogsListResult;
+      }) as LogsListResult;
 
       if (result.success) {
         this.logs = result.logs;

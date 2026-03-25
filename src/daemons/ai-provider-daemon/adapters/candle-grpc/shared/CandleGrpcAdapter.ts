@@ -204,7 +204,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
       return {
         text: result.text,
-        finishReason: result.finishReason as any,
+        finishReason: result.finishReason as 'stop' | 'length' | 'error',
         model: result.model,
         provider: this.providerId,
         usage,

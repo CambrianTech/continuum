@@ -27,7 +27,7 @@ export abstract class ChatWidgetBase extends BaseWidget {
       let dynamicContent: string;
       if (!this.config.template && 'renderTemplate' in this) {
         // Use template literal from renderTemplate() method
-        dynamicContent = (this as any).renderTemplate();
+        dynamicContent = (this as unknown as { renderTemplate(): string }).renderTemplate();
       } else {
         // Use external template file with placeholder replacements
         const template = this.templateHTML ?? '<div>No template loaded</div>';

@@ -195,7 +195,7 @@ export class CoordinationDecisionLogger {
 
         // Metadata
         metadata
-      } as any;
+      } as unknown as CoordinationDecisionEntity;
 
       // Store to database (fire-and-forget in PersonaUser, but sync here for error handling)
       await DataCreate.execute({

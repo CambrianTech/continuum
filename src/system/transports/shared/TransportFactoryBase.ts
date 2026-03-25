@@ -35,7 +35,7 @@ interface LegacyTransportBridge {
  */
 export const validateAndConvertProtocol = (protocol: string): TransportConfig['protocol'] => {
   const validProtocols = ['websocket', 'http', 'udp-multicast'] as const;
-  if (validProtocols.includes(protocol as any)) {
+  if ((validProtocols as readonly string[]).includes(protocol)) {
     return protocol as TransportConfig['protocol'];
   }
   throw new Error(`Invalid protocol: ${protocol}. Valid protocols: ${validProtocols.join(', ')}`);

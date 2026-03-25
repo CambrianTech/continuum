@@ -370,7 +370,7 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
   private extractText(item: QueueItem): string {
     if (typeof item === 'string') return item;
     if (item && typeof item === 'object' && 'message' in item) {
-      return String((item as any).message);
+      return String((item as { message: unknown }).message);
     }
     return JSON.stringify(item);
   }

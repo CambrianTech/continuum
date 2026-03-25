@@ -148,7 +148,8 @@ This document is the **single source of truth** for remaining work before open-s
 | # | Issue | Status | What |
 |---|-------|--------|------|
 | [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
-| [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | TODO | write → test → fix → commit loop must actually complete. |
+| [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | PARTIAL (PR #407) | sentinel/coding-agent works e2e. Persona→chat→code trigger needs proof. |
+| [#411](https://github.com/CambrianTech/continuum/issues/411) | **Self-improving system** | TODO | Personas autonomously propose → code → test → PR. The endgame. |
 
 **Previously completed:**
 - 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
@@ -285,14 +286,14 @@ This document is the **single source of truth** for remaining work before open-s
 | **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360 | 13 |
 | **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399, #409 | 10 |
 | **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
-| **4: Dev Orchestration** | #326, #370 | 2 |
+| **4: Dev Orchestration** | #326, #370, #411 | 3 |
 | **5: Academy** | #377, #369, #374, #365, #344, #345, #384, #359 | 8 |
 | **6: Genome** | #382, #378, #330, #319 | 4 |
 | **7: Autonomous** | #383, #329, #336 | 3 |
 | **8: Distillation** | #327, #357 | 2 |
 | **9: Codebase Intel** | #328 | 1 |
 | **10: Grid** | #323, #364, #349, #337 | 4 |
-| **Total** | | **63** |
+| **Total** | | **64** |
 
 ---
 

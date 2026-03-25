@@ -105,7 +105,7 @@ export class SemanticMemorySource implements RAGSource {
     }
 
     // Extract metadata from the result
-    const metadata = result.metadata as any || {};
+    const metadata = (result.metadata ?? {}) as Record<string, unknown>;
 
     return {
       sourceName: this.name,

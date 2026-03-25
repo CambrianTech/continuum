@@ -136,7 +136,7 @@ export class ORM {
     }
 
     const dbPath = ORM.resolveHandle(handle);
-    const done = logOperationStart('store', collection, { id: (data as any).id });
+    const done = logOperationStart('store', collection, { id: (data as BaseEntity).id });
 
     try {
       const client = await getRustClient();

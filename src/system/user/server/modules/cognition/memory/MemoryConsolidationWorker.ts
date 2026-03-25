@@ -521,7 +521,7 @@ export class MemoryConsolidationWorker {
 
     // If it's an object with a message property
     if (item && typeof item === 'object' && 'message' in item) {
-      return String((item as any).message);
+      return String((item as { message: unknown }).message);
     }
 
     // Fallback: stringify

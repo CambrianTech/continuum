@@ -307,10 +307,10 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
       try {
         await DataCreate.execute({
           collection,
-          data: row,
+          data: row as unknown as Record<string, unknown>,
           dbHandle: destHandle,
           suppressEvents: true
-        } as any);
+        });
         copiedIds.push(row.id);
       } catch (error) {
         this.log.error(`🗄️  Failed to copy row ${row.id} to archive:`, error);
@@ -349,7 +349,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
           id,
           dbHandle: sourceHandle,
           suppressEvents: true
-        } as any);
+        });
         deletedCount++;
       } catch (error) {
         this.log.error(`🗄️  Failed to delete row ${id} from source:`, error);

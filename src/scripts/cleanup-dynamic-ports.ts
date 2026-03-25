@@ -35,7 +35,7 @@ class DynamicPortCleanup {
       // Create a mock command daemon for the server command
       const mockCommander = {
         subpath: 'system-cleanup',
-        router: null as any,
+        router: null!,
         commands: new Map()
       };
 

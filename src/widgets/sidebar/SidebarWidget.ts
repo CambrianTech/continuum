@@ -257,7 +257,7 @@ export class SidebarWidget extends ReactiveWidget {
     if (continuumWidget?.shadowRoot) {
       const resizer = continuumWidget.shadowRoot.querySelector(
         `panel-resizer[side="${this.panelSide}"]`
-      ) as any;
+      ) as (Element & { toggle?: () => void }) | null;
       resizer?.toggle?.();
     }
   };

@@ -236,7 +236,7 @@ export class RAGComposer {
     const allResults = allLoadResults;
     const sortedByTime = allResults.slice().sort((a, b) => b.loadTime - a.loadTime);
     const sourceTimingSummary = sortedByTime
-      .map(s => `${s.success ? (s as any).sourceName : s.source}:${s.loadTime.toFixed(0)}ms`)
+      .map(s => `${s.success ? s.sourceName : s.source}:${s.loadTime.toFixed(0)}ms`)
       .join(', ');
 
     // Calculate totals

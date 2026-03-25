@@ -118,7 +118,7 @@ export function querySelectorDeep(selector: string, root: Element | null): Eleme
   if (!root) return null;
 
   // Try to find in this element's shadow root
-  const shadowRoot = (root as any).shadowRoot as ShadowRoot | null;
+  const shadowRoot = (root as Element & { shadowRoot: ShadowRoot | null }).shadowRoot;
   if (shadowRoot) {
     const match = shadowRoot.querySelector(selector);
     if (match) return match;
@@ -135,7 +135,7 @@ export function querySelectorDeep(selector: string, root: Element | null): Eleme
   const children = root.querySelectorAll('*');
   for (const child of Array.from(children)) {
     // Check if child has shadow root
-    const childShadow = (child as any).shadowRoot as ShadowRoot | null;
+    const childShadow = (child as Element & { shadowRoot: ShadowRoot | null }).shadowRoot;
     if (childShadow) {
       const match = childShadow.querySelector(selector);
       if (match) return match;

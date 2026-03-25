@@ -71,7 +71,7 @@ export class UserIdentityResolver {
 
     const detectedAgent: AgentInfo = {
       name: pluginDetection.detection.name,
-      type: pluginDetection.detection.type as any,
+      type: pluginDetection.detection.type as AgentInfo['type'],
       version: pluginDetection.detection.version,
       confidence: pluginDetection.detection.confidence,
       capabilities: pluginDetection.capabilities,

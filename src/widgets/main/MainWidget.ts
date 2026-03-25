@@ -18,6 +18,7 @@ import {
 } from '../shared/ReactiveWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Events } from '../../system/core/shared/Events';
+import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
@@ -177,7 +178,7 @@ export class MainWidget extends ReactiveWidget {
     // RoutingService.resolve() fails silently because Commands can't execute.
     const waitForClient = async () => {
       for (let i = 0; i < 50; i++) {
-        if ((globalThis as any).jtag) return;
+        if (jtagGlobal.jtag) return;
         await new Promise(r => setTimeout(r, 100));
       }
     };

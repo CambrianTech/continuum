@@ -10,6 +10,12 @@ import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { type SessionCreateParams, type SessionCreateResult, createSessionCreateResult } from './SessionCreateTypes';
 import { type CreateSessionParams, type CreateSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
+/** Router-wrapped response format: the daemon response is nested under .response */
+interface RouterWrappedResponse {
+  resolved: boolean;
+  response: CreateSessionResult;
+}
+
 export abstract class SessionCreateCommand extends CommandBase<SessionCreateParams, SessionCreateResult> {
   
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

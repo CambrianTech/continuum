@@ -1022,7 +1022,7 @@ export abstract class ReactiveWidget extends LitElement {
       }
 
       // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
-      const userId = currentUser.id ?? (currentUser as any).entity?.id;
+      const userId = currentUser.id ?? (currentUser as unknown as { entity?: { id?: string } }).entity?.id;
       console.log(`🔍 ${this.config.widgetName}.loadUserContext: userId=${userId?.slice?.(0, 8) || 'null'}`);
 
       if (!userId) {

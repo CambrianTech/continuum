@@ -13,8 +13,41 @@ import { createGenomeTrainingOverviewResultFromParams } from '../shared/GenomeTr
 import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { GenomeLayers } from '@commands/genome/layers/shared/GenomeLayersTypes';
 import { GenomeAcademySessionList } from '@commands/genome/academy-session-list/shared/GenomeAcademySessionListTypes';
+import type { AcademySessionSummary } from '@commands/genome/academy-session-list/shared/GenomeAcademySessionListTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { GridNode, NodeCapability } from '../../../../workers/continuum-core/bindings/modules/grid';
+import { UserEntity } from '@system/data/entities/UserEntity';
 import { Logger } from '@system/core/logging/Logger';
+
+/** Shape returned by grid/send for user/list */
+interface GridUserListResponse {
+  users?: Array<{ id: string; type: string; uniqueId?: string; displayName?: string }>;
+}
+
+/** Shape returned by grid/send for genome/layers */
+interface GridGenomeLayersResponse {
+  layers?: Array<{
+    id?: string;
+    name: string;
+    domain: string;
+    baseModel: string;
+    createdAt?: string;
+    sizeMB?: number;
+    maturity?: number;
+    trainingMetrics?: {
+      finalLoss: number;
+      epochs: number;
+      examplesProcessed: number;
+      lossHistory?: number[];
+      trainRuntime?: number;
+    };
+  }>;
+}
+
+/** Shape returned by grid/send for genome/academy-session-list */
+interface GridAcademySessionListResponse {
+  sessions?: AcademySessionSummary[];
+}
 
 const log = Logger.create('genome/training-overview', 'genome');
 const ZOMBIE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h in curriculum = dead
@@ -67,38 +100,38 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
 
   private async loadLocal(adapters: TrainingAdapterInfo[], sessions: TrainingSessionInfo[], personaFilter?: string): Promise<void> {
     try {
-      const usersResult = await DataList.execute({
+      const usersResult = await DataList.execute<UserEntity>({
         collection: 'users', filter: { type: 'ai' }, limit: 50, dbHandle: 'default',
-      }) as any;
+      });
 
-      const users = (usersResult?.items ?? []).filter((u: Record<string, unknown>) => !personaFilter || u.id === personaFilter);
+      const users = (usersResult?.items ?? []).filter((u: UserEntity) => !personaFilter || u.id === personaFilter);
 
       // Parallel: load layers + sessions for all personas concurrently
-      await Promise.all(users.map(async (user: Record<string, unknown>) => {
-        const pName = (user.uniqueId ?? user.displayName) as string;
+      await Promise.all(users.map(async (user: UserEntity) => {
+        const pName = user.uniqueId ?? user.displayName;
 
         try {
-          const lr = await GenomeLayers.execute({ personaId: user.id as string, personaName: pName }) as any;
+          const lr = await GenomeLayers.execute({ personaId: user.id, personaName: pName });
           for (const l of lr?.layers ?? []) {
             if (l.trainingMetrics) {
               adapters.push({
-                id: l.id ?? user.id,
+                id: user.id,
                 name: l.name, domain: l.domain, baseModel: l.baseModel,
-                personaName: pName, personaId: user.id as string, nodeName: 'local',
+                personaName: pName, personaId: user.id, nodeName: 'local',
                 finalLoss: l.trainingMetrics.finalLoss ?? 0,
                 epochs: l.trainingMetrics.epochs ?? 0,
                 examplesProcessed: l.trainingMetrics.examplesProcessed ?? 0,
                 maturity: l.maturity ?? 0, sizeMB: l.sizeMB ?? 0,
                 createdAt: l.createdAt ?? '',
                 lossHistory: l.trainingMetrics.lossHistory ?? [],
-                trainingDurationMs: l.trainingMetrics.trainRuntime ? l.trainingMetrics.trainRuntime * 1000 : 0,
+                trainingDurationMs: l.trainingMetrics.trainingDurationMs ?? 0,
               });
             }
           }
         } catch { /* skip */ }
 
         try {
-          const sr = await GenomeAcademySessionList.execute({ personaId: user.id as string }) as any;
+          const sr = await GenomeAcademySessionList.execute({ personaId: user.id });
           for (const s of sr?.sessions ?? []) {
             if (this.isZombie(s)) continue;
             sessions.push({ ...s, personaName: s.personaName ?? pName, nodeName: 'local' });
@@ -113,24 +146,23 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
   private async loadGrid(adapters: TrainingAdapterInfo[], sessions: TrainingSessionInfo[], nodes: TrainingNodeInfo[], personaFilter?: string): Promise<void> {
     try {
       const rustClient = RustCoreIPCClient.getInstance();
-      const nodesResult = await rustClient.gridNodes() as any;
-      const gridNodesList = Array.isArray(nodesResult) ? nodesResult : nodesResult?.nodes ?? [];
+      const gridNodesList: GridNode[] = await rustClient.gridNodes();
 
       for (const n of gridNodesList) {
-        const nodeId = n.node_id ?? n.nodeId;
-        const nodeName = n.node_name ?? n.nodeName ?? nodeId;
-        const gpuCap = (n.capabilities ?? []).find((c: any) => c.gpu);
+        const nodeId = n.node_id;
+        const nodeName = n.node_name ?? nodeId;
+        const gpuCap = (n.capabilities ?? []).find((c: NodeCapability) => c.type === 'compute');
         let nodeAdapters = 0, nodeSessions = 0;
 
         try {
-          const usersResult = await rustClient.gridSend(nodeId, 'user/list', { limit: 50 }) as any;
+          const usersResult = await rustClient.gridSend(nodeId, 'user/list', { limit: 50 }) as GridUserListResponse;
           for (const user of usersResult?.users ?? []) {
             if (user.type === 'human') continue;
             if (personaFilter && user.id !== personaFilter) continue;
-            const pName = user.uniqueId ?? user.displayName;
+            const pName = user.uniqueId ?? user.displayName ?? user.id;
 
             try {
-              const lr = await rustClient.gridSend(nodeId, 'genome/layers', { personaId: user.id, personaName: pName }) as any;
+              const lr = await rustClient.gridSend(nodeId, 'genome/layers', { personaId: user.id, personaName: pName }) as GridGenomeLayersResponse;
               for (const l of lr?.layers ?? []) {
                 if (l.trainingMetrics) {
                   adapters.push({
@@ -143,7 +175,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
                     maturity: l.maturity ?? 0, sizeMB: l.sizeMB ?? 0,
                     createdAt: l.createdAt ?? '',
                     lossHistory: l.trainingMetrics.lossHistory ?? [],
-                    trainingDurationMs: l.trainingMetrics.trainRuntime ? l.trainingMetrics.trainRuntime * 1000 : 0,
+                    trainingDurationMs: l.trainingMetrics.trainRuntime ?? 0,
                   });
                   nodeAdapters++;
                 }
@@ -152,7 +184,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
           }
 
           try {
-            const sr = await rustClient.gridSend(nodeId, 'genome/academy-session-list', {}) as any;
+            const sr = await rustClient.gridSend(nodeId, 'genome/academy-session-list', {}) as GridAcademySessionListResponse;
             for (const s of sr?.sessions ?? []) {
               if (this.isZombie(s)) continue;
               sessions.push({ ...s, nodeName });
@@ -163,14 +195,15 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
           log.warn(`Grid node ${nodeName} failed: ${err}`);
         }
 
-        nodes.push({ nodeId, nodeName, adapterCount: nodeAdapters, sessionCount: nodeSessions, gpu: gpuCap?.gpu, vramMb: gpuCap?.vram_mb });
+        const computeCap = gpuCap?.type === 'compute' ? gpuCap : undefined;
+        nodes.push({ nodeId, nodeName, adapterCount: nodeAdapters, sessionCount: nodeSessions, gpu: computeCap?.gpu ?? undefined, vramMb: computeCap?.vram_mb });
       }
     } catch (err) {
       log.warn(`Grid load failed: ${err}`);
     }
   }
 
-  private isZombie(session: any): boolean {
+  private isZombie(session: AcademySessionSummary): boolean {
     const age = Date.now() - new Date(session.createdAt).getTime();
     return session.status === 'curriculum' && age > ZOMBIE_THRESHOLD_MS;
   }

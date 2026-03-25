@@ -29,14 +29,14 @@ export class GenomeTrainResumeServerCommand extends CommandBase<GenomeTrainResum
     }
 
     // 1. Load job from database
-    const readResult = await DataList.execute({
+    const readResult = await DataList.execute<TrainingJobEntity>({
       collection: TrainingJobEntity.collection,
       filter: { id: params.jobId },
       limit: 1,
       dbHandle: 'default',
     });
 
-    const job = readResult.items?.[0] as any;
+    const job = readResult.items?.[0];
     if (!job) {
       throw new ValidationError('jobId', `Training job not found: ${params.jobId}`);
     }

@@ -13,6 +13,7 @@
  */
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
+import type { BaseEntity } from '../../../../../data/entities/BaseEntity';
 import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ProcessableMessage } from '../../QueueItemTypes';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
@@ -109,10 +110,10 @@ export class PersonaMemory {
 
       if (existing) {
         // Update existing record (DataDaemon handles updatedAt)
-        await ORM.update(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, record as any, true, handle);
+        await ORM.update(COLLECTIONS.PERSONA_RAG_CONTEXTS, recordId, record as unknown as BaseEntity, true, handle);
       } else {
         // Create new record
-        await ORM.store(COLLECTIONS.PERSONA_RAG_CONTEXTS, record as any, false, handle);
+        await ORM.store(COLLECTIONS.PERSONA_RAG_CONTEXTS, record as unknown as BaseEntity, false, handle);
       }
     } catch (error) {
       this.log(`❌ Failed to store RAG context: ${error}`);

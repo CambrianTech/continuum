@@ -236,7 +236,7 @@ export class ManagedProcess extends EventEmitter {
       uptime: this._state === 'running' ? Date.now() - this._startTime : 0,
       restartCount: this._restartCount,
       lastHealthCheck: this._lastHealthCheck,
-      memoryUsage: this._process ? (this._process as any).memoryUsage?.rss : undefined
+      memoryUsage: this._process ? (this._process as unknown as { memoryUsage?: { rss?: number } }).memoryUsage?.rss : undefined
     };
   }
 

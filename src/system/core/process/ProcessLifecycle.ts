@@ -206,7 +206,7 @@ export class LifecycleManager {
   private setupIPCHandlers(): void {
     console.log('[LifecycleManager] Setting up IPC handlers - process.on("message")');
     console.log(`[LifecycleManager] process.send exists: ${typeof process.send !== 'undefined'}`);
-    console.log(`[LifecycleManager] process.channel exists: ${typeof (process as any).channel !== 'undefined'}`);
+    console.log(`[LifecycleManager] process.channel exists: ${typeof process.channel !== 'undefined'}`);
 
     // Handle IPC messages from parent
     process.on('message', async (rawMessage: unknown) => {

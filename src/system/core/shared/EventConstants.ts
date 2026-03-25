@@ -162,7 +162,7 @@ export function isDataEvent(eventName: string): boolean {
  * Check if event is a UI event
  */
 export function isUIEvent(eventName: string): boolean {
-  return Object.values(UI_EVENTS).includes(eventName as any);
+  return (Object.values(UI_EVENTS) as string[]).includes(eventName);
 }
 
 /**

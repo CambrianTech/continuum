@@ -23,7 +23,7 @@ import type {
   PersonaPriority
 } from '../shared/ConversationCoordinationTypes';
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
-import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
+import { BaseModerator, PolynomialDecayModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
 import { BackpressureService } from '../../core/services/BackpressureService';
 import { HeartbeatManager } from '../shared/SystemHeartbeat';
 import type { StageCompleteEvent } from '../shared/CognitionEventTypes';
@@ -398,8 +398,8 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     this.updateConversationHealth(stream.contextId, granted.length > 0);
 
     // Update moderator's recency tracking (if using PolynomialDecayModerator)
-    if ('updateRecency' in this.moderator && typeof (this.moderator as any).updateRecency === 'function') {
-      (this.moderator as any).updateRecency(stream.contextId, granted);
+    if ('updateRecency' in this.moderator && typeof (this.moderator as unknown as { updateRecency?: Function }).updateRecency === 'function') {
+      (this.moderator as unknown as PolynomialDecayModerator).updateRecency(stream.contextId, granted);
     }
 
     // CONDITION VARIABLE: Signal all waiters

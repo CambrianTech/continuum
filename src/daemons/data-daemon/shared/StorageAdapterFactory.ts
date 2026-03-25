@@ -202,7 +202,7 @@ export class StorageAdapterFactory {
     }
     
     return {
-      type: strategy as any,
+      type: strategy as StorageAdapterConfig['type'],
       namespace,
       options
     };

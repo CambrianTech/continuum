@@ -20,7 +20,8 @@ import {
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { Commands } from '../../system/core/shared/Commands';
 
-import { AIGenerate } from '../../commands/ai/generate/shared/AIGenerateTypes';
+import { AIGenerate, type AIGenerateParams, type AIGenerateResult } from '../../commands/ai/generate/shared/AIGenerateTypes';
+import type { CommandInput } from '../../system/core/types/JTAGTypes';
 interface ProviderTestedEvent {
   provider: string;
   configKey: string;
@@ -212,7 +213,7 @@ export class SettingsAssistantWidget extends ReactiveWidget {
 
 Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most likely cause and solution. Be friendly and concise.`,
         maxTokens: 150
-      } as any) as any;
+      } as unknown as CommandInput<AIGenerateParams>) as AIGenerateResult;
 
       if (result?.text) {
         this.addMessage('help', `💡 ${result.text}`);

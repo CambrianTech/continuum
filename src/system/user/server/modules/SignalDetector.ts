@@ -327,7 +327,7 @@ Output JSON only:
    */
   private validateTrait(trait: string): TraitType {
     const validTraits = Object.values(TRAIT_TYPES);
-    return validTraits.includes(trait as any) ? trait : TRAIT_TYPES.TONE_AND_VOICE;
+    return (validTraits as readonly string[]).includes(trait) ? trait as TraitType : TRAIT_TYPES.TONE_AND_VOICE;
   }
 
   /**

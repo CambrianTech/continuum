@@ -398,7 +398,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       throw new Error(`Dataset creation failed: ${response.status} ${error}`);
     }
 
-    const data = await response.json() as any;
+    const _data = await response.json() as Record<string, unknown>;
     // API returns the datasetId we sent in
     return datasetId;
   }

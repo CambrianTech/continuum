@@ -5,7 +5,7 @@
  * Detects external WebSocket clients based on clean endpoint patterns.
  */
 
-import type { JTAGMessage } from '../../types/JTAGTypes';
+import type { JTAGMessage, JTAGRequestMessage } from '../../types/JTAGTypes';
 import { JTAGMessageTypes } from '../../types/JTAGTypes';
 
 export class ExternalClientDetector {
@@ -150,7 +150,7 @@ export class ExternalClientDetector {
    */
   getCorrelationId(message: JTAGMessage): string | null {
     if (JTAGMessageTypes.isRequest(message) || JTAGMessageTypes.isResponse(message)) {
-      return (message as any).correlationId;
+      return (message as JTAGRequestMessage).correlationId;
     }
     return null;
   }

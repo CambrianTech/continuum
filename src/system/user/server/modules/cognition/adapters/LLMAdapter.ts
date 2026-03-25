@@ -28,7 +28,7 @@ export class LLMAdapter implements IDecisionAdapter {
   async evaluate<TEvent extends BaseEntity>(context: DecisionContext<TEvent>): Promise<CognitiveDecision> {
     // For chat domain, use ChatRAGBuilder to get context
     if ('content' in context.triggerEvent && 'roomId' in context.triggerEvent) {
-      const chatMessage = context.triggerEvent as any as ChatMessageEntity;
+      const chatMessage = context.triggerEvent as unknown as ChatMessageEntity;
 
       // Build RAG context for LLM gating
       const ragBuilder = new ChatRAGBuilder();

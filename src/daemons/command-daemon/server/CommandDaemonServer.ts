@@ -38,7 +38,7 @@ export class CommandDaemonServer extends CommandDaemon {
     // This is critical for daemon initialization order - UserDaemon needs
     // CommandDaemon during its initializeDeferred(), which runs before
     // JTAGSystem.daemons array is populated by setupDaemons()
-    (globalThis as any).__JTAG_COMMAND_DAEMON__ = this;
+    globalThis.__JTAG_COMMAND_DAEMON__ = this;
     this.log.info('✅ CommandDaemonServer: Registered to globalThis for early access');
   }
 

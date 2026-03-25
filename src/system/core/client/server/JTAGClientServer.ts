@@ -187,7 +187,7 @@ export class JTAGClientServer extends JTAGClient {
       // console.log(`📥 JTAGClientServer: Received event message, triggering local subscriptions`);
 
       // Extract event name and data from payload (EventBridgePayload structure)
-      const payload = message.payload as any;
+      const payload = message.payload as { eventName?: string; data?: unknown };
       const eventName = payload?.eventName;
       const eventData = payload?.data;
 

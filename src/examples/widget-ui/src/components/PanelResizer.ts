@@ -246,7 +246,7 @@ export class PanelResizer extends HTMLElement {
     }
 
     private applyCollapsedState(collapsed: boolean): void {
-        const continuumWidget = document.querySelector('continuum-widget') as any;
+        const continuumWidget = document.querySelector('continuum-widget');
         if (!continuumWidget?.shadowRoot) return;
 
         const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
@@ -279,7 +279,7 @@ export class PanelResizer extends HTMLElement {
     }
 
     private applyPanelWidth(width: number, clipping: boolean = false): void {
-        const continuumWidget = document.querySelector('continuum-widget') as any;
+        const continuumWidget = document.querySelector('continuum-widget');
         if (!continuumWidget?.shadowRoot) return;
 
         const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
@@ -411,7 +411,7 @@ export class PanelResizer extends HTMLElement {
         if (this.isCollapsed && this.config.collapsible) {
             if (rawWidth > this.collapsedHandleWidth) {
                 // Show live expansion as user drags
-                const continuumWidget = document.querySelector('continuum-widget') as any;
+                const continuumWidget = document.querySelector('continuum-widget');
                 if (continuumWidget?.shadowRoot) {
                     const panelContainer = continuumWidget.shadowRoot.querySelector(`.${this.config.containerClass}`) as HTMLElement;
                     if (panelContainer) {

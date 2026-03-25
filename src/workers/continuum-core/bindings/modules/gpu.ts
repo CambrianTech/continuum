@@ -188,7 +188,7 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 		async gpuRegisterConsumer(id: string, label: string, bytes: number, priority = 'batch'): Promise<{ registered: boolean; pressure: number }> {
 			const response = await this.request({ command: 'gpu/register-consumer', id, label, bytes, priority });
 			if (!response.success) throw new Error(response.error || 'Failed to register GPU consumer');
-			return { registered: true, pressure: Number((response.result as any).pressure) };
+			return { registered: true, pressure: Number((response.result as { pressure: number }).pressure) };
 		}
 
 		/**
@@ -197,7 +197,7 @@ export function GpuMixin<T extends new (...args: any[]) => RustCoreIPCClientBase
 		async gpuUnregisterConsumer(id: string, bytes: number): Promise<{ unregistered: boolean; pressure: number }> {
 			const response = await this.request({ command: 'gpu/unregister-consumer', id, bytes });
 			if (!response.success) throw new Error(response.error || 'Failed to unregister GPU consumer');
-			return { unregistered: true, pressure: Number((response.result as any).pressure) };
+			return { unregistered: true, pressure: Number((response.result as { pressure: number }).pressure) };
 		}
 	};
 }

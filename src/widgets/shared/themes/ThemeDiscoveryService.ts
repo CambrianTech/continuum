@@ -79,7 +79,7 @@ export class ThemeDiscoveryService {
             filepath: filePath
           });
           
-          const fileData = (result as any).commandResult || result;
+          const fileData = (result as unknown as { commandResult?: typeof result }).commandResult || result;
           if (result.success && fileData.success && fileData.content) {
             combinedCSS += `\\n/* === ${themeName}/${filename} === */\\n${fileData.content}\\n`;
             console.log(`✅ ThemeDiscoveryService: Loaded ${filename} (${fileData.bytesRead} bytes)`);
@@ -161,7 +161,7 @@ export class ThemeDiscoveryService {
         filepath: manifestPath
       });
       
-      const fileData = (result as any).commandResult || result;
+      const fileData = (result as unknown as { commandResult?: typeof result }).commandResult || result;
       if (result.success && fileData.success && fileData.content) {
         const manifest: ThemeManifest = JSON.parse(fileData.content);
         console.log(`✅ ThemeDiscoveryService: Loaded manifest for '${manifest.name}'`);

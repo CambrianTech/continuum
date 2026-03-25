@@ -150,7 +150,7 @@ export function getState<T extends Record<string, Signal<unknown>>>(
   const result = {} as { [K in keyof T]: T[K] extends Signal<infer V> ? V : never };
 
   for (const key of Object.keys(signals) as (keyof T)[]) {
-    result[key] = signals[key].value as any;
+    result[key] = signals[key].value as (typeof result)[typeof key];
   }
 
   return result;

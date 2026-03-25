@@ -90,7 +90,7 @@ export class LogViewerWidget extends BasePanelWidget {
     // The DiagnosticsWidget passes logPath in metadata when opening this tab
     const logPath = this.getAttribute('entity-id') ||
                     this.getAttribute('data-entity-id') ||
-                    (this as any).entityId ||
+                    (this as unknown as { entityId?: string }).entityId ||
                     '.continuum/personas/helper/logs/hippocampus.log'; // Default for testing
 
     // Check for inline tool output content (opened from ToolOutputAdapter "Open" button)
@@ -180,7 +180,7 @@ export class LogViewerWidget extends BasePanelWidget {
         log: this.logData.logPath,
         tail: 200, // Get last 200 lines initially
         level: this.logData.levelFilter !== 'ALL' ? this.logData.levelFilter : undefined
-      } as any) as LogsReadResult;
+      }) as LogsReadResult;
 
       if (result.success) {
         this.logData.lines = result.lines;
@@ -240,7 +240,7 @@ export class LogViewerWidget extends BasePanelWidget {
         log: this.logData.logPath,
         tail: 50, // Get just the latest lines
         level: this.logData.levelFilter !== 'ALL' ? this.logData.levelFilter : undefined
-      } as any) as LogsReadResult;
+      }) as LogsReadResult;
 
       if (result.success) {
         // Merge new lines with existing, keeping last 500

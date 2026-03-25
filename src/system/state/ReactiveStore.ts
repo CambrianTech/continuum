@@ -167,9 +167,8 @@ export function deriveStore<T, U>(
   const derived = new ReactiveStore<U>(transform(source.get()));
 
   source.subscribe(state => {
-    derived.reset(transform(state));
-    // Manually trigger notification since reset doesn't notify
-    (derived as any).notify();
+    // Use set() to update state AND notify subscribers
+    derived.set(transform(state));
   });
 
   return derived;
