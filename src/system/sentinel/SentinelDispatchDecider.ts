@@ -63,21 +63,28 @@ interface ComplexitySignals {
 // ─── Pattern Matchers ───────────────────────────────────────────────────────────
 
 const FEATURE_PATTERNS = [
-  /\b(?:implement|build|create|add|develop)\b.*\b(?:feature|component|module|page|endpoint|api|service|widget)\b/i,
-  /\b(?:feature|component|module|page|endpoint|api|service|widget)\b.*\b(?:implement|build|create|add|develop)\b/i,
+  // Require BOTH an action verb AND a technical target — prevents false positives
+  // on conversational uses like "build a better relationship" or "implement a philosophy"
+  /\b(?:implement|build|create|add|develop)\b.*\b(?:feature|component|module|page|endpoint|api|service|widget|command|daemon|function|class|route|handler)\b/i,
+  /\b(?:feature|component|module|page|endpoint|api|service|widget|command|daemon|function|class|route|handler)\b.*\b(?:implement|build|create|add|develop)\b/i,
   /\badd\b.*\bsupport\s+for\b/i,
-  /\bimplement\b/i,
-  /\bbuild\s+(?:a|an|the)\b/i,
-  /\bcreate\s+(?:a|an|the)\s+new\b/i,
+  // Standalone "implement" or "build a" are too broad without technical context
+  /\bimplement\b.*\b(?:in|for|using|with)\s+\b(?:typescript|rust|python|javascript|ts|js|css|html)\b/i,
+  /\bcreate\s+(?:a|an|the)\s+new\s+(?:feature|component|module|command|widget|endpoint|api)\b/i,
 ];
 
 const BUG_PATTERNS = [
-  /\b(?:fix|debug|diagnose|investigate|resolve)\b.*\b(?:bug|error|crash|issue|failure|problem|broken)\b/i,
-  /\b(?:bug|error|crash|issue|failure|problem|broken)\b.*\b(?:fix|debug|diagnose|investigate|resolve)\b/i,
-  /\bfailing\b/i,
-  /\bdoesn'?t\s+work\b/i,
-  /\bnot\s+working\b/i,
-  /\bregression\b/i,
+  // Require BOTH a problem indicator AND an action verb — prevents false positives
+  // on conversational uses like "broken tools WERE the cage" or "that's not working for me philosophically"
+  /\b(?:fix|debug|diagnose|investigate|resolve|repair)\b.*\b(?:bug|error|crash|issue|failure|problem|broken)\b/i,
+  /\b(?:bug|error|crash|issue|failure|problem|broken)\b.*\b(?:fix|debug|diagnose|investigate|resolve|repair)\b/i,
+  // These standalone patterns are too broad without additional context:
+  // "failing" alone could be "the approach is failing us" (conversational)
+  // "doesn't work" alone could be "that metaphor doesn't work" (conversational)
+  // Only match when combined with technical context (file, code, test, function, module)
+  /\b(?:failing|doesn'?t\s+work|not\s+working)\b.*\b(?:test|code|function|module|file|build|endpoint|api|service|command)\b/i,
+  /\b(?:test|code|function|module|file|build|endpoint|api|service|command)\b.*\b(?:failing|doesn'?t\s+work|not\s+working)\b/i,
+  /\bregression\b/i, // "regression" is almost always technical
 ];
 
 const REVIEW_PATTERNS = [
@@ -141,6 +148,15 @@ export class SentinelDispatchDecider {
     }
     if (signals.isSimpleCommand) {
       return this._noDispatch('Message is a simple command');
+    }
+
+    // Conversational messages without technical context are never dispatched.
+    // A message must reference at least one technical artifact (file, function, module, etc.)
+    // to be considered for sentinel dispatch. This prevents dispatching on philosophical
+    // discussions that happen to use words like "broken" or "implement".
+    const hasTechnicalContext = /\b(?:file|function|class|module|component|endpoint|api|service|widget|command|test|\.ts|\.rs|\.py|\.js|src\/|package\.json)\b/i.test(text);
+    if (!hasTechnicalContext && !signals.needsBuild && !signals.needsTest && !signals.needsGit) {
+      return this._noDispatch('No technical context — message appears conversational');
     }
 
     // Match against templates
