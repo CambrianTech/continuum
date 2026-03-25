@@ -109,11 +109,11 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.batchSize !== undefined && { batchSize: params.batchSize }),
       ...(params.model && { teacherModel: params.model }),
       ...(params.provider && { teacherProvider: params.provider }),
-      // Student defaults to same model/provider as teacher when not explicitly set.
-      // This prevents the student from falling back to baseModel (local Llama 2048 context)
-      // when the teacher uses a cloud model with adequate context for code generation.
-      ...(params.studentModel ? { studentModel: params.studentModel } : params.model ? { studentModel: params.model } : {}),
-      ...(params.studentProvider ? { studentProvider: params.studentProvider } : params.provider ? { studentProvider: params.provider } : {}),
+      // Student uses LOCAL model by default — that's what LoRA training improves.
+      // Only override to cloud if explicitly requested via --studentModel/--studentProvider.
+      // The whole point of academy is making the LOCAL model better, not evaluating cloud models.
+      ...(params.studentModel && { studentModel: params.studentModel }),
+      ...(params.studentProvider && { studentProvider: params.studentProvider }),
     };
 
     // Validate teacher model/provider BEFORE creating session.
