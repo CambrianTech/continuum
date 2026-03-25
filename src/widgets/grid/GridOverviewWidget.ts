@@ -611,7 +611,13 @@ export class GridOverviewWidget extends ReactiveWidget {
     this._nodes = updated;
 
     try {
-      const result = await this.executeCommand<any, any>('grid/ping', { nodeId });
+      // 5 second timeout — don't hang forever on unreachable nodes
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- grid/ping has dynamic result shape
+      const pingPromise = this.executeCommand<any, any>('grid/ping', { nodeId });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Ping timeout (5s)')), 5000)
+      );
+      const result = await Promise.race([pingPromise, timeoutPromise]);
       if (result.success) {
         const refreshed = this._nodes.get(nodeId);
         if (refreshed) {
