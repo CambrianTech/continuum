@@ -1013,26 +1013,72 @@ impl ServiceModule for SentinelModule {
         *self.registry.write() = Some(Arc::clone(&ctx.registry));
 
         // Scan for orphaned pipelines (were Running when process died)
+        // Mark as Interrupted, emit events, and AUTO-RESUME.
+        // Training runs for days/weeks — a restart should NOT kill it.
+        let self_clone = Arc::new(self.sentinels.clone());
         match checkpoint::recover_interrupted() {
             Ok(interrupted) => {
                 if !interrupted.is_empty() {
                     log.info(&format!(
-                        "Found {} interrupted pipeline(s): {:?}",
+                        "Found {} interrupted pipeline(s) — auto-resuming: {:?}",
                         interrupted.len(),
                         interrupted
                     ));
-                    // Emit events so persona layer can decide whether to resume
+                    // Emit events for monitoring
                     if let Some(ref bus) = *self.bus.read() {
                         for handle in &interrupted {
                             bus.publish_async_only(
                                 "sentinel:pipeline:interrupted",
                                 json!({
                                     "handle": handle,
-                                    "message": "Pipeline was interrupted by process restart",
+                                    "message": "Pipeline interrupted by restart — auto-resuming",
                                 }),
                             );
                         }
                     }
+                    // Auto-resume each interrupted pipeline after a brief delay
+                    // (let the rest of the system initialize first)
+                    let handles_to_resume = interrupted.clone();
+                    let registry_clone = self.registry.read().clone();
+                    let bus_clone = self.bus.read().clone();
+                    let logs_dir = self.logs_base_dir.read().clone();
+                    let sentinels = Arc::clone(&self.sentinels);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let log = crate::runtime::logger("sentinel");
+                        for handle in handles_to_resume {
+                            log.info(&format!("[{handle}] Auto-resuming interrupted pipeline..."));
+                            match checkpoint::load_checkpoint(&handle) {
+                                Ok(Some(mut cp)) => {
+                                    cp.status = PipelineStatus::Running;
+                                    let _ = checkpoint::save_checkpoint(&handle, &cp);
+                                    // Re-execute the pipeline from where it left off
+                                    let pipeline = cp.pipeline.clone();
+                                    let working_dir = std::path::PathBuf::from(&cp.working_dir);
+                                    let step_index = cp.step_index;
+                                    log.info(&format!(
+                                        "[{handle}] Resuming from step {step_index} of {}",
+                                        pipeline.steps.len()
+                                    ));
+                                    let _ = executor::execute_pipeline(
+                                        logs_dir.clone(),
+                                        pipeline,
+                                        handle.clone(),
+                                        working_dir,
+                                        bus_clone.clone(),
+                                        registry_clone.clone(),
+                                    )
+                                    .await;
+                                }
+                                Ok(None) => {
+                                    log.warn(&format!("[{handle}] No checkpoint found — cannot resume"));
+                                }
+                                Err(e) => {
+                                    log.warn(&format!("[{handle}] Failed to load checkpoint: {e}"));
+                                }
+                            }
+                        }
+                    });
                 }
             }
             Err(e) => {
