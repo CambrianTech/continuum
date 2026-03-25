@@ -201,7 +201,14 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       lines.push('Cover diverse aspects of the topic. Make questions natural and varied.');
     }
 
-    lines.push('', 'Output as a JSON array of objects with "messages" arrays.');
+    lines.push(
+      '',
+      'CRITICAL OUTPUT RULES:',
+      '- Output ONLY a JSON array. No explanation, no reasoning, no <think> tags.',
+      '- Keep assistant answers concise (2-4 sentences each). Do NOT write essays.',
+      '- The JSON must be complete and valid — do not truncate.',
+      '- Format: [{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}, ...]',
+    );
 
     return lines.join('\n');
   }
