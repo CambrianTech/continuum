@@ -83,7 +83,16 @@ pub async fn read_log(logs_base_dir: &Path, params: Value) -> Result<CommandResu
     } else if jsonl_path.exists() {
         jsonl_path
     } else {
-        return Err(format!("Log stream not found: {stream}"));
+        // List available streams so the caller knows what's valid
+        let available = list_available_streams(&logs_dir).await;
+        let hint = if available.is_empty() {
+            "none (sentinel may not have produced output yet)".to_string()
+        } else {
+            available.join(", ")
+        };
+        return Err(format!(
+            "Log stream not found: {stream}. Available streams: {hint}"
+        ));
     };
 
     let content = tokio::fs::read_to_string(&actual_path)
@@ -124,7 +133,15 @@ pub async fn tail_log(logs_base_dir: &Path, params: Value) -> Result<CommandResu
     } else if jsonl_path.exists() {
         jsonl_path
     } else {
-        return Err(format!("Log stream not found: {stream}"));
+        let available = list_available_streams(&logs_dir).await;
+        let hint = if available.is_empty() {
+            "none (sentinel may not have produced output yet)".to_string()
+        } else {
+            available.join(", ")
+        };
+        return Err(format!(
+            "Log stream not found: {stream}. Available streams: {hint}"
+        ));
     };
 
     let content = tokio::fs::read_to_string(&actual_path)
@@ -144,4 +161,22 @@ pub async fn tail_log(logs_base_dir: &Path, params: Value) -> Result<CommandResu
         "lineCount": tail_lines.len(),
         "totalLines": total_lines,
     })))
+}
+
+/// List available log stream names in a sentinel's log directory
+async fn list_available_streams(logs_dir: &Path) -> Vec<String> {
+    let mut streams = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(logs_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext == Some("log") || ext == Some("jsonl") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    streams.push(stem.to_string());
+                }
+            }
+        }
+    }
+    streams.sort();
+    streams
 }
