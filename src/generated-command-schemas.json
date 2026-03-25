@@ -2579,6 +2579,43 @@
       }
     },
     {
+      "name": "plasticity/topology",
+      "description": "Read the head topology of a compacted model. Returns per-layer head precision assignments showing which heads were pruned, quantized to different levels, or kept at full precision. Use this to inspect what compaction did to a model.",
+      "params": {
+        "topologyPath": {
+          "type": "string",
+          "required": true,
+          "description": "topologyPath parameter"
+        }
+      }
+    },
+    {
+      "name": "plasticity/pipeline",
+      "description": "End-to-end plasticity pipeline: gate_gradients.json → analysis → compaction. The 'wake up to a compacted model' command. Given a gate capture directory and a model path, runs the full pipeline: load gradients, compute optimization plan, build topology, compact model (multi-shard aware), write compacted model + topology + analysis.",
+      "params": {
+        "capturePath": {
+          "type": "string",
+          "required": true,
+          "description": "capturePath parameter"
+        },
+        "modelPath": {
+          "type": "string",
+          "required": true,
+          "description": "modelPath parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": false,
+          "description": "config parameter"
+        }
+      }
+    },
+    {
       "name": "plasticity/compress",
       "description": "Compress a model using utilization-aware head pruning + mixed quantization. Takes a base model + gradient capture data + target device spec, produces an optimized GGUF file that fits the device's memory budget. Precision is allocated per-tensor based on head utilization scores.",
       "params": {
@@ -2606,6 +2643,48 @@
           "type": "string",
           "required": false,
           "description": "architecture parameter"
+        }
+      }
+    },
+    {
+      "name": "plasticity/compact",
+      "description": "Physically remove pruned heads from a model's safetensors. Reads gate_gradients.json from adapter directory, computes which heads to prune, then slices Q/K/V/O projection weights to remove dead heads. Produces a smaller model with fewer parameters. Handles both single-file and multi-shard models.",
+      "params": {
+        "adapterPath": {
+          "type": "string",
+          "required": true,
+          "description": "adapterPath parameter"
+        },
+        "modelPath": {
+          "type": "string",
+          "required": true,
+          "description": "modelPath parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": false,
+          "description": "config parameter"
+        }
+      }
+    },
+    {
+      "name": "plasticity/analyze",
+      "description": "Dry-run analysis of what compaction would do to a model. Reads gate_gradients.json from the adapter directory, computes per-head utilization scores, and returns a topology showing which heads would be pruned/compressed/kept. Does NOT modify any files.",
+      "params": {
+        "adapterPath": {
+          "type": "string",
+          "required": true,
+          "description": "adapterPath parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": false,
+          "description": "config parameter"
         }
       }
     },
@@ -2945,6 +3024,58 @@
           "type": "array",
           "required": true,
           "description": "availableApiKeys parameter"
+        }
+      }
+    },
+    {
+      "name": "model/search",
+      "description": "Search HuggingFace for base models by name, architecture, or size. Used to find compaction targets (e.g., 'Qwen 3.5 27B'). Different from adapter/search which finds LoRA adapters.",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "description": "sort parameter"
+        },
+        "minSize": {
+          "type": "number",
+          "required": false,
+          "description": "minSize parameter"
+        },
+        "maxSize": {
+          "type": "number",
+          "required": false,
+          "description": "maxSize parameter"
+        }
+      }
+    },
+    {
+      "name": "model/download",
+      "description": "Download a base model from HuggingFace to a local or remote grid node. Routes to GPU-capable node if needed. Wraps huggingface_hub snapshot_download with progress reporting via chat.",
+      "params": {
+        "modelId": {
+          "type": "string",
+          "required": true,
+          "description": "modelId parameter"
+        },
+        "node": {
+          "type": "string",
+          "required": false,
+          "description": "node parameter"
+        },
+        "revision": {
+          "type": "string",
+          "required": false,
+          "description": "revision parameter"
         }
       }
     },
@@ -4121,6 +4252,32 @@
       "params": {}
     },
     {
+      "name": "grid/deploy",
+      "description": "Pull latest code and rebuild on grid nodes. Runs git pull + npm run build:ts on each reachable node via SSH over Tailscale. Keeps all nodes in sync without manual SSH.",
+      "params": {
+        "nodes": {
+          "type": "string",
+          "required": false,
+          "description": "nodes parameter"
+        },
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "skipBuild": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipBuild parameter"
+        },
+        "restart": {
+          "type": "boolean",
+          "required": false,
+          "description": "restart parameter"
+        }
+      }
+    },
+    {
       "name": "grid/audit",
       "description": "Returns the audit trail of grid operations (sends, receives, ACL decisions). Routes to Rust GridModule via continuum-core IPC.",
       "params": {
@@ -4927,6 +5084,47 @@
           "type": "boolean",
           "required": false,
           "description": "activate parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/benchmark",
+      "description": "Run standard and Continuum-specific benchmarks against a model or adapter. Stores results in BenchmarkResultEntity and embeds in adapter manifest for model card publishing. Supports HumanEval, MBPP, RealClassEval, and collaborative team benchmarks.",
+      "params": {
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "adapter": {
+          "type": "string",
+          "required": false,
+          "description": "adapter parameter"
+        },
+        "suite": {
+          "type": "string",
+          "required": true,
+          "description": "suite parameter"
+        },
+        "teamProjectId": {
+          "type": "string",
+          "required": false,
+          "description": "teamProjectId parameter"
+        },
+        "academySessionId": {
+          "type": "string",
+          "required": false,
+          "description": "academySessionId parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         }
       }
     },
@@ -9798,6 +9996,47 @@
           "type": "string",
           "required": false,
           "description": "sort parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/publish",
+      "description": "Publish a trained LoRA adapter to HuggingFace with auto-generated model card and continuum:* tags. The adapter manifest metadata (role, skill, scores, base model) becomes discoverable via adapter/search. Every published adapter is an advertisement for the Continuum ecosystem.",
+      "params": {
+        "adapterPath": {
+          "type": "string",
+          "required": true,
+          "description": "adapterPath parameter"
+        },
+        "repoId": {
+          "type": "string",
+          "required": true,
+          "description": "repoId parameter"
+        },
+        "projectType": {
+          "type": "string",
+          "required": false,
+          "description": "projectType parameter"
+        },
+        "academySessionId": {
+          "type": "string",
+          "required": false,
+          "description": "academySessionId parameter"
+        },
+        "teamProjectId": {
+          "type": "string",
+          "required": false,
+          "description": "teamProjectId parameter"
+        },
+        "private": {
+          "type": "boolean",
+          "required": false,
+          "description": "private parameter"
+        },
+        "update": {
+          "type": "boolean",
+          "required": false,
+          "description": "update parameter"
         }
       }
     },
