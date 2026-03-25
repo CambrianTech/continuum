@@ -29,6 +29,18 @@ else
     FAILED=1
 fi
 
+# Phase 1b: ESLint — zero tolerance for any, malformed types, etc.
+echo ""
+echo "📋 Phase 1b: ESLint"
+echo "--------------------"
+LINT_START=$(date +%s)
+if cd "$SRC_DIR" && npx eslint . --max-warnings 0 --quiet > /dev/null 2>&1; then
+    echo "✅ ESLint: clean ($(( $(date +%s) - LINT_START ))s)"
+else
+    echo "❌ ESLint FAILED — run: cd src && npm run lint"
+    FAILED=1
+fi
+
 # Phase 2: Rust compilation check (<20s cached)
 echo ""
 echo "📋 Phase 2: Rust compilation"
