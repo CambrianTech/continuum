@@ -79,7 +79,7 @@ export async function getAvailableCloudProviders(): Promise<Set<string>> {
     const configured = new Set<string>();
     for (const p of result.providers) {
       if (p.isConfigured && p.category === 'cloud') {
-        configured.add(p.provider);
+        configured.add(p.provider.toLowerCase());
       }
     }
     _cachedProviders = configured;
