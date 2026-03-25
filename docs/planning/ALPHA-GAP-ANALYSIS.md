@@ -113,8 +113,9 @@ This document is the **single source of truth** for remaining work before open-s
 | [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** | TODO | Equal male/female distribution needed. |
 | [#332](https://github.com/CambrianTech/continuum/issues/332) | **Offline-first architecture** | TODO | Live calls fail without internet. All local features must work offline. |
 | [#380](https://github.com/CambrianTech/continuum/issues/380) | **GPU governor: full consumer management** | TODO | Only 3 subsystems, no dynamic consumer tracking or pressure-driven eviction. |
+| [#399](https://github.com/CambrianTech/continuum/issues/399) | **Persona response latency: 2+ min** | TODO | 15 personas thundering herd, no priority escalation for human messages, backpressure spikes to critical. |
 
-**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers.
+**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers. Human message gets AI response within 15s.
 
 ---
 
@@ -125,7 +126,7 @@ This document is the **single source of truth** for remaining work before open-s
 | # | Issue | Status | What |
 |---|-------|--------|------|
 | [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | TODO | 7 parsers needed: Native, Hermes, Qwen, Llama, DeepSeek, Mistral, GenericXML. |
-| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | TODO | Tool selection, routing, and execution all unreliable. |
+| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | IN PROGRESS | String(v) destroying object params, force-text too aggressive, double correction, code/search example bias. Fixes deployed, QA validated. |
 | [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | TODO | CodingAgent, tools, quality, full loop all broken. |
 | [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | TODO | Claude Code dispatch needs error handling and retry. |
 | [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
@@ -281,7 +282,7 @@ This document is the **single source of truth** for remaining work before open-s
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, #385, #381, #373 | 3 remaining |
 | **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360 | 13 |
-| **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380 | 8 |
+| **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399 | 9 |
 | **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
 | **4: Dev Orchestration** | #326, #370 | 2 |
 | **5: Academy** | #377, #369, #374, #365, #344, #345, #384, #359 | 8 |
@@ -290,7 +291,7 @@ This document is the **single source of truth** for remaining work before open-s
 | **8: Distillation** | #327, #357 | 2 |
 | **9: Codebase Intel** | #328 | 1 |
 | **10: Grid** | #323, #364, #349, #337 | 4 |
-| **Total** | | **61** |
+| **Total** | | **62** |
 
 ---
 

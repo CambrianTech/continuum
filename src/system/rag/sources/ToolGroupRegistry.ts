@@ -63,14 +63,21 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
   {
     id: 'code-read',
     label: 'Code Reading',
-    description: 'Read files, search code, explore project structure',
+    description: 'Read specific files with code/read, search for patterns across files with code/search, explore directory structure with code/tree. IMPORTANT: To read a known file, use code/read (NOT code/search).',
     toolPatterns: ['code/read', 'code/search', 'code/tree'],
     intentKeywords: [
       'read', 'look', 'find', 'search', 'where', 'how does', 'what does',
       'show me', 'check', 'explore', 'file', 'function', 'class', 'code',
       'source', 'implementation', 'module', 'import', 'codebase', 'review',
     ],
-    example: `<tool_use>
+    example: `To read a specific file:
+<tool_use>
+<tool_name>code/read</tool_name>
+<parameters>{"filePath": "src/system/user/server/PersonaUser.ts"}</parameters>
+</tool_use>
+
+To search for a pattern across files:
+<tool_use>
 <tool_name>code/search</tool_name>
 <parameters>{"pattern": "class PersonaUser", "fileGlob": "*.ts"}</parameters>
 </tool_use>`,

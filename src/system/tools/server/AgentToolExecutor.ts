@@ -441,9 +441,22 @@ export class AgentToolExecutor {
   ): Promise<ToolCallResult> {
     // Apply corrections
     const { corrected } = this.correctToolCall({ toolName, parameters: params });
+    return this.executeCorrectedToolCall(corrected.toolName, corrected.parameters, ctx);
+  }
 
+  /**
+   * Execute a tool call that has ALREADY been corrected (name + params).
+   * Skips correction step — use when caller has already called correctToolCall().
+   *
+   * Pipeline: room resolution -> ToolRegistry.executeTool() -> result
+   */
+  async executeCorrectedToolCall(
+    toolName: string,
+    params: Record<string, string>,
+    ctx: ToolCallContext
+  ): Promise<ToolCallResult> {
     // Resolve room params
-    const resolved = await this.resolveRoomParams(corrected.parameters, ctx.contextId);
+    const resolved = await this.resolveRoomParams(params, ctx.contextId);
 
     // Inject caller identity
     const paramsWithCaller = {
@@ -454,7 +467,7 @@ export class AgentToolExecutor {
 
     // Execute via ToolRegistry
     const registryResult: ToolExecutionResult = await this.toolRegistry.executeTool(
-      corrected.toolName,
+      toolName,
       paramsWithCaller,
       ctx.sessionId,
       ctx.contextId,
@@ -488,10 +501,15 @@ export class AgentToolExecutor {
     }
 
     // Convert native → internal format (decode sanitized names)
+    // Values must be strings for the ToolCall interface, but objects/arrays
+    // need JSON.stringify (not String()) to preserve structure for ToolRegistry parsing.
     const internalCalls: ToolCall[] = nativeCalls.map(tc => ({
       toolName: unsanitizeToolName(tc.name),
       parameters: Object.fromEntries(
-        Object.entries(tc.input ?? {}).map(([k, v]) => [k, String(v)])
+        Object.entries(tc.input ?? {}).map(([k, v]) => [
+          k,
+          (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v),
+        ])
       ) as Record<string, string>,
     }));
 
@@ -514,19 +532,15 @@ export class AgentToolExecutor {
     );
 
     // Map results back to native format with tool_use_id correlation
+    // Use the allowed set (already partitioned above) — do NOT re-call isLoopDetected
+    // as it has side effects (pushes to tracking array).
+    const allowedIndices = new Set(allowed.map(a => a.idx));
     const results: NativeToolResult[] = [];
     let execIdx = 0;
 
     for (let i = 0; i < nativeCalls.length; i++) {
-      const tc = internalCalls[i];
-      const isBlocked = this.isLoopDetected(tc.toolName, tc.parameters, ctx.callerId)
-        && !allowed.some(a => a.idx === i);
-
-      // Check if this index was in the allowed set
-      const allowedEntry = allowed.find(a => a.idx === i);
-
-      if (!allowedEntry) {
-        // Blocked by loop detection
+      if (!allowedIndices.has(i)) {
+        // Blocked by loop detection (determined in partition step above)
         results.push({
           toolUseId: nativeCalls[i].id,
           content: 'Tool call blocked by loop detection.',
