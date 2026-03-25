@@ -1,7 +1,8 @@
 /**
- * Typing Indicator - Single persistent row: "Helper AI, Teacher AI are typing..."
+ * Thinking Indicator - Single persistent row: "Helper AI, Teacher AI are thinking..."
  *
  * One line. Always reserved. Names accumulate/drop. No layout shifts.
+ * AIs don't have keyboards — they think, not type.
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -64,6 +65,6 @@ export class TypingIndicator {
     if (!this._container) return;
     const names = Array.from(this._activeTypers.values()).map(t => t.displayName);
     if (names.length === 0) { this._container.textContent = ''; return; }
-    this._container.textContent = `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} typing...`;
+    this._container.textContent = `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} thinking...`;
   }
 }
