@@ -234,6 +234,10 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
     try {
       let cleaned = text.trim();
 
+      // Strip <think>...</think> reasoning blocks (DeepSeek, Qwen3.5, etc.)
+      // These models emit chain-of-thought before the actual JSON output.
+      cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
       // Strip markdown code fences (```json ... ```)
       const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
       if (fenceMatch) {
