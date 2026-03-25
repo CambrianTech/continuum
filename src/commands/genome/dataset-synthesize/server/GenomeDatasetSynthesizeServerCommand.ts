@@ -321,18 +321,34 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
   private _salvageExamples(text: string): unknown[] {
     const results: unknown[] = [];
 
-    // Find individual { "messages": [...] } objects using balanced brace matching
-    const objectPattern = /\{\s*"messages"\s*:\s*\[[\s\S]*?\]\s*\}/g;
-    let match: RegExpExecArray | null;
+    // Extract individual objects by balanced brace counting
+    // The regex approach fails when message content contains ] or }
+    let depth = 0;
+    let start = -1;
 
-    while ((match = objectPattern.exec(text)) !== null) {
-      try {
-        const obj = JSON.parse(match[0]);
-        if (obj.messages && Array.isArray(obj.messages)) {
-          results.push(obj);
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          const candidate = text.slice(start, i + 1);
+          try {
+            const obj = JSON.parse(candidate);
+            if (obj.messages && Array.isArray(obj.messages)) {
+              results.push(obj);
+            }
+          } catch {
+            // Skip malformed objects
+          }
+          start = -1;
         }
-      } catch {
-        // Individual object parse failed — skip it
+      }
+      // Handle string escaping — don't count braces inside strings
+      if (text[i] === '"' && (i === 0 || text[i - 1] !== '\\')) {
+        i++;
+        while (i < text.length && !(text[i] === '"' && text[i - 1] !== '\\')) i++;
       }
     }
 
