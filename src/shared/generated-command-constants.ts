@@ -68,6 +68,7 @@ export const COMMANDS = {
   CANVAS_STROKE_ADD: 'canvas/stroke/add',
   CANVAS_STROKE_LIST: 'canvas/stroke/list',
   CANVAS_VISION: 'canvas/vision',
+  CLAUDE_CONTEXT: 'claude/context',
   CODE_DIFF: 'code/diff',
   CODE_EDIT: 'code/edit',
   CODE_GIT: 'code/git',

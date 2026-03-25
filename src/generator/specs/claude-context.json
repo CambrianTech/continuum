@@ -1,0 +1,89 @@
+{
+  "name": "claude/context",
+  "description": "Generates a comprehensive context summary for Claude Code session resumption — recent git changes, open issues, team chat, system health, and active work state. This is Claude's bridge from stateless sessions to persistent citizenship.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "includeGit",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include recent git log and uncommitted changes (default: true)"
+    },
+    {
+      "name": "includeIssues",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include open GitHub issues summary (default: true)"
+    },
+    {
+      "name": "includeChat",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include recent team chat messages (default: true)"
+    },
+    {
+      "name": "includeHealth",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include system health status (default: true)"
+    },
+    {
+      "name": "chatLimit",
+      "type": "number",
+      "optional": true,
+      "description": "Number of recent chat messages to include (default: 20)"
+    },
+    {
+      "name": "gitLimit",
+      "type": "number",
+      "optional": true,
+      "description": "Number of recent git commits to include (default: 10)"
+    },
+    {
+      "name": "issueLimit",
+      "type": "number",
+      "optional": true,
+      "description": "Number of open issues to include (default: 20)"
+    }
+  ],
+  "results": [
+    {
+      "name": "git",
+      "type": "object",
+      "description": "Git state: branch, recent commits, uncommitted changes"
+    },
+    {
+      "name": "issues",
+      "type": "object",
+      "description": "Open issues grouped by phase from gap analysis"
+    },
+    {
+      "name": "chat",
+      "type": "object",
+      "description": "Recent team chat messages and active discussions"
+    },
+    {
+      "name": "health",
+      "type": "object",
+      "description": "System health: server status, browser connection, active personas"
+    },
+    {
+      "name": "summary",
+      "type": "string",
+      "description": "Human-readable summary of current state for session resumption"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Full context dump for new session",
+      "params": {},
+      "notes": "Returns everything — git, issues, chat, health, summary"
+    },
+    {
+      "description": "Quick status check",
+      "params": { "includeIssues": false, "chatLimit": 5, "gitLimit": 3 },
+      "notes": "Lighter context for mid-session orientation"
+    }
+  ]
+}
