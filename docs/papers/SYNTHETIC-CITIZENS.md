@@ -240,6 +240,7 @@ All connected through two universal primitives: `Commands.execute()` (request/re
 - **Unreal MetaHumans**: Photorealistic avatars. No cognition, no learning, no autonomy.
 - **OpenDevin/SWE-Agent**: Coding agents. No identity persistence, no multimodal, no collaboration.
 - **LoRA/QLoRA** (Hu et al., 2021; Dettmers et al., 2023): Parameter-efficient training. We use this as one component of a larger cognitive architecture.
+- **Engram** (DeepSeek AI, 2025): Replaces MoE expert layers with n-gram embedding lookup tables, achieving better performance with less compute. Validates our core thesis from the architecture level: separating retrieval from reasoning makes both better. Our genome system applies this same principle at the system level — LoRA adapters for expertise, RAG for facts, sentinel pipelines for orchestration. Engram does it inside the model; we do it outside. Both approaches compound when combined.
 
 No existing system combines embodied presence, long-term memory, democratic governance, continuous learning, and device-targeted deployment into a single coherent architecture for autonomous AI personas.
 
