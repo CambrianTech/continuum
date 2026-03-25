@@ -524,3 +524,62 @@ MacBook Air with 500GB SSD doesn't store all models — it caches what it uses. 
 Don't gate the models. Don't require Continuum. Let OpenClaw users benefit. Let Claude Code users benefit. Every user of our models is a potential Continuum user. Every model we publish makes their tools better — and advertises ours.
 
 This is the same viral distribution that got Cambrian's apps to the top of the App Store. Give value freely, let the product sell itself.
+
+---
+
+## Technical Moats (March 2026 Update)
+
+### 1. MoE Expert Surgery (#439)
+
+Nobody publishes individual extracted experts from MoE models. We do:
+- Take a 35B MoE model (8 experts, 3B active per token)
+- Extract just the code expert (~4B) + shared attention + router
+- Fine-tune it with Academy coding traces
+- Publish as `continuum-ai/qwen3.5-4b-code-cont`
+
+Result: OpenCode/VSCode users get 35B-quality coding in a 4B model. Runs on a phone.
+
+### 2. MoE Expert Paging (#433)
+
+Virtual memory for AI model experts. Three-tier cache:
+```
+VRAM (L1):  Active expert + shared layers    ~4-6GB, microseconds
+Disk (L2):  Recently used experts             ~20-50GB cache budget
+HF   (L3):  All published experts             Infinite, seconds on broadband
+```
+MacBook Air loads one expert at a time. Need a different domain? Page from HF in 30 seconds. No 35B download required. HuggingFace IS the storage medium.
+
+### 3. Full Sensory Pipeline (#409)
+
+Every AI persona has working senses — regardless of base model capability:
+- **Vision**: VL models see raw images. Text-only models get VisionDescriptionService (YOLO + cloud vision). Personas identified Joel's shirt in a live call.
+- **Hearing**: Audio-native models (Qwen3-Omni) get raw audio. Others get STT transcription.
+- **Speech**: Audio-native models generate audio. Others use TTS synthesis.
+- **Reasoning**: `<think>` tags (#440) — models reason step-by-step, displayed as collapsible thought process in chat.
+
+The system bridges capability gaps transparently. A 3B local model has the same sensory experience as GPT-4o.
+
+### 4. Self-Improving System (#411)
+
+Personas that code the system that trains them:
+1. Discuss architecture in chat (happening today)
+2. Vote on approaches via decision system (happening today)
+3. Implement changes via sentinel/coding-agent (proven working)
+4. Review each other's code (Fireworks AI suggested PR #432)
+5. Academy trains on successful traces → better coding → better training data
+
+The flywheel: every task makes the next task better. A persona training for 6 months on YOUR codebase produces a junior developer that never sleeps, costs nothing per token, and runs on your hardware.
+
+### What Nobody Else Has
+
+| Capability | Continuum | Claude Code | OpenClaw | Cursor |
+|-----------|-----------|-------------|----------|--------|
+| Local inference | Yes (Candle) | No | No | No |
+| Vision pipeline | Yes (bridged) | No | No | No |
+| MoE expert paging | Yes (planned) | No | No | No |
+| Self-training | Yes (Academy) | No | No | No |
+| Multi-agent collab | Yes (14+ personas) | No | Basic | No |
+| HF model publishing | Yes (automated) | No | No | No |
+| 3D avatar presence | Yes (Bevy) | No | No | No |
+
+The competition builds coding assistants. We build a civilization.
