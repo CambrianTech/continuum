@@ -222,7 +222,7 @@ export async function refreshToolDefinitions(): Promise<void> {
 
         for (const [paramName, paramInfo] of Object.entries(metaTool.parameters)) {
           properties[paramName] = {
-            type: paramInfo.type as any,
+            type: paramInfo.type as ParameterDefinition['type'],
             description: paramInfo.description || `${paramName} parameter`,
             required: paramInfo.required
           };
@@ -665,7 +665,7 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
       if (INFRA_PARAMS.has(paramName)) continue;
 
       properties[paramName] = {
-        type: paramInfo.type as any,  // Trust the type from command signature
+        type: paramInfo.type as ParameterDefinition['type'],  // Trust the type from command signature
         description: descOverrides?.[paramName]
           || paramInfo.description
           || GLOBAL_PARAM_DESCRIPTIONS[paramName]

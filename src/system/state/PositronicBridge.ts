@@ -110,7 +110,7 @@ class PositronicBridgeImpl {
       await WidgetStateDebug.execute({
         setRAGString: ragString,
         contextSessionId: sessionId
-      } as any);
+      });
 
       verbose() && console.log(`🌉 PositronicBridge: RAG context stored for session ${sessionId.slice(0, 8)}`);
     } catch (error) {
@@ -123,8 +123,8 @@ class PositronicBridgeImpl {
    */
   private async getSessionId(): Promise<string> {
     try {
-      const result = await SessionGetId.execute({} as any) as any;
-      return result?.sessionId || 'unknown';
+      const result = await SessionGetId.execute({});
+      return (result as { sessionId?: string })?.sessionId || 'unknown';
     } catch {
       return 'unknown';
     }

@@ -57,7 +57,7 @@ export class VoiceConversationSource implements RAGSource {
   readonly defaultBudgetPercent = 30;
 
   isApplicable(context: RAGSourceContext): boolean {
-    const hasVoiceSession = !!(context.options as any)?.voiceSessionId;
+    const hasVoiceSession = !!context.options?.voiceSessionId;
     const hasOrchestrator = voiceOrchestrator !== null;
 
     if (hasVoiceSession && !hasOrchestrator) {
@@ -74,7 +74,7 @@ export class VoiceConversationSource implements RAGSource {
       return this.emptySection(startTime, 'VoiceOrchestrator not registered');
     }
 
-    const voiceSessionId = (context.options as any)?.voiceSessionId;
+    const voiceSessionId = context.options?.voiceSessionId;
     if (!voiceSessionId) {
       return this.emptySection(startTime, 'No voice session ID');
     }
