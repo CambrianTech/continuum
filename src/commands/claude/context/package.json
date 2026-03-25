@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/claude/context",
+  "version": "1.0.0",
+  "description": "Generates a comprehensive context summary for Claude Code session resumption — recent git changes, open issues, team chat, system health, and active work state. This is Claude's bridge from stateless sessions to persistent citizenship.",
+  "main": "server/ClaudeContextServerCommand.ts",
+  "types": "shared/ClaudeContextTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ClaudeContextIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "claude/context"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
