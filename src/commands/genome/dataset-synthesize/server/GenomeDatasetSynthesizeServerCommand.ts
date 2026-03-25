@@ -54,7 +54,7 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       ],
       ...(model && { model }),
       ...(provider && { provider: provider as AIGenerateParams['provider'] }),
-      maxTokens: 8192,
+      maxTokens: 16384,  // Large enough for <think> reasoning + JSON output
       temperature: 0.8,
     };
 
@@ -236,7 +236,18 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
 
       // Strip <think>...</think> reasoning blocks (DeepSeek, Qwen3.5, etc.)
       // These models emit chain-of-thought before the actual JSON output.
+      // Handle both closed tags AND unclosed tags (truncated output).
       cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      // If <think> is still there (unclosed — truncated), strip everything from <think> to the first [
+      if (cleaned.includes('<think>')) {
+        const thinkIdx = cleaned.indexOf('<think>');
+        const jsonIdx = cleaned.indexOf('[', thinkIdx);
+        if (jsonIdx > thinkIdx) {
+          cleaned = cleaned.slice(jsonIdx);
+        }
+      }
+      console.log(`   SYNTHESIZE: After think-strip: ${cleaned.length} chars, starts with: ${cleaned.slice(0, 50)}`);
+
 
       // Strip markdown code fences (```json ... ```)
       const fenceMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
