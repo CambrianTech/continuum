@@ -7,6 +7,7 @@
 
 import { JTAGSystem, type JTAGSystemConfig } from '../shared/JTAGSystem';
 import type { JTAGContext } from '../../types/JTAGTypes';
+import type { UUID } from '../../types/CrossPlatformUUID';
 import { JTAG_ENVIRONMENTS } from '../../types/JTAGTypes';
 import { JTAGRouterDynamicServer } from '../../router/server/JTAGRouterDynamicServer';
 import { SYSTEM_EVENTS } from '../../../events';
@@ -90,7 +91,7 @@ export class JTAGSystemServer extends JTAGSystem {
       // Create mock commander for direct command usage
       const mockCommander = {
         subpath: 'system-registration',
-        router: null as any,
+        router: null!,
         commands: new Map()
       };
 
@@ -101,7 +102,7 @@ export class JTAGSystemServer extends JTAGSystem {
       const result = await processRegistryCommand.registerProcess({
         userId: SYSTEM_SCOPES.SYSTEM,
         context: this.context,
-        sessionId: 'system-registration' as any,
+        sessionId: 'system-registration' as UUID,
         processType: 'server',
         description: `JTAG System Server (${this.context.uuid})`,
         capabilities: [

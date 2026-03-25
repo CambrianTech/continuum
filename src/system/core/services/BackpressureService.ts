@@ -228,13 +228,14 @@ export class BackpressureService {
         return null;
       }
 
-      // Check if adapter has getQueueStats method
-      if (typeof (adapter as any).getQueueStats !== 'function') {
+      // Check if adapter has getQueueStats method (optional on AIProviderAdapter)
+      const adapterWithStats = adapter as { getQueueStats?: () => QueueStats };
+      if (typeof adapterWithStats.getQueueStats !== 'function') {
         return null;
       }
 
       // Get fresh stats
-      const stats = (adapter as any).getQueueStats() as QueueStats;
+      const stats = adapterWithStats.getQueueStats();
       this.cachedStats = stats;
       this.cacheTimestamp = now;
 
