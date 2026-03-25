@@ -349,7 +349,7 @@ export class PersonaResponseGenerator {
       const toolCap = getToolCapability(this.modelConfig.provider, this.modelConfig);
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
-      this.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
+      this.log(`🔧 ${this.personaName}: [PHASE 3.3] Building inference request (default provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
 
       // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
       // RAG budget can only REDUCE maxTokens (protect against context overflow),
@@ -438,13 +438,19 @@ export class PersonaResponseGenerator {
         }
       }
 
-      // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
+      // Tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
+      // hasTools must be true for BOTH native AND XML tools — otherwise TaskAwareProviderRouter
+      // never triggers the "tools require cloud" upgrade for local personas (who get XML tools).
       const toolMeta = fullRAGContext.metadata?.toolDefinitions;
-      const hasTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
-      if (hasTools) {
+      const hasNativeTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
+      const hasXmlTools = !!(toolMeta?.toolCount && (toolMeta.toolCount as number) > 0);
+      const hasTools = hasNativeTools || hasXmlTools;
+      if (hasNativeTools) {
         request.tools = toolMeta.nativeToolSpecs as NativeToolSpec[];
         request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
         this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
+      } else if (hasXmlTools) {
+        this.log(`🔧 ${this.personaName}: ${toolMeta!.toolCount} XML tools in system prompt (no native specs)`);
       }
 
       // PER-TASK MODEL ROUTING (#371): If the persona uses a local model and the task

@@ -126,7 +126,7 @@ This document is the **single source of truth** for remaining work before open-s
 | # | Issue | Status | What |
 |---|-------|--------|------|
 | [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | TODO | 7 parsers needed: Native, Hermes, Qwen, Llama, DeepSeek, Mistral, GenericXML. |
-| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | IN PROGRESS | String(v) destroying object params, force-text too aggressive, double correction, code/search example bias. Fixes deployed, QA validated. |
+| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | DONE (PR #400) | Fixed param serialization, agent loop cap, double correction, loop detection side-effect, tool group bias. |
 | [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | TODO | CodingAgent, tools, quality, full loop all broken. |
 | [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | TODO | Claude Code dispatch needs error handling and retry. |
 | [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
