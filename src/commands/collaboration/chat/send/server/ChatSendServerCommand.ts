@@ -43,11 +43,11 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     // 2. Get sender — resolve identity from whoever initiated the command.
-    // Priority: explicit senderId > params.userId (auto-injected by infrastructure) > human owner fallback.
-    // When a persona calls chat/send via tool executor, params.userId is the persona's UUID.
-    // When the CLI calls chat/send, params.userId is the human owner or @cli.
-    // Only fall back to human owner when no identity is available at all.
-    const senderId = params.senderId || params.userId;
+    // Priority: explicit senderId > params.userId (auto-injected) > human owner fallback.
+    // Skip system UUID (00000...) — sentinels/Academy run as SYSTEM but can't be a chat sender.
+    const { isSystemUUID } = await import('@system/core/types/SystemScopes');
+    const rawSenderId = params.senderId || params.userId;
+    const senderId = rawSenderId && !isSystemUUID(rawSenderId as UUID) ? rawSenderId : undefined;
     const sender = senderId
       ? await this.findUserById(senderId as UUID, params)
       : await this.findHumanOwnerOrFallback(params);
