@@ -87,9 +87,10 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
     const workingDir = runParams.workingDir || process.cwd();
     const asyncMode = runParams.async !== false;
 
+    // Use ?? not || — timeout=0 means "no timeout", but || treats 0 as falsy
     const timeoutSecs = runParams.timeout
-      || definition.timeoutSecs
-      || definition.timeout_secs;
+      ?? definition.timeoutSecs
+      ?? definition.timeout_secs;
 
     const pipeline: Pipeline = {
       name: definition.name || 'unnamed',
