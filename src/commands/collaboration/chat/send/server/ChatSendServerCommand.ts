@@ -42,8 +42,13 @@ export class ChatSendServerCommand extends ChatSendCommand {
       throw new Error(`Room not found: ${params.room || 'general'}`);
     }
 
-    // 2. Get sender — explicit senderId (CLI) or params.userId (auto-injected by infrastructure)
-    const sender = await this.findUserById(params.senderId || params.userId, params);
+    // 2. Get sender — explicit senderId takes priority, otherwise resolve human owner.
+    // params.userId reflects the session identity (could be @cli, agent, system).
+    // For chat/send without explicit sender, the human owner is the correct attribution
+    // since this is a single-owner system and CLI/agent are the human's tools.
+    const sender = params.senderId
+      ? await this.findUserById(params.senderId, params)
+      : await this.findHumanOwnerOrFallback(params);
 
     // 3. Create message entity
     const messageEntity = new ChatMessageEntity();
@@ -126,6 +131,31 @@ export class ChatSendServerCommand extends ChatSendCommand {
       shortId: shortId,
       roomId: resolved.id
     });
+  }
+
+  /**
+   * Find the seeded human owner (single-owner system), fall back to params.userId.
+   * Used when no explicit senderId is provided — CLI and agent sessions should
+   * attribute messages to the human, not to "@cli" or "Claude Code".
+   */
+  private async findHumanOwnerOrFallback(params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
+    // Try to find the seeded human owner
+    const result = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
+      collection: UserEntity.collection,
+      filter: { type: 'human' },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId,
+    });
+
+    if (result.success && result.items && result.items.length > 0) {
+      const owner = result.items[0];
+      return { id: owner.id, entity: owner };
+    }
+
+    // No human owner seeded yet — fall back to session userId
+    return this.findUserById(params.userId, params);
   }
 
   /**

@@ -707,15 +707,22 @@ export class SessionDaemonServer extends SessionDaemon {
         }
 
         case 'cli': {
-          // CLI identity: Use uniqueId (@cli or env user)
-          const cliUniqueId = identity?.uniqueId || '@cli';
-          this.log.info(`💻 CLI session: resolving uniqueId=${cliUniqueId}`);
-
-          const existingCli = await this.findUserByUniqueId(cliUniqueId);
-          if (existingCli) {
-            user = existingCli;
+          // CLI = the human owner, same as browser. Single-owner system:
+          // ./jtag commands are Joel, not a separate "@cli" user.
+          const seededOwner = await this.findSeededHumanOwner();
+          if (seededOwner) {
+            user = seededOwner;
+            this.log.info(`✅ CLI session → seeded owner: ${user.displayName}`);
           } else {
-            user = await this.createUser(params);
+            // No seeded owner yet (pre-seed or first boot) — fall back to uniqueId
+            const cliUniqueId = identity?.uniqueId || '@cli';
+            this.log.info(`💻 CLI session: no seeded owner, resolving uniqueId=${cliUniqueId}`);
+            const existingCli = await this.findUserByUniqueId(cliUniqueId);
+            if (existingCli) {
+              user = existingCli;
+            } else {
+              user = await this.createUser(params);
+            }
           }
           break;
         }

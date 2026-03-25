@@ -331,24 +331,6 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   fi
 done
 
-BROWSER_CONNECTED=false
-if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
-  BROWSER_CONNECTED=true
-elif [ "$HOT_RESTART" = true ]; then
-  # Hot restart: browser is reconnecting — give it time before declaring it absent.
-  # The existing tab's WebSocket reconnects once the new server is up.
-  echo -e "  ⏳ Waiting for browser to reconnect..."
-  for i in 1 2 3 4 5; do
-    sleep 3
-    PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
-    if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
-      BROWSER_CONNECTED=true
-      echo -e "  ${GREEN}Browser reconnected${NC}"
-      break
-    fi
-  done
-fi
-
 if [ "$HEALTHY" = false ]; then
   if echo "$PING_OUTPUT" | grep -q '"success"' 2>/dev/null; then
     HEALTHY=true
@@ -360,43 +342,29 @@ if [ "$HEALTHY" = false ]; then
   fi
 fi
 
-# Phase 5.5: Seed database BEFORE opening browser
+# Phase 5.5: Seed database BEFORE browser connects
 # Critical: Browser must connect AFTER seeding so findSeededHumanOwner() finds Joel.
 # Without this, browser connects → anonymous user created → wrong userId in session.
 echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
 npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
 echo -e "  ${GREEN}✅ Seed complete${NC}"
 
-# Phase 6: Open browser (COLD START only — hot restart reuses existing tab)
-# On hot restart the existing browser tab reconnects via WebSocket automatically.
-# Opening a new tab would create duplicates.
-if [ "$BROWSER_CONNECTED" = false ] && [ "$HEALTHY" = true ] && [ "$HOT_RESTART" = false ]; then
-  PLATFORM=$(preflight_detect_platform)
-  URL="http://localhost:9000"
-  echo -e "  ${YELLOW}Opening browser...${NC}"
-  case "$PLATFORM" in
-    macos)  open "$URL" 2>/dev/null & ;;
-    wsl)    cmd.exe /c start "$URL" 2>/dev/null & ;;
-    linux)  xdg-open "$URL" 2>/dev/null & ;;
-  esac
-
-  # Wait for browser to connect (up to 30s)
-  BWAIT=0
-  while [ $BWAIT -lt 30 ]; do
+# Phase 6: Browser launch is handled by SystemOrchestrator.detectAndManageBrowser()
+# The orchestrator runs as a daemon and manages browser lifecycle — open, detect, reconnect.
+# Shell script does NOT open the browser to avoid duplicate tabs (#335).
+BROWSER_CONNECTED=false
+if [ "$HOT_RESTART" = true ]; then
+  # Hot restart: give existing tab time to reconnect via WebSocket
+  echo -e "  ⏳ Waiting for browser to reconnect..."
+  for i in 1 2 3 4 5; do
     sleep 3
-    BWAIT=$((BWAIT + 3))
     PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
     if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
       BROWSER_CONNECTED=true
-      echo -e "  ${GREEN}Browser connected${NC}"
+      echo -e "  ${GREEN}Browser reconnected${NC}"
       break
     fi
-    echo -e "  ⏳ Waiting for browser... (${BWAIT}s)"
   done
-
-  if [ "$BROWSER_CONNECTED" = false ]; then
-    echo -e "  ${YELLOW}Browser didn't connect — open ${URL} manually${NC}"
-  fi
 fi
 
 END_TIME=$(date +%s)
