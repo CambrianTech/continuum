@@ -34,6 +34,11 @@ export class NavigateBrowserCommand extends NavigateCommand {
    * When target='webview', navigates the co-browsing widget instead
    */
   async execute(params: NavigateParams): Promise<NavigateResult> {
+    // Tab switching: emit content:opened to switch the active content tab
+    if (params.tab) {
+      return this.switchTab(params);
+    }
+
     const isReload = !params.url;
     const isWebview = params.target === 'webview';
 
@@ -93,6 +98,28 @@ export class NavigateBrowserCommand extends NavigateCommand {
       };
 
       check();
+    });
+  }
+
+  /**
+   * Switch the active content tab by emitting content:opened event.
+   * Uses the same event system that room clicks, activity joins, etc. use.
+   */
+  private async switchTab(params: NavigateParams): Promise<NavigateResult> {
+    const tab = params.tab!;
+    console.log(`📑 BROWSER: Switching to tab '${tab}'`);
+
+    Events.emit('content:opened', {
+      contentType: tab,
+      entityId: tab,
+      title: tab.charAt(0).toUpperCase() + tab.slice(1),
+      setAsCurrent: true,
+    });
+
+    return createNavigateResult(params.context, params.sessionId, {
+      success: true,
+      url: window.location.href,
+      title: `Switched to ${tab} tab`,
     });
   }
 

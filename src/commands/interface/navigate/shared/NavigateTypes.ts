@@ -9,9 +9,10 @@ import { Commands } from '../../../../system/core/shared/Commands';
 
 export type NavigateTarget = '_blank' | '_self' | '_parent' | '_top' | 'webview' | string;
 
-/** Navigate the browser to a URL. */
+/** Navigate the browser to a URL or switch content tabs. */
 export interface NavigateParams extends CommandParams {
   readonly url?: string;  // Optional - if not provided, triggers location.reload()
+  readonly tab?: string;  // Switch to a content tab by name (e.g., 'training', 'coding', 'general')
   readonly timeout?: number;
   readonly waitForSelector?: string;
   readonly target?: NavigateTarget;  // 'webview' to navigate the co-browsing widget
