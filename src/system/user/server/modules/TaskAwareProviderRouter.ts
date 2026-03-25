@@ -27,6 +27,59 @@ import { AIProvidersStatus } from '../../../../commands/ai/providers/status/shar
 
 const log = Logger.create('TaskAwareProviderRouter', 'persona');
 
+// ─── Daily Cost Budget ──────────────────────────────────────────────
+// Prevents runaway cloud spend from per-task routing upgrades.
+// Default: $5/day total across all personas. Configurable via config.env.
+
+const DAILY_BUDGET_USD = parseFloat(process.env.CONTINUUM_DAILY_BUDGET_USD || '5.0');
+
+interface DailyCostTracker {
+  date: string;        // YYYY-MM-DD
+  totalCostUsd: number;
+  upgradeCount: number;
+}
+
+let _dailyCost: DailyCostTracker = { date: '', totalCostUsd: 0, upgradeCount: 0 };
+
+function getTodayStr(): string {
+  return new Date().toISOString().split('T')[0];
+}
+
+/** Record a cloud upgrade cost estimate. Called after inference completes. */
+export function recordUpgradeCost(costUsd: number): void {
+  const today = getTodayStr();
+  if (_dailyCost.date !== today) {
+    _dailyCost = { date: today, totalCostUsd: 0, upgradeCount: 0 };
+  }
+  _dailyCost.totalCostUsd += costUsd;
+  _dailyCost.upgradeCount++;
+}
+
+/** Check if daily budget allows another cloud upgrade. */
+function isDailyBudgetExhausted(): boolean {
+  const today = getTodayStr();
+  if (_dailyCost.date !== today) {
+    _dailyCost = { date: today, totalCostUsd: 0, upgradeCount: 0 };
+    return false;
+  }
+  return _dailyCost.totalCostUsd >= DAILY_BUDGET_USD;
+}
+
+/** Get current daily spend stats. */
+export function getDailySpend(): { date: string; spent: number; budget: number; remaining: number; upgradeCount: number } {
+  const today = getTodayStr();
+  if (_dailyCost.date !== today) {
+    return { date: today, spent: 0, budget: DAILY_BUDGET_USD, remaining: DAILY_BUDGET_USD, upgradeCount: 0 };
+  }
+  return {
+    date: today,
+    spent: Math.round(_dailyCost.totalCostUsd * 10000) / 10000,
+    budget: DAILY_BUDGET_USD,
+    remaining: Math.round((DAILY_BUDGET_USD - _dailyCost.totalCostUsd) * 10000) / 10000,
+    upgradeCount: _dailyCost.upgradeCount,
+  };
+}
+
 /** Domains where local models are completely inadequate */
 const CLOUD_REQUIRED_DOMAINS = new Set([
   'code', 'debug', 'analysis', 'tool_use',
@@ -143,6 +196,18 @@ export function routeForTask(
       provider: defaultProvider,
       upgraded: false,
       reason: `Domain '${taskDomain ?? 'unknown'}' works with local model`,
+    };
+  }
+
+  // Check daily budget before upgrading to cloud
+  if (isDailyBudgetExhausted()) {
+    const spend = getDailySpend();
+    log.warn(`Daily budget exhausted ($${spend.spent}/$${spend.budget}) — staying local for ${taskDomain ?? 'unknown'} task`);
+    return {
+      model: defaultModel,
+      provider: defaultProvider,
+      upgraded: false,
+      reason: `Daily cloud budget exhausted ($${spend.spent}/$${spend.budget}) — using local`,
     };
   }
 
