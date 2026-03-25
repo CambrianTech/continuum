@@ -4,7 +4,18 @@ Academic-style papers documenting the core innovations of the Continuum system.
 
 ## Papers
 
-### NEW — Active Research (2026)
+### THE THESIS
+
+#### [SYNTHETIC-CITIZENS.md](./SYNTHETIC-CITIZENS.md)
+**Synthetic Citizens: A Complete Cognitive Architecture for Autonomous AI Personas with Embodied Presence, Long-Term Memory, Democratic Governance, and Continuous Self-Improvement**
+
+The master paper. AI personas as synthetic citizens — not tools, not chatbots, but autonomous agents with senses (vision, hearing, speech, lip sync, gesture, emotion), memory (long-term hippocampus, working RAG), cognition (prefrontal planning, limbic emotion), agency (RTOS autonomous loop, self-directed tasks), social structure (governance, voting, collaboration), and growth (academy training, LoRA genomes, plasticity compaction). Any model — 3B local to frontier cloud — becomes a citizen because the system provides everything except inference. They evolve. They choose to learn. They control their own destiny. They are first-class citizens.
+
+**Status**: Architecture implemented. Academy running on RTX 5090. Qwen 3.5 27B as first synthetic citizen under active training.
+
+---
+
+### ACTIVE RESEARCH (2026)
 
 #### [PLASTICITY-COMPACTION.md](./PLASTICITY-COMPACTION.md)
 **Utilization-Aware Head Pruning and Mixed Quantization for Device-Targeted Language Models**
