@@ -125,10 +125,10 @@ This document is the **single source of truth** for remaining work before open-s
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | TODO | 7 parsers needed: Native, Hermes, Qwen, Llama, DeepSeek, Mistral, GenericXML. |
+| [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | DONE (Rust) | 6 families in Rust (DeepSeek, Llama, Mistral, Hermes, Qwen, Generic) + Native protocol upstream. Closed. |
 | [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | DONE (PR #400) | Fixed param serialization, agent loop cap, double correction, loop detection side-effect, tool group bias. |
 | [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | TODO | CodingAgent, tools, quality, full loop all broken. |
-| [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | TODO | Claude Code dispatch needs error handling and retry. |
+| [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | DONE (tested e2e) | Works — 3 workspace strategies, error handling, training capture. Closed. |
 | [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
 | [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
 | [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | DONE (PR #401) | Fixed hasTools false for XML providers — local personas now upgrade to cloud for tool use. |
