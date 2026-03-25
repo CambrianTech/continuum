@@ -111,8 +111,8 @@ export class ThemeGetBrowserCommand {
   private async getThemeManifest(themeName: string): Promise<ThemeManifest | undefined> {
     try {
       // Try to get theme manifest from ThemeRegistry if available
-      if (typeof window !== 'undefined' && (window as any).ThemeRegistry) {
-        const registry = (window as any).ThemeRegistry;
+      if (typeof window !== 'undefined' && window.ThemeRegistry) {
+        const registry = window.ThemeRegistry;
         if (typeof registry.getTheme === 'function') {
           const manifest = registry.getTheme(themeName);
           if (manifest) {

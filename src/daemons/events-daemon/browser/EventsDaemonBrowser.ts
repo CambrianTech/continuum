@@ -15,7 +15,7 @@ import { EventSubscriptionManager } from '../../../system/events/shared/EventSub
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 // EventBridge metadata structure for better type safety
 interface EventBridgeMetadata {

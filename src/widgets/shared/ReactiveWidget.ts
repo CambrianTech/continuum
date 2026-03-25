@@ -1077,7 +1077,7 @@ export abstract class ReactiveWidget extends LitElement {
    * Enable with: window.JTAG_VERBOSE = true
    */
   protected verbose(): boolean {
-    return typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    return typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
   }
 
   /**

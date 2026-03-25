@@ -18,7 +18,7 @@ import type { ConnectionStatus } from '../../system/core/client/browser/Connecti
 import { asyncStorage } from '../../system/core/browser/AsyncStorage';
 
 // Verbose logging helper for browser (standalone since ReactiveWidget != BaseWidget)
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 const STORAGE_KEY = 'webview-widget-url';
 

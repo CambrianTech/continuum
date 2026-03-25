@@ -13,7 +13,7 @@ import { ChatMessageEntityHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 /**
  * Message Renderer Interface - Extensible for future widget conversion

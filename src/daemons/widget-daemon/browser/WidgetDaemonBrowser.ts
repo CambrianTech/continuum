@@ -21,7 +21,7 @@ export class WidgetDaemonBrowser extends WidgetDaemon {
     console.log('✅ WidgetDaemonBrowser: Connected to JTAG system via router');
     
     // Make this daemon globally available for widgets
-    (window as any).widgetDaemon = this;
+    window.widgetDaemon = this;
   }
 
   /**
@@ -29,8 +29,8 @@ export class WidgetDaemonBrowser extends WidgetDaemon {
    */
   async shutdown(): Promise<void> {
     // Remove global reference
-    if ((window as any).widgetDaemon === this) {
-      delete (window as any).widgetDaemon;
+    if (window.widgetDaemon === this) {
+      delete window.widgetDaemon;
     }
 
     await super.shutdown();

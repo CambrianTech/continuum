@@ -115,7 +115,7 @@ export class PositronContentStateAdapter {
     const offMainThread = (handler: (data: unknown) => void) => {
       return (data: unknown) => {
         if ('requestIdleCallback' in window) {
-          (window as any).requestIdleCallback(() => handler(data), { timeout: 100 });
+          window.requestIdleCallback(() => handler(data), { timeout: 100 });
         } else {
           queueMicrotask(() => handler(data));
         }

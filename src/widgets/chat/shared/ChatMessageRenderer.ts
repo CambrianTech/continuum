@@ -8,7 +8,7 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
 // Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
 /**
  * Handles creating DOM elements for chat messages

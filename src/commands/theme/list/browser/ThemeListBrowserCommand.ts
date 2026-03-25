@@ -67,8 +67,8 @@ export class ThemeListBrowserCommand {
   }> {
     try {
       // Method 1: Get from ThemeRegistry if available (preferred)
-      if (typeof window !== 'undefined' && (window as any).ThemeRegistry) {
-        const registry = (window as any).ThemeRegistry;
+      if (typeof window !== 'undefined' && window.ThemeRegistry) {
+        const registry = window.ThemeRegistry;
         if (typeof registry.getAllThemes === 'function') {
           const manifests = registry.getAllThemes() as ThemeManifest[];
           const themes = manifests.map(manifest => manifest.name);

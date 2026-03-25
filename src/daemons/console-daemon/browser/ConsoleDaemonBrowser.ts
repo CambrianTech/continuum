@@ -41,7 +41,7 @@ export class ConsoleDaemonBrowser extends ConsoleDaemon {
 
     // Use requestIdleCallback for non-blocking localStorage write
     if ('requestIdleCallback' in window) {
-      (window as any).requestIdleCallback(() => this.flushToStorage(), {
+      window.requestIdleCallback(() => this.flushToStorage(), {
         timeout: ConsoleDaemonBrowser.FLUSH_INTERVAL_MS
       });
     } else {

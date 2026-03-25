@@ -22,7 +22,7 @@ export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
   }
 
   async execute(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
-    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    const verbose = typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
     const backend = (params as any).backend ?? 'auto';
 
     // If backend is 'server', skip localStorage entirely
