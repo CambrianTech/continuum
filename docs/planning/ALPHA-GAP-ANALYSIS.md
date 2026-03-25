@@ -298,7 +298,8 @@ This document is the **single source of truth** for remaining work before open-s
 | **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | #323, #364, #349, #337 | 4 |
-| **Total** | | **69 tracked, 49 open, 20 closed** |
+| **Research** | #391, #392, #393 | 3 |
+| **Total** | | **72 tracked, 45 open, 27 closed** |
 
 ---
 
