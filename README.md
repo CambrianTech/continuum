@@ -362,6 +362,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Arrow** ([2024](https://arxiv.org/abs/2405.11157)) — Per-token, per-layer LoRA routing
 - **RealClassEval** ([2025](https://arxiv.org/abs/2510.26130)) — Real-world Python class benchmark
 - **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1))
+- **Engram** ([DeepSeek 2025](https://arxiv.org/abs/2601.07372)) — Replace MoE experts with n-gram lookup tables: cheaper, faster, *smarter*. Validates our genome thesis: separating retrieval from reasoning makes both better
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
 

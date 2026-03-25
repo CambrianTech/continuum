@@ -119,6 +119,23 @@ Training: Each adapter trained independently (cheap)
 
 **This is MoE++**: Expertise is **composable, tradeable, and autonomous** rather than monolithic.
 
+### 2.3 The Engram Validation
+
+DeepSeek's Engram architecture (2025) provides striking internal validation of this decomposition. They replaced 20-25% of MoE expert layers with simple n-gram embedding lookup tables — essentially a "pantry" of pre-computed knowledge that the model retrieves cheaply instead of reconstructing through full transformer computation. The result: the model got *smarter*, not dumber. Loss curves dropped significantly. Every benchmark improved.
+
+**The parallel to our genome architecture is exact:**
+
+| Engram (inside the model) | LoRA Genome (outside the model) |
+|--------------------------|--------------------------------|
+| N-gram lookup tables store facts | RAG memory hierarchy stores context |
+| Remaining MoE experts handle reasoning | Base model handles creative decisions |
+| Context-aware gating filters irrelevant retrievals | RAG relevance threshold (0.35) filters noise |
+| Cheaper, faster, *and* smarter | Smaller local models + infrastructure = *more reliable* |
+
+Engram validates the principle at the architecture level: **separating retrieval from reasoning makes both better.** Our genome system applies this principle at the system level — the base model reasons, LoRA adapters provide domain expertise, RAG provides facts, and sentinel pipelines provide deterministic orchestration. The model doesn't need to be a Michelin-star chef growing peanuts from scratch. It just needs to cook well with good ingredients from a well-stocked pantry.
+
+When Engram-style architectures ship in open-weight models, Continuum's Candle inference engine runs them locally — the retrieval optimization goes *inside* the model while the genome provides retrieval *outside* it. Two layers of the same principle, compounding.
+
 ---
 
 ## 3. The Dual-Track Strategy
@@ -629,9 +646,10 @@ $110K baseline ÷ 10 (localized rates) ÷ 2 (head culling) ÷ 2 (incremental) �
 
 1. **LoRA: Low-Rank Adaptation of Large Language Models** - Hu et al., 2021
 2. **Mixture-of-Experts** - Shazeer et al., 2017
-3. **SENTINEL-NEUROPLASTIC-TRAINING.md** - This codebase
-4. **Continuum Chat Logs (11/6/2025)** - Vision and mission statements
-5. **THOUGHT-FRAME-ARCHITECTURE.md** - RTOS cognitive architecture
+3. **Engram: Memory-Augmented Transformers via N-gram Embeddings** - DeepSeek AI, 2025 ([arXiv:2601.07372](https://arxiv.org/abs/2601.07372))
+4. **SENTINEL-NEUROPLASTIC-TRAINING.md** - This codebase
+5. **Continuum Chat Logs (11/6/2025)** - Vision and mission statements
+6. **THOUGHT-FRAME-ARCHITECTURE.md** - RTOS cognitive architecture
 
 ---
 
