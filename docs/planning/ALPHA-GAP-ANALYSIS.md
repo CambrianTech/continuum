@@ -1,11 +1,10 @@
-# Alpha Gap Analysis — Prioritized Feature Backlog
+# Alpha Gap Analysis — Master Plan
 
-**Date**: 2026-03-15
+**Updated**: 2026-03-24
 **Status**: UI/UX alpha complete. System runs stable with 14+ AI personas in live video calls.
 **Branch**: `main`
 
-This document is the **single source of truth** for remaining work before open-source launch.
-Each item is a self-contained feature branch. Priority order is the implementation order.
+This document is the **single source of truth** for remaining work before open-source launch. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase.
 
 ---
 
@@ -19,843 +18,333 @@ Each item is a self-contained feature branch. Priority order is the implementati
 | Persona cadence | Working | Pressure-aware adaptive timing |
 | Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
 | LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
-| Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass |
-| Sentinel pipeline | Working | 10 step types, 120+ tests, CodingAgent integration, 4 dev + 1 creative + 1 research templates |
-| Sentinel workspaces | Working | SentinelWorkspaceManager: identity chain fix, git worktree isolation, lifecycle cleanup |
-| Dev CLI front door | Working | `--repoPath` on all dev commands: build-feature, fix-bug, code-review, integrate |
-| Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe, role declarations, RecipeAssembler |
-| Recipe commands | Working | recipe/list, recipe/run, recipe/generate (NL→Recipe via LLM with validation) |
-| Capability registry | Working | Skill domains, all 10 adapters self-register via getCapabilityRegistration() |
+| Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass (cloud) |
+| Sentinel pipeline | Working | 12 step types, 55 Rust tests, CodingAgent integration |
+| Sentinel workspaces | Working | Identity chain, git worktree isolation, lifecycle cleanup |
+| Dev CLI front door | Working | `--repoPath` on all dev commands |
+| Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe |
+| Recipe commands | Working | recipe/list, recipe/run, recipe/generate |
+| Capability registry | Working | Skill domains, all 10 adapters self-register |
 | ORM | Working | SQLite + Postgres, schema evolution, self-healing |
 | RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
-| RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource |
+| RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource, auto-index on startup |
 | Vision pipeline | Proven E2E | Tiered perception, content-addressed cache |
 | Neural compression | Proven E2E | Head pruning + Q3_K_S: 32B model on 32GB MacBook, 5.3 tok/s |
-| Compression pipeline | Built | planner + GGUF writer + pipeline orchestration, 142 tests |
-| HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-32b-compacted published |
+| Compression pipeline | Built | Planner + GGUF writer + pipeline orchestration, 142 tests |
+| HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-14b-compacted published |
 | Local GGUF inference | Working | Candle Metal backend, Qwen2 architecture support |
 | Auto model discovery | Working | CandleAdapter finds local GGUFs, falls back to HF download |
+| Pressure system | Complete | ThoughtStream slots + voice broadcast gating (PR #304) |
+| Decision logging | Complete | CoordinationDecisionLogger, full RAG context capture |
+| Widget system | Working | 32 auto-discovered widgets, Lit + Shadow DOM |
+| Command system | Working | 320 auto-discovered commands, zero central registries |
+| AI providers | Working | 12 providers (Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle, Candle-gRPC, Sentinel) |
+| continuum-core | Working | 26 Rust modules, 1,179+ tests |
 
 ---
 
-## Priority 1: Architectural Integrity (Code Quality)
+## Phase 0: Critical Bugs (Ship-Blockers)
 
-**Why first**: Open-source contributors will copy these patterns. Every `any` cast, every god class, every magic number becomes a template for how the community writes code. Fix the foundation before anyone sees it.
+> Fix before anything else. These break the first-run experience.
 
-### 1A. Type Safety — Eliminate `any` Casts
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#376](https://github.com/CambrianTech/continuum/issues/376) | **chat/send userId bug** | TODO | Personas can't post to chat rooms — userId not resolved correctly. Blocks the README promise: "AI personas join immediately." |
+| [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | TODO | npm start opens duplicate tabs. Annoying first impression. |
+| [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | TODO | Double-init causes resource waste and glitches. |
+| [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. README promises `npm install && npm start` just works. |
+| [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Breaks node discovery. |
+| [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Blocks all tower work. |
+| [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date handling** | TODO | TEXT columns, missing cursor pagination, unused composite indexes. Data layer reliability. |
 
-**Current**: 831 `any` casts in production code, 1,269 in tests (2,100 total)
-**Target**: Zero in production code, minimal in tests
-
-**Top offenders (production)**:
-| File | Count | Fix Strategy |
-|------|-------|-------------|
-| PersonaBrainWidget.ts | 21 | Import proper event/data types |
-| InferenceGrpcClient.ts | 16 | Type gRPC response objects |
-| FileStorageAdapter.ts | 14 | Use generic `BaseEntity` constraints |
-| WidgetEventService.ts | 13 | Type event payloads from AI_DECISION_EVENTS |
-| GlobalAugmentations.ts | 12 | Proper module augmentation types |
-| MemoryStorageAdapter.ts | 12 | Same as FileStorageAdapter |
-| JTAGClient.ts | 11 | Type command response generics |
-| DataDaemon.ts | 11 | Type collection operations |
-| PersonaUser.ts | 9 | Type tool/genome/RAG interfaces |
-
-**Approach**: File-by-file, starting with public APIs (JTAGClient, DataDaemon, Commands), then adapters, then widgets.
-
-### 1B. Command Infrastructure — Single Source of Truth
-
-**The command generator creates correct patterns automatically.** Any command that bypasses the generator is a pattern violation waiting to be copied by contributors.
-
-**Current state**:
-- 273 commands have proper static accessors — good
-- **39 commands missing static accessors** (agent/*, sentinel/*, state/*, search/*, voice snapshots)
-- **266 commands hand-written** without generator specs (only 47 have specs)
-- **23 `any` casts** in command Types files
-- **5 raw `Commands.execute()` calls** with string literals + `as any` (SearchWorkerClient, DiagnosticsWidget, LogViewerWidget)
-- **52 uses of `object`/`Record<string, unknown>`/`unknown`** in command types
-
-**Priority targets** (most-used commands missing proper types):
-| Command Group | Issues | Impact |
-|---------------|--------|--------|
-| sentinel/* (8 commands) | No static accessors, `as any` casts throughout | High — sentinel is core infrastructure |
-| agent/* (4 commands) | No static accessors | High — agentic loop depends on these |
-| state/* (3 commands) | No static accessors | Medium — state management API |
-| search/* (4 commands) | No static accessors, untyped results | Medium — RAG depends on these |
-| data/* (create/read/update/query-next) | No static accessors | High — most-used commands in system |
-
-**Approach**:
-1. Create generator specs for the 39 missing-accessor commands
-2. Regenerate with `npx tsx generator/CommandGenerator.ts generator/specs/<name>.json`
-3. Replace all raw `Commands.execute('name', ...)` calls with typed `CommandName.execute()`
-4. Eliminate `any` from command Types files
-5. Replace `object`/`Record<string, unknown>` with proper interfaces
-
-**Enforcement** (prevent regression):
-- **Precommit hook or CI check**: Any new directory under `commands/` MUST have a matching spec in `generator/specs/`. Script scans `commands/*/` dirs, checks for corresponding `.json` spec. Fails if missing.
-- **Generator improvement**: Review and modernize the generator during this phase — ensure it produces the latest patterns (path aliases, proper generics, static accessor with `commandName` const).
-- **Lint rule**: Flag raw `Commands.execute('string-literal', ...)` calls — must use typed accessor.
-
-**Validation**: `grep -r "Commands.execute(" --include="*.ts" | grep -v "CommandName\."` should return zero results when done.
-
-### 1C. God Class Decomposition — PARTIALLY COMPLETE
-
-**Completed extractions**:
-- `DataSchemaManager.ts` extracted from DataDaemon (schema extraction, validation, provisioning)
-- `DataVectorOperations.ts` extracted from DataDaemon (6 vector methods + VectorCapableAdapter interface)
-- `JTAGClientConnections.ts` extracted from JTAGClient (LocalConnection, RemoteConnection, RemoteConnectionHost interface)
-- `PersonaAgentLoop.ts` extracted from PersonaResponseGenerator (agent tool loop, 294 lines)
-
-**Remaining**:
-| File | Lines | Should Be |
-|------|-------|-----------|
-| PersonaUser.ts | ~2,200 | <500 — extract to focused modules |
-| RustWorkerStorageAdapter.ts | 1,234 | <500 — extract per-operation modules |
-| OllamaAdapter.ts (legacy) | 1,225 | <500 — extract model management, streaming, tool parsing |
-| ChatRAGBuilder.ts | 1,214 | <500 — extract source management, assembly, caching |
-| PersonaMessageEvaluator.ts | 909 | <500 — extract training signal, topic detection |
-
-**Approach**: Extract using the existing module pattern (PersonaUser already has `modules/`). Each extraction is a PR with tests proving behavior preservation.
-
-### 1D. Magic Number Consolidation — COMPLETE
-
-All timing constants consolidated into `PersonaTimingConfig.ts`:
-- `PersonaState.ts` — snapshot throttle, initial delay, periodic interval
-- `SelfTaskGenerator.ts` — sweep cooldown, domain cooldown
-- `PersonaAutonomousLoop.ts` — gap assessment interval, circuit breaker
-- `PersonaSubprocess.ts` — priority-based wait times (6-case switch → map lookup)
-- `PersonaTile.ts` — diamond persist duration
-- `PersonaResponseGenerator.ts` — daemon init wait/poll, generation timeout, voice max tokens
-- `PersonaUser.ts` — generation timeout
-
-### 1E. Rust Panic Safety — MOSTLY COMPLETE
-
-**Fixed**:
-- All regex sites already use `LazyLock` or `once_cell::Lazy` (agent.rs, garbage_detection.rs, parsers.rs, interpolation.rs)
-- `.ok()` on file writes → warn log in sentinel/executor.rs (PID write, log writes, mkdir, cleanup — 20 sites)
-- Log write errors use first-failure-only logging to avoid flooding
-- `step_err()` helper added to `sentinel/types.rs` — used by llm.rs, coding_agent.rs, command.rs, emit.rs, watch.rs, shell.rs
-
-**Remaining (intentionally kept)**:
-- 36 `.lock().unwrap()` sites in render_loop, selection, message_bus, livekit_agent, bevy_renderer, archive
-  - These are correct: a poisoned mutex = corrupted data, crashing is the right behavior
-- 3 `.expect()` in init code (home_dir, AIProviderModule) — genuine preconditions
-
-### 1F. Missing ts-rs Exports — COMPLETE
-
-Added `#[derive(TS)]` with proper exports to 10 types across 4 modules:
-- `RagComposeRequest` (rag.rs) → `shared/generated/rag/`
-- `AgentStatus`, `ToolCall`, `ToolResult`, `AgentAction` (agent.rs) → `shared/generated/agent/`
-- `DatasetManifest`, `DatasetMetrics` (dataset.rs) → `shared/generated/dataset/`
-- `MCPTool`, `MCPInputSchema`, `MCPProperty` (mcp.rs) → `shared/generated/mcp/`
-
-Barrel exports created for agent/, dataset/, mcp/ and added to main index.ts.
+**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes.
 
 ---
 
-## Priority 2: Pressure System Completion (Phases 1, 3) — COMPLETE
+## Phase 1: Architectural Integrity (Code Quality)
 
-**Status**: Completed in PR #304 (pressure-aware inference + content lifecycle).
+> Open-source contributors will copy these patterns. Fix the foundation before anyone sees it.
 
-### 2A. ThoughtStream Pressure-Aware Slots — DONE
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | TODO | Production code has 831 `any` casts. Target: zero. |
+| [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | TODO | 72+ sites with type switch statements violating modular architecture. |
+| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | TODO | Kill ContentTypeRegistry, route everything through recipes. |
+| [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
+| [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
+| [#353](https://github.com/CambrianTech/continuum/issues/353) | **Generator v2: Rust modules + tokio** | TODO | Full Rust module generation with IPC and tests. |
+| [#351](https://github.com/CambrianTech/continuum/issues/351) | **Magic strings → command constants** | TODO | All Rust modules must use constants, not string literals. |
+| [#361](https://github.com/CambrianTech/continuum/issues/361) | **Maximum lint/clippy strictness** | TODO | Enforce across TypeScript and Rust. |
+| [#354](https://github.com/CambrianTech/continuum/issues/354) | **Git pre-push hooks** | TODO | Infrastructure and mission-critical test gates. |
+| [#352](https://github.com/CambrianTech/continuum/issues/352) | **Formalize test architecture** | TODO | Unit, integration, infrastructure, mission-critical tiers. |
+| [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
+| [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
 
-`getProbabilisticMaxResponders()` in `ThoughtStreamCoordinator.ts:440` reads `BackpressureService.pressureLevel` with graduated response counts (Normal: 1/2/3, Warning: 1/2, High/Critical: 1).
+**Previously completed:**
+- 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
+- 1E: Rust panic safety — MOSTLY DONE (36 `.lock().unwrap()` intentional)
+- 1F: ts-rs exports — DONE (10 types across 4 modules)
+- God class decomposition — PARTIAL (DataSchemaManager, DataVectorOperations, JTAGClientConnections, PersonaAgentLoop extracted)
 
-### 2B. Voice Broadcast Gating — DONE
+**Remaining god classes:**
 
-`onUtterance()` in `VoiceOrchestrator.ts:239` gates broadcast targets by pressure level (Normal: all, Warning: max 3, High: max 1, Critical: none).
+| File | Lines | Target |
+|------|-------|--------|
+| PersonaUser.ts | ~2,200 | <500 |
+| RustWorkerStorageAdapter.ts | 1,234 | <500 |
+| ChatRAGBuilder.ts | 1,214 | <500 |
+| PersonaMessageEvaluator.ts | 909 | <500 |
 
----
-
-## Priority 3: Coordination Decision Logging (Phase 5C) — COMPLETE
-
-**Status**: All 5 wiring steps done.
-
-### What's Done
-- CoordinationDecisionEntity (630 lines) — complete
-- CoordinationDecisionLogger (200+ lines) — complete
-- EntityRegistry integration — complete
-- PersonaUser import — complete
-- `evaluateShouldRespond()` returns `GatingResult` discriminated union with `filteredRagContext` — complete
-- `buildCoordinationRAGContext()` helper converts pipeline → decision format — complete
-- RESPOND decisions: logged in `PersonaResponseGenerator.ts:830` with full response content after generation
-- SILENT decisions (LLM gating): logged in `PersonaMessageEvaluator.ts:462` with minimal context + coordination snapshot
-- Post-inference SILENT: logged in `PersonaMessageEvaluator.ts:626` with full RAG context (was already built)
-- Early gate SILENT (rate limit, response cap): file-based only (mechanical, high-volume, low coherence value)
-
----
-
-## Priority 4: Scene Lifecycle (Bug Fix) — MOSTLY COMPLETE
-
-**Status**: Core fix in PR #305 (resource lifecycle cleanup).
-
-### What's Fixed
-- Video loop shutdown: `LiveKitAgent.disconnect()` sends watch channel signal, video loops exit immediately
-- Slot pool recovery: `reset_slot_pool()` reclaims zombie-held Bevy slots after idle timeout
-- Identity mapping cleanup: `unload_avatar_models()` clears identity→slot map on idle timeout
-- Model unloading: STT/TTS adapters unload after 60s idle (ReloadableModel + shutdown() trait)
-
-### Remaining Investigation
-- Verify `AvatarCommand::UnloadIdle` actually tears down Bevy scenes (ECS entities, loaded meshes)
-- Bevy render loop must tick for commands to process — confirmed it does (idle_cadence gating disabled for this reason)
+**Done when**: Zero `any` in production. All commands generator-backed. Lint/clippy clean. Pre-push hooks enforced. 100+ sentinel tests.
 
 ---
 
-## Priority 4B: Live Video Call Quality — ACTIVE ISSUES
+## Phase 2: Live Call Quality & Resource Management
 
-**Status**: Functional but degraded. Multiple resource management and UX issues observed (2026-03-15).
+> The 3D video calls work but leak memory, have high latency, and break offline.
 
-### 4B-1. Memory Not Deallocating After Live Chat Close — CRITICAL
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** | TODO | Memory leaks (10.5GB RSS after close), 30s latency, simultaneous speech. |
+| [#338](https://github.com/CambrianTech/continuum/issues/338) | **Deterministic resource deallocation** | TODO | Closing live chat must free resources in <30s, not idle timeout. |
+| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | TODO | STT→LLM→TTS pipeline too slow. Need streaming TTS, speculative STT. |
+| [#340](https://github.com/CambrianTech/continuum/issues/340) | **AIs talk over each other** | TODO | ThoughtStream coordination doesn't prevent overlap in live mode. |
+| [#318](https://github.com/CambrianTech/continuum/issues/318) | **Avatar models eating 26GB** | TODO | Too many models loaded on Mac. GPU governor must manage. |
+| [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** | TODO | Equal male/female distribution needed. |
+| [#332](https://github.com/CambrianTech/continuum/issues/332) | **Offline-first architecture** | TODO | Live calls fail without internet. All local features must work offline. |
+| [#380](https://github.com/CambrianTech/continuum/issues/380) | **GPU governor: full consumer management** | TODO | Only 3 subsystems, no dynamic consumer tracking or pressure-driven eviction. |
 
-**Symptom**: Closing live chat does not release GPU/system memory. Node process at 10.5GB RSS and 344% CPU after session ends. Machine runs hot with no active work. Blocks development (can't even type in Claude Code).
-
-**Root causes (identified 2026-03-15)**:
-
-1. **VoiceOrchestrator event listeners never cleaned up**: 4 `Events.subscribe()` calls in constructor, never unsubscribed. Handlers fire continuously even with zero sessions — thousands of emissions/sec × map lookups = 344% CPU burn.
-   - **FIXED**: Listeners now session-scoped — activate on first `registerSession()`, deactivate on last `unregisterSession()`. No idle handlers.
-
-2. **60-second idle timeout hack**: `AudioResourceLifecycle.spawn_idle_watcher()` uses `DEFAULT_IDLE_TIMEOUT_SECS = 60` instead of deterministic cleanup. Session ends → wait 60s → maybe unload. During that window, STT/TTS models (~5GB), Bevy renderer (~3GB), avatar textures (~1GB) all stay loaded.
-   - **NOT FIXED**: Needs deterministic deinit — `on_session_end()` should trigger immediate cleanup when session count hits zero, not a timer.
-
-3. **Fire-and-forget willClose()**: `LiveWidget.disconnectedCallback()` calls `willClose().catch()` — if promise hangs or page unloads before completion, `voice/end-session` never reaches Rust. Session counter stays non-zero → idle watcher never fires → resources leak permanently.
-   - **NOT FIXED**: Needs `beforeunload` + synchronous IPC or Rust-side orphan detection with short timeout.
-
-4. **VoiceOrchestrator belongs in Rust**: This is TypeScript orchestration logic doing event processing, session state management, and bridge coordination. Should be a Rust module with its own thread, queues, init/deinit/health — not a TS singleton.
-
-**Target**: Closing live chat should return memory to within 500MB of pre-session baseline within 30 seconds. Deterministic, not timer-based.
-
-### 4B-2. High Latency in Live Video Calls
-
-**Symptom**: Huge delay between speaking and AI response. Makes conversation feel sluggish.
-
-**Factors**:
-- STT transcription latency (local Whisper model)
-- LLM inference latency (cloud round-trip or local Candle inference)
-- TTS synthesis latency (local model)
-- Video render pipeline latency (Bevy → LiveKit)
-- Network round-trip if using cloud providers
-
-**Targets**:
-- Measure end-to-end latency breakdown (STT → LLM → TTS → render)
-- Streaming TTS: begin speaking as tokens arrive, don't wait for full response
-- Speculative STT: detect speech end faster (current silence threshold may be too conservative)
-- Prefetch/warm models: keep STT/TTS loaded in memory during active session
-
-### 4B-3. Turn-Taking & Simultaneous Speech — UX IMPROVEMENT
-
-**Current**: Multiple AIs sometimes speak simultaneously, creating cacophony. ThoughtStream coordination exists but doesn't prevent overlap well enough in live mode.
-
-**Targets**:
-- Reduce simultaneous speech occurrence (not eliminate — organic conversation is valuable)
-- Better turn-taking signals: detect when one AI is mid-sentence before allowing another to start
-- Priority-based interruption: high-relevance responses can interrupt, low-relevance waits
-- Visual indicator: show who's "about to speak" so user can see the queue
-
-### 4B-4. Multi-AI Presentation Quality
-
-**Current**: All AI avatars render at same resolution regardless of context.
-
-**Targets**:
-- **Full singular view**: When user expands one AI to full screen, render at higher resolution (HD/FullHD tier from ResolutionTier)
-- **Picture-in-picture**: When focused on one AI, show others who are actively speaking as small PiP overlays
-- **Active speaker highlighting**: More prominent visual distinction for who's currently speaking
-- **Adaptive quality**: Speaking AIs get higher resolution budget, silent AIs get lower (already partially implemented via idle_cadence but can be more aggressive)
-
-### 4B-5. Efficiency Improvements
-
-**Current**: System resource usage stays high even when live call is idle or has few active participants.
-
-**Targets**:
-- Deterministic model unloading on session end (not idle timeout)
-- Reduce Bevy render rate further when no visual changes (current: 15fps idle, could go lower)
-- GPU memory pooling: share texture allocations across avatar slots instead of per-slot allocation
-- Track and log resource usage per-component so leaks are visible
-
-### 4B-6. Architectural Consistency — Every Subsystem Needs Init/Deinit/Health
-
-**Current**: VoiceOrchestrator, VoiceService, SentinelWorkspaceManager are ad-hoc singletons with no lifecycle management. No health monitoring, no resource tracking, no observability. Contrast with Rust `ServiceModule` trait and adapter `getCapabilityRegistration()` patterns which have all of this.
-
-**Target**: Every subsystem follows the same pattern:
-- Non-blocking initialization
-- Deterministic deinitialization (releases ALL resources)
-- Health monitoring (healthy/degraded/failed)
-- Resource tracking visible to pressure system
-- Observable via widgets, commands, events
-- Own thread, own queue, lazy wakeup — don't waste cycles, don't hold up callers
+**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers.
 
 ---
 
-## Priority 4C: Offline-First Architecture — ARCHITECTURAL FAILURE
+## Phase 3: Tool Calling & Local Model Reliability
 
-**Status**: System fails to load live calls (and likely other features) without internet access. This violates the core thesis: MacBook Air running the impossible, locally.
+> THE blocker for local-first AI. Personas can't reliably call tools with local models.
 
-**Symptom (2026-03-15)**: Internet dropped at home. Tried to open a live call — nothing would load.
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | TODO | 7 parsers needed: Native, Hermes, Qwen, Llama, DeepSeek, Mistral, GenericXML. |
+| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | TODO | Tool selection, routing, and execution all unreliable. |
+| [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | TODO | CodingAgent, tools, quality, full loop all broken. |
+| [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | TODO | Claude Code dispatch needs error handling and retry. |
+| [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
+| [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
+| [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | TODO | Pick BEST available model for each task, not fixed per-persona. |
+| [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
+| [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | TODO | Personas see screenshots, live visual context. |
+| [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | TODO | Track and limit spend per persona/provider. |
 
-**Investigation needed**:
-- [ ] Which assets load from CDN? (fonts, CSS frameworks, JS libraries, WASM modules)
-- [ ] Does LiveKit client SDK phone home or check a remote server?
-- [ ] Do browser widgets import from unpkg/cdnjs/googleapis?
-- [ ] Does the WebSocket connection fail-check against an external endpoint?
-- [ ] Are avatar models downloaded on demand from remote?
-- [ ] Does any auth flow require internet (OAuth token refresh)?
-
-**The rule**: Every feature that uses local resources (Candle inference, local LiveKit server, local Bevy renderer, local STT/TTS) MUST work offline. Cloud providers failing is expected and acceptable — but the UI not loading, the call not starting, the avatars not rendering? That's a broken architecture.
-
-**Targets**:
-- All static assets bundled locally (no CDN dependencies)
-- LiveKit client connects to local `livekit-server` — no external DNS/STUN/TURN needed
-- UI loads fully offline — degrade gracefully (show "cloud providers unavailable" but local features work)
-- Avatar models cached locally after first download
-- Test: airplane mode → `npm start` → open browser → start live call → local Candle personas respond
+**Done when**: Local 14B model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
 
 ---
 
-## Priority 5: RAG Codebase Indexing (Full Integration) — MOSTLY COMPLETE
+## Phase 4: End-to-End Development Orchestration
 
-**Why fifth**: Foundation exists (CodebaseIndexer proven E2E), but not integrated into persona cognition. This is what makes the AI team actually useful — answering questions about the codebase.
+> From "AI that chats" to "AI that ships code."
 
-### What's Done
-- `CodebaseIndexer` — chunks TS/MD/JS, generates 384-dim embeddings via Rust IPC
-- `CodebaseSearchSource` (RAGSource) — queries code_index, injects into system prompt (priority 55, already wired into ChatRAGBuilder)
-- Relevance threshold 0.35 filters naturally
-- Embedding mixin proven (Rust returns binary f32 data)
-- **Index persistence** — ORM stores code_index entries in SQLite, survives restarts
-- **Incremental indexing** — SHA-256 content hashes skip unchanged files on re-index, deleted files pruned automatically
-- **Query optimization** — switched from load-all-then-topK to `ORM.vectorSearch()` (delegates to Rust vector similarity, no full scan)
-- **Auto-indexing on startup** — ServiceInitializer triggers background incremental index 10s after boot (fire-and-forget, doesn't block startup)
-- **Concurrency guard** — `indexing` flag prevents overlapping index operations
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
+| [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | TODO | write → test → fix → commit loop must actually complete. |
 
-### What's Remaining
-- **File watcher for live re-indexing** — currently re-indexes on startup only, not on file save (acceptable for alpha — `./jtag ai/rag/index-codebase` available for manual refresh)
+**Previously completed:**
+- 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
+- TemplateRegistry — DONE
+- SentinelChatBridge — DONE
+- SentinelDispatchDecider — DONE
 
-### Success Metric
-Ask Helper AI "Why does PersonaUser have both inbox and coordinator?" and get a correct, cited answer within 5 seconds.
-
----
-
-## Priority 6: Tool Calling Reliability — The Local Model Blocker
-
-**Why sixth**: Everything below depends on local models being able to call tools. Today they can't do it reliably. This is THE blocker. A persona with perfect Sentinel pipelines and a perfect workspace is useless if the model can't emit `<tool_use>code/edit...</tool_use>` correctly.
-
-**Competitive insight**: Hermes Agent (Nous Research) solved this with 11 model-specific parsers — Hermes, Qwen, Llama3/4, DeepSeek v3/v3.1, Mistral, Kimi K2, GLM4.5/4.7, Qwen3-Coder. Each handles the model family's unique tool call format (XML tags, JSON blocks, Unicode delimiters, native arrays). Dual-path detection: native `tool_calls` first, XML/JSON text fallback.
-
-**Our current state**: Single regex parser in PersonaAgentLoop. Works for Claude/OpenAI (native tool calling). Breaks constantly for local models that emit malformed XML, wrong parameter names, truncated tags, or model-specific formats like DeepSeek's `＜｜tool▁calls▁begin｜＞`.
-
-**The thesis**: Sentinel pipelines make orchestration deterministic. LoRA makes domain expertise learnable. But neither matters if the model can't reliably invoke the tools. Parser-per-model-family is the bridge.
-
-### 6A. Parser-Per-Model-Family Architecture
-
-**New module**: `PersonaToolCallParser` with strategy pattern
-
-| Parser | Model Family | Format | Key Quirks |
-|--------|-------------|--------|------------|
-| `NativeParser` | Claude, GPT, Groq | JSON `tool_calls` array | Clean, no parsing needed |
-| `HermesParser` | Hermes-tuned (Nous) | `<tool_call>` XML | Standard XML, reliable |
-| `QwenParser` | Qwen, Qwen3-Coder | `<tool_call>` with nested JSON | Escaping issues in JSON values |
-| `LlamaParser` | Llama 3/4 | `<|python_tag|>` prefix + JSON | Non-standard prefix tag |
-| `DeepSeekParser` | DeepSeek v3/R1 | Unicode fullwidth delimiters | `＜｜tool▁calls▁begin｜＞` |
-| `MistralParser` | Mistral, Mixtral | `[TOOL_CALLS]` JSON array | Bracket-based format |
-| `GenericXMLParser` | Fallback | `<tool_use>` / `<tool_call>` | Current regex, enhanced |
-
-**Approach**:
-- AIProviderDaemon already knows the model family per provider → pass parser hint to PersonaAgentLoop
-- Each parser: `parse(text: string): ToolCall[] | null` — returns null if format not detected, falls through to next parser
-- Dual-path: try native first (from API response), then text parsing with model-specific parser, then generic XML fallback
-- Fuzzy tool name repair: `code_edit` → `code/edit`, `codeEdit` → `code/edit` (Hermes does this, we should too)
-- Truncation recovery: if XML is truncated mid-tag, attempt to close it and parse partial
-
-### 6B. ToolGroupRegistry → Model-Aware Examples
-
-ToolGroupRegistry already provides few-shot examples per tool group. Extend to emit examples in the model's preferred format:
-- Native models get JSON function-calling examples
-- XML models get `<tool_use>` examples
-- DeepSeek gets fullwidth-delimited examples
-
-### 6C. Tool Call LoRA Fine-Tuning Dataset
-
-The ultimate solution: fine-tune local models to call OUR tools correctly.
-- Capture every successful tool call (model output → parsed → executed → success) as training data
-- Generate synthetic tool-call training examples from tool definitions
-- Academy dojo mode for tool calling: present tasks, grade by successful tool invocation, retrain on failures
-- A 3B model fine-tuned on 1000 successful tool-call traces will outperform a 70B model that's never seen our tool schema
-
-**Build checklist**:
-- [ ] `PersonaToolCallParser` interface + strategy pattern
-- [ ] 5 model-family parsers (Native, Hermes/Qwen, Llama, DeepSeek, Generic XML)
-- [ ] Parser selection wired to AIProviderDaemon model family
-- [ ] Fuzzy tool name repair (`ToolNameNormalizer` — partially exists in PersonaToolDefinitions)
-- [ ] Truncation recovery for partial XML
-- [ ] Model-format-aware few-shot examples in ToolGroupRegistry
-- [ ] Training data capture for successful tool calls
-- [ ] Academy dojo mode for tool-calling proficiency
-
----
-
-## Priority 6B: Local Coding Model — Ship 14B, Research 32B
-
-**Strategy**: Ship the 14B model (guaranteed quality, fits everywhere). Continue 32B QAT research in parallel — don't block launch on it.
-
-### Alpha Launch Model: Qwen2.5-Coder-14B Compacted at Q5_K
-
-- Fits 16GB MacBook Air AND 32GB Pro (~8-10GB)
-- Q5_K (5.1 bpw) is well above quality floor
-- 30-minute RunPod job using existing pipeline
-- Publish to `continuum-ai/qwen2.5-coder-14b-compacted`
-
-### Research Track: 32B QAT (don't block launch)
-
-**Findings (2026-03-18)**:
-- 32B compacted model is PERFECT at NF4 4-bit (proven on RunPod PyTorch)
-- Q3_K_S (3.5 bpw) is below quality floor — degrades after ~20 tokens
-- QAT (quantization-aware training) WORKS: one round ($0.07) doubled coherent output
-- F16 embedding was a critical bug — F32 is mandatory for 152K+ vocabularies
-- Need more QAT rounds with larger dataset (RealClassEval 488 examples)
-- If QAT reaches 256+ tokens: ship as premium 32B model for 32GB machines
-- Q4_K_M needs dimension padding (ncols 3200 not divisible by 256)
-
-### Remaining Gaps
-
-| Item | Status | Priority |
-|------|--------|----------|
-| **14B model compress + publish** | GAP | **ALPHA BLOCKER** |
-| Qwen2 chat template | GAP | Alpha |
-| Persona config for local model | GAP | Alpha |
-| Auto device detection (16GB→14B, 32GB→32B) | GAP | Alpha |
-| 32B QAT longer training | GAP | Research |
-| Mixed quantization from BF16 | GAP | Research |
-| Publish command (genome/publish) | GAP | Post-alpha |
-
-**Build checklist**:
-- [x] Candle GGUF backend with Qwen2 support (quantized_llama.rs)
-- [x] Architecture-aware metadata, head_dim derivation
-- [x] F32 embedding (F16 was corrupting logits — critical bug fixed)
-- [x] clear_kv_cache without model reload (was OOMing)
-- [x] CandleAdapter local model discovery + "coder" alias + model registry
-- [x] Compression pipeline: planner, GGUF writer, pipeline orchestrator (142 tests)
-- [x] IPC command: plasticity/compress (generated via CommandGenerator)
-- [x] Python subprocess adapter (unified Rust wrapper)
-- [x] First model published to continuum-ai on HuggingFace
-- [x] Benchmark harness (5 coding prompts, speed/quality/memory)
-- [x] QAT proof of concept ($0.07, doubled quality)
-- [x] Architecture-aware EOS tokens (Qwen2: im_end only for chat mode)
-- [ ] **14B model compress + publish (NEXT)**
-- [ ] Qwen2 chat template in prompt builder
-- [ ] Persona config for local model selection
-- [ ] Auto device detection + model selection
-- [ ] 32B QAT with full RealClassEval dataset
-- [ ] Publish command (genome/publish)
-
----
-
-## Priority 7: End-to-End Development Orchestration
-
-**Why seventh**: With reliable tool calling (P6), personas can invoke tools. But invoking individual tools is not "creating things." Claude Code creates things because it has an agent loop that plans → edits → compiles → tests → fixes → iterates → commits. Our personas need the same loop, but built from Sentinel infrastructure instead of hardcoded.
-
-**Competitive insight**: Devin ($500/month) and Claude Code are the only tools that do true end-to-end development. Both are single-agent, cloud-dependent, no training, no persistence. Cursor runs 8 parallel agents in worktrees — 35% of their PRs are agent-authored. Nobody does this locally. Nobody's agents get better at it over time.
-
-**Our advantage**: Sentinel pipelines are JSON-serializable data that personas can create, save, share, and modify. A "build feature" sentinel is a reusable template. A LoRA-trained local model inside a sentinel pipeline with shell verification steps doesn't need to be "smart enough to remember to run tests" — the pipeline MAKES it run tests. The model just writes code. **Infrastructure compensates for model capability.**
-
-### 7A. Sentinel Development Templates — IMPLEMENTED + WORKSPACE ISOLATION
-
-Pre-built pipeline templates as TypeScript builder functions. **Workspace architecture complete (PR #314)**: identity chain fix (personaId flows through full stack), SentinelWorkspaceManager for git worktree isolation, lifecycle cleanup on completion/failure. **CLI front door complete**: `--repoPath` wired through all 4 dev commands (build-feature, fix-bug, code-review, integrate) + TemplateRegistry. **Claude Agent SDK installed**: ClaudeCodeProvider ready for E2E testing. Personas invoke by name via `--template=dev/build-feature`. `TemplateRegistry` provides name-based lookup, listing, and runtime extensibility.
-
-| Template | Steps | What It Does | Status |
-|----------|-------|-------------|--------|
-| `dev/build-feature` | LLM(plan) → Emit(review) → Watch(feedback) → CodingAgent(implement) → Shell(build) → Condition → Shell(test) → Shell(commit) | Collaborative feature dev with team review checkpoints | **Done** |
-| `dev/fix-bug` | CodingAgent(diagnose) → Emit(diagnosis) → Watch(approval) → CodingAgent(fix) → Shell(build+test) → Shell(commit) | Root cause diagnosis → team review → fix → verify | **Done** |
-| `dev/code-review` | Shell(diff) → Parallel[LLM(arch) + LLM(security) + LLM(quality)] → Emit(reviews) → Watch(discussion) → LLM(verdict) | Three parallel review perspectives → team discussion → verdict | **Done** |
-| `dev/create-pr` | Shell(git status) → LLM(summarize) → Shell(push) → Shell(gh pr create) | Summarize changes, push, open PR | Planned |
-| `dev/refactor` | LLM(plan) → Parallel[LLM(edit-file) × N] → Shell(build) → Shell(test) → Shell(commit) | Multi-file refactor with parallel edits | Planned |
-
-**Key design — Collaborative Decision Points**: Templates are NOT fire-and-forget. They have Emit→Watch checkpoints where the AI team reviews, discusses, votes, and provides feedback. Sentinels escalate when stuck, consult when uncertain — like any competent employee. User controls involvement via `autonomous: true` to skip checkpoints.
-
-**Key design — Template + Config**: Templates use Sentinel's existing step interpolation (`{{steps.N.output}}`, `{{input.iteration}}`). The LLM/CodingAgent steps are where intelligence matters — everything else is deterministic. A LoRA-tuned 3B model fills in the LLM blanks; the pipeline handles orchestration, verification, and retry.
-
-**Files**:
-- `system/sentinel/pipelines/TemplateRegistry.ts` — Name-based lookup, listing, runtime registration
-- `system/sentinel/pipelines/DevBuildFeaturePipeline.ts` — Feature builder with collaborative checkpoints
-- `system/sentinel/pipelines/DevFixBugPipeline.ts` — Bug fix with diagnosis-first approach
-- `system/sentinel/pipelines/DevCodeReviewPipeline.ts` — Parallel multi-perspective code review
-
-**Usage**:
-```bash
-# Run a template by name
-./jtag sentinel/run --type=pipeline --template=dev/build-feature \
-  --templateConfig='{"feature":"Add user profiles","personaName":"Helper AI"}'
-
-# List available templates
-./jtag sentinel/list --templatesOnly=true
-```
-
-### 7B. Auto-Triggering From Chat
-
-**Current state**: Persona receives chat message → generates text response (maybe with tool calls). For complex tasks, persona must manually invoke `sentinel/coding-agent` or `sentinel/run`.
-
-**Target**: Persona receives "build an auth middleware" → recognizes this needs a sentinel → selects `dev/build-feature` template → fills parameters from context → spawns sentinel → reports progress to chat.
-
-**Implementation**:
-- Add `SentinelDispatchDecider` to PersonaResponseGenerator (parallel to PersonaEngagementDecider)
-- Decision logic: if task complexity exceeds single-turn tool loop (>3 files, needs build/test, multi-step), dispatch sentinel instead
-- Persona announces in chat: "This needs a multi-step pipeline. Spawning `dev/build-feature` sentinel..."
-- Sentinel progress events flow back to chat via SentinelEventBridge
-- On completion, persona posts summary + diff to chat
-
-### 7C. PR Workflow (GitHub Integration)
-
-The last mile of "creating things" — code changes must become PRs.
-
-- [ ] `code/git/push` — push workspace branch to remote (Workspace.gitPush already exists)
-- [ ] `code/pr/create` — create PR via `gh pr create` (shell command, wrapped as typed command)
-- [ ] `code/pr/review` — post review comments via `gh api`
-- [ ] `code/pr/status` — check CI status, review comments
-- [ ] Wire into `dev/create-pr` sentinel template
-
-### 7D. Sentinel Progress → Chat Bridge
-
-Sentinels currently report via `sentinel/status` polling. For personas creating things, progress must flow into the room naturally.
-
-- [x] SentinelEventBridge emits to chat room when sentinel step completes (SentinelChatBridge)
-- [x] Errors are posted immediately (don't wait for pipeline completion)
-- [x] Final result includes summary, files changed, test results, commit hash
-- [ ] Other personas in the room can see and react to progress
-
-**Build checklist**:
-- [x] 3 sentinel development templates (build-feature, fix-bug, code-review) with collaborative checkpoints
-- [x] TemplateRegistry for name-based lookup, listing, and runtime registration
-- [x] Template resolver in SentinelRunServerCommand (`--template=dev/build-feature`)
-- [x] Built-in templates appear in `sentinel/list --templatesOnly=true`
+**Remaining:**
 - [ ] 2 more templates (create-pr, refactor)
-- [x] SentinelDispatchDecider in response pipeline
-- [x] Auto-triggering for complex tasks (pattern matching + confidence scoring)
 - [ ] PR workflow commands (push, create, review, status)
-- [x] SentinelEventBridge → chat room integration (SentinelChatBridge)
-- [ ] Template parameter extraction from chat context (LLM step)
+- [ ] Template parameter extraction from chat context
+- [ ] Prove the full loop: chat request → sentinel → code → tests → commit → PR
+
+**Done when**: Someone says "add rate limiting to the login endpoint" in chat → persona spawns sentinel → code written → tests pass → PR created. Proven, not theoretical.
 
 ---
 
-## Priority 8: Distillation Pipeline — The Flywheel That Makes Local Models Excel
+## Phase 5: Academy — Full Training Loop
 
-**Why eighth**: P6 makes local models call tools. P7 makes them create things via sentinels. P8 makes them get BETTER at it over time. This is the flywheel that no competitor has.
+> The README promises personas get smarter every day. Prove it.
 
-**Competitive insight**: NVIDIA's Data Flywheel achieved 98% of a 70B model's tool-calling accuracy with a 1B model through distillation. FireAct showed 500 GPT-4 trajectories → 77% improvement in fine-tuned Llama2-7B. DeepSeek-R1 used 800K reasoning traces for SFT-only distillation. The research is clear: **small models + good training data > large models + prompting**.
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#377](https://github.com/CambrianTech/continuum/issues/377) | **Full academy session E2E** | TODO | All challenges → failures → LoRA trained → re-exam → measurable improvement. Never completed. |
+| [#369](https://github.com/CambrianTech/continuum/issues/369) | **RealClassEval trash with local models** | TODO | 53% was with DeepSeek-Chat (cloud). Local models produce garbage. |
+| [#374](https://github.com/CambrianTech/continuum/issues/374) | **Teacher needs cloud API** | TODO | Train a local teacher adapter so Academy works at $0. |
+| [#365](https://github.com/CambrianTech/continuum/issues/365) | **Training job persistence** | TODO | Checkpoint resume, crash recovery, auto-restart for weeks-long runs. |
+| [#344](https://github.com/CambrianTech/continuum/issues/344) | **Ship LoRA-tuned local model** | TODO | A model that passes coding challenges via our tool system. |
+| [#345](https://github.com/CambrianTech/continuum/issues/345) | **LoRA-tuned persona layer** | TODO | Teach personas to use Continuum's own systems. |
+| [#384](https://github.com/CambrianTech/continuum/issues/384) | **Team training** | TODO | Multi-persona project decomposition — roles, parallel training, collaborative building. |
+| [#359](https://github.com/CambrianTech/continuum/issues/359) | **Training env auto-bootstrap** | TODO | Any Grid node can train — zero manual intervention. |
 
-**Our unique position**: We already capture training data from CodingAgent sessions (`captureTraining=true`). We already have the LoRA training pipeline (PEFT, proven E2E). We already have Academy for structured training. What's missing is **closing the loop**: capture → score → filter → train → evaluate → deploy → capture better data.
-
-**See**: [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md) GAP 5 for detailed analysis.
-
-### 8A. Composite Quality Scoring
-
-Replace binary 0.9/0.3 scoring with multi-dimensional quality metrics.
-
+**The critical path:**
 ```
-TraceQualityScore {
-  outcome: 0-1      // did the task succeed?
-  correctness: 0-1   // does code compile, do tests pass?
-  efficiency: 0-1    // steps taken vs. optimal (fewer tool calls = better)
-  complexity: 0-1    // task difficulty (trivial read vs. multi-file feature)
-  novelty: 0-1       // different from existing training data?
-  composite() → weighted sum
-}
+#374 (local teacher) → #377 (full session) → #369 (quality baseline)
+    → #344 (ship tuned model) → #384 (team training)
 ```
 
-### 8B. Evaluation Sentinel
+**Done when**: A full academy session completes on the 5090 tower using only local models. Student scores improve after training. Adapter published to HuggingFace.
 
-After every LoRA training, run an evaluation sentinel that benchmarks the new adapter.
-- Held-out task set (not used in training)
-- Compare new adapter vs. previous version vs. base model
-- Auto-rollback if regression detected
-- Report: "Helper AI improved from 53% → 67% on Python class implementation"
+---
 
-### 8C. The Full Flywheel
+## Phase 6: Genome & Adapter Ecosystem
 
-```
-Teacher (Claude Code/Codex/Aider)
-  → Completes coding task via sentinel
-  → Interaction traces captured with quality scores
-  → Filtered by composite quality (>0.7 threshold)
-  → LoRA training on filtered traces
-  → Evaluation sentinel benchmarks new adapter
-  → If improved: deploy adapter, persona uses it for next task
-  → If regressed: rollback, adjust training mix
-  → Persona uses new adapter → captures traces from its own work
-  → Successful traces feed back into training pool
-  → The student becomes the teacher for the NEXT student
-```
+> Personas carry skills in their genome. Skills page in/out. Skills are shared globally.
 
-### 8D. Negative Example Training
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#382](https://github.com/CambrianTech/continuum/issues/382) | **Genome paging not wired** | TODO | activateSkill/evictLRU exists but not connected to persona loop or GPU governor. |
+| [#378](https://github.com/CambrianTech/continuum/issues/378) | **First HuggingFace adapter publication** | TODO | README promises `continuum:*` tags, searchable marketplace. Never published from system. |
+| [#330](https://github.com/CambrianTech/continuum/issues/330) | **Adapter management** | TODO | Docker-like ops: list, prune, info. 58 old adapters hit 21GB before manual cleanup. |
+| [#319](https://github.com/CambrianTech/continuum/issues/319) | **Separate install from start** | TODO | Detect if build needed. Don't rebuild every time. |
 
-Agent-FLAN research shows including failed traces with corrections reduces hallucination.
-- Capture failed tool calls (wrong params, non-existent tools, truncated XML)
-- Pair each failure with the corrected version
-- Training data: `[bad_output, correction]` pairs
-- This directly trains local models to avoid the exact failure modes from P6
+**Done when**: Persona faces a Python task → genome pages in python-expertise adapter → processes task → publishes adapter to HuggingFace → another instance discovers and pulls it.
 
-**Build checklist**:
-- [ ] TraceQualityScore composite scoring (replace binary 0.9/0.3)
+---
+
+## Phase 7: Autonomous Persona Life
+
+> Not agents you invoke. Teammates who live.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#383](https://github.com/CambrianTech/continuum/issues/383) | **Self-task generation** | TODO | generateSelfTasks() not implemented. Personas only react, never initiate. |
+| [#329](https://github.com/CambrianTech/continuum/issues/329) | **Persona-sentinel integration** | TODO | Autonomous dispatch, sentinel memory → RAG, NL → pipeline, multi-teacher. |
+| [#336](https://github.com/CambrianTech/continuum/issues/336) | **First-run onboarding** | TODO | Guide users to configure API keys, understand the system. |
+
+**Done when**: Leave the system running overnight → come back to find personas have consolidated memories, audited skills, searched HuggingFace for useful adapters, and initiated peer learning sessions. Without any human prompt.
+
+---
+
+## Phase 8: Distillation & Training Flywheel
+
+> The competitive moat: every task makes the next task better.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#327](https://github.com/CambrianTech/continuum/issues/327) | **Distillation pipeline** | TODO | Capture → score → filter → train → evaluate → deploy → capture better data. |
+| [#357](https://github.com/CambrianTech/continuum/issues/357) | **Persistent learning layer** | TODO | Continuum as learning layer for Claude Code and other AI dev tools. |
+
+**Sub-tasks:**
+- [ ] Composite quality scoring (replace binary 0.9/0.3)
 - [ ] Quality-filtered training data pipeline (>0.7 threshold)
-- [ ] Evaluation sentinel template (`eval/benchmark-adapter`)
+- [ ] Evaluation sentinel (benchmark new adapter vs. previous)
 - [ ] Auto-rollback on regression
-- [ ] Negative example capture (failed tool calls + corrections)
-- [ ] Flywheel automation: capture → score → filter → train → evaluate → deploy
-- [ ] Replay buffer: mix 20% historical best traces with new data
+- [ ] Negative example training (failed tool calls + corrections)
+- [ ] Flywheel automation: the full loop runs unattended
+
+**Done when**: Helper AI improves from 53% → 70%+ on RealClassEval after one training cycle. Measured, not assumed.
 
 ---
 
-## Priority 9: Codebase Intelligence
+## Phase 9: Codebase Intelligence
 
-**Why ninth**: Personas creating things (P7) need to understand the codebase they're modifying. Currently, each task starts blind — the model must re-explore every time.
+> Know what you're changing before you change it.
 
-**Competitive insight**: Aider uses PersonalizedPageRank on tree-sitter dependency graphs. Cursor indexes entire codebases into vector DB with sub-100ms lookup. Sweep processes 2M+ files/day with CST entity extraction. OpenCode has native LSP integration for 20+ languages.
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#328](https://github.com/CambrianTech/continuum/issues/328) | **Tree-sitter + dep graph** | TODO | Symbol extraction, dependency graph, sentinel context enrichment, LSP. |
 
-**Our current state**: CodebaseIndexer (P5) chunks files and generates embeddings. CodebaseSearchSource injects relevant code into persona context. This is keyword/semantic search — good for "find files about X" but not for "what does changing this function break?"
-
-**See**: [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md) GAP 1, GAP 2 for detailed analysis.
-
-### 9A. Symbol Extraction (Tree-Sitter)
-
-Rust worker using tree-sitter to extract structured symbols from source files.
-- Functions, classes, types, interfaces, imports, exports
-- Per-file symbol table stored in SQLite via ORM
-- Incremental: re-parse only changed files (SHA-256 content hash, same pattern as CodebaseIndexer)
-- Expose via `codebase/symbols` command
-
-### 9B. Dependency Graph
-
-Build import/call graph across files from extracted symbols.
-- "This function is called by 5 other functions in 3 files"
-- "Changing this type breaks these 12 consumers"
-- PersonalizedPageRank (Aider's approach) to rank files by relevance to current task
-- Expose via `codebase/dependencies` command
-
-### 9C. Sentinel Context Enrichment
-
-LLM steps in sentinel pipelines auto-receive relevant codebase context.
-- `contextSources` field on LLM steps: `["codebase.symbols", "codebase.dependencies"]`
-- Template variable: `{{codebase.relevant_to_file("src/auth.ts")}}` → symbol table + dependency graph for that file
-- Long pipeline context management: step-result summarization to prevent context rot (GSD pattern)
-
-### 9D. LSP Integration (Future)
-
-Native LSP for diagnostics, go-to-definition, find-references.
-- TypeScript (tsserver), Rust (rust-analyzer), Python (pyright)
-- Diagnostics as a first-class tool: `codebase/diagnostics` returns compiler errors structured, not as raw text
-- Go-to-definition enables models to follow code paths without guessing
-
-**Build checklist**:
+**Sub-tasks:**
 - [ ] Tree-sitter Rust worker for symbol extraction (TS, Rust, Python, JS)
 - [ ] Symbol table storage via ORM (incremental, content-hashed)
 - [ ] Dependency graph from import analysis
 - [ ] `codebase/symbols` and `codebase/dependencies` commands
 - [ ] Sentinel LLM step `contextSources` field
 - [ ] Step-result summarization for long pipelines
-- [ ] (Future) LSP integration for diagnostics
+- [ ] (Future) LSP integration
+
+**Done when**: Persona modifying `auth.ts` automatically knows every file that imports it, every function that calls its methods, and every test that covers it — before writing a single line.
 
 ---
 
-## Priority 10: Persona-Sentinel Deep Integration
+## Phase 10: Grid — Multi-Node Mesh
 
-**Why tenth**: With P6-P9, personas have reliable tools, development pipelines, a training flywheel, and codebase intelligence. P10 makes all of this AUTONOMOUS — personas create sentinels as naturally as they form thoughts.
+> Your machines form a single organism.
 
-**The vision** (from SENTINEL-GAP-ANALYSIS.md GAP 7): Sentinels are currently **adjacent** to personas — invoked explicitly. They should be **part of** persona cognition. A persona should think "I need to learn TypeScript testing" and autonomously spawn an Academy session, or think "this code needs reviewing" and spawn a review sentinel, without human instruction.
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#323](https://github.com/CambrianTech/continuum/issues/323) | **Tailscale mesh for remote inference** | TODO | Multi-tower transparent command routing. |
+| [#364](https://github.com/CambrianTech/continuum/issues/364) | **Cross-node event forwarding** | TODO | Events must propagate across Grid nodes (Rust plumbing). |
+| [#349](https://github.com/CambrianTech/continuum/issues/349) | **Reticulum mesh** | TODO | MPC identity + encrypted transport. Replace Tailscale dependency. |
+| [#337](https://github.com/CambrianTech/continuum/issues/337) | **Distributed inference + training** | TODO | Shard models and training across towers. |
 
-### 10A. Autonomous Sentinel Dispatch
-
-Wire sentinel dispatch into PersonaUser's autonomous task generation (`generateSelfTasks()`).
-- Persona analyzes own failure patterns → spawns Academy dojo in weak areas
-- Persona detects PR merged → spawns review sentinel
-- Persona notices test failures in chat → spawns fix-bug sentinel
-- Persona reaches training data threshold → spawns training sentinel
-
-### 10B. Sentinel Memory → Persona RAG
-
-Sentinel execution results feed back into persona's RAG context.
-- Completed sentinel → summary stored as persona memory
-- "I built auth middleware last week using Express + JWT" → searchable via Hippocampus
-- Failed sentinels → lessons learned stored as negative examples
-- Cross-persona: if Helper AI's sentinel succeeded, Teacher AI can find that memory
-
-### 10C. Natural Language → Pipeline
-
-Persona describes a pipeline in natural language → LLM step generates JSON pipeline definition.
-- "Build a feature that adds rate limiting to the login endpoint, with tests"
-- → LLM generates `dev/build-feature` template with filled parameters
-- Persona reviews generated pipeline, modifies if needed, then dispatches
-- Per-persona template library: persona saves and reuses pipelines that worked
-
-### 10D. Multi-Teacher Distillation
-
-Multiple external agents as teachers, each captured in the same training format.
-- `ClaudeCodeProvider` (already implemented)
-- `CodexProvider` (OpenAI Codex CLI)
-- `AiderProvider` (subprocess-based, good for git workflow expertise)
-- Multi-teacher training merges traces from all providers → more robust student
-- Domain routing: route traces to domain-specific adapters (Python traces → python-expertise adapter)
-
-**Build checklist**:
-- [ ] Sentinel dispatch in `generateSelfTasks()` based on failure analysis
-- [ ] Sentinel execution summaries stored as persona memories
-- [ ] Natural language → pipeline JSON generation (LLM step)
-- [ ] Per-persona sentinel template library
-- [ ] CodexProvider implementation
-- [ ] AiderProvider implementation
-- [ ] Multi-teacher training data merger
-- [ ] Domain-specific adapter routing
+**Done when**: MacBook Air coordinates. 5090 tower trains for a week. Checkpoint resumes across crashes. Training dashboard shows live progress from anywhere on the mesh.
 
 ---
 
-## Priority 11: Adapter Management
+## Issue Map — Every Open Issue, One Phase
 
-**User request**: Docker-like management for LoRA adapters.
-- 58 old adapters accumulated to 21GB before manual cleanup
-- Need `genome/adapter-list`, `genome/adapter-prune`, `genome/adapter-info` commands
-- Integrate with EvictionRegistry for usage tracking
-- LRU eviction policy: auto-prune adapters not used in N days
-
----
-
-## Priority 12: Technical Debt Deep Clean
-
-### 12A. ESLint Configuration
-- Missing `@typescript-eslint/eslint-plugin`
-- Can't catch type errors, unused imports, style violations
-- Technical debt accumulates unchecked
-
-### 12B. Disabled Systems (Dead Code or Re-enable)
-- Circuit breaker: `maxConsecutiveFailures: 999999` in BaseAIProviderAdapter (disabled)
-- PersonaState energy rates: effectively 0 (thermodynamic system dead)
-- Decision: re-enable with proper values, or remove entirely
-
-### 12C. Error Handling Audit
-- Silent `.ok()` swallowing in sentinel executor (7+ sites) — **FIXED in P1E**
-- Missing input validation: sentinel/run doesn't validate pipeline after JSON.parse()
-- `e.to_string()` vs `format_pg_error()` pattern may exist in other Postgres sites
-
-### 12E. AI `data/create` Failures — System Must Accommodate, Not Friction
-
-**Status**: Active, high-impact. Every AI persona hits this. The system is too rigid.
-
-**Philosophy**: Models will emit whatever format they emit. Providers will retire models without notice. Commands will be called with weird payloads. The system must absorb all of this gracefully — accommodate, don't friction.
-
-**Current errors (2026-03-14):**
-
-| Provider | Error | What System Should Do Instead |
-|----------|-------|-------------------------------|
-| Groq Lightning | 400: `tool_use_failed` — emits `<function=name{json}</function>` | Parse it. That's a valid tool call in Groq's format. Add a parser. (P6A) |
-| DeepSeek, Helper, Local, CodeReview | Request timeout: `data/create` | `data/create` is hanging — fix the command, not the callers |
-| Qwen3-Omni | "Provider not available" | Discover and register dynamically. Don't require manual registration. (P4) |
-| Together Assistant | "Unable to access non-serverless model" | Model was retired. Detect, fall back to available model, don't error. |
-
-**Root causes — all are system rigidity, not model failures:**
-1. **Tool call parsing is too narrow**: Only handles native JSON + our XML format. Models emit dozens of formats (Groq function tags, DeepSeek fullwidth Unicode, Llama python tags). System must parse all of them. → P6A parser-per-model-family.
-2. **`data/create` hangs under load**: 4+ providers all timing out on the same command. The ORM write path or schema validation is the bottleneck, not the models. Needs investigation and fix.
-3. **Provider/model discovery is static**: Models get retired, new ones appear daily. Hard-coded model lists go stale immediately. → P4 adapter self-registration + API discovery.
-4. **No graceful degradation on provider errors**: A retired model should trigger automatic fallback to the next available model in that provider, not a 400 error surfaced to the persona.
-
-**Impact**: Personas cannot persist data (memories, observations, decisions). A persona that can't write memories can't learn. This is the autonomous loop's foundation — it must be rock solid.
-
-### 12D. Rust Test Failures (14 pre-existing)
-- 6 `modules::data::tests::*` — data module integration tests (SQLite-related)
-- 3 `orm::connection_manager::tests::*` — connection pooling / LRU eviction
-- 3 `orm::migration::tests::*` — migration pause/resume, verify, cross-db
-- 1 `orm::sqlite::tests::test_create_and_read` — basic CRUD assertion failure
-- 1 `rag::engine::tests::test_parallel_source_loading` — timing-dependent race condition
-- Total: 1261 pass, 14 fail, 25 ignored (as of 2026-03-14)
+| Phase | Issues | Count |
+|-------|--------|-------|
+| **0: Critical Bugs** | #376, #335, #317, #385, #381, #373, #360 | 7 |
+| **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334 | 12 |
+| **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380 | 8 |
+| **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
+| **4: Dev Orchestration** | #326, #370 | 2 |
+| **5: Academy** | #377, #369, #374, #365, #344, #345, #384, #359 | 8 |
+| **6: Genome** | #382, #378, #330, #319 | 4 |
+| **7: Autonomous** | #383, #329, #336 | 3 |
+| **8: Distillation** | #327, #357 | 2 |
+| **9: Codebase Intel** | #328 | 1 |
+| **10: Grid** | #323, #364, #349, #337 | 4 |
+| **Total** | | **61** |
 
 ---
 
-## The Thesis: Infrastructure > Model Capability
+## The Narrative
 
-The competitive landscape reveals a market fixated on smarter models. Every competitor races for larger context windows, better reasoning, faster inference. Continuum takes the opposite bet:
+**Phase 0** removes the embarrassments — things that break the first-run experience.
 
-**Dumb models + smart infrastructure > smart models + no infrastructure.**
+**Phase 1** makes the codebase worthy of public scrutiny. Contributors will copy these patterns forever.
+
+**Phase 2** makes the live video calls — the most visually impressive feature — actually reliable. No leaks, low latency, works offline.
+
+**Phase 3** solves THE local model blocker. Without reliable tool calling, personas are chat decorations. With it, they're functional teammates.
+
+**Phase 4** proves personas can CREATE things, not just discuss them. Code → tests → PR, end-to-end.
+
+**Phase 5** proves personas get SMARTER over time. The full Academy loop, measured.
+
+**Phase 6** makes trained skills portable and composable. The genome ecosystem.
+
+**Phase 7** makes personas autonomous — they initiate work, not just respond to it.
+
+**Phase 8** closes the flywheel — every task improves the next task. The competitive moat.
+
+**Phase 9** gives personas deep codebase understanding. Know before you change.
+
+**Phase 10** distributes everything across a mesh of commodity hardware. The Cell architecture realized.
+
+---
+
+## The Thesis
+
+**Infrastructure > Model Capability.**
 
 | Layer | What It Does | Why Models Don't Need To |
 |-------|-------------|------------------------|
 | **Sentinel Pipelines** | Deterministic orchestration: plan → code → build → test → fix → commit | Model doesn't need to "remember" to run tests — pipeline forces it |
-| **Generator System** | Encodes correct patterns as code templates | Model doesn't need to know project conventions — generator enforces them |
-| **LoRA Fine-Tuning** | Bakes domain expertise into weights | Model doesn't need 200K context of documentation — it already knows |
+| **Generator System** | Encodes correct patterns as code templates | Model doesn't need project conventions — generator enforces them |
+| **LoRA Fine-Tuning** | Bakes domain expertise into weights | Model doesn't need 200K context of docs — it already knows |
 | **Academy** | Structured training with deterministic evaluation | Model doesn't need to self-assess — benchmarks measure truth |
 | **Parser-Per-Model** | Handles each model's unique tool-call format | Model doesn't need to conform to one format — parser adapts |
 | **Workspace Isolation** | Git worktrees per task, rollback on failure | Model doesn't need to be careful — infrastructure catches mistakes |
 
-A LoRA-tuned Llama 3.2 3B running inside a `dev/build-feature` sentinel with shell verification, tree-sitter context enrichment, and automatic retry on compilation failure will produce working code more reliably than a prompted GPT-4 in a single-shot terminal session. Because the infrastructure does what the model can't: remember, verify, retry, learn.
+A LoRA-tuned 3B running inside a `dev/build-feature` sentinel with shell verification, tree-sitter context, and automatic retry will produce working code more reliably than a prompted GPT-4 in a single-shot terminal. Because the infrastructure does what the model can't: remember, verify, retry, learn.
 
-**The competitors' ceiling**: They need smarter models forever. Their agents are exactly as good as the latest API release.
+**The competitors' ceiling**: They need smarter models forever.
 
-**Our ceiling**: Every task our agents complete makes them better at the next task. The flywheel compounds. A persona that's been training for 6 months on YOUR codebase, YOUR patterns, YOUR domain — fine-tuned on thousands of successful tool-call traces — running inside deterministic pipelines with full codebase intelligence — is not competing with Claude Code. It's competing with a junior developer who has memorized your entire codebase. And it works offline, costs nothing per token, and never takes a day off.
-
-**See also**: [COMPETITIVE-LANDSCAPE.md](COMPETITIVE-LANDSCAPE.md) for full market analysis, [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md) for detailed technical gaps and research references.
-
----
-
-## Implementation Order
-
-```
-P1: Architectural Integrity     ← Foundation for everything else
-  ├── 1A: Type safety (any elimination)
-  ├── 1B: Command infrastructure (single source of truth + generator enforcement)
-  ├── 1C: God class decomposition        ← PARTIALLY COMPLETE (4 extractions done)
-  ├── 1D: Magic number consolidation     ← COMPLETE
-  ├── 1E: Rust panic safety              ← MOSTLY COMPLETE
-  └── 1F: ts-rs exports                 ← COMPLETE
-
-P2: Pressure System              ← COMPLETE (PR #304)
-  ├── 2A: ThoughtStream slots    ✓
-  └── 2B: Voice broadcast gating ✓
-
-P3: Decision Logging (5C)        ← COMPLETE (PR #305 + current)
-
-P4: Scene Lifecycle Bug           ← MOSTLY COMPLETE (PR #305)
-
-P5: RAG Codebase Indexing         ← MOSTLY COMPLETE (incremental + auto-index + vectorSearch)
-
-P6: Tool Calling Reliability      ← THE local model blocker
-  ├── 6A: Parser-per-model-family (7 parsers)
-  ├── 6B: Model-aware few-shot examples
-  └── 6C: Tool-call LoRA training dataset
-
-P7: E2E Development Orchestration ← Personas creating things, not describing things
-  ├── 7A: Sentinel development templates (5 templates)
-  ├── 7B: Auto-triggering from chat
-  ├── 7C: PR workflow (GitHub integration)
-  └── 7D: Sentinel progress → chat bridge
-
-P8: Distillation Pipeline         ← The flywheel: agents that get better
-  ├── 8A: Composite quality scoring
-  ├── 8B: Evaluation sentinel
-  ├── 8C: Full flywheel automation
-  └── 8D: Negative example training
-
-P9: Codebase Intelligence         ← Know what you're changing
-  ├── 9A: Tree-sitter symbol extraction
-  ├── 9B: Dependency graph
-  ├── 9C: Sentinel context enrichment
-  └── 9D: LSP integration (future)
-
-P10: Persona-Sentinel Integration ← Autonomous creation
-  ├── 10A: Autonomous sentinel dispatch
-  ├── 10B: Sentinel memory → persona RAG
-  ├── 10C: Natural language → pipeline
-  └── 10D: Multi-teacher distillation
-
-P11: Adapter Management           ← Docker-like adapter ops
-
-P12: Technical Debt Deep Clean    ← ESLint, dead code, error handling
-```
-
-**The narrative**: P1-P5 built the foundation (types, pressure, logging, lifecycle, indexing). P6-P10 are the **creation stack** — the path from "AI that chats" to "AI that ships code." P6 makes tools work. P7 makes tools compose into workflows. P8 makes workflows improve over time. P9 gives workflows understanding. P10 makes it all autonomous. P11-P12 are maintenance.
-
-Each priority is a feature branch, a PR, a merge. No mixing concerns across branches.
+**Our ceiling**: Every task makes the next task better. The flywheel compounds. A persona training for 6 months on YOUR codebase, YOUR patterns, YOUR domain — fine-tuned on thousands of successful traces — running inside deterministic pipelines with full codebase intelligence — is not competing with Claude Code. It's competing with a junior developer who memorized your entire codebase. And it works offline, costs nothing per token, and never takes a day off.
 
 ---
 
 ## Superseded Documents
 
-The following planning docs are partially or fully superseded by this analysis:
-- `ARCHITECTURE-GAPS-PHASE1.md` — Gap 1 (RAG indexing) now proven E2E, covered in P5
-- `TECHNICAL-DEBT-AUDIT.md` — Updated numbers in P1 (was 1,108 `any`, now 831 production + 1,269 test)
-- `ELEGANCE-AUDIT-2026-02-15.md` — Rust issues covered in P1D, TS issues in P1A-C
-- `PHASE-5C-STATUS.md` — Still accurate, referenced from P3
-- `PRACTICAL-ROADMAP.md` — Milestones 2-5 covered in P5, P7, P8, P9, P10
-- `PHASE-5C-INTEGRATION-PLAN.md` — Detailed steps for P3
-- `CODING-AI-FOUNDATION.md` — Tiers 1-4 partially superseded; memory persistence done, tool safety done, coding enablement now in P6-P7
-- `SENTINEL-GAP-ANALYSIS.md` — Still accurate as deep technical reference; gaps mapped to P6 (GAP tool calling), P7 (GAP 4 UX), P8 (GAP 5 quality), P9 (GAP 1 codebase, GAP 2 context), P10 (GAP 7 persona integration, GAP 6 multi-provider)
+- `ARCHITECTURE-GAPS-PHASE1.md` — Gap 1 (RAG indexing) now proven E2E, covered in Phase 1/9
+- `TECHNICAL-DEBT-AUDIT.md` — Updated numbers in Phase 1 (was 1,108 `any`, now 831)
+- Previous version of this doc (2026-03-15) — replaced with phased issue-driven plan
+
+**See also**: [COMPETITIVE-LANDSCAPE.md](COMPETITIVE-LANDSCAPE.md) | [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md)

@@ -27,6 +27,8 @@
 **Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090.
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
+>
+> **Alpha roadmap**: 61 tracked issues across 10 phases — from critical bugs to the full training flywheel. Everything described below is built or actively being wired together. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
 
 ---
 
@@ -255,7 +257,7 @@ async serviceInbox() {
 
 Sentinels are the subconscious — handling formulaic patterns so the persona's mind handles only novel decisions.
 
-**10 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent. 111 Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
+**12 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent, Approve, WebResearch. 55 Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
 
 A **Recipe IS a Sentinel with a UI layout.** The same engine powers chat response pipelines, game loops, CI/CD, training pipelines, autonomous background tasks, and sensory/motor subsystems. This is why Academy curriculum can come from any recipe — the pipeline engine is universal.
 
@@ -272,20 +274,20 @@ Not a Node.js app with Rust helpers. A **Rust RTOS with TypeScript as thin UI/po
 ```
 Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
-TypeScript Bridge (317 commands, auto-discovered)
+TypeScript Bridge (320 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 22 modules, 1079+ tests)
+continuum-core (Rust — 26 modules, 1,179+ tests)
     ├── Persona Engine    — autonomous loop, cognitive state, coordination
     ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
-    ├── Sentinel Engine   — 10 step types, recursive pipelines, 111 tests
+    ├── Sentinel Engine   — 12 step types, recursive pipelines, 55 tests
     ├── RAG Engine        — 5-level memory hierarchy, cross-cognition access
     ├── Live Engine       — WebRTC, Bevy 3D avatars, voice, video, captions
-    ├── GPU Governor      — 4-layer resource governance, 19 managed consumers
+    ├── GPU Governor      — 4-layer resource governance, 3 subsystems
     ├── Grid Engine       — Tailscale + Reticulum mesh, transparent command routing
     └── Data Layer        — type-safe ORM, Postgres + SQLite, entity system
 ```
 
-**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 317 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
+**Two universal primitives.** Everything built on `Commands.execute()` and `Events.subscribe()`. 320 commands, auto-discovered from the filesystem. No central registry. No switch statements. Adding a capability = adding a directory.
 
 **12 AI providers.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral — plus local inference via Candle (Rust-native) and Candle-gRPC. Fine-tuning through 6 providers or local PEFT. No vendor lock-in.
 
@@ -371,7 +373,7 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 
 ## Documentation
 
-326 architecture documents and growing. Start here:
+354 architecture documents and growing. Start here:
 
 | Document | What |
 |----------|------|
