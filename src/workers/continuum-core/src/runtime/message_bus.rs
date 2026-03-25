@@ -53,9 +53,13 @@ pub struct MessageBus {
     sender: broadcast::Sender<BusEvent>,
 
     /// Ring buffer of recent events for race-condition-safe watch steps.
-    /// Watch steps check this before subscribing to the broadcast channel
-    /// so they don't miss events emitted just before their subscription.
     recent_events: Mutex<VecDeque<TimestampedEvent>>,
+
+    /// Per-prefix coalescing: tracks last emit time per event prefix.
+    /// Events matching a coalesced prefix are dropped if emitted within
+    /// the coalescing window (50ms default). Prevents event floods from
+    /// bulk operations like codebase indexing.
+    coalesce_tracker: DashMap<String, Instant>,
 }
 
 impl Default for MessageBus {
@@ -65,12 +69,19 @@ impl Default for MessageBus {
 }
 
 impl MessageBus {
+    /// Minimum interval between events with the same prefix.
+    /// Events arriving faster than this are dropped (coalesced).
+    /// 50ms = max 20 events/sec per prefix — enough for UI updates,
+    /// prevents flooding from bulk ops (indexer, ORM batch writes).
+    const COALESCE_WINDOW_MS: u128 = 50;
+
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(1024);
         Self {
             subscriptions: DashMap::new(),
             sender,
             recent_events: Mutex::new(VecDeque::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
+            coalesce_tracker: DashMap::new(),
         }
     }
 
@@ -181,13 +192,46 @@ impl MessageBus {
 
     /// Publish without async (for use from sync code).
     /// Only broadcasts to deferred tier — synchronous handlers are skipped.
+    /// Applies per-prefix coalescing to prevent event floods from bulk operations.
     pub fn publish_async_only(&self, event_name: &str, payload: serde_json::Value) {
+        // Passthrough: sentinel/academy/chat events need real-time delivery
+        let is_realtime = event_name.starts_with("sentinel:")
+            || event_name.starts_with("academy:")
+            || event_name.starts_with("chat:")
+            || event_name.starts_with("presence:")
+            || event_name.starts_with("tool:");
+
+        if !is_realtime {
+            // Coalesce: extract prefix (first two segments) and rate-limit
+            let prefix = Self::event_prefix(event_name);
+            let now = Instant::now();
+
+            if let Some(last) = self.coalesce_tracker.get(&prefix) {
+                if now.duration_since(*last).as_millis() < Self::COALESCE_WINDOW_MS {
+                    return; // Drop — too fast
+                }
+            }
+            self.coalesce_tracker.insert(prefix, now);
+        }
+
         let event = BusEvent {
             name: event_name.to_string(),
             payload,
         };
         self.record_recent(&event);
         let _ = self.sender.send(event);
+    }
+
+    /// Extract event prefix for coalescing (first two segments).
+    /// "data:users:created" → "data:users"
+    /// "code_index:created" → "code_index:created"
+    fn event_prefix(event_name: &str) -> String {
+        let parts: Vec<&str> = event_name.splitn(3, ':').collect();
+        if parts.len() >= 2 {
+            format!("{}:{}", parts[0], parts[1])
+        } else {
+            event_name.to_string()
+        }
     }
 }
 
