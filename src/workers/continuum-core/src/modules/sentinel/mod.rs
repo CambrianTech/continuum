@@ -148,7 +148,10 @@ impl SentinelModule {
         let args: Vec<String> = p
             .json_opt("args")
             .unwrap_or_else(|| vec!["run".to_string(), "build".to_string()]);
-        let timeout_secs = p.u64_or("timeout", 600);
+        // timeout=0 means no timeout (Academy sessions can run for hours/days).
+        // Default 600s (10 min) for ad-hoc sentinels.
+        let raw_timeout = p.u64_or("timeout", 600);
+        let timeout_secs = if raw_timeout == 0 { u64::MAX / 2 } else { raw_timeout };
         let env: HashMap<String, String> = p.json_or("env");
 
         // Check if this is a pipeline execution
@@ -464,7 +467,8 @@ impl SentinelModule {
     async fn await_sentinel(&self, params: Value) -> Result<CommandResult, String> {
         let p = Params::new(&params);
         let handle_id = p.str("handle")?;
-        let timeout_secs = p.u64_or("timeout", 600);
+        let raw_timeout = p.u64_or("timeout", 600);
+        let timeout_secs = if raw_timeout == 0 { u64::MAX / 2 } else { raw_timeout };
 
         // Clone the watch receiver while holding the DashMap ref briefly
         let mut rx = {
