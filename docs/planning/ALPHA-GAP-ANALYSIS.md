@@ -114,8 +114,9 @@ This document is the **single source of truth** for remaining work before open-s
 | [#332](https://github.com/CambrianTech/continuum/issues/332) | **Offline-first architecture** | TODO | Live calls fail without internet. All local features must work offline. |
 | [#380](https://github.com/CambrianTech/continuum/issues/380) | **GPU governor: full consumer management** | TODO | Only 3 subsystems, no dynamic consumer tracking or pressure-driven eviction. |
 | [#399](https://github.com/CambrianTech/continuum/issues/399) | **Persona response latency: 2+ min** | TODO | 15 personas thundering herd, no priority escalation for human messages, backpressure spikes to critical. |
+| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. All personas need working senses — was working, needs e2e verification. |
 
-**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers. Human message gets AI response within 15s.
+**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers. Human message gets AI response within 15s. All personas can see (directly or bridged).
 
 ---
 
@@ -282,7 +283,7 @@ This document is the **single source of truth** for remaining work before open-s
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, #385, #381, #373 | 3 remaining |
 | **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360 | 13 |
-| **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399 | 9 |
+| **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399, #409 | 10 |
 | **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
 | **4: Dev Orchestration** | #326, #370 | 2 |
 | **5: Academy** | #377, #369, #374, #365, #344, #345, #384, #359 | 8 |
@@ -291,7 +292,7 @@ This document is the **single source of truth** for remaining work before open-s
 | **8: Distillation** | #327, #357 | 2 |
 | **9: Codebase Intel** | #328 | 1 |
 | **10: Grid** | #323, #364, #349, #337 | 4 |
-| **Total** | | **62** |
+| **Total** | | **63** |
 
 ---
 
