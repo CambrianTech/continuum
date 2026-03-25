@@ -42,12 +42,14 @@ export class ChatSendServerCommand extends ChatSendCommand {
       throw new Error(`Room not found: ${params.room || 'general'}`);
     }
 
-    // 2. Get sender — explicit senderId takes priority, otherwise resolve human owner.
-    // params.userId reflects the session identity (could be @cli, agent, system).
-    // For chat/send without explicit sender, the human owner is the correct attribution
-    // since this is a single-owner system and CLI/agent are the human's tools.
-    const sender = params.senderId
-      ? await this.findUserById(params.senderId, params)
+    // 2. Get sender — resolve identity from whoever initiated the command.
+    // Priority: explicit senderId > params.userId (auto-injected by infrastructure) > human owner fallback.
+    // When a persona calls chat/send via tool executor, params.userId is the persona's UUID.
+    // When the CLI calls chat/send, params.userId is the human owner or @cli.
+    // Only fall back to human owner when no identity is available at all.
+    const senderId = params.senderId || params.userId;
+    const sender = senderId
+      ? await this.findUserById(senderId as UUID, params)
       : await this.findHumanOwnerOrFallback(params);
 
     // 3. Create message entity

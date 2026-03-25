@@ -79,7 +79,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
 | [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
 | [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date/pagination/indexes** | INVESTIGATED | Dates work correctly (TIMESTAMPTZ/RFC3339). Composite indexes working for high-traffic tables. Cursor pagination unimplemented (OFFSET fine for alpha). |
-| [#412](https://github.com/CambrianTech/continuum/issues/412) | **chat/send sender identity** | TODO | CLI sends show as human owner. Persona tool calls should show as persona. |
+| [#412](https://github.com/CambrianTech/continuum/issues/412) | **chat/send sender identity** | DONE (PR #422) | Persona tool calls now show as persona. Uses params.userId (auto-injected). |
 
 **Previously completed:**
 - 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
@@ -137,7 +137,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
 | [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | TODO | Personas see screenshots, live visual context. |
 | [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
-| [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | TODO | Personas hit "stream not found" with no hint of valid streams. Found by AI team. |
+| [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | DONE (PR #421) | Error messages now list available streams. Found by AI team. |
 | [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate Qwen3.5-35B-A3B** | TODO | Opus reasoning distilled, 3B active MoE. Could replace Llama-3.2-3B as local model. |
 
 **Done when**: Local model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
@@ -153,8 +153,8 @@ This document is the **single source of truth** for remaining work before open-s
 | [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
 | [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | PARTIAL (PR #407) | sentinel/coding-agent works e2e. Persona→chat→code trigger needs proof. |
 | [#411](https://github.com/CambrianTech/continuum/issues/411) | **Self-improving system** | TODO | Personas autonomously propose → code → test → PR. The endgame. |
-| [#415](https://github.com/CambrianTech/continuum/issues/415) | **Dispatch classifier too trigger-happy** | TODO | Chat messages dispatched as bug fix tasks. Burned $0.50 on a conversation. |
-| [#416](https://github.com/CambrianTech/continuum/issues/416) | **sentinel/resume rejects BudgetExhausted** | TODO | Status set to Failed not BudgetExhausted — can't resume after budget extension. |
+| [#415](https://github.com/CambrianTech/continuum/issues/415) | **Dispatch classifier too trigger-happy** | DONE (PR #419) | Tightened patterns + technical context gate. |
+| [#416](https://github.com/CambrianTech/continuum/issues/416) | **sentinel/resume rejects BudgetExhausted** | DONE (PR #420) | Budget exhaustion now sets correct resumable status. |
 
 **Previously completed:**
 - 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
