@@ -2384,6 +2384,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires libonnxruntime.dylib — run with ORT_DYLIB_PATH set"]
     async fn test_backfill_vectors() {
         let module = DataModule::new();
 
