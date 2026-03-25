@@ -125,12 +125,14 @@ impl PersonaCognitionEngine {
         // Mention score (direct mentions = high priority)
         let mention_score = if self.is_mentioned(content) { 1.0 } else { 0.3 };
 
-        // Sender score (humans > AI for response priority)
+        // Sender score (humans >> AI for response priority)
+        // Human messages should ALWAYS outprioritize AI-to-AI chatter.
+        // A human waiting 2+ minutes while AIs process old inter-AI messages is unacceptable.
         let sender_score = match sender_type {
-            SenderType::Human => 0.9,
-            SenderType::Persona => 0.4,
-            SenderType::Agent => 0.5,
-            SenderType::System => 0.2,
+            SenderType::Human => 1.0,
+            SenderType::Persona => 0.3,
+            SenderType::Agent => 0.4,
+            SenderType::System => 0.1,
         };
 
         // Voice boost (voice = more urgent)
@@ -139,9 +141,10 @@ impl PersonaCognitionEngine {
         // Room score (could be enhanced with recent room tracking)
         let room_score = 0.5;
 
-        // Combine scores
+        // Combine scores — sender weight increased from 0.2 to 0.3 so human messages
+        // reliably outrank AI-to-AI chatter even without @mentions
         let base_score =
-            recency_score * 0.2 + mention_score * 0.4 + sender_score * 0.2 + room_score * 0.2;
+            recency_score * 0.15 + mention_score * 0.35 + sender_score * 0.3 + room_score * 0.2;
 
         let final_score = (base_score + voice_boost).min(1.0);
 
