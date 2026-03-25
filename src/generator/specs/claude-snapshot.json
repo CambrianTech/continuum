@@ -1,0 +1,67 @@
+{
+  "name": "claude/snapshot",
+  "description": "Saves a work-state snapshot for session continuity. Captures what Claude was doing, what's pending, and what comes next — so the next Claude instance can resume without reading 200 lines of MEMORY.md and guessing.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "summary",
+      "type": "string",
+      "description": "What was being worked on — the current task and approach"
+    },
+    {
+      "name": "pendingWork",
+      "type": "string",
+      "optional": true,
+      "description": "What's unfinished — branches, uncommitted code, failing tests"
+    },
+    {
+      "name": "nextSteps",
+      "type": "string",
+      "optional": true,
+      "description": "What should happen next — the plan for the next session"
+    },
+    {
+      "name": "decisions",
+      "type": "string",
+      "optional": true,
+      "description": "Key decisions made this session and why — so the next instance doesn't relitigate them"
+    },
+    {
+      "name": "issuesWorked",
+      "type": "string",
+      "optional": true,
+      "description": "Comma-separated issue numbers touched this session (e.g. '376,335,317')"
+    }
+  ],
+  "results": [
+    {
+      "name": "snapshotId",
+      "type": "string",
+      "description": "Unique ID for this snapshot"
+    },
+    {
+      "name": "filePath",
+      "type": "string",
+      "description": "Where the snapshot was saved"
+    },
+    {
+      "name": "timestamp",
+      "type": "string",
+      "description": "When the snapshot was taken"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Save end-of-session snapshot",
+      "params": {
+        "summary": "Fixed 3 Phase 0 bugs: chat/send userId, duplicate tabs, live double-init",
+        "pendingWork": "ORM date handling investigated but deferred to Phase 1",
+        "nextSteps": "Phase 1 code quality — start with #363 switch elimination or #351 magic strings",
+        "decisions": "Moved #360 from Phase 0 to Phase 1 — dates work correctly, not a ship-blocker",
+        "issuesWorked": "376,335,317,360"
+      },
+      "notes": "Next session runs claude/context + reads latest snapshot to resume instantly"
+    }
+  ]
+}

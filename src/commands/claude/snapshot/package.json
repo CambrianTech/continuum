@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/claude/snapshot",
+  "version": "1.0.0",
+  "description": "Saves a work-state snapshot for session continuity. Captures what Claude was doing, what's pending, and what comes next — so the next Claude instance can resume without reading 200 lines of MEMORY.md and guessing.",
+  "main": "server/ClaudeSnapshotServerCommand.ts",
+  "types": "shared/ClaudeSnapshotTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ClaudeSnapshotIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "claude/snapshot"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
