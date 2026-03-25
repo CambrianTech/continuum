@@ -567,9 +567,13 @@ export class PersonaResponseGenerator {
         // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
         const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
+        // Use the ACTUAL provider/model (after task routing), not the persona's default.
+        // Without this, candle→deepseek upgrades show $0 cost.
+        const actualProvider = request.provider ?? this.modelConfig.provider;
+        const actualModel = request.model ?? this.modelConfig.model;
         const cost = calculateModelCost(
-          this.modelConfig.provider,
-          this.modelConfig.model,
+          actualProvider,
+          actualModel,
           inputTokenEstimate,
           outputTokenEstimate
         );
