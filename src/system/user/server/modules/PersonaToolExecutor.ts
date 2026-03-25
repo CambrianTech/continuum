@@ -201,8 +201,8 @@ export class PersonaToolExecutor {
       });
     }
 
-    // Execute via AgentToolExecutor (corrections already applied, so pass corrected directly)
-    const agentResult = await this.agentExecutor.executeToolCall(
+    // Execute via AgentToolExecutor (corrections already applied — use direct path)
+    const agentResult = await this.agentExecutor.executeCorrectedToolCall(
       corrected.toolName,
       corrected.parameters,
       callCtx
@@ -401,10 +401,15 @@ export class PersonaToolExecutor {
     }
 
     // Convert native format → executor format
+    // Values must be strings for the ToolCall interface, but objects/arrays
+    // need JSON.stringify (not String()) to preserve structure for ToolRegistry parsing.
     const executorCalls: ToolCall[] = nativeToolCalls.map(tc => ({
       toolName: unsanitizeToolName(tc.name),
       parameters: Object.fromEntries(
-        Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+        Object.entries(tc.input).map(([k, v]) => [
+          k,
+          (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v),
+        ])
       ) as Record<string, string>,
     }));
 

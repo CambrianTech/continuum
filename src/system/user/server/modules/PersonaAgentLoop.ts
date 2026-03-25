@@ -65,6 +65,18 @@ function getSafetyMaxIterations(provider: string): number {
 }
 
 /**
+ * Iteration count after which tools are disabled and text response is forced.
+ * Tiered by model capability — frontier models need more iterations for
+ * multi-step chains (read → edit → test → fix). XML/local models get
+ * a shorter leash since they struggle with long tool chains.
+ */
+function getForceTextAfter(provider: string): number {
+  if (['anthropic', 'openai', 'azure'].includes(provider)) return 10;
+  if (supportsNativeTools(provider)) return 5;
+  return 3;
+}
+
+/**
  * Run the canonical agent tool loop.
  *
  * Mutates `aiResponse` in place (text, toolCalls, content, finishReason).
@@ -78,6 +90,7 @@ export async function runAgentLoop(
 ): Promise<AgentLoopResult> {
   const agentLoopStart = Date.now();
   const SAFETY_MAX = getSafetyMaxIterations(ctx.provider);
+  const FORCE_TEXT_AFTER = getForceTextAfter(ctx.provider);
   let toolIterations = 0;
   const useNativeProtocol = supportsNativeTools(ctx.provider);
   const allStoredResultIds: UUID[] = [];
@@ -224,8 +237,8 @@ export async function runAgentLoop(
       messages.push({ role: 'user' as const, content: toolResultContent });
     }
 
-    // Regenerate — force text response after 3 tool iterations.
-    const forceText = toolIterations >= 3 || toolIterations >= SAFETY_MAX - 1;
+    // Regenerate — force text response after provider-tiered iteration count.
+    const forceText = toolIterations >= FORCE_TEXT_AFTER || toolIterations >= SAFETY_MAX - 1;
     const regenerationTools = forceText ? undefined : request.tools;
     const regenerationToolChoice = forceText ? undefined : request.toolChoice;
 
