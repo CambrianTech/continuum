@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/claude/resume",
+  "version": "1.0.0",
+  "description": "Loads the latest snapshot and current context, synthesizes a session briefing. Run this first thing in a new session — it tells you who you are, what you were doing, and what to do next.",
+  "main": "server/ClaudeResumeServerCommand.ts",
+  "types": "shared/ClaudeResumeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ClaudeResumeIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "claude/resume"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
