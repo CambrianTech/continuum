@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/development/verify-web",
+  "version": "1.0.0",
+  "description": "Verify web output by opening in headless Playwright browser, capturing console errors + screenshot. Used by Academy teacher to grade coding output. No blind training.",
+  "main": "server/DevelopmentVerifyWebServerCommand.ts",
+  "types": "shared/DevelopmentVerifyWebTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DevelopmentVerifyWebIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "development/verify-web"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
