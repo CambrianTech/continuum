@@ -49,13 +49,12 @@ This document is the **single source of truth** for remaining work before open-s
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#376](https://github.com/CambrianTech/continuum/issues/376) | **chat/send userId bug** | TODO | Personas can't post to chat rooms — userId not resolved correctly. Blocks the README promise: "AI personas join immediately." |
-| [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | TODO | npm start opens duplicate tabs. Annoying first impression. |
-| [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | TODO | Double-init causes resource waste and glitches. |
-| [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. README promises `npm install && npm start` just works. |
-| [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Breaks node discovery. |
-| [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Blocks all tower work. |
-| [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date handling** | TODO | TEXT columns, missing cursor pagination, unused composite indexes. Data layer reliability. |
+| [#376](https://github.com/CambrianTech/continuum/issues/376) | **chat/send userId bug** | DONE (PR #387) | Fixed — resolves to human owner, not @cli/agent. |
+| [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | DONE (PR #387) | Fixed — removed shell script browser launch, orchestrator handles it. |
+| [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | DONE (PR #388) | Fixed — activation guard prevents duplicate join from racing code paths. |
+| [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. Needs cross-platform testing. |
+| [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
+| [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
 
 **Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes.
 
@@ -79,6 +78,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#352](https://github.com/CambrianTech/continuum/issues/352) | **Formalize test architecture** | TODO | Unit, integration, infrastructure, mission-critical tiers. |
 | [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
 | [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
+| [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date/pagination/indexes** | INVESTIGATED | Dates work correctly (TIMESTAMPTZ/RFC3339). Composite indexes working for high-traffic tables. Cursor pagination unimplemented (OFFSET fine for alpha). |
 
 **Previously completed:**
 - 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
@@ -279,8 +279,8 @@ This document is the **single source of truth** for remaining work before open-s
 
 | Phase | Issues | Count |
 |-------|--------|-------|
-| **0: Critical Bugs** | #376, #335, #317, #385, #381, #373, #360 | 7 |
-| **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334 | 12 |
+| **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, #385, #381, #373 | 3 remaining |
+| **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360 | 13 |
 | **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380 | 8 |
 | **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
 | **4: Dev Orchestration** | #326, #370 | 2 |
