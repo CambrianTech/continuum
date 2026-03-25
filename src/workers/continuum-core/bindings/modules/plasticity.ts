@@ -9,6 +9,8 @@ import type { RustCoreIPCClientBase } from './base';
 import type {
 	AnalysisResult,
 	CompactionResult,
+	CompressionPipelineResult,
+	HeadTopology,
 } from '../../../../shared/generated/plasticity';
 
 // ============================================================================
@@ -39,6 +41,21 @@ export interface PlasticityTopologyParams {
 	topologyPath: string;
 }
 
+export interface PlasticityCompressParams {
+	capturePath: string;
+	modelPath: string;
+	deviceSpec?: string;
+	outputPath?: string;
+	architecture?: string;
+}
+
+export interface PlasticityPipelineParams {
+	capturePath: string;
+	modelPath: string;
+	outputPath?: string;
+	config?: PlasticityAnalyzeParams['config'];
+}
+
 // ============================================================================
 // Mixin
 // ============================================================================
@@ -46,7 +63,9 @@ export interface PlasticityTopologyParams {
 export interface PlasticityMixin {
 	plasticityAnalyze(params: PlasticityAnalyzeParams): Promise<AnalysisResult>;
 	plasticityCompact(params: PlasticityCompactParams): Promise<CompactionResult>;
-	plasticityTopology(params: PlasticityTopologyParams): Promise<import('../../../../shared/generated/plasticity').HeadTopology>;
+	plasticityTopology(params: PlasticityTopologyParams): Promise<HeadTopology>;
+	plasticityCompress(params: PlasticityCompressParams): Promise<CompressionPipelineResult>;
+	plasticityPipeline(params: PlasticityPipelineParams): Promise<CompactionResult>;
 }
 
 export function PlasticityMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -84,13 +103,46 @@ export function PlasticityMixin<T extends new (...args: any[]) => RustCoreIPCCli
 		/**
 		 * Get topology of an already-compacted model.
 		 */
-		async plasticityTopology(params: PlasticityTopologyParams): Promise<import('../../../../shared/generated/plasticity').HeadTopology> {
+		async plasticityTopology(params: PlasticityTopologyParams): Promise<HeadTopology> {
 			const response = await this.request({
 				command: 'plasticity/topology',
 				topologyPath: params.topologyPath,
 			});
 			if (!response.success) throw new Error(response.error || 'plasticity/topology failed');
-			return response.result as import('../../../../shared/generated/plasticity').HeadTopology;
+			return response.result as HeadTopology;
+		}
+
+		/**
+		 * Compress a model to mixed-quantization GGUF, fitted to a target device.
+		 * Takes gate gradient capture + base model → produces optimized GGUF.
+		 */
+		async plasticityCompress(params: PlasticityCompressParams): Promise<CompressionPipelineResult> {
+			const response = await this.request({
+				command: 'plasticity/compress',
+				capturePath: params.capturePath,
+				modelPath: params.modelPath,
+				...(params.deviceSpec ? { deviceSpec: params.deviceSpec } : {}),
+				...(params.outputPath ? { outputPath: params.outputPath } : {}),
+				...(params.architecture ? { architecture: params.architecture } : {}),
+			});
+			if (!response.success) throw new Error(response.error || 'plasticity/compress failed');
+			return response.result as CompressionPipelineResult;
+		}
+
+		/**
+		 * End-to-end pipeline: gate_gradients.json → analysis → compaction.
+		 * The "wake up to a compacted model" command.
+		 */
+		async plasticityPipeline(params: PlasticityPipelineParams): Promise<CompactionResult> {
+			const response = await this.request({
+				command: 'plasticity/pipeline',
+				capturePath: params.capturePath,
+				modelPath: params.modelPath,
+				...(params.outputPath ? { outputPath: params.outputPath } : {}),
+				...(params.config ? { config: params.config } : {}),
+			});
+			if (!response.success) throw new Error(response.error || 'plasticity/pipeline failed');
+			return response.result as CompactionResult;
 		}
 	};
 }

@@ -26,7 +26,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { TeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 import { buildKnowledgeExplorationPipeline } from './KnowledgeExplorationPipeline';
 
 const E = ACADEMY_EVENTS;
@@ -104,6 +104,23 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
     },
   });
 
+  // === Post curriculum to academy chat — show what the teacher designed ===
+  nextStepIdx++;
+  steps.push({
+    type: 'command',
+    command: 'collaboration/chat/send',
+    params: {
+      room: 'academy',
+      message: [
+        `📚 **Academy Session: ${skill}** — Curriculum designed for **${personaName}**`,
+        '',
+        `{{steps.${curriculumStepIdx}.output}}`,
+        '',
+        `_${academyConfig.topicsPerSession} topics, ${academyConfig.examplesPerTopic} examples each, ${academyConfig.epochs} training epochs per topic._`,
+      ].join('\n'),
+    },
+  });
+
   // === Outer Loop: iterate over topics ===
   // Count matches the prompt's exact topic request from academyConfig.topicsPerSession.
   const loopStepIdx = nextStepIdx++;
@@ -124,6 +141,21 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       sessionId,
       skill,
       personaName,
+    },
+  });
+
+  // === Post session completion to chat ===
+  steps.push({
+    type: 'command',
+    command: 'collaboration/chat/send',
+    params: {
+      room: 'academy',
+      message: [
+        `🎓 **Academy Session Complete** — **${personaName}** finished studying **${skill}**`,
+        '',
+        `_${academyConfig.topicsPerSession} topics covered, ${academyConfig.epochs} training epochs per topic._`,
+        '_Adapters composed and model compaction running._',
+      ].join('\n'),
     },
   });
 
@@ -185,11 +217,12 @@ function buildCurriculumStep(
     '}',
   );
 
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   return {
     type: 'llm',
     prompt: promptLines.join('\n'),
-    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    model: teacherLlm.model,
+    provider: teacherLlm.provider,
     temperature: 0.7,
     maxTokens: 2048,
   };
@@ -212,14 +245,15 @@ function buildTopicLoopSteps(
   knowledgeStepIdx?: number,
 ): PipelineStep[] {
   // Build the synthesize params — conditionally include groundingContext
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   const synthesizeParams: Record<string, unknown> = {
     topic: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.name}}`,
     skill,
     personaName,
     exampleCount: academyConfig.examplesPerTopic,
     difficulty: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.difficulty}}`,
-    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    model: teacherLlm.model,
+    provider: teacherLlm.provider,
   };
 
   if (knowledgeStepIdx !== undefined) {
@@ -252,7 +286,7 @@ function buildTopicLoopSteps(
     {
       type: 'watch',
       event: iterEvt(E.TRAINING_COMPLETE),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — training runs for hours/days
     },
 
     // outer.3: Inner loop — exam/grade/remediate cycle
@@ -298,6 +332,7 @@ function buildExamRetrySteps(
   const parentIterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.parent_iteration}}`;
 
   // Build remedial synthesize params
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   const remediationSynthesizeParams: Record<string, unknown> = {
     topic: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}`,
     skill,
@@ -306,8 +341,8 @@ function buildExamRetrySteps(
     difficulty: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.difficulty}}`,
     remediationFeedback: '{{loop.4.output.feedback}}',
     weakAreas: '{{loop.4.output.weakAreas}}',
-    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    model: teacherLlm.model,
+    provider: teacherLlm.provider,
   };
 
   if (knowledgeStepIdx !== undefined) {
@@ -337,8 +372,8 @@ function buildExamRetrySteps(
         '  }',
         ']',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.7,
       maxTokens: 2048,
     },
@@ -377,7 +412,7 @@ function buildExamRetrySteps(
     {
       type: 'watch',
       event: parentIterEvt(E.EXAM_RESPONSES),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for student
     },
 
     // inner.4: Grade responses via LLM
@@ -407,8 +442,8 @@ function buildExamRetrySteps(
         '  ]',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.3,
       maxTokens: 2048,
     },
@@ -462,8 +497,48 @@ function buildExamRetrySteps(
             overallScore: '{{loop.4.output.overallScore}}',
           },
         },
+        // Post the grade report to chat — the student's homework graded
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `✅ **${personaName} PASSED** — Topic: "{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}"`,
+              '',
+              `**Score: {{loop.4.output.overallScore}}/100** (attempt {{input.iteration}})`,
+              '',
+              '**Exam Questions & Grading:**',
+              '{{loop.0.output}}',
+              '',
+              '**Student Answers:**',
+              '{{loop.3.data.payload.responses}}',
+              '',
+              '**Feedback:** {{loop.4.output.feedback}}',
+            ].join('\n'),
+          },
+        },
       ],
       else: [
+        // Student failed — post the grade report showing what needs work
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `❌ **${personaName} needs more study** — Topic: "{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}"`,
+              '',
+              `**Score: {{loop.4.output.overallScore}}/100** (attempt {{input.iteration}}, need ${academyConfig.passingScore} to pass)`,
+              '',
+              '**Weak Areas:** {{loop.4.output.weakAreas}}',
+              '',
+              '**Feedback:** {{loop.4.output.feedback}}',
+              '',
+              '_Generating targeted training data for remediation..._',
+            ].join('\n'),
+          },
+        },
         // Student failed — synthesize targeted remedial data
         {
           type: 'emit',
@@ -503,7 +578,7 @@ function buildExamRetrySteps(
         {
           type: 'watch',
           event: parentIterEvt(E.TRAINING_COMPLETE),
-          timeoutSecs: 600,
+          timeoutSecs: 0,  // No timeout — training runs for hours/days
         },
       ],
     },

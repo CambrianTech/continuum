@@ -66,7 +66,7 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
     {
       type: 'watch',
       event: evt(E.CURRICULUM_READY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // Step 1: Challenge attempt loop
@@ -78,7 +78,7 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
         {
           type: 'watch',
           event: iterEvt(E.DATASET_READY),
-          timeoutSecs: 300,
+          timeoutSecs: 0,  // No timeout — wait for other sentinel
         },
 
         // loop.1: Emit training:started (iteration-scoped)
@@ -133,7 +133,7 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
         {
           type: 'watch',
           event: iterEvt(E.CHALLENGE_READY),
-          timeoutSecs: 300,
+          timeoutSecs: 0,  // No timeout — wait for other sentinel
         },
 
         // loop.5: Read buggy source code
@@ -224,6 +224,28 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
             round: '{{input.iteration}}',
           },
         },
+
+        // loop.11: Post the student's work to chat — their actual code + test results
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `💻 **${personaName}** submitted a fix (round {{input.iteration}})`,
+              '',
+              '**The student\'s code:**',
+              '```typescript',
+              '{{loop.8.output}}',
+              '```',
+              '',
+              '**Test results:**',
+              '```',
+              '{{loop.9.output}}',
+              '```',
+            ].join('\n'),
+          },
+        },
       ],
     },
 
@@ -238,6 +260,27 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
         layers: '{{steps.1.iterations.*.2.data.layerId}}',
         strategy: 'weighted-merge',
         activate: true,
+      },
+    },
+
+    // Step 3: Plasticity compaction — prune dead heads using training gate gradients
+    {
+      type: 'command',
+      command: 'plasticity/pipeline',
+      params: {
+        capturePath: '{{steps.2.data.composedAdapterPath}}',
+        modelPath: baseModel,
+      },
+    },
+
+    // Step 4: Compress to target-device GGUF
+    {
+      type: 'command',
+      command: 'plasticity/compress',
+      params: {
+        capturePath: '{{steps.3.data.topologyPath}}',
+        modelPath: '{{steps.3.data.modelPath}}',
+        deviceSpec: '32gb',
       },
     },
   ];

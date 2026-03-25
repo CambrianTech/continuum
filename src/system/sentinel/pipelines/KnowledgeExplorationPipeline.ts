@@ -359,11 +359,14 @@ function buildFactExtractionStep(
     '}',
   ].join('\n');
 
+  if (!model || !provider) {
+    throw new Error('KnowledgeExplorationPipeline: model and provider are required for fact extraction LLM step');
+  }
   return {
     type: 'llm',
     prompt,
-    ...(model && { model }),
-    ...(provider && { provider }),
+    model,
+    provider,
     temperature: 0.3,
     maxTokens: 8192,
   };

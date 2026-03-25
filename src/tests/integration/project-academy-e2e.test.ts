@@ -42,6 +42,12 @@ const BASE_MODEL = 'smollm2:135m';
 const PROJECT_DIR = path.resolve(__dirname, '../../projects/url-shortener');
 const PROJECT_SPEC: ProjectSpec = JSON.parse(fs.readFileSync(path.join(PROJECT_DIR, 'project.json'), 'utf8'));
 
+const TEST_ACADEMY_CONFIG = {
+  ...DEFAULT_ACADEMY_CONFIG,
+  teacherModel: 'deepseek-chat',
+  teacherProvider: 'deepseek',
+};
+
 const TEACHER_CONFIG: ProjectTeacherPipelineConfig = {
   sessionId: SESSION_ID,
   skill: SKILL,
@@ -49,7 +55,7 @@ const TEACHER_CONFIG: ProjectTeacherPipelineConfig = {
   baseModel: BASE_MODEL,
   projectDir: PROJECT_DIR,
   milestones: PROJECT_SPEC.milestones,
-  config: DEFAULT_ACADEMY_CONFIG,
+  config: TEST_ACADEMY_CONFIG,
 };
 
 const STUDENT_CONFIG: ProjectStudentPipelineConfig = {
@@ -59,7 +65,7 @@ const STUDENT_CONFIG: ProjectStudentPipelineConfig = {
   baseModel: BASE_MODEL,
   projectDir: PROJECT_DIR,
   milestones: PROJECT_SPEC.milestones,
-  config: DEFAULT_ACADEMY_CONFIG,
+  config: TEST_ACADEMY_CONFIG,
 };
 
 // ─── Test Phases ─────────────────────────────────────────────────────────────
@@ -218,18 +224,21 @@ async function main() {
     console.log(`  Pipeline name: ${studentPipeline.name}`);
     console.log(`  Top-level steps: ${studentPipeline.steps.length}`);
 
-    // Expected: 4 top-level steps
+    // Expected: 6 top-level steps
     // 0: watch (curriculum:ready), 1: watch (project:setup:complete),
-    // 2: loop (milestones), 3: command (genome/compose)
+    // 2: loop (milestones), 3: command (genome/compose),
+    // 4: command (plasticity/pipeline), 5: command (plasticity/compress)
     const studentTopTypes = studentPipeline.steps.map(s => s.type);
     console.log(`  Top-level types: ${studentTopTypes.join(', ')}`);
 
     const studentStructureValid =
-      studentPipeline.steps.length === 4 &&
+      studentPipeline.steps.length === 6 &&
       studentTopTypes[0] === 'watch' &&
       studentTopTypes[1] === 'watch' &&
       studentTopTypes[2] === 'loop' &&
-      studentTopTypes[3] === 'command';
+      studentTopTypes[3] === 'command' &&
+      studentTopTypes[4] === 'command' &&
+      studentTopTypes[5] === 'command';
 
     results.push({
       phase: 'Student Pipeline Structure',
@@ -240,34 +249,36 @@ async function main() {
     // Verify student milestone loop
     const studentLoop = studentPipeline.steps[2] as any;
     const studentInnerSteps = studentLoop.steps as any[];
-    console.log(`  Milestone loop steps: ${studentInnerSteps.length} (expected 15)`);
+    console.log(`  Milestone loop steps: ${studentInnerSteps.length} (expected 17)`);
 
     // inner: 0=watch(milestone:ready), 1=shell(read state), 2=llm(cold attempt),
     // 3=shell(write+compile+test), 4=shell(capture files), 5=emit(milestone:attempted cold),
-    // 6=watch(dataset:ready), 7=emit(training:started), 8=command(genome/train),
-    // 9=emit(training:complete), 10=watch(milestone:retry), 11=llm(warm attempt),
-    // 12=shell(write+compile+test), 13=shell(capture diagnostics),
-    // 14=emit(milestone:attempted warm)
+    // 6=command(chat/send cold work), 7=watch(dataset:ready), 8=emit(training:started),
+    // 9=command(genome/train), 10=emit(training:complete), 11=watch(milestone:retry),
+    // 12=llm(warm attempt), 13=shell(write+compile+test), 14=shell(capture diagnostics),
+    // 15=emit(milestone:attempted warm), 16=command(chat/send warm work)
     const studentInnerTypes = studentInnerSteps.map((s: any) => s.type);
     console.log(`  Inner step types: ${studentInnerTypes.join(', ')}`);
 
     const studentInnerValid =
-      studentInnerSteps.length === 15 &&
+      studentInnerSteps.length === 17 &&
       studentInnerTypes[0] === 'watch' &&
       studentInnerTypes[1] === 'shell' &&
       studentInnerTypes[2] === 'llm' &&
       studentInnerTypes[3] === 'shell' &&
       studentInnerTypes[4] === 'shell' &&
       studentInnerTypes[5] === 'emit' &&
-      studentInnerTypes[6] === 'watch' &&
-      studentInnerTypes[7] === 'emit' &&
-      studentInnerTypes[8] === 'command' &&
-      studentInnerTypes[9] === 'emit' &&
-      studentInnerTypes[10] === 'watch' &&
-      studentInnerTypes[11] === 'llm' &&
-      studentInnerTypes[12] === 'shell' &&
+      studentInnerTypes[6] === 'command' &&   // chat/send cold attempt
+      studentInnerTypes[7] === 'watch' &&
+      studentInnerTypes[8] === 'emit' &&
+      studentInnerTypes[9] === 'command' &&   // genome/train
+      studentInnerTypes[10] === 'emit' &&
+      studentInnerTypes[11] === 'watch' &&
+      studentInnerTypes[12] === 'llm' &&
       studentInnerTypes[13] === 'shell' &&
-      studentInnerTypes[14] === 'emit';
+      studentInnerTypes[14] === 'shell' &&
+      studentInnerTypes[15] === 'emit' &&
+      studentInnerTypes[16] === 'command';    // chat/send warm attempt
 
     results.push({
       phase: 'Student Milestone Loop',

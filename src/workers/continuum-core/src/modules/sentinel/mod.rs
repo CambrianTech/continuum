@@ -248,46 +248,54 @@ impl SentinelModule {
                 );
             }
 
-            // Execute based on type
+            // Execute based on type.
+            // timeout_secs == 0 means no timeout (run indefinitely — for long training).
             let result: Result<(i32, String), String> = if let Some(pipeline) = pipeline {
                 log.info(&format!(
-                    "[{handle_id_clone}] Executing pipeline with {} steps",
-                    pipeline.steps.len()
+                    "[{handle_id_clone}] Executing pipeline with {} steps (timeout: {})",
+                    pipeline.steps.len(),
+                    if timeout_secs == 0 { "none".to_string() } else { format!("{timeout_secs}s") }
                 ));
 
-                tokio::time::timeout(
-                    Duration::from_secs(timeout_secs),
-                    executor::execute_pipeline(
-                        logs_base_dir.clone(),
-                        pipeline,
-                        handle_id_clone.clone(),
-                        working_dir_clone.clone(),
-                        bus.clone(),
-                        registry.clone(),
-                    ),
-                )
-                .await
-                .map_err(|_| format!("Pipeline timeout after {timeout_secs}s"))
-                .and_then(|r| r)
+                let future = executor::execute_pipeline(
+                    logs_base_dir.clone(),
+                    pipeline,
+                    handle_id_clone.clone(),
+                    working_dir_clone.clone(),
+                    bus.clone(),
+                    registry.clone(),
+                );
+
+                if timeout_secs == 0 {
+                    future.await
+                } else {
+                    tokio::time::timeout(Duration::from_secs(timeout_secs), future)
+                        .await
+                        .map_err(|_| format!("Pipeline timeout after {timeout_secs}s"))
+                        .and_then(|r| r)
+                }
             } else {
-                tokio::time::timeout(
-                    Duration::from_secs(timeout_secs),
-                    executor::execute_isolated(
-                        executor::IsolatedProcessConfig {
-                            logs_base_dir,
-                            handle_id: handle_id_clone.clone(),
-                            command,
-                            args,
-                            working_dir: working_dir_clone,
-                            env,
-                        },
-                        cancel_rx,
-                        bus.clone(),
-                    ),
-                )
-                .await
-                .map_err(|_| format!("Timeout after {timeout_secs}s"))
-                .and_then(|r| r)
+                let future = executor::execute_isolated(
+                    executor::IsolatedProcessConfig {
+                        logs_base_dir,
+                        handle_id: handle_id_clone.clone(),
+                        command,
+                        args,
+                        working_dir: working_dir_clone,
+                        env,
+                    },
+                    cancel_rx,
+                    bus.clone(),
+                );
+
+                if timeout_secs == 0 {
+                    future.await
+                } else {
+                    tokio::time::timeout(Duration::from_secs(timeout_secs), future)
+                        .await
+                        .map_err(|_| format!("Timeout after {timeout_secs}s"))
+                        .and_then(|r| r)
+                }
             };
 
             // Update handle status

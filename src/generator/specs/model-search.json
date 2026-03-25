@@ -1,0 +1,60 @@
+{
+  "name": "model/search",
+  "description": "Search HuggingFace for base models by name, architecture, or size. Used to find compaction targets (e.g., 'Qwen 3.5 27B'). Different from adapter/search which finds LoRA adapters.",
+  "params": [
+    {
+      "name": "query",
+      "type": "string",
+      "optional": false,
+      "description": "Search query (e.g., 'Qwen3.5', 'codellama', 'mistral 7b')"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max results to return. Default: 10."
+    },
+    {
+      "name": "sort",
+      "type": "string",
+      "optional": true,
+      "description": "Sort by: 'downloads', 'likes', 'recent'. Default: 'downloads'."
+    },
+    {
+      "name": "minSize",
+      "type": "number",
+      "optional": true,
+      "description": "Minimum model size in billions of parameters (e.g., 7, 14, 27)"
+    },
+    {
+      "name": "maxSize",
+      "type": "number",
+      "optional": true,
+      "description": "Maximum model size in billions of parameters"
+    }
+  ],
+  "results": [
+    {
+      "name": "models",
+      "type": "object",
+      "description": "Array of { id, author, downloads, likes, tags, pipeline_tag, lastModified }"
+    },
+    {
+      "name": "totalCount",
+      "type": "number",
+      "description": "Total number of results found"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Find Qwen 3.5 models",
+      "params": { "query": "Qwen/Qwen3.5" }
+    },
+    {
+      "description": "Find coding models between 14B and 32B",
+      "params": { "query": "coder", "minSize": 14, "maxSize": 32, "sort": "downloads" }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "model"
+}

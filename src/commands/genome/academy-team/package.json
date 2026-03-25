@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/academy-team",
+  "version": "1.0.0",
+  "description": "Start a collaborative team training project. Decomposes a project description into roles, trains each student for their role, then orchestrates collaborative building. Teacher grades both the overall project and individual role performance. Students communicate via the academy chat room.",
+  "main": "server/GenomeAcademyTeamServerCommand.ts",
+  "types": "shared/GenomeAcademyTeamTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeAcademyTeamIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/academy-team"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

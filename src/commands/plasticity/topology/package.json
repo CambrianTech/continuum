@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/plasticity/topology",
+  "version": "1.0.0",
+  "description": "Read the head topology of a compacted model. Returns per-layer head precision assignments showing which heads were pruned, quantized to different levels, or kept at full precision. Use this to inspect what compaction did to a model.",
+  "main": "server/PlasticityTopologyServerCommand.ts",
+  "types": "shared/PlasticityTopologyTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/PlasticityTopologyIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "plasticity/topology"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

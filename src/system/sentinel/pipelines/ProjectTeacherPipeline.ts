@@ -23,7 +23,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { ProjectTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 
 const E = ACADEMY_EVENTS;
 
@@ -155,6 +155,7 @@ function buildMilestoneLoopSteps(
   evt: (action: string) => string,
   iterEvt: (action: string) => string,
 ): PipelineStep[] {
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   return [
     // loop.0: Read the milestone's test file
     {
@@ -183,7 +184,7 @@ function buildMilestoneLoopSteps(
     {
       type: 'watch',
       event: iterEvt(E.MILESTONE_ATTEMPTED),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — student work takes time
     },
 
     // loop.3: LLM (agentMode) — Analyze the student's cold attempt
@@ -218,8 +219,8 @@ function buildMilestoneLoopSteps(
         '  "hints": ["hint1", "hint2"]',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       agentMode: true,
       maxIterations: 5,
       temperature: 0.3,
@@ -244,8 +245,8 @@ function buildMilestoneLoopSteps(
           'Generate training examples that teach the SPECIFIC concepts the student is missing.',
           'Focus on the weak areas identified in the analysis.',
         ].join('\n'),
-        ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-        ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+        model: teacherLlm.model,
+        provider: teacherLlm.provider,
       },
     },
 
@@ -266,7 +267,7 @@ function buildMilestoneLoopSteps(
     {
       type: 'watch',
       event: iterEvt(E.TRAINING_COMPLETE),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — training runs for hours
     },
 
     // loop.7: Emit milestone:retry with feedback and hints from analysis (iteration-scoped)
@@ -287,7 +288,7 @@ function buildMilestoneLoopSteps(
     {
       type: 'watch',
       event: iterEvt(E.MILESTONE_ATTEMPTED),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — wait for student warm attempt
     },
 
     // loop.9: LLM — Evaluate the warm attempt's test output
@@ -317,8 +318,8 @@ function buildMilestoneLoopSteps(
         '  "feedback": "What the student did well and what still needs work"',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.2,
       maxTokens: 2048,
     },
@@ -339,10 +340,23 @@ function buildMilestoneLoopSteps(
             attemptType: 'warm',
           },
         },
+        // Teacher announces milestone passed — all students see this
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `✅ **Milestone {{input.iteration}} PASSED** — **${personaName}** scored {{loop.9.output.score}}%`,
+              '',
+              '{{loop.9.output.feedback}}',
+              '',
+              '_Moving to next milestone..._',
+            ].join('\n'),
+          },
+        },
       ],
       else: [
-        // For v1, emit session:failed on milestone failure.
-        // Future: inner retry loop with more training rounds.
         {
           type: 'emit',
           event: evt(E.SESSION_FAILED),
@@ -351,6 +365,21 @@ function buildMilestoneLoopSteps(
             milestoneIndex: '{{input.iteration}}',
             score: '{{loop.9.output.score}}',
             feedback: '{{loop.9.output.feedback}}',
+          },
+        },
+        // Teacher posts what went wrong — other students learn from failures too
+        {
+          type: 'command',
+          command: 'collaboration/chat/send',
+          params: {
+            room: 'academy',
+            message: [
+              `❌ **Milestone {{input.iteration}} not passed** — **${personaName}** scored {{loop.9.output.score}}%`,
+              '',
+              '**Teacher feedback:** {{loop.9.output.feedback}}',
+              '',
+              '_More training needed for this milestone._',
+            ].join('\n'),
           },
         },
       ],

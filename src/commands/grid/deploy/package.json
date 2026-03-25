@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/grid/deploy",
+  "version": "1.0.0",
+  "description": "Pull latest code and rebuild on grid nodes. Runs git pull + npm run build:ts on each reachable node via SSH over Tailscale. Keeps all nodes in sync without manual SSH.",
+  "main": "server/GridDeployServerCommand.ts",
+  "types": "shared/GridDeployTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GridDeployIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "grid/deploy"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

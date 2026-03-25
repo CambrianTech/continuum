@@ -1,0 +1,73 @@
+{
+  "name": "plasticity/pipeline",
+  "description": "End-to-end plasticity pipeline: gate_gradients.json → analysis → compaction. The 'wake up to a compacted model' command. Given a gate capture directory and a model path, runs the full pipeline: load gradients, compute optimization plan, build topology, compact model (multi-shard aware), write compacted model + topology + analysis.",
+  "params": [
+    {
+      "name": "capturePath",
+      "type": "string",
+      "optional": false,
+      "description": "Gate capture directory containing gate_gradients.json (from PEFT training with GateGradientCallback)"
+    },
+    {
+      "name": "modelPath",
+      "type": "string",
+      "optional": false,
+      "description": "Base model path — directory for multi-shard, file for single safetensors"
+    },
+    {
+      "name": "outputPath",
+      "type": "string",
+      "optional": true,
+      "description": "Output directory for compacted model. Default: <capturePath>/compacted/"
+    },
+    {
+      "name": "config",
+      "type": "object",
+      "optional": true,
+      "description": "CompactionConfig overrides: { minHeadsPerLayer, minKvHeadsPerLayer, deadThreshold, lowThreshold, highThreshold, saturatedThreshold, enableQuantization, targetSizeGb }"
+    }
+  ],
+  "results": [
+    {
+      "name": "modelPath",
+      "type": "string",
+      "description": "Path to the compacted model safetensors"
+    },
+    {
+      "name": "topologyPath",
+      "type": "string",
+      "description": "Path to the head_topology.json file"
+    },
+    {
+      "name": "originalSizeBytes",
+      "type": "number",
+      "description": "Original model size in bytes"
+    },
+    {
+      "name": "compactedSizeBytes",
+      "type": "number",
+      "description": "Compacted model size in bytes"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Full pipeline: train → gate gradients → compact",
+      "params": {
+        "capturePath": "~/.continuum/genome/adapters/helper-ai/coding-expertise",
+        "modelPath": "Qwen/Qwen2.5-Coder-14B-Instruct"
+      }
+    },
+    {
+      "description": "Compact targeting 16GB MacBook Air",
+      "params": {
+        "capturePath": "/path/to/capture",
+        "modelPath": "/path/to/model",
+        "config": {
+          "targetSizeGb": 11.0
+        }
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}

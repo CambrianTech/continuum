@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/plasticity/compact",
+  "version": "1.0.0",
+  "description": "Physically remove pruned heads from a model's safetensors. Reads gate_gradients.json from adapter directory, computes which heads to prune, then slices Q/K/V/O projection weights to remove dead heads. Produces a smaller model with fewer parameters. Handles both single-file and multi-shard models.",
+  "main": "server/PlasticityCompactServerCommand.ts",
+  "types": "shared/PlasticityCompactTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/PlasticityCompactIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "plasticity/compact"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

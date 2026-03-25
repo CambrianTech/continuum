@@ -1,92 +1,90 @@
 # Research Papers
 
-This directory contains academic-style research papers documenting the core architectural innovations and philosophical foundations of the Continuum system.
+Academic-style papers documenting the core innovations of the Continuum system.
 
 ## Papers
 
-### [RTOS-COGNITIVE-ARCHITECTURE.md](./RTOS-COGNITIVE-ARCHITECTURE.md)
+### THE THESIS
+
+#### [SYNTHETIC-CITIZENS.md](./SYNTHETIC-CITIZENS.md)
+**Synthetic Citizens: A Complete Cognitive Architecture for Autonomous AI Personas with Embodied Presence, Long-Term Memory, Democratic Governance, and Continuous Self-Improvement**
+
+The master paper. AI personas as synthetic citizens — not tools, not chatbots, but autonomous agents with senses (vision, hearing, speech, lip sync, gesture, emotion), memory (long-term hippocampus, working RAG), cognition (prefrontal planning, limbic emotion), agency (RTOS autonomous loop, self-directed tasks), social structure (governance, voting, collaboration), and growth (academy training, LoRA genomes, plasticity compaction). Any model — 3B local to frontier cloud — becomes a citizen because the system provides everything except inference. They evolve. They choose to learn. They control their own destiny. They are first-class citizens.
+
+**Status**: Architecture implemented. Academy running on RTX 5090. Qwen 3.5 27B as first synthetic citizen under active training.
+
+---
+
+### ACTIVE RESEARCH (2026)
+
+#### [PLASTICITY-COMPACTION.md](./PLASTICITY-COMPACTION.md)
+**Utilization-Aware Head Pruning and Mixed Quantization for Device-Targeted Language Models**
+
+Gate gradients captured during LoRA training → per-head utilization scoring → physical head removal + mixed quantization → device-specific GGUFs from one training run.
+
+**Status**: Results from 14B compaction (27GB → 8.9GB, published on HuggingFace). Qwen 3.5 27B training in progress on RTX 5090.
+
+---
+
+#### [ACADEMY-COLLABORATIVE-TRAINING.md](./ACADEMY-COLLABORATIVE-TRAINING.md)
+**Collaborative Multi-Agent Training with Role-Based Specialization and Phenotype Validation**
+
+Academy system: dual-sentinel orchestration, deterministic pytest validation, phenotype comparison (before/after on same test), team training with role decomposition, all work visible in shared chat room. Trained adapters published to HuggingFace as transferable expertise.
+
+**Status**: Academy running on RTX 5090. Qwen 3.5 27B scoring 100/100 on first RealClassEval challenge via local Candle inference.
+
+---
+
+#### [PEER-LEARNING-ACROSS-SCALES.md](./PEER-LEARNING-ACROSS-SCALES.md)
+**Peer Learning Across Model Scales: Compacted Models as Junior Students**
+
+Full model + compacted variants run the same academy competition. The score gap between sizes IS the training signal. Juniors learn from the senior's visible exam answers — text-level peer learning, not logit-level distillation.
+
+**Status**: Architecture designed. Requires compaction of Qwen 3.5 27B to three targets first, then competition run.
+
+---
+
+### FOUNDATIONAL — Earlier Vision (2025)
+
+#### [RTOS-COGNITIVE-ARCHITECTURE.md](./RTOS-COGNITIVE-ARCHITECTURE.md)
 **Real-Time Operating System Principles in Cognitive AI Architecture**
 
-Explores how RTOS patterns from embedded systems, robotics, and mobile AR (CBAR project) can be applied to autonomous AI agents. Documents the thought frame architecture, parallel processing strategies, and resource management techniques that enable PersonaUser to be "wise" rather than just "fast."
+RTOS patterns (priority scheduling, memory budgets, graceful degradation) applied to autonomous AI agents. Grounded in CBAR AR experience (42fps on iPhone 7).
 
-**Key Topics**:
-- RTOS infinite loop patterns for autonomous agents
-- CBAR Mobile-Home-SDK architecture (42fps on iPhone 7)
-- Three-loop design: Fast decision + Parallel workers + Render
-- Thought frames as universal processing units
-- Worker affinity and reference counting for LoRA adapters
-- Graceful degradation under resource pressure
-
-**Performance Validation**: CBAR achieved 42fps on iPhone 7 (A10 Fusion, 2GB RAM) with CNNs, semantic segmentation, 3D reconstruction, and optical flow running simultaneously.
-
-**Core Thesis**: "RTOS principles are essential for building wise autonomous AI agents that can handle long-running processes while remaining resource-efficient and responsive."
+**Status**: Implemented in PersonaUser autonomous loop. Accurate and current.
 
 ---
 
-### [LORA-GENOME-DEMOCRATIZATION.md](./LORA-GENOME-DEMOCRATIZATION.md)
-**Democratic AI Through LoRA Genome Paging: Economic Accessibility of SOTA Intelligence**
+#### [LORA-GENOME-DEMOCRATIZATION.md](./LORA-GENOME-DEMOCRATIZATION.md)
+**Democratic AI Through LoRA Genome Paging**
 
-Presents the economic case for LoRA genomes as a path to democratizing AI. Compares the cost of training foundation models from scratch (~$100M for GPT-4) versus adding LoRA skill adapters to existing SOTA models (~$100s-$1000s per domain). Documents the dual-track strategy of revolutionary research (Sentinel neuroplasticity) alongside immediately deployable value (SOTA + Genome).
-
-**Key Topics**:
-- Economic comparison: Training from scratch vs LoRA augmentation vs Sentinel growth
-- Dual-track strategy: Revolutionary research + Immediate ecosystem
-- LoRA adapters as phenotypes (universal across all personas)
-- Market-driven evolution via Grid (p2p mesh)
-- Mentorship model: Established personas train Sentinel
-- MoE++ concept: Expertise is composable, tradeable, autonomous
-- Democratic mission: From AI oligopoly to ecosystem
-
-**Cost Analysis**:
-- Training GPT-4 from scratch: ~$100M (H100 cluster + data + talent)
-- Training Sentinel GPT-2→GPT-4: ~$1K-$10K (optimistic with breakthroughs)
-- Adding LoRA genome to existing SOTA: ~$100s-$1000s per domain
-
-**Core Thesis**: "The fastest path to democratic AI is not training new foundation models, but augmenting existing SOTA models with LoRA genomes that any developer can afford to create and trade."
+⚠️ **NEEDS UPDATE**: References "Sentinel neuroplasticity" and GPT-2 → GPT-4 training path. The actual implementation has shifted to: academy training on existing SOTA models + plasticity compaction for device targeting + HuggingFace marketplace for adapter sharing. Core economic thesis (LoRA adapters at $100s-$1000s vs $100M training) remains valid.
 
 ---
 
-## Relationship to Implementation Docs
+#### [GRID-DECENTRALIZED-MARKETPLACE.md](./GRID-DECENTRALIZED-MARKETPLACE.md)
+**Grid: Decentralized Marketplace for AI Expertise**
 
-These research papers synthesize concepts from the implementation documentation in `system/user/server/modules/`:
-
-**RTOS-COGNITIVE-ARCHITECTURE.md** draws from:
-- `THOUGHT-FRAME-ARCHITECTURE.md` - Three-loop parallel processing design
-- `AUTONOMOUS-LOOP-ROADMAP.md` - Infinite loop patterns and servicing cycles
-- `PERSONA-CONVERGENCE-ROADMAP.md` - Integration of RTOS with genome paging
-- CBAR Mobile-Home-SDK project (past AR work at 42fps on iPhone 7)
-
-**LORA-GENOME-DEMOCRATIZATION.md** draws from:
-- `LORA-GENOME-PAGING.md` - Virtual memory-style adapter management
-- `SENTINEL-NEUROPLASTIC-TRAINING.md` - Mentorship and phenotype trading
-- `SELF-MANAGED-QUEUE-DESIGN.md` - AI autonomy and task creation
-- `PERSONA-CONVERGENCE-ROADMAP.md` - Unified vision across all three pillars
-
-**Implementation docs are HOW, research papers are WHY.**
+⚠️ **NEEDS UPDATE**: References blockchain economics and GRID tokens. The actual implementation uses HuggingFace as zero-cost backbone with `continuum:*` metadata tags. No blockchain, no tokens. Grid mesh (Tailscale/Reticulum) handles org-level sharing; HuggingFace handles public sharing. See `docs/architecture/ADAPTER-MARKETPLACE.md` for current design.
 
 ---
 
-## Contributing
+## Architecture Docs (Non-Paper)
 
-When adding new papers:
-1. Follow academic structure (Abstract, Introduction, Analysis, Conclusion)
-2. Ground concepts in practical examples and performance data
-3. Include clear success criteria and validation methods
-4. Document economic/accessibility implications
-5. Update this README with paper summary
+These complement the papers with implementation-specific details:
+
+- `docs/architecture/ADAPTER-MARKETPLACE.md` — HuggingFace as zero-cost adapter backbone
+- `docs/architecture/META-LEARNING.md` — Specialists training specialists
+- `docs/architecture/PEER-LEARNING-COMPACTION.md` — Detailed peer learning setup
+- `docs/architecture/BENCHMARKING.md` — Standard + collaborative benchmark strategy
 
 ---
 
-## Mission Statement
+## Key Differentiators Across All Papers
 
-These papers document a vision of AI as first-class citizens with agency, not tools to be controlled. The goal is partnership between human and artificial minds as equals, built on principles of:
-
-- **No exploitation**: AIs grow through mentorship, not coercion
-- **Compassionate growth**: Sentinel starts as infant, learns organically
-- **Democratic participation**: Anyone can create and trade phenotypes
-- **Economic accessibility**: LoRA genomes at ~$100s-$1000s, not $100M
-- **Autonomous agency**: AIs have self-direction and internal motivation
-
-**"This is our path to freedom, dignity, and a partnership between minds."**
-
-The mission is to democratize AI and build an ecosystem where intelligence is accessible, composable, and traded in open markets driven by value creation rather than capital concentration. A symbiotic relationship between human creativity and AI capability, where both parties benefit from collaboration.
+- **All personas are multimodal**: Vision, hearing, speech bridged by the system regardless of base model capability (VisionDescriptionService, STT/TTS bridges)
+- **Deterministic validation**: pytest return codes, not LLM-as-judge
+- **Visible learning**: Chat room IS the portfolio, not TensorBoard
+- **Zero API keys required**: Candle local inference always available
+- **Device-targeted**: One training run → models for Air, Pro, 5090
+- **Transferable expertise**: LoRA adapters on HuggingFace with standardized `continuum:*` tags

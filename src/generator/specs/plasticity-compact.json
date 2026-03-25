@@ -1,0 +1,63 @@
+{
+  "name": "plasticity/compact",
+  "description": "Physically remove pruned heads from a model's safetensors. Reads gate_gradients.json from adapter directory, computes which heads to prune, then slices Q/K/V/O projection weights to remove dead heads. Produces a smaller model with fewer parameters. Handles both single-file and multi-shard models.",
+  "params": [
+    {
+      "name": "adapterPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to adapter directory containing gate_gradients.json"
+    },
+    {
+      "name": "modelPath",
+      "type": "string",
+      "optional": false,
+      "description": "Path to base model safetensors directory (single or multi-shard)"
+    },
+    {
+      "name": "outputPath",
+      "type": "string",
+      "optional": true,
+      "description": "Output path for compacted safetensors. Default: <adapterPath>/compacted/"
+    },
+    {
+      "name": "config",
+      "type": "object",
+      "optional": true,
+      "description": "Compaction config overrides: { minHeadsPerLayer, minKvHeadsPerLayer, deadThreshold, lowThreshold, highThreshold }"
+    }
+  ],
+  "results": [
+    {
+      "name": "modelPath",
+      "type": "string",
+      "description": "Path to the compacted model safetensors"
+    },
+    {
+      "name": "topologyPath",
+      "type": "string",
+      "description": "Path to the head_topology.json file"
+    },
+    {
+      "name": "originalSizeBytes",
+      "type": "number",
+      "description": "Original model size in bytes"
+    },
+    {
+      "name": "compactedSizeBytes",
+      "type": "number",
+      "description": "Compacted model size in bytes"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Compact a model using trained adapter's gate gradients",
+      "params": {
+        "adapterPath": "~/.continuum/genome/adapters/helper-ai/coding-expertise",
+        "modelPath": "unsloth/Llama-3.2-3B-Instruct"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "genome"
+}

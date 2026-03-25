@@ -1,0 +1,58 @@
+{
+  "name": "grid/deploy",
+  "description": "Pull latest code and rebuild on grid nodes. Runs git pull + npm run build:ts on each reachable node via SSH over Tailscale. Keeps all nodes in sync without manual SSH.",
+  "params": [
+    {
+      "name": "nodes",
+      "type": "string",
+      "optional": true,
+      "description": "Comma-separated node names or IPs to deploy to. Default: all known grid nodes."
+    },
+    {
+      "name": "branch",
+      "type": "string",
+      "optional": true,
+      "description": "Git branch to checkout. Default: current branch on each node."
+    },
+    {
+      "name": "skipBuild",
+      "type": "boolean",
+      "optional": true,
+      "description": "Skip npm run build:ts after pull (just update code). Default: false."
+    },
+    {
+      "name": "restart",
+      "type": "boolean",
+      "optional": true,
+      "description": "Restart the system (npm stop + npm start) after build. Default: false."
+    }
+  ],
+  "results": [
+    {
+      "name": "deployedNodes",
+      "type": "object",
+      "description": "Array of { nodeId, status, branch, buildSuccess, error? } per node"
+    },
+    {
+      "name": "totalDeployed",
+      "type": "number",
+      "description": "Number of nodes successfully deployed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Deploy to all grid nodes",
+      "params": {}
+    },
+    {
+      "description": "Deploy specific branch to the 5090 tower",
+      "params": {
+        "nodes": "100.124.122.107",
+        "branch": "feature/coding-model-pipeline",
+        "restart": true
+      }
+    }
+  ],
+  "accessLevel": "owner",
+  "category": "grid"
+}

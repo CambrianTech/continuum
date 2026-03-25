@@ -4,9 +4,11 @@
  * Generates a Pipeline definition that orchestrates:
  * 1. Dataset preparation (genome/dataset-prepare)
  * 2. Condition check on success
- * 3. Training (genome/train)
+ * 3. Training (genome/train) — with gate gradient capture for plasticity
  * 4. Adapter registration (genome/paging-adapter-register)
  * 5. Adapter activation (genome/paging-activate)
+ * 6. Plasticity compaction (plasticity/pipeline) — prune dead heads
+ * 7. GGUF compression (plasticity/compress) — target device optimization
  *
  * Uses Rust interpolation {{steps.N.data.field}} for step-to-step data flow.
  */
@@ -29,6 +31,10 @@ export interface LoRATrainingConfig {
   epochs?: number;
   learningRate?: number;
   batchSize?: number;
+  /** Target device for GGUF compression. Default: '32gb' */
+  deviceSpec?: string;
+  /** Skip plasticity compaction/compression steps */
+  skipPlasticity?: boolean;
 }
 
 /**
@@ -53,6 +59,8 @@ export function buildLoRATrainingPipeline(config: LoRATrainingConfig): Pipeline 
     epochs = 3,
     learningRate = 0.0001,
     batchSize = 4,
+    deviceSpec = '32gb',
+    skipPlasticity = false,
   } = config;
 
   const adapterId = uuidv4() as UUID;
@@ -120,6 +128,38 @@ export function buildLoRATrainingPipeline(config: LoRATrainingConfig): Pipeline 
       ],
     },
   ];
+
+  // Plasticity steps: compact the base model using gate gradients from training,
+  // then compress to a target-device GGUF. Only if training succeeded.
+  if (!skipPlasticity) {
+    // Step 2: Plasticity compaction + GGUF compression (guarded by training success)
+    steps.push({
+      type: 'condition',
+      if: '{{steps.1.0.data.adapterPath}}',
+      then: [
+        // Compact using gate gradients
+        {
+          type: 'command',
+          command: 'plasticity/pipeline',
+          params: {
+            capturePath: '{{steps.1.0.data.adapterPath}}',
+            modelPath: baseModel,
+          },
+        },
+        // Compress to target-device GGUF
+        {
+          type: 'command',
+          command: 'plasticity/compress',
+          params: {
+            capturePath: '{{steps.2.0.data.topologyPath}}',
+            modelPath: '{{steps.2.0.data.modelPath}}',
+            deviceSpec,
+          },
+        },
+      ],
+      else: [],
+    });
+  }
 
   return {
     name: `lora-training-${safeName}`,

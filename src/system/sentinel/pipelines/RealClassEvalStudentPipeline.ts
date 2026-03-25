@@ -77,7 +77,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     {
       type: 'watch',
       event: evt(E.CURRICULUM_READY),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // Step 1: Initial exam — challenge loop
@@ -91,7 +91,7 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
     {
       type: 'watch',
       event: evt(E.SESSION_COMPLETE),
-      timeoutSecs: 60,
+      timeoutSecs: 0,  // No timeout — wait for session complete
     },
 
     // Step 3: Condition — training data available AND training enabled?
@@ -146,7 +146,37 @@ export function buildRealClassEvalStudentPipeline(config: RealClassEvalStudentPi
         {
           type: 'watch',
           event: evt(E.REEXAM_COMPLETE),
-          timeoutSecs: 120,
+          timeoutSecs: 0,  // No timeout — wait for comparison
+        },
+      ],
+      else: [],
+    },
+
+    // Step 4: Plasticity compaction + GGUF compression (only if training happened)
+    // Gate gradients only exist when training ran (Step 3 then-branch).
+    // Check adapterPath from the training step — if truthy, training happened.
+    {
+      type: 'condition',
+      if: '{{steps.3.data.adapterPath}}',
+      then: [
+        // Compact the model using gate gradients from training
+        {
+          type: 'command',
+          command: 'plasticity/pipeline',
+          params: {
+            capturePath: '{{steps.3.data.adapterPath}}',
+            modelPath: baseModel,
+          },
+        },
+        // Compress to target-device GGUF
+        {
+          type: 'command',
+          command: 'plasticity/compress',
+          params: {
+            capturePath: '{{steps.4.0.data.topologyPath}}',
+            modelPath: '{{steps.4.0.data.modelPath}}',
+            deviceSpec: '32gb',
+          },
         },
       ],
       else: [],
@@ -191,7 +221,7 @@ function buildInitialChallengeSteps(
     {
       type: 'watch',
       event: iterEvt(E.CHALLENGE_READY),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.1: LLM — Implement the Python class
@@ -240,7 +270,7 @@ function buildInitialChallengeSteps(
     {
       type: 'watch',
       event: iterEvt('verdict:ready'),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.4: Condition — did we get remediation data AND training is enabled?
@@ -310,7 +340,7 @@ function buildReexamChallengeSteps(
     {
       type: 'watch',
       event: reexamIterEvt('challenge:ready'),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
 
     // loop.1: LLM — Re-implement (LoRA should be active for local model inference)
@@ -364,7 +394,7 @@ function buildReexamChallengeSteps(
     {
       type: 'watch',
       event: reexamIterEvt('verdict:ready'),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — wait for other sentinel
     },
   ];
 }

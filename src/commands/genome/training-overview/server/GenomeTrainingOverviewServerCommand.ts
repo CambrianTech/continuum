@@ -84,7 +84,7 @@ export class GenomeTrainingOverviewServerCommand extends CommandBase<GenomeTrain
               adapters.push({
                 id: l.id ?? user.id,
                 name: l.name, domain: l.domain, baseModel: l.baseModel,
-                personaName: pName, personaId: user.id, nodeName: 'local',
+                personaName: pName, personaId: user.id as string, nodeName: 'local',
                 finalLoss: l.trainingMetrics.finalLoss ?? 0,
                 epochs: l.trainingMetrics.epochs ?? 0,
                 examplesProcessed: l.trainingMetrics.examplesProcessed ?? 0,

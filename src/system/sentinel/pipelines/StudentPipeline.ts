@@ -53,7 +53,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
     {
       type: 'watch',
       event: evt(E.CURRICULUM_READY),
-      timeoutSecs: 300,  // 5 minutes for curriculum design
+      timeoutSecs: 0,  // No timeout — teacher curriculum design can take time with complex skills
     },
 
     // Step 1: Loop over topics (matching teacher's topic count)
@@ -66,7 +66,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         {
           type: 'watch',
           event: iterEvt(E.DATASET_READY),
-          timeoutSecs: 300,  // 5 minutes for data synthesis
+          timeoutSecs: 0,  // No timeout — synthesis of 100+ examples takes time
         },
 
         // loop.1: PRE-TEST — Answer topic questions BEFORE training
@@ -138,7 +138,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         {
           type: 'watch',
           event: iterEvt(E.EXAM_READY),
-          timeoutSecs: 300,
+          timeoutSecs: 0,  // No timeout — wait for other sentinel
         },
 
         // loop.6: Take the exam via LLM (POST-training)
@@ -179,7 +179,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         {
           type: 'watch',
           event: iterEvt(E.EXAM_GRADED),
-          timeoutSecs: 300,
+          timeoutSecs: 0,  // No timeout — wait for other sentinel
         },
 
         // loop.9: Phenotype validation — compare pre-test (loop.1) vs exam (loop.6)
@@ -244,10 +244,34 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
                 adaptedScore: '{{loop.9.data.adaptedScore}}',
                 improvement: '{{loop.9.data.improvement}}',
                 summary: '{{loop.9.data.summary}}',
-                // Include a sample Q&A to demonstrate learning
                 sampleQuestion: '{{loop.9.data.questionResults.0.question}}',
                 sampleBaselineAnswer: '{{loop.9.data.questionResults.0.baselineAnswer}}',
                 sampleAdaptedAnswer: '{{loop.9.data.questionResults.0.adaptedAnswer}}',
+              },
+            },
+            // Post the before/after to chat — THIS is what proves learning happened
+            {
+              type: 'command',
+              command: 'collaboration/chat/send',
+              params: {
+                room: 'academy',
+                message: [
+                  `🧠 **${personaName} learned something!** — Topic: "{{loop.0.data.payload.topicName}}"`,
+                  '',
+                  `**Before training:** {{loop.9.data.baselineScore}}/100`,
+                  `**After training:** {{loop.9.data.adaptedScore}}/100`,
+                  `**Improvement:** +{{loop.9.data.improvement}} points`,
+                  '',
+                  '**Same question, different answers:**',
+                  '',
+                  '> **Q:** {{loop.9.data.questionResults.0.question}}',
+                  '',
+                  '> **Before:** {{loop.9.data.questionResults.0.baselineAnswer}}',
+                  '',
+                  '> **After:** {{loop.9.data.questionResults.0.adaptedAnswer}}',
+                  '',
+                  '_{{loop.9.data.summary}}_',
+                ].join('\n'),
               },
             },
           ],
@@ -267,6 +291,24 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
                 summary: '{{loop.9.data.summary}}',
               },
             },
+            // Post the failure to chat — honest about what didn't work
+            {
+              type: 'command',
+              command: 'collaboration/chat/send',
+              params: {
+                room: 'academy',
+                message: [
+                  `⚠️ **${personaName} needs more work** — Topic: "{{loop.0.data.payload.topicName}}"`,
+                  '',
+                  `**Before training:** {{loop.9.data.baselineScore}}/100`,
+                  `**After training:** {{loop.9.data.adaptedScore}}/100`,
+                  `**Improvement:** +{{loop.9.data.improvement}} (below threshold)`,
+                  '',
+                  '_Training didn\'t improve this topic enough. The adapter was NOT registered._',
+                  '_{{loop.9.data.summary}}_',
+                ].join('\n'),
+              },
+            },
           ],
         },
       ],
@@ -274,9 +316,6 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
 
     // Step 2: Post-loop composition — merge all successfully trained adapters
     // into a single stacked genome for the persona.
-    // Uses the layerIds collected from each loop iteration's training step.
-    // The sentinel engine tracks step results across iterations, so we reference
-    // the training results from all loop iterations.
     {
       type: 'command',
       command: 'genome/compose',
@@ -284,12 +323,35 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
         personaId,
         baseModel,
         name: `${personaName}-academy-${sessionId.slice(0, 8)}`,
-        // Layers are collected from all successful training iterations.
-        // Each loop.3.data.layerId contains the trained adapter's UUID.
-        // The Rust engine expands {{steps.1.iterations}} to the loop result array.
         layers: '{{steps.1.iterations.*.3.data.layerId}}',
         strategy: 'weighted-merge',
-        activate: true,  // Auto-activate with LRU eviction
+        activate: true,
+      },
+    },
+
+    // Step 3: Plasticity compaction — use gate gradients from training to prune dead heads.
+    // gate_gradients.json was written by GateGradientCallback during each training step.
+    // The last training iteration's adapter directory has the most complete gradient data.
+    // This produces a compacted safetensors model with fewer parameters.
+    {
+      type: 'command',
+      command: 'plasticity/pipeline',
+      params: {
+        capturePath: '{{steps.2.data.composedAdapterPath}}',
+        modelPath: baseModel,
+      },
+    },
+
+    // Step 4: Compress compacted model to target-device GGUF.
+    // Uses the topology from compaction + the compacted safetensors.
+    // Default device: 32gb (MacBook Pro). Override via academy config.
+    {
+      type: 'command',
+      command: 'plasticity/compress',
+      params: {
+        capturePath: '{{steps.3.data.topologyPath}}',
+        modelPath: '{{steps.3.data.modelPath}}',
+        deviceSpec: '32gb',
       },
     },
   ];

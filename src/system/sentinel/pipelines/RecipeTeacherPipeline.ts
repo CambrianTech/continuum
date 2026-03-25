@@ -22,7 +22,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { RecipeTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
-import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
+import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 import type { RecipeDefinition } from '../../recipes/shared/RecipeTypes';
 
 const E = ACADEMY_EVENTS;
@@ -259,11 +259,12 @@ function buildRecipeCurriculumStep(
     '}',
   ].join('\n');
 
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
   return {
     type: 'llm',
     prompt,
-    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    model: teacherLlm.model,
+    provider: teacherLlm.provider,
     temperature: 0.7,
     maxTokens: 4096,
   };
@@ -291,6 +292,7 @@ function buildTopicLoopSteps(
   curriculumStepIdx: number,
 ): PipelineStep[] {
   const recipeGrounding = buildRecipeGroundingContext(recipe);
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
 
   return [
     // outer.0: Synthesize training data for current gap topic
@@ -304,8 +306,8 @@ function buildTopicLoopSteps(
         exampleCount: academyConfig.examplesPerTopic,
         difficulty: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.difficulty}}`,
         groundingContext: recipeGrounding,
-        ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-        ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+        model: teacherLlm.model,
+        provider: teacherLlm.provider,
       },
     },
 
@@ -326,7 +328,7 @@ function buildTopicLoopSteps(
     {
       type: 'watch',
       event: iterEvt(E.TRAINING_COMPLETE),
-      timeoutSecs: 600,
+      timeoutSecs: 0,  // No timeout — training runs for hours
     },
 
     // outer.3: Inner loop — exam/grade/remediate cycle
@@ -363,6 +365,7 @@ function buildExamRetrySteps(
   const parentIterEvt = (action: string) => `${academyEvent(sessionId, action)}:{{input.parent_iteration}}`;
 
   const recipeGrounding = buildRecipeGroundingContext(recipe);
+  const teacherLlm = resolveTeacherLlmConfig(academyConfig);
 
   const remediationSynthesizeParams: Record<string, unknown> = {
     topic: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}`,
@@ -373,8 +376,8 @@ function buildExamRetrySteps(
     remediationFeedback: '{{loop.4.output.feedback}}',
     weakAreas: '{{loop.4.output.weakAreas}}',
     groundingContext: recipeGrounding,
-    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    model: teacherLlm.model,
+    provider: teacherLlm.provider,
   };
 
   return [
@@ -412,8 +415,8 @@ function buildExamRetrySteps(
         '  }',
         ']',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.7,
       maxTokens: 2048,
     },
@@ -452,7 +455,7 @@ function buildExamRetrySteps(
     {
       type: 'watch',
       event: parentIterEvt(E.EXAM_RESPONSES),
-      timeoutSecs: 300,
+      timeoutSecs: 0,  // No timeout — wait for student
     },
 
     // inner.4: Grade responses via LLM
@@ -486,8 +489,8 @@ function buildExamRetrySteps(
         '  ]',
         '}',
       ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      model: teacherLlm.model,
+      provider: teacherLlm.provider,
       temperature: 0.3,
       maxTokens: 2048,
     },
@@ -574,7 +577,7 @@ function buildExamRetrySteps(
         {
           type: 'watch',
           event: parentIterEvt(E.TRAINING_COMPLETE),
-          timeoutSecs: 600,
+          timeoutSecs: 0,  // No timeout — training runs for hours
         },
       ],
     },

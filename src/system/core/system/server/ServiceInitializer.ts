@@ -73,6 +73,11 @@ export async function initializeServices(): Promise<void> {
   initializeTrainingCompletionHandler();
   log.debug('Training completion handler initialized');
 
+  // Training crash recovery: scan for orphaned jobs and auto-resume from checkpoints
+  const { initializeTrainingRecovery } = await import('../../../genome/server/TrainingRecoveryService');
+  initializeTrainingRecovery();
+  log.debug('Training recovery service initialized');
+
   // Codebase indexing: background incremental index so personas can answer code questions
   initializeCodebaseIndexing();
 
