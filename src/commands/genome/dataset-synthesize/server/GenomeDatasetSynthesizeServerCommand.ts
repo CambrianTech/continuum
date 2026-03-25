@@ -54,7 +54,7 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       ],
       ...(model && { model }),
       ...(provider && { provider: provider as AIGenerateParams['provider'] }),
-      maxTokens: 16384,  // Large enough for <think> reasoning + JSON output
+      maxTokens: 8192,  // DeepSeek max is 8192. For models with <think>, reduce examplesPerTopic to fit.
       temperature: 0.8,
     };
 
