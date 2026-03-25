@@ -62,8 +62,8 @@ export abstract class JTAGBase extends JTAGModule {
         // Wrap command to inject real sessionId and ensure required fields
         return async (params?: CommandParams) => {
           // Use sessionId from params if provided, otherwise fall back to system sessionId
-          const sessionIdToUse = (params as any)?.sessionId ?? this.sessionId;
-          const contextToUse = (params as any)?.context ?? this.context;
+          const sessionIdToUse = params?.sessionId ?? this.sessionId;
+          const contextToUse = params?.context ?? this.context;
 
           const fullParams = command.withDefaults(params ?? {}, sessionIdToUse, contextToUse);
 

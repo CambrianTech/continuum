@@ -11,7 +11,7 @@ import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonBase';
 import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } from '../shared/DataDaemon';
 import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
-import type { DataRecord, StorageQuery, StorageResult, RecordData, CollectionStats, StorageOperation } from '../shared/DataStorageAdapter';
+import type { DataRecord, StorageQuery, StorageResult, RecordData, CollectionStats, StorageOperation, StorageAdapterConfig } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
@@ -56,7 +56,7 @@ export class DataDaemonServer extends DataDaemonBase {
     // Create adapter via factory - server-side dependency injection
     const factory = new DefaultStorageAdapterFactory();
     const adapterConfig = {
-      type: storageConfig.backend as any,
+      type: storageConfig.backend as StorageAdapterConfig['type'],
       namespace: storageConfig.namespace,
       options: storageConfig.options
     };
@@ -161,7 +161,7 @@ export class DataDaemonServer extends DataDaemonBase {
     // Register logging_config collection -> .continuum/logging.json
     const loggingAdapter = new SingleJsonFileAdapter();
     await loggingAdapter.initialize({
-      type: 'file' as any,  // Use 'file' type, actual behavior determined by adapter class
+      type: 'file' as const,
       namespace: 'logging',
       options: {
         filePath: `${GlobalPaths.root}/logging.json`,
