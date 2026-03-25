@@ -114,18 +114,24 @@ pub fn delete_checkpoint(handle: &str) -> Result<(), String> {
 /// Returns handles that were marked as Interrupted.
 pub fn recover_interrupted() -> Result<Vec<String>, String> {
     let checkpoints = list_checkpoints()?;
-    let mut interrupted = Vec::new();
+    let mut resumable = Vec::new();
 
     for mut cp in checkpoints {
         if cp.status == PipelineStatus::Running {
+            // Was running when process died — mark as interrupted
             cp.status = PipelineStatus::Interrupted;
             cp.last_checkpoint_at = chrono::Utc::now().to_rfc3339();
             save_checkpoint(&cp.sentinel_handle, &cp)?;
-            interrupted.push(cp.sentinel_handle);
+            resumable.push(cp.sentinel_handle);
+        } else if cp.status == PipelineStatus::Interrupted
+            || cp.status == PipelineStatus::BudgetExhausted
+        {
+            // Already interrupted or budget-exhausted from a previous restart — still resumable
+            resumable.push(cp.sentinel_handle);
         }
     }
 
-    Ok(interrupted)
+    Ok(resumable)
 }
 
 #[cfg(test)]
