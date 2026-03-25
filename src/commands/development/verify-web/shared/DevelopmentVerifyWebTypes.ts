@@ -87,13 +87,12 @@ export const createDevelopmentVerifyWebResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
-    success: boolean;
     // True if page loaded with zero errors
-    success?: boolean;
+    success: boolean;
     // Runtime JavaScript errors captured from page
-    errors?: array;
+    errors?: string[];
     // All console.log/warn/error messages
-    consoleOutput?: array;
+    consoleOutput?: string[];
     // Path to captured screenshot
     screenshotPath?: string;
     // Base64-encoded screenshot for AI vision
@@ -105,14 +104,13 @@ export const createDevelopmentVerifyWebResult = (
     error?: JTAGError;
   }
 ): DevelopmentVerifyWebResult => createPayload(context, sessionId, {
-  success: data.success ?? false,
-  errors: data.errors ?? {} as array,
-  consoleOutput: data.consoleOutput ?? {} as array,
+  success: data.success,
+  errors: data.errors ?? [],
+  consoleOutput: data.consoleOutput ?? [],
   screenshotPath: data.screenshotPath ?? '',
   screenshotBase64: data.screenshotBase64 ?? '',
   pageTitle: data.pageTitle ?? '',
   loadTimeMs: data.loadTimeMs ?? 0,
-  ...data
 });
 
 /**
