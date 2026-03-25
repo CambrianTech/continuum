@@ -406,7 +406,7 @@ export class PersonaToolExecutor {
     const executorCalls: ToolCall[] = nativeToolCalls.map(tc => ({
       toolName: unsanitizeToolName(tc.name),
       parameters: Object.fromEntries(
-        Object.entries(tc.input).map(([k, v]) => [
+        Object.entries(tc.input ?? {}).map(([k, v]) => [
           k,
           (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v),
         ])
