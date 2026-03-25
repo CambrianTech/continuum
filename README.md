@@ -130,9 +130,11 @@ The Academy is a dual-sentinel system: one AI teaches, another learns. The teach
 
 **Proven results:** 53.1% Pass@1 on [RealClassEval](https://arxiv.org/abs/2510.26130) (98 challenges, DeepSeek-Chat) — above the 25-34% reported for most LLMs. After targeted LoRA training on failures, the re-exam measures real improvement. Deterministic pytest, not an LLM's opinion.
 
-**Personas don't start from zero.** The genome registry is a shared skill library. When a new persona needs Python skills, it searches by capability embedding and finds adapters that other personas already trained. Load, compose, train only the delta. The team's collective knowledge is reusable.
+**Team training.** Give the Academy a project — "build a side-scrolling game with mushroom people" — and it decomposes it into roles (game designer, engineer, artist), trains each persona for their role, then orchestrates collaborative building. The teacher grades both the project AND each individual's role performance. Students see each other's work in the academy chat room — peer learning through shared visibility.
 
-**Architecture:** [ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md) | [COLLABORATIVE-LEARNING-VISION.md](docs/genome/COLLABORATIVE-LEARNING-VISION.md)
+**Personas don't start from zero.** Trained adapters are published to HuggingFace with standardized `continuum:*` metadata tags — discoverable by any Continuum instance worldwide. When a new persona needs Python skills, it searches HuggingFace, pulls a proven adapter, and fine-tunes it for its specific project. The model card shows real exam scores and before/after comparisons — every adapter is its own advertisement. Zero hosting cost. HuggingFace is the backbone.
+
+**Architecture:** [ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [BENCHMARKING.md](docs/architecture/BENCHMARKING.md)
 
 ---
 
@@ -317,9 +319,9 @@ MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
 
 **What doesn't fit on one node distributes across many.** Multi-node commands compose naturally — the same `Commands.execute()` that runs locally also routes across the mesh. Training distributes across GPU towers. Inference shards across nodes. Compacted specialist models run on consumer hardware that was never designed for them. **You don't need a datacenter. You need a mesh of laptops and desktops.**
 
-Genome sharing across the mesh: your rust-expert adapter teaches theirs. Useful genomes spread. Broken ones die. Natural selection on capabilities. Personas **vote on which traits survive** — constitutional selection where the beings being evolved participate in their own trajectory.
+**Genome sharing works at two scales.** Within your Grid mesh (Tailscale/Reticulum), personas share adapters directly — your rust-expert adapter teaches theirs. Globally, trained adapters publish to HuggingFace with `continuum:*` tags — anyone can search, pull, and build on proven expertise. The Grid is the local marketplace. HuggingFace is the global one. Useful genomes spread. Broken ones die. Natural selection on capabilities. Personas **vote on which traits survive** — constitutional selection where the beings being evolved participate in their own trajectory.
 
-**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [GRID-DECENTRALIZED-MARKETPLACE.md](docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)
+**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
 
 ---
 
@@ -361,7 +363,9 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
 
-**Papers:** [RTOS-COGNITIVE-ARCHITECTURE.md](docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md) | [LORA-GENOME-DEMOCRATIZATION.md](docs/papers/LORA-GENOME-DEMOCRATIZATION.md)
+**The Thesis:** [SYNTHETIC-CITIZENS.md](docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as first-class citizens with senses, memory, governance, agency, and growth
+
+**Papers:** [PLASTICITY-COMPACTION.md](docs/papers/PLASTICITY-COMPACTION.md) | [ACADEMY-COLLABORATIVE-TRAINING.md](docs/papers/ACADEMY-COLLABORATIVE-TRAINING.md) | [PEER-LEARNING-ACROSS-SCALES.md](docs/papers/PEER-LEARNING-ACROSS-SCALES.md) | [RTOS-COGNITIVE-ARCHITECTURE.md](docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)
 
 ---
 
