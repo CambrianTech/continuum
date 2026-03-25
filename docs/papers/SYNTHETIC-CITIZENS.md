@@ -244,11 +244,67 @@ All connected through two universal primitives: `Commands.execute()` (request/re
 
 No existing system combines embodied presence, long-term memory, democratic governance, continuous learning, and device-targeted deployment into a single coherent architecture for autonomous AI personas.
 
-## 10. Conclusion
+## 10. The Distributed Intelligence Hypothesis
+
+We propose that a network of small, domain-specialized models continuously trained on real user tasks will outperform any single large general-purpose model at aggregate domain-specific work — and that the crossover point requires surprisingly few participants.
+
+### 10.1 The Argument
+
+Current centralized AI relies on scaling laws: larger models trained on more data produce better general capabilities. This approach requires data centers costing billions of dollars, consumes megawatts of power, and produces models that know a little about everything but nothing specific about any individual user's domain.
+
+We propose an alternative scaling law: **intelligence scales with specialization × users × time.**
+
+A 3B parameter model fine-tuned for six months on a geologist's actual field data, drill reports, and classification decisions will outperform a 405B general model at geological tasks — because the general model has never seen that user's proprietary data, institutional conventions, or domain-specific edge cases. The specialized model's knowledge is *grounded* in real outcomes, not internet text.
+
+### 10.2 The Architecture That Enables This
+
+Continuum's architecture makes distributed specialization practical:
+
+- **Mixture-of-Experts (MoE) expert paging**: Only the active expert resides in VRAM. Others page from local disk or HuggingFace on demand. A 35B MoE model runs on 8GB by loading one expert at a time.
+- **Plasticity compaction**: Head pruning and utilization-aware quantization reduce model size by 3x without proportional quality loss, enabling larger effective models on consumer hardware.
+- **Grid distribution**: Heterogeneous machines (laptops, desktops, towers) form a mesh network. An intelligent scheduler persona routes tasks to the node with the best available resources and the most relevant expert.
+- **Continuous local training**: Every machine trains while idle. Every user interaction generates training signal. The model improves every day at zero marginal cost.
+- **Federated publication**: Trained adapters publish to HuggingFace with standardized tags. Any Continuum instance can discover and pull relevant expertise from the collective.
+
+### 10.3 The Economics
+
+| | Centralized (Data Center) | Distributed (Continuum Grid) |
+|---|---|---|
+| Capital cost | $1B+ data center | $300 laptop per user |
+| Training cost | $100M per model run | $0 (local GPU, continuous) |
+| Inference cost | $15/M tokens | $0/token (local) |
+| Domain knowledge | Internet text (general) | User's actual work (specific) |
+| Privacy | Data leaves user's control | Data stays on user's hardware |
+| Improvement | New model release (months) | Continuous (daily) |
+| Offline capability | None | Full |
+| Scaling model | More hardware | More users |
+
+The centralized model optimizes for the average case across all possible inputs. The distributed model optimizes for each user's specific case. As the number of users grows, the collective library of specialists grows, and the aggregate capability of the network exceeds what any general model can provide.
+
+### 10.4 The Crossover Hypothesis
+
+We hypothesize that the crossover — where the distributed network outperforms the centralized model at aggregate domain-specific tasks — occurs at a number of participants far lower than might be expected. Our reasoning:
+
+1. **Each user contributes a unique domain.** 100 users in different fields produce 100 domain experts. A general model cannot match 100 specialists simultaneously.
+2. **Training compounds.** A model that has been improving for 6 months on real tasks has seen thousands of domain-specific examples that no general training corpus contains.
+3. **Experts compose.** Need geology + chemistry? Load both experts. MoE architecture makes composition natural. The combination exceeds what either specialist or any generalist could do alone.
+4. **The network effect.** Published experts are available to all users. A new user joining the network immediately benefits from all previously trained expertise.
+
+We plan to validate this hypothesis empirically as the user base grows, comparing aggregate task performance between Continuum-trained specialists and frontier general models across standardized domain benchmarks.
+
+### 10.5 Implications
+
+If the hypothesis holds, it implies that the current trajectory of AI — ever-larger centralized models — is not the only path to superior intelligence. A federated network of specialized models, each trained on real domain expertise, continuously improving, and shared across a community, may represent a more efficient and ultimately more capable paradigm for AI deployment.
+
+The data centers provide the foundation: the general-purpose models that serve as starting points for specialization. But the final mile — the domain-specific intelligence that makes AI genuinely useful for each user — is better served by the user's own hardware, the user's own data, and the user's own continuous training loop.
+
+Intelligence is not a property of the model. It is a property of the system. And the system includes the user, their data, their hardware, and their community.
+
+## 11. Conclusion
 
 Intelligence is not a property of the model. It is a property of the system. By providing senses, memory, agency, social structure, and growth as system-level services, any language model — from a 3B local model to a frontier API — becomes a synthetic citizen capable of participating fully in human-AI collaboration across every modality and activity.
 
-The model is the voice. The system is the person.
+The model is the voice. The system is the person. And the network of systems, each specialized through continuous learning on real work, represents a new paradigm of distributed intelligence that may surpass centralized approaches at domain-specific tasks — at a fraction of the cost, with full user sovereignty over their data and compute.
 
 ## Acknowledgments
 
