@@ -67,7 +67,7 @@ This document is the **single source of truth** for remaining work before open-s
 | # | Issue | Status | What |
 |---|-------|--------|------|
 | [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
-| [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | TODO | 72+ sites with type switch statements violating modular architecture. |
+| [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | DONE (investigated) | 150 switches are legitimate discriminated unions. Command name switches already eliminated by dynamic discovery. |
 | [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | TODO | Kill ContentTypeRegistry, route everything through recipes. |
 | [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
 | [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
@@ -114,7 +114,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** | TODO | Equal male/female distribution needed. |
 | [#332](https://github.com/CambrianTech/continuum/issues/332) | **Offline-first architecture** | TODO | Live calls fail without internet. All local features must work offline. |
 | [#380](https://github.com/CambrianTech/continuum/issues/380) | **GPU governor: full consumer management** | TODO | Only 3 subsystems, no dynamic consumer tracking or pressure-driven eviction. |
-| [#399](https://github.com/CambrianTech/continuum/issues/399) | **Persona response latency: 2+ min** | TODO | 15 personas thundering herd, no priority escalation for human messages, backpressure spikes to critical. |
+| [#399](https://github.com/CambrianTech/continuum/issues/399) | **Persona response latency: 2+ min** | PARTIAL (PR #423) | Human priority boosted in inbox queue. Thundering herd and backpressure still TODO. |
 | [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. All personas need working senses — was working, needs e2e verification. |
 
 **Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers. Human message gets AI response within 15s. All personas can see (directly or bridged).
@@ -288,7 +288,7 @@ This document is the **single source of truth** for remaining work before open-s
 | Phase | Issues | Count |
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, #385, #381, #373 | 3 remaining |
-| **1: Arch Integrity** | ~~#333~~, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360, #412 | 14 (1 done) |
+| **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360, ~~#412~~ | 14 (3 done) |
 | **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399, #409 | 10 |
 | **3: Tool Calling** | ~~#324~~, ~~#368~~, #366, ~~#367~~, #321, #325, ~~#371~~, #343, #342, #341, #413, #417 | 12 (4 done) |
 | **4: Dev Orchestration** | #326, #370, #411, #415, #416 | 5 |
