@@ -1046,35 +1046,74 @@ impl ServiceModule for SentinelModule {
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         let log = crate::runtime::logger("sentinel");
-                        for handle in handles_to_resume {
-                            log.info(&format!("[{handle}] Auto-resuming interrupted pipeline..."));
-                            match checkpoint::load_checkpoint(&handle) {
+                        for handle_id in handles_to_resume {
+                            log.info(&format!("[{handle_id}] Auto-resuming interrupted pipeline..."));
+                            match checkpoint::load_checkpoint(&handle_id) {
                                 Ok(Some(mut cp)) => {
                                     cp.status = PipelineStatus::Running;
-                                    let _ = checkpoint::save_checkpoint(&handle, &cp);
-                                    // Re-execute the pipeline from where it left off
+                                    let _ = checkpoint::save_checkpoint(&handle_id, &cp);
+
                                     let pipeline = cp.pipeline.clone();
                                     let working_dir = std::path::PathBuf::from(&cp.working_dir);
                                     let step_index = cp.step_index;
+
+                                    // Register as running sentinel so sentinel/status works
+                                    let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::channel(1);
+                                    let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    let handle = SentinelHandle {
+                                        id: handle_id.clone(),
+                                        sentinel_type: "pipeline".to_string(),
+                                        status: SentinelStatus::Running,
+                                        progress: 0,
+                                        start_time: now,
+                                        end_time: None,
+                                        exit_code: None,
+                                        error: None,
+                                        logs_dir: logs_dir.to_string_lossy().to_string(),
+                                        working_dir: working_dir.to_string_lossy().to_string(),
+                                    };
+                                    sentinels.insert(
+                                        handle_id.clone(),
+                                        RunningSentinel {
+                                            handle: handle.clone(),
+                                            cancel_tx: Some(cancel_tx),
+                                            escalation: cp.escalation.clone(),
+                                            completion_tx: Some(completion_tx),
+                                            completion_rx,
+                                        },
+                                    );
+
                                     log.info(&format!(
-                                        "[{handle}] Resuming from step {step_index} of {}",
+                                        "[{handle_id}] Registered + resuming from step {step_index} of {}",
                                         pipeline.steps.len()
                                     ));
                                     let _ = executor::execute_pipeline(
                                         logs_dir.clone(),
                                         pipeline,
-                                        handle.clone(),
+                                        handle_id.clone(),
                                         working_dir,
                                         bus_clone.clone(),
                                         registry_clone.clone(),
                                     )
                                     .await;
+
+                                    // Mark complete
+                                    if let Some(mut entry) = sentinels.get_mut(&handle_id) {
+                                        entry.handle.status = SentinelStatus::Completed;
+                                        if let Some(tx) = entry.completion_tx.take() {
+                                            let _ = tx.send(true);
+                                        }
+                                    }
                                 }
                                 Ok(None) => {
-                                    log.warn(&format!("[{handle}] No checkpoint found — cannot resume"));
+                                    log.warn(&format!("[{handle_id}] No checkpoint found — cannot resume"));
                                 }
                                 Err(e) => {
-                                    log.warn(&format!("[{handle}] Failed to load checkpoint: {e}"));
+                                    log.warn(&format!("[{handle_id}] Failed to load checkpoint: {e}"));
                                 }
                             }
                         }
