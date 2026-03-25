@@ -66,7 +66,7 @@ This document is the **single source of truth** for remaining work before open-s
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | TODO | Production code has 831 `any` casts. Target: zero. |
+| [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
 | [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | TODO | 72+ sites with type switch statements violating modular architecture. |
 | [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | TODO | Kill ContentTypeRegistry, route everything through recipes. |
 | [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
@@ -79,6 +79,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
 | [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
 | [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date/pagination/indexes** | INVESTIGATED | Dates work correctly (TIMESTAMPTZ/RFC3339). Composite indexes working for high-traffic tables. Cursor pagination unimplemented (OFFSET fine for alpha). |
+| [#412](https://github.com/CambrianTech/continuum/issues/412) | **chat/send sender identity** | TODO | CLI sends show as human owner. Persona tool calls should show as persona. |
 
 **Previously completed:**
 - 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
@@ -136,8 +137,10 @@ This document is the **single source of truth** for remaining work before open-s
 | [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
 | [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | TODO | Personas see screenshots, live visual context. |
 | [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
+| [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | TODO | Personas hit "stream not found" with no hint of valid streams. Found by AI team. |
+| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate Qwen3.5-35B-A3B** | TODO | Opus reasoning distilled, 3B active MoE. Could replace Llama-3.2-3B as local model. |
 
-**Done when**: Local 14B model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
+**Done when**: Local model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
 
 ---
 
@@ -150,6 +153,8 @@ This document is the **single source of truth** for remaining work before open-s
 | [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
 | [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | PARTIAL (PR #407) | sentinel/coding-agent works e2e. Persona→chat→code trigger needs proof. |
 | [#411](https://github.com/CambrianTech/continuum/issues/411) | **Self-improving system** | TODO | Personas autonomously propose → code → test → PR. The endgame. |
+| [#415](https://github.com/CambrianTech/continuum/issues/415) | **Dispatch classifier too trigger-happy** | TODO | Chat messages dispatched as bug fix tasks. Burned $0.50 on a conversation. |
+| [#416](https://github.com/CambrianTech/continuum/issues/416) | **sentinel/resume rejects BudgetExhausted** | TODO | Status set to Failed not BudgetExhausted — can't resume after budget extension. |
 
 **Previously completed:**
 - 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
@@ -283,17 +288,17 @@ This document is the **single source of truth** for remaining work before open-s
 | Phase | Issues | Count |
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, #385, #381, #373 | 3 remaining |
-| **1: Arch Integrity** | #333, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360 | 13 |
+| **1: Arch Integrity** | ~~#333~~, #363, #362, #356, #355, #353, #351, #361, #354, #352, #379, #334, #360, #412 | 14 (1 done) |
 | **2: Live Quality** | #331, #338, #339, #340, #318, #322, #332, #380, #399, #409 | 10 |
-| **3: Tool Calling** | #324, #368, #366, #367, #321, #325, #371, #343, #342, #341 | 10 |
-| **4: Dev Orchestration** | #326, #370, #411 | 3 |
+| **3: Tool Calling** | ~~#324~~, ~~#368~~, #366, ~~#367~~, #321, #325, ~~#371~~, #343, #342, #341, #413, #417 | 12 (4 done) |
+| **4: Dev Orchestration** | #326, #370, #411, #415, #416 | 5 |
 | **5: Academy** | #377, #369, #374, #365, #344, #345, #384, #359 | 8 |
 | **6: Genome** | #382, #378, #330, #319 | 4 |
 | **7: Autonomous** | #383, #329, #336 | 3 |
 | **8: Distillation** | #327, #357 | 2 |
 | **9: Codebase Intel** | #328 | 1 |
 | **10: Grid** | #323, #364, #349, #337 | 4 |
-| **Total** | | **64** |
+| **Total** | | **69** (5 closed this session) |
 
 ---
 
