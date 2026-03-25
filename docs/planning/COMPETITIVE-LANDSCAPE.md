@@ -477,3 +477,50 @@ The market is white-hot. Thousands of people are building multi-agent systems wi
 Nobody else is even attempting the full stack. The harnesses do code generation. The frameworks do orchestration. The local tools do inference. We do all of it, integrated, on your hardware.
 
 The question isn't whether the market wants this. The question is how fast we can get it in front of them.
+
+---
+
+## Distribution Strategy: Models as the Funnel (March 2026 Update)
+
+### The Insight
+
+Don't fight competitors — empower them. Publish models on HuggingFace that work in VSCode, OpenCode, OpenClaw, Claude Code, any IDE. The models are free. The models are the ad.
+
+### MoE Expert Distribution
+
+Continuum trains full Mixture-of-Experts models (e.g., Qwen3.5-35B-A3B). Then publishes trimmed variants:
+
+| Model | Experts | Target | Suffix |
+|-------|---------|--------|--------|
+| `continuum-ai/qwen3.5-3b-a3b-cont` | All | Continuum users | `-cont` |
+| `continuum-ai/qwen3.5-3b-a3b-code-cont` | Code only | Continuum coders | `-code-cont` |
+| `continuum-ai/qwen3.5-3b-a3b-code` | Code only | VSCode/OpenCode/any IDE | `-code` |
+| `continuum-ai/qwen3.5-3b-a3b-reason` | Reasoning only | Generic reasoning | `-reason` |
+| `continuum-ai/qwen3.5-3b-a3b-code-reason` | Code + Reasoning | Full coding assistant | `-code-reason` |
+
+### Three-Tier Storage (HF as CDN)
+
+Models live on HuggingFace. Local disk is a cache. VRAM is the working set.
+
+```
+VRAM (L1):  Active expert + shared layers + LoRA     ~4-6GB, microseconds
+Disk (L2):  Recently used experts + adapters           ~20-50GB cache budget
+HF   (L3):  All published models, infinite             Seconds on broadband
+```
+
+MacBook Air with 500GB SSD doesn't store all models — it caches what it uses. LRU eviction keeps disk budget under control. Need a different expert? Fetch from HF, takes 30 seconds.
+
+### The Funnel
+
+1. Developer finds `continuum-ai/qwen3.5-3b-a3b-code` on HuggingFace
+2. Uses it in VSCode — it's great at coding (Opus reasoning distilled)
+3. Model card says "Trained by Continuum"
+4. Developer thinks: "What if I could train this on MY codebase?"
+5. Downloads Continuum → trains a `-code-cont` variant → publishes back to HF
+6. Their colleagues find the model → cycle repeats
+
+### Symbiotic Competition
+
+Don't gate the models. Don't require Continuum. Let OpenClaw users benefit. Let Claude Code users benefit. Every user of our models is a potential Continuum user. Every model we publish makes their tools better — and advertises ours.
+
+This is the same viral distribution that got Cambrian's apps to the top of the App Store. Give value freely, let the product sell itself.
