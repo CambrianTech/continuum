@@ -167,9 +167,20 @@ pub async fn execute_pipeline(
                 // Update budget consumed
                 budget_consumed.elapsed_secs = start_time.elapsed().as_secs();
 
-                // Write durable checkpoint after each step
+                // Write durable checkpoint after each step.
+                // Distinguish budget exhaustion from general failure — BudgetExhausted
+                // is resumable after sentinel/extend-budget, Failed is not.
                 let cp_status = if failed {
-                    PipelineStatus::Failed
+                    let is_budget = error_msg.as_ref().map_or(false, |e| {
+                        e.contains("max_budget_usd")
+                            || e.contains("budget")
+                            || e.contains("Budget exhausted")
+                    });
+                    if is_budget {
+                        PipelineStatus::BudgetExhausted
+                    } else {
+                        PipelineStatus::Failed
+                    }
                 } else {
                     PipelineStatus::Running
                 };
