@@ -163,6 +163,30 @@ echo "-----------------------------------"
 cd src
 npm install --no-audit --no-fund 2>&1 | tail -3
 echo "  ✅ Node dependencies installed"
+
+# Python training dependencies (for Academy LoRA fine-tuning)
+# Only install if GPU is available — no point on CPU-only machines
+if command -v python3 &>/dev/null; then
+    HAS_GPU=false
+    if python3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+        HAS_GPU=true
+    fi
+
+    if [ "$HAS_GPU" = true ]; then
+        echo "  🧠 GPU detected — installing training dependencies..."
+        python3 -m pip install --quiet \
+            unsloth \
+            peft \
+            transformers \
+            bitsandbytes \
+            datasets \
+            trl \
+            2>&1 | tail -3
+        echo "  ✅ Training dependencies installed (Unsloth + PEFT + LoRA)"
+    else
+        echo "  ⚠️  No GPU detected — skipping training dependencies (inference still works)"
+    fi
+fi
 echo ""
 
 # ─── Step 5: Build + Start ──────────────────────────────────────────
