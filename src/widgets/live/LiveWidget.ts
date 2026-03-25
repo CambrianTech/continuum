@@ -164,6 +164,9 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
   // Reentrancy guard for handleJoin (async — prevents duplicate joins on rapid refresh)
   private _joining = false;
 
+  // Activation guard — prevents duplicate onActivate for the same entity (#317)
+  private _activatingEntityId: string | null = null;
+
   // Page unload handler (must be stored for removeEventListener)
   private _unloadHandler: (() => void) | null = null;
 
@@ -311,18 +314,24 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
     this._tabActive = true; // Effective state recomputes — mic/speaker restore automatically
 
     if (entityId) {
+      // Guard against duplicate activation for the same entity (#317).
+      // Two code paths race on page load: openContentFromUrl and content:opened event.
+      // The async uniqueId resolution creates a gap where both paths call handleJoin().
+      const cleanId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
+      if (this._activatingEntityId === cleanId || (this.isJoined && this.entityId === cleanId)) {
+        return;
+      }
+      this._activatingEntityId = cleanId;
       // Unregister old entityId if switching
       if (this.entityId) {
         ContentLifecycle.unregister(this.entityId, this);
       }
 
-      const cleanEntityId = entityId.startsWith('live-') ? entityId.slice(5) : entityId;
-
       const meta = metadata as { room?: { id?: string; displayName?: string }; session?: { id: string } } | undefined;
       if (meta?.room?.id) {
         this.entityId = meta.room.id;
       } else {
-        this.entityId = cleanEntityId;
+        this.entityId = cleanId;
       }
 
       // If entityId looks like a uniqueId (not a UUID), resolve it to UUID first
@@ -360,6 +369,7 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
 
   onDeactivate(): void {
     this._tabActive = false; // Effective state recomputes — mic/speaker mute automatically
+    this._activatingEntityId = null; // Allow re-activation on next navigate
   }
 
   setEntityId(entityId: string): void {
