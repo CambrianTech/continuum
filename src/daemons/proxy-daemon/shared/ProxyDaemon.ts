@@ -74,8 +74,8 @@ export abstract class ProxyDaemon extends DaemonBase {
    * Process incoming JTAG messages
    */
   protected async processMessage(message: JTAGMessage): Promise<any> {
-    const payload = message.payload as any;
-    
+    const payload = message.payload as unknown as ProxyRequest & { command?: string };
+
     switch (payload.command) {
       case 'proxyRequest':
         // Extract proxy request parameters from payload

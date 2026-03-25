@@ -116,7 +116,7 @@ export class AIProviderDaemon extends DaemonBase {
           return createPayload(payload.context, payload.sessionId, {
             success: false,
             timestamp: new Date().toISOString(),
-            error: `Unknown AI provider operation: ${(payload as any).type}`,
+            error: `Unknown AI provider operation: ${(payload as AIProviderPayload).type}`,
           });
       }
     } catch (error) {
@@ -182,7 +182,7 @@ export class AIProviderDaemon extends DaemonBase {
     };
 
     // Check if ProcessPool is available (server-side only)
-    const processPool = this.getProcessPoolInstance() as any;
+    const processPool = this.getProcessPoolInstance() as { executeInference?: (...args: unknown[]) => Promise<unknown> } | undefined;
     if (processPool && typeof processPool.executeInference === 'function') {
       this.log.info(`🏊 AIProviderDaemon: Routing ${adapter.providerId} inference through ProcessPool`);
       timer.setMeta('route', 'ProcessPool');
@@ -208,7 +208,7 @@ export class AIProviderDaemon extends DaemonBase {
 
         // Return formatted response with routing info
         return {
-          text: output,
+          text: String(output),
           finishReason: 'stop',
           model: request.model || 'phi3:mini',
           provider: adapter.providerId,

@@ -8,6 +8,7 @@
 declare const customElements: CustomElementRegistry;
 
 import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
+import { jtagGlobal } from './system/core/types/GlobalAugmentations';
 import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
 import { JTAGClient } from './system/core/client/shared/JTAGClient';
 import { createJTAGClientServices } from './system/core/client/shared/services';
@@ -34,10 +35,10 @@ export const jtag = {
     const client = connectionResult.client;
 
     // Set up global window.jtag for widgets and tests
-    (globalThis as any).jtag = client;
+    jtagGlobal.jtag = client;
 
     // Expose WidgetDiscovery for universal selector support
-    (globalThis as any).WidgetDiscovery = WidgetDiscovery;
+    (jtagGlobal as typeof jtagGlobal & { WidgetDiscovery?: typeof WidgetDiscovery }).WidgetDiscovery = WidgetDiscovery;
 
     // Register client in static registry for sharedInstance access
     JTAGClient.registerClient('default', client);
@@ -73,4 +74,4 @@ export * from './commands/interface/screenshot/shared/browser-utils/BrowserEleme
 
 // Set jtag on globalThis immediately for non-module scripts
 // This allows inline scripts to call jtag.connect() without waiting for imports
-(globalThis as any).jtag = jtag;
+jtagGlobal.jtag = jtag;

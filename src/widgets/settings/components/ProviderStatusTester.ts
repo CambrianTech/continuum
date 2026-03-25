@@ -52,7 +52,7 @@ export class ProviderStatusTester {
         provider: params.provider,
         key: params.key,
         useStored: params.useStored
-      } as any) as any;
+      });
 
       const testResult: ProviderTestResult = result?.valid
         ? {

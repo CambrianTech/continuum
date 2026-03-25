@@ -127,7 +127,7 @@ export abstract class BaseEntity {
     testId: string,
     data: Partial<T>
   ): { success: boolean; entity?: T; error?: string } {
-    const result = (this as any).create(data);
+    const result = (this as unknown as { create(data: Partial<T>): { success: boolean; entity?: T; error?: string } }).create(data);
     if (result.success && result.entity) {
       // Convert string test ID to UUID format for testing
       result.entity.id = testId as UUID;
@@ -165,7 +165,7 @@ export abstract class BaseEntity {
     this: typeof BaseEntity,
     data: Partial<T>
   ): { success: boolean; error?: string; validatedData?: T } {
-    const result = (this as any).create(data);
+    const result = (this as unknown as { create(data: Partial<T>): { success: boolean; entity?: T; error?: string } }).create(data);
     return {
       success: result.success,
       error: result.error,

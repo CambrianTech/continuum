@@ -1,6 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { RAGLoadParams, RAGLoadResult, LoadedMessage } from '../shared/RAGLoadTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
@@ -31,7 +32,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
           return {
             ...ragParams,
             success: false,
-            roomId: ragParams.room as any,
+            roomId: ragParams.room as UUID,
             model: ragParams.model,
             contextWindow: 0,
             tokenBudget: 0,
@@ -51,7 +52,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
         return {
           ...ragParams,
           success: false,
-          roomId: '' as any,
+          roomId: '' as UUID,
           model: ragParams.model,
           contextWindow: 0,
           tokenBudget: 0,
@@ -186,7 +187,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       return {
         ...ragParams,
         success: false,
-        roomId: (ragParams.roomId || ragParams.room || '') as any,
+        roomId: (ragParams.roomId || ragParams.room || '') as UUID,
         model: ragParams.model,
         contextWindow: 0,
         tokenBudget: 0,

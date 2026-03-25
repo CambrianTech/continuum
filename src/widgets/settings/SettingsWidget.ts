@@ -227,7 +227,7 @@ export class SettingsWidget extends ReactiveWidget {
 
     // If already configured, test the stored key
     if (entry?.isConfigured) {
-      const result = await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      const result = await this.tester.testKey({ provider, key: '', useStored: true }, configKey);
       this.emitTestResult(provider, configKey, result);
       return;
     }

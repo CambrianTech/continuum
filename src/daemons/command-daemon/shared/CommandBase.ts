@@ -120,7 +120,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     const { Commands } = await import('../../../system/core/shared/Commands');
     return await Commands.execute<TParams, TResult>(
       this.commandName,
-      { ...params, targetEnvironment: environment } as any
+      { ...params, targetEnvironment: environment } as unknown as TParams
     );
   }
 

@@ -7,6 +7,8 @@
 
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 // Verbose logging helper for browser
@@ -229,8 +231,8 @@ export class InfiniteScrollHelper {
         direction: 'before' // Load messages older than cursor
       } : undefined,
       dbHandle: 'default',
-      context: {} as any,
-      sessionId: '' as any, // These will be filled by the widget
+      context: {} as unknown as JTAGContext,
+      sessionId: '' as unknown as UUID, // These will be filled by the widget
       userId: SYSTEM_SCOPES.SYSTEM
     };
   }

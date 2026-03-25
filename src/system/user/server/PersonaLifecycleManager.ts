@@ -11,6 +11,7 @@
 
 import { Events } from '../../core/shared/Events';
 import { Commands } from '../../core/shared/Commands';
+import type { CommandParams } from '../../core/types/JTAGTypes';
 
 interface KeyChangeEvent {
   provider: string;
@@ -90,7 +91,7 @@ export class PersonaLifecycleManager {
     // Call Rust allocator for optimal persona assignments
     const allocation = await Commands.execute(
       'persona/allocate',
-      { availableApiKeys } as any
+      { availableApiKeys } as Partial<CommandParams>
     ) as unknown as AllocationResult;
 
     if (!allocation?.allocations) {
@@ -142,7 +143,7 @@ export class PersonaLifecycleManager {
         displayName: allocation.displayName,
         uniqueId: allocation.uniqueId,
         provider: allocation.provider,
-      } as any) as any;
+      } as Partial<CommandParams>) as unknown as { success: boolean; error?: string };
 
       if (result?.success) {
         console.log(`  ✅ Created persona: ${allocation.displayName} (${allocation.uniqueId})`);

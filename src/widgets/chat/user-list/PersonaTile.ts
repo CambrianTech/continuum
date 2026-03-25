@@ -267,7 +267,7 @@ export class PersonaTile extends LitElement {
       if (result.success) {
         this._genomeLayers = result.layers;
       } else {
-        console.error(`[PersonaTile] genome/layers failed for ${this.displayName}:`, (result as any).error ?? 'unknown');
+        console.error(`[PersonaTile] genome/layers failed for ${this.displayName}:`, result.error ?? 'unknown');
       }
     } catch (err) {
       console.error(`[PersonaTile] genome/layers threw for ${this.displayName}:`, err);

@@ -156,7 +156,7 @@ export class TypeScriptCompiler {
       const typeString = this.typeChecker.typeToString(propType);
 
       // Extract JSDoc description
-      const jsDocTags = (prop as any).getJsDocTags?.() || [];
+      const jsDocTags = (prop as unknown as { getJsDocTags?: () => Array<{ text?: string }> }).getJsDocTags?.() || [];
       const description = jsDocTags.length > 0 ? jsDocTags[0].text : undefined;
 
       propertyInfos.push({

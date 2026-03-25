@@ -131,7 +131,7 @@ export class ContentInfoManager {
     // Create full room data object
     const roomData: RoomData = {
       roomId,
-      roomType: (roomConfig?.roomType as any) || 'private',
+      roomType: (roomConfig?.roomType as RoomData['roomType']) || 'private',
       name: roomConfig?.name || roomId,
       displayName: roomConfig?.displayName || this.capitalizeFirst(roomId),
       description: roomConfig?.description || `Chat room: ${roomId}`,

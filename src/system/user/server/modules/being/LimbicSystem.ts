@@ -191,7 +191,8 @@ export class LimbicSystem {
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
     // This is safe because LimbicSystem is only instantiated by PersonaUser
-    this.hippocampus = new Hippocampus(personaUser as any);
+    // PersonaUserForLimbic is a forward declaration subset of PersonaUser (avoids circular import)
+    this.hippocampus = new Hippocampus(personaUser as unknown as import('../../PersonaUser').PersonaUser);
 
     this.logger.info('Limbic system initialized', {
       components: ['memory', 'genomeManager', 'trainingAccumulator', 'trainingManager', 'hippocampus']

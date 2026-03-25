@@ -297,9 +297,10 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       const adapter = registration.adapter;
 
       // OpenAI-compatible adapters have config with apiKey and baseUrl
-      const config = (adapter as any).config;
+      const adapterRecord = adapter as unknown as Record<string, unknown>;
+      const config = adapterRecord.config as { apiKey?: string; baseUrl?: string; models?: Array<{ id: string; contextWindow: number; maxOutputTokens?: number; capabilities?: string[]; costPer1kTokens?: { input: number; output: number } }> } | undefined;
       if (config?.apiKey && config?.baseUrl) {
-        const staticModels = config.models?.map((m: any) => ({
+        const staticModels = config.models?.map((m) => ({
           id: m.id,
           context_window: m.contextWindow,
           max_output_tokens: m.maxOutputTokens,
@@ -317,7 +318,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       }
 
       // Anthropic adapter has apiKey directly (not OpenAI-compatible)
-      const apiKey = (adapter as any).apiKey;
+      const apiKey = adapterRecord.apiKey as string | undefined;
       if (apiKey && providerId === 'anthropic') {
         providers.push({
           provider_id: providerId,
@@ -332,7 +333,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       }
 
       // Google adapter has apiKey in googleConfig
-      const googleConfig = (adapter as any).googleConfig;
+      const googleConfig = adapterRecord.googleConfig as { apiKey?: string } | undefined;
       if (googleConfig?.apiKey && providerId === 'google') {
         providers.push({
           provider_id: providerId,

@@ -23,7 +23,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { Events } from '../../../system/core/shared/Events';
 import { ORM } from '../../data-daemon/server/ORM';
-import { SystemConfigEntity, FACTORY_DEFAULTS, type SettingValue } from '../../../system/data/entities/SystemConfigEntity';
+import { SystemConfigEntity, FACTORY_DEFAULTS, type SettingValue, type SettingMetadata } from '../../../system/data/entities/SystemConfigEntity';
 import type { StorageQuery, StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
 import { Logger } from '../../../system/core/logging/Logger';
 
@@ -132,7 +132,7 @@ export class SystemDaemon {
 
     // Register all factory default settings
     for (const [path, metadata] of Object.entries(FACTORY_DEFAULTS)) {
-      config.registerSetting(path, metadata as any);
+      config.registerSetting(path, metadata as SettingMetadata);
     }
 
     // Store in database

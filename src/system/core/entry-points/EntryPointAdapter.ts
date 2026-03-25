@@ -54,7 +54,7 @@ export class EntryPointAdapter {
           shouldShowAgentInfo: options.showAgentInfo ?? false, // AI agents know who they are
           shouldShowProgressIndicators: false, // AI doesn't need progress bars
           shouldSuppressVerboseLogs: true, // AI wants clean output
-          outputFormat: outputFormat as any,
+          outputFormat: outputFormat as EntryPointBehavior['outputFormat'],
           logLevel: 'minimal',
           showTimestamps: false, // AI doesn't care about timestamps
           showCorrelationIds: false // AI doesn't need correlation debugging
@@ -79,7 +79,7 @@ export class EntryPointAdapter {
           shouldShowAgentInfo: options.showAgentInfo ?? false, // Clean output by default
           shouldShowProgressIndicators: false, // Clean output by default
           shouldSuppressVerboseLogs: true, // Quiet by default for everyone
-          outputFormat: outputFormat as any,
+          outputFormat: outputFormat as EntryPointBehavior['outputFormat'],
           logLevel: 'minimal', // Quiet by default
           showTimestamps: false,
           showCorrelationIds: false

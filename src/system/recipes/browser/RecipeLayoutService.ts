@@ -84,7 +84,7 @@ export class RecipeLayoutService {
         collection: 'recipes',
         limit: 100,
         fields: ['uniqueId', 'displayName', 'layout'] // Only fetch layout-relevant fields
-      } as any) as unknown as { items?: RecipeLayoutData[]; success?: boolean; error?: string };
+      }) as unknown as { items?: RecipeLayoutData[]; success?: boolean; error?: string };
 
       if (verbose) console.log('📚 RecipeLayoutService: data/list result:', result);
 

@@ -149,33 +149,23 @@ export abstract class BaseSidePanelWidget extends ReactiveWidget {
 
   // === COLLAPSE/EXPAND VIA PANELRESIZER ===
 
-  protected toggleCollapse = (): void => {
+  private getPanelResizer(): (Element & { toggle?: () => void; collapse?: () => void; expand?: () => void }) | null {
     const continuumWidget = document.querySelector('continuum-widget');
-    if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector(
-        `panel-resizer[side="${this.panelSide}"]`
-      ) as any;
-      resizer?.toggle?.();
-    }
+    if (!continuumWidget?.shadowRoot) return null;
+    return continuumWidget.shadowRoot.querySelector(
+      `panel-resizer[side="${this.panelSide}"]`
+    ) as (Element & { toggle?: () => void; collapse?: () => void; expand?: () => void }) | null;
+  }
+
+  protected toggleCollapse = (): void => {
+    this.getPanelResizer()?.toggle?.();
   };
 
   protected collapse(): void {
-    const continuumWidget = document.querySelector('continuum-widget');
-    if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector(
-        `panel-resizer[side="${this.panelSide}"]`
-      ) as any;
-      resizer?.collapse?.();
-    }
+    this.getPanelResizer()?.collapse?.();
   }
 
   protected expand(): void {
-    const continuumWidget = document.querySelector('continuum-widget');
-    if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector(
-        `panel-resizer[side="${this.panelSide}"]`
-      ) as any;
-      resizer?.expand?.();
-    }
+    this.getPanelResizer()?.expand?.();
   }
 }

@@ -44,6 +44,7 @@ interface MonitoringState {
   currentPollInterval: number;
   startTime: number;
   pollCount: number;
+  timeoutId?: NodeJS.Timeout;
 }
 
 // Strong typing for process diagnostics
@@ -398,7 +399,7 @@ async function monitorSystemReadiness(signaler: SystemReadySignaler): Promise<vo
     
     // Store timeout for cleanup if needed
     if (state.active) {
-      (state as any).timeoutId = timeoutId;
+      state.timeoutId = timeoutId;
     }
   };
   
@@ -424,8 +425,8 @@ async function monitorSystemReadiness(signaler: SystemReadySignaler): Promise<vo
   process.on('SIGINT', () => {
     state.active = false;
     clearTimeout(globalTimeout);
-    if ((state as any).timeoutId) {
-      clearTimeout((state as any).timeoutId);
+    if (state.timeoutId) {
+      clearTimeout(state.timeoutId);
     }
   });
 }

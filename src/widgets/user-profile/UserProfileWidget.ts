@@ -128,7 +128,7 @@ export class UserProfileWidget extends ReactiveWidget {
   // === Data Loading ===
 
   private async loadUser(): Promise<void> {
-    const entityId = getWidgetEntityId(this) || (this as any).pageState?.entityId;
+    const entityId = getWidgetEntityId(this) || (this as unknown as { pageState?: { entityId?: string } }).pageState?.entityId;
 
     if (!entityId) {
       this.error = 'No user specified';
