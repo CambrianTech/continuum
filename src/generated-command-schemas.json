@@ -8470,6 +8470,17 @@
       }
     },
     {
+      "name": "claude/resume",
+      "description": "Loads the latest snapshot and current context, synthesizes a session briefing. Run this first thing in a new session — it tells you who you are, what you were doing, and what to do next.",
+      "params": {
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        }
+      }
+    },
+    {
       "name": "claude/context",
       "description": "Generates a comprehensive context summary for Claude Code session resumption — recent git changes, open issues, team chat, system health, and active work state. This is Claude's bridge from stateless sessions to persistent citizenship.",
       "params": {

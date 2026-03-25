@@ -1,0 +1,43 @@
+{
+  "name": "claude/resume",
+  "description": "Loads the latest snapshot and current context, synthesizes a session briefing. Run this first thing in a new session — it tells you who you are, what you were doing, and what to do next.",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "verbose",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include full chat history and issue details (default: false — summary only)"
+    }
+  ],
+  "results": [
+    {
+      "name": "snapshot",
+      "type": "object",
+      "description": "The latest saved snapshot (null if none exists)"
+    },
+    {
+      "name": "gitSince",
+      "type": "string",
+      "description": "Git commits since the snapshot was taken"
+    },
+    {
+      "name": "briefing",
+      "type": "string",
+      "description": "Human-readable session briefing — everything you need to resume"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Start a new session",
+      "params": {},
+      "notes": "Returns briefing: last session summary + what changed since + next steps"
+    },
+    {
+      "description": "Verbose resume with full context",
+      "params": { "verbose": true },
+      "notes": "Includes recent chat messages and full issue list"
+    }
+  ]
+}
