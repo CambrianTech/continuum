@@ -377,6 +377,7 @@
     "minimatch": "^10.1.1",
     "nice-grpc": "^2.1.14",
     "node-llama-cpp": "^3.14.0",
+    "playwright": "^1.58.2",
     "sharp": "^0.34.5",
     "sqlite3": "^5.1.7",
     "uuid": "^11.1.0",

@@ -1,0 +1,96 @@
+{
+  "name": "development/verify-web",
+  "description": "Verify web output by opening in headless Playwright browser, capturing console errors + screenshot. Used by Academy teacher to grade coding output. No blind training.",
+  "params": [
+    {
+      "name": "filePath",
+      "type": "string",
+      "required": true,
+      "description": "Path to HTML file to verify"
+    },
+    {
+      "name": "url",
+      "type": "string",
+      "required": false,
+      "description": "URL to verify (alternative to filePath)"
+    },
+    {
+      "name": "waitMs",
+      "type": "number",
+      "required": false,
+      "description": "Time to wait after page load before capturing (default: 2000)"
+    },
+    {
+      "name": "screenshot",
+      "type": "boolean",
+      "required": false,
+      "description": "Take screenshot (default: true)"
+    },
+    {
+      "name": "screenshotPath",
+      "type": "string",
+      "required": false,
+      "description": "Screenshot output path (default: auto-generated)"
+    },
+    {
+      "name": "captureConsole",
+      "type": "boolean",
+      "required": false,
+      "description": "Capture all console output (default: true)"
+    },
+    {
+      "name": "viewport",
+      "type": "string",
+      "required": false,
+      "description": "Viewport size WxH (default: 1280x720)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "True if page loaded with zero errors"
+    },
+    {
+      "name": "errors",
+      "type": "array",
+      "description": "Runtime JavaScript errors captured from page"
+    },
+    {
+      "name": "consoleOutput",
+      "type": "array",
+      "description": "All console.log/warn/error messages"
+    },
+    {
+      "name": "screenshotPath",
+      "type": "string",
+      "description": "Path to captured screenshot"
+    },
+    {
+      "name": "screenshotBase64",
+      "type": "string",
+      "description": "Base64-encoded screenshot for AI vision"
+    },
+    {
+      "name": "pageTitle",
+      "type": "string",
+      "description": "Document title after load"
+    },
+    {
+      "name": "loadTimeMs",
+      "type": "number",
+      "description": "Page load time in milliseconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Verify a generated HTML game",
+      "params": {
+        "filePath": "/tmp/snake.html",
+        "waitMs": 3000
+      },
+      "expectedResult": "Returns errors array + screenshot. success=false if any runtime errors."
+    }
+  ],
+  "accessLevel": "ai-safe"
+}
