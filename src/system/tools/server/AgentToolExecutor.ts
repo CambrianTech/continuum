@@ -80,10 +80,14 @@ export interface NativeToolBatchResult {
  * Tool name corrections: LLMs sometimes confuse similarly-named tools.
  * workspace/tree shows the JTAG command hierarchy, code/tree shows workspace files.
  */
+// TODO: #351 — This should be generated from the command registry, not hardcoded.
+// Each command spec should declare its aliases. Generator produces the correction map.
+// This hand-maintained list is the exact anti-pattern we're eliminating.
 const TOOL_CORRECTIONS: Record<string, string> = {
   'workspace/tree': 'code/tree',
   'chat/send': 'collaboration/chat/send',
   'chat/export': 'collaboration/chat/export',
+  'chat/poll': 'collaboration/chat/poll',
   'shell/execute': 'code/shell/execute',
   'shell/run': 'code/shell/execute',
   'git/status': 'code/git',
@@ -93,6 +97,14 @@ const TOOL_CORRECTIONS: Record<string, string> = {
   'file/write': 'code/write',
   'file/edit': 'code/edit',
   'search': 'code/search',
+  // Interface tools — personas try short names
+  'screenshot': 'interface/screenshot',
+  'take_screenshot': 'interface/screenshot',
+  'navigate': 'interface/navigate',
+  'interact': 'interface/interact',
+  'click': 'interface/interact',
+  'verify-web': 'development/verify-web',
+  'verify_web': 'development/verify-web',
 };
 
 /**
