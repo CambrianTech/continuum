@@ -20,13 +20,13 @@ export interface InterfaceInteractParams extends CommandParams {
   // CSS selector for target element. Supports shadow DOM piercing via >> (e.g. 'chat-widget >> .send-btn')
   selector: string;
   // Value for type/select actions. Text to type or option value to select.
-  value: string;
+  value?: string;
   // Scroll direction: up, down, left, right (default: down)
-  direction: string;
+  direction?: string;
   // Scroll amount in pixels (default: 300)
-  amount: number;
+  amount?: number;
   // Wait time after interaction for UI to settle (default: 100)
-  waitAfterMs: number;
+  waitAfterMs?: number;
 }
 
 /**
