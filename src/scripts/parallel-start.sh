@@ -130,20 +130,26 @@ GPU_FEAT="${CARGO_GPU_FEATURES#--features }"  # "metal,accelerate" or "cuda" or 
 GPU_BACKEND=$(echo "$GPU_FEAT" | sed 's/,accelerate//;s/accelerate,//;s/accelerate//' | sed 's/,load-dynamic-ort//;s/load-dynamic-ort,//;s/load-dynamic-ort//')
 BUILD_OUTPUT=""
 RESULT=0
+# First run detection: if no release binary exists, this is a long build — show progress
+CARGO_QUIET="--quiet"
+if [ ! -f "target/release/continuum-core-server" ]; then
+  echo -e "  [Rust] ${YELLOW}First build detected — this takes 5-15 minutes. Showing progress...${NC}"
+  CARGO_QUIET=""
+fi
 for pkg in archive-worker jtag-mcp; do
-  OUT=$(cargo build --release -p $pkg --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  OUT=$(cargo build --release -p $pkg $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 done
 # continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
 if [ -n "$GPU_FEAT" ]; then
-  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 else
-  OUT=$(cargo build --release -p continuum-core --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  OUT=$(cargo build --release -p continuum-core $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 fi
 # inference-grpc: GPU backend only (metal or cuda, no accelerate)
 if [ -n "$GPU_BACKEND" ]; then
-  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 else
-  OUT=$(cargo build --release -p inference-grpc --quiet 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  OUT=$(cargo build --release -p inference-grpc $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
 fi
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
