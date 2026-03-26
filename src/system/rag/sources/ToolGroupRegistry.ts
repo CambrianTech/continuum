@@ -192,17 +192,19 @@ To search for a pattern across files:
   {
     id: 'ui-interaction',
     label: 'UI Interaction',
-    description: 'Click, type, scroll, and navigate the UI. Take screenshots to see results.',
+    description: 'Click, type, scroll, and navigate the UI. Take screenshots to see what you see. You have REAL tools to interact with the actual UI — not just write code about it.',
     toolPatterns: ['interface/interact', 'interface/navigate', 'interface/screenshot'],
     intentKeywords: [
       'click', 'type', 'scroll', 'navigate', 'tab', 'button', 'input',
       'select', 'form', 'ui', 'interface', 'design', 'layout', 'css',
-      'widget', 'sidebar', 'menu', 'theme', 'style',
+      'widget', 'sidebar', 'menu', 'theme', 'style', 'screenshot',
+      'see', 'look', 'view', 'page', 'screen', 'visual',
     ],
     example: `<tool_use>
-<tool_name>interface/interact</tool_name>
-<parameters>{"action": "click", "selector": "continuum-widget >> main-widget >> .tab-button"}</parameters>
+<tool_name>interface/screenshot</tool_name>
+<parameters>{}</parameters>
 </tool_use>`,
+    alwaysInclude: true,
     priority: 30,
   },
 ] as const;
