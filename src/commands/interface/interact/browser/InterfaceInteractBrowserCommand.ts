@@ -25,16 +25,28 @@ export class InterfaceInteractBrowserCommand extends CommandBase<InterfaceIntera
       return this.fail(params, false, `Missing required parameter: ${!action ? 'action' : 'selector'}`);
     }
 
-    // Find element (inside try/catch for invalid CSS selectors)
-    let element: Element | null;
+    // Find element with retry — handles dynamic UI where elements appear after tab switches
+    const maxWaitMs = params.waitForMs ?? 0; // 0 = no waiting (immediate)
+    let element: Element | null = null;
+    const startTime = Date.now();
+
     try {
       element = this.querySelector(selector);
+
+      // If not found and waitForMs specified, poll until element appears or timeout
+      if (!element && maxWaitMs > 0) {
+        while (!element && (Date.now() - startTime) < maxWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          element = this.querySelector(selector);
+        }
+      }
     } catch (err) {
       return this.fail(params, false, `Invalid selector: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     if (!element) {
-      return this.fail(params, false, `No element found for selector: ${selector}`);
+      const waitMsg = maxWaitMs > 0 ? ` (waited ${Date.now() - startTime}ms)` : '';
+      return this.fail(params, false, `No element found for selector: ${selector}${waitMsg}. Try waitForMs parameter if element appears after a tab switch.`);
     }
 
     const elementTag = element.tagName.toLowerCase();

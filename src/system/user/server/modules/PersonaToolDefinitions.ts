@@ -304,6 +304,7 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     direction: 'Scroll direction: up, down, left, right',
     amount: 'Scroll amount in pixels (default: 300)',
     waitAfterMs: 'Wait time after interaction for UI to settle (default: 100)',
+    waitForMs: 'Max time to wait for element to appear (default: 0). Use after tab switches — elements mount asynchronously.',
   },
   'interface/navigate': {
     url: 'URL to navigate to',

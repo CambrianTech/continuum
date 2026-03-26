@@ -27,6 +27,9 @@ export interface InterfaceInteractParams extends CommandParams {
   amount?: number;
   // Wait time after interaction for UI to settle (default: 100)
   waitAfterMs?: number;
+  // Max time to wait for element to appear in DOM (default: 0 = immediate, no waiting).
+  // Use after tab switches when elements mount asynchronously.
+  waitForMs?: number;
 }
 
 /**
