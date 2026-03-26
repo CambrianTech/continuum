@@ -667,14 +667,10 @@ export class MetricsDetailWidget extends ReactiveWidget {
 
   private async _fetchAIData(): Promise<void> {
     try {
-      const intervalMap: Record<string, string> = {
-        '1h': '5m', '6h': '30m', '24h': '1h', '7d': '6h', '30d': '1d'
-      };
-
+      // Server auto-selects bucket interval based on time range span
       const result = await AICost.execute({
         startTime: this._timeRange,
         includeTimeSeries: true,
-        interval: intervalMap[this._timeRange] ?? '1h',
         includeBreakdown: true,
         includeTopModels: 10,
         includeLatency: true,
