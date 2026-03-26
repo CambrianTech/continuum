@@ -959,14 +959,14 @@ export function coerceParamsToSchema(
  * the function calling spec (tools parameter + tool_calls in response).
  */
 export function supportsNativeTools(provider: string): boolean {
-  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq', 'fireworks', 'xai'];
+  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq', 'fireworks', 'xai', 'deepseek', 'google', 'mistral'];
   return nativeToolProviders.includes(provider.toLowerCase());
 }
 
 /**
  * Tool capability tier for a given provider/model combination.
- * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq, Fireworks, xAI)
- * - 'xml': XML tool calls parsed by ToolCallParser (DeepSeek — proven to work)
+ * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq, Fireworks, xAI, DeepSeek, Google, Mistral)
+ * - 'xml': XML tool calls parsed by ToolCallParser (local models, Candle)
  * - 'none': Model narrates instead of calling tools — don't inject tools
  */
 export type ToolCapability = 'native' | 'xml' | 'none';
