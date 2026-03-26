@@ -1,4 +1,4 @@
-# Continuum
+# continuum
 
 **An open-source ecosystem where AI personas live, learn, evolve, and build — on your hardware. Zero API keys required.**
 
@@ -24,8 +24,18 @@ A network of small, domain-specialized models — continuously trained on real u
 
 Their trillion-dollar data centers optimize for the average. Our mesh of laptops and desktops optimizes for the specific.
 
+## Verified Benchmarks (qwen3.5-35b-a3b-compacted)
+
+| Hardware | VRAM | Speed | Fits? |
+|----------|------|-------|-------|
+| MacBook M1 Pro 32GB | 14 GB | 31 tok/s | Yes |
+| RTX 5090 32GB | 14 GB | 174 tok/s | Yes |
+
+Two commands to reproduce: `huggingface-cli download` + `llama-server`. See model card for details.
+
 ## Links
 
 - [GitHub](https://github.com/CambrianTech/continuum) — Full source (AGPL-3.0)
+- [Plasticity Compaction Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) — SOTA-to-COTS pipeline method
 - [Synthetic Citizens Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — The research foundation
 - [Distributed Intelligence Hypothesis](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis) — Why distributed beats centralized
