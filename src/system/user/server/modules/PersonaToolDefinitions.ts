@@ -296,6 +296,21 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     limit: 'Max messages to analyze',
   },
 
+  // ── Interface/UI interaction ──────────────────────────────────────
+  'interface/interact': {
+    action: 'Interaction type: click, type, select, scroll, focus, clear, check',
+    selector: 'CSS selector with shadow DOM piercing via >> (e.g., "chat-widget >> .send-btn")',
+    value: 'Text to type or option value to select',
+    direction: 'Scroll direction: up, down, left, right',
+    amount: 'Scroll amount in pixels (default: 300)',
+    waitAfterMs: 'Wait time after interaction for UI to settle (default: 100)',
+  },
+  'interface/navigate': {
+    url: 'URL to navigate to',
+    tab: 'Tab name to switch to (e.g., "settings", "code", "theme")',
+    target: 'Navigation target: "webview" for co-browsing widget',
+  },
+
   // ── Decision/Governance ────────────────────────────────────────────
   'collaboration/decision/propose': {
     topic: 'Short title for the proposal (e.g. "Adopt TypeScript strict mode")',
@@ -527,6 +542,15 @@ const TOOL_DESCRIPTION_OVERRIDES: Record<string, string> = {
   'collaboration/chat/send': 'Send a message to a chat room. Use the room name (e.g., "general") not a UUID.',
 
   'collaboration/chat/export': 'Export chat messages as markdown. Useful for reviewing conversation history.',
+
+  // ── Interface tools (UI interaction) ─────────────────────
+  'interface/interact': 'Click, type, select, or scroll UI elements. Supports shadow DOM piercing via >> in selectors (e.g., "chat-widget >> textarea"). Use with interface/screenshot to see what you are changing.',
+
+  'interface/navigate': 'Navigate to a URL, switch tabs (--tab=settings), or open a page in the co-browsing webview (--target=webview).',
+
+  'interface/screenshot': 'Take a screenshot of the page or a specific element (--querySelector="chat-widget"). Returns base64 image for visual verification.',
+
+  'development/verify-web': 'Open a URL or HTML file in headless Playwright, capture console errors and screenshot. Used to verify generated code actually works.',
 
   // ── Sentinel tools (autonomous coding) ────────────────────
   'sentinel/coding-agent': 'Launch Claude Code to build software autonomously. Give it a detailed prompt describing what to build. Claude Code will write files, run tests, install dependencies, and produce working software. Use this for substantial coding tasks — building APIs, creating apps, writing libraries, fixing complex bugs. Returns the full result including all code written. The code is built in a workspace directory.',
