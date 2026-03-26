@@ -531,7 +531,9 @@ ${result.error || 'Unknown error'}
       toolResult: true,
       toolName,
       parameters,
-      fullData: result.data,
+      // fullData intentionally omitted — was storing entire file contents, search
+      // results, etc. in chat messages. 11K tool results × full data = DB bloat.
+      // The summary is enough for working memory. Call the tool again if needed.
       success: result.success,
       error: result.error,
       storedAt: Date.now()
