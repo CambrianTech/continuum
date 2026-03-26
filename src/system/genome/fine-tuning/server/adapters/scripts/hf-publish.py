@@ -235,7 +235,8 @@ base_model: {base}
     sections.append("where personas live, work, learn, and evolve on your hardware. Zero API keys required. AGPL-3.0.")
     sections.append("")
     sections.append("Built on the research foundations of [Synthetic Citizens](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md).")
-    sections.append("\n[Get started →](https://github.com/CambrianTech/continuum)")
+    sections.append("")
+    sections.append("[Plasticity Compaction Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) | [Get started →](https://github.com/CambrianTech/continuum)")
 
     return '\n'.join(sections)
 
