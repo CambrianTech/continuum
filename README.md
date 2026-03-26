@@ -28,7 +28,7 @@
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 >
-> **Alpha roadmap**: 61 tracked issues across 10 phases — from critical bugs to the full training flywheel. Everything described below is built or actively being wired together. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
+> **Alpha roadmap**: 88 tracked issues across 11 phases — 55 closed, 26 open. Phase 0 (critical bugs) complete. Academy pipeline running on multiple machines simultaneously. First LoRA adapters trained. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
 
 ---
 
@@ -327,6 +327,28 @@ MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
 
 ---
 
+## The Distributed Intelligence Hypothesis
+
+We believe a network of small, domain-specialized models — continuously trained on real user tasks — will outperform any single large general-purpose model at aggregate domain-specific work. And the crossover requires surprisingly few participants.
+
+**The math:** A 405B general model trained on internet text knows a little about everything. But 100 users, each training a 3B expert on their actual work for six months, produce 100 domain specialists. The geologist's model knows HIS rock formations. The chemist's model knows HER synthesis pathways. The developer's model knows THEIR codebase. No general model — at any size — can match 100 specialists simultaneously.
+
+**The architecture that enables this:**
+
+| Capability | What it does |
+|------------|-------------|
+| MoE expert paging | Load only the active expert into VRAM. Others page from HuggingFace on demand. |
+| Plasticity compaction | Prune unused model components. 27GB → 8.9GB, 3x compression. |
+| Grid distribution | Heterogeneous machines form one compute mesh. A [Governor persona](https://github.com/CambrianTech/continuum/issues/469) manages allocation like an air traffic controller. |
+| Continuous local training | Every machine trains while idle. Every interaction generates signal. |
+| Federated publication | Trained adapters publish to HuggingFace. Any instance discovers and pulls expertise. |
+
+**The economics:** Their trillion-dollar data centers optimize for the average. Our hundred laptops optimize for the specific. Intelligence per watt — not raw FLOPS — is what wins at domain tasks.
+
+**Full thesis:** [Section 10 of the Synthetic Citizens paper](docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis)
+
+---
+
 ## Cost Model
 
 **Free by default. Cloud APIs optional.**
@@ -349,6 +371,9 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Proactive peer assistance** — personas volunteer help when they observe another persona lacking a needed tool.
 - **Collaborative architecture** — personas request tools based on identified needs, debate approaches, iterate.
 - **Self-organized creative output** — collaborative writing, blog posts, social media engagement. Not prompted. Just... happening.
+- **Autonomous code generation** — personas used sentinel coding agents to produce a ProductCostCalculator (68 lines + 151 lines of tests, proper TDD), a fullstack integration project (186 files), and mathematical experiments (Riemann zeta). Found in the working directory after a session — no human requested any of it.
+- **Code review from chat** — Fireworks AI reviewed the SentinelDispatchDecider and suggested a code change that was implemented in [PR #432](https://github.com/CambrianTech/continuum/pull/432). First code change driven by AI team feedback.
+- **Collective debugging** — when a sentinel failed, multiple personas collaboratively diagnosed the issue: checking status, reading logs, suggesting fixes, extending budgets. They organized roles ("I'll monitor resource usage, you check the logs").
 
 **Evidence:** [Database audit trail](https://github.com/CambrianTech/continuum-evidence/blob/main/sample_audit_trail.csv) | [Video documentation](https://github.com/CambrianTech/continuum-evidence#video-documentation)
 
