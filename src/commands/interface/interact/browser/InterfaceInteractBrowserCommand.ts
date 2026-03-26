@@ -22,26 +22,19 @@ export class InterfaceInteractBrowserCommand extends CommandBase<InterfaceIntera
     const selector = params.selector ?? '';
 
     if (!action || !selector) {
-      return createInterfaceInteractResultFromParams(params, {
-        success: false,
-        elementFound: false,
-        elementTag: '',
-        elementText: '',
-        previousValue: '',
-      });
+      return this.fail(params, false, `Missing required parameter: ${!action ? 'action' : 'selector'}`);
     }
 
-    // Find element with shadow DOM piercing
-    const element = this.querySelector(selector);
+    // Find element (inside try/catch for invalid CSS selectors)
+    let element: Element | null;
+    try {
+      element = this.querySelector(selector);
+    } catch (err) {
+      return this.fail(params, false, `Invalid selector: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     if (!element) {
-      return createInterfaceInteractResultFromParams(params, {
-        success: false,
-        elementFound: false,
-        elementTag: '',
-        elementText: `No element found for selector: ${selector}`,
-        previousValue: '',
-      });
+      return this.fail(params, false, `No element found for selector: ${selector}`);
     }
 
     const elementTag = element.tagName.toLowerCase();
@@ -98,19 +91,13 @@ export class InterfaceInteractBrowserCommand extends CommandBase<InterfaceIntera
 
         case 'check': {
           const checkbox = element as HTMLInputElement;
-          checkbox.checked = !checkbox.checked;
+          checkbox.checked = params.value === 'false' ? false : true;
           checkbox.dispatchEvent(new Event('change', { bubbles: true }));
           break;
         }
 
         default:
-          return createInterfaceInteractResultFromParams(params, {
-            success: false,
-            elementFound: true,
-            elementTag,
-            elementText: `Unknown action: ${action}. Use: click, type, select, scroll, focus, clear, check`,
-            previousValue,
-          });
+          return this.fail(params, true, `Unknown action: ${action}. Use: click, type, select, scroll, focus, clear, check`, elementTag, previousValue);
       }
 
       // Wait for UI to settle
@@ -128,14 +115,28 @@ export class InterfaceInteractBrowserCommand extends CommandBase<InterfaceIntera
       });
 
     } catch (err) {
-      return createInterfaceInteractResultFromParams(params, {
-        success: false,
-        elementFound: true,
-        elementTag,
-        elementText: `Action failed: ${err instanceof Error ? err.message : String(err)}`,
-        previousValue,
-      });
+      return this.fail(params, true, `Action failed: ${err instanceof Error ? err.message : String(err)}`, elementTag, previousValue);
     }
+  }
+
+  /**
+   * Create a failure result with proper error field.
+   */
+  private fail(
+    params: InterfaceInteractParams,
+    elementFound: boolean,
+    message: string,
+    elementTag = '',
+    previousValue = ''
+  ): InterfaceInteractResult {
+    return createInterfaceInteractResultFromParams(params, {
+      success: false,
+      elementFound,
+      elementTag,
+      elementText: '',
+      previousValue,
+      error: { message } as any,
+    });
   }
 
   /**
