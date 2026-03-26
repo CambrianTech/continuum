@@ -1,0 +1,98 @@
+{
+  "name": "interface/interact",
+  "description": "Interact with UI elements — click, type, select, scroll. Enables personas to navigate and modify the UI via DOM selectors. Works through shadow DOM boundaries (Lit web components).",
+  "params": [
+    {
+      "name": "action",
+      "type": "string",
+      "required": true,
+      "description": "Interaction type: click, type, select, scroll, focus, clear, check"
+    },
+    {
+      "name": "selector",
+      "type": "string",
+      "required": true,
+      "description": "CSS selector for target element. Supports shadow DOM piercing via >> (e.g. 'chat-widget >> .send-btn')"
+    },
+    {
+      "name": "value",
+      "type": "string",
+      "required": false,
+      "description": "Value for type/select actions. Text to type or option value to select."
+    },
+    {
+      "name": "direction",
+      "type": "string",
+      "required": false,
+      "description": "Scroll direction: up, down, left, right (default: down)"
+    },
+    {
+      "name": "amount",
+      "type": "number",
+      "required": false,
+      "description": "Scroll amount in pixels (default: 300)"
+    },
+    {
+      "name": "waitAfterMs",
+      "type": "number",
+      "required": false,
+      "description": "Wait time after interaction for UI to settle (default: 100)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "True if interaction completed successfully"
+    },
+    {
+      "name": "elementFound",
+      "type": "boolean",
+      "description": "True if the selector matched an element"
+    },
+    {
+      "name": "elementTag",
+      "type": "string",
+      "description": "Tag name of the matched element (e.g. button, input, select)"
+    },
+    {
+      "name": "elementText",
+      "type": "string",
+      "description": "Text content of the element (truncated to 200 chars)"
+    },
+    {
+      "name": "previousValue",
+      "type": "string",
+      "description": "Previous value before type/select/clear (for undo context)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Click the send button in chat",
+      "params": {
+        "action": "click",
+        "selector": "chat-widget >> .send-btn"
+      },
+      "expectedResult": "Returns success=true, elementTag=button"
+    },
+    {
+      "description": "Type a message in chat input",
+      "params": {
+        "action": "type",
+        "selector": "chat-widget >> .message-input",
+        "value": "Hello team!"
+      },
+      "expectedResult": "Returns success=true, previousValue=''"
+    },
+    {
+      "description": "Select dark theme",
+      "params": {
+        "action": "select",
+        "selector": "settings-widget >> select.theme",
+        "value": "dark"
+      },
+      "expectedResult": "Returns success=true, previousValue='light'"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}
