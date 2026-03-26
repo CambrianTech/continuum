@@ -106,18 +106,20 @@ This document is the **single source of truth** for remaining work before open-s
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** | TODO | Memory leaks (10.5GB RSS after close), 30s latency, simultaneous speech. |
-| [#338](https://github.com/CambrianTech/continuum/issues/338) | **Deterministic resource deallocation** | TODO | Closing live chat must free resources in <30s, not idle timeout. |
+| [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** ⚠️ CRITICAL | TODO | Avatar vertex corruption — most personas show shredded/exploded geometry in live view. 8 VRM models for 15 personas = overflow models garbled. Also: memory leaks, latency, simultaneous speech. |
+| ~~[#338](https://github.com/CambrianTech/continuum/issues/338)~~ | **Deterministic resource deallocation** | DONE | Merged into #331. |
 | [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | TODO | STT→LLM→TTS pipeline too slow. Need streaming TTS, speculative STT. |
-| [#340](https://github.com/CambrianTech/continuum/issues/340) | **AIs talk over each other** | TODO | ThoughtStream coordination doesn't prevent overlap in live mode. |
-| [#318](https://github.com/CambrianTech/continuum/issues/318) | **Avatar models eating 26GB** | TODO | Too many models loaded on Mac. GPU governor must manage. |
-| [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** | TODO | Equal male/female distribution needed. |
-| [#332](https://github.com/CambrianTech/continuum/issues/332) | **Offline-first architecture** | TODO | Live calls fail without internet. All local features must work offline. |
-| [#380](https://github.com/CambrianTech/continuum/issues/380) | **GPU governor: full consumer management** | TODO | Only 3 subsystems, no dynamic consumer tracking or pressure-driven eviction. |
-| [#399](https://github.com/CambrianTech/continuum/issues/399) | **Persona response latency: 2+ min** | PARTIAL (PR #423) | Human priority boosted in inbox queue. Thundering herd and backpressure still TODO. |
-| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. All personas need working senses — was working, needs e2e verification. |
+| ~~[#340](https://github.com/CambrianTech/continuum/issues/340)~~ | **AIs talk over each other** | DONE | Merged into #331. |
+| ~~[#318](https://github.com/CambrianTech/continuum/issues/318)~~ | **Avatar models eating 26GB** | DONE | Cleaned up — 8 CC0 VRoid models only. |
+| [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** ⚠️ CRITICAL | TODO | Only 8 models for 15 personas. Overflow causes vertex corruption. Need 15+ working VRM 0.x models. |
+| ~~[#332](https://github.com/CambrianTech/continuum/issues/332)~~ | **Offline-first architecture** | DONE | No CDN deps. Works offline. |
+| ~~[#380](https://github.com/CambrianTech/continuum/issues/380)~~ | **GPU governor** | DONE | Superseded by #469 (Grid Governor). |
+| ~~[#399](https://github.com/CambrianTech/continuum/issues/399)~~ | **Persona response latency** | DONE | Priority boost (PR #423), event coalescing (PR #466), timeout fix (PR #460). |
+| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. |
+| [#436](https://github.com/CambrianTech/continuum/issues/436) | **Cost/metrics widgets** | TODO | Auto-adjust time segments. |
+| [#473](https://github.com/CambrianTech/continuum/issues/473) | **Grid telemetry widget** | TODO | SCADA-style per-node CPU/MEM/GPU + sparklines. |
 
-**Done when**: Live call closes → memory returns to baseline in 30s. Latency under 5s. Airplane mode → local calls still work. GPU governor tracks all consumers. Human message gets AI response within 15s. All personas can see (directly or bridged).
+**Done when**: Avatar geometry works for ALL personas (no vertex corruption). Live call closes → memory baseline in 30s. Latency under 5s. All personas can see. Grid telemetry visible.
 
 ---
 
@@ -289,17 +291,17 @@ This document is the **single source of truth** for remaining work before open-s
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, ~~#385~~, ~~#381~~, ~~#373~~ | 6 (ALL DONE) |
 | **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, ~~#356~~, ~~#355~~, #353, #351, ~~#361~~, ~~#354~~, ~~#352~~, ~~#379~~, ~~#334~~, ~~#360~~, ~~#412~~ | 14 (11 done) |
-| **2: Live Quality** | #331, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322, ~~#332~~, #380, #399, #409, #436, ~~#464~~, #465 | 13 (6 done) |
-| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, #343, #342, ~~#341~~, ~~#413~~, #417, #430, #433, #439, #440, #453 | 17 (9 done) |
-| **4: Dev Orchestration** | ~~#326~~, ~~#370~~, #411, ~~#415~~, ~~#416~~, #445 | 6 (4 done) |
+| **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, #436, ~~#464~~, ~~#465~~, #473 | 14 (8 done, 2 CRITICAL) |
+| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, ~~#342~~, ~~#341~~, ~~#413~~, ~~#417~~, ~~#430~~, #433, #439, ~~#440~~, #453 | 17 (13 done) |
+| **4: Dev Orchestration** | ~~#326~~, ~~#370~~, ~~#411~~ ✅, ~~#415~~, ~~#416~~, #445 | 6 (5 done) |
 | **5: Academy** | #377, ~~#369~~, ~~#374~~, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (5 done) |
-| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~ | 4 (2 done) |
+| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, #472 | 5 (2 done) |
 | **7: Autonomous** | #383, ~~#329~~, ~~#336~~ | 3 (2 done) |
 | **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
-| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 | 6 (3 done) |
-| **Research** | #391, #392, #393 | 3 |
-| **Total** | | **88 tracked, 33 open, 55 closed** |
+| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469, #473 | 7 (3 done) |
+| **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
+| **Total** | | **96 tracked, 25 open, 71 closed** |
 
 ---
 
