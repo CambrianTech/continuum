@@ -9,7 +9,9 @@ use super::types::*;
 use crate::{clog_info, clog_warn};
 use std::path::{Path, PathBuf};
 
-/// The 8 VRM 0.x avatar models in the static (compile-time) catalog.
+/// The 3 working VRM 0.0 avatar models in the static (compile-time) catalog.
+/// ONLY models with specVersion "0.0" render correctly in Bevy 0.18.
+/// sakurada, shino, sample-d/e/f REMOVED — vertex corruption (#331).
 /// All models are VRoid Studio quality (35-50k triangles, 52 morph targets, 83 joints).
 /// Sources: VRoid Studio CC0 (OpenGameArt).
 /// Voice-to-avatar matching uses pitch + gender + energy to select the best fit.
@@ -42,28 +44,7 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             energy: EnergyLevel::Moderate,
         },
     },
-    AvatarModel {
-        id: "vroid-sakurada",
-        name: "Sakurada Fumiriya",
-        filename: "vroid-sakurada.vrm",
-        style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile {
-            pitch: PitchRange::Mid,
-            gender: AvatarGender::Male,
-            energy: EnergyLevel::Energetic,
-        },
-    },
-    AvatarModel {
-        id: "vroid-shino",
-        name: "Sendagaya Shino",
-        filename: "vroid-shino.vrm",
-        style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile {
-            pitch: PitchRange::High,
-            gender: AvatarGender::Female,
-            energy: EnergyLevel::Calm,
-        },
-    },
+    // REMOVED: sakurada, shino — vertex corruption in Bevy 0.18 (not specVersion 0.0)
     AvatarModel {
         id: "vroid-darkness",
         name: "Darkness",
@@ -75,39 +56,7 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             energy: EnergyLevel::Calm,
         },
     },
-    AvatarModel {
-        id: "vroid-sample-d",
-        name: "Sample D",
-        filename: "vroid-sample-d.vrm",
-        style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile {
-            pitch: PitchRange::High,
-            gender: AvatarGender::Female,
-            energy: EnergyLevel::Moderate,
-        },
-    },
-    AvatarModel {
-        id: "vroid-sample-e",
-        name: "Sample E",
-        filename: "vroid-sample-e.vrm",
-        style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile {
-            pitch: PitchRange::Mid,
-            gender: AvatarGender::Female,
-            energy: EnergyLevel::Energetic,
-        },
-    },
-    AvatarModel {
-        id: "vroid-sample-f",
-        name: "Sample F",
-        filename: "vroid-sample-f.vrm",
-        style: AvatarStyle::Anime,
-        voice_profile: VoiceProfile {
-            pitch: PitchRange::Mid,
-            gender: AvatarGender::Female,
-            energy: EnergyLevel::Moderate,
-        },
-    },
+    // REMOVED: sample-d, sample-e, sample-f — vertex corruption in Bevy 0.18 (not specVersion 0.0)
 ];
 
 /// Models directory relative to the working directory (src/).
@@ -587,8 +536,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_avatar_catalog_has_8_models() {
-        assert_eq!(AVATAR_CATALOG.len(), 8);
+    fn test_avatar_catalog_has_3_models() {
+        assert_eq!(AVATAR_CATALOG.len(), 3);
     }
 
     #[test]
@@ -616,7 +565,7 @@ mod tests {
     #[test]
     fn test_static_catalog_conversion() {
         let catalog = AvatarCatalog::from_static();
-        assert_eq!(catalog.len(), 8);
+        assert_eq!(catalog.len(), 3);
         assert!(catalog.by_id("vroid-female-base").is_some());
         assert!(catalog.by_id("nonexistent").is_none());
     }

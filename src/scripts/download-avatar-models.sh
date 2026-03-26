@@ -115,26 +115,12 @@ download_vroid_zip "vroid-female-base" \
 download_vroid_zip "vroid-male-base" \
   "https://opengameart.org/sites/default/files/base_male.zip"
 
-download_vroid_zip "vroid-sakurada" \
-  "https://opengameart.org/sites/default/files/sakurada_fumiriya.zip"
-
-download_vroid_zip "vroid-shino" \
-  "https://opengameart.org/sites/default/files/sendagaya_shino.zip"
-
 download_vroid_zip "vroid-darkness" \
   "https://opengameart.org/sites/default/files/avatarsample_d_darkness.zip"
 
-download_vroid_zip "vroid-sample-d" \
-  "https://opengameart.org/sites/default/files/avatarsample_d_0.zip"
-
-download_vroid_zip "vroid-sample-e" \
-  "https://opengameart.org/sites/default/files/avatarsample_e.zip"
-
-download_vroid_zip "vroid-sample-f" \
-  "https://opengameart.org/sites/default/files/avatarsample_f.zip"
-
-# 100Avatars REMOVED — 2D flat models, look terrible next to 3D VRoid models.
-# Need proper 3D CC0 models to expand the catalog beyond 8.
+# REMOVED: These VRM models cause vertex corruption in Bevy 0.18 (exploded geometry).
+# Only VRM 0.0 specVersion models work. sakurada, shino, sample-d/e/f are incompatible.
+# See #331, #322 — need more compatible CC0 VRM 0.x models to expand beyond 3.
 
 # ============================================================================
 # Summary
