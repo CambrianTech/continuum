@@ -181,6 +181,7 @@ if command -v python3 &>/dev/null; then
             bitsandbytes \
             datasets \
             trl \
+            tensorboard \
             2>&1 | tail -3
         echo "  ✅ Training dependencies installed (Unsloth + PEFT + LoRA)"
     else
