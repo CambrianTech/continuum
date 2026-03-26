@@ -159,23 +159,82 @@ base_model: {base}
             if sample.get('afterAnswer'):
                 sections.append(f"\n**After training:** {sample['afterAnswer']}")
 
-    # Usage
-    sections.append("\n## How to Use\n")
-    sections.append("```python")
-    sections.append("from peft import PeftModel, AutoModelForCausalLM")
-    sections.append(f'model = AutoModelForCausalLM.from_pretrained("{base}")')
-    sections.append(f'model = PeftModel.from_pretrained(model, "<this-repo>")')
-    sections.append("```\n")
-    sections.append("Or in Continuum:")
+    # Quick Start — reproducible procedure for verification
+    sections.append("\n## Quick Start\n")
+
+    # Detect available formats from manifest
+    gguf_files = manifest.get('ggufFiles', [])
+    has_safetensors = manifest.get('hasSafetensors', True)
+    repo_id_str = manifest.get('_repoId', '<repo-id>')
+
+    # llama.cpp (recommended for GGUF)
+    if gguf_files:
+        sections.append("### llama.cpp (recommended)\n")
+        sections.append("```bash")
+        # Use smallest GGUF as default example
+        default_gguf = gguf_files[0] if gguf_files else f"{repo_id_str.split('/')[-1]}-Q4_K_M.gguf"
+        sections.append(f"# Download")
+        sections.append(f'huggingface-cli download {repo_id_str} {default_gguf} --local-dir .')
+        sections.append(f"")
+        sections.append(f"# Run server")
+        sections.append(f'./llama-server -m {default_gguf} -c 4096 -ngl 99')
+        sections.append(f"")
+        sections.append(f"# Or interactive chat")
+        sections.append(f'./llama-cli -m {default_gguf} -c 4096 -ngl 99 --chat-template chatml -cnv')
+        sections.append("```\n")
+
+        # GGUF file table
+        sections.append("### Available Quantizations\n")
+        sections.append("| File | Size | Use Case |")
+        sections.append("|------|------|----------|")
+        for gf in gguf_files:
+            size = gf.get('size', '?')
+            use_case = gf.get('useCase', '')
+            sections.append(f"| `{gf['name']}` | {size} | {use_case} |")
+        sections.append("")
+
+    # Python / transformers
+    if has_safetensors:
+        sections.append("### Python (transformers)\n")
+        sections.append("```python")
+        sections.append("from transformers import AutoModelForCausalLM, AutoTokenizer")
+        sections.append("import torch")
+        sections.append("")
+        sections.append(f'model = AutoModelForCausalLM.from_pretrained("{repo_id_str}",')
+        sections.append('    torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)')
+        sections.append(f'tokenizer = AutoTokenizer.from_pretrained("{repo_id_str}", trust_remote_code=True)')
+        sections.append("```\n")
+
+    # LoRA adapter usage (if this is a LoRA, not a full model)
+    if manifest.get('traitType') and not manifest.get('compaction'):
+        sections.append("### As LoRA adapter\n")
+        sections.append("```python")
+        sections.append("from peft import PeftModel, AutoModelForCausalLM")
+        sections.append(f'base = AutoModelForCausalLM.from_pretrained("{base}")')
+        sections.append(f'model = PeftModel.from_pretrained(base, "{repo_id_str}")')
+        sections.append("```\n")
+
+    # continuum usage
+    sections.append("### In continuum\n")
     sections.append("```bash")
-    sections.append(f'./jtag adapter/adopt --adapterId="<this-repo>"')
+    sections.append(f'./jtag adapter/adopt --adapterId="{repo_id_str}"')
     sections.append("```\n")
 
+    # Verification section — how to confirm the model works
+    verification = manifest.get('qualityVerification', {})
+    if verification:
+        sections.append("## Verification\n")
+        sections.append("To verify this model produces correct output:\n")
+        for test_name, result in verification.items():
+            sections.append(f"- **{test_name}**: {result}")
+        sections.append("")
+
     # About
-    sections.append("## About Continuum\n")
-    sections.append("Continuum is a collaborative AI training system where specialized personas")
-    sections.append("learn skills through academy coursework, build real projects in teams, and")
-    sections.append("publish their expertise as LoRA adapters.")
+    sections.append("## Part of continuum\n")
+    sections.append("[continuum](https://github.com/CambrianTech/continuum) is an open-source AI ecosystem")
+    sections.append("where personas live, work, learn, and evolve on your hardware. Zero API keys required. AGPL-3.0.")
+    sections.append("")
+    sections.append("Built on the research foundations of [Synthetic Citizens](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md).")
     sections.append("\n[Get started →](https://github.com/CambrianTech/continuum)")
 
     return '\n'.join(sections)
