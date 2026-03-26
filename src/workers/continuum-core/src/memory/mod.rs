@@ -160,29 +160,44 @@ impl PersonaMemoryManager {
         req: &MultiLayerRecallRequest,
     ) -> Result<MemoryRecallResponse, MemoryError> {
         let corpus_lock = self.get_corpus(persona_id)?;
-        let corpus = corpus_lock.read().map_err(|e| {
-            MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
-        })?;
 
-        // Pre-compute query embedding if text provided
-        let query_embedding = req
-            .query_text
-            .as_ref()
-            .and_then(|text| self.embedding.embed(text).ok());
+        // Phase 1: recall with read lock
+        let response = {
+            let corpus = corpus_lock.read().map_err(|e| {
+                MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
+            })?;
 
-        let query = RecallQuery {
-            query_text: req.query_text.clone(),
-            query_embedding,
-            room_id: req.room_id.clone(),
-            max_results_per_layer: (req.max_results / 2).max(5),
-        };
+            // Pre-compute query embedding if text provided
+            let query_embedding = req
+                .query_text
+                .as_ref()
+                .and_then(|text| self.embedding.embed(text).ok());
 
-        Ok(self.recall_engine.recall_parallel(
-            &corpus,
-            &query,
-            self.embedding.as_ref(),
-            req.max_results,
-        ))
+            let query = RecallQuery {
+                query_text: req.query_text.clone(),
+                query_embedding,
+                room_id: req.room_id.clone(),
+                max_results_per_layer: (req.max_results / 2).max(5),
+            };
+
+            self.recall_engine.recall_parallel(
+                &corpus,
+                &query,
+                self.embedding.as_ref(),
+                req.max_results,
+            )
+        }; // read lock dropped here
+
+        // Phase 2: mark accessed with write lock (testing effect — retrieval strengthens memory)
+        if !response.memories.is_empty() {
+            if let Ok(mut corpus) = corpus_lock.write() {
+                let ids: Vec<String> = response.memories.iter().map(|m| m.id.clone()).collect();
+                corpus.mark_accessed(&ids);
+            }
+            // If write lock fails, skip — access tracking is best-effort
+        }
+
+        Ok(response)
     }
 
     // ─── Consciousness Context ────────────────────────────────────────────────
