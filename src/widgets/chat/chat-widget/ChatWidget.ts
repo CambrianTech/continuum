@@ -1106,20 +1106,34 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const memberIdSet = new Set(memberIds);
 
     try {
-      // Load all users and filter to room members client-side.
-      // The $in operator has a UUID coercion bug in the Postgres ORM (#488),
-      // so we use a broader query + client filter instead.
+      // Batch load members via $in operator (fixed in PR #510).
+      // Falls back to load-all + client filter if $in returns empty
+      // (server-side Postgres $in works, browser localStorage $in now works too).
       const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
-        limit: 100,
+        filter: { id: { $in: memberIds } },
+        limit: memberIds.length,
         backend: 'server',
         dbHandle: 'default'
       });
 
-      if (result?.success && result.items) {
+      if (result?.success && result.items && result.items.length > 0) {
         for (const user of result.items) {
-          if (memberIdSet.has(user.id as UUID)) {
-            this.roomMembers.set(user.id as UUID, user);
+          this.roomMembers.set(user.id as UUID, user);
+        }
+      } else {
+        // Fallback: load all users and filter client-side
+        const fallback = await DataList.execute<UserEntity>({
+          collection: UserEntity.collection,
+          limit: 100,
+          backend: 'server',
+          dbHandle: 'default'
+        });
+        if (fallback?.success && fallback.items) {
+          for (const user of fallback.items) {
+            if (memberIdSet.has(user.id as UUID)) {
+              this.roomMembers.set(user.id as UUID, user);
+            }
           }
         }
       }
