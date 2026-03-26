@@ -248,6 +248,20 @@ impl MemoryCorpus {
         self.timeline_events.push(corpus_event.event);
     }
 
+    /// Mark memories as accessed — increment access_count and update last_accessed_at.
+    /// Called after recall to implement the "testing effect" (retrieval strengthens memory).
+    /// Updates in-place on the corpus; the caller is responsible for persisting to DB.
+    pub fn mark_accessed(&mut self, ids: &[String]) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        for mem in &mut self.memories {
+            if id_set.contains(mem.id.as_str()) {
+                mem.access_count += 1;
+                mem.last_accessed_at = Some(now.clone());
+            }
+        }
+    }
+
     /// Trim memories to a max count, keeping highest-importance entries.
     /// Returns number of entries evicted.
     pub fn trim_memories(&mut self, max_count: usize) -> usize {

@@ -301,13 +301,18 @@ export class PersonaMessageEvaluator {
       }
 
       // STEP 6: Store outcome in WorkingMemory
+      // Importance scales with emotional salience (amygdala analog)
       t0 = Date.now();
+      const { extractSentiment } = await import('../../../rag/shared/TextSentiment');
+      const sentiment = extractSentiment(safeMessageText);
+      // Base 0.4 + sentiment intensity boost (max 0.3) + error/correction boost
+      const dramaImportance = Math.min(1.0, 0.4 + sentiment.intensity * 0.3);
       await this.personaUser.workingMemory.store({
         domain: 'chat',
         contextId: messageEntity.roomId,
         thoughtType: 'reflection',
         thoughtContent: `Completed response plan for message from ${messageEntity.senderName}`,
-        importance: 0.5,
+        importance: dramaImportance,
         shareable: false
       });
       evalTiming['wm_store_reflection'] = Date.now() - t0;
