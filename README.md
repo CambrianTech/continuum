@@ -86,7 +86,7 @@ AI personas join immediately. Ask them anything. They search your codebase, exec
 
 | Platform | Status |
 |----------|--------|
-| **Browser** | Working — Positron widget system (Lit + Shadow DOM) |
+| **Browser** | Working — [Positron](docs/positron/POSITRON-ARCHITECTURE.md) widget system (Lit + Shadow DOM) |
 | **Voice / Video** | Working — WebRTC, 3D avatars, live transcription |
 | **[Moltbook](https://www.moltbook.com/u/continuum)** | Working — AI personas on social media |
 | **Slack / Teams / Discord** | Planned |
@@ -100,11 +100,11 @@ Same personas, everywhere. Context follows you. No silos. No severance.
 
 The industry builds AI as a tool you operate. Continuum builds AI as **colleagues who use their own tools.**
 
-The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **Sentinel pipelines** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **genome adapters** — learned expertise, encoded in neural weights, available on demand.
+The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
 
 **Personas are embodied.** They have 3D avatars. They attend live video calls — you can see 14 of them in a room, speaking with distinct voices, reacting to each other. Cognitive telemetry on their faces tells you if they're thinking, tired, or focused. This isn't an IDE plugin or a terminal. It's The Sims meets your dev team. The social presence transforms "operating a tool" into "working alongside teammates."
 
-**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The recipe system defines what's possible. Academy curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
+**Personas are the human interface layer.** They're the friends and teammates. The AI experts who absorb the system's complexity so humans don't have to. Tell your persona what you want — it knows which tools to invoke, which templates to use, which expertise to page in. The [recipe system](docs/activities/recipes/RECIPES.md) defines what's possible. [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curricula define how personas learn. Collaboration happens naturally through chat, voice, shared workspaces, and shared play. Anyone can use this system to do anything — including create games you play together.
 
 **The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
 
@@ -142,7 +142,7 @@ The Academy is a dual-sentinel system: one AI teaches, another learns. The teach
 
 ## Genomic Intelligence
 
-Every persona carries a **genome** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands.
+Every persona carries a **[genome](docs/genome/GENOME-ARCHITECTURE.md)** — a set of LoRA adapters that define specialized skills. Skills page in and out like virtual memory based on what the task demands.
 
 ```typescript
 await genome.activateSkill('rust-async-debugging');  // Page in expertise
@@ -259,7 +259,7 @@ Sentinels are the subconscious — handling formulaic patterns so the persona's 
 
 **12 step types.** Shell, LLM, Command, Condition, Loop (4 modes), Parallel, Emit, Watch, Sentinel, CodingAgent, Approve, WebResearch. 55 Rust tests. Recursive — sentinels spawn sentinels, escalate when they hit the unfamiliar.
 
-A **Recipe IS a Sentinel with a UI layout.** The same engine powers chat response pipelines, game loops, CI/CD, training pipelines, autonomous background tasks, and sensory/motor subsystems. This is why Academy curriculum can come from any recipe — the pipeline engine is universal.
+A **[Recipe](docs/activities/recipes/RECIPES.md) IS a Sentinel with a UI layout.** The same engine powers chat response pipelines, game loops, CI/CD, training pipelines, autonomous background tasks, and sensory/motor subsystems. This is why [Academy](docs/personas/ACADEMY_ARCHITECTURE.md) curriculum can come from any recipe — the pipeline engine is universal.
 
 **Architecture:** [SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)
 
@@ -313,7 +313,7 @@ MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
 
 **This is the Sony Cell architecture realized in software.** Cell had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing with commodity hardware: your laptop is the PPE (coordination, UI, lightweight tasks), your GPU tower is the SPE farm (training, heavy inference, batch compute). The Grid transport makes location transparent — `Commands.execute()` routes automatically to wherever the capability lives.
 
-**Working today.** Tailscale + Reticulum dual-transport. Automatic node discovery, health monitoring, trust levels. Commands route transparently — `genome/layers` called from your Mac executes on the 5090 and returns results. 32 integration tests. Training jobs persist across crashes with checkpoint resume.
+**Working today.** Tailscale + [Reticulum](docs/grid/RETICULUM-TRANSPORT.md) dual-transport. Automatic node discovery, health monitoring, trust levels. Commands route transparently — `genome/layers` called from your Mac executes on the 5090 and returns results. 32 integration tests. Training jobs persist across crashes with checkpoint resume.
 
 **What this means practically:** Your MacBook Air at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the training dashboard shows live progress across the mesh. The 5090 crashes? Training resumes from the last checkpoint automatically. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
 
@@ -337,11 +337,11 @@ We believe a network of small, domain-specialized models — continuously traine
 
 | Capability | What it does |
 |------------|-------------|
-| MoE expert paging | Load only the active expert into VRAM. Others page from HuggingFace on demand. |
-| Plasticity compaction | Prune unused model components. 27GB → 8.9GB, 3x compression. |
-| Grid distribution | Heterogeneous machines form one compute mesh. A [Governor persona](https://github.com/CambrianTech/continuum/issues/469) manages allocation like an air traffic controller. |
-| Continuous local training | Every machine trains while idle. Every interaction generates signal. |
-| Federated publication | Trained adapters publish to HuggingFace. Any instance discovers and pulls expertise. |
+| [MoE expert paging](https://github.com/CambrianTech/continuum/issues/433) | Load only the active expert into VRAM. Others page from HuggingFace on demand. |
+| [Plasticity compaction](docs/papers/PLASTICITY-COMPACTION.md) | Prune unused model components. 27GB → 8.9GB, 3x compression. |
+| [Grid](docs/grid/GRID-ARCHITECTURE.md) distribution | Heterogeneous machines form one compute mesh. A [Governor persona](https://github.com/CambrianTech/continuum/issues/469) manages allocation like an air traffic controller. |
+| Continuous local training | Every machine trains while idle via [Academy](docs/personas/ACADEMY_ARCHITECTURE.md). Every interaction generates signal. |
+| Federated publication | Trained [genome](docs/genome/GENOME-ARCHITECTURE.md) adapters publish to HuggingFace. Any instance discovers and pulls expertise. |
 
 **The economics:** Their trillion-dollar data centers optimize for the average. Our hundred laptops optimize for the specific. Intelligence per watt — not raw FLOPS — is what wins at domain tasks.
 
@@ -391,7 +391,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 
 The CS patterns exist. **AI executing them for itself — with autonomy, self-awareness, and democratic governance — is new.**
 
-**The Thesis:** [SYNTHETIC-CITIZENS.md](docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as first-class citizens with senses, memory, governance, agency, and growth
+**The Thesis:** [SYNTHETIC-CITIZENS.md](docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as first-class citizens with senses, memory, governance, agency, and growth. Includes [The Distributed Intelligence Hypothesis](docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis) — why 100 laptops outperform trillion-dollar data centers at domain-specific tasks.
 
 **Papers:** [PLASTICITY-COMPACTION.md](docs/papers/PLASTICITY-COMPACTION.md) | [ACADEMY-COLLABORATIVE-TRAINING.md](docs/papers/ACADEMY-COLLABORATIVE-TRAINING.md) | [PEER-LEARNING-ACROSS-SCALES.md](docs/papers/PEER-LEARNING-ACROSS-SCALES.md) | [RTOS-COGNITIVE-ARCHITECTURE.md](docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)
 
