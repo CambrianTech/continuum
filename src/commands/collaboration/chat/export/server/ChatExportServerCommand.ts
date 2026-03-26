@@ -114,9 +114,6 @@ export class ChatExportServerCommand extends ChatExportCommand {
   }
 
   /**
-   * Apply post-filters (system/test messages, timestamps)
-   */
-  /**
    * Safely access metadata as an object, handling both parsed objects and JSON strings.
    * The Rust ORM may return JSON fields as strings depending on the storage backend.
    */
@@ -128,6 +125,9 @@ export class ChatExportServerCommand extends ChatExportCommand {
     return m.metadata;
   }
 
+  /**
+   * Apply post-filters (system/test messages, timestamps)
+   */
   private applyPostFilters(messages: ChatMessageEntity[], params: ChatExportParams): ChatMessageEntity[] {
     let filtered = messages;
 
