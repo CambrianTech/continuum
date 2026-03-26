@@ -95,6 +95,46 @@ if ! command -v git &>/dev/null; then
 fi
 echo "  ✅ Git: $(git --version | awk '{print $3}')"
 
+# Build essentials (Linux only — needed for Rust native deps)
+if [ "$IS_LINUX" = true ]; then
+    NEED_BUILD_DEPS=false
+    for dep in gcc g++ make pkg-config; do
+        if ! command -v "$dep" &>/dev/null; then
+            NEED_BUILD_DEPS=true
+            break
+        fi
+    done
+    if [ "$NEED_BUILD_DEPS" = true ]; then
+        echo "  📦 Installing build essentials..."
+        sudo apt-get install -y build-essential pkg-config libssl-dev 2>/dev/null || \
+        sudo dnf groupinstall -y "Development Tools" 2>/dev/null || \
+        echo "  ⚠️  Could not install build tools. Rust compilation may fail."
+    else
+        echo "  ✅ Build tools: installed"
+    fi
+fi
+
+# PostgreSQL
+if ! command -v psql &>/dev/null; then
+    echo "  📦 Installing PostgreSQL..."
+    if [ "$IS_MAC" = true ]; then
+        brew install postgresql@16 2>/dev/null && brew services start postgresql@16 2>/dev/null
+    elif [ "$IS_LINUX" = true ]; then
+        sudo apt-get install -y postgresql postgresql-contrib 2>/dev/null || \
+        sudo dnf install -y postgresql-server postgresql-contrib 2>/dev/null
+        # Start PostgreSQL service
+        sudo systemctl start postgresql 2>/dev/null || sudo service postgresql start 2>/dev/null || true
+        # Create user if needed (non-fatal — user may need to configure manually)
+        sudo -u postgres createuser --superuser "$USER" 2>/dev/null || true
+        sudo -u postgres createdb "$USER" 2>/dev/null || true
+    fi
+fi
+if command -v psql &>/dev/null; then
+    echo "  ✅ PostgreSQL: $(psql --version | awk '{print $3}')"
+else
+    echo "  ⚠️  PostgreSQL not found. Install manually: sudo apt install postgresql"
+fi
+
 # Python3 (for academy training — optional but nice to have)
 if command -v python3 &>/dev/null; then
     echo "  ✅ Python3: $(python3 --version 2>&1 | awk '{print $2}')"
