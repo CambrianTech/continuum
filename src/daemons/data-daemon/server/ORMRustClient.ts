@@ -308,6 +308,16 @@ export class ORMRustClient {
   private poolConnecting = false;
   private dbPath: string;
 
+  /**
+   * Negative result cache — prevents repeated IPC calls for records that don't exist.
+   * Key: "collection:id", Value: timestamp when not-found was recorded.
+   * Entries expire after NOT_FOUND_TTL_MS. Without this, stale references cause
+   * "Record not found" loops that block persona responsiveness for hours (#482).
+   */
+  private static readonly NOT_FOUND_TTL_MS = 30_000; // 30 seconds
+  private static readonly NOT_FOUND_MAX_ENTRIES = 2000;
+  private notFoundCache = new Map<string, number>();
+
   private constructor() {
     this.dbPath = getServerConfig().getDatabasePath();
   }
@@ -410,6 +420,9 @@ export class ORMRustClient {
     data: T,
     dbPath?: string
   ): Promise<StorageResult<T>> {
+    // Invalidate not-found cache — record is being created
+    if (data.id) this.invalidateNotFound(collection, data.id);
+
     const actualDbPath = dbPath ?? this.dbPath;
     const response = await this.request<RustDataRecord>({
       command: 'data/create',
@@ -559,6 +572,13 @@ export class ORMRustClient {
     id: UUID,
     dbPath?: string
   ): Promise<T | null> {
+    // Check negative cache — avoid repeated IPC for known-missing records (#482)
+    const cacheKey = `${collection}:${id}`;
+    const notFoundAt = this.notFoundCache.get(cacheKey);
+    if (notFoundAt && (Date.now() - notFoundAt) < ORMRustClient.NOT_FOUND_TTL_MS) {
+      return null;
+    }
+
     const response = await this.request<RustDataRecord>({
       command: 'data/read',
       dbPath: dbPath ?? this.dbPath,
@@ -567,6 +587,8 @@ export class ORMRustClient {
     });
 
     if (!response.success || !response.result?.data) {
+      // Cache the not-found result to prevent loop (#482)
+      this.cacheNotFound(cacheKey);
       return null;
     }
 
@@ -601,6 +623,9 @@ export class ORMRustClient {
     incrementVersion: boolean = true,
     dbPath?: string
   ): Promise<T> {
+    // Invalidate not-found cache — record exists if being updated
+    this.invalidateNotFound(collection, id);
+
     const response = await this.request<RustDataRecord>({
       command: 'data/update',
       dbPath: dbPath ?? this.dbPath,
@@ -1197,6 +1222,31 @@ export class ORMRustClient {
 
   private snakeToCamel(s: string): string {
     return s.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+  }
+
+  // ─── Negative Result Cache (#482) ─────────────────────────────────
+
+  /**
+   * Record that a collection:id was not found. Prevents repeated IPC for stale references.
+   */
+  private cacheNotFound(key: string): void {
+    this.notFoundCache.set(key, Date.now());
+    // Evict oldest entries if cache exceeds max
+    if (this.notFoundCache.size > ORMRustClient.NOT_FOUND_MAX_ENTRIES) {
+      const entries = [...this.notFoundCache.entries()];
+      entries.sort((a, b) => a[1] - b[1]);
+      const toRemove = entries.slice(0, entries.length - ORMRustClient.NOT_FOUND_MAX_ENTRIES);
+      for (const [k] of toRemove) {
+        this.notFoundCache.delete(k);
+      }
+    }
+  }
+
+  /**
+   * Invalidate not-found cache for a record (e.g., after store/update creates it).
+   */
+  private invalidateNotFound(collection: string, id: string): void {
+    this.notFoundCache.delete(`${collection}:${id}`);
   }
 
   /**
