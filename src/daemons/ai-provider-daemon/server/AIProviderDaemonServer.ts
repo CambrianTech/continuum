@@ -268,8 +268,58 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // for its own context window and capabilities (not the static map).
     this.registerLocalModels();
 
+    // Bootstrap the shared ontology — load concepts, seed missing ones, start drift detection.
+    // Runs non-blocking after adapters are ready (embeddings require the AI provider to be up).
+    this.initOntologyRegistry().catch(err => {
+      this.log.warn(`⚠️  OntologyRegistry bootstrap failed (non-fatal): ${err}`);
+    });
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ AIProviderDaemonServer: DEFERRED init complete (${deferredMs}ms) - health monitoring active`);
+  }
+
+  /**
+   * Initialise the shared ontology registry.
+   *
+   * Embedder and generator are thin closures over Commands.execute — the
+   * AIProviderDaemon is already up at this point so the calls will resolve.
+   * OntologyRegistry seeds missing concepts and bootstraps embeddings async.
+   */
+  private async initOntologyRegistry(): Promise<void> {
+    const { OntologyRegistry } = await import('../../../system/ontology/server/OntologyRegistry');
+    const { EmbeddingGenerate } = await import('../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes');
+    const { AIGenerate } = await import('../../../commands/ai/generate/shared/AIGenerateTypes');
+
+    const embedder = async (text: string, modelKey: string): Promise<number[]> => {
+      const [providerId, ...modelParts] = modelKey.split('/');
+      const result = await EmbeddingGenerate.execute({
+        input: text,
+        provider: providerId,
+        model: modelParts.join('/'),
+      });
+      return result?.embeddings?.[0] ?? [];
+    };
+
+    const generator = async (userPrompt: string, systemPrompt: string, modelKey: string): Promise<string> => {
+      const [providerId, ...modelParts] = modelKey.split('/');
+      const result = await AIGenerate.execute({
+        messages: [{ role: 'user', content: userPrompt }],
+        systemPrompt,
+        provider: providerId as 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek',
+        model: modelParts.join('/'),
+        maxTokens: 512,
+        temperature: 0.3,
+      });
+      return result?.text ?? '';
+    };
+
+    await OntologyRegistry.sharedInstance().init({
+      embedder,
+      generator,
+      log: (msg, level = 'info') => this.log[level](`[OntologyRegistry] ${msg}`),
+    });
+
+    this.log.info('✅ OntologyRegistry initialised');
   }
 
   /**

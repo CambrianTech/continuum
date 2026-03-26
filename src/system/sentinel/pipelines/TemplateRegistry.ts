@@ -23,6 +23,7 @@ import { buildCreativeWriteChapterPipeline, type CreativeWriteChapterConfig } fr
 import { buildResearchInvestigatePipeline, type ResearchInvestigateConfig } from './ResearchInvestigatePipeline';
 import { buildPublishPipeline, type PublishConfig } from './PublishPipeline';
 import { buildSafeDeployPipeline, type SafeDeployConfig } from './SafeDeployPipeline';
+import { buildSemanticTranslatorPipeline, buildSemanticTranslatorListenerPipeline, type SemanticTranslatorConfig } from './SemanticTranslatorPipeline';
 
 // -- Template metadata --------------------------------------------------------
 
@@ -168,6 +169,28 @@ register(
     ],
   },
   buildSafeDeployPipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'ontology/translate',
+    description: 'Translate content between two AI model semantic spaces using the shared ontology',
+    category: 'ontology',
+    requiredFields: ['content', 'sourceProviderId', 'sourceModelId', 'targetProviderId', 'targetModelId'],
+    optionalFields: ['requestId', 'maxAnchors', 'minSimilarity', 'announceResult'],
+  },
+  buildSemanticTranslatorPipeline as BuilderFn,
+);
+
+register(
+  {
+    name: 'ontology/translate-listener',
+    description: 'Long-running sentinel that listens for translate:request events and processes them continuously',
+    category: 'ontology',
+    requiredFields: ['sourceProviderId', 'sourceModelId', 'targetProviderId', 'targetModelId'],
+    optionalFields: ['maxTranslations'],
+  },
+  buildSemanticTranslatorListenerPipeline as BuilderFn,
 );
 
 // -- Public API ---------------------------------------------------------------
