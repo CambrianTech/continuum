@@ -131,6 +131,12 @@ if ! command -v psql &>/dev/null; then
 fi
 if command -v psql &>/dev/null; then
     echo "  ✅ PostgreSQL: $(psql --version | awk '{print $3}')"
+    # Create the continuum database if it doesn't exist
+    if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+        echo "  📦 Creating 'continuum' database..."
+        createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || \
+            echo "  ⚠️  Could not create database. Run manually: createdb continuum"
+    fi
 else
     echo "  ⚠️  PostgreSQL not found. Install manually: sudo apt install postgresql"
 fi
@@ -188,6 +194,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
 # Server config (defaults are fine)
 HTTP_PORT=9000
 WS_PORT=9001
+
+# Database (PostgreSQL — auto-configured by install.sh)
+DATABASE_URL=postgres://$USER@localhost/continuum
 ENVEOF
     echo "  ✅ Config created: $CONFIG_FILE"
     echo "  💡 Add API keys later: nano $CONFIG_FILE"
