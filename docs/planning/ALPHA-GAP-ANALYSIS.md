@@ -1,10 +1,10 @@
 # Alpha Gap Analysis — Master Plan
 
 **Updated**: 2026-03-26
-**Status**: UI/UX alpha complete. System runs stable with 14+ AI personas. 5 PRs merged today (tool output leak, IPC cache, member loading, cost widgets, hippocampus memory). Vision crystallizing: local multimodal models that SEE and BUILD their own UI.
+**Status**: **BUILD PHASE.** Architecture proven, vision crystallized. Now it's mostly build — with special emphasis on training during build (every buggy session = training data) and careful analysis of initial Academy sessions. 8 PRs merged today, 10 issues filed, 5 reopened. Qwen3.5-35B-A3B downloaded on 5090, expert activation profiling running.
 **Branch**: `main`
 
-This document is the **single source of truth** for remaining work before open-source launch. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase.
+This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
 
 ---
 
@@ -300,9 +300,9 @@ This document is the **single source of truth** for remaining work before open-s
 | **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469, #473 | 7 (3 done) |
-| **11: Multimodal Compaction** | #492, #417, #480, #493, #494, #495, #496, #497 | 8 (0 done — THE UNLOCK) |
+| **11: Multimodal Compaction** | #492, #417, #480, #493, #494, #495, #496, #497, #409, #502, #503, #501, #499 | 13 (0 done — THE UNLOCK) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **104 tracked, 37 open, 67 closed** |
+| **Total** | | **109 tracked, 42 open, 67 closed** |
 
 ---
 
@@ -322,6 +322,11 @@ This phase combines plasticity compaction, MoE paging, vision, and Academy train
 | [#495](https://github.com/CambrianTech/continuum/issues/495) | **HuggingFace naming + publishing** | TODO | `-cont` suffix, model cards, publishing pipeline. |
 | [#496](https://github.com/CambrianTech/continuum/issues/496) | **Integration test: persona redesigns widget** | TODO | THE proof — zero API keys, local model, full visual loop. |
 | [#497](https://github.com/CambrianTech/continuum/issues/497) | **Compaction + MoE paging combined** | TODO | Any model on any hardware: compact what fits, page the rest from HF. |
+| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Total sensory verification** | REOPENED | Vision + hearing + speech all working locally with Qwen VL. Zero API keys. |
+| [#502](https://github.com/CambrianTech/continuum/issues/502) | **Training signal capture** | TODO | Every live session (especially bugs) becomes Academy training data. |
+| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + individual experts across the mesh. |
+| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits by hosting MoE experts. Route tokens across mesh. |
+| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. Economy comes last. |
 
 **The dependency chain:**
 ```
