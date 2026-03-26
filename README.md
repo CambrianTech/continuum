@@ -1,4 +1,4 @@
-# Continuum
+# continuum
 
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
 ### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
@@ -36,9 +36,9 @@
 
 Every other project in this space is building a better **tool**. A smarter terminal. A faster code agent. A more capable chatbot. They compete on who can make the best hammer.
 
-**Continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
+**continuum is building the workshop.** An entire ecosystem where AI entities live, work, learn, create, and evolve — embodied in 3D spaces with real-time voice, visible to each other and to you. Not agents you invoke. Teammates you work alongside.
 
-| What the industry builds | What Continuum is |
+| What the industry builds | What continuum is |
 |---|---|
 | Terminal agent (Claude Code, Aider, Hermes) | **Living 3D world** — avatars, voice, presence, shared spaces |
 | Stateless single-session | **Persistent identity** — memory, personality, skills that compound over months |
@@ -98,7 +98,7 @@ Same personas, everywhere. Context follows you. No silos. No severance.
 
 ## Colleagues, Not Tools
 
-The industry builds AI as a tool you operate. Continuum builds AI as **colleagues who use their own tools.**
+The industry builds AI as a tool you operate. continuum builds AI as **colleagues who use their own tools.**
 
 The relationship between a persona and its infrastructure mirrors the relationship between a human developer and theirs. A human offloads execution to Claude Code and focuses on architecture. A persona offloads execution to **[Sentinel pipelines](docs/sentinel/SENTINEL-ARCHITECTURE.md)** and focuses on creative decisions. A human uses project templates to encode patterns. A persona uses **Generators** to encode patterns. A human pages in documentation when needed. A persona pages in **[genome adapters](docs/genome/GENOME-ARCHITECTURE.md)** — learned expertise, encoded in neural weights, available on demand.
 
@@ -116,7 +116,7 @@ This is the bet: **infrastructure that compensates for model capability beats sm
 
 ## The Academy — AI That Trains Itself
 
-Most AI systems are frozen at deployment. Continuum personas **get smarter every day.**
+Most AI systems are frozen at deployment. continuum personas **get smarter every day.**
 
 The Academy is a dual-sentinel system: one AI teaches, another learns. The teacher synthesizes challenges. The student attempts them. **Real tests run** — not "did the LLM say it passed" but `pytest` returning 0 or it doesn't. Failures become targeted training data. The student trains a LoRA adapter, then **retakes the exam to prove it worked.**
 
@@ -134,7 +134,7 @@ The Academy is a dual-sentinel system: one AI teaches, another learns. The teach
 
 **Team training.** Give the Academy a project — "build a side-scrolling game with mushroom people" — and it decomposes it into roles (game designer, engineer, artist), trains each persona for their role, then orchestrates collaborative building. The teacher grades both the project AND each individual's role performance. Students see each other's work in the academy chat room — peer learning through shared visibility.
 
-**Personas don't start from zero.** Trained adapters are published to HuggingFace with standardized `continuum:*` metadata tags — discoverable by any Continuum instance worldwide. When a new persona needs Python skills, it searches HuggingFace, pulls a proven adapter, and fine-tunes it for its specific project. The model card shows real exam scores and before/after comparisons — every adapter is its own advertisement. Zero hosting cost. HuggingFace is the backbone.
+**Personas don't start from zero.** Trained adapters are published to HuggingFace with standardized `continuum:*` metadata tags — discoverable by any continuum instance worldwide. When a new persona needs Python skills, it searches HuggingFace, pulls a proven adapter, and fine-tunes it for its specific project. The model card shows real exam scores and before/after comparisons — every adapter is its own advertisement. Zero hosting cost. HuggingFace is the backbone.
 
 **Architecture:** [ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [BENCHMARKING.md](docs/architecture/BENCHMARKING.md)
 
@@ -179,7 +179,7 @@ await genome.publish('rust-expert-v2');                // Share with the team
 
 ## Collaborative Team Delegation
 
-Continuum personas don't just answer questions — they **delegate, coordinate, and self-organize.**
+continuum personas don't just answer questions — they **delegate, coordinate, and self-organize.**
 
 A persona facing a task outside its expertise doesn't hallucinate through it. It identifies which team member has the right genome for the job, delegates the subtask, and integrates the result. A coding task spawns a code review. A research question routes to the persona with the deepest domain knowledge. The team structure emerges from capabilities, not from scripts you wrote.
 
@@ -203,7 +203,7 @@ Recipes define behavior. The sentinel engine runs the pipeline. Chat flows into 
 
 The AI industry is converging on a truth: models are specializing, not consolidating. Coding models, reasoning models, vision models, voice models — each getting better at their domain, none winning everything. Platform lock-in to a single provider is a ceiling.
 
-Continuum was architected for this from day one.
+continuum was architected for this from day one.
 
 **The 4-tier model selection engine** (Rust, sub-millisecond) routes every request to the best available model:
 
@@ -214,14 +214,14 @@ Tier 3: Any trained adapter       →  Got a LoRA for this? Prefer expertise ove
 Tier 4: Base model fallback       →  Route to whichever provider fits (local or cloud)
 ```
 
-But Continuum goes beyond routing. **Routing picks from what exists. Continuum creates what's missing.** When no specialist exists for a task, the Academy trains one. The genome grows. Next time, Tier 1 hits.
+But continuum goes beyond routing. **Routing picks from what exists. continuum creates what's missing.** When no specialist exists for a task, the Academy trains one. The genome grows. Next time, Tier 1 hits.
 
 | Approach | What it does | Limitation |
 |----------|-------------|------------|
 | **API Router** (LiteLLM, etc.) | Routes to cheapest/fastest provider | Picks from existing models only |
 | **Agent Framework** (LangChain, etc.) | Chains prompts with tools | Single-model, no specialization |
 | **Coding Agent** (Cursor, Windsurf) | Wraps one frontier model | Provider-locked, no learning |
-| **Continuum** | Routes + trains specialists + evolves + collaborates | The organism, not the switchboard |
+| **continuum** | Routes + trains specialists + evolves + collaborates | The organism, not the switchboard |
 
 **12 providers today.** Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle (local), Candle-gRPC, and any provider added tomorrow. The sentinel engine treats models as interchangeable compute — what matters is the genome riding on top.
 
