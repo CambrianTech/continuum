@@ -126,7 +126,8 @@ export class AICostServerCommand extends AICostCommand {
       const costByProvider = params.includeBreakdown ? this.aggregateByProvider(finalGens, totalCost) : undefined;
       const costByModel = params.includeBreakdown ? this.aggregateByModel(finalGens, totalCost) : undefined;
       const topModels = params.includeTopModels ? this.getTopModels(finalGens, totalCost, params.includeTopModels) : undefined;
-      const timeSeries = params.includeTimeSeries ? this.generateTimeSeries(finalGens, startTime, endTime, params.interval || '1h') : undefined;
+      const interval = params.interval || this.autoInterval(endTime - startTime);
+      const timeSeries = params.includeTimeSeries ? this.generateTimeSeries(finalGens, startTime, endTime, interval) : undefined;
       const latency = params.includeLatency ? this.calculateLatencyMetrics(finalGens) : undefined;
 
       if (params.format === 'text') {
@@ -281,6 +282,20 @@ export class AICostServerCommand extends AICostCommand {
     }
 
     return points;
+  }
+
+  /**
+   * Auto-select bucket interval based on time range span.
+   * Targets 12-24 buckets for visual clarity at any zoom level.
+   */
+  private autoInterval(spanMs: number): string {
+    const hours = spanMs / 3_600_000;
+    if (hours <= 1) return '5m';
+    if (hours <= 6) return '15m';
+    if (hours <= 24) return '1h';
+    if (hours <= 72) return '3h';
+    if (hours <= 168) return '6h'; // 7 days
+    return '1d';
   }
 
   private parseIntervalToMs(interval: string): number {
