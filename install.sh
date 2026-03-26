@@ -206,52 +206,21 @@ fi
 
 echo ""
 
-# ─── Step 4: Install Dependencies ────────────────────────────────────
-echo "📋 Step 4: Installing dependencies"
+# ─── Step 4: Full Install via comprehensive installer ────────────────
+# src/scripts/install.sh handles ALL platform-specific dependencies:
+# PostgreSQL, build-essential, CUDA, Python ML stack, Node deps, Rust build
+echo "📋 Step 4: Running full installer"
 echo "-----------------------------------"
 cd src
-npm install --no-audit --no-fund 2>&1 | tail -3
-echo "  ✅ Node dependencies installed"
-
-# Python training dependencies (for Academy LoRA fine-tuning + plasticity compaction)
-# Install torch first (needed for GPU detection), then training deps if GPU available
-if command -v python3 &>/dev/null; then
-    PIP_FLAGS=""
-    # Python 3.12+ requires --break-system-packages for system pip
-    if python3 -c "import sys; exit(0 if sys.version_info >= (3,12) else 1)" 2>/dev/null; then
-        PIP_FLAGS="--break-system-packages"
-    fi
-
-    # Ensure torch is installed (needed for GPU detection and inference)
-    if ! python3 -c "import torch" 2>/dev/null; then
-        echo "  📦 Installing PyTorch..."
-        python3 -m pip install --quiet $PIP_FLAGS torch 2>&1 | tail -3
-    fi
-
-    HAS_GPU=false
-    if python3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-        HAS_GPU=true
-    fi
-
-    if [ "$HAS_GPU" = true ]; then
-        echo "  🧠 GPU detected — installing training + compaction dependencies..."
-        python3 -m pip install --quiet $PIP_FLAGS \
-            unsloth \
-            peft \
-            transformers \
-            bitsandbytes \
-            datasets \
-            trl \
-            tensorboard \
-            huggingface_hub \
-            safetensors \
-            2>&1 | tail -3
-        echo "  ✅ Training dependencies installed (Unsloth + PEFT + LoRA + compaction)"
-    else
-        echo "  ⚠️  No GPU detected — skipping training dependencies (inference still works)"
-    fi
+if [ -f "scripts/install.sh" ]; then
+    bash scripts/install.sh
+else
+    # Fallback: basic npm install if comprehensive script not found
+    npm install --no-audit --no-fund 2>&1 | tail -3
+    echo "  ✅ Node dependencies installed"
 fi
-echo ""
+
+# Python/GPU deps handled by src/scripts/install.sh above
 
 # ─── Step 5: Build + Start ──────────────────────────────────────────
 echo "📋 Step 5: Building and starting"
