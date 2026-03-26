@@ -39,7 +39,11 @@ export class AdapterRegistry {
     // Priority order for content type detection:
 
     // 1. Check for tool result metadata (highest priority — rich tool output rendering)
-    if (message.metadata?.toolResult === true) {
+    //    Handle both parsed object and JSON string (Rust ORM may return either)
+    const meta = typeof message.metadata === 'string'
+      ? (() => { try { return JSON.parse(message.metadata); } catch { return null; } })()
+      : message.metadata;
+    if (meta?.toolResult === true) {
       return this.adapters.get('tool_output') ?? this.adapters.get('text') ?? null;
     }
 

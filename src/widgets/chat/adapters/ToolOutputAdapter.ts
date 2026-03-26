@@ -378,7 +378,10 @@ export class ToolOutputAdapter extends AbstractMessageAdapter<ToolOutputContentD
   }
 
   parseContent(message: ChatMessageEntity): ToolOutputContentData | null {
-    const meta = message.metadata;
+    // Handle both parsed object and JSON string (Rust ORM may return either)
+    const meta = typeof message.metadata === 'string'
+      ? (() => { try { return JSON.parse(message.metadata); } catch { return null; } })()
+      : message.metadata;
     if (!meta?.toolResult) return null;
 
     const toolName = (meta.toolName as string) || 'unknown';

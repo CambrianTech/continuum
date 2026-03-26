@@ -426,6 +426,25 @@ export class AgentToolExecutor {
     return params;
   }
 
+  /**
+   * Check if a room reference (name or UUID) matches the given contextId (room UUID).
+   * Used to detect redundant chat/send calls to the persona's current room.
+   */
+  private async isSameRoom(roomRef: string, contextId: UUID): Promise<boolean> {
+    if (!roomRef || !contextId) return false;
+    // Direct UUID match
+    if (roomRef === contextId) return true;
+    // "current" always refers to same room
+    if (roomRef === 'current') return true;
+    // Name-based: look up the room by name and compare IDs
+    try {
+      const resolved = await RoomResolver.resolveByName(roomRef);
+      return resolved?.id === contextId;
+    } catch {
+      return false;
+    }
+  }
+
   // ─── Core Execution ──────────────────────────────────────────────
 
   /**
@@ -455,8 +474,24 @@ export class AgentToolExecutor {
     params: Record<string, string>,
     ctx: ToolCallContext
   ): Promise<ToolCallResult> {
-    // Resolve room params
+    // Resolve room params (once — reused by suppression check below)
     const resolved = await this.resolveRoomParams(params, ctx.contextId);
+
+    // Suppress redundant chat/send to the current room.
+    // When a persona responds to a chat message, the response pipeline (ORM.store)
+    // already posts the response. If the LLM also calls chat/send for the same room,
+    // it creates duplicate messages. Suppress and return a helpful note.
+    if (toolName === 'collaboration/chat/send') {
+      const targetRoom = resolved.room || resolved.roomId || '';
+      const isSameRoom = await this.isSameRoom(targetRoom, ctx.contextId);
+      if (isSameRoom) {
+        return {
+          toolName,
+          success: true,
+          content: 'Your response will be posted automatically to this room. No need to call chat/send — just reply directly in your message text.',
+        };
+      }
+    }
 
     // Inject caller identity
     const paramsWithCaller = {
