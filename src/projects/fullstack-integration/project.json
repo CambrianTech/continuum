@@ -1,0 +1,151 @@
+{
+  "name": "fullstack-integration",
+  "description": "Tier 4 capstone: Build a unified full-stack application combining a shopping cart with backend API, real-time collaborative whiteboard, and an analytics dashboard with data visualization endpoints",
+  "skill": "fullstack-integration",
+  "difficulty": "advanced",
+  "milestones": [
+    {
+      "index": 0,
+      "name": "E-commerce foundation",
+      "description": "Create an Express server on port 3458 with a product catalog (6 seeded products across 3 categories), JWT-style auth (base64-encoded token), and a session-based shopping cart via X-Session-Id header. Implement: GET /health, GET /products, GET /products/:id, POST /auth/register, POST /auth/login, GET /auth/me (Bearer token), POST /cart/items, GET /cart, PUT /cart/items/:productId, DELETE /cart/items/:productId. Export the Express app as 'app'.",
+      "learningObjectives": [
+        "Express server and routing",
+        "Seeded product data with multiple categories",
+        "Token-based authentication (base64 JSON token)",
+        "Authorization middleware (Bearer token)",
+        "Session-based shopping cart using X-Session-Id header",
+        "Computed cart fields (subtotal, total)"
+      ],
+      "testFile": "tests/milestone-1.test.ts",
+      "testCommand": "npx tsx tests/milestone-1.test.ts",
+      "acceptanceCriteria": [
+        "Server listens on port 3458",
+        "GET /health returns 200 {status:'ok'}",
+        "GET /products returns array of 6 seeded products",
+        "Products have id, name, price, category, description, inStock fields",
+        "POST /auth/register returns {userId, email, name}, rejects duplicates with 409",
+        "POST /auth/login returns {token} for valid credentials, 401 for bad password",
+        "GET /auth/me with valid Bearer token returns user profile",
+        "POST /cart/items adds item (requires X-Session-Id), GET /cart returns items with subtotals and total"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Checkout and inventory",
+      "description": "Add stock tracking and order lifecycle. Each product gets a stockCount field (seed with values 0-50). POST /cart/items must reject out-of-stock products (stockCount === 0) with 400. POST /orders (authenticated) creates an order from the user's cart using X-Session-Id, clears the cart, decrements stock counts, and returns the order. GET /orders and GET /orders/:id for order history. First registered user is admin and can call PUT /admin/products/:id to update stockCount.",
+      "learningObjectives": [
+        "Inventory tracking with stock counts",
+        "Stock validation before cart add",
+        "Multi-resource transaction (cart to order)",
+        "Order lifecycle management",
+        "Decrementing stock on purchase",
+        "Admin role for stock management"
+      ],
+      "testFile": "tests/milestone-2.test.ts",
+      "testCommand": "npx tsx tests/milestone-2.test.ts",
+      "acceptanceCriteria": [
+        "GET /products/:id includes stockCount field",
+        "POST /cart/items returns 400 for out-of-stock product (stockCount === 0)",
+        "POST /orders creates order with items, total, status='confirmed', createdAt",
+        "POST /orders clears the cart after success",
+        "POST /orders decrements product stockCount",
+        "GET /orders returns authenticated user's order list",
+        "GET /orders/:id returns order detail, 404 for another user's order",
+        "Previous milestone tests still pass"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "WebSocket real-time layer",
+      "description": "Upgrade the server to support WebSocket connections on the same port. Switch from exporting 'app' (Express) to exporting 'server' (http.Server with WS attached). When a client connects via WebSocket, it should send {type:'hello', clientId:'<string>'}. The server responds with {type:'welcome', clientId:'<string>'}. Maintain a live count of connected clients. Implement GET /ws/stats returning {connectedClients: number}. Remove disconnected clients from the count automatically.",
+      "learningObjectives": [
+        "WebSocket server attached to existing HTTP server",
+        "Exporting http.Server (not Express app) for WS compatibility",
+        "Client registration on WS connect via hello/welcome handshake",
+        "Connection lifecycle management (open, close, error)",
+        "Live client count tracking",
+        "HTTP stats endpoint reflecting WS state"
+      ],
+      "testFile": "tests/milestone-3.test.ts",
+      "testCommand": "npx tsx tests/milestone-3.test.ts",
+      "acceptanceCriteria": [
+        "WebSocket connection succeeds at ws://localhost:3458",
+        "Server sends {type:'welcome', clientId} after client sends {type:'hello', clientId}",
+        "Multiple clients can connect simultaneously",
+        "GET /ws/stats returns {connectedClients: N} reflecting live count",
+        "Disconnected client is removed and count decrements",
+        "HTTP routes still work alongside WebSocket"
+      ]
+    },
+    {
+      "index": 3,
+      "name": "Collaborative whiteboard",
+      "description": "Add a multi-user collaborative whiteboard over WebSocket. Clients join a board with {type:'whiteboard/join', boardId:'<string>'}. Server acknowledges with {type:'whiteboard/joined', boardId}. Draw operations {type:'whiteboard/draw', boardId, operation:{tool, x, y, color, size}} are broadcast to all other members of that board (not the sender). A new member joining receives {type:'whiteboard/sync', boardId, operations:[...]} with all previous operations. {type:'whiteboard/clear', boardId} resets the board and broadcasts to all members. Implement GET /whiteboard/:boardId/history returning the operations array.",
+      "learningObjectives": [
+        "WebSocket rooms / board membership",
+        "Selective broadcast (all members except sender)",
+        "State sync for late joiners",
+        "Operation history storage",
+        "Board clear event with broadcast",
+        "Independent board isolation"
+      ],
+      "testFile": "tests/milestone-4.test.ts",
+      "testCommand": "npx tsx tests/milestone-4.test.ts",
+      "acceptanceCriteria": [
+        "Client receives whiteboard/joined ack after sending whiteboard/join",
+        "Draw operation broadcast to other board members, not sender",
+        "Client outside the board does not receive draw events",
+        "New joiner receives whiteboard/sync with all prior operations",
+        "whiteboard/clear resets history and broadcasts to all members",
+        "GET /whiteboard/:boardId/history returns operations array",
+        "Two different boardIds operate independently"
+      ]
+    },
+    {
+      "index": 4,
+      "name": "Analytics pipeline",
+      "description": "Instrument the existing routes to track analytics events automatically. GET /products/:id increments a view count for that product. POST /cart/items increments a cartAdds counter. POST /orders increments purchase count and adds to totalRevenue. Track unique customers (distinct userIds who ordered). Implement: GET /analytics/summary returning {totalOrders, totalRevenue, uniqueCustomers, totalProductViews}. GET /analytics/products returning array of products with {productId, name, views, cartAdds, purchases} sorted by views descending. GET /analytics/revenue returning {daily:[{date, revenue, orderCount}]} for the last 7 calendar days.",
+      "learningObjectives": [
+        "Instrumentation of existing HTTP routes",
+        "Aggregate metric computation",
+        "Unique value tracking (distinct customers)",
+        "Time-series bucketing by calendar day",
+        "Sorted analytics outputs",
+        "Analytics endpoints as read-only projections"
+      ],
+      "testFile": "tests/milestone-5.test.ts",
+      "testCommand": "npx tsx tests/milestone-5.test.ts",
+      "acceptanceCriteria": [
+        "GET /products/:id increments view count tracked in analytics",
+        "POST /cart/items increments cartAdds for that product",
+        "POST /orders increments purchases and adds to totalRevenue",
+        "GET /analytics/summary returns correct aggregates",
+        "GET /analytics/products returns products sorted by views descending with metrics",
+        "GET /analytics/revenue returns last 7 days with date, revenue, orderCount"
+      ]
+    },
+    {
+      "index": 5,
+      "name": "Dashboard and integration",
+      "description": "Build a unified dashboard that aggregates data from all subsystems. GET /dashboard returns {ecommerce:{totalOrders, totalRevenue, topProducts:[{id,name,purchases}]}, whiteboard:{activeSessions, totalOperations}, realtime:{connectedClients}}. GET /dashboard/activity returns an array of the last 20 cross-system events (orders placed, whiteboard draws, user logins) each with {type, timestamp, summary}. Add a WebSocket dashboard channel: clients send {type:'dashboard/subscribe'} and receive {type:'dashboard/update', data} whenever a new order is placed or a whiteboard operation occurs. Bind the dashboard updates to live system activity.",
+      "learningObjectives": [
+        "Cross-subsystem data aggregation",
+        "Unified dashboard endpoint design",
+        "Activity log across multiple event sources",
+        "WebSocket push notifications triggered by HTTP events",
+        "Real-time data pipeline (HTTP action → WS push)",
+        "Top-N aggregation (topProducts by purchases)"
+      ],
+      "testFile": "tests/milestone-6.test.ts",
+      "testCommand": "npx tsx tests/milestone-6.test.ts",
+      "acceptanceCriteria": [
+        "GET /dashboard returns all three sections: ecommerce, whiteboard, realtime",
+        "ecommerce section has totalOrders, totalRevenue, topProducts array",
+        "whiteboard section has activeSessions and totalOperations",
+        "realtime section has connectedClients",
+        "GET /dashboard/activity returns array of last 20 cross-system events with type, timestamp, summary",
+        "WS dashboard/subscribe client receives dashboard/update push when a new order is placed"
+      ]
+    }
+  ]
+}

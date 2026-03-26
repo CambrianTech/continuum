@@ -1,0 +1,19 @@
+{
+  "name": "fullstack-integration",
+  "version": "1.0.0",
+  "description": "Tier 4 full-stack integration project — e-commerce, collaborative whiteboard, analytics dashboard",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "npx tsx src/index.ts"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

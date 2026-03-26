@@ -90,6 +90,8 @@ import { CompetitionEntity } from '../../../system/genome/entities/CompetitionEn
 import { SentinelEntity } from '../../../system/sentinel/entities/SentinelEntity';
 import { BenchmarkEntity } from '../../../system/data/entities/BenchmarkEntity';
 import { BenchmarkResultEntity } from '../../../system/data/entities/BenchmarkResultEntity';
+import { OntologyConceptEntity } from '../../../system/ontology/shared/entities/OntologyConceptEntity';
+import { OntologyMappingEntity } from '../../../system/ontology/shared/entities/OntologyMappingEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -153,6 +155,8 @@ export function initializeEntityRegistry(): void {
   new SentinelEntity();
   new BenchmarkEntity();
   new BenchmarkResultEntity();
+  new OntologyConceptEntity();
+  new OntologyMappingEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -208,6 +212,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(SentinelEntity.collection, SentinelEntity);
   registerEntity(BenchmarkEntity.collection, BenchmarkEntity);
   registerEntity(BenchmarkResultEntity.collection, BenchmarkResultEntity);
+  registerEntity(OntologyConceptEntity.collection, OntologyConceptEntity);
+  registerEntity(OntologyMappingEntity.collection, OntologyMappingEntity);
 
   log.info('All entities registered');
 }
