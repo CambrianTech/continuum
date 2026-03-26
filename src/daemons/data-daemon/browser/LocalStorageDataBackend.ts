@@ -233,10 +233,27 @@ export class LocalStorageDataBackend {
           try {
             const entityData: LocalStorageEntityData = JSON.parse(stored);
 
-            // Apply filter if provided
+            // Apply filter if provided — supports MongoDB-style operators
             if (filter) {
               const matchesFilter = Object.entries(filter).every(([filterKey, filterValue]) => {
-                return entityData.entity[filterKey] === filterValue;
+                const entityVal = entityData.entity[filterKey];
+                // Simple equality (most common case)
+                if (filterValue === null || typeof filterValue !== 'object') {
+                  return entityVal === filterValue;
+                }
+                // Operator object: { $in: [...], $eq: v, $ne: v, $gt: v, $gte: v, $lt: v, $lte: v }
+                const ops = filterValue as Record<string, unknown>;
+                if ('$in' in ops) return Array.isArray(ops.$in) && (ops.$in as unknown[]).includes(entityVal);
+                if ('$nin' in ops) return Array.isArray(ops.$nin) && !(ops.$nin as unknown[]).includes(entityVal);
+                if ('$eq' in ops) return entityVal === ops.$eq;
+                if ('$ne' in ops) return entityVal !== ops.$ne;
+                if ('$gt' in ops) return entityVal > (ops.$gt as string | number);
+                if ('$gte' in ops) return entityVal >= (ops.$gte as string | number);
+                if ('$lt' in ops) return entityVal < (ops.$lt as string | number);
+                if ('$lte' in ops) return entityVal <= (ops.$lte as string | number);
+                if ('$exists' in ops) return ops.$exists ? entityVal !== undefined : entityVal === undefined;
+                // Unknown operator — fall back to deep equality
+                return JSON.stringify(entityVal) === JSON.stringify(filterValue);
               });
               if (!matchesFilter) {
                 continue;
