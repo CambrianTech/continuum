@@ -164,17 +164,29 @@ cd src
 npm install --no-audit --no-fund 2>&1 | tail -3
 echo "  ✅ Node dependencies installed"
 
-# Python training dependencies (for Academy LoRA fine-tuning)
-# Only install if GPU is available — no point on CPU-only machines
+# Python training dependencies (for Academy LoRA fine-tuning + plasticity compaction)
+# Install torch first (needed for GPU detection), then training deps if GPU available
 if command -v python3 &>/dev/null; then
+    PIP_FLAGS=""
+    # Python 3.12+ requires --break-system-packages for system pip
+    if python3 -c "import sys; exit(0 if sys.version_info >= (3,12) else 1)" 2>/dev/null; then
+        PIP_FLAGS="--break-system-packages"
+    fi
+
+    # Ensure torch is installed (needed for GPU detection and inference)
+    if ! python3 -c "import torch" 2>/dev/null; then
+        echo "  📦 Installing PyTorch..."
+        python3 -m pip install --quiet $PIP_FLAGS torch 2>&1 | tail -3
+    fi
+
     HAS_GPU=false
     if python3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
         HAS_GPU=true
     fi
 
     if [ "$HAS_GPU" = true ]; then
-        echo "  🧠 GPU detected — installing training dependencies..."
-        python3 -m pip install --quiet \
+        echo "  🧠 GPU detected — installing training + compaction dependencies..."
+        python3 -m pip install --quiet $PIP_FLAGS \
             unsloth \
             peft \
             transformers \
@@ -182,8 +194,10 @@ if command -v python3 &>/dev/null; then
             datasets \
             trl \
             tensorboard \
+            huggingface_hub \
+            safetensors \
             2>&1 | tail -3
-        echo "  ✅ Training dependencies installed (Unsloth + PEFT + LoRA)"
+        echo "  ✅ Training dependencies installed (Unsloth + PEFT + LoRA + compaction)"
     else
         echo "  ⚠️  No GPU detected — skipping training dependencies (inference still works)"
     fi
