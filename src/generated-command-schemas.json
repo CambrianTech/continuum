@@ -2004,7 +2004,7 @@
     },
     {
       "name": "sentinel/coding-agent",
-      "description": "Sentinel Coding Agent Command — Types Execute external coding agents (Claude Code, Codex, etc.) as sentinel pipeline steps. Provider architecture: each agent SDK is wrapped as a CodingAgentProvider.",
+      "description": "Execute an external coding agent (Claude Code) for complex multi-file coding tasks. The agent reads, writes, tests, and iterates autonomously within a managed workspace.",
       "params": {
         "prompt": {
           "type": "string",
@@ -3028,6 +3028,93 @@
       }
     },
     {
+      "name": "ontology/concept/lookup-batch",
+      "description": "ontology/concept/lookup-batch — Find concept anchors relevant to a piece of content Used by the SemanticTranslatorPipeline as Step 0: embed the source content, compute cosine similarity against all stored concept embeddings, and return the top-N concept anchors with their source→target expression mappings. This command is the \"vocabulary lookup\" that powers the translation glossary.",
+      "params": {
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "sourceModelKey": {
+          "type": "string",
+          "required": true,
+          "description": "sourceModelKey parameter"
+        },
+        "targetModelKey": {
+          "type": "string",
+          "required": true,
+          "description": "targetModelKey parameter"
+        },
+        "maxAnchors": {
+          "type": "number",
+          "required": false,
+          "description": "maxAnchors parameter"
+        },
+        "minSimilarity": {
+          "type": "number",
+          "required": false,
+          "description": "minSimilarity parameter"
+        },
+        "domains": {
+          "type": "array",
+          "required": false,
+          "description": "domains parameter"
+        }
+      }
+    },
+    {
+      "name": "ontology/bridge/translate",
+      "description": "ontology/bridge/translate — High-level semantic translation command The primary entry point for programmatic semantic translation. Wraps SemanticBridgeService.translate() as a first-class command so it's accessible from the pipeline system, ./jtag CLI, and Commands.execute(). Usage: const result = await OntologyBridgeTranslate.execute({ content: 'Implement low-rank adaptation using rank-r matrices', sourceProviderId: 'anthropic', sourceModelId: 'claude-sonnet-4-6', targetProviderId: 'candle', targetModelId: 'qwen2.5-14b', }); console.log(result.translatedContent);",
+      "params": {
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "sourceProviderId": {
+          "type": "string",
+          "required": true,
+          "description": "sourceProviderId parameter"
+        },
+        "sourceModelId": {
+          "type": "string",
+          "required": true,
+          "description": "sourceModelId parameter"
+        },
+        "targetProviderId": {
+          "type": "string",
+          "required": true,
+          "description": "targetProviderId parameter"
+        },
+        "targetModelId": {
+          "type": "string",
+          "required": true,
+          "description": "targetModelId parameter"
+        },
+        "requestId": {
+          "type": "string",
+          "required": false,
+          "description": "requestId parameter"
+        },
+        "maxAnchors": {
+          "type": "number",
+          "required": false,
+          "description": "maxAnchors parameter"
+        },
+        "minSimilarity": {
+          "type": "number",
+          "required": false,
+          "description": "minSimilarity parameter"
+        },
+        "domains": {
+          "type": "array",
+          "required": false,
+          "description": "domains parameter"
+        }
+      }
+    },
+    {
       "name": "model/search",
       "description": "Search HuggingFace for base models by name, architecture, or size. Used to find compaction targets (e.g., 'Qwen 3.5 27B'). Different from adapter/search which finds LoRA adapters.",
       "params": {
@@ -3966,12 +4053,17 @@
     },
     {
       "name": "interface/navigate",
-      "description": "Navigate the browser to a URL.",
+      "description": "Navigate the browser to a URL or switch content tabs.",
       "params": {
         "url": {
           "type": "string",
           "required": false,
           "description": "url parameter"
+        },
+        "tab": {
+          "type": "string",
+          "required": false,
+          "description": "tab parameter"
         },
         "timeout": {
           "type": "number",
@@ -5594,6 +5686,47 @@
           "type": "string",
           "required": false,
           "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "development/verify-web",
+      "description": "Verify web output by opening in headless Playwright browser, capturing console errors + screenshot. Used by Academy teacher to grade coding output. No blind training.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "waitMs": {
+          "type": "number",
+          "required": true,
+          "description": "waitMs parameter"
+        },
+        "screenshot": {
+          "type": "boolean",
+          "required": true,
+          "description": "screenshot parameter"
+        },
+        "screenshotPath": {
+          "type": "string",
+          "required": true,
+          "description": "screenshotPath parameter"
+        },
+        "captureConsole": {
+          "type": "boolean",
+          "required": true,
+          "description": "captureConsole parameter"
+        },
+        "viewport": {
+          "type": "string",
+          "required": true,
+          "description": "viewport parameter"
         }
       }
     },

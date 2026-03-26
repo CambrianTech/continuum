@@ -119,12 +119,12 @@ export class UserService extends ServiceBase implements IUserService {
   }
 
   async createPersonaUser(config: PersonaConfig): Promise<PersonaUser> {
-    // TODO: Import PersonaUser constructor from API types
+    // import { createPersonaUser } from "../../api/types/User";
     throw new Error('PersonaUser creation not implemented yet');
   }
 
   async createAgentUser(config: AgentConfig): Promise<AgentUser> {
-    // TODO: Import AgentUser constructor from API types  
+    // import { createAgentUser } from "../../api/types/User";  
     throw new Error('AgentUser creation not implemented yet');
   }
 
