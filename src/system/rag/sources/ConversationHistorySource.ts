@@ -284,6 +284,24 @@ export class ConversationHistorySource implements RAGSource {
 
       // Messages arrive newest-first from DB. Filter and sanitize in that order.
 
+      // Filter out tool result messages — stored by PersonaToolExecutor for working
+      // memory, NOT for conversation context. Without this filter, other personas see
+      // "send: 29 lines", "read: 510 lines" etc. and discuss them, causing cascading noise.
+      let toolResultCount = 0;
+      messages = messages.filter((msg: MessageWithSender) => {
+        const meta = typeof msg.metadata === 'string'
+          ? (() => { try { return JSON.parse(msg.metadata); } catch { return null; } })()
+          : msg.metadata;
+        if (meta?.toolResult === true) {
+          toolResultCount++;
+          return false;
+        }
+        return true;
+      });
+      if (toolResultCount > 0) {
+        log.debug(`Filtered ${toolResultCount} tool result messages from conversation history`);
+      }
+
       // Filter out fabricated conversation messages — hallucinated multi-party
       // conversations that poison context and cause cascading failures.
       let filteredCount = 0;

@@ -116,22 +116,34 @@ export class ChatExportServerCommand extends ChatExportCommand {
   /**
    * Apply post-filters (system/test messages, timestamps)
    */
+  /**
+   * Safely access metadata as an object, handling both parsed objects and JSON strings.
+   * The Rust ORM may return JSON fields as strings depending on the storage backend.
+   */
+  private parseMeta(m: ChatMessageEntity): Partial<import('@system/data/entities/ChatMessageEntity').MessageMetadata> | undefined {
+    if (!m.metadata) return undefined;
+    if (typeof m.metadata === 'string') {
+      try { return JSON.parse(m.metadata); } catch { return undefined; }
+    }
+    return m.metadata;
+  }
+
   private applyPostFilters(messages: ChatMessageEntity[], params: ChatExportParams): ChatMessageEntity[] {
     let filtered = messages;
 
     // Filter system messages
     if (!params.includeSystem) {
-      filtered = filtered.filter(m => m.metadata?.source !== 'system');
+      filtered = filtered.filter(m => this.parseMeta(m)?.source !== 'system');
     }
 
     // Filter tool result messages (stored by PersonaToolExecutor for RAG, not for display)
     if (!params.includeSystem) {
-      filtered = filtered.filter(m => !m.metadata?.toolResult);
+      filtered = filtered.filter(m => !this.parseMeta(m)?.toolResult);
     }
 
     // Filter test messages
     if (!params.includeTests) {
-      filtered = filtered.filter(m => !m.metadata?.isSystemTest);
+      filtered = filtered.filter(m => !this.parseMeta(m)?.isSystemTest);
     }
 
     // Filter by afterMessageId
