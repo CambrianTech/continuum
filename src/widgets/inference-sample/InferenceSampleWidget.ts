@@ -404,7 +404,7 @@ export class InferenceSampleWidget extends ReactiveWidget {
 
   private async _loadAdapters(): Promise<void> {
     try {
-      const result = await this.executeCommand<any, any>('genome/adapter-list', {
+      const result = await this.executeCommand<any, any>('genome/layers', {
         includeMetrics: true,
       });
       if (result.success && result.adapters) {
