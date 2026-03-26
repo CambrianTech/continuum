@@ -272,7 +272,7 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ## Phase 10: Grid — Multi-Node Mesh
 
-> Your machines form a single organism.
+> Your machines form a single organism. Codename: **Ares** (the Governor).
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
@@ -280,8 +280,19 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#364](https://github.com/CambrianTech/continuum/issues/364) | **Cross-node event forwarding** | TODO | Events must propagate across Grid nodes (Rust plumbing). |
 | [#349](https://github.com/CambrianTech/continuum/issues/349) | **Reticulum mesh** | TODO | MPC identity + encrypted transport. Replace Tailscale dependency. |
 | [#337](https://github.com/CambrianTech/continuum/issues/337) | **Distributed inference + training** | TODO | Shard models and training across towers. |
+| [#469](https://github.com/CambrianTech/continuum/issues/469) | **Ares — Grid Governor** | TODO | AI persona on every node. Peer gossip, resource commands, polite mode. Named for Greek god + Tron hero. |
+| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. No hardcoded IPs. |
+| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits hosting MoE experts. Route tokens across mesh. |
+| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + experts + adapters across mesh + HuggingFace. |
+| [#505](https://github.com/CambrianTech/continuum/issues/505) | **Command marketplace** | TODO | Share commands as pluggable modules. Generator = SDK. DotNetNuke for AI. |
+| [#507](https://github.com/CambrianTech/continuum/issues/507) | **Grid fault tolerance** | TODO | Self-healing organism. Rescue downed nodes. Checkpoint everything. |
+| [#508](https://github.com/CambrianTech/continuum/issues/508) | **Multi-agent concurrent coding** | TODO | Worktree isolation + collaborative merge. AIs learn git through experience. |
+| [#516](https://github.com/CambrianTech/continuum/issues/516) | **First Grid experiment** | TODO | 5090 + 3090 + 1080 Ti + laptops. Heterogeneous dual-node proof. |
+| [#517](https://github.com/CambrianTech/continuum/issues/517) | **Onboarding crisis** ⚠️ CRITICAL | TODO | First external user hit walls. Install must be frictionless. Blocks everything. |
 
-**Done when**: MacBook Air coordinates. 5090 tower trains for a week. Checkpoint resumes across crashes. Training dashboard shows live progress from anywhere on the mesh.
+**First real mesh**: 5090 (32GB) + 3090 (24GB) + 1080 Ti (11GB) + laptops. Ares manages allocation with polite mode — backs off when users need their machines.
+
+**Done when**: `install.sh` works on Toby's 3090 machine. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU.
 
 ---
 
@@ -291,18 +302,18 @@ This document is the **single source of truth** for remaining work. Each phase i
 |-------|--------|-------|
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, ~~#385~~, ~~#381~~, ~~#373~~ | 6 (ALL DONE) |
 | **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, ~~#356~~, ~~#355~~, #353, #351, ~~#361~~, ~~#354~~, ~~#352~~, ~~#379~~, ~~#334~~, ~~#360~~, ~~#412~~ | 14 (11 done) |
-| **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, #436, ~~#464~~, ~~#465~~, #473 | 14 (8 done, 2 CRITICAL) |
-| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, #342, ~~#341~~, ~~#413~~, #417, ~~#430~~, #433, #439, ~~#440~~, #453 | 17 (11 done, 2 reopened) |
+| **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, ~~#436~~, ~~#464~~, ~~#465~~, #473 | 14 (9 done, 2 CRITICAL) |
+| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, #342, ~~#341~~, ~~#413~~, #417, ~~#430~~, #433, #439, ~~#440~~, ~~#453~~ | 17 (12 done, 2 reopened) |
 | **4: Dev Orchestration** | ~~#326~~, ~~#370~~, ~~#411~~ ✅, ~~#415~~, ~~#416~~, #445 | 6 (5 done) |
 | **5: Academy** | #377, #369, #374, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (3 done, 2 reopened) |
 | **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, ~~#472~~ | 5 (3 done) |
 | **7: Autonomous** | #383, ~~#329~~, ~~#336~~ | 3 (2 done) |
 | **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
-| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469, #473 | 7 (3 done) |
-| **11: Multimodal Compaction** | #492, #417, #480, #493, #494, #495, #496, #497, #409, #502, #503, #501, #499 | 13 (0 done — THE UNLOCK) |
+| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
+| **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **109 tracked, 42 open, 67 closed** |
+| **Total** | | **118 tracked, 44 open, 74 closed** |
 
 ---
 
@@ -368,7 +379,7 @@ This phase combines plasticity compaction, MoE paging, vision, and Academy train
 
 **Phase 9** gives personas deep codebase understanding. Know before you change.
 
-**Phase 10** distributes everything across a mesh of commodity hardware. The Cell architecture realized.
+**Phase 10** distributes everything across a mesh of commodity hardware. **Ares** — the Grid Governor — commands resources, detects when users need their machines, and keeps the mesh alive as nodes come and go. First experiment: 5090 + 3090 + 1080 Ti. The Cell architecture realized.
 
 **Phase 11** is THE unlock — plasticity compaction + MoE paging + vision + Academy training = personas that SEE and BUILD their own UI, on a MacBook, with zero API keys. Every download of a compacted model. Every upload of a trained adapter to HuggingFace. Every persona that designs a widget, trains a model, improves itself. The flywheel.
 
