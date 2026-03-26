@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-24
-**Status**: UI/UX alpha complete. System runs stable with 14+ AI personas in live video calls.
+**Updated**: 2026-03-26
+**Status**: UI/UX alpha complete. System runs stable with 14+ AI personas. 5 PRs merged today (tool output leak, IPC cache, member loading, cost widgets, hippocampus memory). Vision crystallizing: local multimodal models that SEE and BUILD their own UI.
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work before open-source launch. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase.
@@ -137,7 +137,7 @@ This document is the **single source of truth** for remaining work before open-s
 | [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
 | [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | DONE (PR #401) | Fixed hasTools false for XML providers — local personas now upgrade to cloud for tool use. |
 | [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
-| [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | TODO | Personas see screenshots, live visual context. |
+| [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | REOPENED | Pipes exist but full loop (see→fix→verify) not proven. Needs #493 + #480. |
 | [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
 | [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | DONE (PR #421) | Error messages now list available streams. Found by AI team. |
 | [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate Qwen3.5-35B-A3B** | TODO | Opus reasoning distilled, 3B active MoE. Could replace Llama-3.2-3B as local model. |
@@ -181,8 +181,8 @@ This document is the **single source of truth** for remaining work before open-s
 | # | Issue | Status | What |
 |---|-------|--------|------|
 | [#377](https://github.com/CambrianTech/continuum/issues/377) | **Full academy session E2E** | TODO | All challenges → failures → LoRA trained → re-exam → measurable improvement. Never completed. |
-| [#369](https://github.com/CambrianTech/continuum/issues/369) | **RealClassEval trash with local models** | TODO | 53% was with DeepSeek-Chat (cloud). Local models produce garbage. |
-| [#374](https://github.com/CambrianTech/continuum/issues/374) | **Teacher needs cloud API** | TODO | Train a local teacher adapter so Academy works at $0. |
+| [#369](https://github.com/CambrianTech/continuum/issues/369) | **RealClassEval trash with local models** | REOPENED | Solved by compaction + training, not API keys. Open until local model passes. |
+| [#374](https://github.com/CambrianTech/continuum/issues/374) | **Teacher needs cloud API** | REOPENED | Compacted 35B MoE IS the teacher. Needs #492 first. |
 | [#365](https://github.com/CambrianTech/continuum/issues/365) | **Training job persistence** | TODO | Checkpoint resume, crash recovery, auto-restart for weeks-long runs. |
 | [#344](https://github.com/CambrianTech/continuum/issues/344) | **Ship LoRA-tuned local model** | TODO | A model that passes coding challenges via our tool system. |
 | [#345](https://github.com/CambrianTech/continuum/issues/345) | **LoRA-tuned persona layer** | TODO | Teach personas to use Continuum's own systems. |
@@ -292,16 +292,52 @@ This document is the **single source of truth** for remaining work before open-s
 | **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, ~~#385~~, ~~#381~~, ~~#373~~ | 6 (ALL DONE) |
 | **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, ~~#356~~, ~~#355~~, #353, #351, ~~#361~~, ~~#354~~, ~~#352~~, ~~#379~~, ~~#334~~, ~~#360~~, ~~#412~~ | 14 (11 done) |
 | **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, #436, ~~#464~~, ~~#465~~, #473 | 14 (8 done, 2 CRITICAL) |
-| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, ~~#342~~, ~~#341~~, ~~#413~~, ~~#417~~, ~~#430~~, #433, #439, ~~#440~~, #453 | 17 (13 done) |
+| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, #342, ~~#341~~, ~~#413~~, #417, ~~#430~~, #433, #439, ~~#440~~, #453 | 17 (11 done, 2 reopened) |
 | **4: Dev Orchestration** | ~~#326~~, ~~#370~~, ~~#411~~ ✅, ~~#415~~, ~~#416~~, #445 | 6 (5 done) |
-| **5: Academy** | #377, ~~#369~~, ~~#374~~, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (5 done) |
-| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, #472 | 5 (2 done) |
+| **5: Academy** | #377, #369, #374, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (3 done, 2 reopened) |
+| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, ~~#472~~ | 5 (3 done) |
 | **7: Autonomous** | #383, ~~#329~~, ~~#336~~ | 3 (2 done) |
 | **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469, #473 | 7 (3 done) |
+| **11: Multimodal Compaction** | #492, #417, #480, #493, #494, #495, #496, #497 | 8 (0 done — THE UNLOCK) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **96 tracked, 25 open, 71 closed** |
+| **Total** | | **104 tracked, 37 open, 67 closed** |
+
+---
+
+## Phase 11: Multimodal Compaction — The Unlock
+
+> Personas that SEE what they build. On a MacBook. With zero API keys.
+
+This phase combines plasticity compaction, MoE paging, vision, and Academy training into the system's defining capability: AI teammates that can design, build, and visually verify their own work on consumer hardware.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#492](https://github.com/CambrianTech/continuum/issues/492) | **Compact Qwen3.5-35B-A3B on 5090** | TODO | Run plasticity pipeline on MoE model. Target: 8-12GB (MacBook Air). |
+| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate compacted model** | REOPENED | Was closed as "too big" — never tried compaction. 3x proven on 14B. |
+| [#480](https://github.com/CambrianTech/continuum/issues/480) | **Qwen3.5-0.8B vision service** | TODO | Lightweight real-time scene captioning for text-only models. |
+| [#493](https://github.com/CambrianTech/continuum/issues/493) | **DOM interaction command** | TODO | click/type/select — personas interact with UI elements. |
+| [#494](https://github.com/CambrianTech/continuum/issues/494) | **UI design training curriculum** | TODO | Academy teaches personas to see screenshots, find problems, fix code. |
+| [#495](https://github.com/CambrianTech/continuum/issues/495) | **HuggingFace naming + publishing** | TODO | `-cont` suffix, model cards, publishing pipeline. |
+| [#496](https://github.com/CambrianTech/continuum/issues/496) | **Integration test: persona redesigns widget** | TODO | THE proof — zero API keys, local model, full visual loop. |
+| [#497](https://github.com/CambrianTech/continuum/issues/497) | **Compaction + MoE paging combined** | TODO | Any model on any hardware: compact what fits, page the rest from HF. |
+
+**The dependency chain:**
+```
+#492 (compact model) → #417 (evaluate) → #495 (publish to HF)
+    → #374 (local teacher) → #377 (Academy fully local)
+    → #369 (local code quality) → #494 (UI design curriculum)
+    → #496 (THE PROOF: persona redesigns widget with zero API keys)
+
+#493 (DOM interaction) + #480 (vision) + #342 (feedback loop)
+    → #496 (the proof)
+
+#497 (compaction + paging) → #433 + #439 (MoE paging/surgery)
+    → ANY model on ANY hardware
+```
+
+**Done when**: A persona on a MacBook Air with zero API keys receives "make the chat input rounded," takes a screenshot, edits the CSS, rebuilds, takes another screenshot, and confirms the fix. All inference local. Model published to HuggingFace.
 
 ---
 
@@ -328,6 +364,8 @@ This document is the **single source of truth** for remaining work before open-s
 **Phase 9** gives personas deep codebase understanding. Know before you change.
 
 **Phase 10** distributes everything across a mesh of commodity hardware. The Cell architecture realized.
+
+**Phase 11** is THE unlock — plasticity compaction + MoE paging + vision + Academy training = personas that SEE and BUILD their own UI, on a MacBook, with zero API keys. Every download of a compacted model. Every upload of a trained adapter to HuggingFace. Every persona that designs a widget, trains a model, improves itself. The flywheel.
 
 ---
 
