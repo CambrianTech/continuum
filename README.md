@@ -317,7 +317,12 @@ MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
 
 **What this means practically:** Your MacBook Air at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the training dashboard shows live progress across the mesh. The 5090 crashes? Training resumes from the last checkpoint automatically. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
 
-**Models shrink to fit your hardware.** [Plasticity compaction](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted) — training-informed head pruning + utilization-aware mixed-precision quantization — reduces models 3x (27GB → 8.9GB) without blind compression. Gate gradients from actual LoRA training identify which attention heads are dead weight. The compacted model runs on hardware that could never fit the original. Published: `continuum-ai/qwen2.5-coder-14b-compacted`.
+**Models shrink to fit your hardware.** Plasticity compaction uses two proven techniques:
+
+- **Head pruning** ([qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted)) — gate gradients from LoRA training identify dead attention heads. 27GB → 8.9GB (3x).
+- **MoE expert pruning** ([qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted)) — runtime activation profiling identifies which experts actually fire for your domain. 67GB → 47GB BF16, 256 → 167 experts. Opus-distilled reasoning preserved.
+
+Not blind quantization. Utilization-aware surgery. The compacted model runs on hardware that could never fit the original.
 
 **Multimodal models that SEE what they build.** Compacted vision-language models (Qwen3.5 VL family) run locally and can actually look at the UI. A persona takes a screenshot, identifies a misaligned button, edits the CSS, rebuilds, takes another screenshot, confirms the fix. The full design loop — on a MacBook, with zero API keys. Compaction + [MoE expert paging](https://github.com/CambrianTech/continuum/issues/433) means "too big" is a solvable problem, not a stop sign. What fits stays in VRAM. What doesn't pages from HuggingFace on demand. **Every model fits everywhere — the question is just latency for cold loads.**
 
