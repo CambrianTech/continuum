@@ -359,8 +359,9 @@ async function seedViaJTAG() {
     const { usersByUniqueId, missingUniqueIds } = await loadAllUsers(activePersonas);
 
     if (missingUniqueIds.length === 0) {
-      console.log('⚡ All required users exist - no seeding needed');
-      return;
+      // Users exist, but rooms may be missing (e.g. DB was partially cleared).
+      // Fall through to room check instead of returning early.
+      console.log('⚡ All required users exist — checking rooms...');
     }
 
     // Get system identity
@@ -427,7 +428,10 @@ async function seedViaJTAG() {
     }
 
     // Step 3: Create missing personas (must be sequential — each triggers auto-join)
-    console.log(`📝 Creating ${missingUniqueIds.length - (missingUniqueIds.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) ? 0 : 1)} remaining users...`);
+    const missingPersonaCount = missingUniqueIds.filter(id => id !== DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN).length;
+    if (missingPersonaCount > 0) {
+      console.log(`📝 Creating ${missingPersonaCount} remaining users...`);
+    }
 
     for (const persona of activePersonas) {
       if (!missingUniqueIds.includes(persona.uniqueId)) continue;

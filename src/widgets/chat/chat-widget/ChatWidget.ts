@@ -1098,35 +1098,33 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Optimized: Uses data/list with id filter instead of N individual reads
    */
   private async loadRoomMembers(): Promise<void> {
-    console.log(`🔍 ChatWidget.loadRoomMembers: currentRoom=${!!this.currentRoom}, memberCount=${this.currentRoom?.members?.length ?? 0}`);
     if (!this.currentRoom || this.currentRoom.members.length === 0) return;
 
     this.roomMembers.clear();
 
-    // Batch load all members in ONE query (was N+1 queries before)
     const memberIds = this.currentRoom.members.map(m => m.userId);
-    console.log(`🔍 ChatWidget.loadRoomMembers: Loading ${memberIds.length} members:`, memberIds.slice(0, 3));
+    const memberIdSet = new Set(memberIds);
 
     try {
-      // Uses MongoDB-style $in operator for batch ID lookup
-      // Must use server backend - localStorage doesn't support $in operator
+      // Load all users and filter to room members client-side.
+      // The $in operator has a UUID coercion bug in the Postgres ORM (#488),
+      // so we use a broader query + client filter instead.
       const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
-        filter: { id: { $in: memberIds } },
-        limit: memberIds.length,
+        limit: 100,
         backend: 'server',
         dbHandle: 'default'
       });
 
-      console.log(`🔍 ChatWidget.loadRoomMembers: Result success=${result?.success}, itemCount=${result?.items?.length ?? 0}`);
       if (result?.success && result.items) {
         for (const user of result.items) {
-          this.roomMembers.set(user.id as UUID, user);
+          if (memberIdSet.has(user.id as UUID)) {
+            this.roomMembers.set(user.id as UUID, user);
+          }
         }
-        console.log(`✅ ChatWidget.loadRoomMembers: Loaded ${this.roomMembers.size} members`);
       }
     } catch (error) {
-      console.warn(`⚠️ ChatWidget: Failed to batch load members:`, error);
+      console.warn(`⚠️ ChatWidget: Failed to load members:`, error);
     }
   }
 
