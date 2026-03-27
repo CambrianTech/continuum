@@ -268,7 +268,25 @@ The critical insight transferred from sentinel-ai to production compaction: **ut
 
 4. **Training steps at aggressive pruning**: At 40% pruning on gpt2-large, the 500-step retraining budget was insufficient for full recovery (−8.1%). The recovery curve was still trending positive at step 500, suggesting a longer training budget would close the gap.
 
-### 5.2 Future Directions
+### 5.2 Self-Directed Plasticity (Next Phase)
+
+The current system requires human-specified hyperparameters: pruning ratio, strategy choice, training budget, number of cycles. Biological plasticity has no such external controls — the brain determines its own pruning and growth rates from internal signals. The next phase eliminates human specification entirely.
+
+**The self-directed plasticity controller** observes the model's own state and decides:
+
+| Decision | Current (Human-Specified) | Self-Directed (Automated) |
+|----------|--------------------------|--------------------------|
+| How much to prune | Fixed ratio (e.g. 30%) | Derived from redundancy: if many heads have near-identical entropy, there's more room to prune |
+| Which strategy | Fixed choice (entropy) | Selected per-cycle based on which strategy recovered best in previous cycles |
+| When to stop retraining | Fixed step count (500) | Loss plateau detection: stop when eval loss stops improving |
+| Where to grow | Gradient sensitivity | Same, but triggered automatically when quality gap exceeds threshold |
+| When to cycle again | Fixed cycle count (3) | Continuously: cycle whenever utilization metrics indicate redundancy has re-emerged |
+
+**Implementation approach**: The controller is a lightweight policy network (or rule-based system) that takes as input the model's current state vector — per-layer entropy distribution, gate value histogram, recent loss trajectory, VRAM utilization — and outputs the next plasticity action. Training signal comes from the experiments in Section 3: entropy outperforms random at 30%, 2000 steps recovers better than 500 at 40% pruning, etc.
+
+**Biological parallel**: The hypothalamic-pituitary axis doesn't wait for external commands to regulate hormones — it monitors internal state and adjusts continuously. Self-directed plasticity brings the same autonomy to transformer architecture optimization.
+
+### 5.3 Further Directions
 
 **Continuous architecture evolution**: Rather than discrete cycles, the model continuously monitors its own utilization and makes incremental architectural adjustments — closer to biological neuroplasticity which operates continuously, not in phases.
 
