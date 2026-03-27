@@ -508,15 +508,20 @@ install_tailscale() {
       else
         sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
       fi
-      sleep 5
 
-      # Verify daemon started
+      # Wait for daemon with timeout
+      local waited=0
+      while ! pgrep -x tailscaled &>/dev/null && [ $waited -lt 15 ]; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+
       if ! pgrep -x tailscaled &>/dev/null; then
-        echo -e "  ${RED}❌ Failed to start tailscaled daemon${NC}"
+        echo -e "  ${RED}❌ tailscaled failed to start after ${waited}s${NC}"
         echo -e "  ${YELLOW}Try manually: sudo tailscaled &${NC}"
         return
       fi
-      echo -e "  ${GREEN}✅ tailscaled daemon running${NC}"
+      echo -e "  ${GREEN}✅ tailscaled running (took ${waited}s)${NC}"
     fi
 
     # Check if already authenticated
