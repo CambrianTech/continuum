@@ -508,7 +508,7 @@ install_tailscale() {
       else
         sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
       fi
-      sleep 2
+      sleep 5
 
       # Verify daemon started
       if ! pgrep -x tailscaled &>/dev/null; then
