@@ -24,10 +24,12 @@ interface RecipeFile {
     name: string;
     displayName?: string;
     description?: string;
+    entityType?: 'room' | 'user' | 'activity' | null;
     layout?: {
         main?: string[];
         right?: any;
     };
+    inputs?: Record<string, any>;
     tags?: string[];
 }
 
@@ -73,13 +75,16 @@ function main() {
         const displayName = r.displayName || r.name || r.uniqueId;
         const icon = ICON_MAP[r.uniqueId] || '📄';
         const hasRightPanel = r.layout?.right !== null && r.layout?.right !== undefined;
+        const entityType = r.entityType || null;
+        const requiresEntity = entityType !== null || !!r.inputs;
 
         return `    '${r.uniqueId}': {
         widget: '${widget}',
         displayName: '${displayName}',
         icon: '${icon}',
         pathPrefix: '/${r.uniqueId}',
-        requiresEntity: ${r.uniqueId === 'chat' || r.uniqueId === 'live' || r.uniqueId === 'persona' || r.uniqueId === 'dm'},
+        requiresEntity: ${requiresEntity},
+        entityType: ${entityType ? `'${entityType}'` : 'null'},
         hasRightPanel: ${hasRightPanel},
     }`;
     }).join(',\n');
@@ -110,12 +115,15 @@ ${typeIds.map(id => `    '${id}'`).join(',\n')},
 /**
  * Content type configuration — generated from recipe metadata.
  */
+export type EntityType = 'room' | 'user' | 'activity' | null;
+
 export interface ContentTypeConfig {
     widget: string;
     displayName: string;
     icon: string;
     pathPrefix: string;
     requiresEntity: boolean;
+    entityType: EntityType;
     hasRightPanel: boolean;
 }
 

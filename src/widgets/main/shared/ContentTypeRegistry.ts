@@ -61,12 +61,14 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
         const widget = recipeService.getWidget(contentType);
         const rightPanel = recipeService.getRightPanel(contentType);
         if (widget) {
+            const generated = CONTENT_TYPE_CONFIGS[contentType as ContentType];
             return {
                 widget,
                 displayName: recipeService.getDisplayName(contentType) || contentType,
-                icon: CONTENT_TYPE_CONFIGS[contentType as ContentType]?.icon || '📄',
+                icon: generated?.icon || '📄',
                 pathPrefix: `/${contentType}`,
-                requiresEntity: CONTENT_TYPE_CONFIGS[contentType as ContentType]?.requiresEntity || false,
+                requiresEntity: generated?.requiresEntity || false,
+                entityType: generated?.entityType || null,
                 hasRightPanel: rightPanel !== null && rightPanel !== undefined,
             };
         }

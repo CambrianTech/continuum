@@ -31,14 +31,21 @@ import { ContentLifecycle } from './ContentLifecycle';
 import { ContentOpen } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { StateContentSwitch } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import { StateContentClose } from '../../commands/state/content/close/shared/StateContentCloseTypes';
-// Map content types to their associated entity collections
-const CONTENT_TYPE_COLLECTIONS: Record<string, string> = {
-  chat: 'chat_messages',
-  settings: 'settings',
-  persona: 'users',
-  profile: 'users',
-  canvas: 'activities',
+// Entity type → collection mapping (not content type → collection)
+// Content types declare their entityType in the recipe; this maps entity types to collections
+const ENTITY_TYPE_COLLECTIONS: Record<string, string> = {
+  room: 'rooms',
+  user: 'users',
+  activity: 'activities',
 };
+
+import { CONTENT_TYPE_CONFIGS } from '../../shared/generated/ContentTypes';
+
+function getCollectionForContentType(contentType: string): string | undefined {
+  const config = CONTENT_TYPE_CONFIGS[contentType as keyof typeof CONTENT_TYPE_CONFIGS];
+  if (!config?.entityType) return undefined;
+  return ENTITY_TYPE_COLLECTIONS[config.entityType];
+}
 
 export interface OpenContentOptions {
   title?: string;
@@ -304,7 +311,7 @@ class ContentServiceImpl {
    * This enables real-time updates without explicit subscription in widgets
    */
   private ensureCacheSubscription(contentType: string): void {
-    const collection = CONTENT_TYPE_COLLECTIONS[contentType];
+    const collection = getCollectionForContentType(contentType);
     if (collection) {
       entityCache.ensureEventSubscription(collection);
     }
@@ -314,7 +321,7 @@ class ContentServiceImpl {
    * Get the entity collection associated with a content type
    */
   getCollectionForContentType(contentType: string): string | undefined {
-    return CONTENT_TYPE_COLLECTIONS[contentType];
+    return getCollectionForContentType(contentType);
   }
 }
 

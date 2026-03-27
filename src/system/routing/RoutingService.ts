@@ -307,16 +307,17 @@ class RoutingServiceImpl {
    * Resolve any identifier based on content type
    */
   async resolve(contentType: string, identifier: string): Promise<ResolvedEntity | null> {
-    switch (contentType) {
-      case 'chat':
-      case 'live': // Live calls are room-scoped — resolve room name for tab title
+    // Entity resolution driven by recipe entityType — no switch on content type names
+    const { CONTENT_TYPE_CONFIGS } = await import('../../shared/generated/ContentTypes');
+    const config = CONTENT_TYPE_CONFIGS[contentType as keyof typeof CONTENT_TYPE_CONFIGS];
+    if (!config?.entityType) return null;
+
+    switch (config.entityType) {
+      case 'room':
         return this.resolveRoom(identifier);
-      case 'profile':
-      case 'persona':
-      case 'genome-profile':
+      case 'user':
         return this.resolveUser(identifier);
       default:
-        // Unknown content type — return null, let ContentService derive title from contentType
         return null;
     }
   }

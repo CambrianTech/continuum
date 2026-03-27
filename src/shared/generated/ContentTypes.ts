@@ -5,7 +5,7 @@
  * Regenerate: npx tsx generator/generate-content-types.ts
  *
  * 27 content types from 27 recipe files
- * Generated: 2026-03-27T17:53:41.911Z
+ * Generated: 2026-03-27T18:18:25.821Z
  */
 
 /**
@@ -50,12 +50,15 @@ export const CONTENT_TYPES: ContentType[] = [
 /**
  * Content type configuration — generated from recipe metadata.
  */
+export type EntityType = 'room' | 'user' | 'activity' | null;
+
 export interface ContentTypeConfig {
     widget: string;
     displayName: string;
     icon: string;
     pathPrefix: string;
     requiresEntity: boolean;
+    entityType: EntityType;
     hasRightPanel: boolean;
 }
 
@@ -66,6 +69,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/academy-training',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'ai-debate-club': {
@@ -74,6 +78,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/ai-debate-club',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'browser': {
@@ -82,6 +87,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🌐',
         pathPrefix: '/browser',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'canvas': {
@@ -90,6 +96,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🎯',
         pathPrefix: '/canvas',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'chat': {
@@ -98,6 +105,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '💬',
         pathPrefix: '/chat',
         requiresEntity: true,
+        entityType: 'room',
         hasRightPanel: false,
     },
     'coding': {
@@ -106,6 +114,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/coding',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'creative-writing': {
@@ -114,6 +123,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/creative-writing',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'diagnostics-log': {
@@ -121,7 +131,8 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         displayName: 'Log',
         icon: '📋',
         pathPrefix: '/diagnostics-log',
-        requiresEntity: false,
+        requiresEntity: true,
+        entityType: null,
         hasRightPanel: true,
     },
     'diagnostics': {
@@ -130,6 +141,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🔍',
         pathPrefix: '/diagnostics',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'dm': {
@@ -137,7 +149,8 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         displayName: 'DM',
         icon: '✉️',
         pathPrefix: '/dm',
-        requiresEntity: true,
+        requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'gan': {
@@ -146,6 +159,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/gan',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'general-chat': {
@@ -154,6 +168,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/general-chat',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'grid-overview': {
@@ -162,6 +177,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🖥️',
         pathPrefix: '/grid-overview',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'help': {
@@ -170,6 +186,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '❓',
         pathPrefix: '/help',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'inference-sample': {
@@ -178,6 +195,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🔬',
         pathPrefix: '/inference-sample',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'live': {
@@ -186,6 +204,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📹',
         pathPrefix: '/live',
         requiresEntity: true,
+        entityType: 'room',
         hasRightPanel: false,
     },
     'logs': {
@@ -194,6 +213,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/logs',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'multi-persona-chat': {
@@ -202,6 +222,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/multi-persona-chat',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'newsroom': {
@@ -210,6 +231,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/newsroom',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'outreach': {
@@ -218,6 +240,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/outreach',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'persona': {
@@ -226,6 +249,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🤖',
         pathPrefix: '/persona',
         requiresEntity: true,
+        entityType: 'user',
         hasRightPanel: true,
     },
     'profile': {
@@ -233,7 +257,8 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         displayName: 'Profile',
         icon: '👤',
         pathPrefix: '/profile',
-        requiresEntity: false,
+        requiresEntity: true,
+        entityType: 'user',
         hasRightPanel: true,
     },
     'research': {
@@ -242,6 +267,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '📄',
         pathPrefix: '/research',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'settings': {
@@ -250,6 +276,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '⚙️',
         pathPrefix: '/settings',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'terminal': {
@@ -258,6 +285,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '💻',
         pathPrefix: '/terminal',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
     'theme': {
@@ -266,6 +294,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🎨',
         pathPrefix: '/theme',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: false,
     },
     'training-dashboard': {
@@ -274,6 +303,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         icon: '🧪',
         pathPrefix: '/training-dashboard',
         requiresEntity: false,
+        entityType: null,
         hasRightPanel: true,
     },
 };
