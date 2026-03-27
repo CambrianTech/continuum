@@ -31,6 +31,7 @@ import type {
 import { LocalContextBuilder } from './LocalContextBuilder';
 import { LocalModelRouter } from './LocalModelRouter';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { Events } from '@system/core/shared/Events';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { AiAgentResult } from '../../../commands/ai/agent/shared/AiAgentTypes';
@@ -121,7 +122,7 @@ export class LocalAgentProvider implements CodingAgentProvider {
     try {
       // Start agent — local providers return a handle immediately and run in background.
       // Cloud providers block until complete (fast enough for request/response).
-      const agentResponse = await Commands.execute('ai/agent', {
+      const agentResponse = await Commands.execute(COMMANDS.AI_AGENT, {
         prompt: config.prompt,
         systemPrompt,
         provider,

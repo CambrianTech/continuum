@@ -7,6 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevCodeReviewParams, DevCodeReviewResult } from '../shared/DevCodeReviewTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 
 export class DevCodeReviewServerCommand extends CommandBase<DevCodeReviewParams, DevCodeReviewResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -31,7 +32,7 @@ export class DevCodeReviewServerCommand extends CommandBase<DevCodeReviewParams,
     };
 
     try {
-      const result = await Commands.execute('sentinel/run', {
+      const result = await Commands.execute(COMMANDS.SENTINEL_RUN, {
         type: 'pipeline',
         template: 'dev/code-review',
         templateConfig,

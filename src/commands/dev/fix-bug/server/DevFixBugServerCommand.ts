@@ -7,6 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevFixBugParams, DevFixBugResult } from '../shared/DevFixBugTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixBugResult> {
@@ -45,7 +46,7 @@ export class DevFixBugServerCommand extends CommandBase<DevFixBugParams, DevFixB
     };
 
     try {
-      const result = await Commands.execute('sentinel/run', {
+      const result = await Commands.execute(COMMANDS.SENTINEL_RUN, {
         type: 'pipeline',
         template: 'dev/fix-bug',
         templateConfig,
