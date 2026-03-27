@@ -229,14 +229,40 @@ base_model: {base}
             sections.append(f"- **{test_name}**: {result}")
         sections.append("")
 
+    # Plasticity forging data (if this model was forged via experiential plasticity)
+    forging = manifest.get('forging', {})
+    if forging:
+        sections.append("## Experiential Plasticity\n")
+        sections.append("This model was **forged** — its attention architecture was optimized through")
+        sections.append("iterative pruning and retraining, producing a model that is both smaller and")
+        sections.append("more capable than the original.\n")
+        if forging.get('baseline_ppl') and forging.get('final_ppl'):
+            improvement = ((forging['baseline_ppl'] - forging['final_ppl']) / forging['baseline_ppl']) * 100
+            sections.append(f"- **Baseline perplexity:** {forging['baseline_ppl']:.2f}")
+            sections.append(f"- **After forging:** {forging['final_ppl']:.2f} ({improvement:+.1f}%)")
+        if forging.get('pruning_level'):
+            sections.append(f"- **Heads pruned:** {forging['pruning_level']:.0%}")
+        if forging.get('strategy'):
+            sections.append(f"- **Strategy:** {forging['strategy']}")
+        if forging.get('cycles'):
+            sections.append(f"- **Cycles:** {forging['cycles']}")
+        if forging.get('training_steps'):
+            sections.append(f"- **Training steps/cycle:** {forging['training_steps']}")
+        sections.append("")
+        sections.append("See: [Neural Plasticity in Transformers](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SENTINEL-AI-NEURAL-PLASTICITY.md)")
+        sections.append("and [sentinel-ai](https://github.com/CambrianTech/sentinel-ai) for reproduction.\n")
+
     # About
     sections.append("## Part of continuum\n")
     sections.append("[continuum](https://github.com/CambrianTech/continuum) is an open-source AI ecosystem")
     sections.append("where personas live, work, learn, and evolve on your hardware. Zero API keys required. AGPL-3.0.")
     sections.append("")
-    sections.append("Built on the research foundations of [Synthetic Citizens](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md).")
+    sections.append("**Research:**")
+    sections.append("- [Neural Plasticity in Transformers](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SENTINEL-AI-NEURAL-PLASTICITY.md) — experiential plasticity, self-directed architecture optimization")
+    sections.append("- [Plasticity Compaction](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) — MoE expert pruning (67GB → 14GB)")
+    sections.append("- [Synthetic Citizens](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as persistent evolving entities")
     sections.append("")
-    sections.append("[Plasticity Compaction Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) | [Get started →](https://github.com/CambrianTech/continuum)")
+    sections.append("[sentinel-ai](https://github.com/CambrianTech/sentinel-ai) | [continuum](https://github.com/CambrianTech/continuum) | [HuggingFace](https://huggingface.co/continuum-ai)")
 
     return '\n'.join(sections)
 
