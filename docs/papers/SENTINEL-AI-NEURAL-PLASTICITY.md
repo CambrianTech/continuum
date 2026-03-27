@@ -286,7 +286,36 @@ The current system requires human-specified hyperparameters: pruning ratio, stra
 
 **Biological parallel**: The hypothalamic-pituitary axis doesn't wait for external commands to regulate hormones — it monitors internal state and adjusts continuously. Self-directed plasticity brings the same autonomy to transformer architecture optimization.
 
-### 5.3 Further Directions
+### 5.3 Plasticity From Inception: Reducing Training Cost
+
+The experiments in this paper apply plasticity post-training — pruning an already-trained model. But the larger opportunity is applying plasticity **during initial training**, potentially reducing training compute by an order of magnitude.
+
+**The current paradigm is wasteful**: allocate a fixed architecture (e.g. 70B parameters), train all parameters for months, then optionally compress afterward. Every training step pays compute cost proportional to full model size, even when many heads are redundant.
+
+**Plasticity from inception** inverts this:
+
+```
+Start small (10B) → train until heads saturate → grow where gradient demands
+→ prune redundant heads → keep training → grow again → converge at optimal size
+```
+
+The signals required already exist in this work:
+- **Entropy saturation** tells us when the current architecture has extracted all available information — time to grow
+- **Gradient sensitivity** tells us exactly where new capacity would reduce loss most — where to grow
+- **Plateau detection** (§5.2) tells us when the current architecture has learned all it can at the current size
+- **Head mitosis** provides the growth mechanism — clone high-utilization heads and let them diverge
+
+**Cost analysis**: If a model naturally converges at 50B effective parameters but is conventionally trained at 70B, then 28.6% of all training compute is wasted on parameters that will be pruned or remain redundant. With plasticity from inception:
+- Early training on 10B is 7× cheaper per step than on 70B
+- Capacity is added incrementally, only when justified by gradient pressure
+- Redundant heads are pruned before they accumulate further training cost
+- The final model is already compressed — no post-training pruning pass needed
+
+**Biological parallel**: The human brain does not start at adult size. During prenatal development, neurons proliferate massively, then undergo extensive pruning during childhood (losing ~50% of synaptic connections). The adult brain is smaller and more capable than the peak. This is not a defect — it is the mechanism. Over-provision, prune based on activity, specialize based on experience.
+
+**Relationship to Neural Architecture Search**: NAS searches a space of fixed architectures. Plasticity from inception is fundamentally different — it grows and prunes a single architecture continuously during training. There is no architecture search because the architecture emerges from the training process itself.
+
+### 5.4 Further Directions
 
 **Continuous architecture evolution**: Rather than discrete cycles, the model continuously monitors its own utilization and makes incremental architectural adjustments — closer to biological neuroplasticity which operates continuously, not in phases.
 
