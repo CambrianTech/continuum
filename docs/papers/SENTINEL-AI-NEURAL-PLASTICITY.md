@@ -305,7 +305,24 @@ The signals required already exist in this work:
 - **Plateau detection** (§5.2) tells us when the current architecture has learned all it can at the current size
 - **Head mitosis** provides the growth mechanism — clone high-utilization heads and let them diverge
 
-**Cost analysis**: If a model naturally converges at 50B effective parameters but is conventionally trained at 70B, then 28.6% of all training compute is wasted on parameters that will be pruned or remain redundant. With plasticity from inception:
+**Cost analysis**: Traditional training applies a fixed cost of ~6N FLOPs per step across all T steps (total: 6NT). Plasticity from inception pays 6n(t) per step, where n(t) grows from n₀ to N_final only as needed.
+
+The savings depend on the growth curve. If growth were linear, savings would be modest (~2×). But empirically, most of a language model's useful knowledge is learned by a fraction of its parameters — basic grammar and common patterns don't require 70B parameters. A more realistic growth profile, where the model spends the majority of training at small scale and grows only when entropy saturation indicates the current architecture has learned all it can:
+
+| Training Phase | % of Steps | Model Size | Learning |
+|---------------|-----------|------------|----------|
+| Basics | 60% | n₀ (1/10th) | Grammar, common patterns, token relationships |
+| Structure | 25% | 3×n₀ | Syntax, reasoning chains, domain structure |
+| Nuance | 10% | 7×n₀ | Style, specialized knowledge, edge cases |
+| Refinement | 5% | N_final | Final quality polish |
+
+With n₀ = N/10 and N_final = 0.7N (pruning eliminates 30% redundancy), the total compute is approximately 0.24N×T — roughly **4× cheaper** than training at fixed size N for T steps. This estimate is conservative; it does not account for the compounding effect that smaller models also converge faster per-step due to reduced parameter interference.
+
+For attention layers specifically, cost scales with O(S²H) where H is the head count. Fewer heads in early phases yields quadratic savings on the attention-dominated portion of compute, though FFN layers scale linearly, making the overall improvement sub-quadratic.
+
+**These estimates are hypothetical** — they have not been experimentally validated at scale. The growth profile percentages above are informed by the Pareto observation in our pruning experiments (30% of heads can be removed with no quality loss, suggesting significant redundancy in fully-provisioned architectures) but would need to be confirmed through actual inception-style training runs. The key experimental question is whether knowledge learned at small scale transfers cleanly when new capacity is added, or whether growth events cause catastrophic interference with existing representations.
+
+With plasticity from inception:
 - Early training on 10B is 7× cheaper per step than on 70B
 - Capacity is added incrementally, only when justified by gradient pressure
 - Redundant heads are pruned before they accumulate further training cost
