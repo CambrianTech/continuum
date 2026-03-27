@@ -51,4 +51,5 @@ export * from './system';
 export * from './voice';
 export type { AvatarState } from './AvatarState';
 export type { CallMessage } from './CallMessage';
+export type { ContentType } from './ContentTypes';
 export type { VideoPixelFormat } from './VideoPixelFormat';

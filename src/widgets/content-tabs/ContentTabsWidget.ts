@@ -37,25 +37,8 @@ export interface TabInfo {
   contentType?: string;
 }
 
-/** Icons for content type differentiation in tabs */
-const TYPE_ICONS: Partial<Record<ContentType, string>> = {
-  chat: '\u{1F4AC}',            // 💬 speech bubble
-  live: '\u{1F3A5}',            // 🎥 camera
-  persona: '\u{1F9E0}',         // 🧠 brain
-  settings: '\u{2699}\uFE0F',   // ⚙️ gear
-  theme: '\u{1F3A8}',           // 🎨 palette
-  'user-profile': '\u{1F464}',  // 👤 bust
-  profile: '\u{1F464}',         // 👤 bust
-  diagnostics: '\u{1F50D}',     // 🔍 magnifier
-  'diagnostics-log': '\u{1F4CB}', // 📋 clipboard
-  canvas: '\u{1F5BC}\uFE0F',    // 🖼️ framed picture
-  document: '\u{1F4C4}',        // 📄 page
-  help: '\u{2753}',             // ❓ question mark
-  browser: '\u{1F310}',         // 🌐 globe
-  'data-explorer': '\u{1F5C4}\uFE0F', // 🗄️ file cabinet
-  'system-config': '\u{1F527}', // 🔧 wrench
-  'widget-debug': '\u{1F41B}',  // 🐛 bug
-};
+/** Icons from generated content type configs — no hardcoded map needed */
+import { getContentTypeIcon } from '../../shared/generated/ContentTypes';
 
 export class ContentTabsWidget extends ReactiveWidget {
   static override styles = [
@@ -134,7 +117,7 @@ export class ContentTabsWidget extends ReactiveWidget {
     return html`
       <div class="content-tabs-container">
         ${this.tabs.map(tab => {
-          const typeIcon = tab.contentType ? TYPE_ICONS[tab.contentType as ContentType] : undefined;
+          const typeIcon = tab.contentType ? getContentTypeIcon(tab.contentType) : undefined;
           const callState = tab.contentType === 'live' && tab.entityId
             ? this._liveCalls.get(tab.entityId)
             : undefined;
