@@ -19,7 +19,7 @@ if command -v tailscale &>/dev/null; then
     # Start daemon if not running
     if ! pgrep -x tailscaled &>/dev/null; then
         tailscaled --state=/var/lib/tailscale/tailscaled.state &
-        sleep 3
+        sleep 5
     fi
     tailscale up --ssh --accept-routes 2>>"$LOG"
     TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "unknown")
