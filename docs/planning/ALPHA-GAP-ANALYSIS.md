@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-27
-**Status**: **BUILD PHASE.** Session identity is the #1 blocker — all-zeros UUIDs mean no auth, no isolation, no grid. Content type hardcoding eliminated (PR #567 — generated from recipes). Sentinel-ai forge pipeline v3 committed with memory-tiered architecture for Qwen3.5 (4B/9B/27B). Three Qwen2.5 models published to HF with weights. 5090 tower down from OOM (needs WSL reboot). 14 sentinel-ai issues filed (#80-93), continuum issues #564-568 filed.
+**Updated**: 2026-03-27 (evening)
+**Status**: **FORGING QWEN3.5.** First Qwen3.5 model forged and published: `continuum-ai/qwen3.5-4b-code-forged` — baseline 3.04 → forged 2.31 perplexity (+24% improvement on code). Trained on CodeFeedback (156K code Q&A pairs) with LoRA + AMP mixed precision on RTX 5090. Memory-tiered pipeline (A/B/C) working. 27B forge next. Content type hardcoding eliminated (PR #567). Session identity (#568) is the grid blocker. 16 sentinel-ai issues (#80-96), continuum issues #564-571 filed.
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.

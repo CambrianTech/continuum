@@ -9,7 +9,7 @@
 
 ## Abstract
 
-We demonstrate that iterative entropy-based pruning with retraining produces transformers that are both smaller and more capable than the originals. The improvement scales with model size: Qwen2.5-7B achieves +11.8% perplexity improvement after removing 30% of its attention heads. Across a family of models from 0.5B to 7.6B parameters and two attention architectures (Multi-Head and Grouped Query Attention), we establish a scaling law for architectural plasticity — larger models harbor more redundancy and benefit more from pruning-driven specialization.
+We demonstrate that iterative entropy-based pruning with retraining produces transformers that are both smaller and more capable than the originals. The improvement scales with model size and is amplified by domain-specific training: Qwen3.5-4B achieves **+24% perplexity improvement** on code when forged with CodeFeedback data, exceeding the Qwen2.5-7B improvement (+14.6%) on generic text. Across two model families (Qwen2.5 0.5B–7B, Qwen3.5 4B), two attention architectures (MHA, GQA), and both generic and domain-specific training, we establish a scaling law for architectural plasticity.
 
 We discover that recovery from iterative pruning follows a measurable transfer function (1.45·exp(−0.18·cycle) − 0.03), connecting transformer architecture optimization to classical control theory for the first time. This enables a self-directed controller that eliminates human-specified hyperparameters entirely, deciding pruning ratio, strategy, training budget, and stopping criteria from model state observation alone.
 
@@ -84,9 +84,25 @@ On gpt2-medium (355M), three pruning strategies at 30%:
 
 Combined strategy consistently outperforms pure entropy, confirming that both information content (entropy) and functional importance (gradient) contribute to identifying truly expendable heads.
 
-### 3.3 Cross-Architecture Validation
+### 3.3 Qwen3.5 Family: Domain-Specific Forging
 
-The plasticity cycle produces identical behavior on GPT-2's Multi-Head Attention and Qwen2.5's Grouped Query Attention — see [Neural Plasticity paper](SENTINEL-AI-NEURAL-PLASTICITY.md) §3.1 for detailed results.
+With the v3 forge pipeline (LoRA + AMP mixed precision + memory-tiered architecture), we extend experiential plasticity to the latest Qwen3.5 family using **domain-specific training data** instead of generic wikitext.
+
+| Model | Params | Domain | Training Data | Baseline PPL | Final PPL | Improvement | Device |
+|-------|--------|--------|--------------|-------------|-----------|-------------|--------|
+| **Qwen3.5-4B** | 3.4B | Code | CodeFeedback (156K) | 3.04 | **2.31** | **+24.0%** | RTX 5090 |
+| Qwen3.5-9B | 8.2B | Code | — | — | — | — | queued |
+| Qwen3.5-27B | 23.6B | Code | — | — | — | — | queued |
+
+**Key advance over Qwen2.5 results**: the Qwen3.5-4B improvement (+24%) exceeds the Qwen2.5-7B improvement (+14.6%) despite being a smaller model. This is because domain-specific training data (CodeFeedback: real coding Q&A) is dramatically more effective than generic text (wikitext) at driving head specialization. The heads that survive pruning are the ones that matter for **code**, not for Wikipedia — producing a model that is architecturally optimized for its target domain.
+
+**Training configuration**: LoRA (r=16, α=32) with AMP GradScaler for fp16 stability, gradient checkpointing, 3 cycles × 1000 steps, train-then-prune ordering.
+
+**Published model**: [continuum-ai/qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged)
+
+### 3.4 Cross-Architecture Validation
+
+The plasticity cycle produces identical behavior on GPT-2's Multi-Head Attention and Qwen2.5's Grouped Query Attention — see [Neural Plasticity paper](SENTINEL-AI-NEURAL-PLASTICITY.md) §3.1 for detailed results. The Qwen3.5 results (§3.3) extend this to the latest generation with nested VLM config architecture.
 
 ---
 
