@@ -497,18 +497,29 @@ install_tailscale() {
   # Linux/WSL: ensure daemon is running
   if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
     if ! pgrep -x tailscaled &>/dev/null; then
-      # Prefer system service manager; fall back to direct spawn only if needed
-      if command -v systemctl &>/dev/null; then
-        sudo systemctl start tailscaled 2>/dev/null || true
+      echo -e "  ${YELLOW}Starting tailscaled daemon...${NC}"
+      # WSL2 doesn't have systemd — always try direct spawn first
+      if [ "$PLATFORM" = "wsl" ]; then
+        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
+      elif command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null; then
+        sudo systemctl start tailscaled 2>/dev/null
       elif command -v service &>/dev/null; then
-        sudo service tailscaled start 2>/dev/null || true
+        sudo service tailscaled start 2>/dev/null
       else
-        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
+        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
       fi
-      sleep 1
+      sleep 2
+
+      # Verify daemon started
+      if ! pgrep -x tailscaled &>/dev/null; then
+        echo -e "  ${RED}❌ Failed to start tailscaled daemon${NC}"
+        echo -e "  ${YELLOW}Try manually: sudo tailscaled &${NC}"
+        return
+      fi
+      echo -e "  ${GREEN}✅ tailscaled daemon running${NC}"
     fi
 
-    # Check if already authenticated (has a stored key from previous tailscale up)
+    # Check if already authenticated
     local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"' 2>/dev/null || echo "NoState")
     if [ "$ts_status" = "Running" ]; then
       local ts_ip=$(tailscale ip -4 2>/dev/null || echo "connected")
@@ -516,16 +527,16 @@ install_tailscale() {
       return
     fi
 
-    # First time only: need interactive auth. NEVER block npm start.
+    # Need auth — start tailscale up (shows URL interactively)
     if [ -t 0 ]; then
-      # Interactive terminal — auth now (one-time)
-      echo -e "  ${YELLOW}First-time Tailscale auth — click the URL below:${NC}"
-      sudo tailscale up 2>&1
+      echo -e "  ${YELLOW}Authenticating Tailscale...${NC}"
+      sudo tailscale up --ssh 2>&1
       local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
-      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+      if [ "$ts_ip" != "pending" ]; then
+        echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+      fi
     else
-      # Non-interactive (npm start, CI, etc.) — skip auth, don't block
-      echo -e "  ${YELLOW}⚠️ Tailscale installed but needs auth. Run once: sudo tailscale up${NC}"
+      echo -e "  ${YELLOW}⚠️ Tailscale needs auth. Run: sudo tailscale up --ssh${NC}"
     fi
   fi
 }
