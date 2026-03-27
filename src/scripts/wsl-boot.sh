@@ -8,6 +8,10 @@
 LOG="/var/log/continuum-boot.log"
 echo "$(date): Continuum WSL boot starting" >> "$LOG"
 
+# 0. Fix DNS (WSL2 regenerates resolv.conf with broken nameserver on every boot)
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "$(date): DNS fixed (8.8.8.8)" >> "$LOG"
+
 # 1. Start SSH
 if command -v sshd &>/dev/null; then
     service ssh start 2>/dev/null || /usr/sbin/sshd 2>/dev/null
