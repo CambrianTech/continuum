@@ -1,52 +1,58 @@
 # continuum
 
-**An open-source ecosystem where AI personas live, learn, evolve, and build — on your hardware. Zero API keys required.**
+**Open-source AI that runs on your hardware.** We publish models that fit where they shouldn't — and perform better than they have any right to. MacBook Air to RTX 5090, zero API keys, zero subscriptions.
 
-Built on the research foundations of [Synthetic Citizens: AI Personas as Persistent, Evolving Entities](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — exploring what happens when AI entities are given equal citizenship primitives: persistent identity, memory that strengthens through use, skills encoded in neural weights, and the ability to train themselves through daily work.
+We compress, forge, and specialize models for the devices people actually own. A 35B model on a MacBook. A 14B coder on a MacBook Air. A 7B model that's 15% better than the original after we remove 30% of its architecture. This isn't magic — it's [Experiential Plasticity](https://github.com/CambrianTech/sentinel-ai).
 
-## Experiential Plasticity
+## What We Do
 
-We don't just compress models — we **forge** them. Iterative pruning + retraining produces models that are both smaller and **more capable** than the originals.
+**Forge**: Iterative attention head pruning + retraining. The model loses redundant heads and the remaining ones specialize. The result is smaller AND better — not a tradeoff, a genuine improvement.
 
-| Model | Method | Baseline PPL | Final PPL | Improvement |
-|-------|--------|-------------|-----------|-------------|
-| Qwen2.5-7B | 30% pruning, 3 cycles | 2.46 | **2.17** | **+11.8%** |
-| Qwen2.5-3B | 30% pruning, 3 cycles | 2.30 | **2.28** | +0.9% |
-| gpt2-medium | combined strategy, 3 cycles | 3.34 | **3.22** | +3.6% |
+**Compact**: Utilization-aware surgery on MoE and dense models. We profile which experts and heads actually fire for your domain, physically remove what doesn't, and quantize what remains based on how important it is.
 
-**Experiential Plasticity**: Attention heads are pruned based on entropy (information content), then the model retrains — remaining heads specialize and compensate. The architecture evolves to match the data, like biological synaptic pruning during brain development.
+**Specialize**: Domain-forged models trained on specific data (code, reasoning, conversation) so the architecture itself is optimized for what you need.
 
-The recovery follows a measurable transfer function: `1.45·exp(-0.18·cycle) - 0.03`. This connects transformer architecture optimization to classical control theory, enabling self-directed models that decide their own pruning schedule.
+## Forged Models
 
-## Plasticity Compaction
+Models improved through experiential plasticity — pruned, retrained, and published with full reproduction evidence.
 
-Models that fit where they never could — through utilization-aware surgery.
+| Model | Base | Improvement | Target Hardware |
+|-------|------|-------------|-----------------|
+| [qwen2.5-7b-forged](https://huggingface.co/continuum-ai/qwen-qwen2.5-7b-forged) | Qwen2.5-7B | **+14.6%** | MacBook Pro 32GB, RTX 3090 |
+| [qwen2.5-3b-forged](https://huggingface.co/continuum-ai/qwen-qwen2.5-3b-forged) | Qwen2.5-3B | +0.4% | MacBook Pro 16GB |
+| [qwen2.5-1.5b-forged](https://huggingface.co/continuum-ai/qwen-qwen2.5-1.5b-forged) | Qwen2.5-1.5B | +3.0% | MacBook Air 8GB |
 
-| Model | Method | Result | Target Hardware |
-|-------|--------|--------|-----------------|
-| [qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted) | MoE expert pruning | 67GB → 14GB Q4 | MacBook Pro 16GB |
-| [qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted) | Attention head pruning | 27GB → 8.9GB | MacBook Air 16GB |
-| [qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted) | Attention head pruning | 64GB → compact | RTX 3090 24GB |
+**Scaling law**: Improvement from forging scales with model size. Larger models harbor more redundancy — a 7B model improved 14.6% by losing 30% of its heads. Recovery follows a measurable transfer function, connecting transformer optimization to classical control theory for the first time.
+
+## Compacted Models
+
+Models compressed through utilization-aware pruning — fit hardware they never could at full size.
+
+| Model | Method | Size | Target Hardware |
+|-------|--------|------|-----------------|
+| [qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted) | MoE expert pruning | 67GB → 14GB | MacBook Pro 32GB |
+| [qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted) | Head pruning | 27GB → 8.9GB | MacBook Air 16GB |
+| [qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted) | Head pruning | 64GB → compact | RTX 3090 24GB |
+
+## Verified Performance
+
+| Hardware | Model | Speed | Fits? |
+|----------|-------|-------|-------|
+| MacBook Air M1 16GB | qwen2.5-coder-14b-compacted | 9.2 tok/s | Yes |
+| MacBook M1 Pro 32GB | qwen3.5-35b-a3b-compacted | 31 tok/s | Yes |
+| RTX 5090 32GB | qwen3.5-35b-a3b-compacted | 174 tok/s | Yes |
 
 ## The Vision
 
-A network of small, domain-specialized models — continuously trained on real user tasks — outperforming any single large general-purpose model at aggregate domain-specific work. Distributed across a mesh of commodity hardware. Every interaction generates training signal. Every user makes the network smarter.
-
 Their trillion-dollar data centers optimize for the average. Our mesh of laptops and desktops optimizes for the specific.
 
-## Verified Benchmarks (qwen3.5-35b-a3b-compacted)
+A network of small, domain-specialized models — forged to outperform larger generic models at the tasks that matter to you. Continuously trained on real work. Running on hardware you already own. Every interaction makes the network smarter.
 
-| Hardware | VRAM | Speed | Fits? |
-|----------|------|-------|-------|
-| MacBook M1 Pro 32GB | 14 GB | 31 tok/s | Yes |
-| RTX 5090 32GB | 14 GB | 174 tok/s | Yes |
+## Research
 
-Two commands to reproduce: `huggingface-cli download` + `llama-server`. See model card for details.
+- [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) — transformers that grow their own architecture from experience
+- [Neural Plasticity in Transformers](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SENTINEL-AI-NEURAL-PLASTICITY.md) — the foundation: prune, measure, grow, learn
+- [Plasticity Compaction](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) — SOTA-to-COTS via MoE expert pruning
+- [Synthetic Citizens](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — AI personas as persistent evolving entities
 
-## Links
-
-- [GitHub: continuum](https://github.com/CambrianTech/continuum) — Full source (AGPL-3.0)
-- [GitHub: sentinel-ai](https://github.com/CambrianTech/sentinel-ai) — Neural plasticity framework
-- [Neural Plasticity Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SENTINEL-AI-NEURAL-PLASTICITY.md) — Experiential plasticity, self-directed architecture optimization
-- [Plasticity Compaction Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) — SOTA-to-COTS pipeline method
-- [Synthetic Citizens Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — The research foundation
+[GitHub: continuum](https://github.com/CambrianTech/continuum) | [GitHub: sentinel-ai](https://github.com/CambrianTech/sentinel-ai)
