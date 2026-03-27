@@ -4,19 +4,29 @@
 
 Built on the research foundations of [Synthetic Citizens: AI Personas as Persistent, Evolving Entities](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — exploring what happens when AI entities are given equal citizenship primitives: persistent identity, memory that strengthens through use, skills encoded in neural weights, and the ability to train themselves through daily work.
 
+## Experiential Plasticity
+
+We don't just compress models — we **forge** them. Iterative pruning + retraining produces models that are both smaller and **more capable** than the originals.
+
+| Model | Method | Baseline PPL | Final PPL | Improvement |
+|-------|--------|-------------|-----------|-------------|
+| Qwen2.5-7B | 30% pruning, 3 cycles | 2.46 | **2.17** | **+11.8%** |
+| Qwen2.5-3B | 30% pruning, 3 cycles | 2.30 | **2.28** | +0.9% |
+| gpt2-medium | combined strategy, 3 cycles | 3.34 | **3.22** | +3.6% |
+
+**Experiential Plasticity**: Attention heads are pruned based on entropy (information content), then the model retrains — remaining heads specialize and compensate. The architecture evolves to match the data, like biological synaptic pruning during brain development.
+
+The recovery follows a measurable transfer function: `1.45·exp(-0.18·cycle) - 0.03`. This connects transformer architecture optimization to classical control theory, enabling self-directed models that decide their own pruning schedule.
+
 ## Plasticity Compaction
 
-We publish models that fit where they never could — through utilization-aware surgery, not blind compression.
+Models that fit where they never could — through utilization-aware surgery.
 
 | Model | Method | Result | Target Hardware |
 |-------|--------|--------|-----------------|
 | [qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted) | MoE expert pruning | 67GB → 14GB Q4 | MacBook Pro 16GB |
 | [qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted) | Attention head pruning | 27GB → 8.9GB | MacBook Air 16GB |
 | [qwen2.5-coder-32b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-32b-compacted) | Attention head pruning | 64GB → compact | RTX 3090 24GB |
-
-**MoE Expert Pruning**: Runtime activation profiling across domain-representative prompts identifies which of 256 MoE experts actually fire. Inactive experts are physically removed from safetensors. 80% routing coverage retained, Opus-distilled chain-of-thought reasoning preserved.
-
-**Attention Head Pruning**: Gate gradients captured during LoRA fine-tuning reveal dead attention heads. Low-utilization heads are physically sliced. 3x compression with coherent output.
 
 ## The Vision
 
@@ -35,7 +45,8 @@ Two commands to reproduce: `huggingface-cli download` + `llama-server`. See mode
 
 ## Links
 
-- [GitHub](https://github.com/CambrianTech/continuum) — Full source (AGPL-3.0)
+- [GitHub: continuum](https://github.com/CambrianTech/continuum) — Full source (AGPL-3.0)
+- [GitHub: sentinel-ai](https://github.com/CambrianTech/sentinel-ai) — Neural plasticity framework
+- [Neural Plasticity Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SENTINEL-AI-NEURAL-PLASTICITY.md) — Experiential plasticity, self-directed architecture optimization
 - [Plasticity Compaction Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/PLASTICITY-COMPACTION-MOE.md) — SOTA-to-COTS pipeline method
 - [Synthetic Citizens Paper](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md) — The research foundation
-- [Distributed Intelligence Hypothesis](https://github.com/CambrianTech/continuum/blob/main/docs/papers/SYNTHETIC-CITIZENS.md#10-the-distributed-intelligence-hypothesis) — Why distributed beats centralized
