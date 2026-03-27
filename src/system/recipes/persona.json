@@ -4,6 +4,7 @@
   "displayName": "Persona",
   "description": "View and interact with AI persona cognitive state, memory, and activity",
   "version": 1,
+  "entityType": "user",
 
   "inputs": {
     "personaId": {

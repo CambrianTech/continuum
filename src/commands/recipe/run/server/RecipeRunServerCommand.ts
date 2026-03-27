@@ -16,6 +16,7 @@ import { RecipeLoader } from '../../../../system/recipes/server/RecipeLoader';
 import { RecipeAssembler } from '../../../../system/sentinel/RecipeAssembler';
 import { TemplateRegistry } from '../../../../system/sentinel/pipelines/TemplateRegistry';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 
 export class RecipeRunServerCommand extends CommandBase<RecipeRunParams, RecipeRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -110,7 +111,7 @@ export class RecipeRunServerCommand extends CommandBase<RecipeRunParams, RecipeR
 
     // 4. Dispatch to sentinel/run
     try {
-      const sentinelResult = await Commands.execute('sentinel/run', {
+      const sentinelResult = await Commands.execute(COMMANDS.SENTINEL_RUN, {
         type: 'pipeline' as const,
         template: templateName,
         templateConfig: config,

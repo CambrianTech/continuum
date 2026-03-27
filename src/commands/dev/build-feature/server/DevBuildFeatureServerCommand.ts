@@ -10,6 +10,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevBuildFeatureParams, DevBuildFeatureResult } from '../shared/DevBuildFeatureTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeatureParams, DevBuildFeatureResult> {
@@ -49,7 +50,7 @@ export class DevBuildFeatureServerCommand extends CommandBase<DevBuildFeaturePar
     };
 
     try {
-      const result = await Commands.execute('sentinel/run', {
+      const result = await Commands.execute(COMMANDS.SENTINEL_RUN, {
         type: 'pipeline',
         template: 'dev/build-feature',
         templateConfig,

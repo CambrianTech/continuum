@@ -4,6 +4,7 @@
   "displayName": "Profile",
   "description": "View and manage user profile — social page with pathway cards",
   "version": 2,
+  "entityType": "user",
 
   "inputs": {
     "userId": {

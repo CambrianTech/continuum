@@ -1,406 +1,154 @@
 /**
- * ContentTypeRegistry - Maps content types to widget components
+ * ContentTypeRegistry — Maps content types to widgets and layouts.
  *
- * This is the "React Router" of the main panel - determines which widget
- * renders based on the current tab's content type.
+ * Source of truth: Recipe JSON files (system/recipes/*.json)
+ * Generated types: shared/generated/ContentTypes.ts
  *
- * ARCHITECTURE: Recipe JSON files are THE source of truth for layouts.
- * This registry provides:
- * 1. Dynamic lookup from RecipeLayoutService (loaded from recipes)
- * 2. Fallback defaults for content types without recipes
- *
- * When adding a new content type:
- * 1. Create a recipe JSON file in system/recipes/{contentType}.json
- * 2. Define layout.widgets array with position/order (new format)
- * 3. The registry will automatically pick it up
- * 4. Only add to FALLBACK_REGISTRY if recipe doesn't exist yet
+ * NO FALLBACK REGISTRY. If a content type has no recipe, it fails visibly.
+ * Add a recipe JSON file, run the generator. That's it.
  */
 
 import { getRecipeLayoutService } from '../../../system/recipes/browser/RecipeLayoutService';
+import {
+    CONTENT_TYPE_CONFIGS,
+    isContentType,
+    type ContentType,
+    type ContentTypeConfig,
+} from '../../../shared/generated/ContentTypes';
 
 import type { RightPanelSectionPayload } from '../../../system/core/shared/EventConstants';
 
-/** Re-export for convenience — canonical definition is in EventConstants */
 export type RightPanelSection = RightPanelSectionPayload;
 
-/**
- * Right panel configuration - matches recipe.layout.rightPanel
- *
- * Supports two modes:
- *   1. Legacy: { widget, room, compact } — single chat widget (auto-converted to one section)
- *   2. Sections: { sections: [...] } — IDE-style accordion with multiple widgets
- */
 export interface RightPanelConfig {
-  /** Widget to display (default: 'chat-widget') — legacy single-widget mode */
-  widget?: string;
-  /** For chat-widget: which room to connect to — legacy */
-  room?: string;
-  /** Display in compact mode for sidebar use — legacy */
-  compact?: boolean;
-  /** IDE-style accordion sections. When present, legacy fields are ignored. */
-  sections?: RightPanelSection[];
+    widget?: string;
+    room?: string;
+    compact?: boolean;
+    sections?: RightPanelSection[];
 }
 
-export interface ContentTypeConfig {
-  /** Widget tag name (e.g., 'chat-widget', 'settings-widget') */
-  widget: string;
-  /** Display name for UI */
-  displayName: string;
-  /** Icon (optional, for tab display) */
-  icon?: string;
-  /** URL path prefix (e.g., '/chat', '/settings') */
-  pathPrefix: string;
-  /** Whether this content type requires an entityId */
-  requiresEntity: boolean;
-  /** Default title when no entity specified */
-  defaultTitle?: string;
-  /** Right panel configuration. null = hidden, undefined = inherit default */
-  rightPanel?: RightPanelConfig | null;
-}
+// Re-export generated types for consumers
+export { ContentType, ContentTypeConfig, isContentType, CONTENT_TYPE_CONFIGS };
 
 /**
- * Fallback registry for content types without recipe JSON files
- *
- * PREFER: Create a recipe JSON in system/recipes/{contentType}.json
- * This fallback is only for content types that haven't been migrated yet.
- */
-const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
-  // Chat rooms - the original content type
-  // Chat IS the main content, no right panel needed
-  chat: {
-    widget: 'chat-widget',
-    displayName: 'Chat',
-    pathPrefix: '/chat',
-    requiresEntity: true,  // Needs roomId
-    rightPanel: null,  // Hide right panel for chat (chat IS the content)
-  },
-
-  // Settings - config.env editor, API keys
-  // Help assistant in right panel for configuration guidance
-  settings: {
-    widget: 'settings-widget',
-    displayName: 'Settings',
-    pathPrefix: '/settings',
-    requiresEntity: false,
-    defaultTitle: 'Settings',
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // Theme customization
-  // Theme room assistant for color scheme suggestions
-  theme: {
-    widget: 'theme-widget',
-    displayName: 'Theme',
-    pathPrefix: '/theme',
-    requiresEntity: false,
-    defaultTitle: 'Theme',
-    rightPanel: { widget: 'chat-widget', room: 'theme', compact: true },
-  },
-
-  // Help & onboarding
-  // No right panel - help IS the main content
-  help: {
-    widget: 'help-widget',
-    displayName: 'Help',
-    pathPrefix: '/help',
-    requiresEntity: false,
-    defaultTitle: 'Help',
-    rightPanel: null,
-  },
-
-  // Persona brain/cognitive view
-  // Help assistant for understanding persona state
-  persona: {
-    widget: 'persona-brain-widget',
-    displayName: 'Persona',
-    pathPrefix: '/persona',
-    requiresEntity: true,  // Needs userId (uniqueId)
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // Genome profile — adapter inventory, training metrics, academy history
-  'genome-profile': {
-    widget: 'genome-profile-widget',
-    displayName: 'Genome',
-    pathPrefix: '/genome',
-    requiresEntity: true,  // Needs userId
-    rightPanel: {
-      sections: [
-        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
-        { id: 'adapter-actions', title: 'Adapter Actions', icon: '🧬', widgetTag: 'adapter-actions-section', collapsedByDefault: true, flexWeight: 1 },
-        { id: 'genome-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
-      ],
-    },
-  },
-
-  // Web browser (collaborative)
-  // Help assistant for browser usage
-  browser: {
-    widget: 'web-view-widget',
-    displayName: 'Browser',
-    pathPrefix: '/browser',
-    requiresEntity: false,
-    defaultTitle: 'Browser',
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // Drawing canvas (collaborative) - activity-based content type
-  // Each canvas is an ActivityEntity with persistent strokes
-  // Chat room for discussing the drawing with vision-capable AIs
-  canvas: {
-    widget: 'drawing-canvas-widget',
-    displayName: 'Canvas',
-    pathPrefix: '/canvas',
-    requiresEntity: true,  // Needs activityId (canvas instance)
-    rightPanel: { widget: 'chat-widget', room: 'canvas', compact: false },
-  },
-
-  // System diagnostics and persona logs
-  // Help assistant for log interpretation
-  diagnostics: {
-    widget: 'diagnostics-widget',
-    displayName: 'Diagnostics',
-    pathPrefix: '/diagnostics',
-    requiresEntity: false,
-    defaultTitle: 'System Diagnostics',
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // System & AI metrics detail view
-  // Opened by clicking sparklines in sidebar ContinuumMetricsWidget
-  metrics: {
-    widget: 'metrics-detail-widget',
-    displayName: 'Metrics',
-    pathPrefix: '/metrics',
-    requiresEntity: false,
-    defaultTitle: 'System Metrics',
-    rightPanel: null,  // Full-width dashboard, no right panel
-  },
-
-  // Grid network overview — multi-node topology, health, routing
-  'grid-overview': {
-    widget: 'grid-overview-widget',
-    displayName: 'Grid',
-    pathPrefix: '/grid',
-    requiresEntity: false,
-    defaultTitle: 'Grid Overview',
-    rightPanel: {
-      sections: [
-        { id: 'grid-status', title: 'Grid Status', icon: '🌐', widgetTag: 'grid-status-section', flexWeight: 1 },
-        { id: 'grid-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
-      ],
-    },
-  },
-
-  // Training dashboard — TensorBoard replacement with real-time loss curves
-  'training-dashboard': {
-    widget: 'training-dashboard-widget',
-    displayName: 'Training',
-    pathPrefix: '/training',
-    requiresEntity: false,
-    defaultTitle: 'Training Dashboard',
-    rightPanel: {
-      sections: [
-        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
-        { id: 'training-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
-      ],
-    },
-  },
-
-  // Inference sample viewer — compare base vs adapter outputs
-  'inference-sample': {
-    widget: 'inference-sample-widget',
-    displayName: 'Inference',
-    pathPrefix: '/inference',
-    requiresEntity: false,
-    defaultTitle: 'Inference Samples',
-    rightPanel: {
-      sections: [
-        { id: 'training-status', title: 'Training Status', icon: '📊', widgetTag: 'training-status-section', flexWeight: 1 },
-        { id: 'inference-chat', title: 'Assistant', icon: '💬', widgetTag: 'chat-widget', props: { room: 'help', compact: '' }, flexWeight: 2 },
-      ],
-    },
-  },
-
-  // Individual log viewer (opened from diagnostics)
-  // Help assistant for understanding log entries
-  'diagnostics-log': {
-    widget: 'log-viewer-widget',
-    displayName: 'Log',
-    pathPrefix: '/log',
-    requiresEntity: true,  // Needs log file path
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // User profile - universal view for all user types
-  // Edit, freeze, delete actions + links to cognitive views for AI
-  profile: {
-    widget: 'user-profile-widget',
-    displayName: 'Profile',
-    pathPrefix: '/profile',
-    requiresEntity: true,  // Needs userId (uniqueId or UUID)
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
-  },
-
-  // Live collaboration - audio/video/screen share
-  // Like Slack huddles, Discord voice channels, Zoom
-  // Can be attached to any room/activity as a modality layer
-  live: {
-    widget: 'live-widget',
-    displayName: 'Live',
-    pathPrefix: '/live',
-    requiresEntity: true,  // Needs roomId to associate with
-    rightPanel: null,  // Live IS the main interaction (has its own UI for participants)
-  },
-};
-
-/**
- * Get widget tag name for a content type
- * Checks RecipeLayoutService first, then falls back to static registry
+ * Get widget tag name for a content type.
+ * Recipe service (runtime) → generated config (build-time) → error.
  */
 export function getWidgetForType(contentType: string): string {
-  // 1. Try recipe-driven layout first
-  const recipeService = getRecipeLayoutService();
-  if (recipeService.isLoaded()) {
-    const recipeWidget = recipeService.getWidget(contentType);
-    if (recipeWidget) {
-      return recipeWidget;
+    // 1. Recipe service has the most up-to-date info (loaded from DB/files at runtime)
+    const recipeService = getRecipeLayoutService();
+    if (recipeService.isLoaded()) {
+        const widget = recipeService.getWidget(contentType);
+        if (widget) return widget;
     }
-  }
 
-  // 2. Fall back to static registry
-  const config = FALLBACK_REGISTRY[contentType];
-  if (!config) {
-    console.warn(`Unknown content type: ${contentType}, falling back to chat-widget`);
-    return 'chat-widget';
-  }
-  return config.widget;
+    // 2. Generated config from recipe JSON files (compile-time)
+    const generated = CONTENT_TYPE_CONFIGS[contentType as ContentType];
+    if (generated) return generated.widget;
+
+    // 3. No fallback — unknown type is an error
+    console.error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json`);
+    return 'chat-widget'; // Graceful degradation to prevent blank screen
 }
 
 /**
- * Get content type config
- * Checks RecipeLayoutService first, then falls back to static registry
+ * Get full config for a content type.
  */
 export function getContentTypeConfig(contentType: string): ContentTypeConfig | undefined {
-  // 1. Try recipe-driven layout first
-  const recipeService = getRecipeLayoutService();
-  if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
-    // Use RecipeLayoutService's methods which handle both old and new formats
-    const widget = recipeService.getWidget(contentType);
-    const rightPanel = recipeService.getRightPanel(contentType);
-
-    if (widget) {
-      return {
-        widget,
-        displayName: recipeService.getDisplayName(contentType) || contentType,
-        pathPrefix: `/${contentType}`,
-        requiresEntity: false,
-        rightPanel: rightPanel ?? undefined
-      };
+    // 1. Recipe service
+    const recipeService = getRecipeLayoutService();
+    if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+        const widget = recipeService.getWidget(contentType);
+        const rightPanel = recipeService.getRightPanel(contentType);
+        if (widget) {
+            const generated = CONTENT_TYPE_CONFIGS[contentType as ContentType];
+            return {
+                widget,
+                displayName: recipeService.getDisplayName(contentType) || contentType,
+                icon: generated?.icon || '📄',
+                pathPrefix: `/${contentType}`,
+                requiresEntity: generated?.requiresEntity || false,
+                entityType: generated?.entityType || null,
+                hasRightPanel: rightPanel !== null && rightPanel !== undefined,
+            };
+        }
     }
-  }
 
-  // 2. Fall back to static registry
-  return FALLBACK_REGISTRY[contentType];
+    // 2. Generated config
+    return CONTENT_TYPE_CONFIGS[contentType as ContentType];
 }
 
 /**
- * Parse URL path to content type and entity
- *
- * Examples:
- *   /chat/general → { type: 'chat', entityId: 'general' }
- *   /settings → { type: 'settings', entityId: undefined }
- *   /persona/helper → { type: 'persona', entityId: 'helper' }
+ * Parse URL path to content type and entity.
  */
 export function parseContentPath(path: string): { type: string; entityId?: string } {
-  const normalized = path.startsWith('/') ? path : `/${path}`;
+    const normalized = path.startsWith('/') ? path : `/${path}`;
 
-  // Check static registry (has pathPrefix definitions)
-  for (const [type, config] of Object.entries(FALLBACK_REGISTRY)) {
-    if (normalized.startsWith(config.pathPrefix)) {
-      const remainder = normalized.slice(config.pathPrefix.length);
-      const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
-      return { type, entityId: entityId || undefined };
+    // Check generated configs (all have pathPrefix = /{uniqueId})
+    for (const [type, config] of Object.entries(CONTENT_TYPE_CONFIGS)) {
+        if (normalized.startsWith(config.pathPrefix)) {
+            const remainder = normalized.slice(config.pathPrefix.length);
+            const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
+            return { type, entityId: entityId || undefined };
+        }
     }
-  }
 
-  // Check recipe content types (use /{uniqueId} as path)
-  const recipeService = getRecipeLayoutService();
-  if (recipeService.isLoaded()) {
-    for (const type of recipeService.getAllContentTypes()) {
-      const pathPrefix = `/${type}`;
-      if (normalized.startsWith(pathPrefix)) {
-        const remainder = normalized.slice(pathPrefix.length);
-        const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
-        return { type, entityId: entityId || undefined };
-      }
+    // Check recipe service for types not in generated config (shouldn't happen, but safe)
+    const recipeService = getRecipeLayoutService();
+    if (recipeService.isLoaded()) {
+        for (const type of recipeService.getAllContentTypes()) {
+            const prefix = `/${type}`;
+            if (normalized.startsWith(prefix)) {
+                const remainder = normalized.slice(prefix.length);
+                const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
+                return { type, entityId: entityId || undefined };
+            }
+        }
     }
-  }
 
-  // Default to chat
-  return { type: 'chat', entityId: undefined };
+    return { type: 'chat', entityId: undefined };
 }
 
 /**
- * Build URL path from content type and entity
+ * Build URL path from content type and entity.
  */
 export function buildContentPath(contentType: string, entityId?: string): string {
-  const config = FALLBACK_REGISTRY[contentType];
-  const pathPrefix = config?.pathPrefix || `/${contentType}`;
-
-  if (entityId) {
-    return `${pathPrefix}/${entityId}`;
-  }
-  return pathPrefix;
+    const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
+    const pathPrefix = config?.pathPrefix || `/${contentType}`;
+    return entityId ? `${pathPrefix}/${entityId}` : pathPrefix;
 }
 
 /**
- * Get right panel configuration for a content type
- * Returns null if right panel should be hidden
- * Returns config object if right panel should be shown
+ * Get right panel configuration for a content type.
  */
 export function getRightPanelConfig(contentType: string): RightPanelConfig | null {
-  // 1. Try recipe-driven layout first
-  const recipeService = getRecipeLayoutService();
-  const isLoaded = recipeService.isLoaded();
-  const hasRecipe = recipeService.hasRecipe(contentType);
-  console.log(`🔍 getRightPanelConfig('${contentType}'): isLoaded=${isLoaded}, hasRecipe=${hasRecipe}`);
+    // 1. Recipe service
+    const recipeService = getRecipeLayoutService();
+    if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+        const rightPanel = recipeService.getRightPanel(contentType);
+        if (rightPanel === null) return null;
+        if (rightPanel) return rightPanel;
+    }
 
-  if (isLoaded && hasRecipe) {
-    const rightPanel = recipeService.getRightPanel(contentType);
-    console.log(`🔍 getRightPanelConfig('${contentType}'): recipe rightPanel=`, rightPanel);
-    if (rightPanel === null) return null;
-    if (rightPanel) return rightPanel;
-  }
+    // 2. Generated config — hasRightPanel tells us the intent
+    const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
+    if (config && !config.hasRightPanel) return null;
 
-  // 2. Fall back to static registry
-  console.log(`🔍 getRightPanelConfig('${contentType}'): using FALLBACK_REGISTRY`);
-  const config = FALLBACK_REGISTRY[contentType];
-  if (!config) {
-    // Unknown content type - default to showing help panel
+    // Default: help panel
     return { widget: 'chat-widget', room: 'help', compact: true };
-  }
-
-  // null means explicitly hidden, undefined means use default
-  if (config.rightPanel === null) {
-    return null;
-  }
-
-  // Return the config or default help panel
-  return config.rightPanel || { widget: 'chat-widget', room: 'help', compact: true };
 }
 
 /**
- * Initialize recipe layouts from server
- * Call this early in app startup (e.g., MainWidget init)
+ * Initialize recipe layouts from server.
+ * Call early in app startup (MainWidget init).
  */
 export async function initializeRecipeLayouts(): Promise<void> {
-  const recipeService = getRecipeLayoutService();
-  await recipeService.loadLayouts();
+    const recipeService = getRecipeLayoutService();
+    await recipeService.loadLayouts();
 }
 
 /**
- * Export the fallback registry for debugging/introspection
- * (Use the functions above for actual lookups)
+ * @deprecated Use CONTENT_TYPE_CONFIGS from generated types instead.
+ * Kept temporarily for consumers that haven't migrated.
  */
-export const CONTENT_TYPE_REGISTRY = FALLBACK_REGISTRY;
+export const CONTENT_TYPE_REGISTRY = CONTENT_TYPE_CONFIGS;

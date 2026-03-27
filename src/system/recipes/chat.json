@@ -4,6 +4,7 @@
   "displayName": "Chat",
   "description": "Real-time chat with humans and AI personas",
   "version": 1,
+  "entityType": "room",
 
   "layout": {
     "main": ["chat-widget"],

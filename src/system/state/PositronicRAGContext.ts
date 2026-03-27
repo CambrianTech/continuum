@@ -284,6 +284,7 @@ class PositronicRAGContextImpl {
     const highlights: string[] = [];
 
     // Widget-specific highlight extraction
+    // TODO: Move to recipe JSON as ragHighlights config (issue #362)
     switch (type) {
       case 'settings':
         if (data.section) highlights.push(`section:${data.section}`);

@@ -10,6 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ClaudeContextParams, ClaudeContextResult } from '../shared/ClaudeContextTypes';
 import { createClaudeContextResultFromParams } from '../shared/ClaudeContextTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { execSync } from 'child_process';
 
 export class ClaudeContextServerCommand extends CommandBase<ClaudeContextParams, ClaudeContextResult> {
@@ -41,7 +42,7 @@ export class ClaudeContextServerCommand extends CommandBase<ClaudeContextParams,
     let health = {};
     if (includeHealth) {
       try {
-        const pingResult = await Commands.execute('ping', { context: params.context, sessionId: params.sessionId });
+        const pingResult = await Commands.execute(COMMANDS.PING, { context: params.context, sessionId: params.sessionId });
         health = pingResult as unknown as Record<string, unknown>;
         const h = health as Record<string, unknown>;
         const server = h.server as Record<string, unknown> | undefined;
@@ -56,7 +57,7 @@ export class ClaudeContextServerCommand extends CommandBase<ClaudeContextParams,
     let chat = {};
     if (includeChat) {
       try {
-        const chatResult = await Commands.execute('collaboration/chat/export', {
+        const chatResult = await Commands.execute(COMMANDS.COLLABORATION_CHAT_EXPORT, {
           room: 'general',
           limit: chatLimit,
           context: params.context,

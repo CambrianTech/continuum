@@ -11,6 +11,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ClaudeResumeParams, ClaudeResumeResult } from '../shared/ClaudeResumeTypes';
 import { createClaudeResumeResultFromParams } from '../shared/ClaudeResumeTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -86,7 +87,7 @@ export class ClaudeResumeServerCommand extends CommandBase<ClaudeResumeParams, C
     // 3. Verbose: include chat and issues
     if (verbose) {
       try {
-        const chatResult = await Commands.execute('collaboration/chat/export', {
+        const chatResult = await Commands.execute(COMMANDS.COLLABORATION_CHAT_EXPORT, {
           room: 'general',
           limit: 10,
           context: params.context,

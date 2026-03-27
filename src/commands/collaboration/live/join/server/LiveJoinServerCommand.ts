@@ -14,6 +14,7 @@ import { UserEntity } from '@system/data/entities/UserEntity';
 import { RoomEntity } from '@system/data/entities/RoomEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
@@ -443,7 +444,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     for (const participant of aiParticipants) {
       try {
-        await Commands.execute('collaboration/live/join', {
+        await Commands.execute(COMMANDS.COLLABORATION_LIVE_JOIN, {
           entityId: call.roomId,
           userId: participant.userId,
           context: params.context,

@@ -4,6 +4,7 @@
   "displayName": "Live",
   "description": "Real-time voice collaboration with AI participants. AIs can hear humans AND each other with clear speaker type labeling.",
   "version": 2,
+  "entityType": "room",
 
   "layout": {
     "widgets": [

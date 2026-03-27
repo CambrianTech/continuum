@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-26
-**Status**: **BUILD PHASE.** Architecture proven, vision crystallized. Now it's mostly build — with special emphasis on training during build (every buggy session = training data) and careful analysis of initial Academy sessions. 8 PRs merged today, 10 issues filed, 5 reopened. Qwen3.5-35B-A3B downloaded on 5090, expert activation profiling running.
+**Updated**: 2026-03-27 (evening)
+**Status**: **FORGING QWEN3.5.** First Qwen3.5 model forged and published: `continuum-ai/qwen3.5-4b-code-forged` — baseline 3.04 → forged 2.31 perplexity (+24% improvement on code). Trained on CodeFeedback (156K code Q&A pairs) with LoRA + AMP mixed precision on RTX 5090. Memory-tiered pipeline (A/B/C) working. 27B forge next. Content type hardcoding eliminated (PR #567). Session identity (#568) is the grid blocker. 16 sentinel-ai issues (#80-96), continuum issues #564-571 filed.
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
@@ -46,6 +46,18 @@ This document is the **single source of truth** for remaining work. Each phase i
 ## Phase 0: Critical Bugs (Ship-Blockers)
 
 > Fix before anything else. These break the first-run experience.
+
+### SECURITY — Identity & Sessions (BLOCKS GRID, MULTI-USER, EVERYTHING)
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#568](https://github.com/CambrianTech/continuum/issues/568) | **Session identity broken — all-zeros UUIDs** | TODO | System returns `00000000-...` for connected users. No authentication, no authorization, no data isolation. BLOCKS grid, multi-user, any commercial deployment. |
+| [#566](https://github.com/CambrianTech/continuum/issues/566) | **Tab reconnection — tabs multiply, sessions orphaned** | TODO | Reconnecting tabs create new sessions instead of rebinding. Ghost sessions accumulate. Especially bad on Windows. |
+| [#565](https://github.com/CambrianTech/continuum/issues/565) | **WSL2 auto-start on boot** | TODO | Tower doesn't survive reboots. WSL2 requires admin PowerShell to restart. Need Windows service / `winget install` path. |
+
+**Done when**: Every connection has a real UUID. Reconnecting tabs rebind to existing sessions. `userId` is required (not optional) on every contract. Zero-UUID requests are rejected.
+
+### Bugs
 
 | # | Issue | Status | What |
 |---|-------|--------|------|

@@ -10,6 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridDeployParams, GridDeployResult } from '../shared/GridDeployTypes';
 import { createGridDeployResultFromParams } from '../shared/GridDeployTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 
 interface NodeDeployResult {
   nodeId: string;
@@ -33,7 +34,7 @@ export class GridDeployServerCommand extends CommandBase<GridDeployParams, GridD
       nodeIps = (params.nodes as string).split(',').map(n => n.trim());
     } else {
       try {
-        const gridList = await Commands.execute('grid/list', {}) as unknown as Record<string, unknown>;
+        const gridList = await Commands.execute(COMMANDS.GRID_NODES, {}) as unknown as Record<string, unknown>;
         const nodes = (gridList.nodes ?? []) as Array<{ ip: string }>;
         nodeIps = nodes.map(n => n.ip).filter(Boolean);
       } catch {

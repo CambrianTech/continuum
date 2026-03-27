@@ -10,6 +10,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { DevIntegrateParams, DevIntegrateResult } from '../shared/DevIntegrateTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { COMMANDS } from '@shared/generated-command-constants';
 import { ProjectDetector } from '../../../../system/code/server/ProjectDetector';
 
 export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, DevIntegrateResult> {
@@ -55,7 +56,7 @@ export class DevIntegrateServerCommand extends CommandBase<DevIntegrateParams, D
     };
 
     try {
-      const result = await Commands.execute('sentinel/run', {
+      const result = await Commands.execute(COMMANDS.SENTINEL_RUN, {
         type: 'pipeline',
         template: 'dev/integrate',
         templateConfig,
