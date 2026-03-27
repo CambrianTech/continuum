@@ -5,7 +5,6 @@
  * Regenerate: npx tsx generator/generate-content-types.ts
  *
  * 27 content types from 27 recipe files
- * Generated: 2026-03-27T18:18:25.821Z
  */
 
 /**

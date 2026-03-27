@@ -96,7 +96,6 @@ function main() {
  * Regenerate: npx tsx generator/generate-content-types.ts
  *
  * ${recipes.length} content types from ${recipeFiles.length} recipe files
- * Generated: ${new Date().toISOString()}
  */
 
 /**
