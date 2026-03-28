@@ -206,7 +206,30 @@ This produces models at "impossible sizes" — a 35B MoE model compressed to 14G
 
 ---
 
-## 8. Reproduction
+## 8. Continuous Defrag: Accelerating Training Through Compression
+
+Traditional pruning masks attention heads but doesn't reclaim memory. Continuous defrag **structurally removes** dead heads between forge cycles — the model gets physically smaller, freeing VRAM for larger batch sizes. Each cycle trains faster than the last.
+
+```
+Cycle 1: train (batch=1, 27B, 17.9GB) → prune → defrag → freed 1.7GB
+Cycle 2: train (batch=2, 24.5B) → prune → defrag → freed 1.7GB     ← 2× faster
+Cycle 3: train (batch=3, 22B)  → prune → defrag                     ← 2.8× faster
+```
+
+| Metric | Without Defrag | With Continuous Defrag |
+|--------|---------------|----------------------|
+| Total training time | 78 min | 47 min (−40%) |
+| Final params | 23.6B (unchanged) | 17.3B (−27%) |
+| GGUF Q4 size | ~15GB | ~10GB (−33%) |
+| Inference speed | baseline | +30% (fewer heads) |
+
+The residual stream dimension (hidden_size) is unchanged — only the internal attention dimension shrinks. Quality gates prevent over-pruning: if perplexity degrades >5% after defrag, the cycle stops and the previous checkpoint is published.
+
+See [sentinel-ai/docs/CONTINUOUS-DEFRAG.md](https://github.com/CambrianTech/sentinel-ai/blob/main/docs/CONTINUOUS-DEFRAG.md) for full architecture.
+
+---
+
+## 9. Reproduction
 
 ```bash
 git clone https://github.com/CambrianTech/sentinel-ai.git
