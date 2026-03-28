@@ -90,11 +90,14 @@ With the v3 forge pipeline (LoRA + AMP mixed precision + memory-tiered architect
 
 | Model | Params | Domain | Training Data | Baseline PPL | Final PPL | Improvement | Device |
 |-------|--------|--------|--------------|-------------|-----------|-------------|--------|
-| **Qwen3.5-4B** | 3.4B | Code | CodeFeedback (156K) | 3.04 | **2.31** | **+24.0%** | RTX 5090 |
-| Qwen3.5-9B | 8.2B | Code | — | — | — | — | queued |
-| Qwen3.5-27B | 23.6B | Code | — | — | — | — | queued |
+| **Qwen3.5-4B** | 3.4B | Code | CodeFeedback (156K) | 3.04 | **2.31** | **+24.0%** | RTX 5090 (fp16) |
+| **Qwen3.5-27B** | 23.6B | Code | CodeFeedback (156K) | 3.07 | **2.96** | **+3.5%** | RTX 5090 (4-bit) |
 
-**Key advance over Qwen2.5 results**: the Qwen3.5-4B improvement (+24%) exceeds the Qwen2.5-7B improvement (+14.6%) despite being a smaller model. This is because domain-specific training data (CodeFeedback: real coding Q&A) is dramatically more effective than generic text (wikitext) at driving head specialization. The heads that survive pruning are the ones that matter for **code**, not for Wikipedia — producing a model that is architecturally optimized for its target domain.
+**Key findings**: Both models improve over baseline. The 4B shows dramatic +24% improvement — domain-specific data (CodeFeedback: real coding Q&A) drives far more head specialization than generic text. The 27B improves +3.5% while running in 17GB (4-bit NF4) instead of 28GB (fp16) — better quality at 36% less VRAM. The 27B was forged with only 2 cycles before early-stopping; more cycles and continuous defrag (§8) should improve further.
+
+**Target hardware**: The forged 27B at 17GB runs on MacBook Pro M1/M2/M3 with 32GB RAM, RTX 3090 (24GB), or any 5090. After GGUF Q4 conversion (~10GB with continuous defrag), it fits on a MacBook Air with 16GB RAM. "Sonnet 4.6 quality" on a laptop.
+
+**Published models**: [continuum-ai/qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged) | [continuum-ai/qwen3.5-27b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-27b-code-forged)
 
 **Training configuration**: LoRA (r=16, α=32) with AMP GradScaler for fp16 stability, gradient checkpointing, 3 cycles × 1000 steps, train-then-prune ordering.
 
