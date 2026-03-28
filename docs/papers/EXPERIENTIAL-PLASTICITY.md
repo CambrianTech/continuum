@@ -251,6 +251,32 @@ All experiments run on a single RTX 5090 (32GB) or equivalent. Models ≤3B run 
 
 ---
 
+## 10. Future Work
+
+### Head-Level Surgical Training
+
+Pruning importance scores are a **functional map** of the model — which heads do what. This map enables increasingly precise training:
+
+1. **Per-head learning rates**: Heads struggling with a capability get higher LR. Heads that are solid get frozen. Compute focuses where it's needed, not spread uniformly.
+
+2. **Isolated fine-tuning**: Extract the heads most responsible for a capability, fine-tune JUST those on targeted data, plug them back in. No catastrophic forgetting — the rest of the model is untouched.
+
+3. **Head-level LoRA**: Instead of LoRA on all projections, target only heads a benchmark identified as weak. 200K trainable params instead of 3M. Surgical precision.
+
+4. **Hot-swappable head groups**: Head groups as independently loadable modules. The "Rust coding heads" are different tensors from the "SQL heads." Page them in based on task — this is the genome paging system at head granularity.
+
+The importance map IS the genome: high-importance heads are expressed genes, low-importance heads are dormant, fine-tuning a head group is epigenetic modification, hot-swapping is gene expression switching. Not a metaphor — a literal functional map with independent modifiability.
+
+### Benchmark-Driven Curriculum
+
+Third-party benchmarks (ToolCall-15, HumanEval, GSM8K) serve as both evaluation AND training curriculum templates. A sentinel generates training data structured around the benchmark's categories, the forge trains against it, and the benchmark score is stamped on the model card as proof. The benchmark is the FDA approval sticker.
+
+### Grid-Distributed Forging
+
+Different hardware tiers forge different model sizes. Continuous defrag enables models to "flow downhill" — a model forged on a 5090 (32GB) can be defragged until it fits on a 3090 (24GB), then further until it fits on a MacBook (16GB). The grid collectively produces models for every hardware tier from a single forging run.
+
+---
+
 ## References
 
 [1] Huttenlocher, P.R. "Synaptic density in human frontal cortex — developmental changes and effects of aging." Brain Research, 1979.
