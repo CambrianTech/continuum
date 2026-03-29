@@ -138,9 +138,10 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
 Proposal ID: ${params.proposalId}`;
 
+    // Announce in the room where the proposal was made
     await ChatSend.execute({
       message: announcementMessage,
-      room: 'general'
+      room: proposal.contextId || 'general'
     });
 
     return transformPayload(params, {
