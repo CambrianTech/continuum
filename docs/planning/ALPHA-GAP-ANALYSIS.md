@@ -302,9 +302,18 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#516](https://github.com/CambrianTech/continuum/issues/516) | **First Grid experiment** | TODO | 5090 + 3090 + 1080 Ti + laptops. Heterogeneous dual-node proof. |
 | [#517](https://github.com/CambrianTech/continuum/issues/517) | **Onboarding crisis** ⚠️ CRITICAL | TODO | First external user hit walls. Install must be frictionless. Blocks everything. |
 
-**First real mesh**: 5090 (32GB) + 3090 (24GB) + 1080 Ti (11GB) + laptops. Ares manages allocation with polite mode — backs off when users need their machines.
+**Available hardware (ready to mesh):**
 
-**Done when**: `install.sh` works on Toby's 3090 machine. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU.
+| Node | GPU | VRAM | RAM | Role | Status |
+|------|-----|------|-----|------|--------|
+| 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
+| 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
+| Toby's 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
+| Joel's MacBook | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
+
+**The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
+
+**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges.
 
 ---
 
