@@ -256,7 +256,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     // Subscribe to pageState - single source of truth for current room
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
-        if (state.contentType === 'chat' && state.entityId) {
+        if (state.entityId) {
           const matchingRoom = this.entities.find(
             (room: RoomEntity) => room.id === state.entityId || room.uniqueId === state.entityId
           );
@@ -329,8 +329,11 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   // === ROOM SELECTION ===
   private selectRoom(room: RoomEntity): void {
     const roomId = room.id as UUID;
+    // Use room's recipeId as contentType — not hardcoded 'chat'
+    // The recipe determines what widget renders (chat-widget, factory-widget, etc.)
+    const contentType = (room as any).recipeId || 'chat';
 
-    if (pageState.contentType === 'chat' && pageState.entityId === roomId) {
+    if (pageState.contentType === contentType && pageState.entityId === roomId) {
       return;
     }
 
@@ -340,7 +343,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
       ContentService.setUserId(this.currentUser.id as UUID);
     }
 
-    ContentService.open('chat', roomId, {
+    ContentService.open(contentType, roomId, {
       title: room.displayName || room.name,
       subtitle: this.isDM(room) ? `${(room.members?.length || 0)} members` : room.topic,
       uniqueId: room.uniqueId || room.name || roomId,
