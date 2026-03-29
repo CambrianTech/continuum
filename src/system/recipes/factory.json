@@ -6,8 +6,10 @@
   "version": 1,
 
   "layout": {
-    "main": ["factory-widget"],
-    "right": null
+    "widgets": [
+      { "widget": "room-list-widget", "position": "left", "order": 0, "persistent": true },
+      { "widget": "factory-widget", "position": "center", "order": 0 }
+    ]
   },
 
   "pipeline": [
