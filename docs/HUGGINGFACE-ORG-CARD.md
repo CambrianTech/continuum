@@ -9,7 +9,7 @@ pinned: false
 
 # continuum-ai
 
-## Allowing consumer grade hardware to run SOTA models.
+## SOTA models on your iPhone, MacBook, and GPU. No cloud required.
 
 We don't quantize. We don't distill. We **structurally reshape** the model's architecture through [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning and retraining that makes models smaller AND better. Like biological synaptic pruning during brain development: the connections that fire together wire together, the rest are removed.
 
@@ -17,7 +17,7 @@ We don't quantize. We don't distill. We **structurally reshape** the model's arc
 
 | What | Proof |
 |------|-------|
-| **2.6GB code model for iPhone** | [qwen3.5-4b-code-forged-GGUF](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged-GGUF) — HumanEval: 44/58 early problems passing, benchmark in progress |
+| **2.6GB code model for iPhone** | [qwen3.5-4b-code-forged-GGUF](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged-GGUF) — HumanEval: **63/85 passing (74.1%)**, 70% on hard problems, benchmark still running |
 | **Sonnet 4.6-level on MacBook** | [qwen3.5-27b-code-forged-mlx-4bit](https://huggingface.co/continuum-ai/qwen3.5-27b-code-forged-mlx-4bit) — 15GB, 9 tok/s on M1 32GB |
 | **35B MoE in 1.8GB** | [qwen3.5-35b-a3b-compacted-GGUF](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted-GGUF) — 256 experts pruned to 16 |
 | **+24% better at code** | [qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged) — perplexity 3.04 to 2.31 after forging |
