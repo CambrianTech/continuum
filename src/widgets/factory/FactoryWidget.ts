@@ -22,6 +22,8 @@ import {
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
+import type { ModelListPublishedResult } from '../../commands/model/list-published/shared/ModelList-publishedTypes';
+import type { ForgeJobStatus } from '../../commands/model/forge-status/shared/ModelForge-statusTypes';
 // ── Types ───────────────────────────────────────────────────────────────
 
 interface ForgeStatus {
