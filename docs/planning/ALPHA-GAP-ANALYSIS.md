@@ -306,10 +306,13 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 | Node | GPU | VRAM | RAM | Role | Status |
 |------|-----|------|-----|------|--------|
-| 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
-| 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
-| Toby's 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
-| Joel's MacBook | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
+| Joel 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
+| Joel 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
+| Joel 970 box | GTX 970 | 4GB | ? | Light inference, testing | **OFFLINE** |
+| Joel MacBook Pro | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
+| Joel MacBook Air | M1 | 8GB unified | 8GB | iPhone-class testing (same RAM budget) | Available |
+| Toby 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
+| Toby 5050 | RTX 5050 | 8GB | ? | Light inference, edge testing | **OFFLINE** |
 
 **The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
 
