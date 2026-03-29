@@ -11,9 +11,13 @@ pinned: false
 
 ## SOTA models on your iPhone, MacBook, tiny robots, and virtually ANY GPU. No cloud required.
 
+**经验可塑性** (Experiential Plasticity) — 模型通过经验塑造自身架构
+
 We don't quantize. We don't distill. We **structurally reshape** the model's architecture through [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning and retraining that makes models smaller AND better. Like biological synaptic pruning during brain development: the connections that fire together wire together, the rest are removed.
 
 **The result: models that were designed for datacenters, running on your phone.**
+
+Built on the incredible open source work of the [Qwen team](https://huggingface.co/Qwen) and the broader open model community. Open weights make this possible — we compress and specialize what you generously share.
 
 | What | Proof |
 |------|-------|
