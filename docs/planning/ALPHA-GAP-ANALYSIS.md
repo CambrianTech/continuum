@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-27 (evening)
-**Status**: **FORGING QWEN3.5.** First Qwen3.5 model forged and published: `continuum-ai/qwen3.5-4b-code-forged` — baseline 3.04 → forged 2.31 perplexity (+24% improvement on code). Trained on CodeFeedback (156K code Q&A pairs) with LoRA + AMP mixed precision on RTX 5090. Memory-tiered pipeline (A/B/C) working. 27B forge next. Content type hardcoding eliminated (PR #567). Session identity (#568) is the grid blocker. 16 sentinel-ai issues (#80-96), continuum issues #564-571 filed.
+**Updated**: 2026-03-29
+**Status**: **FACTORY COMING ONLINE.** 13 models published on HuggingFace (948 downloads on 35B compacted). First HumanEval benchmark running — 4B code-forged at **74.4% pass rate on first 78/164 problems** (2.6GB GGUF, iPhone-sized). Beats Qwen2.5-Coder-3B (66%), Phi-3-mini (62%), DeepSeek-Coder-1.3B (65%) at similar or smaller size. Factory widget created (#576). Device ladder planned (#108): 64/32/16 expert variants targeting MacBook Air → iPhone. Production pipeline with inference gates committed (sentinel-ai #109). WSL2 DNS root-caused: WSL2 NAT blocks UDP 53 to external DNS — fix: use LAN gateway (PR #581). Leaderboard submission issues filed (#111-114).
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
@@ -308,6 +308,49 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ---
 
+## Phase 12: Factory — Model Forge Production Line
+
+> Nature: forge base models. Nurture: academy trains personas. Factory is nature.
+
+The factory forges, benchmarks, and publishes base models for every device tier. sentinel-ai provides the forge algorithms (temporary — absorbing into continuum-core Rust modules within the month). Continuum owns publishing, cards, distribution, and the factory widget.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#576](https://github.com/CambrianTech/continuum/issues/576) | **Factory widget** | SCAFFOLD | Event-driven widget created. Needs: Start Forge button, live monitor, published models scoreboard, device target matrix. |
+| [#577](https://github.com/CambrianTech/continuum/issues/577) | **Architecture visualizer** | DESIGNED | Shared component for model surgery + cognition visualization. Canvas/WebGL. Same topology renderer for factory and brain widgets. |
+| [#578](https://github.com/CambrianTech/continuum/issues/578) | **Voice model forging** | TODO | Same pipeline for TTS/STT. Prune unused phoneme heads, specialize for accent/language. |
+| [#579](https://github.com/CambrianTech/continuum/issues/579) | **Vision model forging** | TODO | Feature detector pruning, domain specialization. |
+| [#580](https://github.com/CambrianTech/continuum/issues/580) | **Expert-as-a-service** | TODO | Dynamic MoE paging across grid. Hot experts local, cold experts from mesh. Docker for neural compute. |
+| [#581](https://github.com/CambrianTech/continuum/issues/581) | **WSL2 DNS fix** | PR OPEN | Use LAN gateway, disable resolv.conf auto-generation. |
+| [s-ai #108](https://github.com/CambrianTech/sentinel-ai/issues/108) | **Device ladder** | IN PROGRESS | 64/32/16 expert variants for RTX 3090 → MacBook Air → iPhone. |
+| [s-ai #109](https://github.com/CambrianTech/sentinel-ai/issues/109) | **Production pipeline** | COMMITTED | forge → test → GGUF → test → card → publish. Gated, idempotent, never degrades. |
+| [s-ai #110](https://github.com/CambrianTech/sentinel-ai/issues/110) | **Benchmark validation** | IN PROGRESS | HumanEval+ running. Open LLM Leaderboard, Intel Low-Bit, LiveCodeBench next. |
+| [s-ai #111-114](https://github.com/CambrianTech/sentinel-ai/issues/111) | **Leaderboard submissions** | TODO | Open LLM v2, HumanEval+, Intel Low-Bit, LiveCodeBench. |
+
+**Published models (13 on HuggingFace):**
+
+| Model | Downloads | HumanEval | Status |
+|-------|-----------|-----------|--------|
+| qwen3.5-35b-a3b-compacted | 948 | TBD | Published, GGUF Q2_K/Q4_K_M available |
+| qwen2.5-coder-14b-compacted | 898 | TBD | Published, needs GGUF |
+| qwen2.5-coder-32b-compacted | 774 | TBD | Published, needs GGUF |
+| qwen3.5-4b-code-forged | 141 | **74.4% (partial)** | Published, GGUF available, benchmark running |
+| qwen3.5-27b-code-forged | 21 | TBD | Published, MLX 4-bit available |
+
+**The dependency chain:**
+```
+sentinel-ai forge scripts (temporary) → continuum model/forge command (Rust)
+    → factory widget (monitor + control)
+    → benchmark suite (HumanEval, MMLU, LiveCodeBench)
+    → model cards (built from benchmark results, never templates)
+    → publish to HuggingFace
+    → grid distributes to devices
+```
+
+**Done when**: `jtag model/forge Qwen/Qwen3.5-4B --domain code` runs from the factory widget, benchmarks automatically, publishes with score on the card, and appears in the grid model marketplace. All from consumer hardware.
+
+---
+
 ## Issue Map — Every Open Issue, One Phase
 
 | Phase | Issues | Count |
@@ -324,8 +367,9 @@ This document is the **single source of truth** for remaining work. Each phase i
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
 | **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
+| **12: Factory** | #576, #577, #578, #579, #580, #581 + s-ai #108-114 | 13 (2 in progress) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **118 tracked, 44 open, 74 closed** |
+| **Total** | | **131 tracked, 57 open, 74 closed** |
 
 ---
 
