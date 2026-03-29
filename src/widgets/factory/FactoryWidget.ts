@@ -77,6 +77,13 @@ export class FactoryWidget extends ReactiveWidget {
   @reactive() private outputSamples: ForgeSample[] = [];
   @reactive() private _isLoading = true;
 
+  // ── Forge Controls State ────────────────────────────────────────────
+  @reactive() private _selectedModel = 'Qwen/Qwen3.5-4B';
+  @reactive() private _selectedDomain = 'code';
+  @reactive() private _selectedExperts = 0;  // 0 = dense (no expert pruning)
+  @reactive() private _selectedSteps = 2000;
+  @reactive() private _forgeStarting = false;
+
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
   override connectedCallback(): void {
@@ -385,6 +392,122 @@ export class FactoryWidget extends ReactiveWidget {
         stroke-width: 1.5;
       }
 
+      /* ── Forge Controls ────────────────────────────────── */
+
+      .forge-controls {
+        background: var(--surface-elevated, rgba(255,255,255,0.04));
+        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+        border-radius: 8px;
+        padding: 16px 20px;
+      }
+
+      .controls-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .control-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--content-secondary, #8a92a5);
+      }
+
+      .control-select,
+      .control-input {
+        background: rgba(0,0,0,0.3);
+        border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+        border-radius: 4px;
+        color: var(--content-primary, #e0e6ed);
+        font-size: 13px;
+        padding: 8px 10px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+
+      .control-select:focus,
+      .control-input:focus {
+        border-color: var(--accent-primary, #00d4ff);
+      }
+
+      .control-select option {
+        background: #0a1520;
+        color: #e0e6ed;
+      }
+
+      .slider-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .slider-row input[type="range"] {
+        flex: 1;
+        accent-color: var(--accent-primary, #00d4ff);
+        height: 4px;
+      }
+
+      .slider-value {
+        font-size: 13px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        min-width: 50px;
+        text-align: right;
+        color: var(--accent-primary, #00d4ff);
+      }
+
+      .forge-button {
+        width: 100%;
+        padding: 10px;
+        background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 200, 0.2));
+        border: 1px solid var(--accent-primary, #00d4ff);
+        border-radius: 6px;
+        color: var(--accent-primary, #00d4ff);
+        font-size: 14px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      .forge-button:hover {
+        background: linear-gradient(135deg, rgba(0, 212, 255, 0.35), rgba(0, 255, 200, 0.35));
+        box-shadow: 0 0 16px rgba(0, 212, 255, 0.3);
+      }
+
+      .forge-button:active {
+        transform: scale(0.98);
+      }
+
+      .forge-button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      .forge-button.forging {
+        background: linear-gradient(135deg, rgba(255, 170, 0, 0.2), rgba(255, 100, 0, 0.2));
+        border-color: #ffaa00;
+        color: #ffaa00;
+        animation: pulse-glow 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse-glow {
+        0%, 100% { box-shadow: 0 0 8px rgba(255, 170, 0, 0.2); }
+        50% { box-shadow: 0 0 20px rgba(255, 170, 0, 0.4); }
+      }
+
       /* ── Output Log ──────────────────────────────────── */
 
       .output-log {
@@ -484,11 +607,101 @@ export class FactoryWidget extends ReactiveWidget {
           <span class="subtitle">continuum-ai</span>
         </div>
 
+        ${this.renderForgeControls()}
         ${this.renderActiveForge()}
         ${this.renderOutputLog()}
         ${this.renderPublishedModels()}
       </div>
     `;
+  }
+
+  // ── Forge Controls ─────────────────────────────────────────────────────
+
+  private get _isMoe(): boolean {
+    return this._selectedModel.includes('35B') || this._selectedModel.includes('MoE');
+  }
+
+  private get _isForging(): boolean {
+    return this.forgeStatus?.phase === 'training' || this.forgeStatus?.phase === 'loading';
+  }
+
+  private renderForgeControls(): TemplateResult {
+    return html`
+      <div class="section">
+        <div class="section-title">Forge</div>
+        <div class="forge-controls">
+          <div class="controls-grid">
+            <div class="control-group">
+              <span class="control-label">Base Model</span>
+              <select class="control-select"
+                .value=${this._selectedModel}
+                @change=${(e: Event) => this._selectedModel = (e.target as HTMLSelectElement).value}>
+                <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
+                <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
+                <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
+                <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <span class="control-label">Domain</span>
+              <select class="control-select"
+                .value=${this._selectedDomain}
+                @change=${(e: Event) => this._selectedDomain = (e.target as HTMLSelectElement).value}>
+                <option value="code">Code</option>
+                <option value="reasoning">Reasoning</option>
+                <option value="general">General</option>
+                <option value="chat">Chat</option>
+              </select>
+            </div>
+            ${this._isMoe ? html`
+            <div class="control-group">
+              <span class="control-label">Experts (MoE)</span>
+              <div class="slider-row">
+                <input type="range" min="16" max="128" step="16"
+                  .value=${String(this._selectedExperts || 64)}
+                  @input=${(e: Event) => this._selectedExperts = parseInt((e.target as HTMLInputElement).value)}>
+                <span class="slider-value">${this._selectedExperts || 64}</span>
+              </div>
+            </div>
+            ` : nothing}
+            <div class="control-group">
+              <span class="control-label">Training Steps</span>
+              <div class="slider-row">
+                <input type="range" min="500" max="5000" step="500"
+                  .value=${String(this._selectedSteps)}
+                  @input=${(e: Event) => this._selectedSteps = parseInt((e.target as HTMLInputElement).value)}>
+                <span class="slider-value">${this._selectedSteps}</span>
+              </div>
+            </div>
+          </div>
+          <button class="forge-button ${this._isForging ? 'forging' : ''}"
+            ?disabled=${this._forgeStarting}
+            @click=${this.startForge}>
+            ${this._isForging ? 'FORGING...' : this._forgeStarting ? 'STARTING...' : 'START FORGE'}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  private async startForge(): Promise<void> {
+    if (this._isForging || this._forgeStarting) return;
+    this._forgeStarting = true;
+
+    try {
+      // Fire forge command — routes to a grid node with GPU
+      await this.executeCommand<any, any>('model/forge', {
+        model: this._selectedModel,
+        domain: this._selectedDomain,
+        experts: this._isMoe ? (this._selectedExperts || 64) : 0,
+        steps: this._selectedSteps,
+      });
+    } catch (e) {
+      console.error('Forge start failed:', e);
+      // TODO: show error in UI
+    } finally {
+      this._forgeStarting = false;
+    }
   }
 
   // ── Active Forge Section ──────────────────────────────────────────────
