@@ -57,7 +57,8 @@ export const DEFAULT_ROOMS = {
   NEWSROOM: stringToUUID('Newsroom') as UUID,
   CODE: stringToUUID('Code') as UUID,
   SUPPORT: stringToUUID('Support') as UUID,
-  AI_TRAINING: stringToUUID('AI Training') as UUID
+  AI_TRAINING: stringToUUID('AI Training') as UUID,
+  FACTORY: stringToUUID('Factory') as UUID
 } as const;
 
 /**
