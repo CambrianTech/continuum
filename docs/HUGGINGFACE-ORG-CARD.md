@@ -157,4 +157,4 @@ The `AdaptivePlasticityController` observes the model and makes all decisions �
 
 - [sentinel-ai](https://github.com/CambrianTech/sentinel-ai) — Open source forge framework (MIT)
 - [continuum](https://github.com/CambrianTech/continuum) — Distributed AI on consumer hardware
-- [@cambrian](https://x.com/cambrian) — Updates and demos
+- [@joelteply](https://x.com/joelteply) — Updates and demos
