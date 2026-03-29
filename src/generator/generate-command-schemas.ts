@@ -616,12 +616,6 @@ function main() {
   console.log('✨ Done!\n');
 }
 
-// Run if executed directly
-if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
-    console.error('❌ Schema generation failed:', error);
-    process.exit(1);
-  }
-}
+
+// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
+// Run generators via: npx tsx generator/<name>.ts
