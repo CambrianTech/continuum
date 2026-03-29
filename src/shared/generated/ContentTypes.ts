@@ -4,14 +4,14 @@
  * Source of truth: system/recipes/*.json
  * Regenerate: npx tsx generator/generate-content-types.ts
  *
- * 27 content types from 27 recipe files
+ * 28 content types from 28 recipe files
  */
 
 /**
  * All valid content type IDs — derived from recipe uniqueId fields.
  * Adding a new content type: create a recipe JSON, run the generator.
  */
-export type ContentType = 'academy-training' | 'ai-debate-club' | 'browser' | 'canvas' | 'chat' | 'coding' | 'creative-writing' | 'diagnostics-log' | 'diagnostics' | 'dm' | 'gan' | 'general-chat' | 'grid-overview' | 'help' | 'inference-sample' | 'live' | 'logs' | 'multi-persona-chat' | 'newsroom' | 'outreach' | 'persona' | 'profile' | 'research' | 'settings' | 'terminal' | 'theme' | 'training-dashboard';
+export type ContentType = 'academy-training' | 'ai-debate-club' | 'browser' | 'canvas' | 'chat' | 'coding' | 'creative-writing' | 'diagnostics-log' | 'diagnostics' | 'dm' | 'factory' | 'gan' | 'general-chat' | 'grid-overview' | 'help' | 'inference-sample' | 'live' | 'logs' | 'multi-persona-chat' | 'newsroom' | 'outreach' | 'persona' | 'profile' | 'research' | 'settings' | 'terminal' | 'theme' | 'training-dashboard';
 
 /**
  * All content type IDs as a runtime array (for validation, iteration).
@@ -27,6 +27,7 @@ export const CONTENT_TYPES: ContentType[] = [
     'diagnostics-log',
     'diagnostics',
     'dm',
+    'factory',
     'gan',
     'general-chat',
     'grid-overview',
@@ -148,6 +149,15 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         displayName: 'DM',
         icon: '✉️',
         pathPrefix: '/dm',
+        requiresEntity: false,
+        entityType: null,
+        hasRightPanel: false,
+    },
+    'factory': {
+        widget: 'factory-widget',
+        displayName: 'Factory',
+        icon: '📄',
+        pathPrefix: '/factory',
         requiresEntity: false,
         entityType: null,
         hasRightPanel: false,

@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-27 (evening)
-**Status**: **FORGING QWEN3.5.** First Qwen3.5 model forged and published: `continuum-ai/qwen3.5-4b-code-forged` — baseline 3.04 → forged 2.31 perplexity (+24% improvement on code). Trained on CodeFeedback (156K code Q&A pairs) with LoRA + AMP mixed precision on RTX 5090. Memory-tiered pipeline (A/B/C) working. 27B forge next. Content type hardcoding eliminated (PR #567). Session identity (#568) is the grid blocker. 16 sentinel-ai issues (#80-96), continuum issues #564-571 filed.
+**Updated**: 2026-03-29
+**Status**: **FACTORY COMING ONLINE.** 13 models published on HuggingFace (948 downloads on 35B compacted). First HumanEval benchmark running — 4B code-forged at **74.4% pass rate on first 78/164 problems** (2.6GB GGUF, iPhone-sized). Beats Qwen2.5-Coder-3B (66%), Phi-3-mini (62%), DeepSeek-Coder-1.3B (65%) at similar or smaller size. Factory widget created (#576). Device ladder planned (#108): 64/32/16 expert variants targeting MacBook Air → iPhone. Production pipeline with inference gates committed (sentinel-ai #109). WSL2 DNS root-caused: WSL2 NAT blocks UDP 53 to external DNS — fix: use LAN gateway (PR #581). Leaderboard submission issues filed (#111-114).
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
@@ -65,6 +65,8 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | DONE (PR #387) | Fixed — removed shell script browser launch, orchestrator handles it. |
 | [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | DONE (PR #388) | Fixed — activation guard prevents duplicate join from racing code paths. |
 | [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. Needs cross-platform testing. |
+| — | **Duplicate seed systems** | DEBT | Two seed paths: `seed-continuum.ts` (active, correct) and `api/data-seed/RoomDataSeed.ts` (dead code, wrong recipeIds). RoomDataSeed hardcodes `general-chat` for academy/pantheon. Dead code but confusing. Delete or consolidate. |
+| — | **Seeding fragile on fresh installs** | BUG | Seeding is buggy, inefficient, and prone to complete failure on new installs. Needs single reliable path that works every time. |
 | [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
 | [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
 
@@ -80,7 +82,7 @@ This document is the **single source of truth** for remaining work. Each phase i
 |---|-------|--------|------|
 | [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
 | [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | DONE (investigated) | 150 switches are legitimate discriminated unions. Command name switches already eliminated by dynamic discovery. |
-| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | TODO | Kill ContentTypeRegistry, route everything through recipes. |
+| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | PARTIAL | Room selection now uses `room.recipeId` as contentType instead of hardcoded 'chat'. Factory, logs, canvas, help rooms route to correct widgets. ContentTypeRegistry still exists but delegates to RecipeLayoutService. Remaining: URL routing, full recipe-driven panel composition. |
 | [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
 | [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
 | [#353](https://github.com/CambrianTech/continuum/issues/353) | **Generator v2: Rust modules + tokio** | TODO | Full Rust module generation with IPC and tests. |
@@ -120,7 +122,8 @@ This document is the **single source of truth** for remaining work. Each phase i
 |---|-------|--------|------|
 | [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** ⚠️ CRITICAL | TODO | Avatar vertex corruption — most personas show shredded/exploded geometry in live view. 8 VRM models for 15 personas = overflow models garbled. Also: memory leaks, latency, simultaneous speech. |
 | ~~[#338](https://github.com/CambrianTech/continuum/issues/338)~~ | **Deterministic resource deallocation** | DONE | Merged into #331. |
-| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | TODO | STT→LLM→TTS pipeline too slow. Need streaming TTS, speculative STT. |
+| [#582](https://github.com/CambrianTech/continuum/issues/582) | **Native multimodal pipeline** ⚠️ HIGH | TODO | Direct audio/vision for capable models (one hop, <2s), bridge only for text-only. Three parallel streams: LISTEN + THINK + SPEAK. Fundamental architecture fix. |
+| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | SUPERSEDED by #582 | STT→LLM→TTS pipeline too slow. #582 eliminates the pipeline entirely for multimodal models. |
 | ~~[#340](https://github.com/CambrianTech/continuum/issues/340)~~ | **AIs talk over each other** | DONE | Merged into #331. |
 | ~~[#318](https://github.com/CambrianTech/continuum/issues/318)~~ | **Avatar models eating 26GB** | DONE | Cleaned up — 8 CC0 VRoid models only. |
 | [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** ⚠️ CRITICAL | TODO | Only 8 models for 15 personas. Overflow causes vertex corruption. Need 15+ working VRM 0.x models. |
@@ -302,9 +305,64 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#516](https://github.com/CambrianTech/continuum/issues/516) | **First Grid experiment** | TODO | 5090 + 3090 + 1080 Ti + laptops. Heterogeneous dual-node proof. |
 | [#517](https://github.com/CambrianTech/continuum/issues/517) | **Onboarding crisis** ⚠️ CRITICAL | TODO | First external user hit walls. Install must be frictionless. Blocks everything. |
 
-**First real mesh**: 5090 (32GB) + 3090 (24GB) + 1080 Ti (11GB) + laptops. Ares manages allocation with polite mode — backs off when users need their machines.
+**Available hardware (ready to mesh):**
 
-**Done when**: `install.sh` works on Toby's 3090 machine. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU.
+| Node | GPU | VRAM | RAM | Role | Status |
+|------|-----|------|-----|------|--------|
+| Joel 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
+| Joel 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
+| Joel 970 box | GTX 970 | 4GB | ? | Light inference, testing | **OFFLINE** |
+| Joel MacBook Pro | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
+| Joel MacBook Air | M1 | 8GB unified | 8GB | iPhone-class testing (same RAM budget) | Available |
+| Toby 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
+| Toby 5050 | RTX 5050 | 8GB | ? | Light inference, edge testing | **OFFLINE** |
+
+**The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
+
+**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges.
+
+---
+
+## Phase 12: Factory — Model Forge Production Line
+
+> Nature: forge base models. Nurture: academy trains personas. Factory is nature.
+
+The factory forges, benchmarks, and publishes base models for every device tier. sentinel-ai provides the forge algorithms (temporary — absorbing into continuum-core Rust modules within the month). Continuum owns publishing, cards, distribution, and the factory widget.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#576](https://github.com/CambrianTech/continuum/issues/576) | **Factory widget** | SCAFFOLD | Event-driven widget created. Needs: Start Forge button, live monitor, published models scoreboard, device target matrix. |
+| [#577](https://github.com/CambrianTech/continuum/issues/577) | **Architecture visualizer** | DESIGNED | Shared component for model surgery + cognition visualization. Canvas/WebGL. Same topology renderer for factory and brain widgets. |
+| [#578](https://github.com/CambrianTech/continuum/issues/578) | **Voice model forging** | TODO | Same pipeline for TTS/STT. Prune unused phoneme heads, specialize for accent/language. |
+| [#579](https://github.com/CambrianTech/continuum/issues/579) | **Vision model forging** | TODO | Feature detector pruning, domain specialization. |
+| [#580](https://github.com/CambrianTech/continuum/issues/580) | **Expert-as-a-service** | TODO | Dynamic MoE paging across grid. Hot experts local, cold experts from mesh. Docker for neural compute. |
+| [#581](https://github.com/CambrianTech/continuum/issues/581) | **WSL2 DNS fix** | PR OPEN | Use LAN gateway, disable resolv.conf auto-generation. |
+| [s-ai #108](https://github.com/CambrianTech/sentinel-ai/issues/108) | **Device ladder** | IN PROGRESS | 64/32/16 expert variants for RTX 3090 → MacBook Air → iPhone. |
+| [s-ai #109](https://github.com/CambrianTech/sentinel-ai/issues/109) | **Production pipeline** | COMMITTED | forge → test → GGUF → test → card → publish. Gated, idempotent, never degrades. |
+| [s-ai #110](https://github.com/CambrianTech/sentinel-ai/issues/110) | **Benchmark validation** | IN PROGRESS | HumanEval+ running. Open LLM Leaderboard, Intel Low-Bit, LiveCodeBench next. |
+| [s-ai #111-114](https://github.com/CambrianTech/sentinel-ai/issues/111) | **Leaderboard submissions** | TODO | Open LLM v2, HumanEval+, Intel Low-Bit, LiveCodeBench. |
+
+**Published models (13 on HuggingFace):**
+
+| Model | Downloads | HumanEval | Status |
+|-------|-----------|-----------|--------|
+| qwen3.5-35b-a3b-compacted | 948 | TBD | Published, GGUF Q2_K/Q4_K_M available |
+| qwen2.5-coder-14b-compacted | 898 | TBD | Published, needs GGUF |
+| qwen2.5-coder-32b-compacted | 774 | TBD | Published, needs GGUF |
+| qwen3.5-4b-code-forged | 141 | **74.4% (partial)** | Published, GGUF available, benchmark running |
+| qwen3.5-27b-code-forged | 21 | TBD | Published, MLX 4-bit available |
+
+**The dependency chain:**
+```
+sentinel-ai forge scripts (temporary) → continuum model/forge command (Rust)
+    → factory widget (monitor + control)
+    → benchmark suite (HumanEval, MMLU, LiveCodeBench)
+    → model cards (built from benchmark results, never templates)
+    → publish to HuggingFace
+    → grid distributes to devices
+```
+
+**Done when**: `jtag model/forge Qwen/Qwen3.5-4B --domain code` runs from the factory widget, benchmarks automatically, publishes with score on the card, and appears in the grid model marketplace. All from consumer hardware.
 
 ---
 
@@ -324,8 +382,9 @@ This document is the **single source of truth** for remaining work. Each phase i
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
 | **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
+| **12: Factory** | #576, #577, #578, #579, #580, #581 + s-ai #108-114 | 13 (2 in progress) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **118 tracked, 44 open, 74 closed** |
+| **Total** | | **131 tracked, 57 open, 74 closed** |
 
 ---
 

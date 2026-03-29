@@ -500,11 +500,5 @@ function main() {
   console.log(dryRun ? '\n   ⚡ DRY RUN — no files modified' : '\n   ✨ Done!');
 }
 
-if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
-    console.error('❌ Executor generation failed:', error);
-    process.exit(1);
-  }
-}
+// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
+// Run generators via: npx tsx generator/<name>.ts

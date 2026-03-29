@@ -421,6 +421,9 @@ async function seedViaJTAG() {
         createRoom(ROOM_IDS.CODE, 'code', 'Code', 'Collaborative coding — reading, writing, reviewing, and shipping code as a team',
           "Software development with real tools and real agent loops", 0,
           ["coding", "development", "engineering"], humanUser.id, 'code', 'coding'),
+        createRoom(ROOM_IDS.FACTORY, 'factory', 'Factory', 'Model forge production floor — forge, benchmark, and publish models',
+          "Monitor active forges, test model quality, manage the device ladder", 0,
+          ["factory", "forge", "models", "benchmark", "production"], humanUser.id, 'factory', 'factory'),
       ];
 
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);

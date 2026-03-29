@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/forge-status",
+  "version": "1.0.0",
+  "description": "Get the current status of active model forges — phase, step, loss, VRAM usage, ETA. Polls status.json from forge nodes on the grid.",
+  "main": "server/ModelForgeStatusServerCommand.ts",
+  "types": "shared/ModelForgeStatusTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelForgeStatusIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/forge-status"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

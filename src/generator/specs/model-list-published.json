@@ -1,0 +1,64 @@
+{
+  "name": "model/list-published",
+  "description": "List all published models from the continuum-ai HuggingFace org — download counts, likes, improvement scores, hardware targets, tags.",
+  "params": [
+    {
+      "name": "domain",
+      "type": "string",
+      "description": "Filter by domain (code, reasoning, general). If omitted, returns all.",
+      "optional": true
+    },
+    {
+      "name": "includeGguf",
+      "type": "boolean",
+      "description": "Include GGUF variant repos in the list. Default false.",
+      "optional": true
+    }
+  ],
+  "results": [
+    {
+      "name": "models",
+      "type": "array",
+      "description": "List of published models",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "HuggingFace repo ID (e.g., continuum-ai/qwen3.5-4b-code-forged)" },
+          "name": { "type": "string", "description": "Short model name" },
+          "baseModel": { "type": "string", "description": "Original base model ID" },
+          "domain": { "type": "string", "description": "Training domain" },
+          "improvementPct": { "type": "number", "description": "Perplexity improvement percentage vs baseline" },
+          "downloads": { "type": "number", "description": "Total HuggingFace downloads" },
+          "likes": { "type": "number", "description": "Total HuggingFace likes" },
+          "sizeGb": { "type": "number", "description": "Model size on disk in GB" },
+          "variant": { "type": "string", "description": "Model variant: forged, defragged, mlx, compacted, gguf" },
+          "tags": { "type": "array", "description": "HuggingFace tags" },
+          "lastModified": { "type": "string", "description": "ISO timestamp of last update" }
+        }
+      }
+    },
+    {
+      "name": "totalDownloads",
+      "type": "number",
+      "description": "Sum of all model downloads"
+    },
+    {
+      "name": "totalModels",
+      "type": "number",
+      "description": "Number of published models"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all published models",
+      "command": "./jtag model/list-published",
+      "expectedResult": "{ totalModels: 12, totalDownloads: 3649, models: [{ name: \"qwen3.5-4b-code-forged\", downloads: 141, improvementPct: 26.6 }, ...] }"
+    },
+    {
+      "description": "List code models only",
+      "command": "./jtag model/list-published --domain=code",
+      "expectedResult": "{ totalModels: 5, models: [{ name: \"qwen3.5-27b-code-forged\", domain: \"code\" }, ...] }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

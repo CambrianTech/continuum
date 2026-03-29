@@ -1,0 +1,53 @@
+{
+  "name": "model/forge-status",
+  "description": "Get the current status of active model forges — phase, step, loss, VRAM usage, ETA. Polls status.json from forge nodes on the grid.",
+  "params": [
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Optional grid node ID to query. If omitted, returns status from all nodes.",
+      "optional": true
+    }
+  ],
+  "results": [
+    {
+      "name": "forges",
+      "type": "array",
+      "description": "List of active forge jobs",
+      "items": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string", "description": "Grid node running this forge" },
+          "nodeName": { "type": "string", "description": "Human-readable node name" },
+          "phase": { "type": "string", "description": "Current phase: loading, training, pruning, defrag, saving, generating_samples" },
+          "detail": { "type": "string", "description": "Human-readable detail string" },
+          "model": { "type": "string", "description": "Base model being forged (e.g., Qwen/Qwen3.5-4B)" },
+          "domain": { "type": "string", "description": "Training domain (code, reasoning, etc.)" },
+          "step": { "type": "number", "description": "Current training step" },
+          "totalSteps": { "type": "number", "description": "Total training steps" },
+          "loss": { "type": "number", "description": "Current training loss" },
+          "vramGb": { "type": "number", "description": "GPU VRAM used in GB" },
+          "vramTotalGb": { "type": "number", "description": "GPU VRAM total in GB" },
+          "itPerSec": { "type": "number", "description": "Training iterations per second" },
+          "etaSeconds": { "type": "number", "description": "Estimated seconds remaining" },
+          "cycle": { "type": "number", "description": "Current forge cycle" },
+          "totalCycles": { "type": "number", "description": "Total forge cycles" },
+          "timestamp": { "type": "string", "description": "ISO timestamp of last status update" }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check active forges across all nodes",
+      "command": "./jtag model/forge-status",
+      "expectedResult": "{ forges: [{ nodeName: \"bigmama\", phase: \"training\", step: 350, totalSteps: 1000, loss: 2.65, vramGb: 7.0 }] }"
+    },
+    {
+      "description": "Check specific node",
+      "command": "./jtag model/forge-status --nodeId=bigmama",
+      "expectedResult": "{ forges: [{ nodeName: \"bigmama\", phase: \"training\", model: \"Qwen/Qwen3.5-27B\", domain: \"code\" }] }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

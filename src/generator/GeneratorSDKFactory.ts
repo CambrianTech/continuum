@@ -37,58 +37,6 @@ export function createGeneratorRegistry(rootPath: string): GeneratorRegistry {
   return registry;
 }
 
-// CLI execution — when run directly, audit all types
-if (require.main === module) {
-  const path = require('path');
-  const rootPath = path.join(__dirname, '..');
-  const args = process.argv.slice(2);
 
-  const registry = createGeneratorRegistry(rootPath);
-
-  // Parse --type flag
-  const typeArg = args.find(a => a.startsWith('--type='));
-  const typeName = typeArg?.split('=')[1];
-
-  // Parse --fix flag
-  const doFix = args.includes('--fix');
-
-  if (typeName) {
-    // Audit single type
-    const gen = registry.get(typeName);
-    if (doFix) {
-      const fixResult = gen.fixAll();
-      console.log(`\nFixed ${fixResult.totalFixed} issues in ${fixResult.results.length} ${typeName} modules`);
-      if (fixResult.totalRemaining > 0) {
-        console.log(`${fixResult.totalRemaining} issues remaining (manual fix required)`);
-      }
-      for (const result of fixResult.results) {
-        console.log(`  ${result.name}: ${result.issuesFixed.length} fixed, ${result.issuesRemaining.length} remaining`);
-      }
-    } else {
-      const summary = gen.audit();
-      const map = new Map([[typeName, summary]]);
-      registry.printAuditReport(map);
-    }
-  } else {
-    // Audit all types
-    if (doFix) {
-      const results = registry.fixAll();
-      let totalFixed = 0;
-      let totalRemaining = 0;
-      for (const [type, fixResult] of results) {
-        totalFixed += fixResult.totalFixed;
-        totalRemaining += fixResult.totalRemaining;
-        if (fixResult.results.length > 0) {
-          console.log(`\n${type}: Fixed ${fixResult.totalFixed} issues`);
-          for (const result of fixResult.results) {
-            console.log(`  ${result.name}: ${result.issuesFixed.join(', ')}`);
-          }
-        }
-      }
-      console.log(`\nTotal: ${totalFixed} fixed, ${totalRemaining} remaining`);
-    } else {
-      const summaries = registry.auditAll();
-      registry.printAuditReport(summaries);
-    }
-  }
-}
+// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
+// Run generators via: npx tsx generator/<name>.ts

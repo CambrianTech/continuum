@@ -38,10 +38,6 @@ async function cleanupBackupPollution(): Promise<void> {
   logger.info('✅ Backup cleanup complete!');
 }
 
-// CLI execution
-if (require.main === module) {
-  cleanupBackupPollution().catch(error => {
-    console.error('💥 Backup cleanup failed:', error);
-    process.exit(1);
-  });
-}
+
+// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
+// Run generators via: npx tsx generator/<name>.ts

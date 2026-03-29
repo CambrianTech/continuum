@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/list-published",
+  "version": "1.0.0",
+  "description": "List all published models from the continuum-ai HuggingFace org — download counts, likes, improvement scores, hardware targets, tags.",
+  "main": "server/ModelListPublishedServerCommand.ts",
+  "types": "shared/ModelListPublishedTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelListPublishedIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/list-published"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -7,7 +7,6 @@
 import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import { SessionCreateCommand } from '../shared/SessionCreateCommand';
 import { type CreateSessionParams, type CreateSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
@@ -23,9 +22,11 @@ export class SessionCreateBrowserCommand extends SessionCreateCommand {
   protected async routeToSessionDaemon(params: CreateSessionParams): Promise<CreateSessionResult | SessionErrorResponse> {
     console.log(`🏷️ BROWSER: Session creation needs server → delegating to server`);
     
-    // Use the same pattern as screenshot: delegate to server via remoteExecute
-    // CreateSessionParams (daemon-level) doesn't extend CommandParams — bridge with userId
-    const commandParams = { ...params, userId: params.userId ?? SYSTEM_SCOPES.SYSTEM } as CommandParams;
+    // Delegate to server via remoteExecute
+    // CRITICAL: Do NOT default userId to SYSTEM_SCOPES.SYSTEM — that's all-zeros.
+    // Server resolves real identity from connectionContext.identity.deviceId.
+    // If userId is undefined, keep it undefined — server handles resolution.
+    const commandParams = { ...params } as CommandParams;
     const result = await this.remoteExecute(commandParams);
     return result as CreateSessionResult | SessionErrorResponse;
   }

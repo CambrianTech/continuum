@@ -478,8 +478,6 @@ export class EventRegistryUtils {
 
 /**
  * CLI entry point for generating event constants
- */
-if (require.main === module) {
-  const generator = new EventConstantsGenerator();
-  generator.generateEventConstants().catch(console.error);
-}
+
+// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
+// Run generators via: npx tsx generator/<name>.ts
