@@ -1,0 +1,57 @@
+{
+  "uniqueId": "factory",
+  "name": "Factory",
+  "displayName": "Factory",
+  "description": "Model forge production floor — shows active forges, queue, published models, and resource gauges",
+  "version": 1,
+
+  "layout": {
+    "main": ["factory-widget"],
+    "right": null
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Provide helpful guidance",
+      "Be concise and clear"
+    ],
+    "decisionCriteria": [
+      "What is the user trying to accomplish?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["factory"]
+}
