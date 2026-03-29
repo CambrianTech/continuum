@@ -51,9 +51,9 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#568](https://github.com/CambrianTech/continuum/issues/568) | **Session identity broken — all-zeros UUIDs** | TODO | System returns `00000000-...` for connected users. No authentication, no authorization, no data isolation. BLOCKS grid, multi-user, any commercial deployment. |
-| [#566](https://github.com/CambrianTech/continuum/issues/566) | **Tab reconnection — tabs multiply, sessions orphaned** | TODO | Reconnecting tabs create new sessions instead of rebinding. Ghost sessions accumulate. Especially bad on Windows. |
-| [#565](https://github.com/CambrianTech/continuum/issues/565) | **WSL2 auto-start on boot** | TODO | Tower doesn't survive reboots. WSL2 requires admin PowerShell to restart. Need Windows service / `winget install` path. |
+| [#568](https://github.com/CambrianTech/continuum/issues/568) | **Session identity broken — all-zeros UUIDs** | PARTIAL | Browser sessions now get real userId (`./jtag ping` returns `18db7494`). Fixed: browser command, generator template (343 commands), session destroy. Remaining: CommandDaemon fallback, server-internal session. |
+| [#566](https://github.com/CambrianTech/continuum/issues/566) | **Tab reconnection — tabs multiply, sessions orphaned** | PARTIAL | CLI now works so browser detection on `npm start` can refresh existing tabs. Root cause of duplicate tabs: CLI was broken (generator main blocks in esbuild). Fixed. Remaining: proper session rebinding on WebSocket reconnect. |
+| [#565](https://github.com/CambrianTech/continuum/issues/565) | **WSL2 auto-start on boot** | PARTIAL | wsl-boot.sh fixed (uses LAN gateway DNS, not 8.8.8.8). PR #581 merged. Remaining: Windows scheduled task setup, `generateResolvConf=false` auto-config. |
 
 **Done when**: Every connection has a real UUID. Reconnecting tabs rebind to existing sessions. `userId` is required (not optional) on every contract. Zero-UUID requests are rejected.
 
