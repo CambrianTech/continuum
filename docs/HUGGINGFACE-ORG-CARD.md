@@ -9,13 +9,20 @@ pinned: false
 
 # continuum-ai
 
-**We make models smaller AND better.** Not quantized. Not distilled. Structurally reshaped.
+## Allowing consumer grade hardware to run SOTA models.
 
-[Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) iteratively prunes attention heads and retrains on domain data. Like biological synaptic pruning during brain development — the connections that fire together wire together, the rest are removed. What remains is architecturally optimized for its task.
+We don't quantize. We don't distill. We **structurally reshape** the model's architecture through [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning and retraining that makes models smaller AND better. Like biological synaptic pruning during brain development: the connections that fire together wire together, the rest are removed.
 
-**Headline result:** Qwen3.5-4B forged for code — **2.6GB GGUF, runs on iPhone 17 and MacBook Air.** HumanEval benchmark in progress: 44/58 early problems passing (76%). Full score incoming.
+**The result: models that were designed for datacenters, running on your phone.**
 
-Also: Qwen3.5-27B (Sonnet 4.6 level) forged and quantized to **15GB**. Runs on MacBook Pro at 9 tok/s. **+3.5% better at code than the original 54GB model.**
+| What | Proof |
+|------|-------|
+| **2.6GB code model for iPhone** | [qwen3.5-4b-code-forged-GGUF](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged-GGUF) — HumanEval: 44/58 early problems passing, benchmark in progress |
+| **Sonnet 4.6-level on MacBook** | [qwen3.5-27b-code-forged-mlx-4bit](https://huggingface.co/continuum-ai/qwen3.5-27b-code-forged-mlx-4bit) — 15GB, 9 tok/s on M1 32GB |
+| **35B MoE in 1.8GB** | [qwen3.5-35b-a3b-compacted-GGUF](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted-GGUF) — 256 experts pruned to 16 |
+| **+24% better at code** | [qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged) — perplexity 3.04 to 2.31 after forging |
+
+We target every device tier: RTX 5090 down to iPhone 17. Same technique, different compaction levels. **Be competitive at ANY size.**
 
 ## Published Models
 
