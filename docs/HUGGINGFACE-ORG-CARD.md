@@ -9,7 +9,7 @@ pinned: false
 
 # continuum-ai
 
-## SOTA models on your iPhone, MacBook, and GPU. No cloud required.
+## SOTA models on your iPhone, MacBook, tiny robots, and virtually ANY GPU. No cloud required.
 
 We don't quantize. We don't distill. We **structurally reshape** the model's architecture through [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning and retraining that makes models smaller AND better. Like biological synaptic pruning during brain development: the connections that fire together wire together, the rest are removed.
 
