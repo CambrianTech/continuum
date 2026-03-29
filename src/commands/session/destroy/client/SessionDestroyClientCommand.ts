@@ -6,7 +6,6 @@
 
 import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import { SessionDestroyCommand } from '../shared/SessionDestroyCommand';
 import { type DestroySessionParams, type DestroySessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 

@@ -7,7 +7,6 @@
 import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import { SessionCreateCommand } from '../shared/SessionCreateCommand';
 import { type CreateSessionParams, type CreateSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
