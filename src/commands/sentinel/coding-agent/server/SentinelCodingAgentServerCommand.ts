@@ -68,6 +68,17 @@ export class SentinelCodingAgentServerCommand extends CommandBase<SentinelCoding
       });
     }
 
+    // ── Sanitize paths — LLMs sometimes output placeholder paths from docs ──
+    const PLACEHOLDER_PATHS = ['/path/to/project', '/path/to/', '/tmp/project', 'path/to/project'];
+    if (p.cwd && PLACEHOLDER_PATHS.some(ph => p.cwd!.includes(ph))) {
+      console.warn(`⚠️ coding-agent: Rejecting placeholder cwd "${p.cwd}" — using process.cwd() instead`);
+      p.cwd = undefined;
+    }
+    if (p.repoPath && PLACEHOLDER_PATHS.some(ph => p.repoPath!.includes(ph))) {
+      console.warn(`⚠️ coding-agent: Rejecting placeholder repoPath "${p.repoPath}" — clearing`);
+      p.repoPath = undefined;
+    }
+
     // ── Bootstrap workspace ──────────────────────────────────────────
     let workspaceCwd: string;
     let workspaceBranch: string | undefined;
