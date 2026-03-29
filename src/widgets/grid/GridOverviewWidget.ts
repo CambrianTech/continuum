@@ -409,24 +409,55 @@ export class GridOverviewWidget extends ReactiveWidget {
   }
 
   private async _loadInitialState(): Promise<void> {
+    const updated = new Map<string, GridNode>();
+
+    // Always show local machine as node zero
+    try {
+      const localInfo = await this.executeCommand<any, any>('system/info', {});
+      updated.set('local', {
+        nodeId: 'local',
+        nodeName: localInfo?.hostname || 'This Machine',
+        status: 'online' as GridNodeStatus,
+        latencyMs: 0,
+        transport: 'local',
+        address: '127.0.0.1',
+        capabilities: ['compute', 'storage', 'inference'],
+        gpu: localInfo?.gpu ? { name: localInfo.gpu.name, vramMb: localInfo.gpu.vramMb } : undefined,
+        pinging: false,
+        latencyHistory: [],
+      });
+    } catch {
+      // system/info not available — add minimal local node
+      updated.set('local', {
+        nodeId: 'local',
+        nodeName: 'This Machine',
+        status: 'online' as GridNodeStatus,
+        latencyMs: 0,
+        transport: 'local',
+        address: '127.0.0.1',
+        capabilities: ['compute'],
+        pinging: false,
+        latencyHistory: [],
+      });
+    }
+
+    // Load remote grid nodes
     try {
       const result = await this.executeCommand<any, any>('grid/nodes', {});
       const normalized = normalizeGridNodes(result);
 
-      if (normalized.length > 0) {
-        const updated = new Map<string, GridNode>();
-        for (const n of normalized) {
-          updated.set(n.nodeId, {
-            ...n,
-            pinging: false,
-            latencyHistory: [],
-          });
-        }
-        this._nodes = updated;
+      for (const n of normalized) {
+        updated.set(n.nodeId, {
+          ...n,
+          pinging: false,
+          latencyHistory: [],
+        });
       }
     } catch (err) {
       console.warn('[GridOverview] Failed to load grid nodes:', err);
     }
+
+    this._nodes = updated;
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
