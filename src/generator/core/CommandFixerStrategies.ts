@@ -250,7 +250,7 @@ export const ${createParamsFnName} = (
   sessionId: UUID,
   data: Omit<${info.paramsName}, 'context' | 'sessionId' | 'userId'>
 ): ${info.paramsName} => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
+  // userId auto-injected by infrastructure
   ...data
 });
 `,
