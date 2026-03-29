@@ -80,7 +80,7 @@ This document is the **single source of truth** for remaining work. Each phase i
 |---|-------|--------|------|
 | [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
 | [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | DONE (investigated) | 150 switches are legitimate discriminated unions. Command name switches already eliminated by dynamic discovery. |
-| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | TODO | Kill ContentTypeRegistry, route everything through recipes. |
+| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | PARTIAL | Room selection now uses `room.recipeId` as contentType instead of hardcoded 'chat'. Factory, logs, canvas, help rooms route to correct widgets. ContentTypeRegistry still exists but delegates to RecipeLayoutService. Remaining: URL routing, full recipe-driven panel composition. |
 | [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
 | [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
 | [#353](https://github.com/CambrianTech/continuum/issues/353) | **Generator v2: Rust modules + tokio** | TODO | Full Rust module generation with IPC and tests. |
