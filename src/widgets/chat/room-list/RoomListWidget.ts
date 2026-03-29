@@ -331,7 +331,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     const roomId = room.id as UUID;
     // Use room's recipeId as contentType — not hardcoded 'chat'
     // The recipe determines what widget renders (chat-widget, factory-widget, etc.)
-    const contentType = (room as any).recipeId || 'chat';
+    const contentType = room.recipeId || 'chat';
 
     if (pageState.contentType === contentType && pageState.entityId === roomId) {
       return;
