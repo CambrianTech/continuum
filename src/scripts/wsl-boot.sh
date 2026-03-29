@@ -8,9 +8,29 @@
 LOG="/var/log/continuum-boot.log"
 echo "$(date): Continuum WSL boot starting" >> "$LOG"
 
-# 0. Fix DNS (WSL2 regenerates resolv.conf with broken nameserver on every boot)
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "$(date): DNS fixed (8.8.8.8)" >> "$LOG"
+# 0. Fix DNS
+# WSL2 auto-generates resolv.conf pointing at Tailscale DNS (10.255.255.254) or
+# a broken nameserver. External DNS (8.8.8.8) doesn't work because WSL2's NAT
+# blocks outbound UDP port 53. The fix: use the LAN gateway (router) which is
+# always reachable from WSL2.
+GATEWAY=$(ip route show default 2>/dev/null | awk '{print $3}')
+if [ -n "$GATEWAY" ]; then
+    # Disable auto-generation permanently
+    if ! grep -q "generateResolvConf" /etc/wsl.conf 2>/dev/null; then
+        echo -e "\n[network]\ngenerateResolvConf = false" >> /etc/wsl.conf
+    fi
+    echo "nameserver $GATEWAY" > /etc/resolv.conf
+    echo "$(date): DNS fixed (gateway $GATEWAY, auto-generation disabled)" >> "$LOG"
+else
+    # Fallback: try common router IPs
+    for ns in 192.168.1.1 192.168.0.1 10.0.0.1; do
+        if ping -c 1 -W 1 "$ns" &>/dev/null; then
+            echo "nameserver $ns" > /etc/resolv.conf
+            echo "$(date): DNS fixed (fallback $ns)" >> "$LOG"
+            break
+        fi
+    done
+fi
 
 # 1. Start SSH
 if command -v sshd &>/dev/null; then
