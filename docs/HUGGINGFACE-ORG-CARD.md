@@ -13,7 +13,9 @@ pinned: false
 
 [Experiential Plasticity](https://github.com/CambrianTech/continuum/blob/main/docs/papers/EXPERIENTIAL-PLASTICITY.md) iteratively prunes attention heads and retrains on domain data. Like biological synaptic pruning during brain development — the connections that fire together wire together, the rest are removed. What remains is architecturally optimized for its task.
 
-**Headline result:** Qwen3.5-27B (benchmarks at Sonnet 4.6 level) — forged, defragged, quantized to **15GB**. Runs on a MacBook Pro at 9 tok/s. **+3.5% better at code than the original 54GB model.**
+**Headline result:** Qwen3.5-4B forged for code — **2.6GB GGUF, runs on iPhone 17 and MacBook Air.** HumanEval benchmark in progress: 44/58 early problems passing (76%). Full score incoming.
+
+Also: Qwen3.5-27B (Sonnet 4.6 level) forged and quantized to **15GB**. Runs on MacBook Pro at 9 tok/s. **+3.5% better at code than the original 54GB model.**
 
 ## Published Models
 
@@ -25,13 +27,15 @@ pinned: false
 | [qwen3.5-27b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-27b-code-forged) | Qwen3.5-27B | Code | +3.5% | 17GB (4-bit) | RTX 3090/4090/5090 |
 | [qwen3.5-27b-code-forged-defragged](https://huggingface.co/continuum-ai/qwen3.5-27b-code-forged-defragged) | Qwen3.5-27B | Code | +3.9% | Smaller | RTX 3090/4090/5090 |
 | **[qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged)** | Qwen3.5-4B | Code | **+26.6%** | 8GB | **Any GPU / MacBook** |
+| **[qwen3.5-4b-code-forged-GGUF](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged-GGUF)** | Qwen3.5-4B | Code | **+26.6%** | **2.6GB Q4** | **iPhone 17, MacBook Air 8GB** |
 | [qwen3.5-4b-code-forged-defragged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged-defragged) | Qwen3.5-4B | Code | +33% | Smaller | Any GPU / MacBook |
 
 ### Qwen3.5 — Compacted (Expert Pruning)
 
 | Model | Original | Method | Reduction | Runs On |
 |-------|----------|--------|-----------|---------|
-| [qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted) | Qwen3.5-35B-A3B (256 experts) | Expert pruning to 16 experts | 49GB to 11GB | RTX 3090/4090/5090 |
+| **[qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted)** | Qwen3.5-35B-A3B (256 experts) | Expert pruning to 16 experts | **49GB to 11GB** | RTX 3090/4090/5090 |
+| [qwen3.5-35b-a3b-compacted-GGUF](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted-GGUF) | Same | GGUF Q2_K/Q4_K_M | **1.8GB / 2.7GB** | iPhone / MacBook Air |
 
 ### Qwen2.5 — Compacted (Head + Expert Pruning)
 
