@@ -53,7 +53,11 @@ export function createSessionCreateParams(
     connectionContext,
     category: options.category || 'user',
     displayName: options.displayName || 'Default Session',
-    userId: options.userId ?? SYSTEM_SCOPES.SYSTEM,
+    // Pass through userId if provided. For browser-ui connections, this should
+    // come from the seeded owner lookup on the server, not hardcoded to all-zeros.
+    // Using empty string instead of SYSTEM_SCOPES.SYSTEM (all-zeros) so server
+    // knows identity needs resolution rather than thinking it's a system call.
+    userId: options.userId || '',
     isShared: options.isShared ?? true,
     ...options
   };

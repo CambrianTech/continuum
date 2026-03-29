@@ -23,9 +23,11 @@ export class SessionCreateBrowserCommand extends SessionCreateCommand {
   protected async routeToSessionDaemon(params: CreateSessionParams): Promise<CreateSessionResult | SessionErrorResponse> {
     console.log(`🏷️ BROWSER: Session creation needs server → delegating to server`);
     
-    // Use the same pattern as screenshot: delegate to server via remoteExecute
-    // CreateSessionParams (daemon-level) doesn't extend CommandParams — bridge with userId
-    const commandParams = { ...params, userId: params.userId ?? SYSTEM_SCOPES.SYSTEM } as CommandParams;
+    // Delegate to server via remoteExecute
+    // CRITICAL: Do NOT default userId to SYSTEM_SCOPES.SYSTEM — that's all-zeros.
+    // Server resolves real identity from connectionContext.identity.deviceId.
+    // If userId is undefined, keep it undefined — server handles resolution.
+    const commandParams = { ...params } as CommandParams;
     const result = await this.remoteExecute(commandParams);
     return result as CreateSessionResult | SessionErrorResponse;
   }
