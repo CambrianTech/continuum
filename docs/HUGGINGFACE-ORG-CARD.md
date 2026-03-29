@@ -22,7 +22,7 @@ We don't quantize. We don't distill. We **structurally reshape** the model's arc
 | **35B MoE in 1.8GB** | [qwen3.5-35b-a3b-compacted-GGUF](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted-GGUF) — 256 experts pruned to 16 |
 | **+24% better at code** | [qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged) — perplexity 3.04 to 2.31 after forging |
 
-We target every device tier: RTX 5090 down to iPhone 17. Same technique, different compaction levels. **Be competitive at ANY size.**
+We target every device tier: RTX 5090 down to iPhone, Android, and Raspberry Pi. Same technique, different compaction levels. **Be competitive at ANY size.**
 
 ## Published Models
 
