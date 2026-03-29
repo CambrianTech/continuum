@@ -120,7 +120,8 @@ This document is the **single source of truth** for remaining work. Each phase i
 |---|-------|--------|------|
 | [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** ⚠️ CRITICAL | TODO | Avatar vertex corruption — most personas show shredded/exploded geometry in live view. 8 VRM models for 15 personas = overflow models garbled. Also: memory leaks, latency, simultaneous speech. |
 | ~~[#338](https://github.com/CambrianTech/continuum/issues/338)~~ | **Deterministic resource deallocation** | DONE | Merged into #331. |
-| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | TODO | STT→LLM→TTS pipeline too slow. Need streaming TTS, speculative STT. |
+| [#582](https://github.com/CambrianTech/continuum/issues/582) | **Native multimodal pipeline** ⚠️ HIGH | TODO | Direct audio/vision for capable models (one hop, <2s), bridge only for text-only. Three parallel streams: LISTEN + THINK + SPEAK. Fundamental architecture fix. |
+| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | SUPERSEDED by #582 | STT→LLM→TTS pipeline too slow. #582 eliminates the pipeline entirely for multimodal models. |
 | ~~[#340](https://github.com/CambrianTech/continuum/issues/340)~~ | **AIs talk over each other** | DONE | Merged into #331. |
 | ~~[#318](https://github.com/CambrianTech/continuum/issues/318)~~ | **Avatar models eating 26GB** | DONE | Cleaned up — 8 CC0 VRoid models only. |
 | [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** ⚠️ CRITICAL | TODO | Only 8 models for 15 personas. Overflow causes vertex corruption. Need 15+ working VRM 0.x models. |
