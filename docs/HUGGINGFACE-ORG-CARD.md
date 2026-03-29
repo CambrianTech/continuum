@@ -22,7 +22,22 @@ We don't quantize. We don't distill. We **structurally reshape** the model's arc
 | **35B MoE in 1.8GB** | [qwen3.5-35b-a3b-compacted-GGUF](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted-GGUF) — 256 experts pruned to 16 |
 | **+24% better at code** | [qwen3.5-4b-code-forged](https://huggingface.co/continuum-ai/qwen3.5-4b-code-forged) — perplexity 3.04 to 2.31 after forging |
 
-We target every device tier: RTX 5090 down to iPhone, Android, and Raspberry Pi. Same technique, different compaction levels. **Be competitive at ANY size.**
+We target every device tier. Same technique, different compaction levels. **Be competitive at ANY size.**
+
+### Device Targets
+
+| Device | RAM | Our Model | Size |
+|--------|-----|-----------|------|
+| RTX 5090 | 32GB | qwen3.5-27b-code-forged (fp16) | 17GB |
+| MacBook Pro 32GB | 32GB | qwen3.5-27b-code-forged-mlx-4bit | 15GB |
+| RTX 3090 | 24GB | qwen3.5-27b-code-forged (4-bit) | 17GB |
+| MacBook Air 16GB | 16GB | qwen3.5-4b-code-forged Q8_0 | 4.2GB |
+| iPhone 17 / Android | 8GB | qwen3.5-4b-code-forged Q4_K_M | 2.6GB |
+| MacBook Air 8GB | 8GB | qwen3.5-4b-code-forged Q4_K_M | 2.6GB |
+| Raspberry Pi 5 | 8GB | qwen3.5-4b-code-forged Q4_K_M | 2.6GB |
+| **Roomba j7+** | **8GB** | **qwen3.5-4b-code-forged Q4_K_M** | **2.6GB** |
+
+Yes, really. The iRobot Roomba j7+ has a Qualcomm QCS6490 with 8GB RAM — the same memory budget as an iPhone 17. Our 2.6GB Q4_K_M model fits with room to spare. Any ARM SoC with 4GB+ RAM can run these models via [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
 ## Published Models
 
