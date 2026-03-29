@@ -531,9 +531,11 @@ ${result.error || 'Unknown error'}
       toolResult: true,
       toolName,
       parameters,
-      // fullData intentionally omitted — was storing entire file contents, search
-      // results, etc. in chat messages. 11K tool results × full data = DB bloat.
-      // The summary is enough for working memory. Call the tool again if needed.
+      // Store truncated fullData for expand preview (2KB cap).
+      // TODO #591: lazy-load full data on expand via command instead of storing.
+      fullData: typeof result.data === 'string'
+        ? result.data.slice(0, 2048)
+        : JSON.stringify(result.data ?? '', null, 2).slice(0, 2048),
       success: result.success,
       error: result.error,
       storedAt: Date.now()
