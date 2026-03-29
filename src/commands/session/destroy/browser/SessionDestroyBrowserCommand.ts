@@ -22,9 +22,9 @@ export class SessionDestroyBrowserCommand extends SessionDestroyCommand {
   protected async routeToSessionDaemon(params: DestroySessionParams): Promise<DestroySessionResult | SessionErrorResponse> {
     console.log(`🧹 BROWSER: Session destruction needs server → delegating to server`);
     
-    // Use the same pattern as screenshot: delegate to server via remoteExecute
-    // DestroySessionParams (daemon-level) doesn't extend CommandParams — bridge with userId
-    const commandParams = { ...params, userId: SYSTEM_SCOPES.SYSTEM } as CommandParams;
+    // Delegate to server — pass userId through if present, empty string otherwise
+    // Server resolves real identity from session. Never default to SYSTEM_SCOPES.SYSTEM (all-zeros).
+    const commandParams = { ...params, userId: (params as any).userId || '' } as CommandParams;
     const result = await this.remoteExecute(commandParams);
     return result as DestroySessionResult | SessionErrorResponse;
   }
