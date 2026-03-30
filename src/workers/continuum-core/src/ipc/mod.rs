@@ -970,12 +970,25 @@ pub fn start_server(
     log_info!("ipc", "server", "IPC server ready");
 
     // Periodic memory leak reporter — logs RSS + top leakers every 10s
+    // Also acts as OOM guard: exits gracefully at 4GB so npm start can restart
     let mem_rt = state.rt_handle.clone();
     mem_rt.spawn(async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        const MAX_RSS_MB: u64 = 4096; // 4GB — exit before OOM kills us ungracefully
         loop {
             interval.tick().await;
             dump_memory_report();
+            let rss = current_rss_mb();
+            if rss > MAX_RSS_MB {
+                eprintln!(
+                    "[MEMLEAK] FATAL: RSS {}MB exceeds {}MB limit — exiting gracefully to avoid OOM. \
+                     Restart with: npm start. Fix tracked in #603.",
+                    rss, MAX_RSS_MB
+                );
+                // Give time for the message to flush
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(1);
+            }
         }
     });
 
