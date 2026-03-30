@@ -65,6 +65,37 @@ export abstract class ModelListCommand extends CommandBase<CommandParams, Comman
         recommendedFor: ['chat', 'reasoning', 'code'],
         available: true
       },
+      // Continuum forged models — our own, built with experiential plasticity
+      {
+        name: 'continuum-ai/qwen3.5-4b-code-forged',
+        displayName: 'Qwen3.5 4B Code (Forged)',
+        provider: 'candle',
+        parameters: '4B',
+        contextLength: 32768,
+        supportsJSON: true,
+        supportsToolCalling: true,
+        supportsStreaming: true,
+        estimatedLatency: 120,
+        estimatedTokensPerSecond: 60,
+        memoryRequirement: '2.6GB',
+        recommendedFor: ['code', 'reasoning', 'chat'],
+        available: true
+      },
+      {
+        name: 'continuum-ai/qwen3.5-27b-code-forged',
+        displayName: 'Qwen3.5 27B Code (Forged)',
+        provider: 'candle',
+        parameters: '27B',
+        contextLength: 32768,
+        supportsJSON: true,
+        supportsToolCalling: true,
+        supportsStreaming: true,
+        estimatedLatency: 300,
+        estimatedTokensPerSecond: 20,
+        memoryRequirement: '17GB',
+        recommendedFor: ['code', 'reasoning', 'chat', 'creative'],
+        available: true
+      },
       // OpenAI models
       {
         name: 'gpt-4',
