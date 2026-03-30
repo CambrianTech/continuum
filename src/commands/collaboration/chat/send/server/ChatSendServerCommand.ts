@@ -32,8 +32,23 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
   protected async executeChatSend(params: ChatSendParams): Promise<ChatSendResult> {
     // viaBrowser: forward to browser command via WebSocket — fills the actual widget textarea and clicks Send
+    // If browser isn't connected, fall back to direct DB send (don't hang for 60s)
     if (params.viaBrowser) {
-      return this.remoteExecute(params) as Promise<ChatSendResult>;
+      try {
+        const timeoutMs = 5000; // 5s — if browser doesn't respond, fall back
+        const result = await Promise.race([
+          this.remoteExecute(params) as Promise<ChatSendResult>,
+          new Promise<ChatSendResult>((_, reject) =>
+            setTimeout(() => reject(new Error('viaBrowser timeout')), timeoutMs)
+          )
+        ]);
+        if (result.success) return result;
+        console.warn('⚠️ viaBrowser forwarding failed, falling back to direct send');
+      } catch {
+        console.warn('⚠️ viaBrowser unavailable, falling back to direct send');
+      }
+      // Clear viaBrowser flag so the direct path below doesn't recurse
+      params = { ...params, viaBrowser: false };
     }
 
     // 1. Find room (single source of truth: RoutingService)
