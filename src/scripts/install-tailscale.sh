@@ -17,12 +17,14 @@ if ! command -v tailscale &>/dev/null; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
-# 2. Kill any stuck daemons (stale processes block everything)
+# 2. Kill any stuck daemons AND clean stale socket
 if pgrep -x tailscaled &>/dev/null; then
   echo -e "  Killing existing tailscaled processes..."
-  sudo killall tailscaled 2>/dev/null || true
+  sudo kill -9 $(pgrep tailscaled) 2>/dev/null || true
   sleep 2
 fi
+# Remove stale socket — "address already in use" means old socket wasn't cleaned up
+sudo rm -f /var/run/tailscale/tailscaled.sock 2>/dev/null || true
 
 # 3. Set up passwordless sudo (so it auto-starts on boot without prompting)
 if [ ! -f /etc/sudoers.d/tailscale ]; then
