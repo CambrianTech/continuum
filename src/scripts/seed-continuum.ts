@@ -243,8 +243,24 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
       if (response.success &&
           response.server?.health?.systemReady &&
           response.server?.health?.commandsRegistered > 0) {
-        console.log(`✅ JTAG ready with ${response.server.health.commandsRegistered} commands registered`);
-        return true;
+        // Also verify Rust IPC is connected — seed depends on data/create which goes through Rust ORM
+        try {
+          const { stdout: dbCheck } = await execAsync('./jtag data/list --collection=users --limit=1', { timeout: 10000 });
+          if (dbCheck.includes('"success":true') || dbCheck.includes('"success": true')) {
+            console.log(`✅ JTAG ready with ${response.server.health.commandsRegistered} commands + Rust IPC confirmed`);
+            return true;
+          }
+          // Rust IPC not ready yet — data command failed but TS server is up
+          if (attempts % 5 === 0) {
+            console.log(`   TS server ready but Rust IPC not yet connected...`);
+          }
+        } catch {
+          // data/list failed — Rust worker not up yet, keep waiting
+          if (attempts % 5 === 0) {
+            console.log(`   TS server ready but Rust worker not responding...`);
+          }
+        }
+        // Don't return true yet — wait for Rust
       }
 
       if (attempts % 5 === 0 && attempts > 0) {

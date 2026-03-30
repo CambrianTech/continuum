@@ -298,48 +298,66 @@ export async function createUserViaCommand(
   const providerArg = provider ? ` --provider=${provider}` : '';
   const cmd = `./jtag user/create --type=${type} --displayName="${displayName}"${uniqueIdArg}${providerArg}`;
 
-  try {
-    const { stdout } = await execAsync(cmd);
-    const response: UserCreateResult = JSON.parse(stdout);
+  // Retry up to 3 times with backoff — Rust IPC may not be ready on first attempt
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { stdout } = await execAsync(cmd, { timeout: 15000 });
+      const response: UserCreateResult = JSON.parse(stdout);
 
-    if (response.success && response.user) {
-      console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
-      return response.user;
-    } else {
+      if (response.success && response.user) {
+        console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
+        return response.user;
+      } else if (response.error?.includes('IPC') || response.error?.includes('timeout')) {
+        // Rust IPC not ready — retry
+        if (attempt < MAX_RETRIES) {
+          console.log(`   ⏳ Rust IPC not ready, retrying in ${attempt * 3}s (attempt ${attempt}/${MAX_RETRIES})...`);
+          await new Promise(r => setTimeout(r, attempt * 3000));
+          continue;
+        }
+      }
       console.error(`❌ Failed to create user ${displayName}: ${response.error || 'Unknown error'}`);
       return null;
-    }
-  } catch (error: unknown) {
-    const err = toExecError(error);
-    if (err.stdout) {
-      try {
-        const response: UserCreateResult = JSON.parse(err.stdout);
-        if (response.success && response.user) {
-          console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
-          return response.user;
+    } catch (error: unknown) {
+      const err = toExecError(error);
+      if (err.stdout) {
+        try {
+          const response: UserCreateResult = JSON.parse(err.stdout);
+          if (response.success && response.user) {
+            console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
+            return response.user;
+          }
+        } catch {
+          // Fall through
         }
-      } catch {
-        // Fall through
       }
-    }
 
-    // "Record already exists" means the user is there — load it instead of failing
-    if (err.stdout && err.stdout.includes('already exists')) {
-      console.log(`✅ User ${displayName} already exists — loading`);
-      if (uniqueId) {
-        return await loadUserByUniqueId(uniqueId);
+      // "Record already exists" means the user is there — load it instead of failing
+      if (err.stdout && err.stdout.includes('already exists')) {
+        console.log(`✅ User ${displayName} already exists — loading`);
+        if (uniqueId) {
+          return await loadUserByUniqueId(uniqueId);
+        }
+        if (type === 'human') {
+          return await loadFirstUserByType('human');
+        }
       }
-      // Try loading by type if no uniqueId match (human user may have different uniqueId)
-      if (type === 'human') {
-        return await loadFirstUserByType('human');
-      }
-    }
 
-    console.error(`❌ Failed to create user ${displayName}: ${err.message}`);
-    if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}`);
-    if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}`);
-    return null;
+      // IPC/timeout errors — retry if attempts remain
+      const isTransient = err.message?.includes('IPC') || err.message?.includes('timeout') || err.message?.includes('TIMEOUT');
+      if (isTransient && attempt < MAX_RETRIES) {
+        console.log(`   ⏳ Transient error, retrying in ${attempt * 3}s (attempt ${attempt}/${MAX_RETRIES})...`);
+        await new Promise(r => setTimeout(r, attempt * 3000));
+        continue;
+      }
+
+      console.error(`❌ Failed to create user ${displayName}: ${err.message}`);
+      if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}`);
+      if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}`);
+      return null;
+    }
   }
+  return null; // All retries exhausted
 }
 
 /**
