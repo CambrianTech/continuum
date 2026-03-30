@@ -215,7 +215,7 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
         similarity = textSimilarity;
       } else if (inputEmbedding) {
         // Semantic path: Use embeddings only if we have input embedding and message has one
-        let msgEmbedding = msg.embedding;
+        const msgEmbedding = msg.embedding;
         if (!msgEmbedding || msgEmbedding.length === 0) {
           // Skip embedding generation for individual messages - too slow
           // Fall back to text similarity

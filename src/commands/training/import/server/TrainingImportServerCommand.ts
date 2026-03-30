@@ -68,7 +68,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
       console.log(`📚 TRAINING IMPORT: Opening database at ${dbPath}...`);
 
       // Step 3: Open training database
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const openResult = await DataOpen.execute({
         adapter: 'sqlite',
         config: {

@@ -35,7 +35,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
     try {
       // Get record count before truncating for reporting
       const statsResult = await ORM.listCollections('default');
-      let recordCount = 0;
+      const recordCount = 0;
 
       if (statsResult.success && statsResult.data?.includes(validCollection)) {
         // Collection exists, we can get stats

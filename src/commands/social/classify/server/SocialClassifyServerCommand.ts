@@ -144,7 +144,7 @@ export class SocialClassifyServerCommand extends SocialClassifyBaseCommand {
     }
 
     // 3. Fetch comments on their posts (deep only)
-    let allComments: SocialComment[] = [];
+    const allComments: SocialComment[] = [];
     if (depth === 'deep' && posts.length > 0) {
       // Sample up to 3 posts for comment analysis
       const samplePosts = posts.slice(0, 3);

@@ -40,7 +40,7 @@ export class GenomePagingAdapterRegisterServerCommand extends CommandBase<Genome
       let name = params.name;
       let domain = params.domain;
       let sizeMB = params.sizeMB;
-      let priority = params.priority ?? 0.5;
+      const priority = params.priority ?? 0.5;
 
       // If layerId is provided, hydrate adapter info from persisted GenomeLayerEntity
       if (params.layerId) {

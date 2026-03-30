@@ -17,7 +17,7 @@ import * as path from 'path';
 // Import sharp dynamically to handle environments where it's not available
 let sharp: typeof import('sharp') | null = null;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   sharp = require('sharp');
 } catch (error) {
   console.warn('⚠️  Sharp library not available - image resizing disabled');

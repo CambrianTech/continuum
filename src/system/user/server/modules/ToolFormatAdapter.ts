@@ -851,7 +851,7 @@ export class ToolNameCodec {
     if (exact) return exact;
 
     // 2. Strip known prefixes models add ($FUNCTIONS., functions., $tools.)
-    let cleaned = raw.replace(/^\$?(?:functions|tools)\./i, '');
+    const cleaned = raw.replace(/^\$?(?:functions|tools)\./i, '');
     const prefixMatch = this.reverseMap.get(cleaned);
     if (prefixMatch) return prefixMatch;
 

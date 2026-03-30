@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload, JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import type { SessionGetUserParams, SessionGetUserResult } from '../shared/SessionGetUserTypes';
 import type { GetSessionParams } from '../../../../daemons/session-daemon/shared/SessionTypes';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+ 
 import { type GetSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';

@@ -230,7 +230,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let legacyMs: number | undefined;
     // Token budget from model's context window — 75% for input.
     const contextWindow = getContextWindow(options.modelId, options.provider);
-    let totalBudget = Math.floor(contextWindow * 0.75);
+    const totalBudget = Math.floor(contextWindow * 0.75);
 
     {
       const composer = this.getComposer();

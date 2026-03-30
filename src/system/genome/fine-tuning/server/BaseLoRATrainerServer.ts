@@ -59,11 +59,11 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
    *
    * This method should be FAST (< 30 seconds). Don't wait for training to complete!
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   protected abstract _startTraining(
     request: LoRATrainingRequest
   ): Promise<TrainingHandle>;
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
 
   /**
    * Query current status from provider
@@ -80,13 +80,13 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
    *
    * This method should be FAST (< 5 seconds). It's called frequently!
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   protected abstract _queryStatus(
     sessionId: UUID,
     providerJobId: string,
     metadata: Record<string, unknown>
   ): Promise<TrainingStatus>;
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
 
   // ==========================================================================
   // Protected Helper Methods (Available to Subclasses)
@@ -229,15 +229,15 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
    * Creates TrainingSessionEntity with handle information.
    * Session survives server restarts.
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   private async _persistSession(
     request: LoRATrainingRequest,
     handle: TrainingHandle
   ): Promise<UUID> {
     // Import Commands here (server-side only)
-    /* eslint-disable @typescript-eslint/naming-convention */
+     
     const { Commands } = await import('../../../../system/core/shared/Commands');
-    /* eslint-enable @typescript-eslint/naming-convention */
+     
 
     // Create session entity
     const result = await DataCreate.execute<TrainingSessionEntity>({
@@ -282,23 +282,23 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     });
     return result.data!.id;
   }
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
 
   /**
    * Load session from database
    *
    * Returns session data with handle information.
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   private async _loadSession(sessionId: UUID): Promise<{
     providerJobId: string;
     status: string;
     metadata: Record<string, unknown>;
   }> {
     // Import Commands here (server-side only)
-    /* eslint-disable @typescript-eslint/naming-convention */
+     
     const { Commands } = await import('../../../../system/core/shared/Commands');
-    /* eslint-enable @typescript-eslint/naming-convention */
+     
 
     const result = await DataRead.execute<TrainingSessionEntity>({
       collection: 'training_sessions',
@@ -311,22 +311,22 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       metadata: (result.data!.metadata ?? {}) as Record<string, unknown>
     };
   }
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
 
   /**
    * Update session in database
    *
    * Updates status and metadata when training progresses.
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   private async _updateSession(
     sessionId: UUID,
     status: TrainingStatus
   ): Promise<void> {
     // Import Commands here (server-side only)
-    /* eslint-disable @typescript-eslint/naming-convention */
+     
     const { Commands } = await import('../../../../system/core/shared/Commands');
-    /* eslint-enable @typescript-eslint/naming-convention */
+     
 
     const updateData: Record<string, unknown> = {
       status: status.status,
@@ -355,5 +355,5 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       dbHandle: 'default'
     });
   }
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
 }

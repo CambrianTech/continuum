@@ -404,7 +404,7 @@ export class ConversationHistorySource implements RAGSource {
       // If everything fit, no consolidation needed — use full budget for verbatim
       if (verbatimCutoff === allLlmMessages.length) {
         // Try to fit more with the consolidation budget too
-        let totalTokens = verbatimTokens;
+        const totalTokens = verbatimTokens;
         // Already have all messages, just reverse to chronological
         const budgetedMessages = allLlmMessages.slice().reverse();
 

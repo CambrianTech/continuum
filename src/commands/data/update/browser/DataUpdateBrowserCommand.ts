@@ -38,7 +38,7 @@ export class DataUpdateBrowserCommand extends DataUpdateCommand<BaseEntity> {
   private async updateLocal(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     try {
       // Try update first
-      let result = await LocalStorageDataBackend.update(params.collection, params.id, params.data);
+      const result = await LocalStorageDataBackend.update(params.collection, params.id, params.data);
 
       if (!result.success) {
         // Create if doesn't exist

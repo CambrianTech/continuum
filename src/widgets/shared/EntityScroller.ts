@@ -1,4 +1,4 @@
-/* eslint-disable no-undef, @typescript-eslint/no-unused-vars, @typescript-eslint/prefer-nullish-coalescing */
+/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/prefer-nullish-coalescing */
 /**
  * Entity Scroller - Clean React-like + Rust-like Interface
  *

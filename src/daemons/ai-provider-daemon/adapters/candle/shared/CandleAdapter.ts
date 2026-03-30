@@ -124,7 +124,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     }
 
     // Model is pre-loaded by gRPC server at startup
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+     
     const ensureModelLoaded = async (): Promise<void> => {
       // No-op: gRPC server preloads model
     };
