@@ -546,28 +546,33 @@ install_tailscale() {
       echo -e "  ${GREEN}✅ tailscaled running (took ${waited}s)${NC}"
     fi
 
+    # Wait for daemon socket to actually be ready (not just process existing)
+    echo -e "  Waiting for tailscaled socket..."
+    local socket_wait=0
+    while ! tailscale status 2>/dev/null | grep -q '.' && [ $socket_wait -lt 30 ]; do
+      sleep 1
+      socket_wait=$((socket_wait + 1))
+    done
+
     # Check if already authenticated
-    local ts_status=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "NoState"' 2>/dev/null || echo "NoState")
-    if [ "$ts_status" = "Running" ]; then
-      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "connected")
-      echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
+    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+    if [ -n "$ts_ip" ]; then
+      echo -e "  ${GREEN}✅ Tailscale already connected (${ts_ip})${NC}"
       return
     fi
 
     # Need auth — tailscale up prints a login URL that must be opened in a browser.
-    # This BLOCKS until you authenticate. That's intentional — the grid won't work without it.
     echo -e ""
     echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
     echo -e "  ${YELLOW}  TAILSCALE LOGIN REQUIRED${NC}"
-    echo -e "  ${YELLOW}  A URL will appear below. Open it in your browser to authenticate.${NC}"
-    echo -e "  ${YELLOW}  This is a ONE-TIME step — after this, Tailscale auto-reconnects forever.${NC}"
+    echo -e "  ${YELLOW}  A URL will appear below. Open it in your browser.${NC}"
+    echo -e "  ${YELLOW}  ONE-TIME — after this, Tailscale auto-reconnects forever.${NC}"
     echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
     echo -e ""
 
-    # Run tailscale up — it will print the auth URL and wait for you to click it.
-    # No timeout. This must complete for the grid to work.
-    # DO NOT redirect stderr — the auth URL prints there and the user MUST see it.
+    # Print the URL and wait. DO NOT eat stdout or stderr.
     sudo tailscale up --ssh --accept-routes
+    echo -e ""
 
     local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
     if [ "$ts_ip" != "pending" ] && [ -n "$ts_ip" ]; then
