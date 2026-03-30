@@ -222,6 +222,7 @@ export const COMMANDS = {
   INTERFACE_BROWSER_CAPABILITIES: 'interface/browser/capabilities',
   INTERFACE_CLICK: 'interface/click',
   INTERFACE_GET_TEXT: 'interface/get-text',
+  INTERFACE_INTERACT: 'interface/interact',
   INTERFACE_LAUNCH_URL: 'interface/launch/url',
   INTERFACE_NAVIGATE: 'interface/navigate',
   INTERFACE_PAGE_FILL: 'interface/page/fill',

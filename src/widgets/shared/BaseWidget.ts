@@ -695,7 +695,7 @@ export abstract class BaseWidget extends HTMLElement {
       }
 
       // Auto-inject context and sessionId if not already provided
-      let partialParams = params || {} as P;
+      const partialParams = params || {} as P;
       let enrichedParams: P;
       if (!('context' in partialParams) || !('sessionId' in partialParams)) {
         const jtagClient = await JTAGClient.sharedInstance;

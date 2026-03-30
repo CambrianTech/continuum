@@ -29,7 +29,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
 
     try {
       // Get persona ID from params or try to get from session
-      let personaId = params.personaId;
+      const personaId = params.personaId;
 
       if (!personaId) {
         // Try to get from session (for persona calling about themselves)

@@ -93,12 +93,12 @@ export const jtagGlobal = globalThis as typeof globalThis & JTAGGlobalProperties
  */
 declare global {
   interface Window extends JTAGWindowProperties {}
-  // eslint-disable-next-line no-var
+   
   var JTAG_VERBOSE: boolean | undefined;
-  // eslint-disable-next-line no-var
+   
   var __JTAG_COMMAND_DAEMON__: JTAGGlobalProperties['__JTAG_COMMAND_DAEMON__'];
-  // eslint-disable-next-line no-var
+   
   var __JTAG_CONTEXT__: string | undefined;
-  // eslint-disable-next-line no-var
+   
   var __JTAG_SESSION_ID__: string | undefined;
 }

@@ -30,7 +30,7 @@ interface JTAGGlobalClient {
  * Returns null if not available (e.g., during SSR or before injection).
  */
 function getWindowJTAG(): JTAGGlobalClient | null {
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+   
   if (typeof window === 'undefined') return null;
   return (window as unknown as { jtag?: JTAGGlobalClient }).jtag ?? null;
 }

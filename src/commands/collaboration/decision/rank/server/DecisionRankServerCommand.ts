@@ -202,7 +202,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       };
 
       // Update or add vote
-      let votes = [...proposal.votes];
+      const votes = [...proposal.votes];
       if (existingVoteIndex >= 0) {
         votes[existingVoteIndex] = vote;
       } else {

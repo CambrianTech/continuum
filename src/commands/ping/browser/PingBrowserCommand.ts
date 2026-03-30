@@ -35,7 +35,7 @@ export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
   }
 
   private getBrowserInfo(): BrowserEnvironmentInfo {
-    /* eslint-disable no-undef */
+     
     const ua = navigator.userAgent;
     const browserInfo = this.parseBrowser(ua);
     const platformInfo = this.getPlatformInfo(ua);
@@ -62,7 +62,7 @@ export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
       url: window.location.href,
       timestamp: new Date().toISOString()
     };
-    /* eslint-enable no-undef */
+     
   }
 
   private getPlatformInfo(ua: string): string {
@@ -85,9 +85,9 @@ export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
     if (ua.includes('iOS') || ua.includes('iPhone') || ua.includes('iPad')) {
       return 'iOS';
     }
-    /* eslint-disable no-undef */
+     
     return navigator.platform; // Fallback to deprecated API
-    /* eslint-enable no-undef */
+     
   }
 
   private parseBrowser(ua: string): { name: string; version: string } {

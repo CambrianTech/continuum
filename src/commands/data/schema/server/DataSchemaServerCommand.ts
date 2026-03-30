@@ -280,7 +280,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
     // Generate CREATE TABLE statement
     const columnDefinitions = fields.map(field => {
       const columnName = this.toSnakeCase(field.fieldName);
-      let sqlType = this.getSQLType(field.fieldType);
+      const sqlType = this.getSQLType(field.fieldType);
 
       const constraints = [];
       if (!field.nullable) constraints.push('NOT NULL');

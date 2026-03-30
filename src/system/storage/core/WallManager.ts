@@ -356,7 +356,7 @@ export class WallManager {
     // Simple glob to regex conversion
     // * = any characters except /
     // ** = any characters including /
-    let regex = pattern
+    const regex = pattern
       .replace(/\./g, '\\.')
       .replace(/\*\*/g, '🌟')  // Temp marker
       .replace(/\*/g, '[^/]*')

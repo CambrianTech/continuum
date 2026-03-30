@@ -419,7 +419,7 @@ export class SecretManager {
     }
 
     // Read existing config
-    let existing: Map<string, string> = new Map();
+    const existing: Map<string, string> = new Map();
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, 'utf-8');
       const lines = content.split('\n');

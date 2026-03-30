@@ -193,7 +193,7 @@ export class ToolDefinitionsSource implements RAGSource {
     const selectedGroups = groupRegistry.selectGroups(triggerText, 5);
 
     // Filter tools to only those in selected groups + recipe tools
-    let contextualTools = groupRegistry.filterToolsByGroups(toolDefinitions, selectedGroups);
+    const contextualTools = groupRegistry.filterToolsByGroups(toolDefinitions, selectedGroups);
 
     // Always include recipe tools at the top
     if (recipeToolNames.size > 0) {

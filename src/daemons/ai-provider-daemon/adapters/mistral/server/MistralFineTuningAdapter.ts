@@ -30,10 +30,10 @@ import * as path from 'path';
 
 // Declare globals (Node.js 18+ built-ins)
 declare const fetch: typeof globalThis.fetch;
-/* eslint-disable @typescript-eslint/naming-convention */
+ 
 declare const FormData: typeof globalThis.FormData;
 declare const Blob: typeof globalThis.Blob;
-/* eslint-enable @typescript-eslint/naming-convention */
+ 
 
 /**
  * Mistral LoRA Adapter - Remote API training with Mistral AI
@@ -172,13 +172,13 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
    *
    * NO BLOCKING - Returns in < 5 seconds!
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   protected async _queryStatus(
     _sessionId: UUID,
     providerJobId: string,
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
     this.log('debug', `🔍 Mistral: Querying job status: ${providerJobId}`);
 
     const apiKey = getSecret('MISTRAL_API_KEY', 'MistralLoRAAdapter');

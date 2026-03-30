@@ -583,7 +583,7 @@ export abstract class ReactiveWidget extends LitElement {
 
     // Mutable filter/sort (can be updated via handle)
     let currentFilter = config.filter;
-    let currentSort = config.sort;
+    const currentSort = config.sort;
 
     // Process and deliver entities to callback
     const deliverData = (entities: T[]) => {

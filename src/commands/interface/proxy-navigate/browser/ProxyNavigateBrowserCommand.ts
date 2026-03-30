@@ -24,7 +24,7 @@ export class ProxyNavigateBrowserCommand extends ProxyNavigateCommand {
       const proxyUrl = `/proxy/${encodeURIComponent(params.url)}`;
       
       // Find target iframe or create one
-      let iframe = document.querySelector(`#${params.target}`) as HTMLIFrameElement;
+      const iframe = document.querySelector(`#${params.target}`) as HTMLIFrameElement;
       if (!iframe) {
         // If no iframe exists, we could create one, but for now just report the proxy URL
         console.log(`📋 BROWSER: Target iframe #${params.target} not found, returning proxy URL`);

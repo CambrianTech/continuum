@@ -91,7 +91,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         hasRightPanel: true,
     },
     'canvas': {
-        widget: 'chat-widget',
+        widget: 'drawing-canvas-widget',
         displayName: 'Canvas',
         icon: '🎯',
         pathPrefix: '/canvas',
@@ -208,7 +208,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         hasRightPanel: true,
     },
     'live': {
-        widget: 'chat-widget',
+        widget: 'live-widget',
         displayName: 'Live',
         icon: '📹',
         pathPrefix: '/live',
@@ -217,7 +217,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         hasRightPanel: false,
     },
     'logs': {
-        widget: 'chat-widget',
+        widget: 'log-viewer-widget',
         displayName: 'Logs',
         icon: '📄',
         pathPrefix: '/logs',
@@ -280,7 +280,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         hasRightPanel: false,
     },
     'settings': {
-        widget: 'chat-widget',
+        widget: 'settings-widget',
         displayName: 'Settings',
         icon: '⚙️',
         pathPrefix: '/settings',
@@ -298,7 +298,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         hasRightPanel: true,
     },
     'theme': {
-        widget: 'chat-widget',
+        widget: 'theme-widget',
         displayName: 'Theme',
         icon: '🎨',
         pathPrefix: '/theme',

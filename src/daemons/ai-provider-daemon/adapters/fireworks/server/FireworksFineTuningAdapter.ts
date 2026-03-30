@@ -37,10 +37,10 @@ import { SystemPaths } from '../../../../../system/core/config/SystemPaths';
 
 // Declare globals (Node.js 18+ built-ins)
 declare const fetch: typeof globalThis.fetch;
-/* eslint-disable @typescript-eslint/naming-convention */
+ 
 declare const FormData: typeof globalThis.FormData;
 declare const Blob: typeof globalThis.Blob;
-/* eslint-enable @typescript-eslint/naming-convention */
+ 
 
 /**
  * Fireworks LoRA Adapter - Remote API training with Fireworks
@@ -140,9 +140,9 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    *
    * NO BLOCKING - Returns in seconds, not minutes!
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
     this.log('info', '🚀 Fireworks: Starting training job (async pattern)...');
 
     // 1. Export dataset to JSONL
@@ -195,13 +195,13 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    *
    * NO BLOCKING - Returns in < 5 seconds!
    */
-  /* eslint-disable @typescript-eslint/naming-convention */
+   
   protected async _queryStatus(
     _sessionId: UUID,
     providerJobId: string,
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
-  /* eslint-enable @typescript-eslint/naming-convention */
+   
     this.log('debug', `🔍 Fireworks: Querying job status: ${providerJobId}`);
 
     const apiKey = this.config.apiKey;
