@@ -39,15 +39,25 @@ if command -v sshd &>/dev/null; then
 fi
 
 # 2. Start Tailscale
+# PREREQUISITE (one-time, run manually at the tower):
+#   echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/tailscale, /usr/bin/tailscaled" | sudo tee /etc/sudoers.d/tailscale
+#   sudo systemctl enable tailscaled
 if command -v tailscale &>/dev/null; then
-    # Start daemon if not running
+    # Start daemon if not running (needs sudo on WSL2)
     if ! pgrep -x tailscaled &>/dev/null; then
-        tailscaled --state=/var/lib/tailscale/tailscaled.state &
-        sleep 5
+        if sudo -n true 2>/dev/null; then
+            sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
+            sleep 5
+        else
+            echo "$(date): WARNING: tailscaled needs sudo but no passwordless sudo configured" >> "$LOG"
+            echo "$(date): Run: echo '\$USER ALL=(ALL) NOPASSWD: /usr/bin/tailscale, /usr/bin/tailscaled' | sudo tee /etc/sudoers.d/tailscale" >> "$LOG"
+        fi
     fi
-    tailscale up --ssh --accept-routes 2>>"$LOG"
-    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "unknown")
-    echo "$(date): Tailscale up ($TAILSCALE_IP)" >> "$LOG"
+    if pgrep -x tailscaled &>/dev/null; then
+        sudo tailscale up --ssh --accept-routes 2>>"$LOG" || tailscale up --ssh --accept-routes 2>>"$LOG"
+        TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "unknown")
+        echo "$(date): Tailscale up ($TAILSCALE_IP)" >> "$LOG"
+    fi
 fi
 
 # 3. Protect critical services from OOM killer
