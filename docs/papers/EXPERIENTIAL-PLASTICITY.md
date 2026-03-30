@@ -97,19 +97,25 @@ With the v3 forge pipeline (LoRA + AMP mixed precision + memory-tiered architect
 
 **HumanEval verification** (EvalPlus, greedy decoding, 164 problems):
 
-| Model | Params | HumanEval | HumanEval+ | Method |
-|-------|--------|-----------|------------|--------|
-| **Qwen3.5-4B-Code-Forged** | **4.21B** | **57.3%** | **49.4%** | LoRA forge (3 cycles, CodeFeedback 156K) |
-| StarCoder2-3B | 3B | 31.7% | — | Pre-trained on code |
-| Phi-2 | 2.7B | 47.6% | — | Pre-trained |
-| Phi-3-mini | 3.8B | ~58-61% | — | Pre-trained |
-| Qwen2.5-Coder-3B | 3B | ~61-65% | — | Code-specialized pre-training |
+| Model | Params | Size | HumanEval | HumanEval+ | Method |
+|-------|--------|------|-----------|------------|--------|
+| **Qwen3.5-4B-Code-Forged (fp16)** | **4.21B** | **8.4GB** | **57.3%** | **49.4%** | LoRA forge (3 cycles, CodeFeedback 156K) |
+| **Qwen3.5-4B-Code-Forged (Q4_K_M)** | **4.21B** | **2.6GB** | **53.0%** | **47.0%** | Same model, GGUF quantized |
+| StarCoder2-3B | 3B | 6GB | 31.7% | — | Pre-trained on code |
+| Phi-2 | 2.7B | 5.4GB | 47.6% | — | Pre-trained |
+| Phi-3-mini | 3.8B | 7.6GB | ~58-61% | — | Pre-trained |
+| Qwen2.5-Coder-3B | 3B | 6GB | ~61-65% | — | Code-specialized pre-training |
+
+**Key results:**
+- **fp16 → Q4_K_M quantization cost: only -4.3 points** (7.5% relative drop). The GGUF retains 92.5% of the fp16 quality.
+- **53% HumanEval at 2.6GB** — beats Phi-2 (47.6% at 5.4GB) while being less than half the size.
+- **GGUF eval completed in ~10 minutes** vs ~24 hours for fp16. This enables benchmark-in-the-loop forging: score at every checkpoint, stop when quality plateaus.
 
 The forged 4B achieves 57.3% HumanEval through LoRA fine-tuning alone (no structural pruning). This is pure domain specialization via experiential plasticity — the same base model architecture, with attention heads learning to specialize on code patterns through 3 forge cycles on a single RTX 5090. The 4.21B parameter count is unchanged from the base Qwen3.5-4B.
 
 **Note**: This model was NOT structurally pruned. The head pruning results from §3.1-3.2 (Qwen2.5 family) demonstrate the compression aspect of experiential plasticity. The Qwen3.5-4B forge demonstrates the specialization aspect — domain-specific training data driving head specialization without removing heads. Both are facets of the same principle: experience shapes architecture.
 
-At 2.6GB GGUF (Q4_K_M), this runs on iPhone and Raspberry Pi. GGUF evaluation pending.
+**Competitive analysis**: At 2.6GB, the GGUF model runs on iPhone, Raspberry Pi, and any device with 3GB RAM. It is not the absolute best at its parameter count (Qwen2.5-Coder-3B scores higher), but it was created in 3 hours on a single GPU from a general-purpose base model — not months of pre-training on trillions of code tokens. The forge pipeline is the product, not just the model.
 
 ### 3.3.1 Benchmark Plan: Controls and Ablations
 
@@ -119,7 +125,7 @@ To rigorously demonstrate the contribution of each step, the following evaluatio
 |---|-------|----------------|--------|
 | 1 | **Qwen3.5-4B base** (no forge) | Control — baseline before any training | TODO |
 | 2 | **Qwen3.5-4B forged** (LoRA, fp16) | Specialization delta from forge | **57.3% / 49.4%** |
-| 3 | **Qwen3.5-4B forged GGUF** (Q4_K_M) | Quantization cost | TODO |
+| 3 | **Qwen3.5-4B forged GGUF** (Q4_K_M) | Quantization cost | **53.0% / 47.0%** (-4.3pt from fp16) |
 | 4 | **Qwen2.5-Coder-14B compacted** (pruned + tuned) | Compression: pruned model retains quality | TODO |
 | 5 | **Qwen2.5-Coder-14B base** (unpruned) | Control for compaction | TODO |
 | 6 | **Qwen3.5-35B-A3B compacted** (64→16 experts) | MoE surgery retains quality | TODO |
