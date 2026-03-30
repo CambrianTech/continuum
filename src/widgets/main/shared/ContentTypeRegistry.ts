@@ -35,18 +35,19 @@ export { ContentType, ContentTypeConfig, isContentType, CONTENT_TYPE_CONFIGS };
  * Recipe service (runtime) → generated config (build-time) → error.
  */
 export function getWidgetForType(contentType: string): string {
-    // 1. Recipe service has the most up-to-date info (loaded from DB/files at runtime)
+    // 1. Generated config FIRST — always available, no async, no race conditions
+    // This is the compiled-in truth from recipe JSON files.
+    const generated = CONTENT_TYPE_CONFIGS[contentType as ContentType];
+    if (generated) return generated.widget;
+
+    // 2. Recipe service — runtime data from DB (may have newer recipes)
     const recipeService = getRecipeLayoutService();
     if (recipeService.isLoaded()) {
         const widget = recipeService.getWidget(contentType);
         if (widget) return widget;
     }
 
-    // 2. Generated config from recipe JSON files (compile-time)
-    const generated = CONTENT_TYPE_CONFIGS[contentType as ContentType];
-    if (generated) return generated.widget;
-
-    // 3. No fallback — unknown type is an error
+    // 3. No match — unknown type
     console.error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json`);
     return 'chat-widget'; // Graceful degradation to prevent blank screen
 }
