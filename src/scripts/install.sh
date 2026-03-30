@@ -473,118 +473,20 @@ install_livekit
 
 echo -e "${YELLOW}[8/8] Tailscale${NC}"
 
-install_tailscale() {
-  # Fast path: already connected → done (works on all platforms)
-  local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-  if [ -n "$ts_ip" ]; then
-    echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
-    return
-  fi
-
-  case "$PLATFORM" in
-    macos)
-      if [ -d "/Applications/Tailscale.app" ]; then
-        open -a Tailscale 2>/dev/null || true
-        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
-      else
-        echo -e "  Installing Tailscale..."
-        brew install --cask tailscale
-        open -a Tailscale 2>/dev/null || true
-        echo -e "  ${GREEN}✅ Tailscale installed — sign in via the menu bar icon${NC}"
-      fi
-      return
-      ;;
-    linux|wsl)
-      if ! command -v tailscale &>/dev/null; then
-        echo -e "  Installing Tailscale..."
-        curl -fsSL https://tailscale.com/install.sh | sh
-      fi
-      ;;
-  esac
-
-  # Linux/WSL: set up passwordless sudo for tailscale so it auto-starts on boot
-  # without prompting. This is critical for grid resilience — nodes must reconnect
-  # to the mesh automatically after reboots.
-  if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
-    if [ ! -f /etc/sudoers.d/tailscale ]; then
-      echo -e "  Setting up passwordless sudo for tailscale (grid auto-reconnect)..."
-      echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/tailscale, /usr/bin/tailscaled, /usr/sbin/tailscaled" | sudo tee /etc/sudoers.d/tailscale > /dev/null
-      sudo chmod 440 /etc/sudoers.d/tailscale
-      echo -e "  ${GREEN}✅ Passwordless sudo for tailscale configured${NC}"
-    fi
-
-    # Enable systemd service if available (survives reboots on native Linux)
-    if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
-      sudo systemctl enable tailscaled 2>/dev/null || true
-    fi
-
-    if ! pgrep -x tailscaled &>/dev/null; then
-      echo -e "  ${YELLOW}Starting tailscaled daemon...${NC}"
-      # WSL2 doesn't have systemd — always try direct spawn first
-      if [ "$PLATFORM" = "wsl" ]; then
-        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
-      elif command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null; then
-        sudo systemctl start tailscaled 2>/dev/null
-      elif command -v service &>/dev/null; then
-        sudo service tailscaled start 2>/dev/null
-      else
-        sudo tailscaled --state=/var/lib/tailscale/tailscaled.state &
-      fi
-
-      # Wait for daemon with timeout
-      local waited=0
-      while ! pgrep -x tailscaled &>/dev/null && [ $waited -lt 15 ]; do
-        sleep 1
-        waited=$((waited + 1))
-      done
-
-      if ! pgrep -x tailscaled &>/dev/null; then
-        echo -e "  ${RED}❌ tailscaled failed to start after ${waited}s${NC}"
-        echo -e "  ${YELLOW}Try manually: sudo tailscaled &${NC}"
-        return
-      fi
-      echo -e "  ${GREEN}✅ tailscaled running (took ${waited}s)${NC}"
-    fi
-
-    # Wait for daemon socket to actually be ready (not just process existing)
-    echo -e "  Waiting for tailscaled socket..."
-    local socket_wait=0
-    while ! tailscale status 2>/dev/null | grep -q '.' && [ $socket_wait -lt 30 ]; do
-      sleep 1
-      socket_wait=$((socket_wait + 1))
-    done
-
-    # Check if already authenticated
-    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-    if [ -n "$ts_ip" ]; then
-      echo -e "  ${GREEN}✅ Tailscale already connected (${ts_ip})${NC}"
-      return
-    fi
-
-    # Need auth — tailscale up prints a login URL that must be opened in a browser.
-    echo -e ""
-    echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "  ${YELLOW}  TAILSCALE LOGIN REQUIRED${NC}"
-    echo -e "  ${YELLOW}  A URL will appear below. Open it in your browser.${NC}"
-    echo -e "  ${YELLOW}  ONE-TIME — after this, Tailscale auto-reconnects forever.${NC}"
-    echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
-    echo -e ""
-
-    # Print the URL and wait. DO NOT eat stdout or stderr.
-    sudo tailscale up --ssh --accept-routes
-    echo -e ""
-
-    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
-    if [ "$ts_ip" != "pending" ] && [ -n "$ts_ip" ]; then
-      echo -e "  ${GREEN}✅ Tailscale connected! IP: ${ts_ip}${NC}"
-      echo -e "  ${GREEN}  This node is now part of the mesh. It will auto-reconnect on reboot.${NC}"
+# Tailscale is its own script — testable independently: bash scripts/install-tailscale.sh
+case "$PLATFORM" in
+  macos)
+    if [ -d "/Applications/Tailscale.app" ]; then
+      echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
     else
-      echo -e "  ${RED}❌ Tailscale auth may have failed. Run manually: sudo tailscale up --ssh${NC}"
+      brew install --cask tailscale 2>/dev/null
+      echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
     fi
-  fi
-}
-
-install_tailscale
+    ;;
+  linux|wsl)
+    bash "$SCRIPT_DIR/install-tailscale.sh"
+    ;;
+esac
 
 # DEPS_ONLY mode: all infrastructure installed, skip config/summary/auto-launch
 if [ "$SKIP_BUILD" = "1" ]; then
