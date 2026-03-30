@@ -183,10 +183,8 @@ install_system_deps() {
         fi
       fi
 
-      # ONNX Runtime — required for Silero VAD (live mode speech-to-text)
-      if ! ldconfig -p 2>/dev/null | grep -q libonnxruntime; then
-        needed+=("libonnxruntime-dev" "libonnxruntime")
-      fi
+      # ONNX Runtime — installed to user-space below (no apt package exists).
+      # Do NOT add to needed[] — it's handled by the GitHub release download.
 
       if [ ${#needed[@]} -gt 0 ]; then
         if $CAN_SUDO; then
