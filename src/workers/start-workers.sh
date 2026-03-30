@@ -187,6 +187,14 @@ declare -a WORKER_NAMES=()
 # Get default memory limit from config
 DEFAULT_MEM_LIMIT=$(jq -r '.memoryLimits.default // "4G"' "$CONFIG_FILE")
 
+# Set ORT_DYLIB_PATH for ONNX Runtime (needed by Silero VAD in live mode)
+# The ort crate with load-dynamic feature needs to find libonnxruntime.dylib
+if [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
+  export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
+elif [ -f "/usr/local/lib/libonnxruntime.so" ]; then
+  export ORT_DYLIB_PATH="/usr/local/lib/libonnxruntime.so"
+fi
+
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
