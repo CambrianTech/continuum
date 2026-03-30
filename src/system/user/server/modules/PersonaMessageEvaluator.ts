@@ -194,7 +194,8 @@ export class PersonaMessageEvaluator {
         {
           content: safeMessageText,
           timestamp: this.personaUser.timestampToNumber(messageEntity.timestamp),
-          roomId: messageEntity.roomId
+          roomId: messageEntity.roomId,
+          senderType: messageEntity.senderType
         },
         {
           displayName: this.personaUser.displayName,

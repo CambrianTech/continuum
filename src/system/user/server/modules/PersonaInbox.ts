@@ -475,10 +475,16 @@ export class PersonaInbox {
  * Base: 0.2 (all messages have baseline relevance)
  */
 export function calculateMessagePriority(
-  message: { content: string; timestamp: number; roomId: UUID },
+  message: { content: string; timestamp: number; roomId: UUID; senderType?: string },
   persona: { displayName: string; id: UUID; recentRooms?: UUID[]; expertise?: string[] }
 ): number {
   let priority = 0.2; // Base priority
+
+  // HUMAN SENDER: Gentle boost — personas should naturally pay more attention to humans
+  // Not a lockout — they'll learn to prioritize through training, this just helps
+  if (message.senderType === 'human') {
+    priority += 0.3;
+  }
 
   // HIGH PRIORITY: Mentioned by name (NEVER neglect)
   // Check both "Groq Lightning" and "groq-lightning" formats
