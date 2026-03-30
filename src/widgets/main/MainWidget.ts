@@ -506,12 +506,18 @@ export class MainWidget extends ReactiveWidget {
         this.openContentTab('grid-overview', 'Grid');
       };
 
+      const factoryHandler = () => {
+        this.log('Factory button clicked - opening Factory');
+        this.openContentTab('factory', 'Factory');
+      };
+
       this.addEventListener('theme-clicked', themeHandler);
       this.addEventListener('settings-clicked', settingsHandler);
       this.addEventListener('help-clicked', helpHandler);
       this.addEventListener('browser-clicked', browserHandler);
       this.addEventListener('training-clicked', trainingHandler);
       this.addEventListener('grid-clicked', gridHandler);
+      this.addEventListener('factory-clicked', factoryHandler);
 
       return () => {
         this.removeEventListener('theme-clicked', themeHandler);
