@@ -466,6 +466,7 @@ export class PersonaInbox {
  * Calculate message priority for persona
  *
  * Priority factors:
+ * - Human sender: +0.3 (gentle boost, not lockout — personas learn proper behavior through training)
  * - Mentioned by name: +0.4 (NEVER neglect)
  * - Recent message: +0.2 (fresher = more relevant)
  * - Active conversation: +0.1 (persona recently active in room)
@@ -475,7 +476,7 @@ export class PersonaInbox {
  * Base: 0.2 (all messages have baseline relevance)
  */
 export function calculateMessagePriority(
-  message: { content: string; timestamp: number; roomId: UUID; senderType?: string },
+  message: { content: string; timestamp: number; roomId: UUID; senderType?: 'human' | 'persona' | 'agent' | 'system' },
   persona: { displayName: string; id: UUID; recentRooms?: UUID[]; expertise?: string[] }
 ): number {
   let priority = 0.2; // Base priority
