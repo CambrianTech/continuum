@@ -49,9 +49,9 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   // Model sizes: 14B coder ~9GB, 8B instruct ~5GB, 3B instruct ~3GB
   // On big GPUs (5090 32GB), we run specialized models per persona
   // On small GPUs (8GB), everyone shares the 3B model
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'candle', type: 'persona', voiceId: '50', minVramGB: 3, modelId: 'unsloth/Llama-3.2-3B-Instruct' },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'candle', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'unsloth/Llama-3.1-8B-Instruct' },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'candle', type: 'persona', voiceId: '100', minVramGB: 9, modelId: 'coder' },
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'candle', type: 'persona', voiceId: '50', minVramGB: 3, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'candle', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'candle', type: 'persona', voiceId: '100', minVramGB: 9, modelId: 'continuum-ai/qwen3.5-27b-code-forged' },
 
   // Cloud provider personas (each needs its own API key)
   { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
@@ -173,9 +173,11 @@ function detectGpu(): GpuInfo {
  *   <8GB       → 3B instruct (will be slow but works)
  */
 export function selectLocalModel(vramGB: number): string {
-  if (vramGB >= 32) return 'coder';  // 14B compacted — Rust resolves via model_registry.json
-  if (vramGB >= 16) return 'unsloth/Llama-3.1-8B-Instruct';
-  return 'unsloth/Llama-3.2-3B-Instruct';
+  // Use our forged Qwen models — the whole point of the forge pipeline
+  if (vramGB >= 32) return 'continuum-ai/qwen3.5-27b-code-forged';  // 17GB fp16, best quality
+  if (vramGB >= 16) return 'continuum-ai/qwen3.5-27b-code-forged';  // fits in 16GB with 4-bit
+  if (vramGB >= 8)  return 'continuum-ai/qwen3.5-4b-code-forged';   // 2.6GB GGUF, runs anywhere
+  return 'continuum-ai/qwen3.5-4b-code-forged';                     // fallback — smallest forged model
 }
 
 export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: string[]; gpu: GpuInfo } {
