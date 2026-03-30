@@ -84,7 +84,28 @@ export class FactoryWidget extends ReactiveWidget {
   @reactive() private _selectedDomain = 'code';
   @reactive() private _selectedExperts = 0;  // 0 = dense (no expert pruning)
   @reactive() private _selectedSteps = 2000;
+  @reactive() private _selectedPruneLevel = 30;  // % of heads to prune
+  @reactive() private _selectedPruneStrategy: 'entropy' | 'gradient' | 'combined' = 'entropy';
+  @reactive() private _selectedCycles = 3;
+  @reactive() private _selectedLearningRate = '2e-4';
   @reactive() private _forgeStarting = false;
+
+  /** Forge profiles — presets for common configurations */
+  private static readonly FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
+    conservative: { prune: 10, cycles: 5, lr: '1e-4', steps: 2000, label: 'Conservative', risk: 'Low — safe improvement' },
+    balanced:     { prune: 30, cycles: 3, lr: '2e-4', steps: 1000, label: 'Balanced', risk: 'Medium — best tradeoff' },
+    aggressive:   { prune: 50, cycles: 2, lr: '5e-4', steps: 500,  label: 'Aggressive', risk: 'High — maximum compression' },
+    yolo:         { prune: 70, cycles: 1, lr: '1e-3', steps: 250,  label: 'YOLO', risk: 'Extreme — might break the model' },
+  };
+
+  private applyProfile(profileName: string): void {
+    const profile = FactoryWidget.FORGE_PROFILES[profileName];
+    if (!profile) return;
+    this._selectedPruneLevel = profile.prune;
+    this._selectedCycles = profile.cycles;
+    this._selectedLearningRate = profile.lr;
+    this._selectedSteps = profile.steps;
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -468,6 +489,22 @@ export class FactoryWidget extends ReactiveWidget {
         color: var(--accent-primary, #00d4ff);
       }
 
+      .profile-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 4px;
+        background: rgba(255,255,255,0.05);
+        color: rgba(255,255,255,0.8);
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .profile-btn:hover {
+        background: var(--accent-primary, #00d4ff);
+        color: #000;
+        border-color: transparent;
+      }
+
       .forge-button {
         width: 100%;
         padding: 10px;
@@ -667,12 +704,62 @@ export class FactoryWidget extends ReactiveWidget {
             </div>
             ` : nothing}
             <div class="control-group">
+              <span class="control-label">Pruning Level</span>
+              <div class="slider-row">
+                <input type="range" min="0" max="70" step="5"
+                  .value=${String(this._selectedPruneLevel)}
+                  @input=${(e: Event) => this._selectedPruneLevel = parseInt((e.target as HTMLInputElement).value)}>
+                <span class="slider-value">${this._selectedPruneLevel}%${this._selectedPruneLevel > 50 ? ' ⚠️' : ''}</span>
+              </div>
+            </div>
+            <div class="control-group">
+              <span class="control-label">Prune Strategy</span>
+              <select class="control-select"
+                .value=${this._selectedPruneStrategy}
+                @change=${(e: Event) => this._selectedPruneStrategy = (e.target as HTMLSelectElement).value as 'entropy' | 'gradient' | 'combined'}>
+                <option value="entropy">Entropy (recommended)</option>
+                <option value="gradient">Gradient</option>
+                <option value="combined">Combined</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <span class="control-label">Forge Cycles</span>
+              <div class="slider-row">
+                <input type="range" min="1" max="10" step="1"
+                  .value=${String(this._selectedCycles)}
+                  @input=${(e: Event) => this._selectedCycles = parseInt((e.target as HTMLInputElement).value)}>
+                <span class="slider-value">${this._selectedCycles}</span>
+              </div>
+            </div>
+            <div class="control-group">
               <span class="control-label">Training Steps</span>
               <div class="slider-row">
-                <input type="range" min="500" max="5000" step="500"
+                <input type="range" min="100" max="5000" step="100"
                   .value=${String(this._selectedSteps)}
                   @input=${(e: Event) => this._selectedSteps = parseInt((e.target as HTMLInputElement).value)}>
                 <span class="slider-value">${this._selectedSteps}</span>
+              </div>
+            </div>
+            <div class="control-group">
+              <span class="control-label">Learning Rate</span>
+              <select class="control-select"
+                .value=${this._selectedLearningRate}
+                @change=${(e: Event) => this._selectedLearningRate = (e.target as HTMLSelectElement).value}>
+                <option value="1e-5">1e-5 (very slow)</option>
+                <option value="5e-5">5e-5</option>
+                <option value="1e-4">1e-4 (conservative)</option>
+                <option value="2e-4">2e-4 (balanced)</option>
+                <option value="5e-4">5e-4 (aggressive)</option>
+                <option value="1e-3">1e-3 (YOLO)</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <span class="control-label">Profile</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                ${Object.entries(FactoryWidget.FORGE_PROFILES).map(([key, p]) => html`
+                  <button class="profile-btn" title=${p.risk}
+                    @click=${() => this.applyProfile(key)}>${p.label}</button>
+                `)}
               </div>
             </div>
           </div>
@@ -697,6 +784,10 @@ export class FactoryWidget extends ReactiveWidget {
         domain: this._selectedDomain,
         experts: this._isMoe ? (this._selectedExperts || 64) : 0,
         steps: this._selectedSteps,
+        pruneLevel: this._selectedPruneLevel / 100,  // 0.0-0.7
+        pruneStrategy: this._selectedPruneStrategy,
+        cycles: this._selectedCycles,
+        learningRate: this._selectedLearningRate,
       });
     } catch (e) {
       console.error('Forge start failed:', e);
