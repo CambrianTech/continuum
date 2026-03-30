@@ -162,8 +162,8 @@ impl AudioResourceLifecycle {
     /// Force-reset the counter and trigger shutdown.
     pub fn spawn_orphan_watchdog(self: &Arc<Self>) {
         let lifecycle = Arc::clone(self);
-        const ORPHAN_CHECK_INTERVAL_SECS: u64 = 15;
-        const ORPHAN_TIMEOUT_SECS: u64 = 60; // 1 minute without change = orphaned
+        const ORPHAN_CHECK_INTERVAL_SECS: u64 = 30;
+        const ORPHAN_TIMEOUT_SECS: u64 = 600; // 10 minutes — live calls have stable session counts for the entire call duration. 60s was killing Whisper mid-conversation.
         const CHECKS_UNTIL_ORPHAN: u64 = ORPHAN_TIMEOUT_SECS / ORPHAN_CHECK_INTERVAL_SECS;
 
         tokio::spawn(async move {
