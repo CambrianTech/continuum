@@ -566,7 +566,8 @@ install_tailscale() {
 
     # Run tailscale up — it will print the auth URL and wait for you to click it.
     # No timeout. This must complete for the grid to work.
-    sudo tailscale up --ssh --accept-routes 2>&1
+    # DO NOT redirect stderr — the auth URL prints there and the user MUST see it.
+    sudo tailscale up --ssh --accept-routes
 
     local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
     if [ "$ts_ip" != "pending" ] && [ -n "$ts_ip" ]; then
