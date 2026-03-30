@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ModelListPublishedParams, ModelListPublishedResult } from '../shared/ModelList-publishedTypes';
+import type { ModelListPublishedParams, ModelListPublishedResult } from '../shared/ModelListPublishedTypes';
 
 export class ModelListPublishedBrowserCommand extends CommandBase<ModelListPublishedParams, ModelListPublishedResult> {
 

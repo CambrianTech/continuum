@@ -14,7 +14,7 @@
 
 // import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation tests
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
-import type { ModelForgeStatusParams, ModelForgeStatusResult } from '../../shared/ModelForge-statusTypes';
+import type { ModelForgeStatusParams, ModelForgeStatusResult } from '../../shared/ModelForgeStatusTypes';
 
 console.log('🧪 ModelForgeStatus Command Unit Tests');
 

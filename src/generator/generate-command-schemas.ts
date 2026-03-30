@@ -617,5 +617,5 @@ function main() {
 }
 
 
-// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
-// Run generators via: npx tsx generator/<name>.ts
+// CLI entry point
+main();

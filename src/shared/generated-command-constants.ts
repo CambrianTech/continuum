@@ -257,6 +257,8 @@ export const COMMANDS = {
   MIGRATION_STATUS: 'migration/status',
   MIGRATION_VERIFY: 'migration/verify',
   MODEL_DOWNLOAD: 'model/download',
+  MODEL_FORGE_STATUS: 'model/forge-status',
+  MODEL_LIST_PUBLISHED: 'model/list-published',
   MODEL_SEARCH: 'model/search',
   ONTOLOGY_BRIDGE_TRANSLATE: 'ontology/bridge/translate',
   ONTOLOGY_CONCEPT_LOOKUP_BATCH: 'ontology/concept/lookup-batch',

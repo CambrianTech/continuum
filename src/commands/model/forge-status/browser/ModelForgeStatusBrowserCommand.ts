@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ModelForgeStatusParams, ModelForgeStatusResult } from '../shared/ModelForge-statusTypes';
+import type { ModelForgeStatusParams, ModelForgeStatusResult } from '../shared/ModelForgeStatusTypes';
 
 export class ModelForgeStatusBrowserCommand extends CommandBase<ModelForgeStatusParams, ModelForgeStatusResult> {
 

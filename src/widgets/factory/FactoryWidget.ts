@@ -22,8 +22,8 @@ import {
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
-import type { ModelListPublishedResult } from '../../commands/model/list-published/shared/ModelList-publishedTypes';
-import type { ForgeJobStatus } from '../../commands/model/forge-status/shared/ModelForge-statusTypes';
+import type { ModelListPublishedResult } from '../../commands/model/list-published/shared/ModelListPublishedTypes';
+import type { ForgeJobStatus } from '../../commands/model/forge-status/shared/ModelForgeStatusTypes';
 // ── Types ───────────────────────────────────────────────────────────────
 
 interface ForgeStatus {
@@ -47,8 +47,9 @@ interface PublishedModel {
   downloads: number;
   likes: number;
   domain: string;
-  improvement: string;
-  size: string;
+  variant: string;
+  baseModel: string;
+  sizeGb: number;
   tags: string[];
 }
 
@@ -78,6 +79,7 @@ export class FactoryWidget extends ReactiveWidget {
   @reactive() private lossHistory: number[] = [];
   @reactive() private outputSamples: ForgeSample[] = [];
   @reactive() private _isLoading = true;
+  @reactive() private _totalDownloads = 0;
 
   // ── Forge Controls State ────────────────────────────────────────────
   @reactive() private _selectedModel = 'Qwen/Qwen3.5-4B';
@@ -177,12 +179,13 @@ export class FactoryWidget extends ReactiveWidget {
   private async loadPublishedModels(): Promise<void> {
     this._isLoading = true;
     try {
-      const result = await this.executeCommand<any, any>('model/list-published', {});
+      const result = await this.executeCommand<any, any>('model/list-published', { includeGguf: true });
       if (result?.models) {
-        this.models = result.models;
+        // Sort by downloads descending (default)
+        this.models = result.models.sort((a: any, b: any) => b.downloads - a.downloads);
+        this._totalDownloads = result.totalDownloads ?? 0;
       }
     } catch {
-      // Command not available yet
       this.models = [];
     }
     this._isLoading = false;
@@ -313,19 +316,29 @@ export class FactoryWidget extends ReactiveWidget {
         transition: width 0.3s ease;
       }
 
-      /* ── Model Grid ──────────────────────────────────── */
+      /* ── Model List (leaderboard style) ──────────────── */
 
-      .model-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 12px;
+      .section-stats {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--content-secondary, #8a92a5);
+        margin-left: 12px;
+      }
+
+      .model-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
 
       .model-card {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         background: var(--surface-elevated, rgba(255,255,255,0.04));
         border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 14px 16px;
+        border-radius: 6px;
+        padding: 10px 14px;
         transition: border-color 0.2s;
       }
 
@@ -333,10 +346,22 @@ export class FactoryWidget extends ReactiveWidget {
         border-color: var(--accent-primary, #00d4ff);
       }
 
+      .model-rank {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--content-secondary, #8a92a5);
+        min-width: 28px;
+        text-align: center;
+      }
+
+      .model-info {
+        flex: 1;
+        min-width: 0;
+      }
+
       .model-name {
         font-size: 13px;
         font-weight: 600;
-        margin-bottom: 4px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -344,35 +369,48 @@ export class FactoryWidget extends ReactiveWidget {
 
       .model-meta {
         display: flex;
-        gap: 12px;
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 8px;
+        gap: 6px;
+        margin-top: 3px;
       }
 
-      .model-improvement {
-        font-size: 16px;
-        font-weight: 700;
+      .badge {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-weight: 500;
+      }
+
+      .badge.domain {
+        background: rgba(0, 212, 255, 0.1);
+        color: var(--accent-primary, #00d4ff);
+      }
+
+      .badge.variant {
+        background: rgba(0, 255, 200, 0.1);
         color: #00ffc8;
       }
 
-      .model-improvement.negative {
-        color: #ff6666;
-      }
-
-      .model-tags {
+      .model-stats {
         display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-top: 8px;
+        gap: 16px;
+        flex-shrink: 0;
       }
 
-      .tag {
+      .stat {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+      }
+
+      .stat-value {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--content-primary, #e0e6ed);
+      }
+
+      .stat-label {
         font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 3px;
-        background: rgba(0, 212, 255, 0.1);
-        color: var(--accent-primary, #00d4ff);
+        color: var(--content-secondary, #8a92a5);
       }
 
       /* ── Empty State ─────────────────────────────────── */
@@ -929,8 +967,8 @@ export class FactoryWidget extends ReactiveWidget {
         <div class="section">
           <div class="section-title">Published Models</div>
           <div class="empty-state">
-            <div class="message">No models loaded</div>
-            <div class="hint">Published models will appear here once model/list-published is wired</div>
+            <div class="message">No models published yet</div>
+            <div class="hint">Forge a model to publish it to continuum-ai on HuggingFace</div>
           </div>
         </div>
       `;
@@ -938,32 +976,59 @@ export class FactoryWidget extends ReactiveWidget {
 
     return html`
       <div class="section">
-        <div class="section-title">Published Models (${this.models.length})</div>
-        <div class="model-grid">
-          ${this.models.map(m => this.renderModelCard(m))}
+        <div class="section-title">
+          Published Models (${this.models.length})
+          <span class="section-stats">${this._totalDownloads.toLocaleString()} total downloads</span>
+        </div>
+        <div class="model-list">
+          ${this.models.map((m, i) => this.renderModelCard(m, i))}
         </div>
       </div>
     `;
   }
 
-  private renderModelCard(m: PublishedModel): TemplateResult {
-    const impNum = parseFloat(m.improvement);
-    const impClass = isNaN(impNum) ? '' : (impNum < 0 ? 'negative' : '');
+  private renderModelCard(m: PublishedModel, rank: number): TemplateResult {
+    const variantBadge = this.getVariantBadge(m.variant ?? 'forged');
 
     return html`
       <div class="model-card">
-        <div class="model-name">${m.name}</div>
-        <div class="model-meta">
-          <span>${m.domain}</span>
-          <span>${m.size}</span>
-          <span>${m.downloads.toLocaleString()} downloads</span>
+        <div class="model-rank">#${rank + 1}</div>
+        <div class="model-info">
+          <div class="model-name">${m.name}</div>
+          <div class="model-meta">
+            <span class="badge domain">${m.domain}</span>
+            <span class="badge variant">${variantBadge}</span>
+          </div>
         </div>
-        <div class="model-improvement ${impClass}">${m.improvement}</div>
-        <div class="model-tags">
-          ${m.tags.map(t => html`<span class="tag">${t}</span>`)}
+        <div class="model-stats">
+          <div class="stat">
+            <span class="stat-value">${this.formatCount(m.downloads)}</span>
+            <span class="stat-label">downloads</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">${m.likes || '--'}</span>
+            <span class="stat-label">likes</span>
+          </div>
         </div>
       </div>
     `;
+  }
+
+  private getVariantBadge(variant: string): string {
+    switch (variant) {
+      case 'compacted': return 'compacted';
+      case 'defragged': return 'defragged';
+      case 'forged': return 'forged';
+      case 'gguf': return 'GGUF';
+      case 'mlx': return 'MLX';
+      default: return variant;
+    }
+  }
+
+  private formatCount(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return n.toString();
   }
 
   // ── Sparkline ─────────────────────────────────────────────────────────

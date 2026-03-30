@@ -14,7 +14,7 @@
 
 // import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation tests
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
-import type { ModelListPublishedParams, ModelListPublishedResult } from '../../shared/ModelList-publishedTypes';
+import type { ModelListPublishedParams, ModelListPublishedResult } from '../../shared/ModelListPublishedTypes';
 
 console.log('🧪 ModelListPublished Command Unit Tests');
 

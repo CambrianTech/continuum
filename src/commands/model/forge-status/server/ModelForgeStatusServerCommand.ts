@@ -8,8 +8,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ModelForgeStatusParams, ModelForgeStatusResult, ForgeJobStatus } from '../shared/ModelForge-statusTypes';
-import { createModelForgeStatusResultFromParams } from '../shared/ModelForge-statusTypes';
+import type { ModelForgeStatusParams, ModelForgeStatusResult, ForgeJobStatus } from '../shared/ModelForgeStatusTypes';
+import { createModelForgeStatusResultFromParams } from '../shared/ModelForgeStatusTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -22,7 +22,6 @@ export class ModelForgeStatusServerCommand extends CommandBase<ModelForgeStatusP
   async execute(params: ModelForgeStatusParams): Promise<ModelForgeStatusResult> {
     const forges: ForgeJobStatus[] = [];
 
-    // Scan for status.json files in known forge output locations
     const forgeDirs = this.findForgeDirs();
 
     for (const dir of forgeDirs) {
@@ -78,7 +77,6 @@ export class ModelForgeStatusServerCommand extends CommandBase<ModelForgeStatusP
   private findForgeDirs(): string[] {
     const dirs: string[] = [];
 
-    // Check sentinel-ai output directories
     const sentinelPaths = [
       path.join(process.env.HOME ?? '', 'sentinel-ai', 'output', 'forged'),
       path.join(process.cwd(), '..', 'sentinel-ai', 'output', 'forged'),

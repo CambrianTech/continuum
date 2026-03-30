@@ -7,8 +7,8 @@
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ModelListPublishedParams, ModelListPublishedResult, PublishedModelInfo } from '../shared/ModelList-publishedTypes';
-import { createModelListPublishedResultFromParams } from '../shared/ModelList-publishedTypes';
+import type { ModelListPublishedParams, ModelListPublishedResult, PublishedModelInfo } from '../shared/ModelListPublishedTypes';
+import { createModelListPublishedResultFromParams } from '../shared/ModelListPublishedTypes';
 
 const HF_ORG = 'continuum-ai';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -46,7 +46,6 @@ export class ModelListPublishedServerCommand extends CommandBase<ModelListPublis
   }
 
   private async fetchModels(): Promise<PublishedModelInfo[]> {
-    // Return cache if fresh
     if (_cache && Date.now() - _cacheTime < CACHE_TTL_MS) {
       return _cache;
     }
@@ -60,14 +59,14 @@ export class ModelListPublishedServerCommand extends CommandBase<ModelListPublis
 
       for (const m of hfModels) {
         const name = (m.id as string).split('/').pop() ?? '';
-        if (name.includes('paper')) continue; // Skip non-model repos
+        if (name.includes('paper')) continue;
 
         models.push({
           id: m.id,
           name,
           baseModel: this.inferBaseModel(name),
           domain: this.inferDomain(name),
-          improvementPct: 0, // Would need forging_results.json
+          improvementPct: 0,
           downloads: m.downloads ?? 0,
           likes: m.likes ?? 0,
           sizeGb: 0,
@@ -102,7 +101,6 @@ export class ModelListPublishedServerCommand extends CommandBase<ModelListPublis
   }
 
   private inferBaseModel(name: string): string {
-    // Strip our suffixes to get base model
     let base = name.toLowerCase();
     for (const s of ['-gguf', '-mlx-4bit', '-defragged', '-compacted', '-forged']) {
       base = base.replace(s, '');

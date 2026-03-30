@@ -3146,6 +3146,33 @@
       }
     },
     {
+      "name": "model/list-published",
+      "description": "List all published models from the continuum-ai HuggingFace org — download counts, likes, improvement scores, hardware targets, tags.",
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "includeGguf": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGguf parameter"
+        }
+      }
+    },
+    {
+      "name": "model/forge-status",
+      "description": "Get the current status of active model forges — phase, step, loss, VRAM usage, ETA. Polls status.json from forge nodes on the grid.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
       "name": "model/download",
       "description": "Download a base model from HuggingFace to a local or remote grid node. Routes to GPU-capable node if needed. Wraps huggingface_hub snapshot_download with progress reporting via chat.",
       "params": {
@@ -4100,6 +4127,47 @@
           "type": "boolean",
           "required": false,
           "description": "screenshot parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/interact",
+      "description": "Interact with UI elements — click, type, select, scroll. Enables personas to navigate and modify the UI via DOM selectors. Works through shadow DOM boundaries (Lit web components).",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": true,
+          "description": "selector parameter"
+        },
+        "value": {
+          "type": "string",
+          "required": false,
+          "description": "value parameter"
+        },
+        "direction": {
+          "type": "string",
+          "required": false,
+          "description": "direction parameter"
+        },
+        "amount": {
+          "type": "number",
+          "required": false,
+          "description": "amount parameter"
+        },
+        "waitAfterMs": {
+          "type": "number",
+          "required": false,
+          "description": "waitAfterMs parameter"
+        },
+        "waitForMs": {
+          "type": "number",
+          "required": false,
+          "description": "waitForMs parameter"
         }
       }
     },

@@ -491,6 +491,10 @@ class StructureGenerator {
 }
 
 
-// CLI entry point removed — was causing esbuild to execute readFileSync at bundle time.
-// Run generators via: npx tsx generator/<name>.ts
 export { StructureGenerator };
+
+// CLI entry point — runs when invoked directly via npx tsx
+import * as path from 'path';
+const rootPath = path.resolve(__dirname, '..');
+const generator = new StructureGenerator(rootPath);
+generator.generate();
