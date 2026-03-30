@@ -121,6 +121,11 @@ install_system_deps() {
           brew install "$pkg"
         fi
       done
+      # ONNX Runtime — required for Silero VAD (live mode speech-to-text)
+      if ! brew list onnxruntime &>/dev/null; then
+        echo -e "  Installing onnxruntime (for live mode STT)..."
+        brew install onnxruntime
+      fi
       ;;
     linux|wsl)
       # ── Tiered sudo: auto if root/passwordless, prompt if interactive, skip if headless ──
@@ -176,6 +181,11 @@ install_system_deps() {
             needed+=("libnvidia-gl-535")
           fi
         fi
+      fi
+
+      # ONNX Runtime — required for Silero VAD (live mode speech-to-text)
+      if ! ldconfig -p 2>/dev/null | grep -q libonnxruntime; then
+        needed+=("libonnxruntime-dev" "libonnxruntime")
       fi
 
       if [ ${#needed[@]} -gt 0 ]; then
