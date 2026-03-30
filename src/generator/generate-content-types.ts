@@ -28,9 +28,32 @@ interface RecipeFile {
     layout?: {
         main?: string[];
         right?: any;
+        // New format: widgets array with position
+        widgets?: Array<{ widget: string; position: string; order: number }>;
     };
     inputs?: Record<string, any>;
     tags?: string[];
+}
+
+/** Extract the main/center widget from either layout format */
+function getMainWidget(recipe: RecipeFile): string {
+    const layout = recipe.layout;
+    if (!layout) return 'chat-widget';
+
+    // New format: widgets array with position
+    if (layout.widgets && Array.isArray(layout.widgets)) {
+        const center = layout.widgets.find(w => w.position === 'center');
+        if (center) return center.widget;
+        // Fall back to first widget if no center specified
+        if (layout.widgets.length > 0) return layout.widgets[0].widget;
+    }
+
+    // Old format: main array
+    if (layout.main && layout.main.length > 0) {
+        return layout.main[0];
+    }
+
+    return 'chat-widget';
 }
 
 function main() {
@@ -71,7 +94,7 @@ function main() {
     const typeUnion = typeIds.map(id => `'${id}'`).join(' | ');
 
     const configEntries = recipes.map(r => {
-        const widget = r.layout?.main?.[0] || 'chat-widget';
+        const widget = getMainWidget(r);
         const displayName = r.displayName || r.name || r.uniqueId;
         const icon = ICON_MAP[r.uniqueId] || '📄';
         const hasRightPanel = r.layout?.right !== null && r.layout?.right !== undefined;
