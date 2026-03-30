@@ -504,8 +504,22 @@ install_tailscale() {
       ;;
   esac
 
-  # Linux/WSL: ensure daemon is running
+  # Linux/WSL: set up passwordless sudo for tailscale so it auto-starts on boot
+  # without prompting. This is critical for grid resilience — nodes must reconnect
+  # to the mesh automatically after reboots.
   if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
+    if [ ! -f /etc/sudoers.d/tailscale ]; then
+      echo -e "  Setting up passwordless sudo for tailscale (grid auto-reconnect)..."
+      echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/tailscale, /usr/bin/tailscaled, /usr/sbin/tailscaled" | sudo tee /etc/sudoers.d/tailscale > /dev/null
+      sudo chmod 440 /etc/sudoers.d/tailscale
+      echo -e "  ${GREEN}✅ Passwordless sudo for tailscale configured${NC}"
+    fi
+
+    # Enable systemd service if available (survives reboots on native Linux)
+    if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
+      sudo systemctl enable tailscaled 2>/dev/null || true
+    fi
+
     if ! pgrep -x tailscaled &>/dev/null; then
       echo -e "  ${YELLOW}Starting tailscaled daemon...${NC}"
       # WSL2 doesn't have systemd — always try direct spawn first
@@ -542,16 +556,26 @@ install_tailscale() {
       return
     fi
 
-    # Need auth — start tailscale up (shows URL interactively)
-    if [ -t 0 ]; then
-      echo -e "  ${YELLOW}Authenticating Tailscale...${NC}"
-      sudo tailscale up --ssh 2>&1
-      local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
-      if [ "$ts_ip" != "pending" ]; then
-        echo -e "  ${GREEN}✅ Tailscale connected (${ts_ip})${NC}"
-      fi
+    # Need auth — tailscale up prints a login URL that must be opened in a browser.
+    # This BLOCKS until you authenticate. That's intentional — the grid won't work without it.
+    echo -e ""
+    echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}  TAILSCALE LOGIN REQUIRED${NC}"
+    echo -e "  ${YELLOW}  A URL will appear below. Open it in your browser to authenticate.${NC}"
+    echo -e "  ${YELLOW}  This is a ONE-TIME step — after this, Tailscale auto-reconnects forever.${NC}"
+    echo -e "  ${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo -e ""
+
+    # Run tailscale up — it will print the auth URL and wait for you to click it.
+    # No timeout. This must complete for the grid to work.
+    sudo tailscale up --ssh --accept-routes 2>&1
+
+    local ts_ip=$(tailscale ip -4 2>/dev/null || echo "pending")
+    if [ "$ts_ip" != "pending" ] && [ -n "$ts_ip" ]; then
+      echo -e "  ${GREEN}✅ Tailscale connected! IP: ${ts_ip}${NC}"
+      echo -e "  ${GREEN}  This node is now part of the mesh. It will auto-reconnect on reboot.${NC}"
     else
-      echo -e "  ${YELLOW}⚠️ Tailscale needs auth. Run: sudo tailscale up --ssh${NC}"
+      echo -e "  ${RED}❌ Tailscale auth may have failed. Run manually: sudo tailscale up --ssh${NC}"
     fi
   fi
 }
