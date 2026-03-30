@@ -153,7 +153,44 @@ The most compelling demonstration is **not** beating models of the same native s
 
 This is the dev story. Developers don't care about parameter counts — they care about what fits in their GPU and how well it performs. A model with 27B intelligence running where only 7B models could fit before changes the calculus for every edge deployment.
 
-### 3.3.3 Internal Validation: Eat Our Own Dog Food
+### 3.3.3 Utilization-Aware Mixed-Precision Quantization
+
+Standard GGUF quantization applies **uniform precision** — every tensor gets Q4_K_M regardless of importance. This is wasteful: a critical attention head that carries 10% of the model's code reasoning gets the same 4-bit precision as a near-zero pruned head that contributes nothing.
+
+Experiential plasticity produces a byproduct that standard training does not: **per-head utilization data**. After pruning and retraining, we know exactly which heads are load-bearing and which are expendable. This enables **mixed-precision quantization**:
+
+```
+High-utilization heads  → Q8 or BF16  (preserve quality where it matters)
+Medium-utilization heads → Q4_K_M     (standard quality)
+Low-utilization heads    → Q2_K       (minimum viable, save space)
+Pruned/dead heads        → removed    (zero bits)
+```
+
+**Implementation** (already built, pending validation):
+- `compactor.rs` — assigns `HeadPrecision` per head based on utilization analysis
+- `gguf_writer.rs` — writes custom GGUF with per-tensor quantization levels
+- `mixed_quant` — binary that re-quantizes existing GGUF with mixed precision
+
+**Expected benefits:**
+- **Smaller than uniform Q4** — dead/low heads compressed further
+- **Higher quality than uniform Q4** — critical heads retain Q8/BF16 precision
+- **Better score-per-byte** — every bit of VRAM allocated to where it matters most
+
+**Predicted comparison:**
+
+| Method | Size | Expected HumanEval | Bits/param |
+|--------|------|-------------------|------------|
+| Uniform Q4_K_M | 2.6GB | 53.0% (measured) | 4.0 |
+| Mixed precision | ~2.2GB (est.) | ~55-57% (predicted) | 3.4 avg |
+| Uniform Q2_K | ~1.5GB (est.) | ~40-45% (predicted) | 2.0 |
+
+If validated, this means our 4B forged model at **2.2GB could match or exceed the uniform 2.6GB Q4 score** — the same intelligence in 15% less memory. Or equivalently: at the same 2.6GB budget, mixed precision could approach fp16 quality (57.3%) in a GGUF.
+
+This is the compression endgame: pruning removes the dead weight, forging specializes what remains, and mixed-precision quantization allocates precision budget where it earns the highest return. Each step compounds on the previous.
+
+**Status**: Implementation exists in Rust. End-to-end validation (forge → analyze utilization → mixed GGUF → HumanEval) is the next critical experiment.
+
+### 3.3.4 Internal Validation: Eat Our Own Dog Food
 
 These forged models will serve as the default local inference providers in Continuum (#588). Four local AI personas (Helper AI, Teacher AI, CodeReview AI, Local Assistant) will run on the forged GGUF models for daily use:
 
