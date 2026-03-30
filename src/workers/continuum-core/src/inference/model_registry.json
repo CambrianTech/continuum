@@ -56,6 +56,22 @@
       "description": "Full 32B (uncompacted, needs 80GB+)",
       "min_memory_gb": 70,
       "chat_template": "qwen2"
+    },
+    "continuum-ai/qwen3.5-4b-code-forged": {
+      "repo": "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+      "format": "gguf",
+      "architecture": "qwen3",
+      "description": "4B code model, forged with experiential plasticity. 70%+ HumanEval. 2.6GB Q4_K_M.",
+      "min_memory_gb": 3,
+      "chat_template": "qwen2"
+    },
+    "continuum-ai/qwen3.5-27b-code-forged": {
+      "repo": "continuum-ai/qwen3.5-27b-code-forged",
+      "format": "safetensors",
+      "architecture": "qwen3",
+      "description": "27B code model, forged with experiential plasticity. Needs 17GB+ VRAM.",
+      "min_memory_gb": 17,
+      "chat_template": "qwen2"
     }
   },
   "chat_templates": {
