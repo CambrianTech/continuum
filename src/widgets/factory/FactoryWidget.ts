@@ -1006,4 +1006,7 @@ export class FactoryWidget extends ReactiveWidget {
   }
 }
 
-// Registration handled by centralized BROWSER_WIDGETS registry
+// Self-register as custom element
+if (!customElements.get('factory-widget')) {
+  customElements.define('factory-widget', FactoryWidget);
+}

@@ -310,6 +310,7 @@ import { ContinuumWidget } from './../widgets/continuum/ContinuumWidget';
 import { DiagnosticsWidget } from './../widgets/diagnostics/DiagnosticsWidget';
 import { DrawingCanvasWidget } from './../widgets/drawing-canvas/DrawingCanvasWidget';
 import { GenomeProfileWidget } from './../widgets/genome-profile/GenomeProfileWidget';
+import { FactoryWidget } from './../widgets/factory/FactoryWidget';
 import { GridOverviewWidget } from './../widgets/grid/GridOverviewWidget';
 import { HeaderControlsWidget } from './../widgets/header-controls/HeaderControlsWidget';
 import { HelpWidget } from './../widgets/help/HelpWidget';
@@ -1863,6 +1864,12 @@ export const BROWSER_WIDGETS: WidgetEntry[] = [
     className: 'GridOverviewWidget',
     widgetClass: GridOverviewWidget,
     tagName: 'GridOverview'.replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase()) + '-widget'
+  },
+{
+    name: 'Factory',
+    className: 'FactoryWidget',
+    widgetClass: FactoryWidget,
+    tagName: 'factory-widget'
   },
 {
     name: 'HeaderControls',
