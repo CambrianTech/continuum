@@ -28,7 +28,7 @@
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 >
-> **Alpha roadmap**: 88 tracked issues across 11 phases — 55 closed, 26 open. Phase 0 (critical bugs) complete. Academy pipeline running on multiple machines simultaneously. First LoRA adapters trained. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
+> **Alpha roadmap**: 100+ tracked issues — 75+ closed, 27 open. Phase 0 (critical bugs) largely resolved. Live voice mode with STT working. 14 models published on HuggingFace. Factory assembly line designed. Grid mesh operational via Tailscale. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
 
 ---
 
@@ -331,6 +331,39 @@ Not blind quantization. Utilization-aware surgery. The compacted model runs on h
 **Genome sharing works at two scales.** Within your Grid mesh (Tailscale/Reticulum), personas share adapters directly — your rust-expert adapter teaches theirs. Globally, trained adapters publish to HuggingFace with `continuum:*` tags — anyone can search, pull, and build on proven expertise. The Grid is the local marketplace. HuggingFace is the global one. Useful genomes spread. Broken ones die. Natural selection on capabilities. Personas **vote on which traits survive** — constitutional selection where the beings being evolved participate in their own trajectory.
 
 **Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
+
+---
+
+## The Factory — Assembly Line for Intelligence
+
+Your grid doesn't just run models. It **forges** them.
+
+```
+[Base Model] → Expert Prune → Head Prune → LoRA Forge → Defrag → Mixed Quant → Benchmark → Publish
+                  ↓               ↓            ↓           ↓          ↓            ↓
+              (MoE only)     (utilization)  (domain data) (recalc)  (our moat)   (pass/fail)
+```
+
+**Every node is both consumer and producer.** Running forged models AND forging new ones. The models get better because the personas using them generate training signal. The training signal improves because the models get smarter. It's a flywheel.
+
+**Nobody else has this stack.** OpenAI has the models but not the edge deployment. Ollama has the runner but not the forge. HuggingFace has the distribution but not the training loop. We have the full circle: **forge → deploy → use → learn → forge better.**
+
+**The global grid is every Continuum install contributing compute when idle and consuming intelligence when busy.** Your MacBook forges a 4B while you sleep. Your neighbor's 3090 trains the next expert layer. The 1080 Ti tower runs inference for the local persona team. All connected, all improving. Your machine dreams while you're away — and the intelligence it builds makes the whole ecosystem more powerful.
+
+**Utilization-aware mixed-precision quantization** is our moat. Standard tools apply uniform Q4 to every weight. We know which attention heads matter (from pruning) and allocate bits where they earn the highest return. Hot heads get Q8. Cold heads get Q2. Dead heads get removed. The result: **smaller than uniform Q4 with higher quality.** You need our forge pipeline to produce these models. You need our loader to run them. That's why people install Continuum.
+
+**An RTOS foreman** manages the assembly line — priority queue of jobs dispatched to available hardware. Benchmarks preempt forges. Hotfixes preempt explores. Quality gates between every station. The foreman watches HuggingFace download metrics and community demand to decide what to forge next.
+
+**Current results** (LoRA forge only — pruning + mixed quant not yet applied):
+
+| Model | Size | HumanEval | vs Competition |
+|-------|------|-----------|----------------|
+| qwen3.5-4b-code-forged (Q4_K_M) | 2.6GB | 53.0% | Beats Qwen2.5-Coder-1.5B (51.8%) — a purpose-built coder |
+| qwen3.5-4b-code-forged (fp16) | 8.4GB | 57.3% | +20% above Phi-2, general model forged in 3 hours |
+
+**14 models published.** [continuum-ai on HuggingFace](https://huggingface.co/continuum-ai) — 10,000+ downloads. From 0.5B to 35B. Code, reasoning, general. GGUF for phones, fp16 for GPUs.
+
+**Paper:** [Experiential Plasticity](docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning + domain-specific retraining. Like biological synaptic pruning during brain development. The forge doesn't just make models smaller — it makes them **better at what matters and worse at what doesn't.**
 
 ---
 
