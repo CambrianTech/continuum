@@ -718,9 +718,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           if (statusCode === 402 || statusCode === 429 ||
               errorLower.includes('insufficient_quota') ||
               errorLower.includes('quota') ||
-              errorLower.includes('credits') ||
+              errorLower.includes('credit') ||
               errorLower.includes('billing') ||
-              errorLower.includes('spending limit')) {
+              errorLower.includes('spending limit') ||
+              errorLower.includes('balance is too low')) {
 
             // Determine specific status
             const isRateLimited = statusCode === 429 && !errorLower.includes('quota') && !errorLower.includes('credits');
