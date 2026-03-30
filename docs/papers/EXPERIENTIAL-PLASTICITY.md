@@ -99,21 +99,21 @@ With the v3 forge pipeline (LoRA + AMP mixed precision + memory-tiered architect
 
 | Model | Params | Size | HumanEval | HumanEval+ | Method |
 |-------|--------|------|-----------|------------|--------|
-| **Qwen3.5-4B-Code-Forged (fp16)** | **4.21B** | **8.4GB** | **57.3%** | **49.4%** | LoRA forge (3 cycles, CodeFeedback 156K) |
-| **Qwen3.5-4B-Code-Forged (Q4_K_M)** | **4.21B** | **2.6GB** | **53.0%** | **47.0%** | Same model, GGUF quantized |
-| Qwen2.5-Coder-1.5B (Q4_K_M) | 1.5B | ~1GB | 51.8% | 48.2% | Purpose-built coder, months of code pre-training |
-| StarCoder2-3B | 3B | 6GB | 31.7% | — | Pre-trained on code |
-| Phi-2 | 2.7B | 5.4GB | 47.6% | — | Pre-trained |
-| Phi-3-mini | 3.8B | 7.6GB | ~58-61% | — | Pre-trained |
-| Qwen2.5-Coder-3B | 3B | 6GB | ~61-65% | — | Code-specialized pre-training |
+| Base Qwen3-4B (Q4_K_M) | 4B | 2.57GB | 63.4% | 57.9% | No training (different architecture) |
+| **Base Qwen3.5-4B (Q4_K_M)** | **4.21B** | **2.57GB** | **54.3%** | **48.8%** | **Control — no training** |
+| Qwen3.5-4B-Code-Forged (fp16) | 4.21B | 8.4GB | 57.3% | 49.4% | LoRA forge (3 cycles, CodeFeedback 156K) |
+| Qwen3.5-4B-Code-Forged (Q4_K_M) | 4.21B | 2.6GB | 53.0% | 47.0% | Same model, GGUF quantized |
+| Qwen2.5-Coder-1.5B (Q4_K_M) | 1.5B | ~1GB | 51.8% | 48.2% | Purpose-built coder |
 
-**Key results:**
-- **Beats a purpose-built coder**: Our forged 4B GGUF (53.0%) beats Qwen2.5-Coder-1.5B (51.8%) — a model specifically pre-trained on trillions of code tokens. Our model was forged from a general-purpose base in 3 hours on a single GPU.
-- **fp16 → Q4_K_M quantization cost: only -4.3 points** (7.5% relative drop). The GGUF retains 92.5% of the fp16 quality.
-- **53% HumanEval at 2.6GB** — beats Phi-2 (47.6% at 5.4GB) while being less than half the size.
-- **GGUF eval completed in ~10 minutes** vs ~24 hours for fp16. This enables benchmark-in-the-loop forging: score at every checkpoint, stop when quality plateaus.
+**Honest results — LoRA-only forge vs base model:**
+- **LoRA alone did NOT improve HumanEval on Qwen3.5-4B.** The base model scores 54.3%, our forge scores 53.0% (-1.3pt). The base model was already competent at code.
+- **fp16 forged (57.3%) beats base Q4 (54.3%)** — but that's an unfair comparison (8.4GB vs 2.57GB). At the same quantization, the forge slightly hurts.
+- **Quantization cost remains low**: fp16 57.3% → Q4 53.0% = -4.3pt (7.5% relative drop).
+- **Still beats Qwen2.5-Coder-1.5B** (53.0% vs 51.8%) — a purpose-built coder at half the size.
 
-The forged 4B achieves 57.3% HumanEval through LoRA fine-tuning alone (no structural pruning). This is pure domain specialization via experiential plasticity — the same base model architecture, with attention heads learning to specialize on code patterns through 3 forge cycles on a single RTX 5090. The 4.21B parameter count is unchanged from the base Qwen3.5-4B.
+**Why LoRA alone wasn't enough:** Qwen3.5-4B is already strong at code out of the box (54.3%). LoRA fine-tuning on CodeFeedback shifted the model's response style but didn't concentrate its attention patterns. The Qwen2.5 compacted models showed +24% PPL improvement because **head pruning forces surviving heads to specialize harder** — that compression pressure is what drives the real gains.
+
+**Next experiment: prune first, THEN forge.** The assembly line must include structural pruning (Station 2) before LoRA training (Station 3). Without pruning pressure, the forge just rearranges weights instead of concentrating them. This is tracked in sentinel-ai #115 and continuum #629.
 
 **Note**: This model was NOT structurally pruned. The head pruning results from §3.1-3.2 (Qwen2.5 family) demonstrate the compression aspect of experiential plasticity. The Qwen3.5-4B forge demonstrates the specialization aspect — domain-specific training data driving head specialization without removing heads. Both are facets of the same principle: experience shapes architecture.
 
