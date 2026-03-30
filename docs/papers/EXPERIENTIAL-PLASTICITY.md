@@ -138,6 +138,34 @@ To rigorously demonstrate the contribution of each step, the following evaluatio
 
 Without controls (1) and (5), we cannot claim the forge/compaction improved anything. These are mandatory before publication.
 
+### 3.3.2 The Headline Comparison: Big Brain in a Small Body
+
+The most compelling demonstration is **not** beating models of the same native size — it's beating models of the same VRAM footprint that started smaller.
+
+| Comparison | What it proves | VRAM tier |
+|-----------|----------------|-----------|
+| **27B forged GGUF Q4** (~10GB) vs **Qwen3.5-7B** (~4GB fp16) | 27B intelligence in 7B-class VRAM | 8-10GB (MacBook Air 16GB, RTX 3060) |
+| **27B forged GGUF Q4** vs **CodeLlama-7B** (~4GB fp16) | Our compressed 27B vs purpose-built 7B coder | 8-10GB |
+| **35B-A3B compacted** (16 experts, ~3B active) vs **any 3B model** | MoE surgery: 35B patterns in 3B footprint | 2-4GB (iPhone, Roomba) |
+| **14B compacted GGUF Q4** (~5GB) vs **Qwen3.5-7B** | Pruned 14B vs native 7B at same VRAM | 5-7GB |
+
+**The pitch**: "I have 8GB VRAM. Normally I run a 7B model. But this compacted 27B outperforms every 7B because it started life as a 27B — it has 27B's learned patterns compressed into a 7B-class memory footprint."
+
+This is the dev story. Developers don't care about parameter counts — they care about what fits in their GPU and how well it performs. A model with 27B intelligence running where only 7B models could fit before changes the calculus for every edge deployment.
+
+### 3.3.3 Internal Validation: Eat Our Own Dog Food
+
+These forged models will serve as the default local inference providers in Continuum (#588). Four local AI personas (Helper AI, Teacher AI, CodeReview AI, Local Assistant) will run on the forged GGUF models for daily use:
+
+| Persona | Model | VRAM | Use case |
+|---------|-------|------|----------|
+| Helper AI | qwen3.5-4b-code-forged Q4 | 2.6GB | General assistance, small tasks |
+| Teacher AI | qwen3.5-4b-code-forged Q4 | 2.6GB | Explanation, tutorials |
+| CodeReview AI | qwen3.5-27b-code-forged Q4 | ~10GB | Deep code analysis (MacBook Pro 32GB) |
+| Local Assistant | qwen3.5-4b-code-forged Q4 | 2.6GB | System tasks, file operations |
+
+This is the ultimate test: if we won't use our own models, why should anyone else? Every bug found by the personas running on forged models feeds back into the next forge cycle — experiential plasticity applied to the forge pipeline itself.
+
 ### 3.4 Why Qwen3.5 Responds Strongly to Plasticity
 
 Qwen3.5's architecture uses a hybrid of full self-attention layers and linear attention (Mamba-style) layers. Only a fraction of layers (16 of 64 in the 27B) use traditional multi-head attention — the rest use linear recurrence that cannot be pruned in the same way. This architectural choice creates an important dynamic for experiential plasticity:
