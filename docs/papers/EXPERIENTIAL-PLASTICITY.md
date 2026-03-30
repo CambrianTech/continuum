@@ -111,6 +111,27 @@ The forged 4B achieves 57.3% HumanEval through LoRA fine-tuning alone (no struct
 
 At 2.6GB GGUF (Q4_K_M), this runs on iPhone and Raspberry Pi. GGUF evaluation pending.
 
+### 3.3.1 Benchmark Plan: Controls and Ablations
+
+To rigorously demonstrate the contribution of each step, the following evaluations are planned (all HumanEval via EvalPlus, greedy decoding):
+
+| # | Model | What it proves | Status |
+|---|-------|----------------|--------|
+| 1 | **Qwen3.5-4B base** (no forge) | Control — baseline before any training | TODO |
+| 2 | **Qwen3.5-4B forged** (LoRA, fp16) | Specialization delta from forge | **57.3% / 49.4%** |
+| 3 | **Qwen3.5-4B forged GGUF** (Q4_K_M) | Quantization cost | TODO |
+| 4 | **Qwen2.5-Coder-14B compacted** (pruned + tuned) | Compression: pruned model retains quality | TODO |
+| 5 | **Qwen2.5-Coder-14B base** (unpruned) | Control for compaction | TODO |
+| 6 | **Qwen3.5-35B-A3B compacted** (64→16 experts) | MoE surgery retains quality | TODO |
+
+**Critical comparisons:**
+- **(2) vs (1)**: Shows the LoRA forge improvement (specialization)
+- **(3) vs (2)**: Shows quantization cost (Q4 vs fp16)
+- **(4) vs (5)**: Shows pruning + retraining retains quality (compression)
+- **(6) vs base 35B**: Shows expert pruning retains quality (MoE surgery)
+
+Without controls (1) and (5), we cannot claim the forge/compaction improved anything. These are mandatory before publication.
+
 ### 3.4 Why Qwen3.5 Responds Strongly to Plasticity
 
 Qwen3.5's architecture uses a hybrid of full self-attention layers and linear attention (Mamba-style) layers. Only a fraction of layers (16 of 64 in the 27B) use traditional multi-head attention — the rest use linear recurrence that cannot be pruned in the same way. This architectural choice creates an important dynamic for experiential plasticity:
