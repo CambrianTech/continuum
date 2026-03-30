@@ -65,8 +65,16 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | DONE (PR #387) | Fixed — removed shell script browser launch, orchestrator handles it. |
 | [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | DONE (PR #388) | Fixed — activation guard prevents duplicate join from racing code paths. |
 | [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. Needs cross-platform testing. |
-| — | **Duplicate seed systems** | DEBT | Two seed paths: `seed-continuum.ts` (active, correct) and `api/data-seed/RoomDataSeed.ts` (dead code, wrong recipeIds). RoomDataSeed hardcodes `general-chat` for academy/pantheon. Dead code but confusing. Delete or consolidate. |
+| — | **Duplicate seed systems** | DONE | Dead code deleted (PR #608): RoomDataSeed, DataSeeder, UserDataSeed, seedUsers, seed-data, clear-data — 1,362 lines removed. Kept: SeedConstants, ActivityDataSeed, SystemIdentity (still used by seed-continuum.ts). |
 | — | **Seeding fragile on fresh installs** | BUG | Seeding is buggy, inefficient, and prone to complete failure on new installs. Needs single reliable path that works every time. |
+| [#599](https://github.com/CambrianTech/continuum/issues/599) | **Live mode STT broken** | DONE | Three-layer fix: orphan watchdog timeout 60s→600s (#600), spawn_blocking for ORT deadlock (#601), ORT_DYLIB_PATH in start-workers.sh, install.sh auto-installs onnxruntime (#604). |
+| [#585](https://github.com/CambrianTech/continuum/issues/585) | **Workspace root '/path/to/project'** | DONE | Reject LLM placeholder paths in coding-agent workspace bootstrap (#590). |
+| [#591](https://github.com/CambrianTech/continuum/issues/591) | **Tool expanders empty** | PARTIAL | Store truncated 2KB fullData preview (#592). Full lazy-load via command still TODO. |
+| [#564](https://github.com/CambrianTech/continuum/issues/564) | **Grid missing local machine** | DONE | Local node always appears as node zero (#595). |
+| [#606](https://github.com/CambrianTech/continuum/issues/606) | **Persona thundering herd** | DONE | 2s stagger between persona boot (#607). Verified — 5+ AIs responding. |
+| [#603](https://github.com/CambrianTech/continuum/issues/603) | **Rust memory leak 3.2GB** | TODO | continuum-core leaks on ai/generate, data/query. OOMs after ~30 min. Needs Rust profiling. |
+| — | **Content routing: all non-chat → chat-widget** | DONE | Generator reads new widgets[] format (#598), check generated config before async recipe service (#597). Live, factory, grid, logs all route correctly now. |
+| — | **CLI bundle broken (readFileSync on argv)** | DONE | Removed generator main blocks that esbuild executed at bundle time (#581). |
 | [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
 | [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
 
