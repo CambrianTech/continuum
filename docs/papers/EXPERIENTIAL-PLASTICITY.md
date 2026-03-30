@@ -95,7 +95,21 @@ With the v3 forge pipeline (LoRA + AMP mixed precision + memory-tiered architect
 
 **Key findings**: Both models improve over baseline. The 4B shows dramatic +24% improvement — domain-specific data (CodeFeedback: real coding Q&A) drives far more head specialization than generic text. The 27B improves +3.5% while running in 17GB (4-bit NF4) instead of 28GB (fp16) — better quality at 36% less VRAM. The 27B was forged with only 2 cycles before early-stopping; more cycles and continuous defrag (§8) should improve further.
 
-**HumanEval verification**: The forged 4B model scores **~70%+ pass@1 on HumanEval** (164 problems, greedy decoding), competitive with dedicated coder models at 2-3x the parameter count (Qwen2.5-Coder-3B: 66%, Phi-3-mini: 62%). At 2.6GB GGUF (Q4_K_M), this runs on iPhone and Raspberry Pi.
+**HumanEval verification** (EvalPlus, greedy decoding, 164 problems):
+
+| Model | Params | HumanEval | HumanEval+ | Method |
+|-------|--------|-----------|------------|--------|
+| **Qwen3.5-4B-Code-Forged** | **4.21B** | **57.3%** | **49.4%** | LoRA forge (3 cycles, CodeFeedback 156K) |
+| StarCoder2-3B | 3B | 31.7% | — | Pre-trained on code |
+| Phi-2 | 2.7B | 47.6% | — | Pre-trained |
+| Phi-3-mini | 3.8B | ~58-61% | — | Pre-trained |
+| Qwen2.5-Coder-3B | 3B | ~61-65% | — | Code-specialized pre-training |
+
+The forged 4B achieves 57.3% HumanEval through LoRA fine-tuning alone (no structural pruning). This is pure domain specialization via experiential plasticity — the same base model architecture, with attention heads learning to specialize on code patterns through 3 forge cycles on a single RTX 5090. The 4.21B parameter count is unchanged from the base Qwen3.5-4B.
+
+**Note**: This model was NOT structurally pruned. The head pruning results from §3.1-3.2 (Qwen2.5 family) demonstrate the compression aspect of experiential plasticity. The Qwen3.5-4B forge demonstrates the specialization aspect — domain-specific training data driving head specialization without removing heads. Both are facets of the same principle: experience shapes architecture.
+
+At 2.6GB GGUF (Q4_K_M), this runs on iPhone and Raspberry Pi. GGUF evaluation pending.
 
 ### 3.4 Why Qwen3.5 Responds Strongly to Plasticity
 
