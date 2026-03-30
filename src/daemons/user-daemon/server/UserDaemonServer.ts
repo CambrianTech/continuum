@@ -488,7 +488,8 @@ export class UserDaemonServer extends UserDaemon {
         id: r.id  // Add id from DataRecord to entity
       } as UserEntity));
 
-      for (const persona of personas) {
+      for (let i = 0; i < personas.length; i++) {
+        const persona = personas[i];
         if (!persona || !persona.id) {
           this.log.error(`❌ UserDaemon: Invalid persona data:`, persona);
           continue;
@@ -496,6 +497,10 @@ export class UserDaemonServer extends UserDaemon {
 
         if (!this.personaClients.has(persona.id)) {
           await this.createPersonaClient(persona);
+          // Stagger persona boot — 2s between each to avoid thundering herd on DB
+          if (i < personas.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
       }
 
