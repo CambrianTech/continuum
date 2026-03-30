@@ -202,8 +202,11 @@ impl ProductionVAD {
 
     /// Initialize both VAD stages (SYNC - model loading is sync)
     pub fn initialize(&mut self) -> Result<(), VADError> {
+        clog_info!("🎤 VAD: Initializing WebRTC stage...");
         self.webrtc.initialize()?;
+        clog_info!("🎤 VAD: WebRTC OK. Initializing Silero stage...");
         self.silero.initialize()?;
+        clog_info!("🎤 VAD: Both stages initialized successfully");
         self.initialized = true;
         Ok(())
     }

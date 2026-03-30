@@ -1148,7 +1148,9 @@ async fn spawn_stt_listener(
                             let room_ref = room_for_events.clone();
                             let cid = call_id_owned.clone();
                             let tbuf = transcription_buffer.clone();
+                            let sname = speaker_name.clone();
                             tokio::spawn(async move {
+                                clog_info!("🎤 STT: Starting listen_and_transcribe for '{}'", sname);
                                 listen_and_transcribe(
                                     audio_track,
                                     speaker_id,
@@ -1159,6 +1161,7 @@ async fn spawn_stt_listener(
                                     tbuf,
                                 )
                                 .await;
+                                clog_warn!("🎤 STT: listen_and_transcribe exited for '{}'", sname);
                             });
                         }
                         RemoteTrack::Video(video_track) => {
@@ -1223,11 +1226,28 @@ async fn listen_and_transcribe(
     );
 
     // Initialize ProductionVAD — two-stage (WebRTC fast filter → Silero confirmation)
-    let mut vad = ProductionVAD::new();
-    if let Err(e) = vad.initialize() {
-        clog_error!("🎤 STT: Failed to init VAD for '{}': {}", speaker_name, e);
-        return;
-    }
+    // CRITICAL: ORT (ONNX Runtime) can deadlock if Session::builder() is called from
+    // a tokio async context on Apple Silicon. Use spawn_blocking to init on a real thread.
+    clog_info!("🎤 STT: Creating and initializing ProductionVAD for '{}' (spawn_blocking for ORT)...", speaker_name);
+    let vad_result = tokio::task::spawn_blocking(|| {
+        let mut vad = ProductionVAD::new();
+        match vad.initialize() {
+            Ok(()) => Ok(vad),
+            Err(e) => Err(e),
+        }
+    }).await;
+
+    let mut vad = match vad_result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            clog_error!("🎤 STT: Failed to init VAD for '{}': {}", speaker_name, e);
+            return;
+        }
+        Err(e) => {
+            clog_error!("🎤 STT: VAD init task panicked for '{}': {}", speaker_name, e);
+            return;
+        }
+    };
 
     clog_info!("🎤 STT: VAD initialized, listening to '{}'", speaker_name);
 
