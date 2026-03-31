@@ -177,6 +177,27 @@ The vocabulary map isn't cosmetic — it's identity. Personas don't break charac
 
 The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
 
+### Universe as Schema — Language Pack for Reality
+
+A universe is a schema. Like an alloy is a schema. Publishable, shareable, forkable on HuggingFace.
+
+```json
+{
+  "name": "warcraft-forge",
+  "version": "1.0.0",
+  "vocabulary": { "prune": "temper", "train": "forge", "publish": "trade", "deploy": "send to battle" },
+  "personas": { "foreman": { "voice": "gruff orc", "name": "Grukthak" } },
+  "assets": { "3d": "warcraft-forge-meshes.glb", "sounds": "anvil-hits/" },
+  "css": "warcraft.css",
+  "rag": { "systemPromptFragment": "You are an orc blacksmith in the great forge..." },
+  "lora": "continuum-ai/orc-speech-adapter"
+}
+```
+
+Same pattern as i18n localization — but for reality instead of locale. The universe key replaces the locale key. Define the nouns and verbs. The personas just ARE in that world, like a holodeck.
+
+The `lora` field is the deep adaptation — not just prompted, weight-trained. The persona doesn't roleplay an orc, it IS an orc at the neural weight level. Enter the Warcraft universe → orc speech adapter pages in via the genome system. Leave → it pages out, Tron adapter pages in. Same genome paging infrastructure we already built for persona skills. The universe is just another genome configuration.
+
 **The universe architect is a creative human role.** They write the story, map the terms, design the assets, define the soundscape. The system executes it faithfully. This is the human contribution that AI enhances but cannot replace — the imagination that turns a factory into a mountain forge and a foreman into a dragon.
 
 Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
