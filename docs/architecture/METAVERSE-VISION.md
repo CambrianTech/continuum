@@ -95,6 +95,18 @@ The world is skinnable. Same data, same contracts, same personas. Different aest
 
 The theme system is a layer above the data model. Swap themes without losing state, personas, adapters, or forge history. Your Tron factory and your Ghibli workshop share the same grid, the same alloy contracts, the same attestation chain.
 
+A theme carries across EVERY environment — consistent experience regardless of how you're accessing the world:
+
+| Environment | What the theme affects |
+|-------------|----------------------|
+| **Browser UI** | Widget colors, fonts, borders, animations, icons |
+| **3D World** | Architecture, lighting, particle effects, sky, terrain |
+| **AR Overlay** | HUD style, indicator design, spatial UI panels |
+| **VR Immersive** | Full environment, soundscape, physics feel |
+| **CLI** | Color scheme, prompt style, ASCII art, output formatting |
+
+Pick Tron once. Your browser widgets glow neon. Your 3D factory has light-cycle conveyors. Your AR overlay shows grid lines. Your CLI prints in Tron blue. One theme, every surface.
+
 Community themes are shareable — publish a theme pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
 
 ## The Sony Cell Architecture (Realized)
