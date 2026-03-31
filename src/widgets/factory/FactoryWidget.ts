@@ -81,6 +81,27 @@ export class FactoryWidget extends ReactiveWidget {
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
     this.startStatusPolling();
+    this.configureRightPanel();
+  }
+
+  /** Tell the right panel what widget to show for the factory */
+  private configureRightPanel(): void {
+    // Small delay to ensure right panel widget is mounted and listening
+    setTimeout(() => this.emitRightPanelConfig(), 500);
+  }
+
+  private emitRightPanelConfig(): void {
+    Events.emit('layout:rightpanel:configure', {
+      widget: 'factory-stats-widget',
+      contentType: 'factory',
+      sections: [{
+        id: 'factory-stats',
+        title: 'Models',
+        icon: '🏭',
+        widgetTag: 'factory-stats-widget',
+        flexWeight: 1,
+      }],
+    });
   }
 
   override disconnectedCallback(): void {
