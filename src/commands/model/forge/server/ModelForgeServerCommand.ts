@@ -76,23 +76,60 @@ export class ModelForgeServerCommand extends CommandBase<ModelForgeParams, Model
   }
 
   private buildForgeArgs(params: ModelForgeParams): string {
-    const args = [
+    // Build an alloy JSON inline and pass via --alloy
+    // This is the transition path — eventually the alloy file is pre-built
+    const alloy = this.buildAlloy(params);
+    const alloyJson = JSON.stringify(alloy);
+    // Write alloy to a temp file on the remote node, then pass it
+    const escaped = alloyJson.replace(/'/g, "'\\''");
+    return [
+      `echo '${escaped}' > /tmp/forge-alloy-input.json`,
+      `&&`,
       `python scripts/forge_model.py`,
-      params.model,
-      `--domain ${params.domain}`,
-      `--steps ${params.steps}`,
-      `--prune-level ${params.pruneLevel}`,
-      `--prune-strategy ${params.pruneStrategy}`,
-      `--cycles ${params.cycles}`,
-      `--learning-rate ${params.learningRate}`,
-      `--status-json`, // Enable status.json output for polling
+      `--alloy /tmp/forge-alloy-input.json`,
+      `--status-json`,
+    ].join(' ');
+  }
+
+  private buildAlloy(params: ModelForgeParams): Record<string, unknown> {
+    const base = params.model.split('/').pop()?.toLowerCase() ?? 'model';
+    const stages: Record<string, unknown>[] = [
+      {
+        type: 'prune',
+        strategy: params.pruneStrategy || 'entropy',
+        level: params.pruneLevel,
+      },
+      {
+        type: 'train',
+        domain: params.domain,
+        steps: params.steps,
+        learningRate: params.learningRate,
+      },
     ];
 
     if (params.experts && params.experts > 0) {
-      args.push(`--experts ${params.experts}`);
+      stages.unshift({
+        type: 'expert-prune',
+        keepExperts: params.experts,
+      });
     }
 
-    return args.join(' ');
+    return {
+      name: `${base}-${params.domain}-forged`,
+      version: '1.0.0',
+      author: 'continuum-ai',
+      tags: [params.domain, 'forged', 'experiential-plasticity', 'forge-alloy'],
+      license: 'apache-2.0',
+      source: {
+        baseModel: params.model,
+        architecture: base.includes('qwen3.5') ? 'qwen3_5' :
+                      base.includes('qwen2') ? 'qwen2' :
+                      base.includes('qwen3.5') && base.includes('moe') ? 'qwen3_5_moe' : 'llama',
+        isMoE: (params.experts ?? 0) > 0,
+      },
+      stages,
+      cycles: params.cycles,
+    };
   }
 
   private async startForgeViaGrid(nodeId: string, command: string, _jobId: string): Promise<void> {
