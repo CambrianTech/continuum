@@ -134,6 +134,32 @@ The literal naming does the heavy lifting:
 
 Universe > theme. It captures everything.
 
+### Universe Adaptation Formula
+
+A universe doesn't just reskin — it adapts widgets and personas to every integration level:
+
+| Level | What the universe defines |
+|-------|--------------------------|
+| **CLI** | Prompt style, colors, ASCII art, output vocabulary |
+| **Browser** | CSS, animations, layout, widget behavior |
+| **3D World** | Meshes, materials, lighting, physics, spatial audio |
+| **AR** | Overlay style, anchoring, gesture mapping |
+| **VR** | Full environment, haptics, spatial interaction |
+| **RAG/Cognition** | How personas THINK and SPEAK about their world |
+
+The RAG layer is the deepest adaptation. A persona in the Tron Universe doesn't just look different — it thinks in Tron terms. The foreman doesn't say "training a model" — it says "compiling a program on the grid." In the Warcraft Universe, the foreman is an orc blacksmith: "We forge the metal in the fires of the great anvil. The runes strengthen with each cycle."
+
+Same alloy contract. Same delta. Same attestation. Different words for the same work. The universe shapes cognition, not just rendering.
+
+This means the universe definition includes:
+- **Vocabulary map**: technical term → universe term (model → artifact, forge → smith, prune → temper)
+- **Persona voice**: speech patterns, idioms, cultural references
+- **RAG context**: system prompt fragments injected per-universe
+- **Widget labels**: button text, section titles, status messages
+- **Sound design**: UI feedback sounds, ambient audio, notification tones
+
+An orc talks like an orc. A Tron program talks like a program. The human user picks their universe and the entire experience adapts — including how their AI teammates communicate.
+
 Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
 
 ## The Sony Cell Architecture (Realized)
