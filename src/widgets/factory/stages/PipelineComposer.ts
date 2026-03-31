@@ -53,8 +53,11 @@ interface PipelineStage {
 export class PipelineComposer extends ReactiveWidget {
 
   @reactive() stages: PipelineStage[] = [
+    { type: 'source-config', config: {} },
     { type: 'prune', config: {} },
     { type: 'train', config: {} },
+    { type: 'quant', config: {} },
+    { type: 'eval', config: {} },
   ];
 
   @reactive() private _showAddMenu = false;
