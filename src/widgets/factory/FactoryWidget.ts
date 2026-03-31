@@ -142,6 +142,13 @@ export class FactoryWidget extends ReactiveWidget {
   private async pollForgeStatus(): Promise<void> {
     try {
       const result = await this.executeCommand<any, any>('model/forge-status', {});
+      if (!result?.forges?.length) {
+        // No active forges — clear stale status
+        if (this._forgeStatus && this._forgeStatus.phase !== 'complete') {
+          this._forgeStatus = null;
+        }
+        return;
+      }
       if (result?.forges?.length > 0) {
         const f = result.forges[0];
         this._forgeStatus = {
