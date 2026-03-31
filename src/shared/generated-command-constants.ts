@@ -257,6 +257,7 @@ export const COMMANDS = {
   MIGRATION_STATUS: 'migration/status',
   MIGRATION_VERIFY: 'migration/verify',
   MODEL_DOWNLOAD: 'model/download',
+  MODEL_FORGE: 'model/forge',
   MODEL_FORGE_STATUS: 'model/forge-status',
   MODEL_LIST_PUBLISHED: 'model/list-published',
   MODEL_SEARCH: 'model/search',

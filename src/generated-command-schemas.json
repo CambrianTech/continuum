@@ -3173,6 +3173,57 @@
       }
     },
     {
+      "name": "model/forge",
+      "description": "Start a model forge job — sends forge parameters to a grid node with GPU for training. Returns job ID for status tracking.",
+      "params": {
+        "model": {
+          "type": "string",
+          "required": true,
+          "description": "model parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "steps": {
+          "type": "number",
+          "required": true,
+          "description": "steps parameter"
+        },
+        "pruneLevel": {
+          "type": "number",
+          "required": true,
+          "description": "pruneLevel parameter"
+        },
+        "pruneStrategy": {
+          "type": "string",
+          "required": true,
+          "description": "pruneStrategy parameter"
+        },
+        "cycles": {
+          "type": "number",
+          "required": true,
+          "description": "cycles parameter"
+        },
+        "learningRate": {
+          "type": "string",
+          "required": true,
+          "description": "learningRate parameter"
+        },
+        "experts": {
+          "type": "number",
+          "required": false,
+          "description": "experts parameter"
+        },
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
       "name": "model/download",
       "description": "Download a base model from HuggingFace to a local or remote grid node. Routes to GPU-capable node if needed. Wraps huggingface_hub snapshot_download with progress reporting via chat.",
       "params": {

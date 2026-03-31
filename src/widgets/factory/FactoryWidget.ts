@@ -1,15 +1,15 @@
 /**
- * FactoryWidget — Model forge production floor
+ * FactoryWidget — Model forge production floor (composition root)
  *
- * Shows:
- * - Active forges with progress, loss curves, VRAM gauges
- * - Published models with download counts and improvement scores
- * - Hardware resources across grid nodes
+ * Thin orchestrator that:
+ * - Loads data (published models, forge status)
+ * - Subscribes to forge events
+ * - Composes child components via Lit composition
  *
- * Data sources:
- * - status.json from forge nodes (polled)
- * - HuggingFace API for published model stats
- * - Grid node health from grid commands
+ * Child components (each owns its own styles and display logic):
+ * - forge-controls-element: Forge parameter form + start button
+ * - active-forge-element: Live forge status with metrics and sparkline
+ * - published-models-element: Leaderboard-style model list
  */
 
 import {
@@ -22,132 +22,59 @@ import {
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
-import type { ModelListPublishedResult } from '../../commands/model/list-published/shared/ModelListPublishedTypes';
-import type { ForgeJobStatus } from '../../commands/model/forge-status/shared/ModelForgeStatusTypes';
-// ── Types ───────────────────────────────────────────────────────────────
 
-interface ForgeStatus {
-  phase: string;
-  detail: string;
-  vram_gb: number;
-  timestamp: string;
-  step?: number;
-  total_steps?: number;
-  loss?: number;
-  it_per_sec?: number;
-  eta_seconds?: number;
-  cycle?: number;
-  perplexity?: number;
-  improvement_pct?: number;
-}
+// Import child components (self-registering)
+import './ForgeControlsElement';
+import './ActiveForgeElement';
+import './PublishedModelsElement';
 
-interface PublishedModel {
-  id: string;
-  name: string;
-  downloads: number;
-  likes: number;
-  domain: string;
-  variant: string;
-  baseModel: string;
-  sizeGb: number;
-  tags: string[];
-}
-
-interface GridNode {
-  name: string;
-  ip: string;
-  gpu: string;
-  vram_total_gb: number;
-  vram_used_gb: number;
-  status: 'forging' | 'idle' | 'offline';
-}
-
-interface ForgeSample {
-  step: number;
-  prompt: string;
-  output: string;
-  timestamp: string;
-}
-
-/** Alloy results — populated after forge completes */
-interface AlloyResults {
-  baselinePerplexity?: number;
-  finalPerplexity?: number;
-  improvementPct?: number;
-  benchmarks: AlloyBenchmark[];
-  hardwareVerified: AlloyHardwareProfile[];
-  samples: AlloySample[];
-  integrity?: {
-    trustLevel: string;
-    code?: { runner: string; version: string };
-  };
-}
-
-interface AlloyBenchmark {
-  name: string;
-  subset?: string;
-  metrics: Record<string, number | string | boolean>;
-}
-
-interface AlloyHardwareProfile {
-  device: string;
-  format: string;
-  sizeGb?: number;
-  tokensPerSec?: number;
-  verified: boolean;
-}
-
-interface AlloySample {
-  label: string;
-  prompt: string;
-  completion: string;
-  baselineCompletion?: string;
-}
+import type { ForgeStatusData } from './ActiveForgeElement';
+import type { PublishedModelData } from './PublishedModelsElement';
 
 // ── Component ───────────────────────────────────────────────────────────
 
 export class FactoryWidget extends ReactiveWidget {
 
-  @reactive() private forgeStatus: ForgeStatus | null = null;
-  @reactive() private models: PublishedModel[] = [];
-  @reactive() private nodes: GridNode[] = [];
-  @reactive() private lossHistory: number[] = [];
-  @reactive() private outputSamples: ForgeSample[] = [];
+  // ── State ──────────────────────────────────────────────────────────
+  @reactive() private _forgeStatus: ForgeStatusData | null = null;
+  @reactive() private _models: PublishedModelData[] = [];
+  @reactive() private _lossHistory: number[] = [];
   @reactive() private _isLoading = true;
   @reactive() private _totalDownloads = 0;
-  @reactive() private _alloyResults: AlloyResults | null = null;
-
-  // ── Forge Controls State ────────────────────────────────────────────
-  @reactive() private _selectedModel = 'Qwen/Qwen3.5-4B';
-  @reactive() private _selectedDomain = 'code';
-  @reactive() private _selectedExperts = 0;  // 0 = dense (no expert pruning)
-  @reactive() private _selectedSteps = 2000;
-  @reactive() private _selectedPruneLevel = 30;  // % of heads to prune
-  @reactive() private _selectedPruneStrategy: 'entropy' | 'gradient' | 'combined' = 'entropy';
-  @reactive() private _selectedCycles = 3;
-  @reactive() private _selectedLearningRate = '2e-4';
   @reactive() private _forgeStarting = false;
 
-  /** Forge profiles — presets for common configurations */
-  private static readonly FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
-    conservative: { prune: 10, cycles: 5, lr: '1e-4', steps: 2000, label: 'Conservative', risk: 'Low — safe improvement' },
-    balanced:     { prune: 30, cycles: 3, lr: '2e-4', steps: 1000, label: 'Balanced', risk: 'Medium — best tradeoff' },
-    aggressive:   { prune: 50, cycles: 2, lr: '5e-4', steps: 500,  label: 'Aggressive', risk: 'High — maximum compression' },
-    yolo:         { prune: 70, cycles: 1, lr: '1e-3', steps: 250,  label: 'YOLO', risk: 'Extreme — might break the model' },
-  };
+  private _statusPollInterval: ReturnType<typeof setInterval> | null = null;
 
-  private applyProfile(profileName: string): void {
-    const profile = FactoryWidget.FORGE_PROFILES[profileName];
-    if (!profile) return;
-    this._selectedPruneLevel = profile.prune;
-    this._selectedCycles = profile.cycles;
-    this._selectedLearningRate = profile.lr;
-    this._selectedSteps = profile.steps;
+  // ── Forge progress (derived) ───────────────────────────────────────
+
+  private get _progressPct(): number {
+    const s = this._forgeStatus;
+    if (!s) return 0;
+    const totalSteps = (s.totalSteps ?? 1000) * (s.totalCycles ?? 1);
+    const currentStep = ((s.cycle ?? 1) - 1) * (s.totalSteps ?? 1000) + (s.step ?? 0);
+    return Math.min(100, Math.round((currentStep / totalSteps) * 100));
   }
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────
+  private get _progressLabel(): string {
+    const s = this._forgeStatus;
+    if (!s) return 'FORGING...';
+    const pct = this._progressPct;
+    const loss = s.loss && s.loss > 0 ? ` · ${s.loss.toFixed(3)}` : '';
+    const eta = s.etaSeconds ? ` · ${this.formatETA(s.etaSeconds)}` : '';
+    if (s.phase === 'loading' || s.phase === 'loading_data') return 'Loading...';
+    if (s.phase === 'baseline_eval') return 'Baseline...';
+    if (s.phase === 'complete') return 'Done';
+    return `${pct}%${loss}${eta}`;
+  }
 
-  private _statusPollInterval: ReturnType<typeof setInterval> | null = null;
+  private get _isForging(): boolean {
+    const phase = this._forgeStatus?.phase;
+    return phase === 'training' || phase === 'loading' || phase === 'loading_data'
+      || phase === 'baseline_eval' || phase === 'pruning' || phase === 'running'
+      || phase === 'post_train_eval' || phase === 'post_prune_eval' || phase === 'defrag';
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -164,7 +91,49 @@ export class FactoryWidget extends ReactiveWidget {
     }
   }
 
-  /** Poll model/forge-status for active forges across grid nodes */
+  // ── Event Subscriptions ────────────────────────────────────────────
+
+  private subscribeToForgeEvents(): void {
+    Events.subscribe('model:forge:step', (data: any) => {
+      this._forgeStatus = {
+        phase: 'training',
+        detail: data.detail ?? '',
+        vramGb: data.vramGb ?? 0,
+        timestamp: data.timestamp ?? new Date().toISOString(),
+        step: data.step,
+        totalSteps: data.totalSteps,
+        loss: data.loss,
+        itPerSec: data.itPerSec,
+        etaSeconds: data.etaSeconds,
+        cycle: data.cycle,
+        totalCycles: data.totalCycles,
+      };
+      if (data.loss !== undefined) {
+        this._lossHistory = [...this._lossHistory.slice(-50), data.loss];
+      }
+    });
+
+    Events.subscribe('model:forge:phase', (data: any) => {
+      if (this._forgeStatus) {
+        this._forgeStatus = { ...this._forgeStatus, phase: data.phase, detail: data.detail ?? '' };
+      }
+    });
+
+    Events.subscribe('model:forge:complete', (data: any) => {
+      this._forgeStatus = {
+        phase: 'complete',
+        detail: data.detail ?? 'Forge complete',
+        vramGb: 0,
+        timestamp: data.timestamp ?? new Date().toISOString(),
+        improvementPct: data.improvementPct,
+        perplexity: data.perplexity,
+      };
+      this.loadPublishedModels();
+    });
+  }
+
+  // ── Status Polling ─────────────────────────────────────────────────
+
   private startStatusPolling(): void {
     this.pollForgeStatus();
     this._statusPollInterval = setInterval(() => this.pollForgeStatus(), 15_000);
@@ -174,25 +143,24 @@ export class FactoryWidget extends ReactiveWidget {
     try {
       const result = await this.executeCommand<any, any>('model/forge-status', {});
       if (result?.forges?.length > 0) {
-        const forge = result.forges[0]; // Show the most recent active forge
-        this.forgeStatus = {
-          phase: forge.phase ?? 'unknown',
-          detail: forge.detail ?? '',
-          vram_gb: forge.vramGb ?? 0,
-          timestamp: forge.timestamp ?? new Date().toISOString(),
-          step: forge.step,
-          total_steps: forge.totalSteps,
-          loss: forge.loss,
-          it_per_sec: forge.itPerSec,
-          eta_seconds: forge.etaSeconds,
-          cycle: forge.cycle,
-          perplexity: forge.perplexity,
+        const f = result.forges[0];
+        this._forgeStatus = {
+          phase: f.phase ?? 'unknown',
+          detail: f.detail ?? '',
+          vramGb: f.vramGb ?? 0,
+          timestamp: f.timestamp ?? new Date().toISOString(),
+          step: f.step,
+          totalSteps: f.totalSteps,
+          loss: f.loss,
+          itPerSec: f.itPerSec,
+          etaSeconds: f.etaSeconds,
+          cycle: f.cycle,
+          totalCycles: f.totalCycles,
         };
-        if (forge.loss && forge.loss > 0) {
-          this.lossHistory = [...this.lossHistory.slice(-50), forge.loss];
+        if (f.loss && f.loss > 0) {
+          this._lossHistory = [...this._lossHistory.slice(-50), f.loss];
         }
-        // Stop polling when complete
-        if (forge.phase === 'complete' || forge.phase === 'error') {
+        if (f.phase === 'complete' || f.phase === 'error') {
           if (this._statusPollInterval) {
             clearInterval(this._statusPollInterval);
             this._statusPollInterval = null;
@@ -201,95 +169,52 @@ export class FactoryWidget extends ReactiveWidget {
         }
       }
     } catch {
-      // Status command failed — node may be unreachable
+      // Node unreachable
     }
   }
 
-  // ── Event Subscriptions (no polling) ──────────────────────────────────
-
-  private subscribeToForgeEvents(): void {
-    // Subscribe to forge lifecycle events — emitted by the forge daemon/grid node
-    Events.subscribe('model:forge:step', (data: any) => {
-      this.forgeStatus = {
-        phase: 'training',
-        detail: data.detail ?? '',
-        vram_gb: data.vramGb ?? 0,
-        timestamp: data.timestamp ?? new Date().toISOString(),
-        step: data.step,
-        total_steps: data.totalSteps,
-        loss: data.loss,
-        it_per_sec: data.itPerSec,
-        eta_seconds: data.etaSeconds,
-      };
-      if (data.loss !== undefined) {
-        this.lossHistory = [...this.lossHistory.slice(-50), data.loss];
-      }
-    });
-
-    Events.subscribe('model:forge:phase', (data: any) => {
-      this.forgeStatus = {
-        ...this.forgeStatus,
-        phase: data.phase,
-        detail: data.detail ?? '',
-        timestamp: data.timestamp ?? new Date().toISOString(),
-      } as ForgeStatus;
-    });
-
-    Events.subscribe('model:forge:sample', (data: any) => {
-      this.outputSamples = [...this.outputSamples, {
-        step: data.step ?? 0,
-        prompt: data.prompt ?? '',
-        output: data.output ?? '',
-        timestamp: data.timestamp ?? new Date().toISOString(),
-      }];
-    });
-
-    Events.subscribe('model:forge:complete', (data: any) => {
-      this.forgeStatus = {
-        phase: 'complete',
-        detail: data.detail ?? 'Forge complete',
-        vram_gb: 0,
-        timestamp: data.timestamp ?? new Date().toISOString(),
-        improvement_pct: data.improvementPct,
-        perplexity: data.perplexity,
-      };
-      // Populate alloy results if available
-      if (data.alloyResults) {
-        this._alloyResults = data.alloyResults;
-      } else if (data.improvementPct !== undefined) {
-        // Build minimal results from event data
-        this._alloyResults = {
-          baselinePerplexity: data.baselinePerplexity,
-          finalPerplexity: data.perplexity,
-          improvementPct: data.improvementPct,
-          benchmarks: data.benchmarks ?? [],
-          hardwareVerified: data.hardwareVerified ?? [],
-          samples: [],
-        };
-      }
-      // Refresh published models after a forge completes
-      this.loadPublishedModels();
-    });
-  }
-
-  // ── Data Loading (one-shot, not polling) ──────────────────────────────
+  // ── Data Loading ───────────────────────────────────────────────────
 
   private async loadPublishedModels(): Promise<void> {
     this._isLoading = true;
     try {
       const result = await this.executeCommand<any, any>('model/list-published', { includeGguf: true });
       if (result?.models) {
-        // Sort by downloads descending (default)
-        this.models = result.models.sort((a: any, b: any) => b.downloads - a.downloads);
+        this._models = result.models.sort((a: any, b: any) => b.downloads - a.downloads);
         this._totalDownloads = result.totalDownloads ?? 0;
       }
     } catch {
-      this.models = [];
+      this._models = [];
     }
     this._isLoading = false;
   }
 
-  // ── Rendering ─────────────────────────────────────────────────────────
+  // ── Event Handlers (from child components) ─────────────────────────
+
+  private async onForgeStart(e: CustomEvent): Promise<void> {
+    if (this._isForging || this._forgeStarting) return;
+    this._forgeStarting = true;
+    try {
+      await this.executeCommand<any, any>('model/forge', e.detail);
+    } catch (err) {
+      console.error('Forge start failed:', err);
+    } finally {
+      this._forgeStarting = false;
+    }
+  }
+
+  private onForgeExport(e: CustomEvent): void {
+    const alloy = e.detail;
+    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${alloy.name}.alloy.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Rendering ──────────────────────────────────────────────────────
 
   static override styles: CSSResultGroup = [
     ReactiveWidget.styles,
@@ -324,8 +249,6 @@ export class FactoryWidget extends ReactiveWidget {
         color: var(--content-secondary, #8a92a5);
       }
 
-      /* ── Section Layout ──────────────────────────────── */
-
       .section {
         margin-bottom: 28px;
       }
@@ -341,561 +264,11 @@ export class FactoryWidget extends ReactiveWidget {
         border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
       }
 
-      /* ── Active Forge Card ───────────────────────────── */
-
-      .forge-card {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 16px 20px;
-      }
-
-      .forge-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 12px;
-      }
-
-      .forge-phase {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .forge-detail {
-        font-size: 12px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .forge-metrics {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 12px;
-        margin-top: 12px;
-      }
-
-      .metric {
-        text-align: center;
-      }
-
-      .metric-value {
-        font-size: 24px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .metric-label {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-
-      .metric-value.good { color: #00ffc8; }
-      .metric-value.warn { color: #ffaa00; }
-      .metric-value.bad { color: #ff4444; }
-      .metric-value.neutral { color: var(--content-primary, #e0e6ed); }
-
-      /* ── Progress Bar ────────────────────────────────── */
-
-      .progress-bar {
-        height: 4px;
-        background: rgba(255,255,255,0.06);
-        border-radius: 2px;
-        overflow: hidden;
-        margin-top: 12px;
-      }
-
-      .progress-fill {
-        height: 100%;
-        background: linear-gradient(90deg, #00d4ff, #00ffc8);
-        border-radius: 2px;
-        transition: width 0.3s ease;
-      }
-
-      /* ── Model List (leaderboard style) ──────────────── */
-
       .section-stats {
         font-size: 12px;
         font-weight: 400;
         color: var(--content-secondary, #8a92a5);
         margin-left: 12px;
-      }
-
-      .model-list {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-
-      .model-card {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 6px;
-        padding: 10px 14px;
-        transition: border-color 0.2s;
-      }
-
-      .model-card:hover {
-        border-color: var(--accent-primary, #00d4ff);
-      }
-
-      .model-rank {
-        font-size: 12px;
-        font-weight: 700;
-        color: var(--content-secondary, #8a92a5);
-        min-width: 28px;
-        text-align: center;
-      }
-
-      .model-info {
-        flex: 1;
-        min-width: 0;
-      }
-
-      .model-name {
-        font-size: 13px;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .model-meta {
-        display: flex;
-        gap: 6px;
-        margin-top: 3px;
-      }
-
-      .badge {
-        font-size: 10px;
-        padding: 1px 6px;
-        border-radius: 3px;
-        font-weight: 500;
-      }
-
-      .badge.domain {
-        background: rgba(0, 212, 255, 0.1);
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .badge.variant {
-        background: rgba(0, 255, 200, 0.1);
-        color: #00ffc8;
-      }
-
-      .model-stats {
-        display: flex;
-        gap: 16px;
-        flex-shrink: 0;
-      }
-
-      .stat {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-      }
-
-      .stat-value {
-        font-size: 14px;
-        font-weight: 700;
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .stat-label {
-        font-size: 10px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      /* ── Empty State ─────────────────────────────────── */
-
-      .empty-state {
-        text-align: center;
-        padding: 60px 20px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .empty-state .icon {
-        font-size: 48px;
-        margin-bottom: 12px;
-      }
-
-      .empty-state .message {
-        font-size: 14px;
-        margin-bottom: 8px;
-      }
-
-      .empty-state .hint {
-        font-size: 12px;
-        opacity: 0.7;
-      }
-
-      /* ── Loss Sparkline ──────────────────────────────── */
-
-      .sparkline {
-        margin-top: 8px;
-      }
-
-      .sparkline svg {
-        width: 100%;
-        height: 40px;
-      }
-
-      .sparkline path {
-        fill: none;
-        stroke: #00ffc8;
-        stroke-width: 1.5;
-      }
-
-      /* ── Alloy Results ────────────────────────────────── */
-
-      .alloy-results {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid rgba(0, 255, 200, 0.2);
-        border-radius: 8px;
-        padding: 16px 20px;
-      }
-
-      .alloy-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 12px;
-      }
-
-      .trust-badge {
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        padding: 2px 8px;
-        border-radius: 3px;
-      }
-
-      .trust-badge.self-attested {
-        background: rgba(255, 170, 0, 0.15);
-        color: #ffaa00;
-        border: 1px solid rgba(255, 170, 0, 0.3);
-      }
-
-      .trust-badge.verified {
-        background: rgba(0, 255, 200, 0.15);
-        color: #00ffc8;
-        border: 1px solid rgba(0, 255, 200, 0.3);
-      }
-
-      .trust-badge.enclave {
-        background: rgba(0, 212, 255, 0.15);
-        color: #00d4ff;
-        border: 1px solid rgba(0, 212, 255, 0.3);
-      }
-
-      .benchmark-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-        margin-bottom: 12px;
-      }
-
-      .benchmark-table th {
-        text-align: left;
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--content-secondary, #8a92a5);
-        padding: 4px 8px;
-        border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
-      }
-
-      .benchmark-table td {
-        padding: 6px 8px;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .benchmark-table tr:hover {
-        background: rgba(255,255,255,0.02);
-      }
-
-      .device-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 8px;
-        margin-bottom: 12px;
-      }
-
-      .device-card {
-        background: rgba(0,0,0,0.2);
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 6px;
-        padding: 10px 12px;
-        font-size: 12px;
-      }
-
-      .device-name {
-        font-weight: 600;
-        margin-bottom: 4px;
-      }
-
-      .device-meta {
-        display: flex;
-        justify-content: space-between;
-        color: var(--content-secondary, #8a92a5);
-        font-size: 11px;
-      }
-
-      .device-verified {
-        color: #00ffc8;
-        font-size: 10px;
-      }
-
-      .alloy-actions {
-        display: flex;
-        gap: 8px;
-        margin-top: 12px;
-      }
-
-      .alloy-btn {
-        padding: 6px 14px;
-        font-size: 11px;
-        font-weight: 600;
-        border: 1px solid var(--border-color, rgba(255,255,255,0.15));
-        border-radius: 4px;
-        background: rgba(255,255,255,0.05);
-        color: var(--content-primary, #e0e6ed);
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-
-      .alloy-btn:hover {
-        background: rgba(0, 212, 255, 0.15);
-        border-color: var(--accent-primary, #00d4ff);
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      /* ── Forge Controls ────────────────────────────────── */
-
-      .forge-controls {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 16px 20px;
-      }
-
-      .controls-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-
-      .control-group {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .control-label {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .control-select,
-      .control-input {
-        background: rgba(0,0,0,0.3);
-        border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-        border-radius: 4px;
-        color: var(--content-primary, #e0e6ed);
-        font-size: 13px;
-        padding: 8px 10px;
-        font-family: inherit;
-        outline: none;
-        transition: border-color 0.2s;
-      }
-
-      .control-select:focus,
-      .control-input:focus {
-        border-color: var(--accent-primary, #00d4ff);
-      }
-
-      .control-select option {
-        background: #0a1520;
-        color: #e0e6ed;
-      }
-
-      .slider-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .slider-row input[type="range"] {
-        flex: 1;
-        accent-color: var(--accent-primary, #00d4ff);
-        height: 4px;
-      }
-
-      .slider-value {
-        font-size: 13px;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        min-width: 50px;
-        text-align: right;
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .profile-btn {
-        padding: 4px 10px;
-        font-size: 11px;
-        border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 4px;
-        background: rgba(255,255,255,0.05);
-        color: rgba(255,255,255,0.8);
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .profile-btn:hover {
-        background: var(--accent-primary, #00d4ff);
-        color: #000;
-        border-color: transparent;
-      }
-
-      .forge-button {
-        width: 100%;
-        padding: 10px;
-        background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 200, 0.2));
-        border: 1px solid var(--accent-primary, #00d4ff);
-        border-radius: 6px;
-        color: var(--accent-primary, #00d4ff);
-        font-size: 14px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        cursor: pointer;
-        transition: all 0.2s;
-      }
-
-      .forge-button:hover {
-        background: linear-gradient(135deg, rgba(0, 212, 255, 0.35), rgba(0, 255, 200, 0.35));
-        box-shadow: 0 0 16px rgba(0, 212, 255, 0.3);
-      }
-
-      .forge-button:active {
-        transform: scale(0.98);
-      }
-
-      .forge-button:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-        box-shadow: none;
-      }
-
-      .forge-button.forging {
-        background: linear-gradient(135deg, rgba(255, 170, 0, 0.2), rgba(255, 100, 0, 0.2));
-        border-color: #ffaa00;
-        color: #ffaa00;
-        animation: pulse-glow 2s ease-in-out infinite;
-      }
-
-      @keyframes pulse-glow {
-        0%, 100% { box-shadow: 0 0 8px rgba(255, 170, 0, 0.2); }
-        50% { box-shadow: 0 0 20px rgba(255, 170, 0, 0.4); }
-      }
-
-      /* ── Output Log ──────────────────────────────────── */
-
-      .output-log {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .log-entry {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 6px;
-        overflow: hidden;
-        transition: border-color 0.2s;
-      }
-
-      .log-entry:hover {
-        border-color: rgba(255,255,255,0.15);
-      }
-
-      .log-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px 12px;
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .log-header:hover {
-        background: rgba(255,255,255,0.02);
-      }
-
-      .log-step {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--accent-primary, #00d4ff);
-        font-variant-numeric: tabular-nums;
-      }
-
-      .log-preview {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        flex: 1;
-        margin: 0 12px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-      }
-
-      .log-time {
-        font-size: 10px;
-        color: var(--content-tertiary, #5a6070);
-        white-space: nowrap;
-      }
-
-      .log-expand {
-        font-size: 10px;
-        color: var(--content-tertiary, #5a6070);
-        margin-left: 8px;
-      }
-
-      .log-body {
-        padding: 0 12px 12px;
-        border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
-      }
-
-      .log-prompt {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 6px;
-        font-style: italic;
-      }
-
-      .log-output {
-        font-size: 12px;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        line-height: 1.5;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--content-primary, #e0e6ed);
-        background: rgba(0,0,0,0.2);
-        padding: 10px;
-        border-radius: 4px;
-        max-height: 400px;
-        overflow-y: auto;
       }
     `,
   ];
@@ -908,550 +281,42 @@ export class FactoryWidget extends ReactiveWidget {
           <span class="subtitle">continuum-ai</span>
         </div>
 
-        ${this.renderForgeControls()}
-        ${this.renderActiveForge()}
-        ${this._alloyResults ? this.renderAlloyResults() : nothing}
-        ${this.renderOutputLog()}
-        ${this.renderPublishedModels()}
-      </div>
-    `;
-  }
-
-  // ── Forge Controls ─────────────────────────────────────────────────────
-
-  private get _isMoe(): boolean {
-    return this._selectedModel.includes('35B') || this._selectedModel.includes('MoE');
-  }
-
-  private get _isForging(): boolean {
-    const phase = this.forgeStatus?.phase;
-    return phase === 'training' || phase === 'loading' || phase === 'loading_data'
-      || phase === 'baseline_eval' || phase === 'pruning' || phase === 'running'
-      || phase === 'post_train_eval' || phase === 'post_prune_eval' || phase === 'defrag';
-  }
-
-  private renderForgeControls(): TemplateResult {
-    return html`
-      <div class="section">
-        <div class="section-title">Forge</div>
-        <div class="forge-controls">
-          <div class="controls-grid">
-            <div class="control-group">
-              <span class="control-label">Base Model</span>
-              <select class="control-select"
-                .value=${this._selectedModel}
-                @change=${(e: Event) => this._selectedModel = (e.target as HTMLSelectElement).value}>
-                <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
-                <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
-                <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
-                <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Domain</span>
-              <select class="control-select"
-                .value=${this._selectedDomain}
-                @change=${(e: Event) => this._selectedDomain = (e.target as HTMLSelectElement).value}>
-                <option value="code">Code</option>
-                <option value="reasoning">Reasoning</option>
-                <option value="general">General</option>
-                <option value="chat">Chat</option>
-              </select>
-            </div>
-            ${this._isMoe ? html`
-            <div class="control-group">
-              <span class="control-label">Experts (MoE)</span>
-              <div class="slider-row">
-                <input type="range" min="16" max="128" step="16"
-                  .value=${String(this._selectedExperts || 64)}
-                  @input=${(e: Event) => this._selectedExperts = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedExperts || 64}</span>
-              </div>
-            </div>
-            ` : nothing}
-            <div class="control-group">
-              <span class="control-label">Pruning Level</span>
-              <div class="slider-row">
-                <input type="range" min="0" max="70" step="5"
-                  .value=${String(this._selectedPruneLevel)}
-                  @input=${(e: Event) => this._selectedPruneLevel = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedPruneLevel}%${this._selectedPruneLevel > 50 ? ' ⚠️' : ''}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Prune Strategy</span>
-              <select class="control-select"
-                .value=${this._selectedPruneStrategy}
-                @change=${(e: Event) => this._selectedPruneStrategy = (e.target as HTMLSelectElement).value as 'entropy' | 'gradient' | 'combined'}>
-                <option value="entropy">Entropy (recommended)</option>
-                <option value="gradient">Gradient</option>
-                <option value="combined">Combined</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Forge Cycles</span>
-              <div class="slider-row">
-                <input type="range" min="1" max="10" step="1"
-                  .value=${String(this._selectedCycles)}
-                  @input=${(e: Event) => this._selectedCycles = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedCycles}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Training Steps</span>
-              <div class="slider-row">
-                <input type="range" min="100" max="5000" step="100"
-                  .value=${String(this._selectedSteps)}
-                  @input=${(e: Event) => this._selectedSteps = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedSteps}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Learning Rate</span>
-              <select class="control-select"
-                .value=${this._selectedLearningRate}
-                @change=${(e: Event) => this._selectedLearningRate = (e.target as HTMLSelectElement).value}>
-                <option value="1e-5">1e-5 (very slow)</option>
-                <option value="5e-5">5e-5</option>
-                <option value="1e-4">1e-4 (conservative)</option>
-                <option value="2e-4">2e-4 (balanced)</option>
-                <option value="5e-4">5e-4 (aggressive)</option>
-                <option value="1e-3">1e-3 (YOLO)</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Profile</span>
-              <div style="display:flex;gap:6px;flex-wrap:wrap">
-                ${Object.entries(FactoryWidget.FORGE_PROFILES).map(([key, p]) => html`
-                  <button class="profile-btn" title=${p.risk}
-                    @click=${() => this.applyProfile(key)}>${p.label}</button>
-                `)}
-              </div>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="forge-button ${this._isForging ? 'forging' : ''}" style="flex:1"
-              ?disabled=${this._forgeStarting}
-              @click=${this.startForge}>
-              ${this._isForging ? 'FORGING...' : this._forgeStarting ? 'STARTING...' : 'START FORGE'}
-            </button>
-            <button class="alloy-btn" style="align-self:stretch" @click=${this.exportAlloyRecipe}
-              title="Export current settings as .alloy.json recipe">Export Alloy</button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private async startForge(): Promise<void> {
-    if (this._isForging || this._forgeStarting) return;
-    this._forgeStarting = true;
-
-    try {
-      // Fire forge command — routes to a grid node with GPU
-      await this.executeCommand<any, any>('model/forge', {
-        model: this._selectedModel,
-        domain: this._selectedDomain,
-        experts: this._isMoe ? (this._selectedExperts || 64) : 0,
-        steps: this._selectedSteps,
-        pruneLevel: this._selectedPruneLevel / 100,  // 0.0-0.7
-        pruneStrategy: this._selectedPruneStrategy,
-        cycles: this._selectedCycles,
-        learningRate: this._selectedLearningRate,
-      });
-    } catch (e) {
-      console.error('Forge start failed:', e);
-      // TODO: show error in UI
-    } finally {
-      this._forgeStarting = false;
-    }
-  }
-
-  // ── Active Forge Section ──────────────────────────────────────────────
-
-  private renderActiveForge(): TemplateResult {
-    const status = this.forgeStatus;
-
-    return html`
-      <div class="section">
-        <div class="section-title">Active Forge</div>
-        ${status ? this.renderForgeCard(status) : this.renderNoForge()}
-      </div>
-    `;
-  }
-
-  private renderForgeCard(s: ForgeStatus): TemplateResult {
-    const progress = s.step && s.total_steps ? (s.step / s.total_steps) * 100 : 0;
-    const eta = s.eta_seconds ? this.formatETA(s.eta_seconds) : '--';
-    const lossClass = s.loss !== undefined ? (s.loss < 2.5 ? 'good' : s.loss < 3.0 ? 'warn' : 'neutral') : 'neutral';
-
-    return html`
-      <div class="forge-card">
-        <div class="forge-header">
-          <span class="forge-phase">${s.phase.toUpperCase()}</span>
-          <span class="forge-detail">${s.detail}</span>
-        </div>
-
-        <div class="forge-metrics">
-          <div class="metric">
-            <div class="metric-value ${lossClass}">${s.loss?.toFixed(2) ?? '--'}</div>
-            <div class="metric-label">Loss</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${s.step ?? '--'}/${s.total_steps ?? '--'}</div>
-            <div class="metric-label">Step</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${eta}</div>
-            <div class="metric-label">ETA</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value ${s.vram_gb > 28 ? 'warn' : 'neutral'}">${s.vram_gb?.toFixed(1) ?? '--'}GB</div>
-            <div class="metric-label">VRAM</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${s.it_per_sec?.toFixed(1) ?? '--'}</div>
-            <div class="metric-label">it/s</div>
-          </div>
-          ${s.improvement_pct !== undefined ? html`
-          <div class="metric">
-            <div class="metric-value good">${s.improvement_pct > 0 ? '+' : ''}${s.improvement_pct.toFixed(1)}%</div>
-            <div class="metric-label">Improvement</div>
-          </div>
-          ` : nothing}
-        </div>
-
-        ${progress > 0 ? html`
-          <div class="progress-bar">
-            <div class="progress-fill" style="width: ${progress}%"></div>
-          </div>
-        ` : nothing}
-
-        ${this.lossHistory.length > 2 ? this.renderSparkline() : nothing}
-      </div>
-    `;
-  }
-
-  private renderNoForge(): TemplateResult {
-    return html`
-      <div class="empty-state">
-        <div class="icon">&#9881;</div>
-        <div class="message">No active forges</div>
-        <div class="hint">Configure a forge above and hit START FORGE</div>
-      </div>
-    `;
-  }
-
-  // ── Output Log Section ─────────────────────────────────────────────────
-
-  @reactive() private _expandedSample: number = -1;
-  @reactive() private _expandedModel: number = -1;
-
-  private renderOutputLog(): TemplateResult {
-    if (this.outputSamples.length === 0) {
-      return html``;
-    }
-
-    // Show newest first
-    const samples = [...this.outputSamples].reverse();
-
-    return html`
-      <div class="section">
-        <div class="section-title">Output Log (${samples.length})</div>
-        <div class="output-log">
-          ${samples.map((s, i) => this.renderLogEntry(s, i))}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderLogEntry(sample: ForgeSample, index: number): TemplateResult {
-    const expanded = this._expandedSample === index;
-    const preview = sample.output.split('\n')[0].slice(0, 80);
-    const time = new Date(sample.timestamp).toLocaleTimeString();
-
-    return html`
-      <div class="log-entry">
-        <div class="log-header" @click=${() => this.toggleSample(index)}>
-          <span class="log-step">Step ${sample.step}</span>
-          <span class="log-preview">${preview}</span>
-          <span class="log-time">${time}</span>
-          <span class="log-expand">${expanded ? '\u25B2' : '\u25BC'}</span>
-        </div>
-        ${expanded ? html`
-          <div class="log-body">
-            <div class="log-prompt">${sample.prompt}</div>
-            <div class="log-output">${sample.output}</div>
-          </div>
-        ` : nothing}
-      </div>
-    `;
-  }
-
-  private toggleSample(index: number): void {
-    this._expandedSample = this._expandedSample === index ? -1 : index;
-  }
-
-  // ── Alloy Results Section ──────────────────────────────────────────────
-
-  private renderAlloyResults(): TemplateResult {
-    const r = this._alloyResults!;
-    const trustLevel = r.integrity?.trustLevel ?? 'self-attested';
-
-    return html`
-      <div class="section">
-        <div class="section-title">
-          Forge Results
-          <span class="trust-badge ${trustLevel}">${trustLevel}</span>
-        </div>
-        <div class="alloy-results">
-          ${r.benchmarks.length > 0 ? this.renderBenchmarkTable(r.benchmarks) : nothing}
-          ${r.hardwareVerified.length > 0 ? this.renderDeviceGrid(r.hardwareVerified) : nothing}
-          ${r.baselinePerplexity != null ? html`
-            <div class="forge-metrics" style="margin-bottom:12px">
-              <div class="metric">
-                <div class="metric-value neutral">${r.baselinePerplexity?.toFixed(2)}</div>
-                <div class="metric-label">Baseline PPL</div>
-              </div>
-              <div class="metric">
-                <div class="metric-value good">${r.finalPerplexity?.toFixed(2)}</div>
-                <div class="metric-label">Final PPL</div>
-              </div>
-              <div class="metric">
-                <div class="metric-value ${(r.improvementPct ?? 0) > 0 ? 'good' : 'bad'}">
-                  ${(r.improvementPct ?? 0) > 0 ? '+' : ''}${r.improvementPct?.toFixed(1)}%
-                </div>
-                <div class="metric-label">Improvement</div>
-              </div>
-            </div>
-          ` : nothing}
-          <div class="alloy-actions">
-            <button class="alloy-btn" @click=${this.downloadAlloyResults}>Download .alloy.json</button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderBenchmarkTable(benchmarks: AlloyBenchmark[]): TemplateResult {
-    return html`
-      <table class="benchmark-table">
-        <thead>
-          <tr>
-            <th>Benchmark</th>
-            <th>Score</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${benchmarks.map(b => {
-            const score = b.metrics['score'] ?? b.metrics['accuracy'] ?? b.metrics['passing'] ?? '--';
-            const details = Object.entries(b.metrics)
-              .filter(([k]) => k !== 'score' && k !== 'accuracy')
-              .map(([k, v]) => `${k}: ${v}`)
-              .join(', ');
-            return html`
-              <tr>
-                <td style="font-weight:600">${b.name}${b.subset ? ` (${b.subset})` : ''}</td>
-                <td style="color:#00ffc8;font-weight:700">${score}</td>
-                <td style="color:var(--content-secondary,#8a92a5);font-size:11px">${details}</td>
-              </tr>
-            `;
-          })}
-        </tbody>
-      </table>
-    `;
-  }
-
-  private renderDeviceGrid(devices: AlloyHardwareProfile[]): TemplateResult {
-    return html`
-      <div class="device-grid">
-        ${devices.map(d => html`
-          <div class="device-card">
-            <div class="device-name">${d.device}</div>
-            <div class="device-meta">
-              <span>${d.format}</span>
-              ${d.sizeGb ? html`<span>${d.sizeGb}GB</span>` : nothing}
-              ${d.tokensPerSec ? html`<span>${d.tokensPerSec} tok/s</span>` : nothing}
-            </div>
-            ${d.verified ? html`<div class="device-verified">Verified</div>` : nothing}
-          </div>
-        `)}
-      </div>
-    `;
-  }
-
-  private downloadAlloyResults(): void {
-    const alloy = this.buildCurrentAlloy();
-    if (this._alloyResults) {
-      (alloy as any).results = this._alloyResults;
-    }
-    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${alloy.name}.alloy.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  private exportAlloyRecipe(): void {
-    const alloy = this.buildCurrentAlloy();
-    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${alloy.name}.alloy.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  private buildCurrentAlloy(): Record<string, unknown> {
-    const base = this._selectedModel.split('/').pop()?.toLowerCase() ?? 'model';
-    return {
-      name: `${base}-${this._selectedDomain}-forged`,
-      version: '1.0.0',
-      author: 'continuum-ai',
-      tags: [this._selectedDomain, 'forged', 'experiential-plasticity', 'forge-alloy'],
-      license: 'apache-2.0',
-      source: {
-        baseModel: this._selectedModel,
-        architecture: base.includes('qwen3.5') ? 'qwen3_5' : base.includes('qwen2') ? 'qwen2' : 'llama',
-      },
-      stages: [
-        { type: 'prune', strategy: this._selectedPruneStrategy, level: this._selectedPruneLevel / 100 },
-        { type: 'train', domain: this._selectedDomain, steps: this._selectedSteps, learningRate: this._selectedLearningRate },
-      ],
-      cycles: this._selectedCycles,
-    };
-  }
-
-  // ── Published Models Section ──────────────────────────────────────────
-
-  private renderPublishedModels(): TemplateResult {
-    if (this.models.length === 0 && !this._isLoading) {
-      return html`
         <div class="section">
-          <div class="section-title">Published Models</div>
-          <div class="empty-state">
-            <div class="message">No models published yet</div>
-            <div class="hint">Forge a model to publish it to continuum-ai on HuggingFace</div>
-          </div>
+          <div class="section-title">Forge</div>
+          <forge-controls-element
+            .forging=${this._isForging}
+            .starting=${this._forgeStarting}
+            .progressPct=${this._progressPct}
+            .progressLabel=${this._progressLabel}
+            @forge-start=${this.onForgeStart}
+            @forge-export=${this.onForgeExport}
+          ></forge-controls-element>
         </div>
-      `;
-    }
 
-    return html`
-      <div class="section">
-        <div class="section-title">
-          Published Models (${this.models.length})
-          <span class="section-stats">${this._totalDownloads.toLocaleString()} total downloads</span>
+        <div class="section">
+          <div class="section-title">Active Forge</div>
+          <active-forge-element
+            .status=${this._forgeStatus}
+            .lossHistory=${this._lossHistory}
+          ></active-forge-element>
         </div>
-        <div class="model-list">
-          ${this.models.map((m, i) => this.renderModelCard(m, i))}
+
+        <div class="section">
+          <div class="section-title">
+            Published Models (${this._models.length})
+            <span class="section-stats">${this._totalDownloads.toLocaleString()} total downloads</span>
+          </div>
+          <published-models-element
+            .models=${this._models}
+            .totalDownloads=${this._totalDownloads}
+            .loading=${this._isLoading}
+          ></published-models-element>
         </div>
       </div>
     `;
   }
 
-  private renderModelCard(m: PublishedModel, rank: number): TemplateResult {
-    const variantBadge = this.getVariantBadge(m.variant ?? 'forged');
-    const expanded = this._expandedModel === rank;
-    const hfUrl = `https://huggingface.co/${m.id}`;
-
-    return html`
-      <div class="model-card" style="flex-direction:column;cursor:pointer"
-        @click=${() => this._expandedModel = expanded ? -1 : rank}>
-        <div style="display:flex;align-items:center;gap:12px;width:100%">
-          <div class="model-rank">#${rank + 1}</div>
-          <div class="model-info">
-            <div class="model-name">${m.name}</div>
-            <div class="model-meta">
-              <span class="badge domain">${m.domain}</span>
-              <span class="badge variant">${variantBadge}</span>
-              ${m.tags?.includes('forge-alloy') ? html`<span class="trust-badge self-attested" style="font-size:9px;padding:1px 5px">alloy</span>` : nothing}
-            </div>
-          </div>
-          <div class="model-stats">
-            <div class="stat">
-              <span class="stat-value">${this.formatCount(m.downloads)}</span>
-              <span class="stat-label">downloads</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">${m.likes || '--'}</span>
-              <span class="stat-label">likes</span>
-            </div>
-          </div>
-        </div>
-        ${expanded ? html`
-          <div style="width:100%;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color, rgba(255,255,255,0.08))">
-            <div style="display:flex;gap:16px;font-size:12px;color:var(--content-secondary,#8a92a5);margin-bottom:8px">
-              ${m.baseModel ? html`<span>Base: <b style="color:var(--content-primary,#e0e6ed)">${m.baseModel}</b></span>` : nothing}
-              ${m.sizeGb ? html`<span>Size: <b style="color:var(--content-primary,#e0e6ed)">${m.sizeGb}GB</b></span>` : nothing}
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <a class="alloy-btn" href="${hfUrl}" target="_blank"
-                @click=${(e: Event) => e.stopPropagation()}
-                style="text-decoration:none;display:inline-block">View on HF</a>
-              ${m.tags?.includes('forge-alloy') ? html`
-                <a class="alloy-btn" href="${hfUrl}/resolve/main/${m.name}.alloy.json" target="_blank"
-                  @click=${(e: Event) => e.stopPropagation()}
-                  style="text-decoration:none;display:inline-block">Download Alloy</a>
-              ` : nothing}
-            </div>
-          </div>
-        ` : nothing}
-      </div>
-    `;
-  }
-
-  private getVariantBadge(variant: string): string {
-    switch (variant) {
-      case 'compacted': return 'compacted';
-      case 'defragged': return 'defragged';
-      case 'forged': return 'forged';
-      case 'gguf': return 'GGUF';
-      case 'mlx': return 'MLX';
-      default: return variant;
-    }
-  }
-
-  private formatCount(n: number): string {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-    return n.toString();
-  }
-
-  // ── Sparkline ─────────────────────────────────────────────────────────
-
-  private renderSparkline(): TemplateResult {
-    const data = this.lossHistory;
-    if (data.length < 2) return html``;
-
-    const min = Math.min(...data);
-    const max = Math.max(...data);
-    const range = max - min || 1;
-    const w = 100;
-    const h = 40;
-
-    const points = data.map((v, i) => {
-      const x = (i / (data.length - 1)) * w;
-      const y = h - ((v - min) / range) * (h - 4) - 2;
-      return `${x},${y}`;
-    });
-
-    const d = `M ${points.join(' L ')}`;
-
-    return html`
-      <div class="sparkline">
-        <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-          <path d="${d}" />
-        </svg>
-      </div>
-    `;
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────
 
   private formatETA(seconds: number): string {
     if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -1462,7 +327,7 @@ export class FactoryWidget extends ReactiveWidget {
   }
 }
 
-// Self-register as custom element
+// Self-register
 if (!customElements.get('factory-widget')) {
   customElements.define('factory-widget', FactoryWidget);
 }
