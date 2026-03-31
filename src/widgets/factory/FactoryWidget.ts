@@ -311,7 +311,7 @@ export class FactoryWidget extends ReactiveWidget {
         </div>
 
         <div class="section">
-          <div class="section-title">Forge</div>
+          <div class="section-title">Console</div>
           <forge-controls-element
             .forging=${this._isForging}
             .starting=${this._forgeStarting}
@@ -323,7 +323,7 @@ export class FactoryWidget extends ReactiveWidget {
         </div>
 
         <div class="section">
-          <div class="section-title">Active Forge</div>
+          <div class="section-title">Factory Floor</div>
           <active-forge-element
             .status=${this._forgeStatus}
             .lossHistory=${this._lossHistory}
