@@ -202,6 +202,7 @@ export class ForgeControlsElement extends ReactiveWidget {
     .button-row {
       display: flex;
       gap: 8px;
+      margin-bottom: 16px;
     }
 
     .forge-button {
@@ -283,6 +284,21 @@ export class ForgeControlsElement extends ReactiveWidget {
 
     return html`
       <div class="controls">
+        <div class="button-row">
+          <button class="forge-button ${this.forging ? 'forging' : ''}"
+            ?disabled=${this.starting}
+            @click=${this.onStartForge}>
+            ${this.forging ? html`
+              <span class="forge-button-fill"
+                style="width:${this.progressPct}%;background:linear-gradient(90deg,hsl(${hue},100%,50%),hsl(${hue - 10},100%,60%))"></span>
+            ` : nothing}
+            <span class="forge-button-label">
+              ${this.forging ? this.progressLabel : this.starting ? 'STARTING...' : 'START FORGE'}
+            </span>
+          </button>
+          <button class="export-btn" @click=${this.onExportAlloy}
+            title="Export current settings as .alloy.json recipe">Export Alloy</button>
+        </div>
         <div class="controls-grid">
           <div class="control-group">
             <span class="control-label">Base Model</span>
@@ -378,21 +394,6 @@ export class ForgeControlsElement extends ReactiveWidget {
           </div>
         </div>
         <pipeline-composer></pipeline-composer>
-        <div class="button-row">
-          <button class="forge-button ${this.forging ? 'forging' : ''}"
-            ?disabled=${this.starting}
-            @click=${this.onStartForge}>
-            ${this.forging ? html`
-              <span class="forge-button-fill"
-                style="width:${this.progressPct}%;background:linear-gradient(90deg,hsl(${hue},100%,50%),hsl(${hue - 10},100%,60%))"></span>
-            ` : nothing}
-            <span class="forge-button-label">
-              ${this.forging ? this.progressLabel : this.starting ? 'STARTING...' : 'START FORGE'}
-            </span>
-          </button>
-          <button class="export-btn" @click=${this.onExportAlloy}
-            title="Export current settings as .alloy.json recipe">Export Alloy</button>
-        </div>
       </div>
     `;
   }
