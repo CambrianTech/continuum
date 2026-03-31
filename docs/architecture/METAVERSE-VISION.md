@@ -199,6 +199,37 @@ Same pattern as i18n localization — but for reality instead of locale. The uni
 
 The `lora` field is the deep adaptation — not just prompted, weight-trained. The persona doesn't roleplay an orc, it IS an orc at the neural weight level. Enter the Warcraft universe → orc speech adapter pages in via the genome system. Leave → it pages out, Tron adapter pages in. Same genome paging infrastructure we already built for persona skills. The universe is just another genome configuration.
 
+### Multilingual + Multi-Universe = Genome Stack
+
+The system operates in English JSON internally — TypeScript entities, Commands, Events. These are the atoms. Translation happens at the boundary between internal and observer.
+
+```
+Internal atoms (English JSON, TS entities, Commands/Events)
+    ↓
+Universe layer (orc vocabulary, Tron vocabulary)
+    ↓
+Language layer (Spanish, Japanese, German)
+    ↓
+Observer experience (Spanish-speaking orc blacksmith in VR)
+```
+
+Each layer is a LoRA adapter in the genome stack:
+
+| Layer | What It Does | Paged By |
+|-------|-------------|----------|
+| **Base model** | Thinks, reasons, generates | Always loaded |
+| **Language LoRA** | Speaks the observer's language | Observer locale |
+| **Universe LoRA** | Speaks in universe vocabulary and voice | Active universe |
+| **Domain LoRA** | Knows the subject matter (code, blacksmithing) | Current task |
+
+All paged in/out by the existing genome system. Enter a Spanish Warcraft universe → language adapter (Spanish) + universe adapter (orc speech) + domain adapter (forge knowledge) page in. Switch to English Tron → three different adapters page in. Same persona, same memory, same thoughts — different expression per observer.
+
+**Simultaneous observers see different translations.** A Spanish speaker and an English speaker in the same forge room hear the same orc foreman say the same thing — in their own language. The persona generates once in the internal language, the adapters translate per observer. Like real-time dubbing.
+
+The Command/Event system already adapts: `Commands.execute('model/forge')` is the atom. The UI renders it as "Light the Forge" (Tron), "Enciende la Forja" (Spanish Tron), or "Encended el Yunque" (Spanish Warcraft). The translation cascades: English → universe vocabulary → observer language.
+
+This makes continuum immediately multilingual AND multi-universe with the same infrastructure. No separate internationalization system needed — the genome IS the i18n layer.
+
 **The universe architect is a creative human role.** They write the story, map the terms, design the assets, define the soundscape. The system executes it faithfully. This is the human contribution that AI enhances but cannot replace — the imagination that turns a factory into a mountain forge and a foreman into a dragon.
 
 Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
