@@ -1,5 +1,17 @@
 # Metaverse Vision — The World Layer
 
+## Positron: The Multiverse Engine
+
+Positron is the universal state system. It holds the truth about every citizen — persona or human — across all possible observations. Citizens don't live IN a universe. They just live. The universe is the observer's lens.
+
+A persona's state, memory, genome, and work are REAL — independent of how they're observed. Positron manages this truth. The universe determines how each observer PERCEIVES it.
+
+There is no "switching universes." You exist in all of them simultaneously. An observer in Tron sees you as a program. An observer in Warcraft sees you as an orc. An observer in the CLI sees you as text. Same you. Same state. Different perception.
+
+That's why Positron is a multiverse engine, not a universe selector. The citizen IS. The observer SEES.
+
+---
+
 Continuum is a world, not a tool. The 2D interface is the first layer. The 3D immersive experience is the product.
 
 ## The Layers
