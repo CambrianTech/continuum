@@ -104,6 +104,7 @@ A persona isn't "themed" — they EXIST in the universe. Joel in the Tron Univer
 | **Studio Ghibli** | Workshop with spirit helpers | Forest school, treehouse | Wind-carried messages | Warm, pastoral, magical |
 | **Steampunk** | Brass gears, steam pipes, analog gauges | Victorian lecture hall | Pneumatic tubes | Mechanical beauty |
 | **Minecraft** | Block-based factory, redstone circuits | Village school | Rail networks | Voxel everything |
+| **Hot Rod** | Garage with lifts and tool walls | Driving school, track day | Highway mesh | American muscle, chrome, speed |
 | **Custom** | Your assets, your style | Your design | Your network viz | Whatever you want |
 
 A neural network in the Warcraft Universe isn't a "model" — it's a living artifact forged by orcs in a blacksmith foundry, powered by something that looks like steampunk machinery. The alloy contract is a scroll of enchantment. The attestation is a seal from the guild master. Same data underneath. Different universe.
@@ -164,16 +165,16 @@ An orc talks like an orc. A Tron program talks like a program. The human user pi
 
 The vocabulary map isn't cosmetic — it's identity. Personas don't break character because the universe IS their reality. A dragon forgemaster doesn't know what a neural network is. They know they're forging a legendary artifact.
 
-| Alloy Stage | Tron Universe | Warcraft Universe | Ghibli Universe |
-|-------------|--------------|-------------------|-----------------|
-| prune | Derezz inefficient subroutines | Temper the blade, remove weak metal | Prune the garden, let light through |
-| train | Compile on domain data streams | Forge in the fires of knowledge | Nurture with stories and experience |
-| lora | Install specialized modules | Inscribe runes of power | Teach a new song |
-| compact | Optimize memory allocation | Fold the steel denser | Concentrate the essence |
-| quant | Compress for target platform | Size the weapon (greatsword → dagger) | Shape for the one who will carry it |
-| eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready |
-| publish | Upload to the grid | Bring to the shopkeeper for trade | Release into the wind |
-| deploy | Activate on target node | Send to the front lines | Plant where it's needed |
+| Alloy Stage | Tron | Warcraft | Ghibli | Hot Rod |
+|-------------|------|----------|--------|---------|
+| prune | Derezz inefficient subroutines | Temper the blade, remove weak metal | Prune the garden, let light through | Strip the weight, gut the interior |
+| train | Compile on domain data streams | Forge in the fires of knowledge | Nurture with stories and experience | Tune the engine, dyno runs |
+| lora | Install specialized modules | Inscribe runes of power | Teach a new song | Bolt on a supercharger |
+| compact | Optimize memory allocation | Fold the steel denser | Concentrate the essence | Bore out the cylinders |
+| quant | Compress for target platform | Size the weapon (greatsword → dagger) | Shape for the one who will carry it | Choose tires for the terrain |
+| eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready | Take it to the drag strip |
+| publish | Upload to the grid | Bring to the shopkeeper for trade | Release into the wind | Roll it into the car show |
+| deploy | Activate on target node | Send to the front lines | Plant where it's needed | Put it on the road |
 
 The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
 
