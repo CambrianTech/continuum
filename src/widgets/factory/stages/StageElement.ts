@@ -137,6 +137,59 @@ export const STAGE_BASE_STYLES = css`
     color: #ff4444;
     margin-top: 2px;
   }
+
+  /* ── Gate (transition control between stages) ──── */
+
+  .gate {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));
+  }
+
+  .gate-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--content-tertiary, #5a6070);
+  }
+
+  .gate-toggle {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: transparent;
+    color: var(--content-tertiary, #5a6070);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .gate-toggle:hover {
+    border-color: rgba(255,255,255,0.3);
+    color: var(--content-secondary, #8a92a5);
+  }
+
+  .gate-toggle.active-auto {
+    background: rgba(0, 255, 200, 0.1);
+    border-color: rgba(0, 255, 200, 0.3);
+    color: #00ffc8;
+  }
+
+  .gate-toggle.active-manual {
+    background: rgba(255, 170, 0, 0.1);
+    border-color: rgba(255, 170, 0, 0.3);
+    color: #ffaa00;
+  }
+
+  .gate-toggle.active-conditional {
+    background: rgba(0, 212, 255, 0.1);
+    border-color: rgba(0, 212, 255, 0.3);
+    color: #00d4ff;
+  }
 `;
 
 /** Stage type color coding */
@@ -166,6 +219,9 @@ export const STAGE_TEXT_COLORS: Record<string, string> = {
   modality:       '#64ffc8',
 };
 
+/** Gate mode between stages — controls pipeline flow */
+export type GateMode = 'auto' | 'manual' | 'conditional';
+
 export abstract class StageElement extends ReactiveWidget {
 
   /** Which stage in the pipeline (0-indexed) */
@@ -173,6 +229,9 @@ export abstract class StageElement extends ReactiveWidget {
 
   /** Whether the stage is in edit mode (true) or read-only view (false) */
   @reactive() editable = true;
+
+  /** Gate mode — how this stage transitions to the next */
+  @reactive() gate: GateMode = 'auto';
 
   /** The alloy stage type name */
   abstract get stageType(): string;
@@ -190,6 +249,31 @@ export abstract class StageElement extends ReactiveWidget {
       bubbles: true,
       composed: true,
     }));
+  }
+
+  /** Cycle gate mode: auto → manual → conditional → auto */
+  protected cycleGate(): void {
+    const modes: GateMode[] = ['auto', 'manual', 'conditional'];
+    const idx = modes.indexOf(this.gate);
+    this.gate = modes[(idx + 1) % modes.length];
+    this.emitChange();
+  }
+
+  /** Render gate control — shown at the bottom of each stage */
+  protected renderGate(): TemplateResult {
+    const activeClass = `active-${this.gate}`;
+    const label = this.gate === 'auto' ? 'Auto-continue'
+      : this.gate === 'manual' ? 'Manual review'
+      : 'Conditional';
+
+    return html`
+      <div class="gate">
+        <span class="gate-label">Next:</span>
+        <button class="gate-toggle ${activeClass}" @click=${this.cycleGate}>
+          ${label}
+        </button>
+      </div>
+    `;
   }
 
   /** Render the stage header with type badge and order number */

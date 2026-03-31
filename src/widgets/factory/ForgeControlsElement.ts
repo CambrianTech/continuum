@@ -15,6 +15,7 @@ import {
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import './stages/PipelineComposer';
 
 /** Forge profiles — presets for common configurations */
 const FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
@@ -192,6 +193,10 @@ export class ForgeControlsElement extends ReactiveWidget {
       background: var(--accent-primary, #00d4ff);
       color: #000;
       border-color: transparent;
+    }
+
+    pipeline-composer {
+      margin: 12px 0;
     }
 
     .button-row {
@@ -372,6 +377,7 @@ export class ForgeControlsElement extends ReactiveWidget {
             </div>
           </div>
         </div>
+        <pipeline-composer></pipeline-composer>
         <div class="button-row">
           <button class="forge-button ${this.forging ? 'forging' : ''}"
             ?disabled=${this.starting}

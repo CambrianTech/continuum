@@ -82,6 +82,7 @@ export class PruneStageElement extends StageElement {
             @change=${(e: Event) => { this._analysisSteps = parseInt((e.target as HTMLInputElement).value); this.emitChange(); }}>
         </div>
       </div>
+      ${this.renderGate()}
     `;
   }
 }

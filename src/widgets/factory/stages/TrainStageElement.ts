@@ -175,11 +175,12 @@ export class TrainStageElement extends StageElement {
         </div>
       </div>
       ${this._dataset ? html`
-        <div class="field" style="margin-top:8px">
+        <div class="field">
           <span class="field-label">Dataset</span>
           <span class="field-hint">${this._dataset}</span>
         </div>
       ` : ''}
+      ${this.renderGate()}
     `;
   }
 }
