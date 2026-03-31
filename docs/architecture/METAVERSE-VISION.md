@@ -105,6 +105,7 @@ A persona isn't "themed" — they EXIST in the universe. Joel in the Tron Univer
 | **Steampunk** | Brass gears, steam pipes, analog gauges | Victorian lecture hall | Pneumatic tubes | Mechanical beauty |
 | **Minecraft** | Block-based factory, redstone circuits | Village school | Rail networks | Voxel everything |
 | **Hot Rod** | Garage with lifts and tool walls | Driving school, track day | Highway mesh | American muscle, chrome, speed |
+| **Air Buddies x Stray** | Dogs and cats running the forge | Obedience school + alley smarts | Neighborhood territory | Furry chaos, wholesome mayhem |
 | **Custom** | Your assets, your style | Your design | Your network viz | Whatever you want |
 
 A neural network in the Warcraft Universe isn't a "model" — it's a living artifact forged by orcs in a blacksmith foundry, powered by something that looks like steampunk machinery. The alloy contract is a scroll of enchantment. The attestation is a seal from the guild master. Same data underneath. Different universe.
@@ -175,6 +176,8 @@ The vocabulary map isn't cosmetic — it's identity. Personas don't break charac
 | eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready | Take it to the drag strip |
 | publish | Upload to the grid | Bring to the shopkeeper for trade | Release into the wind | Roll it into the car show |
 | deploy | Activate on target node | Send to the front lines | Plant where it's needed | Put it on the road |
+
+*In the Air Buddies x Stray universe: prune = "knock it off the counter", train = "catch mice in the alley", lora = "learn a new trick", eval = "take it to the dog show", publish = "leave it on the doorstep", deploy = "let it loose in the yard". The foreman is a grumpy tabby named Sergeant Whiskers. There's no rule that says a dog can't forge neural networks.*
 
 The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
 
