@@ -100,6 +100,20 @@ export class MainWidget extends ReactiveWidget {
     // Initialize content tabs
     await this.initializeContentTabs();
 
+    // Re-emit right panel config now that BOTH recipes and content tabs are loaded.
+    // Fixes race: content tab may have rendered before recipes were available,
+    // so the right panel got null instead of the recipe's config.
+    if (this.currentViewType) {
+      const rightPanelConfig = getRightPanelConfig(this.currentViewType);
+      Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+        widget: rightPanelConfig?.widget || null,
+        room: rightPanelConfig?.room,
+        compact: rightPanelConfig?.compact,
+        contentType: this.currentViewType,
+        sections: rightPanelConfig?.sections,
+      });
+    }
+
     // Listen to header controls events
     this.setupHeaderControlsListeners();
 
