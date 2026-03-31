@@ -103,6 +103,8 @@ export class MainWidget extends ReactiveWidget {
     // Re-emit right panel config now that BOTH recipes and content tabs are loaded.
     // Fixes race: content tab may have rendered before recipes were available,
     // so the right panel got null instead of the recipe's config.
+    // Re-emit right panel for ALL active content tabs, not just the current one.
+    // The initial render may have happened before recipes loaded.
     if (this.currentViewType) {
       const rightPanelConfig = getRightPanelConfig(this.currentViewType);
       Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {

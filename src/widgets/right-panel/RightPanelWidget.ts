@@ -320,6 +320,10 @@ export class RightPanelWidget extends ReactiveWidget {
       return;
     }
 
+    // Show the panel (may have been hidden by a previous null config)
+    this._isHidden = false;
+    this._expand();
+
     // Build sections array
     let sections: RightPanelSectionPayload[];
 
