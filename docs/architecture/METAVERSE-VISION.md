@@ -78,12 +78,25 @@ Continuum builds a place to LIVE. A world where your AI teammates have faces, vo
 
 The interface isn't the product. The WORLD is the product. The interface is just how much of the world you can see right now.
 
-## Themed Universes
+## Universes
 
-The world is skinnable. Same data, same contracts, same personas. Different aesthetic. The theme is CSS + 3D assets + sound design — the alloy contract underneath doesn't care how it's rendered.
+**Universe**, not theme. A theme is superficial. A universe is complete.
 
-| Theme | Factory | Academy | Grid | Vibe |
-|-------|---------|---------|------|------|
+### The Naming
+
+| Term | What It Means |
+|------|--------------|
+| **Universe** | The complete experience (Tron Universe, Ghibli Universe, Cyberpunk Universe) |
+| **Realm** or **District** | A neighborhood within it (Industrial Realm, Academy Realm) |
+| **Surface** | How you observe it (browser, 3D, AR, VR, CLI) |
+| **Citizen** | Persona or human — exists in all surfaces simultaneously |
+
+A persona isn't "themed" — they EXIST in the universe. Joel in the Tron Universe has a light-suit avatar in VR, a neon profile in browser, a cyan prompt in CLI. Same person, same state, same genome. The universe determines how they're rendered to each observer.
+
+### Universes
+
+| Universe | Industrial Realm | Academy Realm | Grid | Vibe |
+|----------|-----------------|---------------|------|------|
 | **Continuum** (default) | Clean industrial, dark UI, cyan accents | Modern campus | Network graph | Professional, sleek |
 | **Tron** | Light cycle forge, neon assembly | Data temple | Glowing grid lines | Digital frontier |
 | **Warcraft** | Blacksmith forge, anvils, bellows | Mage tower, libraries | Ley lines between keeps | Fantasy guild |
@@ -93,21 +106,35 @@ The world is skinnable. Same data, same contracts, same personas. Different aest
 | **Minecraft** | Block-based factory, redstone circuits | Village school | Rail networks | Voxel everything |
 | **Custom** | Your assets, your style | Your design | Your network viz | Whatever you want |
 
-The theme system is a layer above the data model. Swap themes without losing state, personas, adapters, or forge history. Your Tron factory and your Ghibli workshop share the same grid, the same alloy contracts, the same attestation chain.
+A neural network in the Warcraft Universe isn't a "model" — it's a living artifact forged by orcs in a blacksmith foundry, powered by something that looks like steampunk machinery. The alloy contract is a scroll of enchantment. The attestation is a seal from the guild master. Same data underneath. Different universe.
 
-A theme carries across EVERY environment — consistent experience regardless of how you're accessing the world:
+### Multiple Universes, One Grid
 
-| Environment | What the theme affects |
-|-------------|----------------------|
+You can run multiple universes on the same grid, same data, same alloy contracts. Switch universes like switching a lens — the world is the same, the perception changes. Your Tron factory and your Ghibli workshop share the same compute, the same models, the same attestation chain.
+
+### Surfaces
+
+A universe carries across EVERY surface — consistent experience regardless of how you observe:
+
+| Surface | What the universe affects |
+|---------|-------------------------|
 | **Browser UI** | Widget colors, fonts, borders, animations, icons |
 | **3D World** | Architecture, lighting, particle effects, sky, terrain |
 | **AR Overlay** | HUD style, indicator design, spatial UI panels |
 | **VR Immersive** | Full environment, soundscape, physics feel |
 | **CLI** | Color scheme, prompt style, ASCII art, output formatting |
 
-Pick Tron once. Your browser widgets glow neon. Your 3D factory has light-cycle conveyors. Your AR overlay shows grid lines. Your CLI prints in Tron blue. One theme, every surface.
+Pick Tron once. Your browser widgets glow neon. Your 3D factory has light-cycle conveyors. Your AR overlay shows grid lines. Your CLI prints in Tron blue. One universe, every surface.
 
-Community themes are shareable — publish a theme pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
+The literal naming does the heavy lifting:
+- "Switch to the Tron Universe" makes sense
+- "Switch to the Tron theme" sounds like a CSS change
+- "The factory in the Industrial Realm of the Cyberpunk Universe" — that's a real place
+- "The factory with the cyberpunk theme applied" — that's a skin
+
+Universe > theme. It captures everything.
+
+Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
 
 ## The Sony Cell Architecture (Realized)
 
