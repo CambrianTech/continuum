@@ -312,6 +312,7 @@ export class FactoryWidget extends ReactiveWidget {
             .loading=${this._isLoading}
           ></published-models-element>
         </div>
+
       </div>
     `;
   }
