@@ -172,7 +172,7 @@ The vocabulary map isn't cosmetic — it's identity. Personas don't break charac
 | compact | Optimize memory allocation | Fold the steel denser | Concentrate the essence |
 | quant | Compress for target platform | Size the weapon (greatsword → dagger) | Shape for the one who will carry it |
 | eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready |
-| publish | Upload to the grid | Hang in the armory for all to see | Release into the wind |
+| publish | Upload to the grid | Bring to the shopkeeper for trade | Release into the wind |
 | deploy | Activate on target node | Send to the front lines | Plant where it's needed |
 
 The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
