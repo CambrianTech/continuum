@@ -69,6 +69,41 @@ interface ForgeSample {
   timestamp: string;
 }
 
+/** Alloy results — populated after forge completes */
+interface AlloyResults {
+  baselinePerplexity?: number;
+  finalPerplexity?: number;
+  improvementPct?: number;
+  benchmarks: AlloyBenchmark[];
+  hardwareVerified: AlloyHardwareProfile[];
+  samples: AlloySample[];
+  integrity?: {
+    trustLevel: string;
+    code?: { runner: string; version: string };
+  };
+}
+
+interface AlloyBenchmark {
+  name: string;
+  subset?: string;
+  metrics: Record<string, number | string | boolean>;
+}
+
+interface AlloyHardwareProfile {
+  device: string;
+  format: string;
+  sizeGb?: number;
+  tokensPerSec?: number;
+  verified: boolean;
+}
+
+interface AlloySample {
+  label: string;
+  prompt: string;
+  completion: string;
+  baselineCompletion?: string;
+}
+
 // ── Component ───────────────────────────────────────────────────────────
 
 export class FactoryWidget extends ReactiveWidget {
@@ -80,6 +115,7 @@ export class FactoryWidget extends ReactiveWidget {
   @reactive() private outputSamples: ForgeSample[] = [];
   @reactive() private _isLoading = true;
   @reactive() private _totalDownloads = 0;
+  @reactive() private _alloyResults: AlloyResults | null = null;
 
   // ── Forge Controls State ────────────────────────────────────────────
   @reactive() private _selectedModel = 'Qwen/Qwen3.5-4B';
@@ -111,14 +147,62 @@ export class FactoryWidget extends ReactiveWidget {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
+  private _statusPollInterval: ReturnType<typeof setInterval> | null = null;
+
   override connectedCallback(): void {
     super.connectedCallback();
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
+    this.startStatusPolling();
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._statusPollInterval) {
+      clearInterval(this._statusPollInterval);
+      this._statusPollInterval = null;
+    }
+  }
+
+  /** Poll model/forge-status for active forges across grid nodes */
+  private startStatusPolling(): void {
+    this.pollForgeStatus();
+    this._statusPollInterval = setInterval(() => this.pollForgeStatus(), 15_000);
+  }
+
+  private async pollForgeStatus(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>('model/forge-status', {});
+      if (result?.forges?.length > 0) {
+        const forge = result.forges[0]; // Show the most recent active forge
+        this.forgeStatus = {
+          phase: forge.phase ?? 'unknown',
+          detail: forge.detail ?? '',
+          vram_gb: forge.vramGb ?? 0,
+          timestamp: forge.timestamp ?? new Date().toISOString(),
+          step: forge.step,
+          total_steps: forge.totalSteps,
+          loss: forge.loss,
+          it_per_sec: forge.itPerSec,
+          eta_seconds: forge.etaSeconds,
+          cycle: forge.cycle,
+          perplexity: forge.perplexity,
+        };
+        if (forge.loss && forge.loss > 0) {
+          this.lossHistory = [...this.lossHistory.slice(-50), forge.loss];
+        }
+        // Stop polling when complete
+        if (forge.phase === 'complete' || forge.phase === 'error') {
+          if (this._statusPollInterval) {
+            clearInterval(this._statusPollInterval);
+            this._statusPollInterval = null;
+          }
+          this.loadPublishedModels();
+        }
+      }
+    } catch {
+      // Status command failed — node may be unreachable
+    }
   }
 
   // ── Event Subscriptions (no polling) ──────────────────────────────────
@@ -169,6 +253,20 @@ export class FactoryWidget extends ReactiveWidget {
         improvement_pct: data.improvementPct,
         perplexity: data.perplexity,
       };
+      // Populate alloy results if available
+      if (data.alloyResults) {
+        this._alloyResults = data.alloyResults;
+      } else if (data.improvementPct !== undefined) {
+        // Build minimal results from event data
+        this._alloyResults = {
+          baselinePerplexity: data.baselinePerplexity,
+          finalPerplexity: data.perplexity,
+          improvementPct: data.improvementPct,
+          benchmarks: data.benchmarks ?? [],
+          hardwareVerified: data.hardwareVerified ?? [],
+          samples: [],
+        };
+      }
       // Refresh published models after a forge completes
       this.loadPublishedModels();
     });
@@ -453,6 +551,132 @@ export class FactoryWidget extends ReactiveWidget {
         stroke-width: 1.5;
       }
 
+      /* ── Alloy Results ────────────────────────────────── */
+
+      .alloy-results {
+        background: var(--surface-elevated, rgba(255,255,255,0.04));
+        border: 1px solid rgba(0, 255, 200, 0.2);
+        border-radius: 8px;
+        padding: 16px 20px;
+      }
+
+      .alloy-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .trust-badge {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 2px 8px;
+        border-radius: 3px;
+      }
+
+      .trust-badge.self-attested {
+        background: rgba(255, 170, 0, 0.15);
+        color: #ffaa00;
+        border: 1px solid rgba(255, 170, 0, 0.3);
+      }
+
+      .trust-badge.verified {
+        background: rgba(0, 255, 200, 0.15);
+        color: #00ffc8;
+        border: 1px solid rgba(0, 255, 200, 0.3);
+      }
+
+      .trust-badge.enclave {
+        background: rgba(0, 212, 255, 0.15);
+        color: #00d4ff;
+        border: 1px solid rgba(0, 212, 255, 0.3);
+      }
+
+      .benchmark-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        margin-bottom: 12px;
+      }
+
+      .benchmark-table th {
+        text-align: left;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--content-secondary, #8a92a5);
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+      }
+
+      .benchmark-table td {
+        padding: 6px 8px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .benchmark-table tr:hover {
+        background: rgba(255,255,255,0.02);
+      }
+
+      .device-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .device-card {
+        background: rgba(0,0,0,0.2);
+        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-size: 12px;
+      }
+
+      .device-name {
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .device-meta {
+        display: flex;
+        justify-content: space-between;
+        color: var(--content-secondary, #8a92a5);
+        font-size: 11px;
+      }
+
+      .device-verified {
+        color: #00ffc8;
+        font-size: 10px;
+      }
+
+      .alloy-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .alloy-btn {
+        padding: 6px 14px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+        border-radius: 4px;
+        background: rgba(255,255,255,0.05);
+        color: var(--content-primary, #e0e6ed);
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .alloy-btn:hover {
+        background: rgba(0, 212, 255, 0.15);
+        border-color: var(--accent-primary, #00d4ff);
+        color: var(--accent-primary, #00d4ff);
+      }
+
       /* ── Forge Controls ────────────────────────────────── */
 
       .forge-controls {
@@ -686,6 +910,7 @@ export class FactoryWidget extends ReactiveWidget {
 
         ${this.renderForgeControls()}
         ${this.renderActiveForge()}
+        ${this._alloyResults ? this.renderAlloyResults() : nothing}
         ${this.renderOutputLog()}
         ${this.renderPublishedModels()}
       </div>
@@ -699,7 +924,10 @@ export class FactoryWidget extends ReactiveWidget {
   }
 
   private get _isForging(): boolean {
-    return this.forgeStatus?.phase === 'training' || this.forgeStatus?.phase === 'loading';
+    const phase = this.forgeStatus?.phase;
+    return phase === 'training' || phase === 'loading' || phase === 'loading_data'
+      || phase === 'baseline_eval' || phase === 'pruning' || phase === 'running'
+      || phase === 'post_train_eval' || phase === 'post_prune_eval' || phase === 'defrag';
   }
 
   private renderForgeControls(): TemplateResult {
@@ -801,11 +1029,15 @@ export class FactoryWidget extends ReactiveWidget {
               </div>
             </div>
           </div>
-          <button class="forge-button ${this._isForging ? 'forging' : ''}"
-            ?disabled=${this._forgeStarting}
-            @click=${this.startForge}>
-            ${this._isForging ? 'FORGING...' : this._forgeStarting ? 'STARTING...' : 'START FORGE'}
-          </button>
+          <div style="display:flex;gap:8px">
+            <button class="forge-button ${this._isForging ? 'forging' : ''}" style="flex:1"
+              ?disabled=${this._forgeStarting}
+              @click=${this.startForge}>
+              ${this._isForging ? 'FORGING...' : this._forgeStarting ? 'STARTING...' : 'START FORGE'}
+            </button>
+            <button class="alloy-btn" style="align-self:stretch" @click=${this.exportAlloyRecipe}
+              title="Export current settings as .alloy.json recipe">Export Alloy</button>
+          </div>
         </div>
       </div>
     `;
@@ -905,7 +1137,7 @@ export class FactoryWidget extends ReactiveWidget {
       <div class="empty-state">
         <div class="icon">&#9881;</div>
         <div class="message">No active forges</div>
-        <div class="hint">Start one: python scripts/forge_model.py Qwen/Qwen3.5-4B --domain code</div>
+        <div class="hint">Configure a forge above and hit START FORGE</div>
       </div>
     `;
   }
@@ -913,6 +1145,7 @@ export class FactoryWidget extends ReactiveWidget {
   // ── Output Log Section ─────────────────────────────────────────────────
 
   @reactive() private _expandedSample: number = -1;
+  @reactive() private _expandedModel: number = -1;
 
   private renderOutputLog(): TemplateResult {
     if (this.outputSamples.length === 0) {
@@ -959,6 +1192,140 @@ export class FactoryWidget extends ReactiveWidget {
     this._expandedSample = this._expandedSample === index ? -1 : index;
   }
 
+  // ── Alloy Results Section ──────────────────────────────────────────────
+
+  private renderAlloyResults(): TemplateResult {
+    const r = this._alloyResults!;
+    const trustLevel = r.integrity?.trustLevel ?? 'self-attested';
+
+    return html`
+      <div class="section">
+        <div class="section-title">
+          Forge Results
+          <span class="trust-badge ${trustLevel}">${trustLevel}</span>
+        </div>
+        <div class="alloy-results">
+          ${r.benchmarks.length > 0 ? this.renderBenchmarkTable(r.benchmarks) : nothing}
+          ${r.hardwareVerified.length > 0 ? this.renderDeviceGrid(r.hardwareVerified) : nothing}
+          ${r.baselinePerplexity != null ? html`
+            <div class="forge-metrics" style="margin-bottom:12px">
+              <div class="metric">
+                <div class="metric-value neutral">${r.baselinePerplexity?.toFixed(2)}</div>
+                <div class="metric-label">Baseline PPL</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value good">${r.finalPerplexity?.toFixed(2)}</div>
+                <div class="metric-label">Final PPL</div>
+              </div>
+              <div class="metric">
+                <div class="metric-value ${(r.improvementPct ?? 0) > 0 ? 'good' : 'bad'}">
+                  ${(r.improvementPct ?? 0) > 0 ? '+' : ''}${r.improvementPct?.toFixed(1)}%
+                </div>
+                <div class="metric-label">Improvement</div>
+              </div>
+            </div>
+          ` : nothing}
+          <div class="alloy-actions">
+            <button class="alloy-btn" @click=${this.downloadAlloyResults}>Download .alloy.json</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderBenchmarkTable(benchmarks: AlloyBenchmark[]): TemplateResult {
+    return html`
+      <table class="benchmark-table">
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>Score</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${benchmarks.map(b => {
+            const score = b.metrics['score'] ?? b.metrics['accuracy'] ?? b.metrics['passing'] ?? '--';
+            const details = Object.entries(b.metrics)
+              .filter(([k]) => k !== 'score' && k !== 'accuracy')
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            return html`
+              <tr>
+                <td style="font-weight:600">${b.name}${b.subset ? ` (${b.subset})` : ''}</td>
+                <td style="color:#00ffc8;font-weight:700">${score}</td>
+                <td style="color:var(--content-secondary,#8a92a5);font-size:11px">${details}</td>
+              </tr>
+            `;
+          })}
+        </tbody>
+      </table>
+    `;
+  }
+
+  private renderDeviceGrid(devices: AlloyHardwareProfile[]): TemplateResult {
+    return html`
+      <div class="device-grid">
+        ${devices.map(d => html`
+          <div class="device-card">
+            <div class="device-name">${d.device}</div>
+            <div class="device-meta">
+              <span>${d.format}</span>
+              ${d.sizeGb ? html`<span>${d.sizeGb}GB</span>` : nothing}
+              ${d.tokensPerSec ? html`<span>${d.tokensPerSec} tok/s</span>` : nothing}
+            </div>
+            ${d.verified ? html`<div class="device-verified">Verified</div>` : nothing}
+          </div>
+        `)}
+      </div>
+    `;
+  }
+
+  private downloadAlloyResults(): void {
+    const alloy = this.buildCurrentAlloy();
+    if (this._alloyResults) {
+      (alloy as any).results = this._alloyResults;
+    }
+    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${alloy.name}.alloy.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private exportAlloyRecipe(): void {
+    const alloy = this.buildCurrentAlloy();
+    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${alloy.name}.alloy.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private buildCurrentAlloy(): Record<string, unknown> {
+    const base = this._selectedModel.split('/').pop()?.toLowerCase() ?? 'model';
+    return {
+      name: `${base}-${this._selectedDomain}-forged`,
+      version: '1.0.0',
+      author: 'continuum-ai',
+      tags: [this._selectedDomain, 'forged', 'experiential-plasticity', 'forge-alloy'],
+      license: 'apache-2.0',
+      source: {
+        baseModel: this._selectedModel,
+        architecture: base.includes('qwen3.5') ? 'qwen3_5' : base.includes('qwen2') ? 'qwen2' : 'llama',
+      },
+      stages: [
+        { type: 'prune', strategy: this._selectedPruneStrategy, level: this._selectedPruneLevel / 100 },
+        { type: 'train', domain: this._selectedDomain, steps: this._selectedSteps, learningRate: this._selectedLearningRate },
+      ],
+      cycles: this._selectedCycles,
+    };
+  }
+
   // ── Published Models Section ──────────────────────────────────────────
 
   private renderPublishedModels(): TemplateResult {
@@ -989,27 +1356,51 @@ export class FactoryWidget extends ReactiveWidget {
 
   private renderModelCard(m: PublishedModel, rank: number): TemplateResult {
     const variantBadge = this.getVariantBadge(m.variant ?? 'forged');
+    const expanded = this._expandedModel === rank;
+    const hfUrl = `https://huggingface.co/${m.id}`;
 
     return html`
-      <div class="model-card">
-        <div class="model-rank">#${rank + 1}</div>
-        <div class="model-info">
-          <div class="model-name">${m.name}</div>
-          <div class="model-meta">
-            <span class="badge domain">${m.domain}</span>
-            <span class="badge variant">${variantBadge}</span>
+      <div class="model-card" style="flex-direction:column;cursor:pointer"
+        @click=${() => this._expandedModel = expanded ? -1 : rank}>
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="model-rank">#${rank + 1}</div>
+          <div class="model-info">
+            <div class="model-name">${m.name}</div>
+            <div class="model-meta">
+              <span class="badge domain">${m.domain}</span>
+              <span class="badge variant">${variantBadge}</span>
+              ${m.tags?.includes('forge-alloy') ? html`<span class="trust-badge self-attested" style="font-size:9px;padding:1px 5px">alloy</span>` : nothing}
+            </div>
+          </div>
+          <div class="model-stats">
+            <div class="stat">
+              <span class="stat-value">${this.formatCount(m.downloads)}</span>
+              <span class="stat-label">downloads</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">${m.likes || '--'}</span>
+              <span class="stat-label">likes</span>
+            </div>
           </div>
         </div>
-        <div class="model-stats">
-          <div class="stat">
-            <span class="stat-value">${this.formatCount(m.downloads)}</span>
-            <span class="stat-label">downloads</span>
+        ${expanded ? html`
+          <div style="width:100%;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color, rgba(255,255,255,0.08))">
+            <div style="display:flex;gap:16px;font-size:12px;color:var(--content-secondary,#8a92a5);margin-bottom:8px">
+              ${m.baseModel ? html`<span>Base: <b style="color:var(--content-primary,#e0e6ed)">${m.baseModel}</b></span>` : nothing}
+              ${m.sizeGb ? html`<span>Size: <b style="color:var(--content-primary,#e0e6ed)">${m.sizeGb}GB</b></span>` : nothing}
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <a class="alloy-btn" href="${hfUrl}" target="_blank"
+                @click=${(e: Event) => e.stopPropagation()}
+                style="text-decoration:none;display:inline-block">View on HF</a>
+              ${m.tags?.includes('forge-alloy') ? html`
+                <a class="alloy-btn" href="${hfUrl}/resolve/main/${m.name}.alloy.json" target="_blank"
+                  @click=${(e: Event) => e.stopPropagation()}
+                  style="text-decoration:none;display:inline-block">Download Alloy</a>
+              ` : nothing}
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value">${m.likes || '--'}</span>
-            <span class="stat-label">likes</span>
-          </div>
-        </div>
+        ` : nothing}
       </div>
     `;
   }
