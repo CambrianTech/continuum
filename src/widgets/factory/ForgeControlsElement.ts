@@ -80,6 +80,43 @@ export class ForgeControlsElement extends ReactiveWidget {
     };
   }
 
+  /** Estimate total forge time in minutes based on model + stages + cycles */
+  private get _estimatedMinutes(): number {
+    // Steps per minute by model size (rough, based on 5090 benchmarks)
+    const model = this._model.toLowerCase();
+    let stepsPerMin: number;
+    if (model.includes('0.5b') || model.includes('0.8b')) stepsPerMin = 20;
+    else if (model.includes('1.5b') || model.includes('3b') || model.includes('4b')) stepsPerMin = 10;
+    else if (model.includes('7b') || model.includes('8b') || model.includes('9b')) stepsPerMin = 5;
+    else if (model.includes('14b')) stepsPerMin = 2.5;
+    else if (model.includes('27b') || model.includes('32b')) stepsPerMin = 1;
+    else if (model.includes('35b')) stepsPerMin = 0.8;
+    else stepsPerMin = 3;
+
+    // Training time: steps * cycles / stepsPerMin
+    const trainMin = (this._steps * this._cycles) / stepsPerMin;
+
+    // Prune/eval overhead: ~2 min per cycle
+    const pruneMin = this._cycles * 2;
+
+    // Modality training (if present in pipeline — rough estimate)
+    // Context extension is cheap (config change)
+    // Quant/eval/publish are post-forge
+
+    // Loading time (model download if not cached + load into VRAM)
+    const loadMin = model.includes('27b') || model.includes('35b') ? 5 : 2;
+
+    return Math.round(trainMin + pruneMin + loadMin);
+  }
+
+  private get _estimateLabel(): string {
+    const min = this._estimatedMinutes;
+    if (min < 60) return `~${min}m`;
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m > 0 ? `~${h}h${m}m` : `~${h}h`;
+  }
+
   private applyProfile(name: string): void {
     const p = FORGE_PROFILES[name];
     if (!p) return;
@@ -259,6 +296,18 @@ export class ForgeControlsElement extends ReactiveWidget {
       z-index: 1;
     }
 
+    .forge-estimate {
+      position: absolute;
+      top: 3px;
+      right: 8px;
+      font-size: 9px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.4);
+      z-index: 1;
+      letter-spacing: 0.02em;
+    }
+
     .export-btn {
       align-self: stretch;
       padding: 6px 14px;
@@ -295,6 +344,7 @@ export class ForgeControlsElement extends ReactiveWidget {
             <span class="forge-button-label">
               ${this.forging ? this.progressLabel : this.starting ? 'STARTING...' : 'START FORGE'}
             </span>
+            ${!this.forging ? html`<span class="forge-estimate">${this._estimateLabel}</span>` : nothing}
           </button>
           <button class="export-btn" @click=${this.onExportAlloy}
             title="Export current settings as .alloy.json recipe">Export Alloy</button>
