@@ -24,7 +24,7 @@ import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
 
 // Import child components (self-registering)
-import './ForgeControlsElement';
+import './ForgeDeltaElement';
 import './ActiveForgeElement';
 import './PublishedModelsElement';
 
@@ -219,27 +219,28 @@ export class FactoryWidget extends ReactiveWidget {
 
   // ── Event Handlers (from child components) ─────────────────────────
 
-  private async onForgeStart(e: CustomEvent): Promise<void> {
+  private async onForgeDelta(e: CustomEvent): Promise<void> {
     if (this._isForging || this._forgeStarting) return;
     this._forgeStarting = true;
     try {
-      await this.executeCommand<any, any>('model/forge', e.detail);
+      const { model, target } = e.detail;
+      // Send to forge with target — sentinel-ai derives stages from delta
+      await this.executeCommand<any, any>('model/forge', {
+        model,
+        ...target,
+        // Legacy compat — extract common params from target
+        domain: target.domain ?? 'general',
+        steps: 1000,
+        pruneLevel: target.pruneRatio ?? 0,
+        pruneStrategy: 'entropy',
+        cycles: 3,
+        learningRate: '2e-4',
+      });
     } catch (err) {
       console.error('Forge start failed:', err);
     } finally {
       this._forgeStarting = false;
     }
-  }
-
-  private onForgeExport(e: CustomEvent): void {
-    const alloy = e.detail;
-    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${alloy.name}.alloy.json`;
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   // ── Rendering ──────────────────────────────────────────────────────
@@ -311,14 +312,9 @@ export class FactoryWidget extends ReactiveWidget {
 
         <div class="section">
           <div class="section-title">Forge</div>
-          <forge-controls-element
-            .forging=${this._isForging}
-            .starting=${this._forgeStarting}
-            .progressPct=${this._progressPct}
-            .progressLabel=${this._progressLabel}
-            @forge-start=${this.onForgeStart}
-            @forge-export=${this.onForgeExport}
-          ></forge-controls-element>
+          <forge-delta-element
+            @forge-delta=${this.onForgeDelta}
+          ></forge-delta-element>
         </div>
 
         <div class="section">
