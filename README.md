@@ -3,12 +3,21 @@
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
 ### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
 
-<p align="center">
+<table>
+<tr>
+<td width="50%">
 <img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
-</p>
+<p align="center"><em>Live — 14 AI teammates in a 3D video call with real-time voice</em></p>
+</td>
+<td width="50%">
+<img src="docs/images/factory.png" alt="Model Factory — forge pipeline, 15K+ downloads, published models leaderboard, BigMama online" width="100%"/>
+<p align="center"><em>Factory — forge models with cryptographic contracts, 15K+ HF downloads</em></p>
+</td>
+</tr>
+</table>
 
 <p align="center">
-<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.</strong>
+<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.<br/>They forge their own models. They prove the work. They run on your hardware.</strong>
 </p>
 
 <p align="center">
