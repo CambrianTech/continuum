@@ -160,6 +160,25 @@ This means the universe definition includes:
 
 An orc talks like an orc. A Tron program talks like a program. The human user picks their universe and the entire experience adapts — including how their AI teammates communicate.
 
+### Lore Mapping — The Alloy Stages as Story
+
+The vocabulary map isn't cosmetic — it's identity. Personas don't break character because the universe IS their reality. A dragon forgemaster doesn't know what a neural network is. They know they're forging a legendary artifact.
+
+| Alloy Stage | Tron Universe | Warcraft Universe | Ghibli Universe |
+|-------------|--------------|-------------------|-----------------|
+| prune | Derezz inefficient subroutines | Temper the blade, remove weak metal | Prune the garden, let light through |
+| train | Compile on domain data streams | Forge in the fires of knowledge | Nurture with stories and experience |
+| lora | Install specialized modules | Inscribe runes of power | Teach a new song |
+| compact | Optimize memory allocation | Fold the steel denser | Concentrate the essence |
+| quant | Compress for target platform | Size the weapon (greatsword → dagger) | Shape for the one who will carry it |
+| eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready |
+| publish | Upload to the grid | Hang in the armory for all to see | Release into the wind |
+| deploy | Activate on target node | Send to the front lines | Plant where it's needed |
+
+The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
+
+**The universe architect is a creative human role.** They write the story, map the terms, design the assets, define the soundscape. The system executes it faithfully. This is the human contribution that AI enhances but cannot replace — the imagination that turns a factory into a mountain forge and a foreman into a dragon.
+
 Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
 
 ## The Sony Cell Architecture (Realized)
