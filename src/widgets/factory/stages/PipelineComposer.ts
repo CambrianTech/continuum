@@ -21,22 +21,28 @@ import { nothing } from 'lit';
 import { STAGE_COLORS, STAGE_TEXT_COLORS } from './StageElement';
 
 // Import stage elements (self-registering)
+import './SourceConfigStageElement';
 import './PruneStageElement';
 import './TrainStageElement';
+import './QuantStageElement';
+import './EvalStageElement';
+import './DeployStageElement';
 
-/** Registry of available stage types → custom element tags */
-const STAGE_REGISTRY: Record<string, { tag: string; label: string; description: string }> = {
-  'prune':          { tag: 'prune-stage-element',          label: 'Prune',          description: 'Head pruning (entropy, magnitude, gradient)' },
-  'train':          { tag: 'train-stage-element',          label: 'Train',          description: 'Recovery/fine-tuning with full config' },
-  // Future stage types register here as they're built:
-  // 'lora':         { tag: 'lora-stage-element',           label: 'LoRA',           description: 'LoRA adapter training' },
-  // 'compact':      { tag: 'compact-stage-element',        label: 'Compact',        description: 'Mixed-precision compaction' },
-  // 'quant':        { tag: 'quant-stage-element',          label: 'Quantize',       description: 'GGUF/MLX/ONNX output' },
-  // 'eval':         { tag: 'eval-stage-element',           label: 'Evaluate',       description: 'Benchmarks (HumanEval, MMLU, etc.)' },
-  // 'publish':      { tag: 'publish-stage-element',        label: 'Publish',        description: 'Push to HuggingFace' },
-  // 'expert-prune': { tag: 'expert-prune-stage-element',   label: 'Expert Prune',   description: 'MoE expert selection' },
-  // 'context-extend':{ tag: 'context-extend-stage-element',label: 'Context Extend', description: 'RoPE rescaling (YaRN, NTK)' },
-  // 'modality':     { tag: 'modality-stage-element',       label: 'Modality',       description: 'Add vision/audio encoder' },
+/** Registry of available stage types → custom element tags.
+ *  Organized by pipeline position: input → transform → output.
+ *  Add a new alloy stage type → register it here → the composer discovers it. */
+const STAGE_REGISTRY: Record<string, { tag: string; label: string; description: string; position: 'input' | 'transform' | 'output' }> = {
+  // Input stages (front bookend)
+  'source-config':  { tag: 'source-config-stage-element',  label: 'Source Config',  description: 'Context window, modalities, target devices',      position: 'input' },
+  'context-extend': { tag: 'context-extend-stage-element',  label: 'Context Extend', description: 'RoPE rescaling (YaRN, NTK)',                      position: 'input' },
+  // Transform stages
+  'prune':          { tag: 'prune-stage-element',           label: 'Prune',          description: 'Head pruning (entropy, magnitude, gradient)',      position: 'transform' },
+  'train':          { tag: 'train-stage-element',           label: 'Train',          description: 'Recovery/fine-tuning with full config',            position: 'transform' },
+  'expert-prune':   { tag: 'expert-prune-stage-element',    label: 'Expert Prune',   description: 'MoE expert selection by activation',               position: 'transform' },
+  // Output stages (end bookend)
+  'quant':          { tag: 'quant-stage-element',           label: 'Quantize',       description: 'GGUF, MLX, ONNX, safetensors',                    position: 'output' },
+  'eval':           { tag: 'eval-stage-element',            label: 'Evaluate',       description: 'HumanEval, MMLU, GSM8K, IMO-ProofBench',          position: 'output' },
+  'deploy':         { tag: 'deploy-stage-element',          label: 'Deploy',         description: 'Push to grid node for serving',                    position: 'output' },
 };
 
 interface PipelineStage {
@@ -213,6 +219,26 @@ export class PipelineComposer extends ReactiveWidget {
       .add-menu-item:hover {
         border-color: transparent;
       }
+
+      .add-menu-group {
+        width: 100%;
+      }
+
+      .add-menu-group-label {
+        display: block;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: var(--content-tertiary, #5a6070);
+        margin-bottom: 4px;
+        padding-left: 2px;
+      }
+
+      .add-menu-items {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
     `,
   ];
 
@@ -254,26 +280,48 @@ export class PipelineComposer extends ReactiveWidget {
     // Use static rendering — Lit handles element creation from tag strings via unsafeStatic
     // For now, switch on known tags (the registry is finite and known at compile time)
     switch (tag) {
+      case 'source-config-stage-element':
+        return html`<source-config-stage-element .order=${order}></source-config-stage-element>`;
       case 'prune-stage-element':
         return html`<prune-stage-element .order=${order}></prune-stage-element>`;
       case 'train-stage-element':
         return html`<train-stage-element .order=${order}></train-stage-element>`;
+      case 'quant-stage-element':
+        return html`<quant-stage-element .order=${order}></quant-stage-element>`;
+      case 'eval-stage-element':
+        return html`<eval-stage-element .order=${order}></eval-stage-element>`;
+      case 'deploy-stage-element':
+        return html`<deploy-stage-element .order=${order}></deploy-stage-element>`;
       default:
-        return html`<div>Stage: ${tag}</div>`;
+        return html`<div>Stage: ${tag} (UI not built yet)</div>`;
     }
   }
 
   private renderAddMenu(): TemplateResult {
+    const groups = ['input', 'transform', 'output'] as const;
+    const groupLabels = { input: 'INPUT', transform: 'TRANSFORM', output: 'OUTPUT' };
+
     return html`
       <div class="add-menu">
-        ${Object.entries(STAGE_REGISTRY).map(([type, reg]) => {
-          const bg = STAGE_COLORS[type] ?? 'rgba(255,255,255,0.1)';
-          const color = STAGE_TEXT_COLORS[type] ?? '#e0e6ed';
+        ${groups.map(group => {
+          const stages = Object.entries(STAGE_REGISTRY).filter(([, r]) => r.position === group);
+          if (stages.length === 0) return nothing;
           return html`
-            <button class="add-menu-item"
-              style="background:${bg};color:${color};border-color:${color}33"
-              title=${reg.description}
-              @click=${() => this.addStage(type)}>${reg.label}</button>
+            <div class="add-menu-group">
+              <span class="add-menu-group-label">${groupLabels[group]}</span>
+              <div class="add-menu-items">
+                ${stages.map(([type, reg]) => {
+                  const bg = STAGE_COLORS[type] ?? 'rgba(255,255,255,0.1)';
+                  const color = STAGE_TEXT_COLORS[type] ?? '#e0e6ed';
+                  return html`
+                    <button class="add-menu-item"
+                      style="background:${bg};color:${color};border-color:${color}33"
+                      title=${reg.description}
+                      @click=${() => this.addStage(type)}>${reg.label}</button>
+                  `;
+                })}
+              </div>
+            </div>
           `;
         })}
       </div>

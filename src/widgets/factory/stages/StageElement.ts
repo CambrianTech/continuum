@@ -194,29 +194,41 @@ export const STAGE_BASE_STYLES = css`
 
 /** Stage type color coding */
 export const STAGE_COLORS: Record<string, string> = {
-  prune:          'rgba(255, 100, 100, 0.15)',
-  train:          'rgba(0, 212, 255, 0.15)',
-  lora:           'rgba(150, 100, 255, 0.15)',
-  compact:        'rgba(255, 170, 0, 0.15)',
-  quant:          'rgba(0, 255, 200, 0.15)',
-  eval:           'rgba(255, 255, 100, 0.15)',
-  publish:        'rgba(100, 200, 255, 0.15)',
-  'expert-prune': 'rgba(255, 150, 100, 0.15)',
+  // Input stages
+  'source-config':  'rgba(100, 200, 255, 0.15)',
   'context-extend': 'rgba(200, 100, 255, 0.15)',
-  modality:       'rgba(100, 255, 200, 0.15)',
+  modality:         'rgba(100, 255, 200, 0.15)',
+  // Transform stages
+  prune:            'rgba(255, 100, 100, 0.15)',
+  train:            'rgba(0, 212, 255, 0.15)',
+  lora:             'rgba(150, 100, 255, 0.15)',
+  compact:          'rgba(255, 170, 0, 0.15)',
+  'expert-prune':   'rgba(255, 150, 100, 0.15)',
+  // Output stages
+  quant:            'rgba(0, 255, 200, 0.15)',
+  package:          'rgba(0, 200, 255, 0.15)',
+  eval:             'rgba(255, 255, 100, 0.15)',
+  publish:          'rgba(100, 200, 255, 0.15)',
+  deploy:           'rgba(100, 255, 200, 0.15)',
 };
 
 export const STAGE_TEXT_COLORS: Record<string, string> = {
-  prune:          '#ff6464',
-  train:          '#00d4ff',
-  lora:           '#9664ff',
-  compact:        '#ffaa00',
-  quant:          '#00ffc8',
-  eval:           '#ffff64',
-  publish:        '#64c8ff',
-  'expert-prune': '#ff9664',
+  // Input stages
+  'source-config':  '#64c8ff',
   'context-extend': '#c864ff',
-  modality:       '#64ffc8',
+  modality:         '#64ffc8',
+  // Transform stages
+  prune:            '#ff6464',
+  train:            '#00d4ff',
+  lora:             '#9664ff',
+  compact:          '#ffaa00',
+  'expert-prune':   '#ff9664',
+  // Output stages
+  quant:            '#00ffc8',
+  package:          '#00c8ff',
+  eval:             '#ffff64',
+  publish:          '#64c8ff',
+  deploy:           '#64ffc8',
 };
 
 /** Gate mode between stages — controls pipeline flow */
