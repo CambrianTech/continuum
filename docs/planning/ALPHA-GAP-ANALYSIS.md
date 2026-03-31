@@ -389,7 +389,28 @@ The factory forges, benchmarks, and publishes base models for every device tier.
 | [fa #6](https://github.com/CambrianTech/forge-alloy/issues/6) | **Post-quantum migration** | FUTURE | ML-DSA / SLH-DSA dual-signing. Enum ready, waiting on library maturity. |
 | [s-ai #118](https://github.com/CambrianTech/sentinel-ai/issues/118) | **Full alloy results in forge** | TODO | Populate benchmarks, hardware profiles, dataset hashes after forging. |
 
-**Current state**: ForgeAlloy repo live with results section, peer-reviewed attestation (WebAuthn-modeled), honest security limitations. forge_model.py accepts --alloy, writes executed alloys. publish_forged.py uploads alloys + forge-alloy HF tag. model/forge command builds alloys from UI params.
+**Current state**: ForgeAlloy repo live with 13 stage types (SourceConfig, Prune, Train, LoRA, Compact, Quant, Package, Eval, Publish, Deploy, ExpertPrune, ContextExtend, Modality). Peer-reviewed attestation (WebAuthn-modeled, PQC ready). alloy_executor.py with OOP stage package on sentinel-ai. Factory widget decomposed into 5 components with visual pipeline composer (6 stage UI elements built). First production alloy forged: qwen3.5-4b-code-forged +16.4%.
+
+### Stage Executors (sentinel-ai)
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [s-ai #119](https://github.com/CambrianTech/sentinel-ai/issues/119) | **Source-config executor** | DONE | Context window, modalities, target devices. |
+| [s-ai #120](https://github.com/CambrianTech/sentinel-ai/issues/120) | **Modality executor** | STUB | Vision/audio/video encoder bolt-on. Auto-recommends encoders + datasets. |
+| [s-ai #121](https://github.com/CambrianTech/sentinel-ai/issues/121) | **Package executor** | STUB | CoreML, TensorRT, ONNX device packaging. |
+| [s-ai #122](https://github.com/CambrianTech/sentinel-ai/issues/122) | **Deploy executor** | STUB | Grid node deployment, health check, warmup. |
+| [s-ai #123](https://github.com/CambrianTech/sentinel-ai/issues/123) | **LoRA executor** | TODO | Distinct from train — QLoRA, rank/alpha, merge after. |
+| [s-ai #124](https://github.com/CambrianTech/sentinel-ai/issues/124) | **Compact executor** | TODO | Plasticity-based mixed-precision. Our moat. |
+| [s-ai #125](https://github.com/CambrianTech/sentinel-ai/issues/125) | **Benchmark harness** | TODO | Actually run HumanEval, MMLU, GSM8K via evalplus/lm-eval. |
+| [s-ai #126](https://github.com/CambrianTech/sentinel-ai/issues/126) | **Context-extend training** | TODO | YaRN/NTK with long-context training data. |
+
+### Stage UI Elements (continuum)
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#665](https://github.com/CambrianTech/continuum/issues/665) | **Remaining stage UIs** | TODO | 7 more: LoRA, Compact, Publish, Package, ContextExtend, Modality, ExpertPrune. |
+| [#666](https://github.com/CambrianTech/continuum/issues/666) | **Pipeline → executor integration** | TODO | Send full pipeline (all stages) to forge node, not just prune+train. |
+| [#667](https://github.com/CambrianTech/continuum/issues/667) | **Grid capacity query** | TODO | Factory widget shows available nodes + capabilities before forging. |
 
 ### Benchmarking & Distribution
 
@@ -440,7 +461,7 @@ Factory (forge) → HF (publish + leaderboard) → Grid (deploy) → Academy (le
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
 | **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
-| **12: Factory** | #576, #577, #578, #579, #580, #583, #584, #629, #638, #646, #648-661 + s-ai #108-114, #118 + fa #1-6 | 39 (4 in progress, #659 done) |
+| **12: Factory** | #576-584, #629, #638, #646, #648-667 + s-ai #108-126 + fa #1-6 | 52 (4 in progress, #659 done, first alloy forged) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
 | **Total** | | **131 tracked, 57 open, 74 closed** |
 
