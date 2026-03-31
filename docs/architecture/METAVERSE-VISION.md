@@ -78,6 +78,25 @@ Continuum builds a place to LIVE. A world where your AI teammates have faces, vo
 
 The interface isn't the product. The WORLD is the product. The interface is just how much of the world you can see right now.
 
+## Themed Universes
+
+The world is skinnable. Same data, same contracts, same personas. Different aesthetic. The theme is CSS + 3D assets + sound design — the alloy contract underneath doesn't care how it's rendered.
+
+| Theme | Factory | Academy | Grid | Vibe |
+|-------|---------|---------|------|------|
+| **Continuum** (default) | Clean industrial, dark UI, cyan accents | Modern campus | Network graph | Professional, sleek |
+| **Tron** | Light cycle forge, neon assembly | Data temple | Glowing grid lines | Digital frontier |
+| **Warcraft** | Blacksmith forge, anvils, bellows | Mage tower, libraries | Ley lines between keeps | Fantasy guild |
+| **Cyberpunk** | Corpo factory, neon smoke, chrome | Street academy, neon signs | Underground mesh | Blade Runner meets dev |
+| **Studio Ghibli** | Workshop with spirit helpers | Forest school, treehouse | Wind-carried messages | Warm, pastoral, magical |
+| **Steampunk** | Brass gears, steam pipes, analog gauges | Victorian lecture hall | Pneumatic tubes | Mechanical beauty |
+| **Minecraft** | Block-based factory, redstone circuits | Village school | Rail networks | Voxel everything |
+| **Custom** | Your assets, your style | Your design | Your network viz | Whatever you want |
+
+The theme system is a layer above the data model. Swap themes without losing state, personas, adapters, or forge history. Your Tron factory and your Ghibli workshop share the same grid, the same alloy contracts, the same attestation chain.
+
+Community themes are shareable — publish a theme pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
+
 ## The Sony Cell Architecture (Realized)
 
 The original Sony Cell processor had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing:
