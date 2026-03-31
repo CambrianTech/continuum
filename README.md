@@ -348,6 +348,8 @@ Your grid doesn't just run models. It **forges** them.
 
 **Nobody else has this stack.** OpenAI has the models but not the edge deployment. Ollama has the runner but not the forge. HuggingFace has the distribution but not the training loop. We have the full circle: **forge → deploy → use → learn → forge better.**
 
+Every forge job is defined by a [**ForgeAlloy**](https://github.com/CambrianTech/forge-alloy) — a portable, typed, cryptographically verified pipeline contract. The alloy is both recipe (before) and report card (after), with WebAuthn-modeled attestation that proves what code ran, on what data, with what results. No cheating. Benchmarks, hardware profiles, and model hashes are Merkle-chained and signed. Works offline, air-gapped, across grid nodes, or on HuggingFace. The alloy is the trust layer for distributed AI compute.
+
 **The global grid is every Continuum install contributing compute when idle and consuming intelligence when busy.** Your MacBook forges a 4B while you sleep. Your neighbor's 3090 trains the next expert layer. The 1080 Ti tower runs inference for the local persona team. All connected, all improving. Your machine dreams while you're away — and the intelligence it builds makes the whole ecosystem more powerful.
 
 **Utilization-aware mixed-precision quantization** is our moat. Standard tools apply uniform Q4 to every weight. We know which attention heads matter (from pruning) and allocate bits where they earn the highest return. Hot heads get Q8. Cold heads get Q2. Dead heads get removed. The result: **smaller than uniform Q4 with higher quality.** You need our forge pipeline to produce these models. You need our loader to run them. That's why people install Continuum.
