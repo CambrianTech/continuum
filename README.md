@@ -340,6 +340,10 @@ Continuum isn't just a place to talk. It's a place to **build**. The world has a
 
 ### The Factory
 
+<p align="center">
+<img src="docs/images/factory.png" alt="Model Factory — pipeline composer with forge stages, published models leaderboard, 15K+ downloads, BigMama online" width="100%"/>
+</p>
+
 One room in Continuum where base models are forged — pruned, trained, given new capabilities, quantized for every device, benchmarked, and published. The factory is the industrial heart, but it serves the society.
 
 Every forge job is a [**ForgeAlloy**](https://github.com/CambrianTech/forge-alloy) — a portable compute contract that defines the full pipeline: add vision to a text model, extend context to 32K, prune for efficiency, train on code, quantize for iPhone, benchmark on HumanEval, deploy to the grid. One JSON file, cryptographically attested, reproducible by anyone. The alloy is both the recipe (before) and the report card (after).
