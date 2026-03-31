@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
 **Updated**: 2026-03-30
-**Status**: **FACTORY OPERATIONAL.** 11 models published on HuggingFace (**14,967 total downloads**, 2,426 on 35B compacted). Factory widget live with forge controls, leaderboard-style published models (sorted by downloads, live from HF API), and model/forge command routing to BigMama via SSH/grid (PR #654). Generator CLI restored (was silently broken). Full lifecycle pipeline mapped: Factory → HF Leaderboards → Grid → Academy → Re-forge (#655). Re-forge from known provenance is the moat (#657). Recipe system enables community forging — context extension (#648), vision (#649), audio (#650), composition (#651). HF leaderboards for benchmarks (don't reinvent). Sentinel automation for full lifecycle (#658). 4B code-forged at **74.4% HumanEval** (2.6GB GGUF, iPhone-sized).
+**Status**: **FACTORY OPERATIONAL + FORGE-ALLOY SPEC LIVE.** 11 models published on HuggingFace (**14,967 total downloads**). ForgeAlloy portable pipeline format launched (CambrianTech/forge-alloy) — Rust/Python/TypeScript, peer-reviewed attestation model (WebAuthn-inspired, post-quantum ready), wired into sentinel-ai forge + publish flow. Factory widget live with forge controls. model/forge sends alloy JSON to nodes. Full lifecycle pipeline mapped: Factory → HF Leaderboards → Grid → Academy → Re-forge (#655). Re-forge from known provenance is the moat (#657). 4B code-forged at **74.4% HumanEval** (2.6GB GGUF, iPhone-sized).
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
@@ -374,6 +374,23 @@ The factory forges, benchmarks, and publishes base models for every device tier.
 | [#658](https://github.com/CambrianTech/continuum/issues/658) | **Sentinel forge recipe** | TODO | Automated lifecycle: forge → evaluate → deploy → learn → re-forge. AI foreman orchestrates. |
 | [#652](https://github.com/CambrianTech/continuum/issues/652) | **Low-latency sensory pipeline** | TODO | Sub-100ms vision + real-time audio for personas. Inference speed, not training. |
 
+### ForgeAlloy — Portable Pipeline Format & Integrity
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#659](https://github.com/CambrianTech/continuum/issues/659) | **ForgeAlloy portable entity** | DONE | Public repo (CambrianTech/forge-alloy). Rust + Python + TypeScript. JSON schema. 7 tests. |
+| [#660](https://github.com/CambrianTech/continuum/issues/660) | **Factory widget: import/export alloys** | TODO | Load/save .alloy.json recipes. Display executed alloy results. |
+| [#661](https://github.com/CambrianTech/continuum/issues/661) | **Attestation verification in model/list-published** | TODO | Fetch .alloy.json from HF, display trust level and benchmarks. |
+| [fa #1](https://github.com/CambrianTech/forge-alloy/issues/1) | **JCS canonicalization + ES256 signing** | TODO | RFC 8785 implementation. verify_signature() in all three languages. Blocks all signed attestation. |
+| [fa #2](https://github.com/CambrianTech/forge-alloy/issues/2) | **Key registry** | TODO | Hosted service with revocation, rotation, supersededBy. |
+| [fa #3](https://github.com/CambrianTech/forge-alloy/issues/3) | **Hardware key signing** | TODO | Secure Enclave (macOS), StrongBox (Android), TPM (Windows). Phase 2. |
+| [fa #4](https://github.com/CambrianTech/forge-alloy/issues/4) | **Enclave execution** | TODO | TEE for tamper-proof attestation. Required for marketplace payments. Phase 4. |
+| [fa #5](https://github.com/CambrianTech/forge-alloy/issues/5) | **Dataset hashing** | TODO | RFC 6962 Merkle tree with domain separation. All three languages. |
+| [fa #6](https://github.com/CambrianTech/forge-alloy/issues/6) | **Post-quantum migration** | FUTURE | ML-DSA / SLH-DSA dual-signing. Enum ready, waiting on library maturity. |
+| [s-ai #118](https://github.com/CambrianTech/sentinel-ai/issues/118) | **Full alloy results in forge** | TODO | Populate benchmarks, hardware profiles, dataset hashes after forging. |
+
+**Current state**: ForgeAlloy repo live with results section, peer-reviewed attestation (WebAuthn-modeled), honest security limitations. forge_model.py accepts --alloy, writes executed alloys. publish_forged.py uploads alloys + forge-alloy HF tag. model/forge command builds alloys from UI params.
+
 ### Benchmarking & Distribution
 
 | # | Issue | Status | What |
@@ -423,7 +440,7 @@ Factory (forge) → HF (publish + leaderboard) → Grid (deploy) → Academy (le
 | **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
 | **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
 | **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
-| **12: Factory** | #576, #577, #578, #579, #580, #583, #584, #629, #638, #646, #648-658 + s-ai #108-114 | 28 (4 in progress, PR #654) |
+| **12: Factory** | #576, #577, #578, #579, #580, #583, #584, #629, #638, #646, #648-661 + s-ai #108-114, #118 + fa #1-6 | 39 (4 in progress, #659 done) |
 | **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
 | **Total** | | **131 tracked, 57 open, 74 closed** |
 
