@@ -25,6 +25,7 @@ import { Events } from '../../system/core/shared/Events';
 import { UI_EVENTS, type RightPanelConfigPayload, type RightPanelSectionPayload } from '../../system/core/shared/EventConstants';
 import { ContentOpen } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { ContentType } from '../../system/data/entities/UserStateEntity';
+import { getRightPanelConfig } from '../main/shared/ContentTypeRegistry';
 import { styles as SIDE_PANEL_STYLES } from '../shared/styles/side-panel.styles';
 
 const COLLAPSE_STORAGE_KEY = 'continuum-right-panel-collapse-state';
@@ -197,24 +198,46 @@ export class RightPanelWidget extends ReactiveWidget {
     // Restore collapsed state from localStorage
     this._restoreCollapseState();
 
-    // Restore last config from cache so we're never blank
+    // Restore cached config immediately so we're never blank
     this._restoreConfigCache();
 
-    // Listen for layout configuration events
+    // Listen for layout configuration events from whoever sends them
     this.createMountEffect(() => {
-      const unsubscribe = Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
-        this._handleLayoutConfig(config);
-        // Cache config so we restore it on next mount
-        this._cacheConfig(config);
-      });
-      return () => unsubscribe();
+      const unsubs = [
+        Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
+          this._handleLayoutConfig(config);
+          this._cacheConfig(config);
+        }),
+        // When content switches, look up our own config from the recipe system
+        Events.subscribe('content:switched', (data: { contentType?: string }) => {
+          if (data.contentType) {
+            this._loadConfigForContentType(data.contentType);
+          }
+        }),
+      ];
+      return () => unsubs.forEach(u => u());
     });
 
-    // Ask the active content widget to re-emit its config.
-    // This handles the case where we mount AFTER the content widget already emitted.
-    Events.emit('layout:rightpanel:request-config', {});
-
     this.log('Initialized with accordion layout');
+  }
+
+  /** Look up right panel config from the recipe system — self-sufficient, no middleman */
+  private _loadConfigForContentType(contentType: string): void {
+    const config = getRightPanelConfig(contentType);
+    if (config) {
+      this._handleLayoutConfig({
+        widget: config.widget || null,
+        room: config.room,
+        compact: config.compact,
+        contentType,
+        sections: config.sections,
+      });
+      this._cacheConfig({
+        widget: config.widget || null,
+        contentType,
+        sections: config.sections,
+      } as RightPanelConfigPayload);
+    }
   }
 
   private _cacheConfig(config: RightPanelConfigPayload): void {
