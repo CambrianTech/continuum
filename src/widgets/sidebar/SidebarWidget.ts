@@ -111,18 +111,21 @@ export class SidebarWidget extends ReactiveWidget {
   protected override onDisconnect(): void {
     super.onDisconnect();
 
-    // Unsubscribe from ALL events to prevent memory leaks
+    // Unsubscribe from events to prevent memory leaks
     for (const unsub of this._eventUnsubscribers) {
       try { unsub(); } catch { /* ignore */ }
     }
     this._eventUnsubscribers = [];
 
-    // Reset state
+    // KEEP the widget cache — widgets preserve their loaded data across
+    // disconnect/reconnect cycles (tab switches, hot reloads).
+    // Clearing the cache was destroying all widget state (rooms, metrics,
+    // user lists) and forcing blank reloads on every reconnect.
     this._persistentWidgetsCreated = false;
     this._currentDynamicWidgetTag = null;
-    this._widgetCache.clear();
+    // DO NOT clear _widgetCache — cached widgets retain their data
 
-    this.verbose() && console.log('🧹 SidebarWidget: Cleanup complete');
+    this.verbose() && console.log('🧹 SidebarWidget: Event cleanup (widgets preserved)');
   }
 
   // === URL Detection ===
