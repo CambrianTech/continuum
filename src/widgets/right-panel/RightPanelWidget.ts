@@ -197,15 +197,40 @@ export class RightPanelWidget extends ReactiveWidget {
     // Restore collapsed state from localStorage
     this._restoreCollapseState();
 
-    // Listen for layout configuration events from MainWidget
+    // Restore last config from cache so we're never blank
+    this._restoreConfigCache();
+
+    // Listen for layout configuration events
     this.createMountEffect(() => {
       const unsubscribe = Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
         this._handleLayoutConfig(config);
+        // Cache config so we restore it on next mount
+        this._cacheConfig(config);
       });
       return () => unsubscribe();
     });
 
+    // Ask the active content widget to re-emit its config.
+    // This handles the case where we mount AFTER the content widget already emitted.
+    Events.emit('layout:rightpanel:request-config', {});
+
     this.log('Initialized with accordion layout');
+  }
+
+  private _cacheConfig(config: RightPanelConfigPayload): void {
+    try {
+      localStorage.setItem('wc:right-panel-config', JSON.stringify(config));
+    } catch { /* full */ }
+  }
+
+  private _restoreConfigCache(): void {
+    try {
+      const raw = localStorage.getItem('wc:right-panel-config');
+      if (raw) {
+        const config = JSON.parse(raw) as RightPanelConfigPayload;
+        this._handleLayoutConfig(config);
+      }
+    } catch { /* corrupt */ }
   }
 
   // === Render ===
