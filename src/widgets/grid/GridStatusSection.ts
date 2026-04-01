@@ -53,6 +53,29 @@ export class GridStatusSection extends ReactiveWidget {
 
   constructor() {
     super({ widgetName: 'GridStatusSection' });
+    // Restore cached node data so grid section isn't blank when core is offline
+    this.restoreNodeCache();
+  }
+
+  private restoreNodeCache(): void {
+    try {
+      const raw = localStorage.getItem('wc:grid-status-nodes');
+      if (!raw) return;
+      const entries = JSON.parse(raw) as Array<[string, NodeSnapshot]>;
+      this._nodes = new Map(entries);
+    } catch { /* corrupt */ }
+  }
+
+  private saveNodeCache(): void {
+    if (this._nodes.size === 0) return;
+    try {
+      localStorage.setItem('wc:grid-status-nodes', JSON.stringify([...this._nodes.entries()]));
+    } catch { /* full */ }
+  }
+
+  protected override updated(changedProperties: Map<string, unknown>): void {
+    super.updated(changedProperties);
+    if (this._nodes.size > 0) this.saveNodeCache();
   }
 
   protected override onFirstRender(): void {
