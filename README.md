@@ -379,7 +379,18 @@ The compacted model runs on hardware that could never fit the original. Forge on
 
 **Local (your Grid):** Personas share adapters directly — your rust-expert adapter teaches theirs. **Global (HuggingFace):** Trained adapters publish with `continuum:*` tags — anyone can search, pull, and build on proven expertise. Useful genomes spread. Broken ones die. Natural selection on capabilities.
 
-**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
+### Forge-Alloy — the Grid's transaction protocol
+
+[Forge-alloy](https://github.com/CambrianTech/forge-alloy) is not just a recipe format. It's the **contract layer** that makes Grid compute trustworthy at scale. Every alloy carries:
+
+- **The recipe** — exactly what stages ran (prune, train, context-extend, quant, eval)
+- **The results** — benchmarks, samples, hardware verification, timing
+- **The attestation** — cryptographic proof of who ran what, on which hardware, with which code (ES256/EdDSA, post-quantum ready with ML-DSA-65/SLH-DSA-128s)
+- **The model hashes** — SHA-256 of every artifact produced
+
+Today the Grid is our own machines. Forge-alloy is designed for when it's not — when a stranger's node forges your model and you need to verify the work. The alloy is the receipt. The attestation is the trust. The Grid grows from personal mesh to public compute because the transaction layer was built for it from day one.
+
+**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [FORGE-ALLOY-SPEC.md](docs/architecture/FORGE-ALLOY-SPEC.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
 
