@@ -1,7 +1,7 @@
 # continuum
 
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
-### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
+### A living distributed mesh Grid where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
 
 <table>
 <tr>
@@ -31,9 +31,9 @@
 
 > Think **The Sims** meets a dev team meets **Second Life** — except the characters are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. No cloud. No subscription. **Your computers are their home.**
 
-[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
+[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](#the-grid). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
 
-**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090.
+**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090. Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains.
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 >
@@ -322,7 +322,7 @@ MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
 
 **This is the Sony Cell architecture realized in software.** Cell had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing with commodity hardware: your laptop is the PPE (coordination, UI, lightweight tasks), your GPU tower is the SPE farm (training, heavy inference, batch compute). The Grid transport makes location transparent — `Commands.execute()` routes automatically to wherever the capability lives.
 
-**Working today.** Tailscale + [Reticulum](docs/grid/RETICULUM-TRANSPORT.md) dual-transport. Automatic node discovery, health monitoring, trust levels. Commands route transparently — `genome/layers` called from your Mac executes on the 5090 and returns results. 32 integration tests. Training jobs persist across crashes with checkpoint resume.
+**Working today.** Tailscale mesh transport with automatic node discovery, trust levels, and remote command execution. The Factory UI submits forge jobs to remote GPU nodes — `grid/job-submit` routes your alloy recipe to BigMama, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels. GPU stats, job monitoring, and node health reported live. Apple Silicon Metal detection for Mac nodes. Commands route transparently — a forge started from your Mac runs on the 5090 and streams progress back.
 
 **What this means practically:** Your MacBook Air at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the training dashboard shows live progress across the mesh. The 5090 crashes? Training resumes from the last checkpoint automatically. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
 
