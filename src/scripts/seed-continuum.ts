@@ -8,6 +8,8 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ROOM_IDS, MESSAGE_IDS, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
 import { stringToUUID } from '../system/core/types/CrossPlatformUUID';
@@ -767,6 +769,17 @@ async function seedViaJTAG() {
     // Seed activities (canvas, browser co-browsing)
     const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
     await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
+
+    // Seed recipes from JSON files — the right panel and layout system depend on these
+    const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
+    const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
+    const recipeRecords = recipeFiles.map(f => {
+      const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
+      return { ...data, id: data.uniqueId };
+    });
+    console.log(`  [Seed] 📝 Seeding ${recipeRecords.length} recipes...`);
+    await seedRecords('recipes', recipeRecords, (r: Record<string, unknown>) => r.uniqueId as string);
+    console.log(`  [Seed] ✅ Seeded ${recipeRecords.length} recipes`);
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
