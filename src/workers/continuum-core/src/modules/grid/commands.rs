@@ -21,7 +21,11 @@ pub const DISCOVER: &str = "grid/discover";
 pub const PAIR:     &str = "grid/pair";
 pub const TRUST:    &str = "grid/trust";
 pub const AUDIT:    &str = "grid/audit";
-pub const ROUTE:    &str = "grid/route";
+pub const ROUTE:       &str = "grid/route";
+pub const NODE_STATUS: &str = "grid/node-status";
+pub const JOB_SUBMIT:  &str = "grid/job-submit";
+pub const JOB_CONTROL: &str = "grid/job-control";
+pub const JOB_QUEUE:   &str = "grid/job-queue";
 
 // ============================================================================
 // Command schemas (defined alongside their names — no duplication)
@@ -95,6 +99,37 @@ pub fn schemas() -> Vec<CommandSchema> {
                 ParamSchema { name: "routingHint", param_type: "string", required: false, description: "Routing hint to test" },
             ],
         },
+        CommandSchema {
+            name: NODE_STATUS,
+            description: "Query node GPU utilization, running jobs, queue depth, temperature",
+            params: vec![
+                ParamSchema { name: "nodeId", param_type: "string", required: false, description: "Target node (omit for local)" },
+            ],
+        },
+        CommandSchema {
+            name: JOB_SUBMIT,
+            description: "Submit a forge job to the local queue",
+            params: vec![
+                ParamSchema { name: "alloy",    param_type: "object", required: true,  description: "Complete alloy JSON recipe" },
+                ParamSchema { name: "priority", param_type: "number", required: false, description: "Queue priority 0-10 (default: 5)" },
+            ],
+        },
+        CommandSchema {
+            name: JOB_CONTROL,
+            description: "Control a running forge job: pause, resume, cancel",
+            params: vec![
+                ParamSchema { name: "jobId",  param_type: "string", required: true,  description: "Job ID to control" },
+                ParamSchema { name: "action", param_type: "string", required: true,  description: "pause, resume, or cancel" },
+            ],
+        },
+        CommandSchema {
+            name: JOB_QUEUE,
+            description: "List forge jobs with state and progress",
+            params: vec![
+                ParamSchema { name: "state", param_type: "string", required: false, description: "Filter: queued, running, paused, completed, failed, all" },
+                ParamSchema { name: "limit", param_type: "number", required: false, description: "Max jobs to return (default: 20)" },
+            ],
+        },
     ]
 }
 
@@ -104,7 +139,8 @@ mod tests {
 
     #[test]
     fn test_all_commands_have_grid_prefix() {
-        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE];
+        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
+                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE];
         for cmd in &all {
             assert!(cmd.starts_with("grid/"), "Command {cmd} missing grid/ prefix");
         }
@@ -113,7 +149,8 @@ mod tests {
     #[test]
     fn test_schemas_match_constants() {
         let schemas = schemas();
-        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE];
+        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
+                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE];
         assert_eq!(schemas.len(), all.len(), "Schema count mismatch");
         for (schema, constant) in schemas.iter().zip(all.iter()) {
             assert_eq!(schema.name, *constant, "Schema name doesn't match constant");

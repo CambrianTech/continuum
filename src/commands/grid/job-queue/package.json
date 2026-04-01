@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/grid/job-queue",
+  "version": "1.0.0",
+  "description": "List all jobs on a grid node: queued, running, paused, completed, failed. Shows the full job lifecycle with alloy names, progress, and timing.",
+  "main": "server/GridJobQueueServerCommand.ts",
+  "types": "shared/GridJobQueueTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GridJobQueueIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "grid/job-queue"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

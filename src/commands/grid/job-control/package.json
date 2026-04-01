@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/grid/job-control",
+  "version": "1.0.0",
+  "description": "Control a running or queued forge job: pause (checkpoint + stop), resume (reload checkpoint + continue), cancel (kill + clean up). Uses the grid transport layer.",
+  "main": "server/GridJobControlServerCommand.ts",
+  "types": "shared/GridJobControlTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GridJobControlIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "grid/job-control"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

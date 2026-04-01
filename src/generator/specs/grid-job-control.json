@@ -1,0 +1,60 @@
+{
+  "name": "grid/job-control",
+  "description": "Control a running or queued forge job: pause (checkpoint + stop), resume (reload checkpoint + continue), cancel (kill + clean up). Uses the grid transport layer.",
+  "params": [
+    {
+      "name": "jobId",
+      "type": "string",
+      "description": "Job ID from grid/job-submit"
+    },
+    {
+      "name": "action",
+      "type": "string",
+      "description": "Control action: 'pause' | 'resume' | 'cancel'"
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "optional": true,
+      "description": "Node the job is on (auto-resolved from jobId if omitted)"
+    }
+  ],
+  "results": [
+    {
+      "name": "jobId",
+      "type": "string",
+      "description": "The job that was controlled"
+    },
+    {
+      "name": "previousState",
+      "type": "string",
+      "description": "State before the action: 'queued' | 'running' | 'paused'"
+    },
+    {
+      "name": "newState",
+      "type": "string",
+      "description": "State after the action: 'paused' | 'running' | 'cancelled'"
+    },
+    {
+      "name": "checkpoint",
+      "type": "object",
+      "description": "Checkpoint info if paused: { cycle, step, path }"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Pause a running forge",
+      "params": { "jobId": "forge-a1b2c3d4", "action": "pause" }
+    },
+    {
+      "description": "Resume a paused forge",
+      "params": { "jobId": "forge-a1b2c3d4", "action": "resume" }
+    },
+    {
+      "description": "Cancel a queued job",
+      "params": { "jobId": "forge-e5f6g7h8", "action": "cancel" }
+    }
+  ],
+  "accessLevel": "owner",
+  "category": "grid"
+}

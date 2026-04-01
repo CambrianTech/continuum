@@ -207,6 +207,10 @@ impl ServiceModule for GridModule {
             commands::TRUST    => handlers::handle_trust(&self.state, params).await,
             commands::AUDIT    => handlers::handle_audit(&self.state, params).await,
             commands::ROUTE    => handlers::handle_route(&self.state, params).await,
+            commands::NODE_STATUS => handlers::handle_node_status(&self.state, params).await,
+            commands::JOB_SUBMIT  => handlers::handle_job_submit(&self.state, params).await,
+            commands::JOB_CONTROL => handlers::handle_job_control(&self.state, params).await,
+            commands::JOB_QUEUE   => handlers::handle_job_queue(&self.state, params).await,
             _ => Err(format!("Unknown grid command: {command}")),
         }
     }

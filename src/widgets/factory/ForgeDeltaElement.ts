@@ -21,6 +21,7 @@ import {
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import { COMMANDS } from '@shared/generated-command-constants';
 
 interface ModelCapabilities {
   architecture: string;
@@ -38,6 +39,33 @@ interface ModelCapabilities {
   hasRoPE: boolean;
 }
 
+interface GpuStatus {
+  name: string;
+  utilization: number;
+  memoryUsedMb: number;
+  memoryTotalMb: number;
+  temperatureC: number;
+}
+
+interface NodeStatus {
+  state: string;
+  gpu: GpuStatus;
+  jobs: Array<{ pid: number; type: string; detail: string; cpu: string; mem: string }>;
+  queue: Array<{ name: string; path: string }>;
+  nodeId: string;
+  timestamp: string;
+}
+
+interface JobEntry {
+  jobId: string;
+  alloyName: string;
+  state: string;
+  progress: { cycle: number; totalCycles: number; step: number; totalSteps: number };
+  startedAt: string;
+  estimatedCompletion: string;
+  nodeId: string;
+}
+
 interface DeltaField {
   key: string;
   label: string;
@@ -51,7 +79,9 @@ interface DeltaField {
 export class ForgeDeltaElement extends ReactiveWidget {
 
   // ── Source (introspected, read-only) ───────────────────────
-  @reactive() private _modelId = '';
+  @reactive() private _modelId = 'Qwen/Qwen3.5-4B';
+  @reactive() private _searchResults: Array<{ id: string; downloads: number }> = [];
+  @reactive() private _searchQuery = '';
   @reactive() private _capabilities: ModelCapabilities | null = null;
   @reactive() private _loading = false;
   @reactive() private _loaded = false;
@@ -69,6 +99,17 @@ export class ForgeDeltaElement extends ReactiveWidget {
   @reactive() private _targetDeploy = '';
   @reactive() private _targetPublish = false;
   @reactive() private _forging = false;
+
+  // ── Grid Status ──────────────────────────────────────────
+  @reactive() private _targetNodeId = '';
+  @reactive() private _gridNodes: Array<{ node_id: string; node_name: string | null }> = [];
+  @reactive() private _nodeStatus: NodeStatus | null = null;
+  @reactive() private _nodeOnline = false;
+  @reactive() private _activeJobId = '';
+  @reactive() private _jobList: JobEntry[] = [];
+  @reactive() private _jobSummary = { queued: 0, running: 0, paused: 0, completed: 0, failed: 0 };
+  private _statusPollTimer: ReturnType<typeof setInterval> | null = null;
+  private _jobPollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ── Derived ───────────────────────────────────────────────
 
@@ -204,12 +245,103 @@ export class ForgeDeltaElement extends ReactiveWidget {
     if (this._targetDeploy) target.deployTo = this._targetDeploy;
     if (this._targetDevices.length > 0) target.targetDevices = this._targetDevices;
 
-    this.dispatchEvent(new CustomEvent('forge-delta', {
-      detail: { model: this._modelId, target },
-      bubbles: true, composed: true,
-    }));
+    const alloy = {
+      name: `${this._modelId.split('/').pop()?.toLowerCase()}-${this._targetDomain || 'forged'}`,
+      version: '1.0.0',
+      source: { baseModel: this._modelId, architecture: this._capabilities?.architecture ?? 'unknown' },
+      target,
+      stages: this._deltas.map(d => ({ type: d.stageType })),
+      cycles: this._deltas.some(d => d.stageType === 'train') ? 3 : 1,
+    };
+
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_JOB_SUBMIT, {
+        nodeId: this._targetNodeId,
+        alloy,
+        priority: 5,
+      });
+      if (result?.jobId) {
+        this._activeJobId = result.jobId;
+        this.startJobPolling();
+      }
+    } catch (e) {
+      console.error('Job submit failed:', e);
+    }
 
     this._forging = false;
+  }
+
+  // ── Grid Status Polling ──────────────────────────────────
+
+  private async pollNodeStatus(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_NODE_STATUS, {
+        nodeId: this._targetNodeId,
+      });
+      if (result?.success) {
+        this._nodeStatus = result as NodeStatus;
+        this._nodeOnline = result.state !== 'offline' && result.state !== 'error';
+      }
+    } catch {
+      this._nodeOnline = false;
+      this._nodeStatus = null;
+    }
+  }
+
+  private async pollJobQueue(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_JOB_QUEUE, {
+        nodeId: this._targetNodeId,
+        state: 'all',
+        limit: 10,
+      });
+      if (result?.success) {
+        this._jobList = (result.jobs ?? []) as JobEntry[];
+        const summary = result.summary as Record<string, number> | undefined;
+        if (summary) {
+          this._jobSummary = {
+            queued: summary.queued ?? 0,
+            running: summary.running ?? 0,
+            paused: summary.paused ?? 0,
+            completed: summary.completed ?? 0,
+            failed: summary.failed ?? 0,
+          };
+        }
+      }
+    } catch {
+      // Keep existing state
+    }
+  }
+
+  private startStatusPolling(): void {
+    if (this._statusPollTimer) return;
+    this.pollNodeStatus();
+    this._statusPollTimer = setInterval(() => this.pollNodeStatus(), 10_000);
+  }
+
+  private startJobPolling(): void {
+    if (this._jobPollTimer) return;
+    this.pollJobQueue();
+    this._jobPollTimer = setInterval(() => this.pollJobQueue(), 5_000);
+  }
+
+  private stopPolling(): void {
+    if (this._statusPollTimer) { clearInterval(this._statusPollTimer); this._statusPollTimer = null; }
+    if (this._jobPollTimer) { clearInterval(this._jobPollTimer); this._jobPollTimer = null; }
+  }
+
+  private async controlJob(jobId: string, action: string): Promise<void> {
+    try {
+      await this.executeCommand<any, any>(COMMANDS.GRID_JOB_CONTROL, {
+        jobId,
+        action,
+        nodeId: this._targetNodeId,
+      });
+      // Immediate re-poll to see updated state
+      await this.pollJobQueue();
+    } catch (e) {
+      console.error(`Job ${action} failed:`, e);
+    }
   }
 
   private exportAlloy(): void {
@@ -272,6 +404,14 @@ export class ForgeDeltaElement extends ReactiveWidget {
       }
 
       .model-input:focus { border-color: var(--accent-primary, #00d4ff); }
+
+      .model-selector { margin-bottom: 16px; }
+
+      .model-loading {
+        font-size: 11px;
+        color: var(--accent-primary, #00d4ff);
+        padding: 4px 0;
+      }
 
       .load-btn, .reset-btn {
         padding: 6px 14px;
@@ -522,6 +662,212 @@ export class ForgeDeltaElement extends ReactiveWidget {
         color: var(--content-tertiary, #5a6070);
         padding: 8px;
       }
+
+      /* ── Node Status Bar ───────────────── */
+
+      .node-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        margin-bottom: 12px;
+        border-radius: 6px;
+        background: rgba(0,0,0,0.3);
+        border: 1px solid rgba(255,255,255,0.06);
+        font-size: 11px;
+      }
+
+      .node-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #ff4444;
+        flex-shrink: 0;
+      }
+
+      .node-bar.online .node-indicator {
+        background: #00ff88;
+        box-shadow: 0 0 6px rgba(0, 255, 136, 0.4);
+      }
+
+      .node-name {
+        font-weight: 700;
+        color: var(--content-primary, #e0e6ed);
+        min-width: 60px;
+      }
+
+      .gpu-name {
+        color: var(--content-secondary, #8a92a5);
+        font-size: 10px;
+        margin-right: auto;
+      }
+
+      .bar-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .bar-label {
+        font-size: 9px;
+        font-weight: 600;
+        color: var(--content-tertiary, #5a6070);
+        width: 24px;
+      }
+
+      .usage-bar {
+        width: 50px;
+        height: 6px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .usage-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.5s ease;
+      }
+
+      .gpu-fill { background: linear-gradient(90deg, #00d4ff, #00ffc8); }
+      .mem-fill { background: linear-gradient(90deg, #c864ff, #ff6464); }
+
+      .bar-val {
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--content-secondary, #8a92a5);
+        width: 28px;
+        text-align: right;
+      }
+
+      .temp {
+        font-size: 10px;
+        color: var(--content-tertiary, #5a6070);
+      }
+
+      .node-offline-msg {
+        color: var(--content-tertiary, #5a6070);
+        font-style: italic;
+        flex: 1;
+      }
+
+      .node-select {
+        background: rgba(0,0,0,0.3);
+        border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+        border-radius: 3px;
+        color: var(--content-secondary, #8a92a5);
+        font-size: 10px;
+        padding: 2px 4px;
+        font-family: inherit;
+      }
+
+      .node-select option { background: #0a1520; color: #e0e6ed; }
+
+      /* ── Job Panel ─────────────────────── */
+
+      .job-panel {
+        margin-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        padding-top: 12px;
+      }
+
+      .job-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .job-title {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--content-secondary, #8a92a5);
+      }
+
+      .job-counts { display: flex; gap: 6px; }
+
+      .jc {
+        font-size: 9px;
+        padding: 1px 5px;
+        border-radius: 3px;
+      }
+
+      .jc.running { background: rgba(0, 212, 255, 0.12); color: #00d4ff; }
+      .jc.queued { background: rgba(255, 255, 100, 0.1); color: #ffff64; }
+      .jc.paused { background: rgba(255, 150, 100, 0.1); color: #ff9664; }
+
+      .job-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 8px;
+        border-radius: 4px;
+        background: rgba(0,0,0,0.15);
+        margin-bottom: 4px;
+        border-left: 2px solid transparent;
+      }
+
+      .job-row.running { border-left-color: #00d4ff; }
+      .job-row.paused { border-left-color: #ff9664; }
+      .job-row.queued { border-left-color: #ffff64; }
+      .job-row.completed { border-left-color: #00ff88; opacity: 0.6; }
+      .job-row.failed { border-left-color: #ff4444; opacity: 0.6; }
+      .job-row.active { background: rgba(0, 212, 255, 0.05); }
+
+      .job-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+      }
+
+      .job-name {
+        color: var(--content-primary, #e0e6ed);
+        font-weight: 600;
+      }
+
+      .job-state {
+        font-size: 9px;
+        color: var(--content-tertiary, #5a6070);
+        text-transform: uppercase;
+      }
+
+      .job-progress {
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--accent-primary, #00d4ff);
+      }
+
+      .job-actions { display: flex; gap: 4px; }
+
+      .job-btn {
+        width: 22px;
+        height: 22px;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 3px;
+        background: transparent;
+        color: var(--content-secondary, #8a92a5);
+        font-size: 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+      }
+
+      .job-btn:hover {
+        background: rgba(0, 212, 255, 0.15);
+        border-color: var(--accent-primary, #00d4ff);
+        color: var(--accent-primary, #00d4ff);
+      }
+
+      .job-btn.cancel:hover {
+        background: rgba(255, 68, 68, 0.15);
+        border-color: #ff4444;
+        color: #ff4444;
+      }
     `,
   ];
 
@@ -530,28 +876,161 @@ export class ForgeDeltaElement extends ReactiveWidget {
   protected override render(): TemplateResult {
     return html`
       <div class="delta-forge">
+        ${this.renderNodeStatus()}
         ${this.renderModelSelector()}
         ${this._loaded ? this.renderModelInfo() : nothing}
         ${this._loaded ? this.renderDeltaGrid() : nothing}
         ${this._loaded ? this.renderPipelineSummary() : nothing}
         ${this._loaded ? this.renderForgeButton() : nothing}
+        ${this._jobList.length > 0 ? this.renderJobPanel() : nothing}
+      </div>
+    `;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.loadModel();
+    this.discoverAndPoll();
+  }
+
+  private async discoverAndPoll(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_NODES, {});
+      const nodes = (result?.nodes ?? []) as Array<{ node_id: string; node_name: string | null; capabilities: unknown[] }>;
+      this._gridNodes = nodes;
+      if (nodes.length > 0 && !this._targetNodeId) {
+        const gpuNode = nodes.find(n =>
+          Array.isArray(n.capabilities) && n.capabilities.some((c: any) => c.type === 'compute')
+        );
+        this._targetNodeId = (gpuNode ?? nodes[0]).node_id;
+      }
+    } catch {
+      this._gridNodes = [];
+    }
+    if (this._targetNodeId) {
+      this.startStatusPolling();
+    }
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.stopPolling();
+  }
+
+  private renderNodeStatus(): TemplateResult {
+    if (this._gridNodes.length === 0 && !this._targetNodeId) {
+      return html``;  // No nodes — parent FactoryWidget shows the status bar
+    }
+
+    const s = this._nodeStatus;
+    const gpu = s?.gpu as GpuStatus | undefined;
+    const memPct = gpu?.memoryTotalMb ? Math.round((gpu.memoryUsedMb / gpu.memoryTotalMb) * 100) : 0;
+    const displayName = this._gridNodes.find(n => n.node_id === this._targetNodeId)?.node_name ?? this._targetNodeId;
+
+    return html`
+      <div class="node-bar ${this._nodeOnline ? 'online' : 'offline'}">
+        <div class="node-indicator"></div>
+        ${this._gridNodes.length > 1 ? html`
+          <select class="node-select"
+            .value=${this._targetNodeId}
+            @change=${(e: Event) => {
+              this._targetNodeId = (e.target as HTMLSelectElement).value;
+              this._nodeStatus = null;
+              this.pollNodeStatus();
+            }}>
+            ${this._gridNodes.map(n => html`
+              <option value=${n.node_id}>${n.node_name ?? n.node_id}</option>
+            `)}
+          </select>
+        ` : html`
+          <span class="node-name">${displayName}</span>
+        `}
+        ${this._nodeOnline && gpu?.name ? html`
+          <span class="gpu-name">${gpu.name}</span>
+          <div class="bar-group">
+            <span class="bar-label">GPU</span>
+            <div class="usage-bar">
+              <div class="usage-fill gpu-fill" style="width:${gpu.utilization}%"></div>
+            </div>
+            <span class="bar-val">${gpu.utilization}%</span>
+          </div>
+          <div class="bar-group">
+            <span class="bar-label">MEM</span>
+            <div class="usage-bar">
+              <div class="usage-fill mem-fill" style="width:${memPct}%"></div>
+            </div>
+            <span class="bar-val">${memPct}%</span>
+          </div>
+          <span class="temp">${gpu.temperatureC}°C</span>
+        ` : html`
+          <span class="node-offline-msg">${s ? s.state : 'connecting...'}</span>
+        `}
+      </div>
+    `;
+  }
+
+  private renderJobPanel(): TemplateResult {
+    const running = this._jobList.filter(j => j.state === 'running');
+    const queued = this._jobList.filter(j => j.state === 'queued');
+    const paused = this._jobList.filter(j => j.state === 'paused');
+    const recent = this._jobList.filter(j => j.state === 'completed' || j.state === 'failed').slice(0, 3);
+
+    return html`
+      <div class="job-panel">
+        <div class="job-header">
+          <span class="job-title">Jobs</span>
+          <span class="job-counts">
+            ${this._jobSummary.running > 0 ? html`<span class="jc running">${this._jobSummary.running} running</span>` : nothing}
+            ${this._jobSummary.queued > 0 ? html`<span class="jc queued">${this._jobSummary.queued} queued</span>` : nothing}
+            ${this._jobSummary.paused > 0 ? html`<span class="jc paused">${this._jobSummary.paused} paused</span>` : nothing}
+          </span>
+        </div>
+        ${[...running, ...paused, ...queued, ...recent].map(job => this.renderJobRow(job))}
+      </div>
+    `;
+  }
+
+  private renderJobRow(job: JobEntry): TemplateResult {
+    const isActive = job.jobId === this._activeJobId;
+    return html`
+      <div class="job-row ${job.state} ${isActive ? 'active' : ''}">
+        <div class="job-info">
+          <span class="job-name">${job.alloyName}</span>
+          <span class="job-state">${job.state}</span>
+          ${job.progress?.totalSteps > 0 ? html`
+            <span class="job-progress">${job.progress.step}/${job.progress.totalSteps}</span>
+          ` : nothing}
+        </div>
+        <div class="job-actions">
+          ${job.state === 'running' ? html`
+            <button class="job-btn" @click=${() => this.controlJob(job.jobId, 'pause')} title="Pause">&#9208;</button>
+            <button class="job-btn cancel" @click=${() => this.controlJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+          ${job.state === 'paused' ? html`
+            <button class="job-btn" @click=${() => this.controlJob(job.jobId, 'resume')} title="Resume">&#9654;</button>
+            <button class="job-btn cancel" @click=${() => this.controlJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+        </div>
       </div>
     `;
   }
 
   private renderModelSelector(): TemplateResult {
     return html`
-      <div class="model-row">
-        <input class="model-input" type="text"
-          placeholder="HuggingFace model ID (e.g., Qwen/Qwen3.5-4B)"
-          .value=${this._modelId}
-          @input=${(e: Event) => this._modelId = (e.target as HTMLInputElement).value}
-          @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this.loadModel(); }}>
-        <button class="load-btn" @click=${this.loadModel}
-          ?disabled=${this._loading}>
-          ${this._loading ? 'Loading...' : 'Load'}
-        </button>
-        ${this._loaded ? html`<button class="reset-btn" @click=${this.resetAll}>Reset All</button>` : nothing}
+      <div class="model-selector">
+        <div class="model-row">
+          <input class="model-input" type="text"
+            placeholder="Search HuggingFace or enter model ID..."
+            .value=${this._modelId}
+            @input=${(e: Event) => this._modelId = (e.target as HTMLInputElement).value}
+            @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this.loadModel(); }}>
+          <button class="load-btn" @click=${this.loadModel}
+            ?disabled=${this._loading}>
+            ${this._loading ? 'Loading...' : this._loaded ? 'Reload' : 'Load'}
+          </button>
+          ${this._loaded ? html`<button class="reset-btn" @click=${this.resetAll}>Reset</button>` : nothing}
+        </div>
+        ${this._loading ? html`<div class="model-loading">Introspecting model...</div>` : nothing}
       </div>
     `;
   }

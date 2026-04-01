@@ -124,14 +124,23 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
     // via execute_ts_json (for commands like genome/train that live in TS).
     let result = if let Some(registry) = state.runtime_registry.lock().await.as_ref() {
         if let Some(result) = registry.route_command(command) {
-            // Command found in Rust module registry
+            // Command matched a Rust module prefix — try Rust handler first
             let (module, full_cmd) = result;
-            match module.handle_command(&full_cmd, params).await {
+            match module.handle_command(&full_cmd, params.clone()).await {
                 Ok(CommandResult::Json(value)) => {
                     GridFrame::success_response(request, value)
                 }
                 Ok(CommandResult::Binary { metadata, .. }) => {
                     GridFrame::success_response(request, metadata)
+                }
+                Err(e) if e.starts_with("Unknown") => {
+                    // Rust module doesn't handle this specific command —
+                    // fall through to TypeScript layer (e.g., grid/node-status,
+                    // grid/job-submit live in TS, not Rust).
+                    match crate::runtime::command_executor::execute_ts_json(command, params).await {
+                        Ok(ts_result) => GridFrame::success_response(request, ts_result),
+                        Err(ts_e) => GridFrame::error_response(request, ts_e),
+                    }
                 }
                 Err(e) => GridFrame::error_response(request, e),
             }
