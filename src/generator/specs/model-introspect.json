@@ -1,0 +1,44 @@
+{
+  "name": "model/introspect",
+  "description": "Introspect a model — detect architecture, capabilities, and possible forge stages. Returns the model's current state as an alloy-compatible spec. Works from HF cache or API, no weight download needed.",
+  "params": [
+    {
+      "name": "model",
+      "type": "string",
+      "description": "HuggingFace model ID (e.g., 'Qwen/Qwen3.5-4B') or local path"
+    }
+  ],
+  "results": [
+    {
+      "name": "source",
+      "type": "object",
+      "description": "AlloySource-compatible: baseModel, architecture, isMoE"
+    },
+    {
+      "name": "currentCapabilities",
+      "type": "object",
+      "description": "Current model state: params, heads, context, modalities, hidden size"
+    },
+    {
+      "name": "possibleStages",
+      "type": "array",
+      "description": "Which alloy stages can be applied (with availability and reasons)"
+    },
+    {
+      "name": "currentAlloy",
+      "type": "object",
+      "description": "The model represented as a starting alloy recipe"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Introspect Qwen3.5-4B",
+      "params": { "model": "Qwen/Qwen3.5-4B" }
+    },
+    {
+      "description": "Introspect a MoE model",
+      "params": { "model": "Qwen/Qwen3.5-35B-A3B" }
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

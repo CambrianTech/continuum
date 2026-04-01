@@ -31,6 +31,7 @@ import {
 } from '../../system/events/shared/GridEvents';
 import { ContentService } from '../../system/state/ContentService';
 import { normalizeGridNodes, GRID_STATUS_COLORS } from './GridDataNormalizer';
+import { styles as GRID_STATUS_STYLES } from './public/grid-status-section.styles';
 
 interface NodeSnapshot {
   nodeId: string;
@@ -43,121 +44,8 @@ interface NodeSnapshot {
 
 // Use shared GRID_STATUS_COLORS from GridDataNormalizer
 
-const STYLES = `
-  :host {
-    display: block;
-    padding: 8px 10px;
-    font-size: 11px;
-    color: var(--content-primary, #e0e0e0);
-  }
-
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 6px;
-    cursor: pointer;
-  }
-
-  .header:hover {
-    opacity: 0.85;
-  }
-
-  .summary {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .summary-text {
-    font-weight: 600;
-    color: var(--content-primary, #e0e6ed);
-  }
-
-  .open-arrow {
-    font-size: 10px;
-    color: var(--content-secondary, #8a92a5);
-  }
-
-  .transports {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 6px;
-  }
-
-  .transport-badge {
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 9px;
-    font-weight: 700;
-    font-family: var(--font-mono, monospace);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-  }
-
-  .transport-active {
-    background: rgba(0, 255, 136, 0.12);
-    color: rgba(0, 255, 136, 0.9);
-    border: 1px solid rgba(0, 255, 136, 0.2);
-  }
-
-  .transport-inactive {
-    background: rgba(100, 100, 100, 0.1);
-    color: var(--content-secondary, #8a92a5);
-    border: 1px solid rgba(100, 100, 100, 0.15);
-  }
-
-  .node-list {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .node-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 0;
-  }
-
-  .node-name {
-    flex: 1;
-    font-size: 10px;
-    color: var(--content-primary, #e0e6ed);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .node-latency {
-    font-size: 10px;
-    font-family: var(--font-mono, monospace);
-    color: var(--content-secondary, #8a92a5);
-  }
-
-  .node-gpu {
-    font-size: 9px;
-    color: rgba(0, 212, 255, 0.7);
-    font-family: var(--font-mono, monospace);
-  }
-
-  .empty-state {
-    text-align: center;
-    color: var(--content-secondary, #777);
-    font-style: italic;
-    padding: 12px 0;
-  }
-`;
-
 export class GridStatusSection extends ReactiveWidget {
-  static override styles = [unsafeCSS(STYLES)] as CSSResultGroup;
+  static override styles = [unsafeCSS(GRID_STATUS_STYLES)] as CSSResultGroup;
 
   @reactive() private _nodes: Map<string, NodeSnapshot> = new Map();
 

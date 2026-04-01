@@ -1,0 +1,55 @@
+{
+  "name": "grid/job-submit",
+  "description": "Submit a forge job to a grid node's queue. The node executes when ready (GPU free). Returns a job ID for tracking. Replaces direct SSH forge execution.",
+  "params": [
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Target node to queue the job on"
+    },
+    {
+      "name": "alloy",
+      "type": "object",
+      "description": "Complete alloy JSON (recipe) to execute"
+    },
+    {
+      "name": "priority",
+      "type": "number",
+      "optional": true,
+      "description": "Queue priority 0-10 (higher = sooner). Default: 5"
+    }
+  ],
+  "results": [
+    {
+      "name": "jobId",
+      "type": "string",
+      "description": "Unique job identifier for tracking and control"
+    },
+    {
+      "name": "position",
+      "type": "number",
+      "description": "Position in the queue (0 = running now)"
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Node the job was queued on"
+    },
+    {
+      "name": "estimatedStart",
+      "type": "string",
+      "description": "Estimated start time (ISO 8601) based on queue depth"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Submit a reasoning forge to bigmama",
+      "params": {
+        "nodeId": "bigmama",
+        "alloy": { "name": "qwen3.5-14b-reasoning", "source": { "baseModel": "Qwen/Qwen3.5-14B" }, "stages": [{ "type": "train", "domain": "reasoning", "steps": 3000 }], "cycles": 4 }
+      }
+    }
+  ],
+  "accessLevel": "owner",
+  "category": "grid"
+}

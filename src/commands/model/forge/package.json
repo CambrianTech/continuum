@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/forge",
+  "version": "1.0.0",
+  "description": "Start a model forge job — sends forge parameters to a grid node with GPU for training. Returns job ID for status tracking.",
+  "main": "server/ModelForgeServerCommand.ts",
+  "types": "shared/ModelForgeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelForgeIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/forge"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

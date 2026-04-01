@@ -285,6 +285,373 @@ pub async fn handle_audit(state: &Arc<GridState>, params: Value) -> Result<Comma
     CommandResult::json(&entries)
 }
 
+/// grid/node-status — query local GPU, running jobs, queue depth.
+/// When called remotely via grid/send, this executes on the TARGET node.
+pub async fn handle_node_status(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    let node_id = params.get("nodeId").and_then(|v| v.as_str());
+
+    // If nodeId targets a remote node, delegate via handle_send
+    if let Some(nid) = node_id {
+        if !nid.is_empty() {
+            // Check if this is us
+            let is_local = state.transports.iter().any(|t| {
+                t.local_address().map(|a| a.display_address().contains(nid)).unwrap_or(false)
+            });
+            if !is_local {
+                let send_params = json!({
+                    "nodeId": nid,
+                    "remoteCommand": super::commands::NODE_STATUS,
+                    "params": {}
+                });
+                return handle_send(state, send_params).await;
+            }
+        }
+    }
+
+    // Local: query this machine
+    let gpu = query_gpu_info();
+    let jobs = query_forge_processes();
+    let queue = query_job_queue(&state.grid_dir);
+    let hostname = gethostname();
+
+    let has_running = !jobs.is_empty();
+    let node_state = if has_running { "busy" } else { "ready" };
+
+    Ok(CommandResult::Json(json!({
+        "success": true,
+        "state": node_state,
+        "gpu": gpu,
+        "jobs": jobs,
+        "queue": queue,
+        "nodeId": hostname,
+        "timestamp": chrono_now_iso(),
+    })))
+}
+
+/// grid/job-submit — write alloy to disk, start forge pipeline.
+pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    let alloy = params.get("alloy")
+        .ok_or("alloy parameter required")?;
+    let priority = params.get("priority").and_then(|v| v.as_u64()).unwrap_or(5);
+
+    let jobs_dir = state.grid_dir.join("jobs");
+    let running_dir = jobs_dir.join("running");
+    std::fs::create_dir_all(&running_dir)
+        .map_err(|e| format!("Failed to create jobs dir: {e}"))?;
+
+    let job_id = format!("job-{}-{:06x}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
+        rand_u32() & 0xFFFFFF);
+
+    let alloy_path = running_dir.join(format!("{job_id}.alloy.json"));
+    let log_path = running_dir.join(format!("{job_id}.log"));
+    let meta_path = running_dir.join(format!("{job_id}.meta.json"));
+
+    // Write alloy
+    std::fs::write(&alloy_path, serde_json::to_string_pretty(alloy).unwrap_or_default())
+        .map_err(|e| format!("Failed to write alloy: {e}"))?;
+
+    // Find alloy_executor.py
+    let executor = find_alloy_executor();
+
+    let pid = if let Some(exec_path) = executor {
+        // Start forge pipeline
+        let log_file = std::fs::File::create(&log_path)
+            .map_err(|e| format!("Failed to create log: {e}"))?;
+        let log_err = log_file.try_clone()
+            .map_err(|e| format!("Failed to clone log fd: {e}"))?;
+
+        let child = std::process::Command::new("python3")
+            .arg(&exec_path)
+            .arg(&alloy_path)
+            .arg("--output-dir")
+            .arg(running_dir.join(&job_id))
+            .current_dir(exec_path.parent().and_then(|p| p.parent()).unwrap_or(std::path::Path::new(".")))
+            .stdout(log_file)
+            .stderr(log_err)
+            .spawn()
+            .map_err(|e| format!("Failed to start forge: {e}"))?;
+        child.id()
+    } else {
+        0 // No executor found — job is queued but not started
+    };
+
+    let alloy_name = alloy.get("name").and_then(|v| v.as_str()).unwrap_or(&job_id);
+
+    // Write meta
+    let meta = json!({
+        "jobId": job_id,
+        "pid": pid,
+        "alloyPath": alloy_path.to_string_lossy(),
+        "logPath": log_path.to_string_lossy(),
+        "state": if pid > 0 { "running" } else { "queued" },
+        "priority": priority,
+        "startedAt": chrono_now_iso(),
+        "alloyName": alloy_name,
+    });
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap_or_default())
+        .map_err(|e| format!("Failed to write meta: {e}"))?;
+
+    Ok(CommandResult::Json(json!({
+        "success": true,
+        "jobId": job_id,
+        "position": 0,
+        "nodeId": gethostname(),
+        "estimatedStart": chrono_now_iso(),
+    })))
+}
+
+/// grid/job-control — pause/resume/cancel a running job.
+pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    let job_id = params.get("jobId").and_then(|v| v.as_str())
+        .ok_or("jobId parameter required")?;
+    let action = params.get("action").and_then(|v| v.as_str())
+        .ok_or("action parameter required")?;
+
+    let jobs_dir = state.grid_dir.join("jobs");
+    let meta = find_job_meta(&jobs_dir, job_id)
+        .ok_or_else(|| format!("Job '{job_id}' not found"))?;
+
+    let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+    let previous_state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+
+    let new_state = match action {
+        "pause" => {
+            #[cfg(unix)]
+            unsafe { libc::kill(pid, libc::SIGSTOP); }
+            "paused"
+        }
+        "resume" => {
+            #[cfg(unix)]
+            unsafe { libc::kill(pid, libc::SIGCONT); }
+            "running"
+        }
+        "cancel" => {
+            #[cfg(unix)]
+            unsafe { libc::kill(pid, libc::SIGTERM); }
+            // Move to failed
+            let _ = move_job_files(&jobs_dir, job_id, "running", "failed");
+            "cancelled"
+        }
+        _ => return Err(format!("Invalid action: {action}. Must be pause, resume, or cancel.")),
+    };
+
+    // Update meta
+    let mut updated = meta.clone();
+    updated["state"] = json!(new_state);
+    let state_dir = if new_state == "cancelled" { "failed" } else { new_state };
+    let meta_path = jobs_dir.join(state_dir).join(format!("{job_id}.meta.json"));
+    let _ = std::fs::create_dir_all(meta_path.parent().unwrap_or(std::path::Path::new(".")));
+    let _ = std::fs::write(&meta_path, serde_json::to_string_pretty(&updated).unwrap_or_default());
+
+    Ok(CommandResult::Json(json!({
+        "success": true,
+        "jobId": job_id,
+        "previousState": previous_state,
+        "newState": new_state,
+        "checkpoint": meta.get("checkpoint").cloned().unwrap_or(json!({})),
+    })))
+}
+
+/// grid/job-queue — list jobs from filesystem.
+pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    let state_filter = params.get("state").and_then(|v| v.as_str()).unwrap_or("all");
+    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+
+    let jobs_dir = state.grid_dir.join("jobs");
+    let hostname = gethostname();
+    let dirs = ["queued", "running", "paused", "completed", "failed"];
+
+    let mut summary = json!({ "queued": 0, "running": 0, "paused": 0, "completed": 0, "failed": 0 });
+    let mut jobs = Vec::new();
+
+    for dir_name in &dirs {
+        let dir_path = jobs_dir.join(dir_name);
+        let metas = list_meta_files(&dir_path);
+        summary[*dir_name] = json!(metas.len());
+
+        if state_filter != "all" && state_filter != *dir_name { continue; }
+        if jobs.len() >= limit { continue; }
+
+        for meta_path in metas {
+            if jobs.len() >= limit { break; }
+            if let Ok(content) = std::fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<Value>(&content) {
+                    let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+                    let is_alive = pid > 0 && is_process_alive(pid);
+                    let effective_state = if *dir_name == "running" && !is_alive { "completed" } else { *dir_name };
+
+                    jobs.push(json!({
+                        "jobId": meta.get("jobId").and_then(|v| v.as_str()).unwrap_or(""),
+                        "alloyName": meta.get("alloyName").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        "state": effective_state,
+                        "progress": meta.get("progress").cloned().unwrap_or(json!({
+                            "cycle": 0, "totalCycles": 0, "step": 0, "totalSteps": 0
+                        })),
+                        "startedAt": meta.get("startedAt").and_then(|v| v.as_str()).unwrap_or(""),
+                        "estimatedCompletion": meta.get("estimatedCompletion").and_then(|v| v.as_str()).unwrap_or(""),
+                        "nodeId": hostname,
+                    }));
+                }
+            }
+        }
+    }
+
+    Ok(CommandResult::Json(json!({
+        "success": true,
+        "jobs": jobs,
+        "summary": summary,
+    })))
+}
+
+// ── Helper functions for job management ─────────────────────────────────
+
+fn query_gpu_info() -> Value {
+    // Try standard path first, then WSL2 path
+    let nvidia_smi = if std::path::Path::new("/usr/lib/wsl/lib/nvidia-smi").exists() {
+        "/usr/lib/wsl/lib/nvidia-smi"
+    } else {
+        "nvidia-smi"
+    };
+
+    let output = std::process::Command::new(nvidia_smi)
+        .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+               "--format=csv,noheader,nounits"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let parts: Vec<&str> = s.trim().split(',').map(|p| p.trim()).collect();
+            json!({
+                "name": parts.first().unwrap_or(&""),
+                "utilization": parts.get(1).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                "memoryUsedMb": parts.get(2).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                "memoryTotalMb": parts.get(3).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                "temperatureC": parts.get(4).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+            })
+        }
+        _ => json!({ "name": "", "utilization": 0, "memoryUsedMb": 0, "memoryTotalMb": 0, "temperatureC": 0 }),
+    }
+}
+
+fn query_forge_processes() -> Vec<Value> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", "ps aux | grep -E '(forge_pipeline|forge_model|alloy_executor|train|fine.?tun)' | grep -v grep"])
+        .output();
+
+    match output {
+        Ok(o) => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    let pid = parts.get(1)?.parse::<u32>().ok()?;
+                    let cpu = parts.get(2).unwrap_or(&"0").to_string();
+                    let mem = parts.get(3).unwrap_or(&"0").to_string();
+                    let cmd: String = parts.get(10..).map(|p| p.join(" ")).unwrap_or_default();
+
+                    let job_type = if cmd.contains("forge_pipeline") || cmd.contains("alloy_executor") { "forge" }
+                        else if cmd.contains("train") || cmd.contains("fine") { "training" }
+                        else { "unknown" };
+
+                    Some(json!({ "pid": pid, "type": job_type, "detail": &cmd[..cmd.len().min(120)], "cpu": cpu, "mem": mem }))
+                })
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
+fn query_job_queue(grid_dir: &std::path::Path) -> Vec<Value> {
+    let queue_dir = grid_dir.join("jobs/queued");
+    list_meta_files(&queue_dir).iter().filter_map(|path| {
+        let name = path.file_stem()?.to_string_lossy().replace(".meta", "");
+        Some(json!({ "name": name, "path": path.to_string_lossy() }))
+    }).collect()
+}
+
+fn gethostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn chrono_now_iso() -> String {
+    // Simple ISO 8601 without chrono dependency
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    // Return epoch millis as string — the TS side can format it
+    format!("{}Z", now.as_millis())
+}
+
+fn find_alloy_executor() -> Option<std::path::PathBuf> {
+    let candidates = [
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("sentinel-ai/scripts/alloy_executor.py"),
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Development/cambrian/sentinel-ai/scripts/alloy_executor.py"),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn find_job_meta(jobs_dir: &std::path::Path, job_id: &str) -> Option<Value> {
+    for sub in ["running", "queued", "paused"] {
+        let path = jobs_dir.join(sub).join(format!("{job_id}.meta.json"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(meta) = serde_json::from_str::<Value>(&content) {
+                return Some(meta);
+            }
+        }
+    }
+    None
+}
+
+fn move_job_files(jobs_dir: &std::path::Path, job_id: &str, from: &str, to: &str) -> std::io::Result<()> {
+    let from_dir = jobs_dir.join(from);
+    let to_dir = jobs_dir.join(to);
+    std::fs::create_dir_all(&to_dir)?;
+    if let Ok(entries) = std::fs::read_dir(&from_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(job_id) {
+                std::fs::rename(entry.path(), to_dir.join(&name))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir).ok()
+        .map(|entries| {
+            let mut files: Vec<_> = entries.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
+                .map(|e| e.path())
+                .collect();
+            files.sort();
+            files.reverse();
+            files
+        })
+        .unwrap_or_default()
+}
+
+fn is_process_alive(pid: i32) -> bool {
+    #[cfg(unix)]
+    { unsafe { libc::kill(pid, 0) == 0 } }
+    #[cfg(not(unix))]
+    { false }
+}
+
+fn rand_u32() -> u32 {
+    // Simple random without pulling in rand crate
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos()
+}
+
 /// grid/route — dry-run routing check.
 pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
     let command = params.get("targetCommand").and_then(|v| v.as_str())

@@ -1,0 +1,83 @@
+{
+  "name": "model/forge",
+  "description": "Start a model forge job — sends forge parameters to a grid node with GPU for training. Returns job ID for status tracking.",
+  "params": [
+    {
+      "name": "model",
+      "type": "string",
+      "description": "Base model to forge (e.g., 'Qwen/Qwen3.5-4B')"
+    },
+    {
+      "name": "domain",
+      "type": "string",
+      "description": "Training domain (code, reasoning, general)"
+    },
+    {
+      "name": "steps",
+      "type": "number",
+      "description": "Number of training steps"
+    },
+    {
+      "name": "pruneLevel",
+      "type": "number",
+      "description": "Pruning level 0.0-0.7 (fraction of heads to prune)"
+    },
+    {
+      "name": "pruneStrategy",
+      "type": "string",
+      "description": "Pruning strategy: entropy, random, magnitude"
+    },
+    {
+      "name": "cycles",
+      "type": "number",
+      "description": "Number of prune→recover forge cycles"
+    },
+    {
+      "name": "learningRate",
+      "type": "string",
+      "description": "Learning rate (e.g., '2e-4', '5e-5')"
+    },
+    {
+      "name": "experts",
+      "type": "number",
+      "description": "Number of MoE experts to keep (0 for non-MoE models)",
+      "optional": true
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Target grid node. If omitted, routes to first available GPU node.",
+      "optional": true
+    }
+  ],
+  "results": [
+    {
+      "name": "jobId",
+      "type": "string",
+      "description": "Unique forge job ID for status tracking"
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "description": "Grid node the job was routed to"
+    },
+    {
+      "name": "nodeName",
+      "type": "string",
+      "description": "Human-readable node name"
+    },
+    {
+      "name": "estimatedDuration",
+      "type": "string",
+      "description": "Estimated duration based on model size and steps"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Start a code forge on Qwen3.5-4B",
+      "command": "./jtag model/forge --model=Qwen/Qwen3.5-4B --domain=code --steps=2000 --pruneLevel=0.3 --pruneStrategy=entropy --cycles=3 --learningRate=2e-4",
+      "expectedResult": "{ jobId: 'forge-abc123', nodeId: 'bigmama', nodeName: 'BigMama', estimatedDuration: '~45 minutes' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

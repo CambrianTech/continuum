@@ -1,2 +1,414 @@
-/* FactoryWidget — styles are inline in FactoryWidget.ts via Lit css`` */
-:host { display: block; }
+@use '../../shared/styles/variables' as *;
+
+// ── FactoryWidget ─────────────────────────────────────────────────────
+
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  color: var(--content-primary, #e0e6ed);
+}
+
+.factory {
+  padding: 20px 24px;
+  max-width: 1200px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 24px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.subtitle {
+  font-size: $font-size-md;
+  color: var(--content-secondary, #8a92a5);
+}
+
+.section {
+  margin-bottom: 28px;
+}
+
+.section-title {
+  font-size: $font-size-lg;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--content-secondary, #8a92a5);
+  margin-bottom: $spacing-md;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+}
+
+.section-stats {
+  font-size: $font-size-md;
+  font-weight: 400;
+  color: var(--content-secondary, #8a92a5);
+  margin-left: $spacing-md;
+}
+
+// ── Foreman ID Badge ────────────────────────────────────────────────
+
+.foreman-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+  transition: all $transition-fast;
+  margin-right: 4px;
+
+  &:hover {
+    border-color: $color-primary;
+    background: rgba(0, 212, 255, 0.05);
+  }
+
+  &.vacant {
+    opacity: 0.5;
+    cursor: default;
+
+    &:hover {
+      border-color: rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+    }
+  }
+}
+
+.foreman-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.3), rgba(100, 255, 200, 0.3));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: $color-primary;
+  position: relative;
+  flex-shrink: 0;
+
+  &.vacant-avatar {
+    background: rgba(255,255,255,0.06);
+    color: var(--content-tertiary, #5a6070);
+  }
+}
+
+.foreman-status-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid rgba(0,0,0,0.5);
+  background: $color-error;
+
+  &.online {
+    background: $color-success;
+  }
+}
+
+.foreman-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.foreman-role {
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--content-tertiary, #5a6070);
+  line-height: 1;
+}
+
+.foreman-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--content-primary, #e0e6ed);
+  line-height: 1.2;
+}
+
+.foreman-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.foreman-action-btn {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: var(--content-secondary, #8a92a5);
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: $color-primary;
+    color: $color-primary;
+    background: rgba(0, 212, 255, 0.1);
+  }
+
+  &.call:hover {
+    border-color: $color-success;
+    color: $color-success;
+    background: rgba(0, 255, 200, 0.1);
+  }
+}
+
+// ── Node Status Bar ─────────────────────────────────────────────────
+
+.node-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: $spacing-lg;
+  border-radius: $border-radius-lg;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.06);
+  font-size: $font-size-md;
+}
+
+.node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: $color-error;
+  flex-shrink: 0;
+}
+
+.node-bar.online .node-dot {
+  background: $color-success;
+  @include glow($color-success-dark);
+}
+
+.node-name {
+  font-weight: 700;
+  color: var(--content-primary, #e0e6ed);
+}
+
+.gpu-label {
+  color: var(--content-secondary, #8a92a5);
+  font-size: 11px;
+  margin-right: auto;
+}
+
+.bar-group {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+}
+
+.bar-label {
+  font-size: $font-size-xs;
+  font-weight: 600;
+  color: var(--content-tertiary, #5a6070);
+  width: 26px;
+}
+
+.usage-bar {
+  width: 60px;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.gpu-fill { background: linear-gradient(90deg, $color-primary, #00ffc8); }
+.mem-fill { background: linear-gradient(90deg, #c864ff, #ff6464); }
+
+.bar-val {
+  font-size: $font-size-sm;
+  font-variant-numeric: tabular-nums;
+  color: var(--content-secondary, #8a92a5);
+  min-width: 36px;
+  text-align: right;
+}
+
+.temp-label {
+  font-size: 11px;
+  color: var(--content-tertiary, #5a6070);
+}
+
+.offline-msg {
+  color: var(--content-tertiary, #5a6070);
+  font-style: italic;
+  flex: 1;
+}
+
+.node-bar-link {
+  cursor: pointer;
+  transition: border-color $transition-normal;
+
+  &:hover {
+    border-color: $color-primary;
+  }
+}
+
+.grid-link {
+  font-size: $font-size-sm;
+  font-weight: 600;
+  color: var(--accent-primary, $color-primary);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity $transition-fast;
+  white-space: nowrap;
+
+  &:hover { opacity: 1; }
+}
+
+// ── Empty Floor ─────────────────────────────────────────────────────
+
+.empty-floor {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--content-secondary, #8a92a5);
+}
+
+.empty-floor-icon { font-size: 36px; margin-bottom: $spacing-sm; }
+.empty-floor-msg { font-size: $font-size-lg; margin-bottom: $spacing-xs; }
+.empty-floor-hint { font-size: $font-size-md; opacity: 0.7; }
+
+// ── Grid Jobs ───────────────────────────────────────────────────────
+
+.grid-jobs { margin-top: $spacing-md; }
+
+.jobs-header {
+  display: flex;
+  gap: $spacing-sm;
+  margin-bottom: $spacing-sm;
+}
+
+.jc {
+  font-size: $font-size-sm;
+  padding: 2px 8px;
+  border-radius: $border-radius-md;
+  font-weight: 600;
+
+  &.running  { background: rgba(0, 212, 255, 0.12); color: $color-primary; }
+  &.queued   { background: rgba(255, 255, 100, 0.1); color: #ffff64; }
+  &.paused   { background: rgba(255, 150, 100, 0.1); color: #ff9664; }
+  &.completed { background: rgba(0, 255, 136, 0.1); color: $color-success; }
+}
+
+.jc-clear {
+  font-size: $font-size-sm;
+  padding: 2px 8px;
+  border-radius: $border-radius-md;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--content-secondary, #8a92a5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  margin-left: auto;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(255, 68, 68, 0.15);
+    border-color: $color-error;
+    color: $color-error;
+  }
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $spacing-sm $spacing-md;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.15);
+  margin-bottom: $spacing-xs;
+  border-left: 3px solid transparent;
+  transition: all $transition-fast;
+
+  &.running   { border-left-color: $color-primary; }
+  &.paused    { border-left-color: #ff9664; }
+  &.queued    { border-left-color: #ffff64; }
+  &.completed { border-left-color: $color-success; opacity: 0.5; }
+  &.failed    { border-left-color: $color-error; opacity: 0.5; }
+}
+
+.job-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.job-name {
+  font-size: $font-size-md;
+  font-weight: 600;
+  color: var(--content-primary, #e0e6ed);
+}
+
+.job-state-badge {
+  font-size: $font-size-xs;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--content-tertiary, #5a6070);
+}
+
+.job-progress {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-primary, $color-primary);
+}
+
+.job-time {
+  font-size: $font-size-sm;
+  color: var(--content-tertiary, #5a6070);
+}
+
+.job-actions {
+  display: flex;
+  gap: $spacing-xs;
+}
+
+.job-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: $border-radius-md;
+  background: transparent;
+  color: var(--content-secondary, #8a92a5);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.15);
+    border-color: $color-primary;
+    color: $color-primary;
+  }
+
+  &.cancel:hover {
+    background: rgba(255, 68, 68, 0.15);
+    border-color: $color-error;
+    color: $color-error;
+  }
+}

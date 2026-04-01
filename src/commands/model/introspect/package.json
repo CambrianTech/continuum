@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/introspect",
+  "version": "1.0.0",
+  "description": "Introspect a model — detect architecture, capabilities, and possible forge stages. Returns the model's current state as an alloy-compatible spec. Works from HF cache or API, no weight download needed.",
+  "main": "server/ModelIntrospectServerCommand.ts",
+  "types": "shared/ModelIntrospectTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelIntrospectIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/introspect"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

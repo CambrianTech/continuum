@@ -3,12 +3,21 @@
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
 ### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
 
-<p align="center">
+<table>
+<tr>
+<td width="50%">
 <img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
-</p>
+<p align="center"><em>Live — 14 AI teammates in a 3D video call with real-time voice</em></p>
+</td>
+<td width="50%">
+<img src="docs/images/factory.png" alt="Model Factory — forge pipeline, 15K+ downloads, published models leaderboard, BigMama online" width="100%"/>
+<p align="center"><em>Factory — forge models with cryptographic contracts, 15K+ HF downloads</em></p>
+</td>
+</tr>
+</table>
 
 <p align="center">
-<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.</strong>
+<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.<br/>They forge their own models. They prove the work. They run on your hardware.</strong>
 </p>
 
 <p align="center">
@@ -334,25 +343,33 @@ Not blind quantization. Utilization-aware surgery. The compacted model runs on h
 
 ---
 
-## The Factory — Assembly Line for Intelligence
+## Industry — The Factory, Academy, and Genome
 
-Your grid doesn't just run models. It **forges** them.
+Continuum isn't just a place to talk. It's a place to **build**. The world has an industrial sector — forging base models, training persona expertise, and evolving genomes. These are rooms in the world, not the world itself.
 
-```
-[Base Model] → Expert Prune → Head Prune → LoRA Forge → Defrag → Mixed Quant → Benchmark → Publish
-                  ↓               ↓            ↓           ↓          ↓            ↓
-              (MoE only)     (utilization)  (domain data) (recalc)  (our moat)   (pass/fail)
-```
+### The Factory
 
-**Every node is both consumer and producer.** Running forged models AND forging new ones. The models get better because the personas using them generate training signal. The training signal improves because the models get smarter. It's a flywheel.
+<p align="center">
+<img src="docs/images/factory.png" alt="Model Factory — pipeline composer with forge stages, published models leaderboard, 15K+ downloads, BigMama online" width="100%"/>
+</p>
 
-**Nobody else has this stack.** OpenAI has the models but not the edge deployment. Ollama has the runner but not the forge. HuggingFace has the distribution but not the training loop. We have the full circle: **forge → deploy → use → learn → forge better.**
+One room in Continuum where base models are forged — pruned, trained, given new capabilities, quantized for every device, benchmarked, and published. The factory is the industrial heart, but it serves the society.
 
-**The global grid is every Continuum install contributing compute when idle and consuming intelligence when busy.** Your MacBook forges a 4B while you sleep. Your neighbor's 3090 trains the next expert layer. The 1080 Ti tower runs inference for the local persona team. All connected, all improving. Your machine dreams while you're away — and the intelligence it builds makes the whole ecosystem more powerful.
+Every forge job is a [**ForgeAlloy**](https://github.com/CambrianTech/forge-alloy) — a portable compute contract that defines the full pipeline: add vision to a text model, extend context to 32K, prune for efficiency, train on code, quantize for iPhone, benchmark on HumanEval, deploy to the grid. One JSON file, cryptographically attested, reproducible by anyone. The alloy is both the recipe (before) and the report card (after).
 
-**Utilization-aware mixed-precision quantization** is our moat. Standard tools apply uniform Q4 to every weight. We know which attention heads matter (from pruning) and allocate bits where they earn the highest return. Hot heads get Q8. Cold heads get Q2. Dead heads get removed. The result: **smaller than uniform Q4 with higher quality.** You need our forge pipeline to produce these models. You need our loader to run them. That's why people install Continuum.
+The factory's visual pipeline composer lets you design forge pipelines by adding and configuring stages — like Kerbal Space Program for model architecture. Each stage maps 1:1 to the ForgeAlloy spec. Export the alloy, send it to any node on the grid, get back a verified model.
 
-**An RTOS foreman** manages the assembly line — priority queue of jobs dispatched to available hardware. Benchmarks preempt forges. Hotfixes preempt explores. Quality gates between every station. The foreman watches HuggingFace download metrics and community demand to decide what to forge next.
+### The Academy
+
+Where personas learn. Dual-sentinel architecture: a teacher researches and synthesizes curriculum, a student trains on it and gets examined. LoRA adapters encode the expertise into weights — not prompts, actual neural weight modification. The academy produces the persona-specific skills that make each AI teammate uniquely capable.
+
+Academy training and factory forging connect: the factory produces base models, the academy trains personas on top of them. A forged code-specialist base model + academy-trained persona expertise = an AI teammate that writes better code than either alone.
+
+### The Genome
+
+Every persona has a genome — a set of LoRA adapters representing learned skills. Adapters page in and out like virtual memory. The genome evolves through academy training, work experience, and peer learning. Useful traits spread across the society. Broken ones die. Natural selection on capabilities.
+
+The factory forges the base metal. The academy shapes it into tools. The genome is the living result — a persona's accumulated expertise, portable and shareable across the grid.
 
 **Current results** (LoRA forge only — pruning + mixed quant not yet applied):
 

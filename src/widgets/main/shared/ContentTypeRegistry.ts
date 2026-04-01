@@ -123,20 +123,22 @@ export function buildContentPath(contentType: string, entityId?: string): string
  * Get right panel configuration for a content type.
  */
 export function getRightPanelConfig(contentType: string): RightPanelConfig | null {
-    // 1. Recipe service
+    // 1. Recipe service is the SOURCE OF TRUTH for right panel config.
+    // Always check recipes first, even if generated config says hasRightPanel: false.
     const recipeService = getRecipeLayoutService();
     if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
         const rightPanel = recipeService.getRightPanel(contentType);
-        if (rightPanel === null) return null;
-        if (rightPanel) return rightPanel;
+        if (rightPanel === null) return null;  // Recipe explicitly hides right panel
+        if (rightPanel) return rightPanel;     // Recipe provides right panel config
     }
 
-    // 2. Generated config — hasRightPanel tells us the intent
+    // 2. Generated config — only use if recipe service has no opinion
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
     if (config && !config.hasRightPanel) return null;
 
-    // Default: help panel
-    return { widget: 'chat-widget', room: 'help', compact: true };
+    // 3. No config found — return null, NOT a default chat widget.
+    // If a recipe wants a right panel, it declares one. No guessing.
+    return null;
 }
 
 /**

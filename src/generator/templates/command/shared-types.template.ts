@@ -25,10 +25,10 @@ export const create{{CLASS_NAME}}Params = (
   sessionId: UUID,
   data: {{FACTORY_DATA_TYPE}}
 ): {{CLASS_NAME}}Params => createPayload(context, sessionId, {
-  // userId is auto-injected by infrastructure — never default to SYSTEM_SCOPES.SYSTEM
+  // userId is auto-injected by infrastructure at runtime
 {{FACTORY_DEFAULTS}}
   ...data
-});
+}) as {{CLASS_NAME}}Params;
 
 /**
  * {{COMMAND_NAME}} Command Result

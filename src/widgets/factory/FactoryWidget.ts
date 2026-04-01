@@ -1,70 +1,55 @@
 /**
- * FactoryWidget — Model forge production floor
+ * FactoryWidget — Model forge production floor (composition root)
  *
- * Shows:
- * - Active forges with progress, loss curves, VRAM gauges
- * - Published models with download counts and improvement scores
- * - Hardware resources across grid nodes
+ * Thin orchestrator that:
+ * - Loads data (published models, forge status)
+ * - Subscribes to forge events
+ * - Composes child components via Lit composition
  *
- * Data sources:
- * - status.json from forge nodes (polled)
- * - HuggingFace API for published model stats
- * - Grid node health from grid commands
+ * Child components (each owns its own styles and display logic):
+ * - forge-controls-element: Forge parameter form + start button
+ * - active-forge-element: Live forge status with metrics and sparkline
+ * - published-models-element: Leaderboard-style model list
  */
 
 import {
   ReactiveWidget,
   html,
-  css,
+  unsafeCSS,
   reactive,
   type TemplateResult,
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import { styles as FACTORY_STYLES } from './public/factory-widget.styles';
 import { Events } from '../../system/core/shared/Events';
-import type { ModelListPublishedResult } from '../../commands/model/list-published/shared/ModelList-publishedTypes';
-import type { ForgeJobStatus } from '../../commands/model/forge-status/shared/ModelForge-statusTypes';
-// ── Types ───────────────────────────────────────────────────────────────
+import { COMMANDS } from '@shared/generated-command-constants';
+import { ContentService } from '../../system/state/ContentService';
 
-interface ForgeStatus {
-  phase: string;
-  detail: string;
-  vram_gb: number;
-  timestamp: string;
-  step?: number;
-  total_steps?: number;
-  loss?: number;
-  it_per_sec?: number;
-  eta_seconds?: number;
-  cycle?: number;
-  perplexity?: number;
-  improvement_pct?: number;
+// Import child components (self-registering)
+import './ForgeControlsElement';
+import './ForgeDeltaElement';
+import './ActiveForgeElement';
+import './PublishedModelsElement';
+
+import type { ForgeStatusData } from './ActiveForgeElement';
+import type { PublishedModelData } from './PublishedModelsElement';
+
+interface GridJobEntry {
+  jobId: string;
+  alloyName: string;
+  state: string;
+  progress: { cycle: number; totalCycles: number; step: number; totalSteps: number };
+  startedAt: string;
+  estimatedCompletion: string;
+  nodeId: string;
 }
 
-interface PublishedModel {
-  id: string;
-  name: string;
-  downloads: number;
-  likes: number;
-  domain: string;
-  improvement: string;
-  size: string;
-  tags: string[];
-}
-
-interface GridNode {
-  name: string;
-  ip: string;
-  gpu: string;
-  vram_total_gb: number;
-  vram_used_gb: number;
-  status: 'forging' | 'idle' | 'offline';
-}
-
-interface ForgeSample {
-  step: number;
-  prompt: string;
-  output: string;
+interface GridNodeStatusData {
+  state: string;
+  gpu: { name: string; utilization: number; memoryUsedMb: number; memoryTotalMb: number; temperatureC: number };
+  jobs: Array<{ pid: number; type: string; detail: string; cpu: string; mem: string }>;
+  nodeId: string;
   timestamp: string;
 }
 
@@ -72,570 +57,317 @@ interface ForgeSample {
 
 export class FactoryWidget extends ReactiveWidget {
 
-  @reactive() private forgeStatus: ForgeStatus | null = null;
-  @reactive() private models: PublishedModel[] = [];
-  @reactive() private nodes: GridNode[] = [];
-  @reactive() private lossHistory: number[] = [];
-  @reactive() private outputSamples: ForgeSample[] = [];
+  // ── State ──────────────────────────────────────────────────────────
+  @reactive() private _forgeStatus: ForgeStatusData | null = null;
+  @reactive() private _models: PublishedModelData[] = [];
+  @reactive() private _lossHistory: number[] = [];
   @reactive() private _isLoading = true;
-
-  // ── Forge Controls State ────────────────────────────────────────────
-  @reactive() private _selectedModel = 'Qwen/Qwen3.5-4B';
-  @reactive() private _selectedDomain = 'code';
-  @reactive() private _selectedExperts = 0;  // 0 = dense (no expert pruning)
-  @reactive() private _selectedSteps = 2000;
-  @reactive() private _selectedPruneLevel = 30;  // % of heads to prune
-  @reactive() private _selectedPruneStrategy: 'entropy' | 'gradient' | 'combined' = 'entropy';
-  @reactive() private _selectedCycles = 3;
-  @reactive() private _selectedLearningRate = '2e-4';
+  @reactive() private _totalDownloads = 0;
   @reactive() private _forgeStarting = false;
 
-  /** Forge profiles — presets for common configurations */
-  private static readonly FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
-    conservative: { prune: 10, cycles: 5, lr: '1e-4', steps: 2000, label: 'Conservative', risk: 'Low — safe improvement' },
-    balanced:     { prune: 30, cycles: 3, lr: '2e-4', steps: 1000, label: 'Balanced', risk: 'Medium — best tradeoff' },
-    aggressive:   { prune: 50, cycles: 2, lr: '5e-4', steps: 500,  label: 'Aggressive', risk: 'High — maximum compression' },
-    yolo:         { prune: 70, cycles: 1, lr: '1e-3', steps: 250,  label: 'YOLO', risk: 'Extreme — might break the model' },
-  };
+  // ── Grid state ────────────────────────────────────────────────────
+  @reactive() private _gridJobs: GridJobEntry[] = [];
+  @reactive() private _gridJobSummary = { queued: 0, running: 0, paused: 0, completed: 0, failed: 0 };
+  @reactive() private _gridNodeStatus: GridNodeStatusData | null = null;
+  @reactive() private _gridNodeOnline = false;
+  @reactive() private _targetNodeId = '';
+  @reactive() private _gridNodes: Array<{ node_id: string; node_name: string | null; capabilities: unknown[] }> = [];
 
-  private applyProfile(profileName: string): void {
-    const profile = FactoryWidget.FORGE_PROFILES[profileName];
-    if (!profile) return;
-    this._selectedPruneLevel = profile.prune;
-    this._selectedCycles = profile.cycles;
-    this._selectedLearningRate = profile.lr;
-    this._selectedSteps = profile.steps;
+  private _gridPollInterval: ReturnType<typeof setInterval> | null = null;
+
+  // ── Forge progress (derived) ───────────────────────────────────────
+
+  private get _progressPct(): number {
+    const s = this._forgeStatus;
+    if (!s) return 0;
+    const totalSteps = (s.totalSteps ?? 1000) * (s.totalCycles ?? 1);
+    const currentStep = ((s.cycle ?? 1) - 1) * (s.totalSteps ?? 1000) + (s.step ?? 0);
+    return Math.min(100, Math.round((currentStep / totalSteps) * 100));
   }
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────
+  private get _progressLabel(): string {
+    const s = this._forgeStatus;
+    if (!s) return 'FORGING...';
+    const pct = this._progressPct;
+    const loss = s.loss && s.loss > 0 ? ` · ${s.loss.toFixed(3)}` : '';
+    const eta = s.etaSeconds ? ` · ${this.formatETA(s.etaSeconds)}` : '';
+    if (s.phase === 'loading' || s.phase === 'loading_data') return 'Loading...';
+    if (s.phase === 'baseline_eval') return 'Baseline...';
+    if (s.phase === 'complete') return 'Done';
+    return `${pct}%${loss}${eta}`;
+  }
+
+  private get _isForging(): boolean {
+    const phase = this._forgeStatus?.phase;
+    return phase === 'training' || phase === 'loading' || phase === 'loading_data'
+      || phase === 'baseline_eval' || phase === 'pruning' || phase === 'running'
+      || phase === 'post_train_eval' || phase === 'post_prune_eval' || phase === 'defrag';
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────
 
   override connectedCallback(): void {
     super.connectedCallback();
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
+    this.startGridPolling();
+    this.configureRightPanel();
+  }
+
+  /** Tell the right panel what widget to show for the factory */
+  private configureRightPanel(): void {
+    // Small delay to ensure right panel widget is mounted and listening
+    setTimeout(() => this.emitRightPanelConfig(), 500);
+  }
+
+  private emitRightPanelConfig(): void {
+    Events.emit('layout:rightpanel:configure', {
+      widget: 'factory-stats-widget',
+      contentType: 'factory',
+      sections: [{
+        id: 'factory-stats',
+        title: 'Models',
+        icon: '🏭',
+        widgetTag: 'factory-stats-widget',
+        flexWeight: 1,
+      }],
+    });
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this._gridPollInterval) { clearInterval(this._gridPollInterval); this._gridPollInterval = null; }
   }
 
-  // ── Event Subscriptions (no polling) ──────────────────────────────────
+  // ── Event Subscriptions ────────────────────────────────────────────
 
   private subscribeToForgeEvents(): void {
-    // Subscribe to forge lifecycle events — emitted by the forge daemon/grid node
     Events.subscribe('model:forge:step', (data: any) => {
-      this.forgeStatus = {
+      this._forgeStatus = {
         phase: 'training',
         detail: data.detail ?? '',
-        vram_gb: data.vramGb ?? 0,
+        vramGb: data.vramGb ?? 0,
         timestamp: data.timestamp ?? new Date().toISOString(),
         step: data.step,
-        total_steps: data.totalSteps,
+        totalSteps: data.totalSteps,
         loss: data.loss,
-        it_per_sec: data.itPerSec,
-        eta_seconds: data.etaSeconds,
+        itPerSec: data.itPerSec,
+        etaSeconds: data.etaSeconds,
+        cycle: data.cycle,
+        totalCycles: data.totalCycles,
       };
       if (data.loss !== undefined) {
-        this.lossHistory = [...this.lossHistory.slice(-50), data.loss];
+        this._lossHistory = [...this._lossHistory.slice(-50), data.loss];
       }
     });
 
     Events.subscribe('model:forge:phase', (data: any) => {
-      this.forgeStatus = {
-        ...this.forgeStatus,
-        phase: data.phase,
-        detail: data.detail ?? '',
-        timestamp: data.timestamp ?? new Date().toISOString(),
-      } as ForgeStatus;
-    });
-
-    Events.subscribe('model:forge:sample', (data: any) => {
-      this.outputSamples = [...this.outputSamples, {
-        step: data.step ?? 0,
-        prompt: data.prompt ?? '',
-        output: data.output ?? '',
-        timestamp: data.timestamp ?? new Date().toISOString(),
-      }];
+      if (this._forgeStatus) {
+        this._forgeStatus = { ...this._forgeStatus, phase: data.phase, detail: data.detail ?? '' };
+      }
     });
 
     Events.subscribe('model:forge:complete', (data: any) => {
-      this.forgeStatus = {
+      this._forgeStatus = {
         phase: 'complete',
         detail: data.detail ?? 'Forge complete',
-        vram_gb: 0,
+        vramGb: 0,
         timestamp: data.timestamp ?? new Date().toISOString(),
-        improvement_pct: data.improvementPct,
+        improvementPct: data.improvementPct,
         perplexity: data.perplexity,
       };
-      // Refresh published models after a forge completes
       this.loadPublishedModels();
     });
   }
 
-  // ── Data Loading (one-shot, not polling) ──────────────────────────────
+  // ── Status Polling ─────────────────────────────────────────────────
+  // Forge status is now derived from grid/job-queue polling (see pollGridJobQueue).
+  // No separate forge-status polling needed.
+
+  // ── Grid Polling ───────────────────────────────────────────────────
+
+  private async startGridPolling(): Promise<void> {
+    await this.discoverGridNodes();
+    if (this._targetNodeId) {
+      this.pollGridNodeStatus();
+      this.pollGridJobQueue();
+      this._gridPollInterval = setInterval(() => {
+        this.pollGridNodeStatus();
+        this.pollGridJobQueue();
+      }, 10_000);
+    }
+  }
+
+  private async discoverGridNodes(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_NODES, {});
+      const nodes = (result?.nodes ?? []) as Array<{ node_id: string; node_name: string | null; capabilities: unknown[] }>;
+      this._gridNodes = nodes;
+      // Auto-select first node with compute capability, or first node
+      if (!this._targetNodeId && nodes.length > 0) {
+        const gpuNode = nodes.find(n =>
+          Array.isArray(n.capabilities) && n.capabilities.some((c: any) => c.type === 'compute')
+        );
+        this._targetNodeId = (gpuNode ?? nodes[0]).node_id;
+      }
+    } catch {
+      this._gridNodes = [];
+    }
+  }
+
+  private async pollGridNodeStatus(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_NODE_STATUS, {
+        nodeId: this._targetNodeId,
+      });
+      if (result?.success) {
+        this._gridNodeStatus = result as GridNodeStatusData;
+        this._gridNodeOnline = result.state !== 'offline' && result.state !== 'error';
+      }
+    } catch {
+      this._gridNodeOnline = false;
+      this._gridNodeStatus = null;
+    }
+  }
+
+  private async pollGridJobQueue(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_JOB_QUEUE, {
+        nodeId: this._targetNodeId,
+        state: 'all',
+        limit: 10,
+      });
+      if (result?.success) {
+        this._gridJobs = (result.jobs ?? []) as GridJobEntry[];
+        const summary = result.summary as Record<string, number> | undefined;
+        if (summary) {
+          this._gridJobSummary = {
+            queued: summary.queued ?? 0,
+            running: summary.running ?? 0,
+            paused: summary.paused ?? 0,
+            completed: summary.completed ?? 0,
+            failed: summary.failed ?? 0,
+          };
+        }
+
+        // Derive forge status from the first running grid job
+        const runningJob = this._gridJobs.find(j => j.state === 'running');
+        if (runningJob?.progress) {
+          const p = runningJob.progress;
+          this._forgeStatus = {
+            phase: 'training',
+            detail: `${runningJob.alloyName} on ${runningJob.nodeId}`,
+            vramGb: 0,
+            timestamp: new Date().toISOString(),
+            step: p.step,
+            totalSteps: p.totalSteps,
+            cycle: p.cycle,
+            totalCycles: p.totalCycles,
+          };
+        } else if (!this._gridJobs.some(j => j.state === 'running') && this._forgeStatus?.phase === 'training') {
+          // No running jobs but we had forge status — check if completed
+          const completedJob = this._gridJobs.find(j => j.state === 'completed');
+          if (completedJob) {
+            this._forgeStatus = {
+              phase: 'complete',
+              detail: `${completedJob.alloyName} complete`,
+              vramGb: 0,
+              timestamp: new Date().toISOString(),
+            };
+            this.loadPublishedModels();
+          } else {
+            this._forgeStatus = null;
+          }
+        }
+      }
+    } catch {
+      // Keep existing state
+    }
+  }
+
+  private async controlGridJob(jobId: string, action: string): Promise<void> {
+    try {
+      await this.executeCommand<any, any>(COMMANDS.GRID_JOB_CONTROL, {
+        jobId,
+        action,
+        nodeId: this._targetNodeId,
+      });
+      await this.pollGridJobQueue();
+    } catch (e) {
+      console.error(`Job ${action} failed:`, e);
+    }
+  }
+
+  // ── Data Loading ───────────────────────────────────────────────────
 
   private async loadPublishedModels(): Promise<void> {
     this._isLoading = true;
     try {
-      const result = await this.executeCommand<any, any>('model/list-published', {});
+      const result = await this.executeCommand<any, any>(COMMANDS.MODEL_LIST_PUBLISHED, { includeGguf: true });
       if (result?.models) {
-        this.models = result.models;
+        this._models = result.models.sort((a: any, b: any) => b.downloads - a.downloads);
+        this._totalDownloads = result.totalDownloads ?? 0;
       }
     } catch {
-      // Command not available yet
-      this.models = [];
+      this._models = [];
     }
     this._isLoading = false;
   }
 
-  // ── Rendering ─────────────────────────────────────────────────────────
+  // ── Event Handlers (from child components) ─────────────────────────
+
+  private async onForgeStart(e: CustomEvent): Promise<void> {
+    if (this._isForging || this._forgeStarting) return;
+
+    const { alloy } = e.detail as { params: Record<string, unknown>; alloy: Record<string, unknown> };
+    if (!alloy) {
+      console.error('Forge start: no alloy recipe in event detail');
+      return;
+    }
+
+    // Must have a target node — discovered via grid/nodes on mount
+    if (!this._targetNodeId) {
+      console.error('Forge start: no grid node available. Pair a node with jtag grid/pair first.');
+      return;
+    }
+
+    this._forgeStarting = true;
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_JOB_SUBMIT, {
+        nodeId: this._targetNodeId,
+        alloy,
+        priority: 5,
+      });
+
+      if (result?.success) {
+        // Job queued — grid/job-queue polling will pick up progress
+        console.log(`Forge job ${result.jobId} queued on ${result.nodeId} at position ${result.position}`);
+        // Immediately refresh job list
+        await this.pollGridJobQueue();
+      }
+    } catch (err) {
+      console.error('Forge job submit failed:', err);
+    } finally {
+      this._forgeStarting = false;
+    }
+  }
+
+  private onForgeExport(e: CustomEvent): void {
+    const alloy = e.detail;
+    const blob = new Blob([JSON.stringify(alloy, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${alloy.name}.alloy.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Rendering ──────────────────────────────────────────────────────
 
   static override styles: CSSResultGroup = [
     ReactiveWidget.styles,
-    css`
-      :host {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow-y: auto;
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .factory {
-        padding: 20px 24px;
-        max-width: 1200px;
-      }
-
-      .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 24px;
-      }
-
-      .title {
-        font-size: 20px;
-        font-weight: 700;
-      }
-
-      .subtitle {
-        font-size: 12px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      /* ── Section Layout ──────────────────────────────── */
-
-      .section {
-        margin-bottom: 28px;
-      }
-
-      .section-title {
-        font-size: 14px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 12px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
-      }
-
-      /* ── Active Forge Card ───────────────────────────── */
-
-      .forge-card {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 16px 20px;
-      }
-
-      .forge-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 12px;
-      }
-
-      .forge-phase {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .forge-detail {
-        font-size: 12px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .forge-metrics {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 12px;
-        margin-top: 12px;
-      }
-
-      .metric {
-        text-align: center;
-      }
-
-      .metric-value {
-        font-size: 24px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .metric-label {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-
-      .metric-value.good { color: #00ffc8; }
-      .metric-value.warn { color: #ffaa00; }
-      .metric-value.bad { color: #ff4444; }
-      .metric-value.neutral { color: var(--content-primary, #e0e6ed); }
-
-      /* ── Progress Bar ────────────────────────────────── */
-
-      .progress-bar {
-        height: 4px;
-        background: rgba(255,255,255,0.06);
-        border-radius: 2px;
-        overflow: hidden;
-        margin-top: 12px;
-      }
-
-      .progress-fill {
-        height: 100%;
-        background: linear-gradient(90deg, #00d4ff, #00ffc8);
-        border-radius: 2px;
-        transition: width 0.3s ease;
-      }
-
-      /* ── Model Grid ──────────────────────────────────── */
-
-      .model-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 12px;
-      }
-
-      .model-card {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 14px 16px;
-        transition: border-color 0.2s;
-      }
-
-      .model-card:hover {
-        border-color: var(--accent-primary, #00d4ff);
-      }
-
-      .model-name {
-        font-size: 13px;
-        font-weight: 600;
-        margin-bottom: 4px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .model-meta {
-        display: flex;
-        gap: 12px;
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 8px;
-      }
-
-      .model-improvement {
-        font-size: 16px;
-        font-weight: 700;
-        color: #00ffc8;
-      }
-
-      .model-improvement.negative {
-        color: #ff6666;
-      }
-
-      .model-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-top: 8px;
-      }
-
-      .tag {
-        font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 3px;
-        background: rgba(0, 212, 255, 0.1);
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      /* ── Empty State ─────────────────────────────────── */
-
-      .empty-state {
-        text-align: center;
-        padding: 60px 20px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .empty-state .icon {
-        font-size: 48px;
-        margin-bottom: 12px;
-      }
-
-      .empty-state .message {
-        font-size: 14px;
-        margin-bottom: 8px;
-      }
-
-      .empty-state .hint {
-        font-size: 12px;
-        opacity: 0.7;
-      }
-
-      /* ── Loss Sparkline ──────────────────────────────── */
-
-      .sparkline {
-        margin-top: 8px;
-      }
-
-      .sparkline svg {
-        width: 100%;
-        height: 40px;
-      }
-
-      .sparkline path {
-        fill: none;
-        stroke: #00ffc8;
-        stroke-width: 1.5;
-      }
-
-      /* ── Forge Controls ────────────────────────────────── */
-
-      .forge-controls {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 8px;
-        padding: 16px 20px;
-      }
-
-      .controls-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-
-      .control-group {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .control-label {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .control-select,
-      .control-input {
-        background: rgba(0,0,0,0.3);
-        border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-        border-radius: 4px;
-        color: var(--content-primary, #e0e6ed);
-        font-size: 13px;
-        padding: 8px 10px;
-        font-family: inherit;
-        outline: none;
-        transition: border-color 0.2s;
-      }
-
-      .control-select:focus,
-      .control-input:focus {
-        border-color: var(--accent-primary, #00d4ff);
-      }
-
-      .control-select option {
-        background: #0a1520;
-        color: #e0e6ed;
-      }
-
-      .slider-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .slider-row input[type="range"] {
-        flex: 1;
-        accent-color: var(--accent-primary, #00d4ff);
-        height: 4px;
-      }
-
-      .slider-value {
-        font-size: 13px;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        min-width: 50px;
-        text-align: right;
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .profile-btn {
-        padding: 4px 10px;
-        font-size: 11px;
-        border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 4px;
-        background: rgba(255,255,255,0.05);
-        color: rgba(255,255,255,0.8);
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .profile-btn:hover {
-        background: var(--accent-primary, #00d4ff);
-        color: #000;
-        border-color: transparent;
-      }
-
-      .forge-button {
-        width: 100%;
-        padding: 10px;
-        background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 200, 0.2));
-        border: 1px solid var(--accent-primary, #00d4ff);
-        border-radius: 6px;
-        color: var(--accent-primary, #00d4ff);
-        font-size: 14px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        cursor: pointer;
-        transition: all 0.2s;
-      }
-
-      .forge-button:hover {
-        background: linear-gradient(135deg, rgba(0, 212, 255, 0.35), rgba(0, 255, 200, 0.35));
-        box-shadow: 0 0 16px rgba(0, 212, 255, 0.3);
-      }
-
-      .forge-button:active {
-        transform: scale(0.98);
-      }
-
-      .forge-button:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-        box-shadow: none;
-      }
-
-      .forge-button.forging {
-        background: linear-gradient(135deg, rgba(255, 170, 0, 0.2), rgba(255, 100, 0, 0.2));
-        border-color: #ffaa00;
-        color: #ffaa00;
-        animation: pulse-glow 2s ease-in-out infinite;
-      }
-
-      @keyframes pulse-glow {
-        0%, 100% { box-shadow: 0 0 8px rgba(255, 170, 0, 0.2); }
-        50% { box-shadow: 0 0 20px rgba(255, 170, 0, 0.4); }
-      }
-
-      /* ── Output Log ──────────────────────────────────── */
-
-      .output-log {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .log-entry {
-        background: var(--surface-elevated, rgba(255,255,255,0.04));
-        border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-        border-radius: 6px;
-        overflow: hidden;
-        transition: border-color 0.2s;
-      }
-
-      .log-entry:hover {
-        border-color: rgba(255,255,255,0.15);
-      }
-
-      .log-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px 12px;
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .log-header:hover {
-        background: rgba(255,255,255,0.02);
-      }
-
-      .log-step {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--accent-primary, #00d4ff);
-        font-variant-numeric: tabular-nums;
-      }
-
-      .log-preview {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        flex: 1;
-        margin: 0 12px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-      }
-
-      .log-time {
-        font-size: 10px;
-        color: var(--content-tertiary, #5a6070);
-        white-space: nowrap;
-      }
-
-      .log-expand {
-        font-size: 10px;
-        color: var(--content-tertiary, #5a6070);
-        margin-left: 8px;
-      }
-
-      .log-body {
-        padding: 0 12px 12px;
-        border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
-      }
-
-      .log-prompt {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 6px;
-        font-style: italic;
-      }
-
-      .log-output {
-        font-size: 12px;
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        line-height: 1.5;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--content-primary, #e0e6ed);
-        background: rgba(0,0,0,0.2);
-        padding: 10px;
-        border-radius: 4px;
-        max-height: 400px;
-        overflow-y: auto;
-      }
-    `,
+    unsafeCSS(FACTORY_STYLES),
   ];
 
   protected override render(): TemplateResult {
@@ -646,356 +378,221 @@ export class FactoryWidget extends ReactiveWidget {
           <span class="subtitle">continuum-ai</span>
         </div>
 
-        ${this.renderForgeControls()}
-        ${this.renderActiveForge()}
-        ${this.renderOutputLog()}
-        ${this.renderPublishedModels()}
-      </div>
-    `;
-  }
-
-  // ── Forge Controls ─────────────────────────────────────────────────────
-
-  private get _isMoe(): boolean {
-    return this._selectedModel.includes('35B') || this._selectedModel.includes('MoE');
-  }
-
-  private get _isForging(): boolean {
-    return this.forgeStatus?.phase === 'training' || this.forgeStatus?.phase === 'loading';
-  }
-
-  private renderForgeControls(): TemplateResult {
-    return html`
-      <div class="section">
-        <div class="section-title">Forge</div>
-        <div class="forge-controls">
-          <div class="controls-grid">
-            <div class="control-group">
-              <span class="control-label">Base Model</span>
-              <select class="control-select"
-                .value=${this._selectedModel}
-                @change=${(e: Event) => this._selectedModel = (e.target as HTMLSelectElement).value}>
-                <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
-                <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
-                <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
-                <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Domain</span>
-              <select class="control-select"
-                .value=${this._selectedDomain}
-                @change=${(e: Event) => this._selectedDomain = (e.target as HTMLSelectElement).value}>
-                <option value="code">Code</option>
-                <option value="reasoning">Reasoning</option>
-                <option value="general">General</option>
-                <option value="chat">Chat</option>
-              </select>
-            </div>
-            ${this._isMoe ? html`
-            <div class="control-group">
-              <span class="control-label">Experts (MoE)</span>
-              <div class="slider-row">
-                <input type="range" min="16" max="128" step="16"
-                  .value=${String(this._selectedExperts || 64)}
-                  @input=${(e: Event) => this._selectedExperts = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedExperts || 64}</span>
-              </div>
-            </div>
-            ` : nothing}
-            <div class="control-group">
-              <span class="control-label">Pruning Level</span>
-              <div class="slider-row">
-                <input type="range" min="0" max="70" step="5"
-                  .value=${String(this._selectedPruneLevel)}
-                  @input=${(e: Event) => this._selectedPruneLevel = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedPruneLevel}%${this._selectedPruneLevel > 50 ? ' ⚠️' : ''}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Prune Strategy</span>
-              <select class="control-select"
-                .value=${this._selectedPruneStrategy}
-                @change=${(e: Event) => this._selectedPruneStrategy = (e.target as HTMLSelectElement).value as 'entropy' | 'gradient' | 'combined'}>
-                <option value="entropy">Entropy (recommended)</option>
-                <option value="gradient">Gradient</option>
-                <option value="combined">Combined</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Forge Cycles</span>
-              <div class="slider-row">
-                <input type="range" min="1" max="10" step="1"
-                  .value=${String(this._selectedCycles)}
-                  @input=${(e: Event) => this._selectedCycles = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedCycles}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Training Steps</span>
-              <div class="slider-row">
-                <input type="range" min="100" max="5000" step="100"
-                  .value=${String(this._selectedSteps)}
-                  @input=${(e: Event) => this._selectedSteps = parseInt((e.target as HTMLInputElement).value)}>
-                <span class="slider-value">${this._selectedSteps}</span>
-              </div>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Learning Rate</span>
-              <select class="control-select"
-                .value=${this._selectedLearningRate}
-                @change=${(e: Event) => this._selectedLearningRate = (e.target as HTMLSelectElement).value}>
-                <option value="1e-5">1e-5 (very slow)</option>
-                <option value="5e-5">5e-5</option>
-                <option value="1e-4">1e-4 (conservative)</option>
-                <option value="2e-4">2e-4 (balanced)</option>
-                <option value="5e-4">5e-4 (aggressive)</option>
-                <option value="1e-3">1e-3 (YOLO)</option>
-              </select>
-            </div>
-            <div class="control-group">
-              <span class="control-label">Profile</span>
-              <div style="display:flex;gap:6px;flex-wrap:wrap">
-                ${Object.entries(FactoryWidget.FORGE_PROFILES).map(([key, p]) => html`
-                  <button class="profile-btn" title=${p.risk}
-                    @click=${() => this.applyProfile(key)}>${p.label}</button>
-                `)}
-              </div>
-            </div>
-          </div>
-          <button class="forge-button ${this._isForging ? 'forging' : ''}"
-            ?disabled=${this._forgeStarting}
-            @click=${this.startForge}>
-            ${this._isForging ? 'FORGING...' : this._forgeStarting ? 'STARTING...' : 'START FORGE'}
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  private async startForge(): Promise<void> {
-    if (this._isForging || this._forgeStarting) return;
-    this._forgeStarting = true;
-
-    try {
-      // Fire forge command — routes to a grid node with GPU
-      await this.executeCommand<any, any>('model/forge', {
-        model: this._selectedModel,
-        domain: this._selectedDomain,
-        experts: this._isMoe ? (this._selectedExperts || 64) : 0,
-        steps: this._selectedSteps,
-        pruneLevel: this._selectedPruneLevel / 100,  // 0.0-0.7
-        pruneStrategy: this._selectedPruneStrategy,
-        cycles: this._selectedCycles,
-        learningRate: this._selectedLearningRate,
-      });
-    } catch (e) {
-      console.error('Forge start failed:', e);
-      // TODO: show error in UI
-    } finally {
-      this._forgeStarting = false;
-    }
-  }
-
-  // ── Active Forge Section ──────────────────────────────────────────────
-
-  private renderActiveForge(): TemplateResult {
-    const status = this.forgeStatus;
-
-    return html`
-      <div class="section">
-        <div class="section-title">Active Forge</div>
-        ${status ? this.renderForgeCard(status) : this.renderNoForge()}
-      </div>
-    `;
-  }
-
-  private renderForgeCard(s: ForgeStatus): TemplateResult {
-    const progress = s.step && s.total_steps ? (s.step / s.total_steps) * 100 : 0;
-    const eta = s.eta_seconds ? this.formatETA(s.eta_seconds) : '--';
-    const lossClass = s.loss !== undefined ? (s.loss < 2.5 ? 'good' : s.loss < 3.0 ? 'warn' : 'neutral') : 'neutral';
-
-    return html`
-      <div class="forge-card">
-        <div class="forge-header">
-          <span class="forge-phase">${s.phase.toUpperCase()}</span>
-          <span class="forge-detail">${s.detail}</span>
-        </div>
-
-        <div class="forge-metrics">
-          <div class="metric">
-            <div class="metric-value ${lossClass}">${s.loss?.toFixed(2) ?? '--'}</div>
-            <div class="metric-label">Loss</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${s.step ?? '--'}/${s.total_steps ?? '--'}</div>
-            <div class="metric-label">Step</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${eta}</div>
-            <div class="metric-label">ETA</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value ${s.vram_gb > 28 ? 'warn' : 'neutral'}">${s.vram_gb?.toFixed(1) ?? '--'}GB</div>
-            <div class="metric-label">VRAM</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value neutral">${s.it_per_sec?.toFixed(1) ?? '--'}</div>
-            <div class="metric-label">it/s</div>
-          </div>
-          ${s.improvement_pct !== undefined ? html`
-          <div class="metric">
-            <div class="metric-value good">${s.improvement_pct > 0 ? '+' : ''}${s.improvement_pct.toFixed(1)}%</div>
-            <div class="metric-label">Improvement</div>
-          </div>
-          ` : nothing}
-        </div>
-
-        ${progress > 0 ? html`
-          <div class="progress-bar">
-            <div class="progress-fill" style="width: ${progress}%"></div>
-          </div>
-        ` : nothing}
-
-        ${this.lossHistory.length > 2 ? this.renderSparkline() : nothing}
-      </div>
-    `;
-  }
-
-  private renderNoForge(): TemplateResult {
-    return html`
-      <div class="empty-state">
-        <div class="icon">&#9881;</div>
-        <div class="message">No active forges</div>
-        <div class="hint">Start one: python scripts/forge_model.py Qwen/Qwen3.5-4B --domain code</div>
-      </div>
-    `;
-  }
-
-  // ── Output Log Section ─────────────────────────────────────────────────
-
-  @reactive() private _expandedSample: number = -1;
-
-  private renderOutputLog(): TemplateResult {
-    if (this.outputSamples.length === 0) {
-      return html``;
-    }
-
-    // Show newest first
-    const samples = [...this.outputSamples].reverse();
-
-    return html`
-      <div class="section">
-        <div class="section-title">Output Log (${samples.length})</div>
-        <div class="output-log">
-          ${samples.map((s, i) => this.renderLogEntry(s, i))}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderLogEntry(sample: ForgeSample, index: number): TemplateResult {
-    const expanded = this._expandedSample === index;
-    const preview = sample.output.split('\n')[0].slice(0, 80);
-    const time = new Date(sample.timestamp).toLocaleTimeString();
-
-    return html`
-      <div class="log-entry">
-        <div class="log-header" @click=${() => this.toggleSample(index)}>
-          <span class="log-step">Step ${sample.step}</span>
-          <span class="log-preview">${preview}</span>
-          <span class="log-time">${time}</span>
-          <span class="log-expand">${expanded ? '\u25B2' : '\u25BC'}</span>
-        </div>
-        ${expanded ? html`
-          <div class="log-body">
-            <div class="log-prompt">${sample.prompt}</div>
-            <div class="log-output">${sample.output}</div>
-          </div>
-        ` : nothing}
-      </div>
-    `;
-  }
-
-  private toggleSample(index: number): void {
-    this._expandedSample = this._expandedSample === index ? -1 : index;
-  }
-
-  // ── Published Models Section ──────────────────────────────────────────
-
-  private renderPublishedModels(): TemplateResult {
-    if (this.models.length === 0 && !this._isLoading) {
-      return html`
         <div class="section">
-          <div class="section-title">Published Models</div>
-          <div class="empty-state">
-            <div class="message">No models loaded</div>
-            <div class="hint">Published models will appear here once model/list-published is wired</div>
+          <div class="section-title">Factory Floor</div>
+          ${this.renderNodeStatusBar()}
+          ${this._forgeStatus ? html`
+            <active-forge-element
+              .status=${this._forgeStatus}
+              .lossHistory=${this._lossHistory}
+            ></active-forge-element>
+          ` : nothing}
+          ${this.renderGridJobList()}
+        </div>
+
+        <div class="section">
+          <div class="section-title">Console</div>
+          <forge-controls-element
+            .forging=${this._isForging}
+            .starting=${this._forgeStarting}
+            .progressPct=${this._progressPct}
+            .progressLabel=${this._progressLabel}
+            @forge-start=${this.onForgeStart}
+            @forge-export=${this.onForgeExport}
+          ></forge-controls-element>
+        </div>
+
+      </div>
+    `;
+  }
+
+  // ── Grid Rendering ─────────────────────────────────────────────────
+
+  private openGridTab(): void {
+    ContentService.open('grid-overview', undefined, { title: 'Grid' });
+  }
+
+  private renderNodeStatusBar(): TemplateResult {
+    if (this._gridNodes.length === 0 && !this._targetNodeId) {
+      return html`
+        <div class="node-bar offline node-bar-link" @click=${() => this.openGridTab()}>
+          <div class="node-dot"></div>
+          <span class="offline-msg">No grid nodes discovered</span>
+          <span class="grid-link">Manage Grid →</span>
+        </div>
+      `;
+    }
+
+    const s = this._gridNodeStatus;
+    const gpu = s?.gpu;
+    const memPct = gpu?.memoryTotalMb ? Math.round((gpu.memoryUsedMb / gpu.memoryTotalMb) * 100) : 0;
+    const displayName = this._gridNodes.find(n => n.node_id === this._targetNodeId)?.node_name ?? this._targetNodeId;
+
+    return html`
+      <div class="node-bar ${this._gridNodeOnline ? 'online' : 'offline'}">
+        ${this.renderForemanBadge()}
+        <div class="node-dot"></div>
+        ${this._gridNodes.length > 1 ? html`
+          <select class="node-select"
+            .value=${this._targetNodeId}
+            @change=${(e: Event) => {
+              this._targetNodeId = (e.target as HTMLSelectElement).value;
+              this._gridNodeStatus = null;
+              this._gridNodeOnline = false;
+              this.pollGridNodeStatus();
+              this.pollGridJobQueue();
+            }}>
+            ${this._gridNodes.map(n => html`
+              <option value=${n.node_id}>${n.node_name ?? n.node_id}</option>
+            `)}
+          </select>
+        ` : html`
+          <span class="node-name">${displayName}</span>
+        `}
+        ${this._gridNodeOnline && gpu?.name ? html`
+          <span class="gpu-label">${gpu.name}</span>
+          <div class="bar-group">
+            <span class="bar-label">GPU</span>
+            <div class="usage-bar"><div class="usage-fill gpu-fill" style="width:${gpu.utilization}%"></div></div>
+            <span class="bar-val">${gpu.utilization}%</span>
+          </div>
+          <div class="bar-group">
+            <span class="bar-label">MEM</span>
+            <div class="usage-bar"><div class="usage-fill mem-fill" style="width:${memPct}%"></div></div>
+            <span class="bar-val">${Math.round(gpu.memoryUsedMb / 1024)}/${Math.round(gpu.memoryTotalMb / 1024)}GB</span>
+          </div>
+          <span class="temp-label">${gpu.temperatureC}°C</span>
+        ` : html`
+          <span class="offline-msg">${s ? s.state : 'connecting...'}</span>
+        `}
+        <span class="grid-link" @click=${() => this.openGridTab()}>Grid →</span>
+      </div>
+    `;
+  }
+
+  /** Render Foreman identity badge — the persona responsible for this node.
+   *  Shows avatar + name if assigned, placeholder if not. Click to DM/call. */
+  private renderForemanBadge(): TemplateResult {
+    // TODO: Wire to actual Foreman PersonaUser once #671 is implemented
+    // For now, show a placeholder that indicates the concept
+    const hasForeman = false; // Will be: this._foremanUser !== null
+    const foremanName = 'Foreman'; // Will be: this._foremanUser?.entity.displayName
+    const nodeOnline = this._gridNodeOnline;
+
+    if (!hasForeman) {
+      return html`
+        <div class="foreman-badge vacant" title="No foreman assigned to this node">
+          <div class="foreman-avatar vacant-avatar">?</div>
+          <div class="foreman-info">
+            <span class="foreman-role">FOREMAN</span>
+            <span class="foreman-name">Unassigned</span>
           </div>
         </div>
       `;
     }
 
     return html`
-      <div class="section">
-        <div class="section-title">Published Models (${this.models.length})</div>
-        <div class="model-grid">
-          ${this.models.map(m => this.renderModelCard(m))}
+      <div class="foreman-badge ${nodeOnline ? 'online' : 'offline'}" title="Contact ${foremanName}">
+        <div class="foreman-avatar">
+          <div class="foreman-status-dot ${nodeOnline ? 'online' : 'offline'}"></div>
+        </div>
+        <div class="foreman-info">
+          <span class="foreman-role">FOREMAN</span>
+          <span class="foreman-name">${foremanName}</span>
+        </div>
+        <div class="foreman-actions">
+          <button class="foreman-action-btn" title="DM Foreman">DM</button>
+          <button class="foreman-action-btn call" title="Call Foreman">Call</button>
         </div>
       </div>
     `;
   }
 
-  private renderModelCard(m: PublishedModel): TemplateResult {
-    const impNum = parseFloat(m.improvement);
-    const impClass = isNaN(impNum) ? '' : (impNum < 0 ? 'negative' : '');
+  private renderGridJobList(): TemplateResult {
+    const hasJobs = this._gridJobs.length > 0;
+    const hasForge = !!this._forgeStatus;
+
+    if (!hasJobs && !hasForge) {
+      return html`
+        <div class="empty-floor">
+          <div class="empty-floor-icon">&#9881;</div>
+          <div class="empty-floor-msg">No active forges</div>
+          <div class="empty-floor-hint">Configure a forge above and hit START FORGE</div>
+        </div>
+      `;
+    }
+
+    if (!hasJobs) return html``;
+
+    const deadJobs = this._gridJobs.filter(j => j.state === 'failed' || j.state === 'completed' || j.state === 'cancelled');
+    const liveJobs = this._gridJobs.filter(j => j.state === 'running' || j.state === 'queued' || j.state === 'paused');
 
     return html`
-      <div class="model-card">
-        <div class="model-name">${m.name}</div>
-        <div class="model-meta">
-          <span>${m.domain}</span>
-          <span>${m.size}</span>
-          <span>${m.downloads.toLocaleString()} downloads</span>
+      <div class="grid-jobs">
+        <div class="jobs-header">
+          ${this._gridJobSummary.running > 0 ? html`<span class="jc running">${this._gridJobSummary.running} running</span>` : nothing}
+          ${this._gridJobSummary.queued > 0 ? html`<span class="jc queued">${this._gridJobSummary.queued} queued</span>` : nothing}
+          ${this._gridJobSummary.paused > 0 ? html`<span class="jc paused">${this._gridJobSummary.paused} paused</span>` : nothing}
+          ${this._gridJobSummary.completed > 0 ? html`<span class="jc completed">${this._gridJobSummary.completed} done</span>` : nothing}
+          ${deadJobs.length > 0 ? html`
+            <button class="jc-clear" @click=${() => this.clearDeadJobs()}>Clear ${deadJobs.length} finished</button>
+          ` : nothing}
         </div>
-        <div class="model-improvement ${impClass}">${m.improvement}</div>
-        <div class="model-tags">
-          ${m.tags.map(t => html`<span class="tag">${t}</span>`)}
-        </div>
+        ${liveJobs.map(job => this.renderJobRow(job))}
+        ${deadJobs.map(job => this.renderJobRow(job))}
       </div>
     `;
   }
 
-  // ── Sparkline ─────────────────────────────────────────────────────────
-
-  private renderSparkline(): TemplateResult {
-    const data = this.lossHistory;
-    if (data.length < 2) return html``;
-
-    const min = Math.min(...data);
-    const max = Math.max(...data);
-    const range = max - min || 1;
-    const w = 100;
-    const h = 40;
-
-    const points = data.map((v, i) => {
-      const x = (i / (data.length - 1)) * w;
-      const y = h - ((v - min) / range) * (h - 4) - 2;
-      return `${x},${y}`;
-    });
-
-    const d = `M ${points.join(' L ')}`;
-
+  private renderJobRow(job: GridJobEntry): TemplateResult {
     return html`
-      <div class="sparkline">
-        <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-          <path d="${d}" />
-        </svg>
+      <div class="job-row ${job.state}">
+        <div class="job-info">
+          <span class="job-name">${job.alloyName}</span>
+          <span class="job-state-badge">${job.state}</span>
+          ${job.progress?.totalSteps > 0 ? html`
+            <span class="job-progress">${job.progress.step}/${job.progress.totalSteps}</span>
+          ` : nothing}
+          ${job.startedAt ? html`<span class="job-time">${this.formatRelativeTime(job.startedAt)}</span>` : nothing}
+        </div>
+        <div class="job-actions">
+          ${job.state === 'running' ? html`
+            <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'pause')} title="Pause">&#9208;</button>
+            <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+          ${job.state === 'paused' ? html`
+            <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'resume')} title="Resume">&#9654;</button>
+            <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+          ${job.state === 'failed' || job.state === 'completed' || job.state === 'cancelled' ? html`
+            <button class="job-btn cancel" @click=${() => this.dismissJob(job.jobId)} title="Dismiss">&#10005;</button>
+          ` : nothing}
+        </div>
       </div>
     `;
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────
+  private dismissJob(jobId: string): void {
+    this._gridJobs = this._gridJobs.filter(j => j.jobId !== jobId);
+  }
+
+  private clearDeadJobs(): void {
+    this._gridJobs = this._gridJobs.filter(j =>
+      j.state === 'running' || j.state === 'queued' || j.state === 'paused'
+    );
+  }
+
+  private formatRelativeTime(iso: string): string {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────
 
   private formatETA(seconds: number): string {
     if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -1006,4 +603,7 @@ export class FactoryWidget extends ReactiveWidget {
   }
 }
 
-// Registration handled by centralized BROWSER_WIDGETS registry
+// Self-register
+if (!customElements.get('factory-widget')) {
+  customElements.define('factory-widget', FactoryWidget);
+}

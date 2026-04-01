@@ -2,14 +2,14 @@
   "uniqueId": "factory",
   "name": "Factory",
   "displayName": "Factory",
-  "description": "Model forge production floor — shows active forges, queue, published models, and resource gauges",
-  "version": 1,
+  "description": "Model forge production floor — active forges, published models, grid status, leaderboard",
+  "version": 2,
 
   "layout": {
-    "widgets": [
-      { "widget": "room-list-widget", "position": "left", "order": 0, "persistent": true },
-      { "widget": "factory-widget", "position": "center", "order": 0 }
-    ]
+    "main": ["factory-widget"],
+    "right": {
+      "widgets": ["factory-stats-widget"]
+    }
   },
 
   "pipeline": [

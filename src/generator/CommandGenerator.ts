@@ -56,7 +56,7 @@ export class CommandGenerator extends ModuleGenerator<CommandSpec> {
     }
 
     // Compute className once
-    const className = this.currentSpec.name.split('/').map(part =>
+    const className = this.currentSpec.name.split(/[\/-]/).map(part =>
       part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
     ).join('');
 

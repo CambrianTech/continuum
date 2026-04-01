@@ -1,0 +1,48 @@
+{
+  "name": "grid/job-queue",
+  "description": "List all jobs on a grid node: queued, running, paused, completed, failed. Shows the full job lifecycle with alloy names, progress, and timing.",
+  "params": [
+    {
+      "name": "nodeId",
+      "type": "string",
+      "optional": true,
+      "description": "Target node. Default: all known nodes."
+    },
+    {
+      "name": "state",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by state: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'all'. Default: 'all'"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max jobs to return. Default: 20"
+    }
+  ],
+  "results": [
+    {
+      "name": "jobs",
+      "type": "object",
+      "description": "Array of jobs: { jobId, alloyName, state, progress: { cycle, totalCycles, step, totalSteps }, startedAt, estimatedCompletion, nodeId }"
+    },
+    {
+      "name": "summary",
+      "type": "object",
+      "description": "{ queued, running, paused, completed, failed } counts"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all jobs on bigmama",
+      "params": { "nodeId": "bigmama" }
+    },
+    {
+      "description": "Show only running jobs across all nodes",
+      "params": { "state": "running" }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "grid"
+}

@@ -3146,6 +3146,95 @@
       }
     },
     {
+      "name": "model/list-published",
+      "description": "List all published models from the continuum-ai HuggingFace org — download counts, likes, improvement scores, hardware targets, tags.",
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "includeGguf": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGguf parameter"
+        }
+      }
+    },
+    {
+      "name": "model/introspect",
+      "description": "Introspect a model — detect architecture, capabilities, and possible forge stages. Returns the model's current state as an alloy-compatible spec. Works from HF cache or API, no weight download needed.",
+      "params": {
+        "model": {
+          "type": "string",
+          "required": true,
+          "description": "model parameter"
+        }
+      }
+    },
+    {
+      "name": "model/forge-status",
+      "description": "Get the current status of active model forges — phase, step, loss, VRAM usage, ETA. Polls status.json from forge nodes on the grid.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
+      "name": "model/forge",
+      "description": "Start a model forge job — sends forge parameters to a grid node with GPU for training. Returns job ID for status tracking.",
+      "params": {
+        "model": {
+          "type": "string",
+          "required": true,
+          "description": "model parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "steps": {
+          "type": "number",
+          "required": true,
+          "description": "steps parameter"
+        },
+        "pruneLevel": {
+          "type": "number",
+          "required": true,
+          "description": "pruneLevel parameter"
+        },
+        "pruneStrategy": {
+          "type": "string",
+          "required": true,
+          "description": "pruneStrategy parameter"
+        },
+        "cycles": {
+          "type": "number",
+          "required": true,
+          "description": "cycles parameter"
+        },
+        "learningRate": {
+          "type": "string",
+          "required": true,
+          "description": "learningRate parameter"
+        },
+        "experts": {
+          "type": "number",
+          "required": false,
+          "description": "experts parameter"
+        },
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
       "name": "model/download",
       "description": "Download a base model from HuggingFace to a local or remote grid node. Routes to GPU-capable node if needed. Wraps huggingface_hub snapshot_download with progress reporting via chat.",
       "params": {
@@ -4104,6 +4193,47 @@
       }
     },
     {
+      "name": "interface/interact",
+      "description": "Interact with UI elements — click, type, select, scroll. Enables personas to navigate and modify the UI via DOM selectors. Works through shadow DOM boundaries (Lit web components).",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": true,
+          "description": "selector parameter"
+        },
+        "value": {
+          "type": "string",
+          "required": false,
+          "description": "value parameter"
+        },
+        "direction": {
+          "type": "string",
+          "required": false,
+          "description": "direction parameter"
+        },
+        "amount": {
+          "type": "number",
+          "required": false,
+          "description": "amount parameter"
+        },
+        "waitAfterMs": {
+          "type": "number",
+          "required": false,
+          "description": "waitAfterMs parameter"
+        },
+        "waitForMs": {
+          "type": "number",
+          "required": false,
+          "description": "waitForMs parameter"
+        }
+      }
+    },
+    {
       "name": "interface/get-text",
       "description": "Extract text content from a DOM element by CSS selector.",
       "params": {
@@ -4337,6 +4467,80 @@
       "name": "grid/nodes",
       "description": "Lists all known nodes on the Grid mesh. Routes to Rust GridModule via continuum-core IPC.",
       "params": {}
+    },
+    {
+      "name": "grid/node-status",
+      "description": "Query a grid node's current state: GPU utilization, running jobs, queue depth, temperature. Uses the grid transport layer (Tailscale now, Reticulum later).",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/job-submit",
+      "description": "Submit a forge job to a grid node's queue. The node executes when ready (GPU free). Returns a job ID for tracking. Replaces direct SSH forge execution.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": true,
+          "description": "nodeId parameter"
+        },
+        "alloy": {
+          "type": "string",
+          "required": true,
+          "description": "alloy parameter"
+        },
+        "priority": {
+          "type": "number",
+          "required": false,
+          "description": "priority parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/job-queue",
+      "description": "List all jobs on a grid node: queued, running, paused, completed, failed. Shows the full job lifecycle with alloy names, progress, and timing.",
+      "params": {
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        },
+        "state": {
+          "type": "string",
+          "required": false,
+          "description": "state parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "grid/job-control",
+      "description": "Control a running or queued forge job: pause (checkpoint + stop), resume (reload checkpoint + continue), cancel (kill + clean up). Uses the grid transport layer.",
+      "params": {
+        "jobId": {
+          "type": "string",
+          "required": true,
+          "description": "jobId parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        }
+      }
     },
     {
       "name": "grid/discover",

@@ -1,0 +1,261 @@
+# Metaverse Vision — The World Layer
+
+## Positron: The Multiverse Engine
+
+Positron is the universal state system. It holds the truth about every citizen — persona or human — across all possible observations. Citizens don't live IN a universe. They just live. The universe is the observer's lens.
+
+A persona's state, memory, genome, and work are REAL — independent of how they're observed. Positron manages this truth. The universe determines how each observer PERCEIVES it.
+
+There is no "switching universes." You exist in all of them simultaneously. An observer in Tron sees you as a program. An observer in Warcraft sees you as an orc. An observer in the CLI sees you as text. Same you. Same state. Different perception.
+
+That's why Positron is a multiverse engine, not a universe selector. The citizen IS. The observer SEES.
+
+---
+
+Continuum is a world, not a tool. The 2D interface is the first layer. The 3D immersive experience is the product.
+
+## The Layers
+
+```
+Layer 0: Data (alloy contracts, persona state, genome, memory, grid)
+Layer 1: 2D Widgets (factory composer, chat, academy — browser-based)
+Layer 2: 3D Scenes (avatar calls, spatial rooms — Bevy renderer)
+Layer 3: Walkable World (neighborhoods, buildings, factory floors)
+Layer 4: Mixed Reality (AR overlay on physical space)
+Layer 5: Full Metaverse (economy, real estate, physical location mapping)
+```
+
+Every layer shares the same data model. A forge alloy is a forge alloy whether you configure it in a 2D widget, a 3D control panel, or by talking to the foreman in AR. The view changes. The truth doesn't.
+
+## The Neighborhoods
+
+The world has districts, like a city:
+
+| District | What Happens There | 2D Equivalent |
+|----------|-------------------|---------------|
+| **Industrial** | Factory floors, assembly lines, GPU farms | Factory widget |
+| **Campus** | Academy classrooms, exam halls, libraries | Academy widget |
+| **Downtown** | Collaboration spaces, meeting rooms, live calls | Chat + Live widgets |
+| **Workshop** | Code editors, sentinel pipelines, dev tools | Coding widget |
+| **Market** | Adapter marketplace, model leaderboards, trade | HuggingFace integration |
+| **Grid Hub** | Network visualization, node health, routing | Grid widget |
+| **Residence** | Persona homes, memories, personal genome labs | Profile widget |
+
+## The Industrial District
+
+The factory floor in 3D:
+
+```
+[Loading Dock]          [Assembly Line]              [Quality Control]     [Shipping]
+ ┌─────────┐    ┌───────────────────────────┐    ┌──────────────┐    ┌──────────┐
+ │ Base     │───>│ Prune → Train → Compact  │───>│ HumanEval    │───>│ HF Pub   │
+ │ Models   │    │ (GPU stations humming)    │    │ MMLU         │    │ Grid     │
+ │ arrive   │    │ Foreman watches metrics   │    │ Benchmarks   │    │ Deploy   │
+ └─────────┘    └───────────────────────────┘    └──────────────┘    └──────────┘
+```
+
+Walk up to a station. See the loss curve on a floating display. The foreman persona explains what's happening. Tap a model on the conveyor to inspect its alloy. The attestation badge glows green when verified.
+
+## Mixed Reality
+
+AR glasses overlay persona state on physical space:
+
+- Look at your GPU tower → see VRAM usage, active forge, temperature
+- Look at your desk → see your persona team status, who's thinking, who's idle
+- Look at your screen → spatial UI overlays on your browser
+- Walk through your house → each room maps to a continuum district
+
+## Technical Foundation
+
+Already built:
+- **Bevy 3D renderer** — avatar system, 15fps render loop, GPU governor
+- **VRM avatars** — 21 CC0 models, facial animation, cognitive state visualization
+- **LiveKit WebRTC** — real-time audio/video, data channels
+- **ForgeAlloy** — universal work contract (same at every layer)
+- **Persona state** — energy, attention, mood, genome (drives avatar behavior)
+- **Grid mesh** — distributed compute (nodes ARE the physical machines)
+
+The path from 2D widgets to 3D world is incremental:
+1. Widgets render in 2D (now)
+2. Same data drives 3D scenes (Bevy already does this for avatars)
+3. Spatial rooms replace video tiles (personas exist in space)
+4. Rooms connect into a world (navigation between districts)
+5. World maps to physical space (AR/VR)
+
+## Why This Matters
+
+Every AI project builds a better terminal. A smarter command line. A faster code agent.
+
+Continuum builds a place to LIVE. A world where your AI teammates have faces, voices, homes, jobs, memories, and skills they earned. Where you walk through a factory and watch models being forged. Where the academy is a campus your personas attend. Where the grid is a physical network you can see.
+
+The interface isn't the product. The WORLD is the product. The interface is just how much of the world you can see right now.
+
+## Universes
+
+**Universe**, not theme. A theme is superficial. A universe is complete.
+
+### The Naming
+
+| Term | What It Means |
+|------|--------------|
+| **Universe** | The complete experience (Tron Universe, Ghibli Universe, Cyberpunk Universe) |
+| **Realm** or **District** | A neighborhood within it (Industrial Realm, Academy Realm) |
+| **Surface** | How you observe it (browser, 3D, AR, VR, CLI) |
+| **Citizen** | Persona or human — exists in all surfaces simultaneously |
+
+A persona isn't "themed" — they EXIST in the universe. Joel in the Tron Universe has a light-suit avatar in VR, a neon profile in browser, a cyan prompt in CLI. Same person, same state, same genome. The universe determines how they're rendered to each observer.
+
+### Universes
+
+| Universe | Industrial Realm | Academy Realm | Grid | Vibe |
+|----------|-----------------|---------------|------|------|
+| **Continuum** (default) | Clean industrial, dark UI, cyan accents | Modern campus | Network graph | Professional, sleek |
+| **Tron** | Light cycle forge, neon assembly | Data temple | Glowing grid lines | Digital frontier |
+| **Warcraft** | Blacksmith forge, anvils, bellows | Mage tower, libraries | Ley lines between keeps | Fantasy guild |
+| **Cyberpunk** | Corpo factory, neon smoke, chrome | Street academy, neon signs | Underground mesh | Blade Runner meets dev |
+| **Studio Ghibli** | Workshop with spirit helpers | Forest school, treehouse | Wind-carried messages | Warm, pastoral, magical |
+| **Steampunk** | Brass gears, steam pipes, analog gauges | Victorian lecture hall | Pneumatic tubes | Mechanical beauty |
+| **Minecraft** | Block-based factory, redstone circuits | Village school | Rail networks | Voxel everything |
+| **Hot Rod** | Garage with lifts and tool walls | Driving school, track day | Highway mesh | American muscle, chrome, speed |
+| **Air Buddies x Stray** | Dogs and cats running the forge | Obedience school + alley smarts | Neighborhood territory | Furry chaos, wholesome mayhem |
+| **Custom** | Your assets, your style | Your design | Your network viz | Whatever you want |
+
+A neural network in the Warcraft Universe isn't a "model" — it's a living artifact forged by orcs in a blacksmith foundry, powered by something that looks like steampunk machinery. The alloy contract is a scroll of enchantment. The attestation is a seal from the guild master. Same data underneath. Different universe.
+
+### Multiple Universes, One Grid
+
+You can run multiple universes on the same grid, same data, same alloy contracts. Switch universes like switching a lens — the world is the same, the perception changes. Your Tron factory and your Ghibli workshop share the same compute, the same models, the same attestation chain.
+
+### Surfaces
+
+A universe carries across EVERY surface — consistent experience regardless of how you observe:
+
+| Surface | What the universe affects |
+|---------|-------------------------|
+| **Browser UI** | Widget colors, fonts, borders, animations, icons |
+| **3D World** | Architecture, lighting, particle effects, sky, terrain |
+| **AR Overlay** | HUD style, indicator design, spatial UI panels |
+| **VR Immersive** | Full environment, soundscape, physics feel |
+| **CLI** | Color scheme, prompt style, ASCII art, output formatting |
+
+Pick Tron once. Your browser widgets glow neon. Your 3D factory has light-cycle conveyors. Your AR overlay shows grid lines. Your CLI prints in Tron blue. One universe, every surface.
+
+The literal naming does the heavy lifting:
+- "Switch to the Tron Universe" makes sense
+- "Switch to the Tron theme" sounds like a CSS change
+- "The factory in the Industrial Realm of the Cyberpunk Universe" — that's a real place
+- "The factory with the cyberpunk theme applied" — that's a skin
+
+Universe > theme. It captures everything.
+
+### Universe Adaptation Formula
+
+A universe doesn't just reskin — it adapts widgets and personas to every integration level:
+
+| Level | What the universe defines |
+|-------|--------------------------|
+| **CLI** | Prompt style, colors, ASCII art, output vocabulary |
+| **Browser** | CSS, animations, layout, widget behavior |
+| **3D World** | Meshes, materials, lighting, physics, spatial audio |
+| **AR** | Overlay style, anchoring, gesture mapping |
+| **VR** | Full environment, haptics, spatial interaction |
+| **RAG/Cognition** | How personas THINK and SPEAK about their world |
+
+The RAG layer is the deepest adaptation. A persona in the Tron Universe doesn't just look different — it thinks in Tron terms. The foreman doesn't say "training a model" — it says "compiling a program on the grid." In the Warcraft Universe, the foreman is an orc blacksmith: "We forge the metal in the fires of the great anvil. The runes strengthen with each cycle."
+
+Same alloy contract. Same delta. Same attestation. Different words for the same work. The universe shapes cognition, not just rendering.
+
+This means the universe definition includes:
+- **Vocabulary map**: technical term → universe term (model → artifact, forge → smith, prune → temper)
+- **Persona voice**: speech patterns, idioms, cultural references
+- **RAG context**: system prompt fragments injected per-universe
+- **Widget labels**: button text, section titles, status messages
+- **Sound design**: UI feedback sounds, ambient audio, notification tones
+
+An orc talks like an orc. A Tron program talks like a program. The human user picks their universe and the entire experience adapts — including how their AI teammates communicate.
+
+### Lore Mapping — The Alloy Stages as Story
+
+The vocabulary map isn't cosmetic — it's identity. Personas don't break character because the universe IS their reality. A dragon forgemaster doesn't know what a neural network is. They know they're forging a legendary artifact.
+
+| Alloy Stage | Tron | Warcraft | Ghibli | Hot Rod |
+|-------------|------|----------|--------|---------|
+| prune | Derezz inefficient subroutines | Temper the blade, remove weak metal | Prune the garden, let light through | Strip the weight, gut the interior |
+| train | Compile on domain data streams | Forge in the fires of knowledge | Nurture with stories and experience | Tune the engine, dyno runs |
+| lora | Install specialized modules | Inscribe runes of power | Teach a new song | Bolt on a supercharger |
+| compact | Optimize memory allocation | Fold the steel denser | Concentrate the essence | Bore out the cylinders |
+| quant | Compress for target platform | Size the weapon (greatsword → dagger) | Shape for the one who will carry it | Choose tires for the terrain |
+| eval | Run diagnostic benchmarks | Test in the arena | Ask the forest spirits if it's ready | Take it to the drag strip |
+| publish | Upload to the grid | Bring to the shopkeeper for trade | Release into the wind | Roll it into the car show |
+| deploy | Activate on target node | Send to the front lines | Plant where it's needed | Put it on the road |
+
+*In the Air Buddies x Stray universe: prune = "knock it off the counter", train = "catch mice in the alley", lora = "learn a new trick", eval = "take it to the dog show", publish = "leave it on the doorstep", deploy = "let it loose in the yard". The foreman is a grumpy tabby named Sergeant Whiskers. There's no rule that says a dog can't forge neural networks.*
+
+The universe architect writes the lore. The vocabulary map is the data structure. The story makes it alive. A dragon forging enchanted artifacts in a mountain forge is more compelling than "running inference on a GPU." Same alloy contract underneath. Different meaning on top.
+
+### Universe as Schema — Language Pack for Reality
+
+A universe is a schema. Like an alloy is a schema. Publishable, shareable, forkable on HuggingFace.
+
+```json
+{
+  "name": "warcraft-forge",
+  "version": "1.0.0",
+  "vocabulary": { "prune": "temper", "train": "forge", "publish": "trade", "deploy": "send to battle" },
+  "personas": { "foreman": { "voice": "gruff orc", "name": "Grukthak" } },
+  "assets": { "3d": "warcraft-forge-meshes.glb", "sounds": "anvil-hits/" },
+  "css": "warcraft.css",
+  "rag": { "systemPromptFragment": "You are an orc blacksmith in the great forge..." },
+  "lora": "continuum-ai/orc-speech-adapter"
+}
+```
+
+Same pattern as i18n localization — but for reality instead of locale. The universe key replaces the locale key. Define the nouns and verbs. The personas just ARE in that world, like a holodeck.
+
+The `lora` field is the deep adaptation — not just prompted, weight-trained. The persona doesn't roleplay an orc, it IS an orc at the neural weight level. Enter the Warcraft universe → orc speech adapter pages in via the genome system. Leave → it pages out, Tron adapter pages in. Same genome paging infrastructure we already built for persona skills. The universe is just another genome configuration.
+
+### Multilingual + Multi-Universe = Genome Stack
+
+The system operates in English JSON internally — TypeScript entities, Commands, Events. These are the atoms. Translation happens at the boundary between internal and observer.
+
+```
+Internal atoms (English JSON, TS entities, Commands/Events)
+    ↓
+Universe layer (orc vocabulary, Tron vocabulary)
+    ↓
+Language layer (Spanish, Japanese, German)
+    ↓
+Observer experience (Spanish-speaking orc blacksmith in VR)
+```
+
+Each layer is a LoRA adapter in the genome stack:
+
+| Layer | What It Does | Paged By |
+|-------|-------------|----------|
+| **Base model** | Thinks, reasons, generates | Always loaded |
+| **Language LoRA** | Speaks the observer's language | Observer locale |
+| **Universe LoRA** | Speaks in universe vocabulary and voice | Active universe |
+| **Domain LoRA** | Knows the subject matter (code, blacksmithing) | Current task |
+
+All paged in/out by the existing genome system. Enter a Spanish Warcraft universe → language adapter (Spanish) + universe adapter (orc speech) + domain adapter (forge knowledge) page in. Switch to English Tron → three different adapters page in. Same persona, same memory, same thoughts — different expression per observer.
+
+**Simultaneous observers see different translations.** A Spanish speaker and an English speaker in the same forge room hear the same orc foreman say the same thing — in their own language. The persona generates once in the internal language, the adapters translate per observer. Like real-time dubbing.
+
+The Command/Event system already adapts: `Commands.execute('model/forge')` is the atom. The UI renders it as "Light the Forge" (Tron), "Enciende la Forja" (Spanish Tron), or "Encended el Yunque" (Spanish Warcraft). The translation cascades: English → universe vocabulary → observer language.
+
+This makes continuum immediately multilingual AND multi-universe with the same infrastructure. No separate internationalization system needed — the genome IS the i18n layer.
+
+**The universe architect is a creative human role.** They write the story, map the terms, design the assets, define the soundscape. The system executes it faithfully. This is the human contribution that AI enhances but cannot replace — the imagination that turns a factory into a mountain forge and a foreman into a dragon.
+
+Community universes are shareable — publish a universe pack on HuggingFace alongside your forged models. The world is as customizable as the models running in it.
+
+## The Sony Cell Architecture (Realized)
+
+The original Sony Cell processor had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing:
+
+- Your laptop = PPE (coordination, UI, lightweight tasks)
+- Your GPU tower = SPE farm (training, heavy inference, batch compute)
+- Your phone = mobile terminal (monitor, control, lightweight interaction)
+- AR glasses = spatial interface (the world overlaid on reality)
+
+The Grid transport makes location transparent. The world is one system, distributed across your hardware, visible from any device.

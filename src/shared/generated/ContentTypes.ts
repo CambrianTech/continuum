@@ -97,7 +97,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         pathPrefix: '/canvas',
         requiresEntity: false,
         entityType: null,
-        hasRightPanel: false,
+        hasRightPanel: true,
     },
     'chat': {
         widget: 'chat-widget',
@@ -160,7 +160,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         pathPrefix: '/factory',
         requiresEntity: false,
         entityType: null,
-        hasRightPanel: false,
+        hasRightPanel: true,
     },
     'gan': {
         widget: 'gan-widget',
@@ -223,7 +223,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         pathPrefix: '/logs',
         requiresEntity: false,
         entityType: null,
-        hasRightPanel: false,
+        hasRightPanel: true,
     },
     'multi-persona-chat': {
         widget: 'chat-widget',
@@ -286,7 +286,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         pathPrefix: '/settings',
         requiresEntity: false,
         entityType: null,
-        hasRightPanel: false,
+        hasRightPanel: true,
     },
     'terminal': {
         widget: 'terminal-widget',
@@ -304,7 +304,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         pathPrefix: '/theme',
         requiresEntity: false,
         entityType: null,
-        hasRightPanel: false,
+        hasRightPanel: true,
     },
     'training-dashboard': {
         widget: 'training-dashboard-widget',

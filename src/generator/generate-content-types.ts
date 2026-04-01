@@ -97,7 +97,10 @@ function main() {
         const widget = getMainWidget(r);
         const displayName = r.displayName || r.name || r.uniqueId;
         const icon = ICON_MAP[r.uniqueId] || '📄';
-        const hasRightPanel = r.layout?.right !== null && r.layout?.right !== undefined;
+        // Check both old format (layout.right) and new format (layout.widgets with position: 'right')
+        const hasRightPanelOld = r.layout?.right !== null && r.layout?.right !== undefined;
+        const hasRightPanelNew = Array.isArray(r.layout?.widgets) && r.layout.widgets.some((w: any) => w.position === 'right');
+        const hasRightPanel = hasRightPanelOld || hasRightPanelNew;
         const entityType = r.entityType || null;
         const requiresEntity = entityType !== null || !!r.inputs;
 

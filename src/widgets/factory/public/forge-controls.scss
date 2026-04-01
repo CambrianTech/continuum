@@ -1,0 +1,211 @@
+@use '../../shared/styles/variables' as *;
+
+// ── ForgeControlsElement ────────────────────────────────────────────
+
+:host { display: block; }
+
+.controls {
+  background: var(--surface-elevated, rgba(255,255,255,0.04));
+  border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+  border-radius: $border-radius-lg;
+  padding: $spacing-lg 20px;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $spacing-md;
+  margin-bottom: $spacing-lg;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.control-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--content-secondary, #8a92a5);
+}
+
+.control-select,
+.control-input {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+  border-radius: $border-radius-md;
+  color: var(--content-primary, #e0e6ed);
+  font-size: 13px;
+  padding: $spacing-sm 10px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color $transition-normal;
+
+  &:focus {
+    border-color: $color-primary;
+  }
+}
+
+.control-select option {
+  background: #0a1520;
+  color: #e0e6ed;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+
+  input[type="range"] {
+    flex: 1;
+    accent-color: $color-primary;
+    height: 4px;
+  }
+}
+
+.slider-value {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 50px;
+  text-align: right;
+  color: $color-primary;
+}
+
+.profile-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.profile-btn {
+  padding: $spacing-xs 10px;
+  font-size: 11px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: $border-radius-md;
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.8);
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: $color-primary;
+    color: #000;
+    border-color: transparent;
+  }
+
+  &.mutagen-btn {
+    background: linear-gradient(135deg, rgba(200, 100, 255, 0.15), rgba(100, 255, 200, 0.15));
+    border-color: rgba(200, 100, 255, 0.4);
+    color: #c864ff;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+
+    &:hover {
+      background: linear-gradient(135deg, rgba(200, 100, 255, 0.4), rgba(100, 255, 200, 0.4));
+      border-color: #c864ff;
+      color: #fff;
+      box-shadow: 0 0 12px rgba(200, 100, 255, 0.3);
+    }
+  }
+}
+
+pipeline-composer {
+  margin: $spacing-md 0;
+}
+
+// ── Forge Button ────────────────────────────────────────────────────
+
+.button-row {
+  display: flex;
+  gap: $spacing-sm;
+  margin-bottom: $spacing-lg;
+}
+
+.forge-button {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  padding: 10px;
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 200, 0.2));
+  border: 1px solid $color-primary;
+  border-radius: 6px;
+  color: $color-primary;
+  font-size: $font-size-lg;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all $transition-normal;
+
+  &:hover {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.35), rgba(0, 255, 200, 0.35));
+    @include glow($color-primary-dark, 16px);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  &.forging {
+    background: linear-gradient(135deg, rgba(255, 170, 0, 0.2), rgba(255, 100, 0, 0.2));
+    border-color: $color-warning;
+    color: $color-warning;
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px $color-warning-dark; }
+  50% { box-shadow: 0 0 20px rgba(255, 170, 0, 0.4); }
+}
+
+.forge-button-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  opacity: 0.3;
+  transition: width 0.5s ease, background 0.8s ease;
+}
+
+.forge-button-label {
+  position: relative;
+  z-index: 1;
+}
+
+.forge-estimate {
+  position: absolute;
+  top: 3px;
+  right: 8px;
+  font-size: $font-size-xs;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255,255,255,0.4);
+  z-index: 1;
+  letter-spacing: 0.02em;
+}
+
+.export-btn {
+  align-self: stretch;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border-color, rgba(255,255,255,0.15));
+  border-radius: $border-radius-md;
+  background: rgba(255,255,255,0.05);
+  color: var(--content-primary, #e0e6ed);
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.15);
+    border-color: $color-primary;
+    color: $color-primary;
+  }
+}
