@@ -34,31 +34,6 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   private _pendingUpdate = false;
   @reactive() private _entityCount: number = 0;
 
-  /** Override to enable entity caching. Return a unique key per widget instance. */
-  protected get entityCacheKey(): string | null { return null; }
-
-  /** Cache entities to localStorage after successful load */
-  protected cacheEntities(entities: T[]): void {
-    const key = this.entityCacheKey;
-    if (!key || entities.length === 0) return;
-    try {
-      // Cache essential fields only — not the full entity to save space
-      const slim = entities.map(e => ({ ...e }));
-      localStorage.setItem(`ec:${key}`, JSON.stringify(slim));
-    } catch { /* localStorage full */ }
-  }
-
-  /** Restore cached entities — returns empty array if no cache */
-  protected restoreCachedEntities(): T[] {
-    const key = this.entityCacheKey;
-    if (!key) return [];
-    try {
-      const raw = localStorage.getItem(`ec:${key}`);
-      if (!raw) return [];
-      return JSON.parse(raw) as T[];
-    } catch { return []; }
-  }
-
   /**
    * Batched requestUpdate() - prevents cascading re-renders from rapid CRUD events.
    * Multiple calls within the same microtask are coalesced into a single update.
@@ -158,28 +133,12 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
       this.getScrollerPreset()
     );
 
-    // Restore cached entities FIRST so the widget isn't blank while loading
-    const cached = this.restoreCachedEntities();
-    if (cached.length > 0) {
-      for (const entity of cached) {
-        this.scroller.addWithAutoScroll(entity);
-      }
-      this._entityCount = cached.length;
-      this.requestUpdate();
-    }
-
-    // Load fresh data from server
+    // Load initial data
     await this.scroller.load();
     this._scrollerInitialized = true;
 
-    // Cache successful load for next time
-    const loaded = this.scroller.entities();
-    if (loaded.length > 0) {
-      this.cacheEntities([...loaded]);
-    }
-
     // Update reactive entity count — triggers header re-render
-    this._entityCount = loaded.length;
+    this._entityCount = this.scroller.entities().length;
     this.requestUpdate();
   }
 

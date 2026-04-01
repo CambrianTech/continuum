@@ -34,9 +34,6 @@ type RoomFilter = 'all' | 'rooms' | 'dms';
 export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   readonly collection = RoomEntity.collection;
 
-  // Cache rooms so sidebar isn't blank when Rust core is offline
-  protected override get entityCacheKey(): string { return 'room-list'; }
-
   // Always fetch rooms from server — localStorage cache goes stale after reseed
   // and 'auto' backend returns cached data without ever hitting the server.
   protected override get loadBackend(): 'server' { return 'server'; }
