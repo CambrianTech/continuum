@@ -147,13 +147,12 @@ export class FactoryWidget extends ReactiveWidget {
 
   private _factoryUnsubs: Array<() => void> = [];
 
-  /** Tell the right panel what widget to show for the factory */
+  /** Tell the right panel what widget to show for the factory.
+   *  Emits on connect. The right panel subscribes in onFirstRender —
+   *  if it misses this emit, it will pick up the config from the next
+   *  content:switched event cycle. No setTimeout. */
   private configureRightPanel(): void {
-    // Emit immediately AND after a short delay — the right panel may
-    // not be subscribed yet on first mount, but we also need to re-emit
-    // when navigating back to Factory after visiting another tab.
     this.emitRightPanelConfig();
-    setTimeout(() => this.emitRightPanelConfig(), 200);
   }
 
   private emitRightPanelConfig(): void {

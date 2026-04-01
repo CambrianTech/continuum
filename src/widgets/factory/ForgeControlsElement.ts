@@ -439,9 +439,37 @@ export class ForgeControlsElement extends ReactiveWidget {
         <pipeline-composer
           @pipeline-change=${(e: CustomEvent) => this._pipelineStages = e.detail as Record<string, unknown>[]}
         ></pipeline-composer>
-        <device-target-element></device-target-element>
+        <device-target-element
+          .baseModelGb=${this._estimatedBaseSize}
+          .pruneLevel=${this._pruneLevel / 100}
+          .quantFormats=${this._selectedQuantFormats}
+        ></device-target-element>
       </div>
     `;
+  }
+
+  /** Estimate fp16 size from model name */
+  private get _estimatedBaseSize(): number {
+    const m = this._model.toLowerCase();
+    if (m.includes('0.5b') || m.includes('0.6b')) return 1;
+    if (m.includes('1.5b') || m.includes('1.7b')) return 3;
+    if (m.includes('3b')) return 6;
+    if (m.includes('4b')) return 8;
+    if (m.includes('7b') || m.includes('8b') || m.includes('9b')) return 16;
+    if (m.includes('14b')) return 28;
+    if (m.includes('27b')) return 54;
+    if (m.includes('32b') || m.includes('35b')) return 50;
+    if (m.includes('70b')) return 140;
+    return 8;
+  }
+
+  /** Extract quant formats from pipeline stages */
+  private get _selectedQuantFormats(): string[] {
+    const quantStage = this._pipelineStages.find(s => s.type === 'quant');
+    if (quantStage?.quantTypes && Array.isArray(quantStage.quantTypes)) {
+      return quantStage.quantTypes as string[];
+    }
+    return ['Q4_K_M', 'Q8_0'];
   }
 }
 

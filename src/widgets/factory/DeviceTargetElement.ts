@@ -17,7 +17,6 @@ import {
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
-import { Events } from '../../system/core/shared/Events';
 
 interface DeviceSpec {
   id: string;
@@ -47,13 +46,6 @@ const DEVICES: DeviceSpec[] = [
   { id: 'rtx-5090',      label: '5090',         icon: 'G', vramMb: 32768, category: 'desktop' },
 ];
 
-// Rough model size estimates (fp16 GB) by model name patterns
-const MODEL_SIZES: Record<string, number> = {
-  '0.5b': 1, '1b': 2, '1.5b': 3, '2b': 4, '3b': 6, '4b': 8,
-  '7b': 14, '8b': 16, '9b': 18, '13b': 26, '14b': 28,
-  '27b': 54, '32b': 64, '33b': 66, '34b': 68, '35b': 50, '70b': 140,
-};
-
 // Quant format size multipliers relative to fp16
 const QUANT_MULTIPLIERS: Record<string, number> = {
   'F16': 1.0, 'Q8_0': 0.53, 'Q6_K': 0.41, 'Q5_K_M': 0.36,
@@ -62,43 +54,19 @@ const QUANT_MULTIPLIERS: Record<string, number> = {
 
 export class DeviceTargetElement extends ReactiveWidget {
 
-  @reactive() private _baseModelGb = 8;   // Estimated fp16 size
-  @reactive() private _pruneLevel = 0.3;
-  @reactive() private _quantFormats: string[] = ['Q4_K_M', 'Q8_0'];
+  // These are set as properties by the parent ForgeControlsElement
+  @reactive() baseModelGb = 8;
+  @reactive() pruneLevel = 0.3;
+  @reactive() quantFormats: string[] = ['Q4_K_M', 'Q8_0'];
   @reactive() private _lockedDevices: Set<string> = new Set();
-  @reactive() private _compactEnabled = false;
-  @reactive() private _compactDeadThreshold = 0.1;
+  @reactive() compactEnabled = false;
 
   constructor() {
     super({ widgetName: 'DeviceTargetElement' });
   }
 
-  override connectedCallback(): void {
-    super.connectedCallback();
-    Events.subscribe('factory:pipeline:change', (detail: Record<string, unknown>) => {
-      this.updateFromPipeline(detail);
-    });
-  }
-
-  /** Update estimates from pipeline config */
-  updateFromPipeline(config: Record<string, unknown>): void {
-    if (config.baseModelGb) this._baseModelGb = config.baseModelGb as number;
-    if (config.pruneLevel !== undefined) this._pruneLevel = config.pruneLevel as number;
-    if (config.quantFormats) this._quantFormats = config.quantFormats as string[];
-    if (config.compactEnabled !== undefined) this._compactEnabled = config.compactEnabled as boolean;
-  }
-
-  /** Set base model and estimate its fp16 size */
-  setBaseModel(modelId: string): void {
-    const lower = modelId.toLowerCase();
-    for (const [pattern, gb] of Object.entries(MODEL_SIZES)) {
-      if (lower.includes(pattern)) {
-        this._baseModelGb = gb;
-        return;
-      }
-    }
-    this._baseModelGb = 8; // Default
-  }
+  // Properties set by parent ForgeControlsElement via Lit property binding.
+  // No event subscription needed — Lit re-renders when properties change.
 
   private toggleLock(deviceId: string): void {
     const next = new Set(this._lockedDevices);
@@ -109,8 +77,8 @@ export class DeviceTargetElement extends ReactiveWidget {
 
   private get fits(): DeviceFit[] {
     // Estimate post-prune size
-    const prunedGb = this._baseModelGb * (1 - this._pruneLevel * 0.6); // Pruning doesn't remove 1:1
-    const compactedGb = this._compactEnabled ? prunedGb * 0.7 : prunedGb;
+    const prunedGb = this.baseModelGb * (1 - this.pruneLevel * 0.6); // Pruning doesn't remove 1:1
+    const compactedGb = this.compactEnabled ? prunedGb * 0.7 : prunedGb;
 
     return DEVICES.map(device => {
       const deviceGb = device.vramMb / 1024;
@@ -121,7 +89,7 @@ export class DeviceTargetElement extends ReactiveWidget {
 
       for (const [format, mult] of Object.entries(QUANT_MULTIPLIERS).sort((a, b) => b[1] - a[1])) {
         const sizeGb = compactedGb * mult;
-        if (sizeGb <= deviceGb * 0.85 && this._quantFormats.some(q => q === format || format === 'Q4_K_M')) {
+        if (sizeGb <= deviceGb * 0.85 && this.quantFormats.some(q => q === format || format === 'Q4_K_M')) {
           bestQuant = format;
           bestSizeGb = sizeGb;
           break;
@@ -306,7 +274,7 @@ export class DeviceTargetElement extends ReactiveWidget {
     return html`
       <div class="target-header">
         <span class="target-title">Device Targets ${fitsCount}/${DEVICES.length} fit${lockedCount > 0 ? html` · ${lockedCount} locked${lockedAllFit ? '' : html` <span style="color:#ff4444">&#9888;</span>`}` : nothing}</span>
-        <span class="target-estimate">~${this._baseModelGb}GB fp16 → ~${(this._baseModelGb * (1 - this._pruneLevel * 0.6) * 0.30).toFixed(1)}GB Q4</span>
+        <span class="target-estimate">~${this.baseModelGb}GB fp16 → ~${(this.baseModelGb * (1 - this.pruneLevel * 0.6) * 0.30).toFixed(1)}GB Q4</span>
       </div>
       <div class="device-grid">
         ${results.map(r => this.renderDeviceCard(r))}
