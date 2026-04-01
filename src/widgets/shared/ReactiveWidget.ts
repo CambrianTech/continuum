@@ -267,6 +267,61 @@ export abstract class ReactiveWidget extends LitElement {
   // LIFECYCLE HOOKS - Override these in subclasses
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ── Widget State Cache ─────────────────────────────────────────────
+  // Override cacheKey in subclass to opt in. All reactive state is
+  // automatically persisted to localStorage and restored on mount.
+  // Widgets NEVER show blank if they had data before.
+
+  /** Override to enable widget state caching. Return a unique key. */
+  protected get cacheKey(): string | null { return null; }
+
+  /** Properties to include in cache. Override to limit what's cached. */
+  protected get cacheableProperties(): string[] | null { return null; }
+
+  /** Restore cached state before first render. */
+  private restoreWidgetCache(): void {
+    const key = this.cacheKey;
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(`wc:${key}`);
+      if (!raw) return;
+      const cached = JSON.parse(raw);
+      const allowed = this.cacheableProperties;
+      for (const [prop, value] of Object.entries(cached)) {
+        if (allowed && !allowed.includes(prop)) continue;
+        if (prop in this && value !== undefined && value !== null) {
+          (this as Record<string, unknown>)[prop] = value;
+        }
+      }
+      this.log(`Restored cache (${Object.keys(cached).length} props)`);
+    } catch {
+      // Cache corrupt or schema changed — ignore silently
+    }
+  }
+
+  /** Save current cacheable state to localStorage. */
+  protected saveWidgetCache(): void {
+    const key = this.cacheKey;
+    if (!key) return;
+    try {
+      const state: Record<string, unknown> = {};
+      const allowed = this.cacheableProperties;
+      const props = allowed ?? Object.keys(this).filter(k =>
+        k.startsWith('_') && !k.startsWith('__') && !k.includes('unsub') && !k.includes('timer') && !k.includes('interval')
+      );
+      for (const prop of props) {
+        const val = (this as Record<string, unknown>)[prop];
+        // Only cache serializable values
+        if (val !== undefined && val !== null && typeof val !== 'function') {
+          try { JSON.stringify(val); state[prop] = val; } catch { /* skip non-serializable */ }
+        }
+      }
+      localStorage.setItem(`wc:${key}`, JSON.stringify(state));
+    } catch {
+      // localStorage full or unavailable — ignore
+    }
+  }
+
   /**
    * Called when widget is added to DOM
    * Override for initialization logic
@@ -274,6 +329,9 @@ export abstract class ReactiveWidget extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.log('Connected to DOM');
+
+    // Restore cached state BEFORE first render — never blank
+    this.restoreWidgetCache();
 
     // Auto-load user context (non-blocking)
     this.loadUserContext().catch(err => {
@@ -365,6 +423,8 @@ export abstract class ReactiveWidget extends LitElement {
     // Run effects when any property changes
     if (changedProperties.size > 0) {
       this.runEffects();
+      // Auto-save widget cache on state changes (debounced by Lit batching)
+      if (this.cacheKey) this.saveWidgetCache();
     }
   }
 
