@@ -770,16 +770,20 @@ async function seedViaJTAG() {
     const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
     await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
 
-    // Seed recipes from JSON files — the right panel and layout system depend on these
+    // Sync recipes from JSON files — create if missing, update layout if exists
     const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
     const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
-    const recipeRecords = recipeFiles.map(f => {
+    console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
+    let recipeSynced = 0;
+    for (const f of recipeFiles) {
       const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
-      return { ...data, id: data.uniqueId };
-    });
-    console.log(`  [Seed] 📝 Seeding ${recipeRecords.length} recipes...`);
-    await seedRecords('recipes', recipeRecords, (r: Record<string, unknown>) => r.uniqueId as string);
-    console.log(`  [Seed] ✅ Seeded ${recipeRecords.length} recipes`);
+      const id = data.uniqueId;
+      if (!id) continue;
+      // createRecord returns true on success, false if exists
+      const created = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
+      if (created) recipeSynced++;
+    }
+    console.log(`  [Seed] ✅ Synced recipes (${recipeSynced} new, ${recipeFiles.length - recipeSynced} existing)`);
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
