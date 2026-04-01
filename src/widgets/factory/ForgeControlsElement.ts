@@ -41,6 +41,7 @@ export class ForgeControlsElement extends ReactiveWidget {
   @reactive() private _pruneStrategy: 'entropy' | 'gradient' | 'combined' = 'entropy';
   @reactive() private _cycles = 3;
   @reactive() private _learningRate = '2e-4';
+  @reactive() private _pipelineStages: Record<string, unknown>[] = [];
 
   private get _isMoe(): boolean {
     return this._model.includes('35B') || this._model.includes('MoE');
@@ -60,9 +61,18 @@ export class ForgeControlsElement extends ReactiveWidget {
     };
   }
 
-  /** Current settings as an alloy recipe */
+  /** Current settings as an alloy recipe — uses pipeline composer stages if configured */
   get alloyRecipe(): Record<string, unknown> {
     const base = this._model.split('/').pop()?.toLowerCase() ?? 'model';
+
+    // Use pipeline composer stages if user configured them, otherwise default prune+train
+    const stages = this._pipelineStages.length > 0
+      ? this._pipelineStages
+      : [
+          { type: 'prune', strategy: this._pruneStrategy, level: this._pruneLevel / 100 },
+          { type: 'train', domain: this._domain, steps: this._steps, learningRate: this._learningRate },
+        ];
+
     return {
       name: `${base}-${this._domain}-forged`,
       version: '1.0.0',
@@ -73,10 +83,7 @@ export class ForgeControlsElement extends ReactiveWidget {
         baseModel: this._model,
         architecture: base.includes('qwen3.5') ? 'qwen3_5' : base.includes('qwen2') ? 'qwen2' : 'llama',
       },
-      stages: [
-        { type: 'prune', strategy: this._pruneStrategy, level: this._pruneLevel / 100 },
-        { type: 'train', domain: this._domain, steps: this._steps, learningRate: this._learningRate },
-      ],
+      stages,
       cycles: this._cycles,
     };
   }
@@ -259,7 +266,9 @@ export class ForgeControlsElement extends ReactiveWidget {
             </div>
           </div>
         </div>
-        <pipeline-composer></pipeline-composer>
+        <pipeline-composer
+          @pipeline-change=${(e: CustomEvent) => this._pipelineStages = e.detail as Record<string, unknown>[]}
+        ></pipeline-composer>
       </div>
     `;
   }
