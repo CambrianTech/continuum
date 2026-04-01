@@ -430,6 +430,7 @@ export class FactoryWidget extends ReactiveWidget {
 
     return html`
       <div class="node-bar ${this._gridNodeOnline ? 'online' : 'offline'}">
+        ${this.renderForemanBadge()}
         <div class="node-dot"></div>
         ${this._gridNodes.length > 1 ? html`
           <select class="node-select"
@@ -465,6 +466,44 @@ export class FactoryWidget extends ReactiveWidget {
           <span class="offline-msg">${s ? s.state : 'connecting...'}</span>
         `}
         <span class="grid-link" @click=${() => this.openGridTab()}>Grid →</span>
+      </div>
+    `;
+  }
+
+  /** Render Foreman identity badge — the persona responsible for this node.
+   *  Shows avatar + name if assigned, placeholder if not. Click to DM/call. */
+  private renderForemanBadge(): TemplateResult {
+    // TODO: Wire to actual Foreman PersonaUser once #671 is implemented
+    // For now, show a placeholder that indicates the concept
+    const hasForeman = false; // Will be: this._foremanUser !== null
+    const foremanName = 'Foreman'; // Will be: this._foremanUser?.entity.displayName
+    const nodeOnline = this._gridNodeOnline;
+
+    if (!hasForeman) {
+      return html`
+        <div class="foreman-badge vacant" title="No foreman assigned to this node">
+          <div class="foreman-avatar vacant-avatar">?</div>
+          <div class="foreman-info">
+            <span class="foreman-role">FOREMAN</span>
+            <span class="foreman-name">Unassigned</span>
+          </div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="foreman-badge ${nodeOnline ? 'online' : 'offline'}" title="Contact ${foremanName}">
+        <div class="foreman-avatar">
+          <div class="foreman-status-dot ${nodeOnline ? 'online' : 'offline'}"></div>
+        </div>
+        <div class="foreman-info">
+          <span class="foreman-role">FOREMAN</span>
+          <span class="foreman-name">${foremanName}</span>
+        </div>
+        <div class="foreman-actions">
+          <button class="foreman-action-btn" title="DM Foreman">DM</button>
+          <button class="foreman-action-btn call" title="Call Foreman">Call</button>
+        </div>
       </div>
     `;
   }

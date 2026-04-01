@@ -96,6 +96,21 @@
     color: #000;
     border-color: transparent;
   }
+
+  &.mutagen-btn {
+    background: linear-gradient(135deg, rgba(200, 100, 255, 0.15), rgba(100, 255, 200, 0.15));
+    border-color: rgba(200, 100, 255, 0.4);
+    color: #c864ff;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+
+    &:hover {
+      background: linear-gradient(135deg, rgba(200, 100, 255, 0.4), rgba(100, 255, 200, 0.4));
+      border-color: #c864ff;
+      color: #fff;
+      box-shadow: 0 0 12px rgba(200, 100, 255, 0.3);
+    }
+  }
 }
 
 pipeline-composer {

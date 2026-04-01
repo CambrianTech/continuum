@@ -26,6 +26,69 @@ const FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string
   yolo:         { prune: 70, cycles: 1, lr: '1e-3', steps: 250,  label: 'YOLO', risk: 'Extreme — might break the model' },
 };
 
+/** Mutagen — random pipeline mutations within safe bounds.
+ *  Each axis that's been proven in a successful forge can be rolled. */
+interface MutagenAxis {
+  label: string;
+  apply: (stages: Record<string, unknown>[]) => Record<string, unknown>[];
+  weight: number; // probability weight (0-1)
+}
+
+const MUTAGEN_AXES: MutagenAxis[] = [
+  {
+    label: 'Context 128K',
+    weight: 0.5,
+    apply: (stages) => {
+      const methods = ['yarn', 'ntk', 'linear', 'dynamic-ntk'] as const;
+      const lengths = [65536, 131072, 262144];
+      return [
+        { type: 'context-extend', targetLength: lengths[Math.floor(Math.random() * lengths.length)], method: methods[Math.floor(Math.random() * methods.length)], trainingSteps: 100 + Math.floor(Math.random() * 400) },
+        ...stages,
+      ];
+    },
+  },
+  {
+    label: 'Add Vision',
+    weight: 0.3,
+    apply: (stages) => [
+      { type: 'modality', modality: 'vision', encoderModel: 'openai/clip-vit-large-patch14', projectionArch: 'mlp', freezeBase: true, freezeEncoder: true, trainingSteps: 1000 },
+      ...stages,
+    ],
+  },
+  {
+    label: 'Add Audio',
+    weight: 0.2,
+    apply: (stages) => [
+      { type: 'modality', modality: 'audio', encoderModel: 'openai/whisper-large-v3', projectionArch: 'mlp', freezeBase: true, freezeEncoder: true, trainingSteps: 1000 },
+      ...stages,
+    ],
+  },
+  {
+    label: 'LoRA Rank Boost',
+    weight: 0.5,
+    apply: (stages) => {
+      const ranks = [16, 32, 64, 128];
+      const r = ranks[Math.floor(Math.random() * ranks.length)];
+      return [...stages, { type: 'lora', rank: r, alpha: r * 2, dropout: 0.05, targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'], quantize: true, quantizeBits: 4, epochs: 2, learningRate: '1e-4', mergeAfter: true }];
+    },
+  },
+  {
+    label: 'Compaction',
+    weight: 0.4,
+    apply: (stages) => [...stages, { type: 'compact', deadThreshold: 0.05 + Math.random() * 0.15, dormantThreshold: 0.15 + Math.random() * 0.15, lowThreshold: 0.25 + Math.random() * 0.15, mediumThreshold: 0.4 + Math.random() * 0.2, highThreshold: 0.6 + Math.random() * 0.2, enableQuantization: true }],
+  },
+  {
+    label: 'Aggressive Prune',
+    weight: 0.4,
+    apply: (stages) => {
+      const strategies = ['entropy', 'magnitude', 'gradient'] as const;
+      return stages.map(s => s.type === 'prune'
+        ? { ...s, level: 0.3 + Math.random() * 0.4, strategy: strategies[Math.floor(Math.random() * strategies.length)] }
+        : s);
+    },
+  },
+];
+
 export class ForgeControlsElement extends ReactiveWidget {
 
   @reactive() forging = false;
@@ -132,6 +195,45 @@ export class ForgeControlsElement extends ReactiveWidget {
     this._cycles = p.cycles;
     this._learningRate = p.lr;
     this._steps = p.steps;
+  }
+
+  /** Mutagen: roll random mutations onto the current pipeline.
+   *  Each axis rolls independently based on its weight. At least one fires. */
+  private mutate(): void {
+    // Start from default pipeline
+    let stages: Record<string, unknown>[] = [
+      { type: 'source-config', contextLength: 4096, inputModalities: ['text'], targetDevices: [] },
+      { type: 'prune', strategy: 'entropy', level: 0.3, minHeadsPerLayer: 4, minKvHeadsPerLayer: 2, analysisSteps: 200 },
+      { type: 'train', domain: this._domain, steps: 500 + Math.floor(Math.random() * 1500), learningRate: '2e-4', batchSize: 2, gradientAccumulation: 4, scheduler: 'cosine', precision: 'bf16', sequenceLength: 2048, optimizations: ['flash_attention', 'gradient_checkpointing'] },
+      { type: 'quant', format: 'gguf', quantTypes: ['Q4_K_M', 'Q8_0'], deviceTargets: ['MacBook Air 16GB', 'MacBook Pro 16GB'] },
+      { type: 'eval', benchmarks: [{ name: 'humaneval', submitToLeaderboard: true }], passingThreshold: 40, compareToBase: true },
+      { type: 'publish', org: 'continuum-ai', repoNameTemplate: '{base}-{domain}-mutant', includeAlloy: true, cardFromBenchmarks: true, tags: ['continuum', 'forged', 'mutagen'], private: false },
+    ];
+
+    // Roll mutations — each axis fires independently
+    let anyFired = false;
+    for (const axis of MUTAGEN_AXES) {
+      if (Math.random() < axis.weight) {
+        stages = axis.apply(stages);
+        anyFired = true;
+      }
+    }
+
+    // Guarantee at least one mutation
+    if (!anyFired) {
+      const axis = MUTAGEN_AXES[Math.floor(Math.random() * MUTAGEN_AXES.length)];
+      stages = axis.apply(stages);
+    }
+
+    // Randomize cycles
+    this._cycles = 1 + Math.floor(Math.random() * 4);
+
+    this._pipelineStages = stages;
+    this.dispatchEvent(new CustomEvent('mutagen-roll', {
+      detail: { stages, cycles: this._cycles },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   private onStartForge(): void {
@@ -263,6 +365,8 @@ export class ForgeControlsElement extends ReactiveWidget {
                 <button class="profile-btn" title=${p.risk}
                   @click=${() => this.applyProfile(key)}>${p.label}</button>
               `)}
+              <button class="profile-btn mutagen-btn" title="Roll random mutations: context, vision, audio, LoRA, compaction..."
+                @click=${this.mutate}>MUTAGEN</button>
             </div>
           </div>
         </div>

@@ -22,10 +22,16 @@ import { STAGE_COLORS, STAGE_TEXT_COLORS } from './StageElement';
 
 // Import stage elements (self-registering)
 import './SourceConfigStageElement';
+import './ContextExtendStageElement';
+import './ModalityStageElement';
 import './PruneStageElement';
 import './TrainStageElement';
+import './LoraStageElement';
+import './CompactStageElement';
+import './ExpertPruneStageElement';
 import './QuantStageElement';
 import './EvalStageElement';
+import './PublishStageElement';
 import './DeployStageElement';
 
 /** Registry of available stage types → custom element tags.
@@ -34,15 +40,19 @@ import './DeployStageElement';
 const STAGE_REGISTRY: Record<string, { tag: string; label: string; description: string; position: 'input' | 'transform' | 'output' }> = {
   // Input stages (front bookend)
   'source-config':  { tag: 'source-config-stage-element',  label: 'Source Config',  description: 'Context window, modalities, target devices',      position: 'input' },
-  'context-extend': { tag: 'context-extend-stage-element',  label: 'Context Extend', description: 'RoPE rescaling (YaRN, NTK)',                      position: 'input' },
+  'context-extend': { tag: 'context-extend-stage-element', label: 'Context Extend', description: 'RoPE rescaling (YaRN, NTK) — extend to 128K+',   position: 'input' },
+  'modality':       { tag: 'modality-stage-element',       label: 'Modality',       description: 'Bolt vision, audio, or video onto a text model',  position: 'input' },
   // Transform stages
-  'prune':          { tag: 'prune-stage-element',           label: 'Prune',          description: 'Head pruning (entropy, magnitude, gradient)',      position: 'transform' },
-  'train':          { tag: 'train-stage-element',           label: 'Train',          description: 'Recovery/fine-tuning with full config',            position: 'transform' },
-  'expert-prune':   { tag: 'expert-prune-stage-element',    label: 'Expert Prune',   description: 'MoE expert selection by activation',               position: 'transform' },
+  'prune':          { tag: 'prune-stage-element',          label: 'Prune',          description: 'Head pruning (entropy, magnitude, gradient)',      position: 'transform' },
+  'train':          { tag: 'train-stage-element',          label: 'Train',          description: 'Recovery/fine-tuning with full config',            position: 'transform' },
+  'lora':           { tag: 'lora-stage-element',           label: 'LoRA',           description: 'Low-rank adaptation with QLoRA support',           position: 'transform' },
+  'compact':        { tag: 'compact-stage-element',        label: 'Compact',        description: 'Utilization-aware mixed-precision compaction',     position: 'transform' },
+  'expert-prune':   { tag: 'expert-prune-stage-element',   label: 'Expert Prune',   description: 'MoE expert selection by activation',               position: 'transform' },
   // Output stages (end bookend)
-  'quant':          { tag: 'quant-stage-element',           label: 'Quantize',       description: 'GGUF, MLX, ONNX, safetensors',                    position: 'output' },
-  'eval':           { tag: 'eval-stage-element',            label: 'Evaluate',       description: 'HumanEval, MMLU, GSM8K, IMO-ProofBench',          position: 'output' },
-  'deploy':         { tag: 'deploy-stage-element',          label: 'Deploy',         description: 'Push to grid node for serving',                    position: 'output' },
+  'quant':          { tag: 'quant-stage-element',          label: 'Quantize',       description: 'GGUF, MLX, ONNX, safetensors',                    position: 'output' },
+  'eval':           { tag: 'eval-stage-element',           label: 'Evaluate',       description: 'HumanEval, MMLU, GSM8K, IMO-ProofBench',          position: 'output' },
+  'publish':        { tag: 'publish-stage-element',        label: 'Publish',        description: 'Push to HuggingFace with model card + alloy',     position: 'output' },
+  'deploy':         { tag: 'deploy-stage-element',         label: 'Deploy',         description: 'Push to grid node for serving',                    position: 'output' },
 };
 
 interface PipelineStage {
@@ -285,14 +295,26 @@ export class PipelineComposer extends ReactiveWidget {
     switch (tag) {
       case 'source-config-stage-element':
         return html`<source-config-stage-element .order=${order}></source-config-stage-element>`;
+      case 'context-extend-stage-element':
+        return html`<context-extend-stage-element .order=${order}></context-extend-stage-element>`;
+      case 'modality-stage-element':
+        return html`<modality-stage-element .order=${order}></modality-stage-element>`;
       case 'prune-stage-element':
         return html`<prune-stage-element .order=${order}></prune-stage-element>`;
       case 'train-stage-element':
         return html`<train-stage-element .order=${order}></train-stage-element>`;
+      case 'lora-stage-element':
+        return html`<lora-stage-element .order=${order}></lora-stage-element>`;
+      case 'compact-stage-element':
+        return html`<compact-stage-element .order=${order}></compact-stage-element>`;
+      case 'expert-prune-stage-element':
+        return html`<expert-prune-stage-element .order=${order}></expert-prune-stage-element>`;
       case 'quant-stage-element':
         return html`<quant-stage-element .order=${order}></quant-stage-element>`;
       case 'eval-stage-element':
         return html`<eval-stage-element .order=${order}></eval-stage-element>`;
+      case 'publish-stage-element':
+        return html`<publish-stage-element .order=${order}></publish-stage-element>`;
       case 'deploy-stage-element':
         return html`<deploy-stage-element .order=${order}></deploy-stage-element>`;
       default:
