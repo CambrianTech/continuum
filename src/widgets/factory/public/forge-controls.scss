@@ -98,17 +98,17 @@
   }
 
   &.mutagen-btn {
-    background: linear-gradient(135deg, rgba(200, 100, 255, 0.15), rgba(100, 255, 200, 0.15));
-    border-color: rgba(200, 100, 255, 0.4);
-    color: #c864ff;
+    background: linear-gradient(135deg, rgba(0, 255, 140, 0.15), rgba(0, 212, 255, 0.1));
+    border-color: rgba(0, 255, 140, 0.5);
+    color: #00ff8c;
     font-weight: 700;
     letter-spacing: 0.06em;
 
     &:hover {
-      background: linear-gradient(135deg, rgba(200, 100, 255, 0.4), rgba(100, 255, 200, 0.4));
-      border-color: #c864ff;
+      background: linear-gradient(135deg, rgba(0, 255, 140, 0.35), rgba(0, 212, 255, 0.25));
+      border-color: #00ff8c;
       color: #fff;
-      box-shadow: 0 0 12px rgba(200, 100, 255, 0.3);
+      box-shadow: 0 0 14px rgba(0, 255, 140, 0.35);
     }
   }
 }
