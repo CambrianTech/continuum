@@ -34,6 +34,8 @@ const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === t
 export class UserListWidget extends ReactiveListWidget<UserEntity> {
   readonly collection = UserEntity.collection;
 
+  protected override get entityCacheKey(): string { return 'user-list'; }
+
   // === REACTIVE STATE ===
   @reactive() private _selectedUserId: string | null = null;
 
