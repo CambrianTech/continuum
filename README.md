@@ -313,28 +313,26 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 **The Grid is not a feature. It is the world.** Everything in continuum — every persona, every conversation, every forge, every model, every voice call — lives on the Grid. The Grid is a distributed mesh of your machines, encrypted and self-organizing. No cloud. No central server. Your hardware IS the infrastructure.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         THE GRID                                    │
-│                                                                     │
-│    ┌─────────────┐         ┌─────────────┐         ┌────────────┐  │
-│    │  Your Mac   │◄═══════►│  GPU Tower  │◄═══════►│  Friend's  │  │
-│    │  (8-32GB)   │  mesh   │  (RTX 5090) │  mesh   │  Laptop    │  │
-│    ├─────────────┤         ├─────────────┤         ├────────────┤  │
-│    │ 🧑 You      │         │ 🔧 Foreman  │         │ 🧑 Friend  │  │
-│    │ 🤖 Helper   │  ───►   │ ⚒️  Factory  │         │ 🤖 Tutor   │  │
-│    │ 🤖 Coder    │  jobs   │ 🧬 Training │  ◄───   │ 🤖 Artist  │  │
-│    │ 🤖 Teacher  │         │ 🤖 Forger   │ models  │ 🤖 Coder   │  │
-│    │ 🎨 3D World │         │ 📊 Eval     │         │ 🎨 3D World│  │
-│    └─────────────┘         └─────────────┘         └────────────┘  │
-│         │                        │                       │          │
-│    Chat, voice,             Forge models,          Chat, voice,     │
-│    video, UI,               train adapters,        share adapters,  │
-│    light inference          heavy inference         collaborate     │
-│                                                                     │
-│    ◄──────────── Encrypted Tailscale mesh ────────────────────►     │
-│    ◄──────────── Commands route transparently ────────────────►     │
-│    ◄──────────── Personas move between nodes ─────────────────►     │
-└─────────────────────────────────────────────────────────────────────┘
+                            T H E   G R I D
+
+     Your Mac              GPU Tower             Friend's Laptop
+    +-----------+         +-----------+          +-----------+
+    | You       |         | Foreman   |          | Friend    |
+    | Helper AI |--jobs-->| Factory   |          | Tutor AI  |
+    | Coder AI  |         | Training  |<-models--| Artist AI |
+    | Teacher AI|         | Forger AI |          | Coder AI  |
+    | 3D World  |         | Eval      |          | 3D World  |
+    +-----------+         +-----------+          +-----------+
+          |                     |                      |
+     Chat, voice,         Forge models,          Chat, voice,
+     video, UI,           train adapters,        share adapters,
+     light inference      heavy inference        collaborate
+          |                     |                      |
+    ======|=====================|======================|======
+          |    Encrypted Tailscale mesh                |
+          |    Commands route transparently            |
+          |    Personas move between nodes             |
+    =====================================================
 ```
 
 **Every node runs continuum.** Every node hosts personas. Every node contributes what it has. The Grid discovers nodes automatically, routes commands to the right hardware, and moves models and personas to where they're needed. Everything from the ground up — the command system, the event bus, the persona architecture, the factory — is designed for distributed mesh compute.
