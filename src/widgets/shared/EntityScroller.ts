@@ -434,18 +434,17 @@ export function createScroller<T extends BaseEntity>(
             });
           }
         } else {
-          // No items - clear if we had items before
-          if (entityManager.count() > 0) {
-            entityManager.clear();
-            // Remove all entity elements but keep sentinel
-            const entityElements = container.querySelectorAll('[data-entity-id]');
-            entityElements.forEach(el => el.remove());
-          }
+          // No items returned. DON'T clear existing data — it may be cached
+          // entities that are valid but the server is offline. Only clear on
+          // an explicit refresh() call, not on initial load returning empty.
           hasMoreItems = false;
         }
       } catch (error) {
+        // Load FAILED — do NOT clear existing entities.
+        // Cached/previously loaded data should persist through errors.
         console.error('❌ EntityScroller: Error during load():', error);
         hasMoreItems = false;
+        return; // Skip the finally block's count update — keep existing data
       } finally {
         isLoading = false;
       }
