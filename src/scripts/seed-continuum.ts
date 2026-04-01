@@ -39,6 +39,22 @@ import {
 
 const execAsync = promisify(exec);
 
+/** Sync recipe JSON files to database — idempotent, runs on every seed */
+async function syncRecipesFromJson(): Promise<void> {
+  const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
+  const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
+  console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
+  let created = 0;
+  for (const f of recipeFiles) {
+    const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
+    const id = data.uniqueId;
+    if (!id) continue;
+    const wasCreated = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
+    if (wasCreated) created++;
+  }
+  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${recipeFiles.length - created} existing)`);
+}
+
 // ===== PERSONA PROFILE DATA (single source of truth for all persona bios + colors) =====
 
 interface PersonaProfileData {
@@ -566,6 +582,9 @@ async function seedViaJTAG() {
       const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
       await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
 
+      // Sync recipes — always, even on existing databases
+      await syncRecipesFromJson();
+
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -770,20 +789,8 @@ async function seedViaJTAG() {
     const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
     await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
 
-    // Sync recipes from JSON files — create if missing, update layout if exists
-    const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
-    const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
-    console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
-    let recipeSynced = 0;
-    for (const f of recipeFiles) {
-      const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
-      const id = data.uniqueId;
-      if (!id) continue;
-      // createRecord returns true on success, false if exists
-      const created = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
-      if (created) recipeSynced++;
-    }
-    console.log(`  [Seed] ✅ Synced recipes (${recipeSynced} new, ${recipeFiles.length - recipeSynced} existing)`);
+    // Sync recipes on first-time seed too
+    await syncRecipesFromJson();
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
