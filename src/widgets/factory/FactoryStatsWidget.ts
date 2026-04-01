@@ -30,17 +30,38 @@ interface ModelStat {
   hasAlloy: boolean;
 }
 
+interface ForgeDraft {
+  id: string;
+  name: string;
+  alloy: Record<string, unknown>;
+  status: 'editing' | 'queued' | 'running' | 'completed' | 'failed';
+  lastEditedAt: string;
+  nodeId?: string;
+  jobId?: string;
+}
+
+const DRAFTS_COLLECTION = 'forge_drafts';
+
 export class FactoryStatsWidget extends ReactiveWidget {
 
   @reactive() private _models: ModelStat[] = [];
+  @reactive() private _drafts: ForgeDraft[] = [];
   @reactive() private _totalDownloads = 0;
   @reactive() private _filter: 'all' | 'forged' | 'compacted' | 'gguf' = 'all';
   @reactive() private _sortBy: 'downloads' | 'improvement' | 'name' = 'downloads';
   @reactive() private _selectedModel: string | null = null;
+  @reactive() private _activeTab: 'published' | 'drafts' = 'published';
+
+  protected override get cacheKey(): string { return 'factory-stats'; }
+  protected override get cacheableProperties(): string[] {
+    return ['_models', '_drafts', '_totalDownloads', '_filter', '_sortBy', '_activeTab'];
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
     this.loadStats();
+    this.loadDrafts();
+    this.listenForDraftUpdates();
   }
 
   private async loadStats(): Promise<void> {
@@ -62,6 +83,54 @@ export class FactoryStatsWidget extends ReactiveWidget {
         this._totalDownloads = result.totalDownloads ?? 0;
       }
     } catch { /* */ }
+  }
+
+  private async loadDrafts(): Promise<void> {
+    try {
+      const result = await this.executeCommand<any, any>('data/list', {
+        collection: DRAFTS_COLLECTION,
+        orderBy: [{ field: 'updatedAt', direction: 'desc' }],
+        limit: 20,
+      });
+      if (result?.items) {
+        this._drafts = result.items.map((d: any) => ({
+          id: d.id,
+          name: d.name ?? d.alloy?.name ?? 'Untitled',
+          alloy: d.alloy ?? {},
+          status: d.status ?? 'editing',
+          lastEditedAt: d.updatedAt ?? d.createdAt ?? '',
+          nodeId: d.nodeId,
+          jobId: d.jobId,
+        }));
+      }
+    } catch { /* No drafts yet — that's fine */ }
+  }
+
+  private listenForDraftUpdates(): void {
+    Events.subscribe(`data:${DRAFTS_COLLECTION}:created`, () => this.loadDrafts());
+    Events.subscribe(`data:${DRAFTS_COLLECTION}:updated`, () => this.loadDrafts());
+    Events.subscribe(`data:${DRAFTS_COLLECTION}:deleted`, () => this.loadDrafts());
+  }
+
+  /** Save current console state as a draft — called from forge console via event */
+  private async saveDraft(alloy: Record<string, unknown>): Promise<void> {
+    const name = (alloy.name as string) ?? 'Untitled';
+    await this.executeCommand<any, any>('data/create', {
+      collection: DRAFTS_COLLECTION,
+      data: { name, alloy, status: 'editing' },
+    });
+  }
+
+  private async deleteDraft(id: string, e: Event): Promise<void> {
+    e.stopPropagation();
+    await this.executeCommand<any, any>('data/delete', {
+      collection: DRAFTS_COLLECTION,
+      id,
+    });
+  }
+
+  private loadDraftIntoConsole(draft: ForgeDraft): void {
+    Events.emit('factory:alloy:load', { alloy: draft.alloy, draftId: draft.id });
   }
 
   private get filteredModels(): ModelStat[] {
@@ -138,6 +207,89 @@ export class FactoryStatsWidget extends ReactiveWidget {
         font-size: 11px;
         color: var(--content-tertiary, #5a6070);
         margin-top: 2px;
+      }
+
+      /* ── Panel Tabs (Published / Drafts) ───── */
+
+      .panel-tabs {
+        display: flex;
+        gap: 2px;
+        background: rgba(0,0,0,0.2);
+        border-radius: 6px;
+        padding: 2px;
+      }
+
+      .panel-tab {
+        flex: 1;
+        padding: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--content-tertiary, #5a6070);
+        cursor: pointer;
+        transition: all 0.15s;
+        text-align: center;
+      }
+
+      .panel-tab:hover {
+        color: var(--content-secondary, #8a92a5);
+      }
+
+      .panel-tab.active {
+        background: rgba(0, 212, 255, 0.1);
+        color: var(--accent-primary, #00d4ff);
+      }
+
+      .draft-count {
+        font-size: 9px;
+        padding: 1px 5px;
+        border-radius: 8px;
+        background: rgba(0, 212, 255, 0.2);
+        color: var(--accent-primary, #00d4ff);
+        margin-left: 2px;
+      }
+
+      .empty-drafts {
+        text-align: center;
+        padding: 24px 12px;
+        color: var(--content-tertiary, #5a6070);
+        font-size: 11px;
+      }
+
+      .empty-icon {
+        font-size: 24px;
+        margin-bottom: 8px;
+        opacity: 0.3;
+      }
+
+      .empty-hint {
+        font-size: 9px;
+        margin-top: 6px;
+        font-style: italic;
+      }
+
+      .draft-delete {
+        font-size: 10px;
+        width: 18px;
+        height: 18px;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 3px;
+        background: transparent;
+        color: var(--content-tertiary, #5a6070);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+      }
+
+      .draft-delete:hover {
+        border-color: #ff4444;
+        color: #ff4444;
       }
 
       /* ── Filter Pills ───────────────────────── */
@@ -435,11 +587,82 @@ export class FactoryStatsWidget extends ReactiveWidget {
     return html`
       <div class="stats">
         ${this.renderHero()}
-        ${this.renderFilters()}
-        ${this.renderModelTiles()}
-        ${this.renderAlloyPanel()}
+        ${this.renderPanelTabs()}
+        ${this._activeTab === 'published' ? html`
+          ${this.renderFilters()}
+          ${this.renderModelTiles()}
+          ${this.renderAlloyPanel()}
+        ` : html`
+          ${this.renderDraftsList()}
+        `}
       </div>
     `;
+  }
+
+  private renderPanelTabs(): TemplateResult {
+    const draftCount = this._drafts.filter(d => d.status !== 'completed').length;
+    return html`
+      <div class="panel-tabs">
+        <button class="panel-tab ${this._activeTab === 'published' ? 'active' : ''}"
+          @click=${() => this._activeTab = 'published'}>Published</button>
+        <button class="panel-tab ${this._activeTab === 'drafts' ? 'active' : ''}"
+          @click=${() => this._activeTab = 'drafts'}>Drafts${draftCount > 0 ? html` <span class="draft-count">${draftCount}</span>` : nothing}</button>
+      </div>
+    `;
+  }
+
+  private renderDraftsList(): TemplateResult {
+    if (this._drafts.length === 0) {
+      return html`
+        <div class="empty-drafts">
+          <div class="empty-icon">&#9881;</div>
+          <div>No drafts yet</div>
+          <div class="empty-hint">Click "&#171; Forge This" on a published model or configure a forge in the console</div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="model-tiles">
+        ${this._drafts.map(d => this.renderDraftTile(d))}
+      </div>
+    `;
+  }
+
+  private renderDraftTile(d: ForgeDraft): TemplateResult {
+    const statusColors: Record<string, string> = {
+      editing: '#00d4ff', queued: '#ffaa00', running: '#00ffc8', completed: '#00ffc8', failed: '#ff4444',
+    };
+    const ago = this.timeAgo(d.lastEditedAt);
+    const baseModel = (d.alloy?.source as Record<string, unknown>)?.baseModel as string ?? '';
+
+    return html`
+      <div class="model-tile" @click=${() => this.loadDraftIntoConsole(d)}>
+        <div class="model-rank-badge" style="background:${statusColors[d.status]}22;border-color:${statusColors[d.status]}66;color:${statusColors[d.status]}">
+          ${d.status === 'editing' ? '&#9998;' : d.status === 'queued' ? '&#9203;' : d.status === 'running' ? '&#9654;' : d.status === 'completed' ? '&#10003;' : '&#10007;'}
+        </div>
+        <div class="model-tile-info">
+          <div class="model-tile-name">${d.name}</div>
+          <div class="model-tile-meta">
+            <span class="tag domain">${d.status}</span>
+            ${baseModel ? html`<span class="tag variant">${baseModel.split('/').pop()}</span>` : nothing}
+          </div>
+        </div>
+        <div class="model-gauge">
+          <div class="gauge-value" style="font-size:9px;color:var(--content-tertiary)">${ago}</div>
+          <button class="draft-delete" @click=${(e: Event) => this.deleteDraft(d.id, e)} title="Delete draft">&#10005;</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private timeAgo(iso: string): string {
+    if (!iso) return '';
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 60000) return 'just now';
+    if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
+    if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
+    return `${Math.floor(ms / 86400000)}d ago`;
   }
 
   private renderHero(): TemplateResult {

@@ -120,21 +120,32 @@ export class FactoryWidget extends ReactiveWidget {
     this.listenForModelSelection();
   }
 
-  /** Listen for model selection from right panel stats widget via global Events */
+  /** Listen for model selection and alloy loading from right panel */
   private listenForModelSelection(): void {
-    const unsub = Events.subscribe('factory:model:select', (detail: { modelId: string; name?: string; domain?: string }) => {
-      if (detail?.modelId) {
-        const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
-        if (controls?.setBaseModel) {
-          controls.setBaseModel(detail.modelId);
+    this._factoryUnsubs = [
+      Events.subscribe('factory:model:select', (detail: { modelId: string; name?: string; domain?: string }) => {
+        if (detail?.modelId) {
+          const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
+          if (controls?.setBaseModel) {
+            controls.setBaseModel(detail.modelId);
+          }
         }
-      }
-    });
-    // Clean up on disconnect
-    this._modelSelectUnsub = unsub;
+      }),
+      Events.subscribe('factory:alloy:load', (detail: { alloy: Record<string, unknown>; draftId?: string }) => {
+        if (detail?.alloy) {
+          // Load alloy into forge controls — set base model and pipeline stages
+          const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
+          const source = detail.alloy.source as Record<string, unknown> | undefined;
+          if (controls?.setBaseModel && source?.baseModel) {
+            controls.setBaseModel(source.baseModel as string);
+          }
+          // Pipeline stages will be loaded when pipeline composer supports it
+        }
+      }),
+    ];
   }
 
-  private _modelSelectUnsub?: () => void;
+  private _factoryUnsubs: Array<() => void> = [];
 
   /** Tell the right panel what widget to show for the factory */
   private configureRightPanel(): void {
