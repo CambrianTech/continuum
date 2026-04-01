@@ -19,7 +19,6 @@ import {
 import { render } from 'lit';
 import type { RenderFn, RenderContext } from '../../shared/EntityScroller';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
-import '../../shared/EntityListHeader';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { ContentService } from '../../../system/state/ContentService';
 import { Dm } from '../../../commands/collaboration/dm/shared/DmTypes';
@@ -63,24 +62,51 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   // the 3-user bug where stale cache prevented loading all 17 users.
   protected override get loadBackend(): 'stale-while-revalidate' { return 'stale-while-revalidate'; }
 
-  // === HEADER ===
+  // === HEADER with filter chips ===
   protected override renderHeader(): TemplateResult {
-    const allFilters = [
+    const typeFilters = [
       { id: 'all', label: 'All', icon: '◉' },
       { id: 'human', label: 'Human', icon: '👤' },
       { id: 'persona', label: 'Persona', icon: '⭐' },
-      { id: 'agent', label: 'Agent', icon: '🤖' },
-      { id: 'online', label: 'Online', icon: '●' },
+      { id: 'agent', label: 'Agent', icon: '🤖' }
+    ];
+
+    const statusFilters = [
+      { id: 'online', label: 'Online', icon: '●' }
     ];
 
     return html`
-      <entity-list-header
-        .title=${this.listTitle}
-        .count=${this.entityCount}
-        .activeFilter=${[...this.activeFilters][0] || 'all'}
-        .filters=${allFilters}
-        @filter-change=${(e: CustomEvent) => this.toggleFilter(e.detail.filter)}
-      ></entity-list-header>
+      <div class="entity-list-header">
+        <span class="header-title">${this.listTitle}</span>
+        <span class="user-count">${this.entityCount}</span>
+      </div>
+      <div class="filter-chips">
+        <div class="filter-group type-filters">
+          ${typeFilters.map(f => html`
+            <button
+              class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
+              data-filter="${f.id}"
+              @click=${() => this.toggleFilter(f.id)}
+            >
+              <span class="chip-icon">${f.icon}</span>
+              <span class="chip-label">${f.label}</span>
+            </button>
+          `)}
+        </div>
+        <span class="filter-divider"></span>
+        <div class="filter-group status-filters">
+          ${statusFilters.map(f => html`
+            <button
+              class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
+              data-filter="${f.id}"
+              @click=${() => this.toggleFilter(f.id)}
+            >
+              <span class="chip-icon">${f.icon}</span>
+              <span class="chip-label">${f.label}</span>
+            </button>
+          `)}
+        </div>
+      </div>
     `;
   }
 
