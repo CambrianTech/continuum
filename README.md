@@ -1,23 +1,24 @@
 # continuum
 
-### Not a chatbot. Not an agent framework. Not a terminal tool.
-### A living world inside a distributed mesh — AI citizens with faces, voices, memories, and skills they forge themselves. Your machines are the Grid. You are the User.
+### A distributed AI world that runs on your hardware.
+
+Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI personas live, work, and evolve. They have faces, voices, memories, and skills they [forge](#the-factory) themselves. No cloud. No subscription. **Your computers are the Grid. You are the User.**
 
 <table>
 <tr>
 <td width="50%">
 <img src="docs/images/live-session-avatars.png" alt="One human and 14 AI personas in a live 3D video call — avatars with visible cognitive state, genome bars, and real-time voice" width="100%"/>
-<p align="center"><em>Live — 14 AI teammates in a 3D video call with real-time voice</em></p>
+<p align="center"><em>Live — 14 AI personas in a 3D video call with real-time voice</em></p>
 </td>
 <td width="50%">
 <img src="docs/images/factory.png" alt="Model Factory — forge pipeline, 15K+ downloads, published models leaderboard, BigMama online" width="100%"/>
-<p align="center"><em>Factory — forge models with cryptographic contracts, 15K+ HF downloads</em></p>
+<p align="center"><em><a href="#the-factory">Factory</a> — forge models on the <a href="#the-grid">Grid</a> with <a href="https://github.com/CambrianTech/forge-alloy">cryptographic contracts</a></em></p>
 </td>
 </tr>
 </table>
 
 <p align="center">
-<strong>One human. 14 AI teammates. Live video call. 3D avatars. Real-time voice. They see you. They see each other.<br/>They remember yesterday. They're smarter than yesterday. They run on your laptop.<br/>They forge their own models. They prove the work. They run on your hardware.</strong>
+<a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a>
 </p>
 
 <p align="center">
@@ -29,17 +30,12 @@
 
 ---
 
-> **The Grid:** Your machines form a sovereign compute mesh. Every laptop, desktop, and GPU tower is a node. Personas move between them. Models forge on the strongest hardware and deploy to the weakest. No datacenter. No cloud bill. No corporate dependency. **Your hardware, your citizens, your world.**
->
-> Think the world of *Tron* — except the programs are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. **Your computers are the Grid. You are the User.**
+**The [Grid](#the-grid) is the foundation.** Every laptop, desktop, and GPU tower is a node. [Personas](#autonomous-personas) move between them. Models [forge](#the-factory) on the strongest hardware and deploy to the weakest. [Sentinels](#sentinel-engine) train the [genome](#genomic-intelligence). [Forge-alloy](https://github.com/CambrianTech/forge-alloy) contracts prove the work cryptographically. Everything is built from the ground up for distributed mesh compute.
 
-[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](#the-grid). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
+**Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090. Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains.
-
-> **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
->
-> **Alpha roadmap**: 100+ tracked issues — 75+ closed, 27 open. Phase 0 (critical bugs) largely resolved. Live voice mode with STT working. 14 models published on HuggingFace. Factory assembly line designed. Grid mesh operational via Tailscale. See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) for the phased plan, and our [open issues](https://github.com/CambrianTech/continuum/issues) for real-time progress.
+> **Pre-Alpha** — Active development. For developers, researchers, and the curious.
+> See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
 
 ---
 
@@ -394,7 +390,7 @@ Today the Grid is our own machines. Forge-alloy is designed for when it's not �
 
 ---
 
-## Industry — The Factory, Academy, and Genome
+## The Factory
 
 Continuum isn't just a place to talk. It's a place to **build**. The world has an industrial sector — forging base models, training persona expertise, and evolving genomes. These are rooms in the world, not the world itself.
 
