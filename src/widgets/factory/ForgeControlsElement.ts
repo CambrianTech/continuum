@@ -17,6 +17,7 @@ import {
 import { nothing } from 'lit';
 import { styles as FORGE_CONTROLS_STYLES } from './public/forge-controls.styles';
 import './stages/PipelineComposer';
+import './DeviceTargetElement';
 
 /** Forge profiles — presets for common configurations */
 const FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
@@ -105,6 +106,8 @@ export class ForgeControlsElement extends ReactiveWidget {
   @reactive() private _cycles = 3;
   @reactive() private _learningRate = '2e-4';
   @reactive() private _pipelineStages: Record<string, unknown>[] = [];
+  @reactive() private _modelValid: 'unknown' | 'checking' | 'valid' | 'invalid' = 'unknown';
+  private _validateTimer: ReturnType<typeof setTimeout> | null = null;
 
   private get _isMoe(): boolean {
     return this._model.includes('35B') || this._model.includes('MoE');
@@ -186,6 +189,39 @@ export class ForgeControlsElement extends ReactiveWidget {
     const h = Math.floor(min / 60);
     const m = min % 60;
     return m > 0 ? `~${h}h${m}m` : `~${h}h`;
+  }
+
+  /** Called by parent when user selects a model from the right panel browser */
+  setBaseModel(modelId: string): void {
+    this._model = modelId;
+    this._modelValid = 'valid'; // Selected from our published models — known good
+    this.requestUpdate();
+  }
+
+  /** Debounced HF model validation — checks if model exists on HuggingFace */
+  private onModelInput(value: string): void {
+    this._model = value;
+    this._modelValid = 'unknown';
+
+    if (this._validateTimer) clearTimeout(this._validateTimer);
+
+    if (!value || !value.includes('/')) {
+      this._modelValid = value ? 'invalid' : 'unknown';
+      return;
+    }
+
+    this._modelValid = 'checking';
+    this._validateTimer = setTimeout(() => this.validateModel(value), 600);
+  }
+
+  private async validateModel(modelId: string): Promise<void> {
+    try {
+      const response = await fetch(`https://huggingface.co/api/models/${modelId}`, { method: 'HEAD' });
+      this._modelValid = response.ok ? 'valid' : 'invalid';
+    } catch {
+      this._modelValid = 'unknown'; // Network error — don't block
+    }
+    this.requestUpdate();
   }
 
   private applyProfile(name: string): void {
@@ -276,15 +312,45 @@ export class ForgeControlsElement extends ReactiveWidget {
         </div>
         <div class="controls-grid">
           <div class="control-group">
-            <span class="control-label">Base Model</span>
-            <select class="control-select"
+            <span class="control-label">Base Model
+              ${this._modelValid === 'valid' ? html`<span class="model-status valid">&#10003;</span>` :
+                this._modelValid === 'invalid' ? html`<span class="model-status invalid">&#10007;</span>` :
+                this._modelValid === 'checking' ? html`<span class="model-status checking">...</span>` : nothing}
+            </span>
+            <input class="control-select ${this._modelValid === 'valid' ? 'validated' : this._modelValid === 'invalid' ? 'invalid-input' : ''}"
+              type="text" list="model-list"
+              placeholder="org/model-name (e.g. Qwen/Qwen3.5-4B)"
               .value=${this._model}
-              @change=${(e: Event) => this._model = (e.target as HTMLSelectElement).value}>
-              <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
-              <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
-              <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
-              <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
-            </select>
+              @input=${(e: Event) => this.onModelInput((e.target as HTMLInputElement).value)}>
+            <datalist id="model-list">
+              <optgroup label="Qwen 3.5 (recommended)">
+                <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB)</option>
+                <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB)</option>
+                <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB)</option>
+                <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE</option>
+              </optgroup>
+              <optgroup label="Qwen 3">
+                <option value="Qwen/Qwen3-0.6B">Qwen3-0.6B</option>
+                <option value="Qwen/Qwen3-1.7B">Qwen3-1.7B</option>
+                <option value="Qwen/Qwen3-4B">Qwen3-4B</option>
+                <option value="Qwen/Qwen3-8B">Qwen3-8B</option>
+              </optgroup>
+              <optgroup label="Llama">
+                <option value="meta-llama/Llama-3.1-8B-Instruct">Llama 3.1 8B Instruct</option>
+                <option value="meta-llama/Llama-3.2-3B-Instruct">Llama 3.2 3B Instruct</option>
+              </optgroup>
+              <optgroup label="Our forged models">
+                <option value="continuum-ai/qwen3.5-4b-code-forged">qwen3.5-4b-code-forged (+22.7%)</option>
+                <option value="continuum-ai/qwen3.5-35b-a3b-compacted">qwen3.5-35b-a3b-compacted</option>
+                <option value="continuum-ai/qwen2.5-coder-14b-compacted">qwen2.5-coder-14b-compacted</option>
+              </optgroup>
+              <optgroup label="Other popular">
+                <option value="mistralai/Mistral-7B-v0.3">Mistral 7B v0.3</option>
+                <option value="google/gemma-2-9b">Gemma 2 9B</option>
+                <option value="microsoft/phi-3-mini-4k-instruct">Phi 3 Mini 4K</option>
+              </optgroup>
+            </datalist>
+            <span class="control-hint">Any HuggingFace model — validates on typing</span>
           </div>
           <div class="control-group">
             <span class="control-label">Domain</span>
@@ -373,8 +439,37 @@ export class ForgeControlsElement extends ReactiveWidget {
         <pipeline-composer
           @pipeline-change=${(e: CustomEvent) => this._pipelineStages = e.detail as Record<string, unknown>[]}
         ></pipeline-composer>
+        <device-target-element
+          .baseModelGb=${this._estimatedBaseSize}
+          .pruneLevel=${this._pruneLevel / 100}
+          .quantFormats=${this._selectedQuantFormats}
+        ></device-target-element>
       </div>
     `;
+  }
+
+  /** Estimate fp16 size from model name */
+  private get _estimatedBaseSize(): number {
+    const m = this._model.toLowerCase();
+    if (m.includes('0.5b') || m.includes('0.6b')) return 1;
+    if (m.includes('1.5b') || m.includes('1.7b')) return 3;
+    if (m.includes('3b')) return 6;
+    if (m.includes('4b')) return 8;
+    if (m.includes('7b') || m.includes('8b') || m.includes('9b')) return 16;
+    if (m.includes('14b')) return 28;
+    if (m.includes('27b')) return 54;
+    if (m.includes('32b') || m.includes('35b')) return 50;
+    if (m.includes('70b')) return 140;
+    return 8;
+  }
+
+  /** Extract quant formats from pipeline stages */
+  private get _selectedQuantFormats(): string[] {
+    const quantStage = this._pipelineStages.find(s => s.type === 'quant');
+    if (quantStage?.quantTypes && Array.isArray(quantStage.quantTypes)) {
+      return quantStage.quantTypes as string[];
+    }
+    return ['Q4_K_M', 'Q8_0'];
   }
 }
 

@@ -179,7 +179,8 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
   protected override get cacheKey(): string { return 'continuum-metrics'; }
   protected override get cacheableProperties(): string[] {
-    return ['_activeTab', '_sysTimeSeries', '_sysCurrent', '_aiTimeSeries', '_aiSummary'];
+    // Cache data, not error state — never restore into a broken state
+    return ['_activeTab', '_sysTimeSeries', '_sysCurrent', '_aiTimeSeries', '_aiSummary', '_timeRange'];
   }
 
   protected override async onFirstRender(): Promise<void> {

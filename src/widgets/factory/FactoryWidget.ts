@@ -117,14 +117,15 @@ export class FactoryWidget extends ReactiveWidget {
     this.loadPublishedModels();
     this.startGridPolling();
     this.configureRightPanel();
+    this.listenForModelSelection();
   }
 
-  /** Tell the right panel what widget to show for the factory */
+  /** Tell the right panel what to show.
+   *  TODO: This should come from the recipe system (#704) once recipes are seeded.
+   *  For now, the widget emits its own config because recipes table is empty. */
   private configureRightPanel(): void {
-    // Emit immediately AND after a short delay — the right panel may
-    // not be subscribed yet on first mount, but we also need to re-emit
-    // when navigating back to Factory after visiting another tab.
     this.emitRightPanelConfig();
+    // Re-emit after short delay for right panel that mounts after us
     setTimeout(() => this.emitRightPanelConfig(), 200);
   }
 
@@ -135,12 +136,37 @@ export class FactoryWidget extends ReactiveWidget {
       sections: [{
         id: 'factory-stats',
         title: 'Models',
-        icon: '🏭',
+        icon: 'M',
         widgetTag: 'factory-stats-widget',
         flexWeight: 1,
       }],
     });
   }
+
+  /** Listen for model selection and alloy loading from right panel */
+  private listenForModelSelection(): void {
+    this._factoryUnsubs = [
+      Events.subscribe('factory:model:select', (detail: { modelId: string; name?: string; domain?: string }) => {
+        if (detail?.modelId) {
+          const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
+          if (controls?.setBaseModel) {
+            controls.setBaseModel(detail.modelId);
+          }
+        }
+      }),
+      Events.subscribe('factory:alloy:load', (detail: { alloy: Record<string, unknown>; draftId?: string }) => {
+        if (detail?.alloy) {
+          const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
+          const source = detail.alloy.source as Record<string, unknown> | undefined;
+          if (controls?.setBaseModel && source?.baseModel) {
+            controls.setBaseModel(source.baseModel as string);
+          }
+        }
+      }),
+    ];
+  }
+
+  private _factoryUnsubs: Array<() => void> = [];
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();

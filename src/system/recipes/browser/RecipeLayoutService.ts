@@ -24,7 +24,14 @@ interface LayoutWidget {
   widget: string;
   position: 'left' | 'center' | 'right';
   order: number;
+  /** Widget-specific config (room, compact, etc) */
   config?: Record<string, unknown>;
+  /** Section title when in a panel (right panel accordion) */
+  title?: string;
+  /** Section icon */
+  icon?: string;
+  /** Flex weight for panel layout */
+  flex?: number;
 }
 
 /**
@@ -189,12 +196,20 @@ export class RecipeLayoutService {
         return null; // No right panel widgets = hidden
       }
 
-      const firstRight = rightWidgets[0];
+      // Build sections from all right widgets — each widget becomes a section
+      const sections = rightWidgets.map((w) => ({
+        id: w.widget,
+        title: w.title ?? w.widget.replace(/-widget$/, ''),
+        icon: w.icon,
+        widgetTag: w.widget,
+        flexWeight: w.flex ?? 1,
+      }));
+
       return {
-        widget: firstRight.widget,
-        room: firstRight.config?.room as string | undefined,
-        compact: firstRight.config?.compact as boolean | undefined,
-        ...firstRight.config
+        widget: rightWidgets[0].widget,
+        room: rightWidgets[0].config?.room as string | undefined,
+        compact: rightWidgets[0].config?.compact as boolean | undefined,
+        sections,
       };
     }
 
