@@ -16,10 +16,8 @@ import { execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
-/** Known grid nodes that may have sentinel-ai installed */
-const SENTINEL_NODES = [
-  { name: 'bigmama', ip: '100.124.122.107' },
-];
+/** Grid nodes discovered at runtime — no hardcoded IPs */
+const SENTINEL_NODES: Array<{ name: string; ip: string }> = [];
 
 export class ModelIntrospectServerCommand extends CommandBase<ModelIntrospectParams, ModelIntrospectResult> {
 

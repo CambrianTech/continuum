@@ -10,7 +10,7 @@ import { StageElement, STAGE_BASE_STYLES } from './StageElement';
 
 export class DeployStageElement extends StageElement {
 
-  @reactive() private _target = 'bigmama';
+  @reactive() private _target = 'local';
   @reactive() private _healthCheck = true;
   @reactive() private _warmup = true;
   @reactive() private _maxConcurrency = 4;
@@ -62,7 +62,6 @@ export class DeployStageElement extends StageElement {
           <select class="field-select"
             .value=${this._target}
             @change=${(e: Event) => { this._target = (e.target as HTMLSelectElement).value; this.emitChange(); }}>
-            <option value="bigmama">BigMama (RTX 5090)</option>
             <option value="local">Local (this machine)</option>
             <option value="grid">Grid (auto-select best node)</option>
           </select>

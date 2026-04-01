@@ -1210,7 +1210,6 @@ export class ForgeDeltaElement extends ReactiveWidget {
             .value=${this._targetDeploy}
             @change=${(e: Event) => this._targetDeploy = (e.target as HTMLSelectElement).value}>
             <option value="">— no change —</option>
-            <option value="bigmama">BigMama (RTX 5090)</option>
             <option value="local">Local</option>
             <option value="grid">Grid (auto-select)</option>
           </select>
