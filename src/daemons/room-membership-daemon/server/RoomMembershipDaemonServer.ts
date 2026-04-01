@@ -60,7 +60,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         ROOM_UNIQUE_IDS.ACADEMY,
         ROOM_UNIQUE_IDS.DEV_UPDATES,
         ROOM_UNIQUE_IDS.HELP,
-        ROOM_UNIQUE_IDS.THEME,     // System room for ThemeWidget assistant
+        ROOM_UNIQUE_IDS.UNIVERSE,  // System room for UniverseWidget assistant
         ROOM_UNIQUE_IDS.SETTINGS,  // System room for SettingsWidget assistant
         ROOM_UNIQUE_IDS.OUTREACH,  // Social media strategy and community engagement
         ROOM_UNIQUE_IDS.NEWSROOM   // Current events and world awareness

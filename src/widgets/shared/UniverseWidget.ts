@@ -1,14 +1,14 @@
 /**
- * ThemeWidget - Theme customization with AI assistance
+ * UniverseWidget - Universe experience designer with AI assistance
  *
- * Visual theme editor with embedded AI assistant for designing themes,
- * choosing colors, and customizing workspace appearance.
- * Think Mac Terminal's theme selector, but with AI help.
+ * Complete experience designer (Tron Universe, Ghibli Universe) with embedded
+ * AI assistant for designing universes — visual themes, audio, interaction patterns.
+ * Think Mac Terminal's theme selector, but with AI help and expanded to full experiences.
  *
  * Structure:
- * - public/theme-widget.html - Template container
- * - public/theme-widget.scss - Styles (compiled to .css)
- * - ThemeWidget.ts - Logic (this file)
+ * - public/universe-widget.html - Template container
+ * - public/universe-widget.scss - Styles (compiled to .css)
+ * - UniverseWidget.ts - Logic (this file)
  */
 
 import { BaseWidget } from './BaseWidget';
@@ -27,16 +27,16 @@ import { PositronWidgetState } from './services/state/PositronWidgetState';
 import { FileLoad } from '../../commands/file/load/shared/FileLoadTypes';
 import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
-export class ThemeWidget extends BaseWidget {
+export class UniverseWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
   private themeDiscovery: ThemeDiscoveryService;
 
   constructor() {
     super({
-      widgetName: 'ThemeWidget',
-      template: 'theme-widget.html',
-      styles: 'theme-widget.css',
+      widgetName: 'UniverseWidget',
+      template: 'universe-widget.html',
+      styles: 'universe-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
@@ -48,14 +48,14 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Override path resolution - ThemeWidget is in widgets/shared/, public folder is there too
+   * Override path resolution - UniverseWidget is in widgets/shared/, public folder is there too
    */
   protected resolveResourcePath(filename: string): string {
     return `widgets/shared/public/${filename}`;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    this.verbose() && console.log('🎨 ThemeWidget: Initializing...');
+    this.verbose() && console.log('🎨 UniverseWidget: Initializing...');
 
     try {
       // Discover all available themes dynamically
@@ -67,17 +67,17 @@ export class ThemeWidget extends BaseWidget {
         : null;
 
       this.currentTheme = savedTheme || 'base';
-      this.verbose() && console.log(`🎨 ThemeWidget: Using theme '${this.currentTheme}' from localStorage`);
+      this.verbose() && console.log(`🎨 UniverseWidget: Using theme '${this.currentTheme}' from localStorage`);
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Theme discovery failed:', error);
+      console.error('❌ UniverseWidget: Theme discovery failed:', error);
       this.currentTheme = 'base';
     }
 
     // Emit Positron context for AI awareness
     this.emitPositronContext();
 
-    this.verbose() && console.log('✅ ThemeWidget: Initialization complete');
+    this.verbose() && console.log('✅ UniverseWidget: Initialization complete');
   }
 
   /**
@@ -89,11 +89,11 @@ export class ThemeWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    this.verbose() && console.log(`🎨 ThemeWidget: renderWidget() - currentTheme: ${this.currentTheme}`);
+    this.verbose() && console.log(`🎨 UniverseWidget: renderWidget() - currentTheme: ${this.currentTheme}`);
 
     // Load theme CSS if not already in DOM (uses this.currentTheme set from localStorage in init)
     if (!this.themeStyleElement) {
-      this.verbose() && console.log(`🎨 ThemeWidget: Loading theme '${this.currentTheme}' CSS`);
+      this.verbose() && console.log(`🎨 UniverseWidget: Loading theme '${this.currentTheme}' CSS`);
       await this.setTheme(this.currentTheme);
     }
 
@@ -109,7 +109,7 @@ export class ThemeWidget extends BaseWidget {
     // Setup event listeners
     this.setupThemeControls();
 
-    this.verbose() && console.log('✅ ThemeWidget: Rendered');
+    this.verbose() && console.log('✅ UniverseWidget: Rendered');
   }
 
   private renderContent(): void {
@@ -143,14 +143,14 @@ export class ThemeWidget extends BaseWidget {
     // Just clear our reference so we can re-acquire it on next init
     this.themeStyleElement = null;
 
-    this.verbose() && console.log('✅ ThemeWidget: Cleanup complete (theme CSS preserved in document.head)');
+    this.verbose() && console.log('✅ UniverseWidget: Cleanup complete (theme CSS preserved in document.head)');
   }
 
   /**
    * Switch theme - API for external control
    */
   async setTheme(themeName: string): Promise<void> {
-    this.verbose() && console.log(`🎨 ThemeWidget: Switching to theme '${themeName}'`);
+    this.verbose() && console.log(`🎨 UniverseWidget: Switching to theme '${themeName}'`);
     this.currentTheme = themeName;
 
     // Reload all theme CSS and inject into document head
@@ -169,10 +169,10 @@ export class ThemeWidget extends BaseWidget {
       // Update Positron context with new theme
       this.emitPositronContext();
 
-      this.verbose() && console.log('✅ ThemeWidget: Theme switched, injected globally, and saved to UserState');
+      this.verbose() && console.log('✅ UniverseWidget: Theme switched, injected globally, and saved to UserState');
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to switch theme:', error);
+      console.error('❌ UniverseWidget: Failed to switch theme:', error);
     }
   }
 
@@ -182,7 +182,7 @@ export class ThemeWidget extends BaseWidget {
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      this.verbose() && console.log('🎨 ThemeWidget: Injecting theme CSS into document head...');
+      this.verbose() && console.log('🎨 UniverseWidget: Injecting theme CSS into document head...');
 
       // Check for existing theme style elements in DOM (may exist from previous widget instance)
       const existingStyles = document.querySelectorAll('style[id^="jtag-theme-"]');
@@ -195,7 +195,7 @@ export class ThemeWidget extends BaseWidget {
 
       document.head.appendChild(this.themeStyleElement);
 
-      this.verbose() && console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
+      this.verbose() && console.log(`✅ UniverseWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
 
       // Dispatch theme change event
       this.dispatchEvent(new CustomEvent('theme-changed', {
@@ -204,7 +204,7 @@ export class ThemeWidget extends BaseWidget {
       }));
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to inject theme CSS:', error);
+      console.error('❌ UniverseWidget: Failed to inject theme CSS:', error);
       throw error;
     }
   }
@@ -214,7 +214,7 @@ export class ThemeWidget extends BaseWidget {
    */
   private async loadAllThemeCSS(): Promise<string> {
     try {
-      this.verbose() && console.log('🎨 ThemeWidget: Loading ALL theme CSS (base + theme)');
+      this.verbose() && console.log('🎨 UniverseWidget: Loading ALL theme CSS (base + theme)');
 
       // Load base CSS files from themes/base/
       const baseStyles = await this.loadDirectoryStyles('base');
@@ -227,11 +227,11 @@ export class ThemeWidget extends BaseWidget {
       // Combine base + theme styles
       const combinedCSS = baseStyles + themeStyles;
 
-      this.verbose() && console.log(`✅ ThemeWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
+      this.verbose() && console.log(`✅ UniverseWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
       return combinedCSS;
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to load all theme CSS:', error);
+      console.error('❌ UniverseWidget: Failed to load all theme CSS:', error);
       return '';
     }
   }
@@ -264,7 +264,7 @@ export class ThemeWidget extends BaseWidget {
 
       return results.join('');
     } catch (error) {
-      console.error(`❌ ThemeWidget: Failed to load directory styles for '${directoryName}':`, error);
+      console.error(`❌ UniverseWidget: Failed to load directory styles for '${directoryName}':`, error);
       return '';
     }
   }
@@ -280,7 +280,7 @@ export class ThemeWidget extends BaseWidget {
     }
 
     // Fallback to standard theme.css if no manifest found
-    console.warn(`⚠️ ThemeWidget: No manifest found for theme '${directoryName}', using fallback`);
+    console.warn(`⚠️ UniverseWidget: No manifest found for theme '${directoryName}', using fallback`);
     return ['theme.css'];
   }
 
@@ -309,14 +309,14 @@ export class ThemeWidget extends BaseWidget {
       card.addEventListener('click', async () => {
         const themeName = (card as HTMLElement).dataset.theme;
         if (themeName && themeName !== this.currentTheme) {
-          this.verbose() && console.log(`🎨 ThemeWidget: Theme card clicked - switching to '${themeName}'`);
+          this.verbose() && console.log(`🎨 UniverseWidget: Theme card clicked - switching to '${themeName}'`);
           // Use setTheme directly - it handles CSS loading, persistence to localStorage AND UserState
           await this.setTheme(themeName);
         }
       });
     });
 
-    this.verbose() && console.log('✅ ThemeWidget: Theme controls set up successfully');
+    this.verbose() && console.log('✅ UniverseWidget: Theme controls set up successfully');
   }
 
   /**
@@ -324,15 +324,15 @@ export class ThemeWidget extends BaseWidget {
    */
   private async saveThemeToUserState(themeName: string): Promise<void> {
     try {
-      this.verbose() && console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
+      this.verbose() && console.log(`🔧 UniverseWidget: Saving theme '${themeName}' to UserState`);
 
       // 1. Save to localStorage immediately for instant persistence
       if (LocalStorageStateManager.isAvailable()) {
         const success = LocalStorageStateManager.setTheme(themeName);
         if (success) {
-          this.verbose() && console.log(`✅ ThemeWidget: Theme '${themeName}' saved to localStorage`);
+          this.verbose() && console.log(`✅ UniverseWidget: Theme '${themeName}' saved to localStorage`);
         } else {
-          console.warn('⚠️ ThemeWidget: Failed to save theme to localStorage');
+          console.warn('⚠️ UniverseWidget: Failed to save theme to localStorage');
         }
       }
 
@@ -342,11 +342,11 @@ export class ThemeWidget extends BaseWidget {
       const userStateId = jtagClient.getUserStateId();
 
       if (!userStateId) {
-        console.warn('⚠️ ThemeWidget: No UserState available - theme saved to localStorage only');
+        console.warn('⚠️ UniverseWidget: No UserState available - theme saved to localStorage only');
         return;
       }
 
-      this.verbose() && console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
+      this.verbose() && console.log(`🔧 UniverseWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
 
       // Update existing UserState's preferences
       await DataUpdate.execute<UserStateEntity>({
@@ -362,11 +362,11 @@ export class ThemeWidget extends BaseWidget {
         }
       });
 
-      this.verbose() && console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
+      this.verbose() && console.log(`✅ UniverseWidget: Theme '${themeName}' saved to UserState`);
 
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to save theme using hybrid persistence:', error);
+      console.error('❌ UniverseWidget: Failed to save theme using hybrid persistence:', error);
     }
   }
 
@@ -375,16 +375,16 @@ export class ThemeWidget extends BaseWidget {
    */
   private async loadThemeFromUserState(): Promise<string | null> {
     try {
-      this.verbose() && console.log('🔧 ThemeWidget: Loading theme using hybrid persistence');
+      this.verbose() && console.log('🔧 UniverseWidget: Loading theme using hybrid persistence');
 
       // 1. Try localStorage first for instant response
       if (LocalStorageStateManager.isAvailable()) {
         const localTheme = LocalStorageStateManager.getTheme();
         if (localTheme) {
-          this.verbose() && console.log(`✅ ThemeWidget: Loaded theme '${localTheme}' from localStorage`);
+          this.verbose() && console.log(`✅ UniverseWidget: Loaded theme '${localTheme}' from localStorage`);
           return localTheme;
         }
-        this.verbose() && console.log('ℹ️ ThemeWidget: No theme found in localStorage, trying UserState');
+        this.verbose() && console.log('ℹ️ UniverseWidget: No theme found in localStorage, trying UserState');
       }
 
       // 2. Fall back to UserState from localStorage for persistence
@@ -392,7 +392,7 @@ export class ThemeWidget extends BaseWidget {
       const { BrowserDeviceIdentity } = await import('../../system/core/browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
 
-      this.verbose() && console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
+      this.verbose() && console.log(`🔧 UniverseWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
 
       // Find the user's UserState in localStorage (get most recent first)
       const userStates = await DataList.execute<UserStateEntity>({
@@ -414,23 +414,23 @@ export class ThemeWidget extends BaseWidget {
         const savedTheme = preferences.theme;
 
         if (typeof savedTheme === 'string') {
-          this.verbose() && console.log(`✅ ThemeWidget: Loaded theme '${savedTheme}' from UserState database`);
+          this.verbose() && console.log(`✅ UniverseWidget: Loaded theme '${savedTheme}' from UserState database`);
 
           // Sync back to localStorage for faster future access
           if (LocalStorageStateManager.isAvailable()) {
             LocalStorageStateManager.setTheme(savedTheme);
-            this.verbose() && console.log(`🔄 ThemeWidget: Synced theme '${savedTheme}' to localStorage`);
+            this.verbose() && console.log(`🔄 UniverseWidget: Synced theme '${savedTheme}' to localStorage`);
           }
 
           return savedTheme;
         }
       }
 
-      this.verbose() && console.log('ℹ️ ThemeWidget: No saved theme found in either localStorage or UserState');
+      this.verbose() && console.log('ℹ️ UniverseWidget: No saved theme found in either localStorage or UserState');
       return null;
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to load theme from UserState:', error);
+      console.error('❌ UniverseWidget: Failed to load theme from UserState:', error);
       return null;
     }
   }

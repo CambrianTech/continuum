@@ -11,7 +11,7 @@ export const ROOM_UNIQUE_IDS = {
   PANTHEON: 'pantheon',
   DEV_UPDATES: 'dev-updates',
   HELP: 'help',
-  THEME: 'theme',
+  UNIVERSE: 'universe',
   SETTINGS: 'settings',
   CANVAS: 'canvas',
   OUTREACH: 'outreach',

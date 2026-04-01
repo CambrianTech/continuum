@@ -61,19 +61,19 @@ export class ThemeGetBrowserCommand {
   
   private async getCurrentTheme(): Promise<string | null> {
     try {
-      // Method 1: Get from ThemeWidget
-      const themeWidget = document.querySelector('theme-widget') as any;
+      // Method 1: Get from UniverseWidget
+      const themeWidget = document.querySelector('universe-widget') as any;
       if (themeWidget && typeof themeWidget.getCurrentTheme === 'function') {
         const theme = themeWidget.getCurrentTheme();
         if (theme) {
-          console.log(`🔍 ThemeGetBrowser: Got theme from ThemeWidget: '${theme}'`);
+          console.log(`🔍 ThemeGetBrowser: Got theme from UniverseWidget: '${theme}'`);
           return theme;
         }
       }
       
       // Method 2: Get from theme selector dropdown
       const themeSelector = document.querySelector('#theme-selector') as HTMLSelectElement ||
-                           document.querySelector('theme-widget select') as HTMLSelectElement;
+                           document.querySelector('universe-widget select') as HTMLSelectElement;
       
       if (themeSelector && themeSelector.value) {
         console.log(`🔍 ThemeGetBrowser: Got theme from dropdown: '${themeSelector.value}'`);
@@ -124,7 +124,7 @@ export class ThemeGetBrowserCommand {
       
       // Try to get theme info from dropdown option attributes
       const themeSelector = document.querySelector('#theme-selector') as HTMLSelectElement ||
-                           document.querySelector('theme-widget select') as HTMLSelectElement;
+                           document.querySelector('universe-widget select') as HTMLSelectElement;
       
       if (themeSelector) {
         const option = Array.from(themeSelector.options).find(opt => opt.value === themeName);

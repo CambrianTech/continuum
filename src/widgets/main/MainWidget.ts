@@ -492,9 +492,9 @@ export class MainWidget extends ReactiveWidget {
 
   private setupHeaderControlsListeners(): void {
     this.createMountEffect(() => {
-      const themeHandler = () => {
-        this.log('Theme button clicked - opening Theme tab');
-        this.openContentTab('theme', 'Theme');
+      const universeHandler = () => {
+        this.log('Universe button clicked - opening Universe tab');
+        this.openContentTab('universe', 'Universe');
       };
 
       const settingsHandler = () => {
@@ -527,7 +527,7 @@ export class MainWidget extends ReactiveWidget {
         this.openContentTab('factory', 'Factory');
       };
 
-      this.addEventListener('theme-clicked', themeHandler);
+      this.addEventListener('universe-clicked', universeHandler);
       this.addEventListener('settings-clicked', settingsHandler);
       this.addEventListener('help-clicked', helpHandler);
       this.addEventListener('browser-clicked', browserHandler);
@@ -536,7 +536,7 @@ export class MainWidget extends ReactiveWidget {
       this.addEventListener('factory-clicked', factoryHandler);
 
       return () => {
-        this.removeEventListener('theme-clicked', themeHandler);
+        this.removeEventListener('universe-clicked', universeHandler);
         this.removeEventListener('settings-clicked', settingsHandler);
         this.removeEventListener('help-clicked', helpHandler);
         this.removeEventListener('browser-clicked', browserHandler);

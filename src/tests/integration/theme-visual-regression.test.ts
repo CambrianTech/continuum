@@ -101,14 +101,14 @@ async function runThemeVisualRegressionTest(): Promise<void> {
 
 async function switchTheme(themeName: string): Promise<boolean> {
   try {
-    // Method 1: Try using ThemeWidget setTheme method
+    // Method 1: Try using UniverseWidget setTheme method
     const setThemeResult = await execAsync(`./jtag exec --environment=browser --code="
-      const themeWidget = document.querySelector('theme-widget');
+      const themeWidget = document.querySelector('universe-widget');
       if (themeWidget && typeof themeWidget.setTheme === 'function') {
         await themeWidget.setTheme('${themeName}');
-        return { success: true, method: 'ThemeWidget.setTheme' };
+        return { success: true, method: 'UniverseWidget.setTheme' };
       }
-      return { success: false, error: 'ThemeWidget.setTheme not available' };
+      return { success: false, error: 'UniverseWidget.setTheme not available' };
     "`);
 
     // Check if setTheme worked
@@ -119,7 +119,7 @@ async function switchTheme(themeName: string): Promise<boolean> {
     // Method 2: Try dropdown selection
     console.log(`    🔄 Trying dropdown method for ${themeName}...`);
     const dropdownResult = await execAsync(`./jtag exec --environment=browser --code="
-      const selector = document.querySelector('#theme-selector') || document.querySelector('theme-widget select');
+      const selector = document.querySelector('#theme-selector') || document.querySelector('universe-widget select');
       if (selector && selector.options) {
         // Find the option with the target theme
         const option = Array.from(selector.options).find(opt => opt.value === '${themeName}');

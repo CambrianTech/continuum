@@ -128,7 +128,7 @@ export class ClickBrowserCommand extends ClickCommand {
     if (!continuum?.shadowRoot) return null;
 
     // 2. Container widgets - direct children of continuum-widget
-    const containerWidgets = ['main-widget', 'sidebar-widget', 'theme-widget', 'right-panel-widget'];
+    const containerWidgets = ['main-widget', 'sidebar-widget', 'universe-widget', 'right-panel-widget'];
     if (containerWidgets.includes(selector)) {
       return continuum.shadowRoot.querySelector(selector) as HTMLElement;
     }

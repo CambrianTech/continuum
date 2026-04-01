@@ -113,12 +113,12 @@ export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
     }
   },
 
-  // Theme layout - theme picker center, theme assistant right
+  // Universe layout - universe designer center, universe assistant right
   // No room-list in left (global persistent widgets handle it)
-  'theme': {
+  'universe': {
     widgets: [
-      { widget: 'theme-widget', position: 'center', order: 0 },
-      { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'theme', compact: true } }
+      { widget: 'universe-widget', position: 'center', order: 0 },
+      { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'universe', compact: true } }
     ]
   },
 

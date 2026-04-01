@@ -1,14 +1,14 @@
 {
-  "uniqueId": "theme",
-  "name": "Theme Designer",
-  "displayName": "Theme",
-  "description": "Customize the visual appearance with AI-assisted theme design",
+  "uniqueId": "universe",
+  "name": "Universe Designer",
+  "displayName": "Universe",
+  "description": "Design complete experiences — Tron Universe, Ghibli Universe — with AI-assisted universe creation",
   "version": 2,
 
   "layout": {
     "widgets": [
-      { "widget": "theme-widget", "position": "center", "order": 0 },
-      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "theme", "compact": true } }
+      { "widget": "universe-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "universe", "compact": true } }
     ]
   },
 
@@ -43,10 +43,10 @@
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
-      "Help users design cohesive color schemes",
+      "Help users design cohesive universe experiences (visual, audio, interaction)",
       "Suggest complementary colors based on selections",
       "Explain accessibility considerations (contrast ratios)",
-      "Offer creative theme ideas based on mood or style"
+      "Offer creative universe ideas based on mood or style"
     ],
     "decisionCriteria": [
       "Is the user asking for design advice?",
@@ -56,5 +56,5 @@
   },
 
   "isPublic": true,
-  "tags": ["theme", "design", "customization"]
+  "tags": ["universe", "design", "customization", "experience"]
 }

@@ -140,21 +140,21 @@ export class ThemeSystemValidator {
         let success = false;
         let method = 'none';
         
-        // Method 1: ThemeWidget setTheme
-        const themeWidget = document.querySelector('theme-widget');
+        // Method 1: UniverseWidget setTheme
+        const themeWidget = document.querySelector('universe-widget');
         if (themeWidget && typeof themeWidget.setTheme === 'function') {
           try {
             await themeWidget.setTheme('${themeName}');
             success = true;
-            method = 'ThemeWidget.setTheme';
+            method = 'UniverseWidget.setTheme';
           } catch (e) {
-            console.log('ThemeWidget.setTheme failed:', e);
+            console.log('UniverseWidget.setTheme failed:', e);
           }
         }
         
         // Method 2: Dropdown selection
         if (!success) {
-          const selector = document.querySelector('#theme-selector') || document.querySelector('theme-widget select');
+          const selector = document.querySelector('#theme-selector') || document.querySelector('universe-widget select');
           if (selector) {
             selector.value = '${themeName}';
             const changeEvent = new Event('change', { bubbles: true });
