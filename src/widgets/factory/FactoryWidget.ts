@@ -379,18 +379,6 @@ export class FactoryWidget extends ReactiveWidget {
         </div>
 
         <div class="section">
-          <div class="section-title">Console</div>
-          <forge-controls-element
-            .forging=${this._isForging}
-            .starting=${this._forgeStarting}
-            .progressPct=${this._progressPct}
-            .progressLabel=${this._progressLabel}
-            @forge-start=${this.onForgeStart}
-            @forge-export=${this.onForgeExport}
-          ></forge-controls-element>
-        </div>
-
-        <div class="section">
           <div class="section-title">Factory Floor</div>
           ${this.renderNodeStatusBar()}
           ${this._forgeStatus ? html`
@@ -400,6 +388,18 @@ export class FactoryWidget extends ReactiveWidget {
             ></active-forge-element>
           ` : nothing}
           ${this.renderGridJobList()}
+        </div>
+
+        <div class="section">
+          <div class="section-title">Console</div>
+          <forge-controls-element
+            .forging=${this._isForging}
+            .starting=${this._forgeStarting}
+            .progressPct=${this._progressPct}
+            .progressLabel=${this._progressLabel}
+            @forge-start=${this.onForgeStart}
+            @forge-export=${this.onForgeExport}
+          ></forge-controls-element>
         </div>
 
       </div>
