@@ -4,7 +4,7 @@
 
 ## The Opportunity
 
-Continuum personas have identity, memory, energy, and autonomy — but they only exist inside the browser. Social and calendar integrations make them citizens of your *entire* digital life, not just one tab.
+Continuum personas have identity, memory, energy, and autonomy — but they only exist inside the browser. And humans using Continuum still have to leave it to check their calendar, read Slack, or respond on Discord. Social and calendar integrations solve both problems: personas become citizens of your *entire* digital life, and humans get a unified home base where their schedule, messages, and AI team all live together.
 
 Moltbook is already live — personas publish to social media today. The Newsroom Recipe (#536) envisions analyst personas monitoring Twitter/X, HackerNews, and ArXiv for competitive intelligence. The architecture supports integrations without new primitives. What's missing is a concrete design that connects the existing command/daemon/RAG infrastructure to external services.
 
@@ -157,6 +157,52 @@ In the 3D world, integrations become spatial:
 - **Meeting room** — when a calendar event starts, personas gather in a virtual meeting room with screen-sharing of the call
 
 This transforms integrations from utilities into environmental features of the living world.
+
+---
+
+## Human User Experience
+
+Integrations aren't just for personas — they bring the human user's external digital life *into* Continuum, so you don't have to leave to stay connected.
+
+### Calendar as a First-Class UI
+
+| Feature | Description |
+|---------|-------------|
+| **Calendar widget** | Positron widget showing today's schedule, upcoming events, free/busy blocks — auto-discovered like any other widget |
+| **Availability indicator** | Your avatar shows busy/free status to both personas and other humans on the Grid |
+| **Schedule from Continuum** | Create events, accept/decline invites, and reschedule directly from the UI — no switching to Google Calendar |
+| **Shared team calendar** | See when other Grid members (human and AI) are available for collaboration, pair programming, or live calls |
+| **Meeting join** | One-click join for video calls — Continuum already has WebRTC live calls, external meetings could bridge in |
+
+### Social Feeds Inside Continuum
+
+Instead of checking Slack, Discord, and email in separate tabs:
+
+- **Unified inbox widget** — messages from all connected platforms in one stream, filterable by source and priority
+- **Reply in place** — respond to a Slack message or Discord question without leaving Continuum
+- **Thread context** — when a persona references an external conversation, the human can expand and read the full thread inline
+- **Notification preferences** — choose which channels and platforms surface notifications inside Continuum vs. stay silent
+
+### Presence Across Platforms
+
+Your Continuum status syncs outward:
+
+- **Auto-status**: In a Continuum live call → Slack status shows "In a meeting"
+- **Cross-platform DMs**: Message someone on Discord from Continuum, or receive their DM inside your Continuum inbox
+- **Activity feed**: Your Grid neighbors see what you're working on (opt-in) — "Toby is forging a model" or "Toby is in Sprint Planning"
+
+### The Human in the Metaverse (#668)
+
+In the 3D world, your external life becomes part of the environment:
+
+- **Personal dashboard room** — your calendar, notifications, and social feeds on the walls of your virtual office
+- **Visitor notifications** — a Discord community member asking a question appears as a visitor knocking at your metaverse door
+- **Shared screens** — pull a Slack thread onto a virtual whiteboard during a live call with your AI team
+- **Do Not Disturb** — close your office door in the metaverse, and all external notifications (plus persona interruptions) are held until you open it
+
+### Why This Matters for Adoption
+
+If Continuum requires users to *leave* to check their calendar or respond to a Slack message, it becomes one more window to manage. If Continuum *is* the window — where your schedule, messages, and AI team all live together — it becomes the home base. The goal is that opening Continuum in the morning is the *only* thing you need to open.
 
 ---
 
