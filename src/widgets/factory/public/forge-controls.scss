@@ -120,6 +120,24 @@
   margin-top: 2px;
 }
 
+.model-status {
+  font-size: 10px;
+  margin-left: 4px;
+  font-weight: 700;
+}
+
+.model-status.valid { color: #00ffc8; }
+.model-status.invalid { color: #ff4444; }
+.model-status.checking { color: #ffaa00; }
+
+.control-select.validated {
+  border-color: rgba(0, 255, 200, 0.4);
+}
+
+.control-select.invalid-input {
+  border-color: rgba(255, 68, 68, 0.4);
+}
+
 pipeline-composer {
   margin: $spacing-md 0;
 }

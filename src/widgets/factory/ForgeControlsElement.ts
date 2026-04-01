@@ -105,6 +105,8 @@ export class ForgeControlsElement extends ReactiveWidget {
   @reactive() private _cycles = 3;
   @reactive() private _learningRate = '2e-4';
   @reactive() private _pipelineStages: Record<string, unknown>[] = [];
+  @reactive() private _modelValid: 'unknown' | 'checking' | 'valid' | 'invalid' = 'unknown';
+  private _validateTimer: ReturnType<typeof setTimeout> | null = null;
 
   private get _isMoe(): boolean {
     return this._model.includes('35B') || this._model.includes('MoE');
@@ -191,6 +193,33 @@ export class ForgeControlsElement extends ReactiveWidget {
   /** Called by parent when user selects a model from the right panel browser */
   setBaseModel(modelId: string): void {
     this._model = modelId;
+    this._modelValid = 'valid'; // Selected from our published models — known good
+    this.requestUpdate();
+  }
+
+  /** Debounced HF model validation — checks if model exists on HuggingFace */
+  private onModelInput(value: string): void {
+    this._model = value;
+    this._modelValid = 'unknown';
+
+    if (this._validateTimer) clearTimeout(this._validateTimer);
+
+    if (!value || !value.includes('/')) {
+      this._modelValid = value ? 'invalid' : 'unknown';
+      return;
+    }
+
+    this._modelValid = 'checking';
+    this._validateTimer = setTimeout(() => this.validateModel(value), 600);
+  }
+
+  private async validateModel(modelId: string): Promise<void> {
+    try {
+      const response = await fetch(`https://huggingface.co/api/models/${modelId}`, { method: 'HEAD' });
+      this._modelValid = response.ok ? 'valid' : 'invalid';
+    } catch {
+      this._modelValid = 'unknown'; // Network error — don't block
+    }
     this.requestUpdate();
   }
 
@@ -282,12 +311,16 @@ export class ForgeControlsElement extends ReactiveWidget {
         </div>
         <div class="controls-grid">
           <div class="control-group">
-            <span class="control-label">Base Model</span>
-            <input class="control-select" type="text" list="model-list"
-              placeholder="Type HuggingFace model ID or select..."
+            <span class="control-label">Base Model
+              ${this._modelValid === 'valid' ? html`<span class="model-status valid">&#10003;</span>` :
+                this._modelValid === 'invalid' ? html`<span class="model-status invalid">&#10007;</span>` :
+                this._modelValid === 'checking' ? html`<span class="model-status checking">...</span>` : nothing}
+            </span>
+            <input class="control-select ${this._modelValid === 'valid' ? 'validated' : this._modelValid === 'invalid' ? 'invalid-input' : ''}"
+              type="text" list="model-list"
+              placeholder="org/model-name (e.g. Qwen/Qwen3.5-4B)"
               .value=${this._model}
-              @change=${(e: Event) => this._model = (e.target as HTMLInputElement).value}
-              @input=${(e: Event) => this._model = (e.target as HTMLInputElement).value}>
+              @input=${(e: Event) => this.onModelInput((e.target as HTMLInputElement).value)}>
             <datalist id="model-list">
               <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
               <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
@@ -299,7 +332,7 @@ export class ForgeControlsElement extends ReactiveWidget {
               <option value="google/gemma-2-9b">Gemma 2 9B</option>
               <option value="microsoft/phi-3-mini-4k-instruct">Phi 3 Mini 4K</option>
             </datalist>
-            <span class="control-hint">Any HuggingFace model ID works — type org/model-name</span>
+            <span class="control-hint">Any HuggingFace model — validates on typing</span>
           </div>
           <div class="control-group">
             <span class="control-label">Domain</span>

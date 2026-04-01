@@ -15,6 +15,7 @@ import {
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import { Events } from '../../system/core/shared/Events';
 
 interface ModelStat {
   id: string;
@@ -507,13 +508,8 @@ export class FactoryStatsWidget extends ReactiveWidget {
 
   private useAsBase(m: ModelStat, e: Event): void {
     e.stopPropagation();
-    // Resolve HF model ID from our published name
     const modelId = m.id.includes('/') ? m.id : `continuum-ai/${m.name}`;
-    this.dispatchEvent(new CustomEvent('factory:model:select', {
-      detail: { modelId, name: m.name, domain: m.domain, sizeGb: m.sizeGb, hasAlloy: m.hasAlloy },
-      bubbles: true,
-      composed: true,
-    }));
+    Events.emit('factory:model:select', { modelId, name: m.name, domain: m.domain, sizeGb: m.sizeGb, hasAlloy: m.hasAlloy });
   }
 
   private viewOnHF(m: ModelStat, e: Event): void {
@@ -554,9 +550,9 @@ export class FactoryStatsWidget extends ReactiveWidget {
   private renderModelActions(m: ModelStat): TemplateResult {
     return html`
       <div class="model-actions">
-        <button class="action-btn primary" @click=${(e: Event) => this.useAsBase(m, e)}>Use as Base</button>
-        ${m.hasAlloy ? html`<button class="action-btn" @click=${(e: Event) => { e.stopPropagation(); }}>Remix Alloy</button>` : nothing}
-        <button class="action-btn" @click=${(e: Event) => this.viewOnHF(m, e)}>View on HF</button>
+        <button class="action-btn primary" @click=${(e: Event) => this.useAsBase(m, e)} title="Load into forge console">&#171; Forge This</button>
+        ${m.hasAlloy ? html`<button class="action-btn" @click=${(e: Event) => { e.stopPropagation(); }} title="Load alloy recipe into pipeline composer">&#171; Remix</button>` : nothing}
+        <button class="action-btn" @click=${(e: Event) => this.viewOnHF(m, e)} title="Open on HuggingFace">HF &#8599;</button>
         ${m.sizeGb ? html`<span class="action-info">${m.sizeGb}GB</span>` : nothing}
         ${m.improvement ? html`<span class="action-info improve">+${m.improvement.toFixed(1)}%</span>` : nothing}
       </div>
