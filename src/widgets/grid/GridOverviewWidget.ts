@@ -49,6 +49,7 @@ interface GridNode {
   gpu?: { name: string; vramMb: number };
   gpuUtilization?: number;
   gpuMemoryUsedMb?: number;
+  gpuTemperatureC?: number;
   pinging: boolean;
   latencyHistory: { step: number; latencyMs: number }[];
 }
@@ -216,6 +217,10 @@ export class GridOverviewWidget extends ReactiveWidget {
     const onlineCount = nodes.filter(n => n.status === 'online').length;
     const transports = new Set(nodes.map(n => n.transport));
 
+    // Compute totals for zone summary
+    const totalVramGb = nodes.reduce((sum, n) => sum + (n.gpu ? n.gpu.vramMb / 1024 : 0), 0);
+    const totalGpus = nodes.filter(n => n.gpu).length;
+
     return html`
       <div class="grid-dashboard">
         <div class="dashboard-header">
@@ -236,11 +241,38 @@ export class GridOverviewWidget extends ReactiveWidget {
         ${this._renderTransportBar(transports)}
 
         ${nodes.length > 0 ? html`
-          <div class="section-label">Nodes</div>
+          <div class="zone-header">
+            <div class="zone-ring inner"></div>
+            <div class="zone-info">
+              <span class="zone-name">My Grid</span>
+              <span class="zone-trust">Owner</span>
+            </div>
+            <div class="zone-stats">
+              <span class="zone-stat">${onlineCount} nodes</span>
+              <span class="zone-stat">${totalGpus} GPUs</span>
+              <span class="zone-stat">${totalVramGb.toFixed(0)}GB VRAM</span>
+            </div>
+          </div>
+
           <div class="node-grid">
             ${nodes
-              .sort((a, b) => a.nodeName.localeCompare(b.nodeName))
+              .sort((a, b) => {
+                // Online first, then by name
+                if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
+                return a.nodeName.localeCompare(b.nodeName);
+              })
               .map(n => this._renderNodeCard(n))}
+          </div>
+
+          <div class="zone-future">
+            <div class="zone-ring middle"></div>
+            <span class="zone-future-label">Team Grid</span>
+            <span class="zone-future-hint">Share compute with trusted teams</span>
+          </div>
+          <div class="zone-future">
+            <div class="zone-ring outer"></div>
+            <span class="zone-future-label">Public Grid</span>
+            <span class="zone-future-hint">Trade compute via forge-alloy contracts</span>
           </div>
         ` : html`
           <div class="empty-state">
@@ -281,40 +313,52 @@ export class GridOverviewWidget extends ReactiveWidget {
   // ── Node card ───────────────────────────────────────────────────────────
 
   private _renderNodeCard(node: GridNode): TemplateResult {
+    const gpuPct = node.gpuUtilization ?? 0;
+    const vramTotalGb = node.gpu ? (node.gpu.vramMb / 1024) : 0;
+    const vramUsedGb = node.gpuMemoryUsedMb ? (node.gpuMemoryUsedMb / 1024) : 0;
+    const vramPct = vramTotalGb > 0 ? Math.round((vramUsedGb / vramTotalGb) * 100) : 0;
+    const tempC = node.gpuTemperatureC ?? 0;
+    const isLocal = node.nodeId === 'local';
+    const sshCmd = `ssh ${node.address}`;
+
     return html`
-      <div class="node-card">
+      <div class="node-card ${node.status}">
         <div class="node-card-header">
           <div class="node-name-row">
             <div class="status-dot" style="background: ${GRID_STATUS_COLORS[node.status]};"></div>
             <span class="node-name">${node.nodeName}</span>
+            ${node.latencyMs > 0 ? html`<span class="node-latency">${node.latencyMs}ms</span>` : nothing}
           </div>
-          <span class="node-transport-badge">${node.transport}</span>
+          <div class="node-badges">
+            <span class="node-transport-badge">${node.transport}</span>
+            ${isLocal ? html`<span class="node-local-badge">LOCAL</span>` : nothing}
+          </div>
         </div>
 
-        <div class="node-stats">
-          <span>Latency</span>
-          <span class="node-stat-value">${node.latencyMs}ms</span>
-
-          ${node.gpu ? html`
-            <span>GPU</span>
-            <span class="node-stat-value">${node.gpu.name}</span>
-            <span>VRAM</span>
-            <span class="node-stat-value">${(node.gpu.vramMb / 1024).toFixed(0)} GB</span>
-          ` : nothing}
-
-          ${node.gpuUtilization != null ? html`
-            <span>GPU Load</span>
-            <span class="node-stat-value">${node.gpuUtilization}%</span>
-          ` : nothing}
-
-          ${node.gpuMemoryUsedMb != null ? html`
-            <span>GPU Mem</span>
-            <span class="node-stat-value">${(node.gpuMemoryUsedMb / 1024).toFixed(1)} GB</span>
-          ` : nothing}
-
-          <span>Address</span>
-          <span class="node-stat-value" style="font-size: 9px;">${node.address}</span>
-        </div>
+        ${node.gpu ? html`
+          <div class="node-gpu-name">${node.gpu.name}</div>
+          <div class="node-gauges">
+            <div class="gauge-row">
+              <span class="gauge-label">GPU</span>
+              <div class="gauge-track"><div class="gauge-fill gpu" style="width:${gpuPct}%"></div></div>
+              <span class="gauge-value">${gpuPct}%</span>
+            </div>
+            <div class="gauge-row">
+              <span class="gauge-label">VRAM</span>
+              <div class="gauge-track"><div class="gauge-fill vram" style="width:${vramPct}%"></div></div>
+              <span class="gauge-value">${vramUsedGb.toFixed(1)}/${vramTotalGb.toFixed(0)}G</span>
+            </div>
+            ${tempC > 0 ? html`
+              <div class="gauge-row">
+                <span class="gauge-label">TEMP</span>
+                <div class="gauge-track"><div class="gauge-fill temp ${tempC > 80 ? 'hot' : tempC > 60 ? 'warm' : ''}" style="width:${Math.min(100, tempC)}%"></div></div>
+                <span class="gauge-value">${tempC}C</span>
+              </div>
+            ` : nothing}
+          </div>
+        ` : html`
+          <div class="node-no-gpu">No GPU detected</div>
+        `}
 
         ${node.capabilities.length > 0 ? html`
           <div class="node-capabilities">
@@ -334,14 +378,17 @@ export class GridOverviewWidget extends ReactiveWidget {
           ></continuum-chart>
         ` : nothing}
 
+        <div class="node-address">${node.address}</div>
+
         <div class="node-actions">
-          <button class="ping-btn"
-            ?disabled=${node.pinging}
+          <button class="ping-btn" ?disabled=${node.pinging}
             @click=${() => this._pingNode(node.nodeId)}>
             ${node.pinging ? 'Pinging...' : 'Ping'}
           </button>
-          ${node.nodeId !== 'local' ? html`
-            <button class="ping-btn" @click=${() => this._removeNode(node.nodeId)}>Remove</button>
+          ${!isLocal ? html`
+            <button class="ping-btn ssh-btn" @click=${() => navigator.clipboard.writeText(sshCmd)}
+              title="Copy: ${sshCmd}">SSH</button>
+            <button class="ping-btn remove-btn" @click=${() => this._removeNode(node.nodeId)}>Remove</button>
           ` : nothing}
         </div>
       </div>
