@@ -132,12 +132,16 @@ export function getRightPanelConfig(contentType: string): RightPanelConfig | nul
         if (rightPanel) return rightPanel;     // Recipe provides right panel config
     }
 
-    // 2. Generated config — only use if recipe service has no opinion
+    // 2. Generated config
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
     if (config && !config.hasRightPanel) return null;
 
-    // 3. No config found — return null, NOT a default chat widget.
-    // If a recipe wants a right panel, it declares one. No guessing.
+    // 3. Generated config says hasRightPanel but recipe not loaded yet.
+    // Return a sensible default so the panel isn't blank while recipes load.
+    if (config?.hasRightPanel) {
+        return { widget: 'chat-widget', compact: true };
+    }
+
     return null;
 }
 
