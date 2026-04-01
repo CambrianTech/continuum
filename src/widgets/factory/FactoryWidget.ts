@@ -116,12 +116,32 @@ export class FactoryWidget extends ReactiveWidget {
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
     this.startGridPolling();
+    this.configureRightPanel();
     this.listenForModelSelection();
   }
 
-  // Right panel is configured by the recipe system, not by this widget.
-  // factory.json declares: { "right": { "widgets": ["factory-stats-widget"] } }
-  // RightPanelWidget reads the recipe directly on content:switched.
+  /** Tell the right panel what to show.
+   *  TODO: This should come from the recipe system (#704) once recipes are seeded.
+   *  For now, the widget emits its own config because recipes table is empty. */
+  private configureRightPanel(): void {
+    this.emitRightPanelConfig();
+    // Re-emit after short delay for right panel that mounts after us
+    setTimeout(() => this.emitRightPanelConfig(), 200);
+  }
+
+  private emitRightPanelConfig(): void {
+    Events.emit('layout:rightpanel:configure', {
+      widget: 'factory-stats-widget',
+      contentType: 'factory',
+      sections: [{
+        id: 'factory-stats',
+        title: 'Models',
+        icon: 'M',
+        widgetTag: 'factory-stats-widget',
+        flexWeight: 1,
+      }],
+    });
+  }
 
   /** Listen for model selection and alloy loading from right panel */
   private listenForModelSelection(): void {
