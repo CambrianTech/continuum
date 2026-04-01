@@ -57,6 +57,11 @@ interface GridNodeStatusData {
 
 export class FactoryWidget extends ReactiveWidget {
 
+  protected override get cacheKey(): string { return 'factory'; }
+  protected override get cacheableProperties(): string[] {
+    return ['_models', '_totalDownloads', '_gridJobs', '_gridJobSummary', '_gridNodeOnline', '_targetNodeId'];
+  }
+
   // ── State ──────────────────────────────────────────────────────────
   @reactive() private _forgeStatus: ForgeStatusData | null = null;
   @reactive() private _models: PublishedModelData[] = [];

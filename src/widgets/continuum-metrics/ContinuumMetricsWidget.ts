@@ -177,6 +177,11 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     super({ widgetName: 'ContinuumMetricsWidget' });
   }
 
+  protected override get cacheKey(): string { return 'continuum-metrics'; }
+  protected override get cacheableProperties(): string[] {
+    return ['_activeTab', '_sysTimeSeries', '_sysCurrent', '_aiTimeSeries', '_aiSummary'];
+  }
+
   protected override async onFirstRender(): Promise<void> {
     super.onFirstRender();
 
