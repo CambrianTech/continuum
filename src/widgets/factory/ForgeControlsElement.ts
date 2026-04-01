@@ -9,12 +9,13 @@
 import {
   ReactiveWidget,
   html,
-  css,
+  unsafeCSS,
   reactive,
   type TemplateResult,
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import { styles as FORGE_CONTROLS_STYLES } from './public/forge-controls.styles';
 import './stages/PipelineComposer';
 
 /** Forge profiles — presets for common configurations */
@@ -127,7 +128,11 @@ export class ForgeControlsElement extends ReactiveWidget {
   }
 
   private onStartForge(): void {
-    this.dispatchEvent(new CustomEvent('forge-start', { detail: this.forgeParams, bubbles: true, composed: true }));
+    this.dispatchEvent(new CustomEvent('forge-start', {
+      detail: { params: this.forgeParams, alloy: this.alloyRecipe },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   private onExportAlloy(): void {
@@ -136,197 +141,8 @@ export class ForgeControlsElement extends ReactiveWidget {
 
   static override styles: CSSResultGroup = [
     ReactiveWidget.styles,
-    css`
-    :host { display: block; }
-
-    .controls {
-      background: var(--surface-elevated, rgba(255,255,255,0.04));
-      border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-      border-radius: 8px;
-      padding: 16px 20px;
-    }
-
-    .controls-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .control-group {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .control-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--content-secondary, #8a92a5);
-    }
-
-    .control-select, .control-input {
-      background: rgba(0,0,0,0.3);
-      border: 1px solid var(--border-color, rgba(255,255,255,0.12));
-      border-radius: 4px;
-      color: var(--content-primary, #e0e6ed);
-      font-size: 13px;
-      padding: 8px 10px;
-      font-family: inherit;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .control-select:focus, .control-input:focus {
-      border-color: var(--accent-primary, #00d4ff);
-    }
-
-    .control-select option {
-      background: #0a1520;
-      color: #e0e6ed;
-    }
-
-    .slider-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .slider-row input[type="range"] {
-      flex: 1;
-      accent-color: var(--accent-primary, #00d4ff);
-      height: 4px;
-    }
-
-    .slider-value {
-      font-size: 13px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      min-width: 50px;
-      text-align: right;
-      color: var(--accent-primary, #00d4ff);
-    }
-
-    .profile-row {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    .profile-btn {
-      padding: 4px 10px;
-      font-size: 11px;
-      border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 4px;
-      background: rgba(255,255,255,0.05);
-      color: rgba(255,255,255,0.8);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .profile-btn:hover {
-      background: var(--accent-primary, #00d4ff);
-      color: #000;
-      border-color: transparent;
-    }
-
-    pipeline-composer {
-      margin: 12px 0;
-    }
-
-    .button-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
-
-    .forge-button {
-      flex: 1;
-      position: relative;
-      overflow: hidden;
-      padding: 10px;
-      background: linear-gradient(135deg, rgba(0, 212, 255, 0.2), rgba(0, 255, 200, 0.2));
-      border: 1px solid var(--accent-primary, #00d4ff);
-      border-radius: 6px;
-      color: var(--accent-primary, #00d4ff);
-      font-size: 14px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .forge-button:hover {
-      background: linear-gradient(135deg, rgba(0, 212, 255, 0.35), rgba(0, 255, 200, 0.35));
-      box-shadow: 0 0 16px rgba(0, 212, 255, 0.3);
-    }
-
-    .forge-button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-      box-shadow: none;
-    }
-
-    .forge-button.forging {
-      background: linear-gradient(135deg, rgba(255, 170, 0, 0.2), rgba(255, 100, 0, 0.2));
-      border-color: #ffaa00;
-      color: #ffaa00;
-      animation: pulse-glow 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse-glow {
-      0%, 100% { box-shadow: 0 0 8px rgba(255, 170, 0, 0.2); }
-      50% { box-shadow: 0 0 20px rgba(255, 170, 0, 0.4); }
-    }
-
-    .forge-button-fill {
-      position: absolute;
-      top: 0;
-      left: 0;
-      height: 100%;
-      opacity: 0.3;
-      transition: width 0.5s ease, background 0.8s ease;
-    }
-
-    .forge-button-label {
-      position: relative;
-      z-index: 1;
-    }
-
-    .forge-estimate {
-      position: absolute;
-      top: 3px;
-      right: 8px;
-      font-size: 9px;
-      font-weight: 500;
-      font-variant-numeric: tabular-nums;
-      color: rgba(255,255,255,0.4);
-      z-index: 1;
-      letter-spacing: 0.02em;
-    }
-
-    .export-btn {
-      align-self: stretch;
-      padding: 6px 14px;
-      font-size: 11px;
-      font-weight: 600;
-      border: 1px solid var(--border-color, rgba(255,255,255,0.15));
-      border-radius: 4px;
-      background: rgba(255,255,255,0.05);
-      color: var(--content-primary, #e0e6ed);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .export-btn:hover {
-      background: rgba(0, 212, 255, 0.15);
-      border-color: var(--accent-primary, #00d4ff);
-      color: var(--accent-primary, #00d4ff);
-    }
-  `];
+    unsafeCSS(FORGE_CONTROLS_STYLES),
+  ];
 
   protected override render(): TemplateResult {
     const hue = 185 - this.progressPct * 0.4;

@@ -15,14 +15,16 @@
 import {
   ReactiveWidget,
   html,
-  css,
+  unsafeCSS,
   reactive,
   type TemplateResult,
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
 import { nothing } from 'lit';
+import { styles as FACTORY_STYLES } from './public/factory-widget.styles';
 import { Events } from '../../system/core/shared/Events';
 import { COMMANDS } from '@shared/generated-command-constants';
+import { ContentService } from '../../system/state/ContentService';
 
 // Import child components (self-registering)
 import './ForgeControlsElement';
@@ -71,7 +73,6 @@ export class FactoryWidget extends ReactiveWidget {
   @reactive() private _targetNodeId = '';
   @reactive() private _gridNodes: Array<{ node_id: string; node_name: string | null; capabilities: unknown[] }> = [];
 
-  private _statusPollInterval: ReturnType<typeof setInterval> | null = null;
   private _gridPollInterval: ReturnType<typeof setInterval> | null = null;
 
   // ── Forge progress (derived) ───────────────────────────────────────
@@ -109,7 +110,6 @@ export class FactoryWidget extends ReactiveWidget {
     super.connectedCallback();
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
-    this.startStatusPolling();
     this.startGridPolling();
     this.configureRightPanel();
   }
@@ -136,7 +136,6 @@ export class FactoryWidget extends ReactiveWidget {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    if (this._statusPollInterval) { clearInterval(this._statusPollInterval); this._statusPollInterval = null; }
     if (this._gridPollInterval) { clearInterval(this._gridPollInterval); this._gridPollInterval = null; }
   }
 
@@ -182,52 +181,8 @@ export class FactoryWidget extends ReactiveWidget {
   }
 
   // ── Status Polling ─────────────────────────────────────────────────
-
-  private startStatusPolling(): void {
-    this.pollForgeStatus();
-    this._statusPollInterval = setInterval(() => this.pollForgeStatus(), 15_000);
-  }
-
-  private async pollForgeStatus(): Promise<void> {
-    try {
-      const result = await this.executeCommand<any, any>('model/forge-status', {});
-      if (!result?.forges?.length) {
-        // No active forges — clear stale status
-        if (this._forgeStatus && this._forgeStatus.phase !== 'complete') {
-          this._forgeStatus = null;
-        }
-        return;
-      }
-      if (result?.forges?.length > 0) {
-        const f = result.forges[0];
-        this._forgeStatus = {
-          phase: f.phase ?? 'unknown',
-          detail: f.detail ?? '',
-          vramGb: f.vramGb ?? 0,
-          timestamp: f.timestamp ?? new Date().toISOString(),
-          step: f.step,
-          totalSteps: f.totalSteps,
-          loss: f.loss,
-          itPerSec: f.itPerSec,
-          etaSeconds: f.etaSeconds,
-          cycle: f.cycle,
-          totalCycles: f.totalCycles,
-        };
-        if (f.loss && f.loss > 0) {
-          this._lossHistory = [...this._lossHistory.slice(-50), f.loss];
-        }
-        if (f.phase === 'complete' || f.phase === 'error') {
-          if (this._statusPollInterval) {
-            clearInterval(this._statusPollInterval);
-            this._statusPollInterval = null;
-          }
-          this.loadPublishedModels();
-        }
-      }
-    } catch {
-      // Node unreachable
-    }
-  }
+  // Forge status is now derived from grid/job-queue polling (see pollGridJobQueue).
+  // No separate forge-status polling needed.
 
   // ── Grid Polling ───────────────────────────────────────────────────
 
@@ -294,6 +249,36 @@ export class FactoryWidget extends ReactiveWidget {
             failed: summary.failed ?? 0,
           };
         }
+
+        // Derive forge status from the first running grid job
+        const runningJob = this._gridJobs.find(j => j.state === 'running');
+        if (runningJob?.progress) {
+          const p = runningJob.progress;
+          this._forgeStatus = {
+            phase: 'training',
+            detail: `${runningJob.alloyName} on ${runningJob.nodeId}`,
+            vramGb: 0,
+            timestamp: new Date().toISOString(),
+            step: p.step,
+            totalSteps: p.totalSteps,
+            cycle: p.cycle,
+            totalCycles: p.totalCycles,
+          };
+        } else if (!this._gridJobs.some(j => j.state === 'running') && this._forgeStatus?.phase === 'training') {
+          // No running jobs but we had forge status — check if completed
+          const completedJob = this._gridJobs.find(j => j.state === 'completed');
+          if (completedJob) {
+            this._forgeStatus = {
+              phase: 'complete',
+              detail: `${completedJob.alloyName} complete`,
+              vramGb: 0,
+              timestamp: new Date().toISOString(),
+            };
+            this.loadPublishedModels();
+          } else {
+            this._forgeStatus = null;
+          }
+        }
       }
     } catch {
       // Keep existing state
@@ -318,7 +303,7 @@ export class FactoryWidget extends ReactiveWidget {
   private async loadPublishedModels(): Promise<void> {
     this._isLoading = true;
     try {
-      const result = await this.executeCommand<any, any>('model/list-published', { includeGguf: true });
+      const result = await this.executeCommand<any, any>(COMMANDS.MODEL_LIST_PUBLISHED, { includeGguf: true });
       if (result?.models) {
         this._models = result.models.sort((a: any, b: any) => b.downloads - a.downloads);
         this._totalDownloads = result.totalDownloads ?? 0;
@@ -333,11 +318,35 @@ export class FactoryWidget extends ReactiveWidget {
 
   private async onForgeStart(e: CustomEvent): Promise<void> {
     if (this._isForging || this._forgeStarting) return;
+
+    const { alloy } = e.detail as { params: Record<string, unknown>; alloy: Record<string, unknown> };
+    if (!alloy) {
+      console.error('Forge start: no alloy recipe in event detail');
+      return;
+    }
+
+    // Must have a target node — discovered via grid/nodes on mount
+    if (!this._targetNodeId) {
+      console.error('Forge start: no grid node available. Pair a node with jtag grid/pair first.');
+      return;
+    }
+
     this._forgeStarting = true;
     try {
-      await this.executeCommand<any, any>('model/forge', e.detail);
+      const result = await this.executeCommand<any, any>(COMMANDS.GRID_JOB_SUBMIT, {
+        nodeId: this._targetNodeId,
+        alloy,
+        priority: 5,
+      });
+
+      if (result?.success) {
+        // Job queued — grid/job-queue polling will pick up progress
+        console.log(`Forge job ${result.jobId} queued on ${result.nodeId} at position ${result.position}`);
+        // Immediately refresh job list
+        await this.pollGridJobQueue();
+      }
     } catch (err) {
-      console.error('Forge start failed:', err);
+      console.error('Forge job submit failed:', err);
     } finally {
       this._forgeStarting = false;
     }
@@ -358,230 +367,7 @@ export class FactoryWidget extends ReactiveWidget {
 
   static override styles: CSSResultGroup = [
     ReactiveWidget.styles,
-    css`
-      :host {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow-y: auto;
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .factory {
-        padding: 20px 24px;
-        max-width: 1200px;
-      }
-
-      .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 24px;
-      }
-
-      .title {
-        font-size: 20px;
-        font-weight: 700;
-      }
-
-      .subtitle {
-        font-size: 12px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .section {
-        margin-bottom: 28px;
-      }
-
-      .section-title {
-        font-size: 14px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 12px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
-      }
-
-      .section-stats {
-        font-size: 12px;
-        font-weight: 400;
-        color: var(--content-secondary, #8a92a5);
-        margin-left: 12px;
-      }
-
-      /* ── Node Status Bar ───────────────── */
-
-      .node-bar {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 14px;
-        margin-bottom: 16px;
-        border-radius: 8px;
-        background: rgba(0,0,0,0.3);
-        border: 1px solid rgba(255,255,255,0.06);
-        font-size: 12px;
-      }
-
-      .node-dot {
-        width: 8px; height: 8px;
-        border-radius: 50%;
-        background: #ff4444;
-        flex-shrink: 0;
-      }
-
-      .node-bar.online .node-dot {
-        background: #00ff88;
-        box-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
-      }
-
-      .node-name {
-        font-weight: 700;
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .gpu-label {
-        color: var(--content-secondary, #8a92a5);
-        font-size: 11px;
-        margin-right: auto;
-      }
-
-      .bar-group { display: flex; align-items: center; gap: 4px; }
-
-      .bar-label {
-        font-size: 9px; font-weight: 600;
-        color: var(--content-tertiary, #5a6070);
-        width: 26px;
-      }
-
-      .usage-bar {
-        width: 60px; height: 6px;
-        background: rgba(255,255,255,0.06);
-        border-radius: 3px; overflow: hidden;
-      }
-
-      .usage-fill {
-        height: 100%; border-radius: 3px;
-        transition: width 0.5s ease;
-      }
-
-      .gpu-fill { background: linear-gradient(90deg, #00d4ff, #00ffc8); }
-      .mem-fill { background: linear-gradient(90deg, #c864ff, #ff6464); }
-
-      .bar-val {
-        font-size: 10px; font-variant-numeric: tabular-nums;
-        color: var(--content-secondary, #8a92a5);
-        min-width: 36px; text-align: right;
-      }
-
-      .temp-label {
-        font-size: 11px;
-        color: var(--content-tertiary, #5a6070);
-      }
-
-      .offline-msg {
-        color: var(--content-tertiary, #5a6070);
-        font-style: italic; flex: 1;
-      }
-
-      /* ── Empty Floor ───────────────────── */
-
-      .empty-floor {
-        text-align: center;
-        padding: 40px 20px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .empty-floor-icon { font-size: 36px; margin-bottom: 8px; }
-      .empty-floor-msg { font-size: 14px; margin-bottom: 4px; }
-      .empty-floor-hint { font-size: 12px; opacity: 0.7; }
-
-      /* ── Grid Jobs ─────────────────────── */
-
-      .grid-jobs { margin-top: 12px; }
-
-      .jobs-header {
-        display: flex; gap: 8px;
-        margin-bottom: 8px;
-      }
-
-      .jc {
-        font-size: 10px; padding: 2px 8px;
-        border-radius: 4px; font-weight: 600;
-      }
-
-      .jc.running { background: rgba(0, 212, 255, 0.12); color: #00d4ff; }
-      .jc.queued { background: rgba(255, 255, 100, 0.1); color: #ffff64; }
-      .jc.paused { background: rgba(255, 150, 100, 0.1); color: #ff9664; }
-      .jc.completed { background: rgba(0, 255, 136, 0.1); color: #00ff88; }
-
-      .job-row {
-        display: flex; align-items: center;
-        justify-content: space-between;
-        padding: 8px 12px; border-radius: 6px;
-        background: rgba(0,0,0,0.15);
-        margin-bottom: 4px;
-        border-left: 3px solid transparent;
-        transition: all 0.15s;
-      }
-
-      .job-row.running { border-left-color: #00d4ff; }
-      .job-row.paused { border-left-color: #ff9664; }
-      .job-row.queued { border-left-color: #ffff64; }
-      .job-row.completed { border-left-color: #00ff88; opacity: 0.5; }
-      .job-row.failed { border-left-color: #ff4444; opacity: 0.5; }
-
-      .job-info { display: flex; align-items: center; gap: 10px; }
-
-      .job-name {
-        font-size: 12px; font-weight: 600;
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .job-state-badge {
-        font-size: 9px; font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--content-tertiary, #5a6070);
-      }
-
-      .job-progress {
-        font-size: 11px; font-variant-numeric: tabular-nums;
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .job-time {
-        font-size: 10px;
-        color: var(--content-tertiary, #5a6070);
-      }
-
-      .job-actions { display: flex; gap: 4px; }
-
-      .job-btn {
-        width: 24px; height: 24px;
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 4px;
-        background: transparent;
-        color: var(--content-secondary, #8a92a5);
-        font-size: 11px; cursor: pointer;
-        display: flex; align-items: center;
-        justify-content: center;
-        transition: all 0.15s;
-      }
-
-      .job-btn:hover {
-        background: rgba(0, 212, 255, 0.15);
-        border-color: var(--accent-primary, #00d4ff);
-        color: var(--accent-primary, #00d4ff);
-      }
-
-      .job-btn.cancel:hover {
-        background: rgba(255, 68, 68, 0.15);
-        border-color: #ff4444; color: #ff4444;
-      }
-    `,
+    unsafeCSS(FACTORY_STYLES),
   ];
 
   protected override render(): TemplateResult {
@@ -622,12 +408,17 @@ export class FactoryWidget extends ReactiveWidget {
 
   // ── Grid Rendering ─────────────────────────────────────────────────
 
+  private openGridTab(): void {
+    ContentService.open('grid-overview', undefined, { title: 'Grid' });
+  }
+
   private renderNodeStatusBar(): TemplateResult {
     if (this._gridNodes.length === 0 && !this._targetNodeId) {
       return html`
-        <div class="node-bar offline">
+        <div class="node-bar offline node-bar-link" @click=${() => this.openGridTab()}>
           <div class="node-dot"></div>
-          <span class="offline-msg">No grid nodes discovered. Pair a node with <code>jtag grid/pair</code></span>
+          <span class="offline-msg">No grid nodes discovered</span>
+          <span class="grid-link">Manage Grid →</span>
         </div>
       `;
     }
@@ -673,6 +464,7 @@ export class FactoryWidget extends ReactiveWidget {
         ` : html`
           <span class="offline-msg">${s ? s.state : 'connecting...'}</span>
         `}
+        <span class="grid-link" @click=${() => this.openGridTab()}>Grid →</span>
       </div>
     `;
   }

@@ -15,10 +15,11 @@ import {
   ReactiveWidget,
   html,
   reactive,
-  css,
+  unsafeCSS,
   type TemplateResult,
   type CSSResultGroup,
 } from '../shared/ReactiveWidget';
+import { styles as GRID_OVERVIEW_STYLES } from './public/grid-overview.styles';
 import { nothing } from 'lit';
 import { Events } from '../../system/core/shared/Events';
 import {
@@ -75,244 +76,7 @@ const LATENCY_SERIES: ContinuumChartSeries[] = [
 export class GridOverviewWidget extends ReactiveWidget {
   static override styles = [
     ReactiveWidget.styles,
-    css`
-      :host {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow-y: auto;
-        color: var(--content-primary, #e0e6ed);
-        font-family: var(--font-primary, sans-serif);
-      }
-
-      .grid-dashboard {
-        padding: 16px 20px;
-        max-width: 1200px;
-        margin: 0 auto;
-      }
-
-      .dashboard-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 20px;
-      }
-
-      .dashboard-title {
-        font-size: 18px;
-        font-weight: 700;
-      }
-
-      .dashboard-subtitle {
-        font-size: 11px;
-        color: var(--content-secondary, #8a92a5);
-        margin-top: 2px;
-      }
-
-      .section-label {
-        font-size: 10px;
-        font-weight: 700;
-        color: var(--content-secondary, #8a92a5);
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        margin-bottom: 10px;
-        margin-top: 24px;
-      }
-
-      /* Transport status bar */
-      .transport-bar {
-        display: flex;
-        gap: 12px;
-        margin-bottom: 20px;
-      }
-
-      .transport-status {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 12px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-weight: 600;
-      }
-
-      .transport-active {
-        background: rgba(0, 255, 136, 0.08);
-        border: 1px solid rgba(0, 255, 136, 0.2);
-        color: rgba(0, 255, 136, 0.9);
-      }
-
-      .transport-inactive {
-        background: rgba(100, 100, 100, 0.08);
-        border: 1px solid rgba(100, 100, 100, 0.15);
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .transport-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-      }
-
-      /* Node cards */
-      .node-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 12px;
-        margin-bottom: 20px;
-      }
-
-      .node-card {
-        background: rgba(15, 20, 25, 0.6);
-        border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
-        border-radius: 6px;
-        padding: 12px 14px;
-        transition: border-color 0.2s ease;
-      }
-
-      .node-card:hover {
-        border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
-      }
-
-      .node-card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 8px;
-      }
-
-      .node-name-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .status-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        flex-shrink: 0;
-      }
-
-      .node-name {
-        font-weight: 700;
-        font-size: 13px;
-      }
-
-      .node-transport-badge {
-        font-size: 9px;
-        font-weight: 700;
-        font-family: var(--font-mono, monospace);
-        text-transform: uppercase;
-        padding: 1px 5px;
-        border-radius: 3px;
-        background: rgba(0, 212, 255, 0.1);
-        color: rgba(0, 212, 255, 0.8);
-        border: 1px solid rgba(0, 212, 255, 0.2);
-      }
-
-      .node-stats {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 4px 12px;
-        font-size: 10px;
-        color: var(--content-secondary, #8a92a5);
-        margin-bottom: 8px;
-      }
-
-      .node-stat-value {
-        font-family: var(--font-mono, monospace);
-        color: var(--content-primary, #e0e6ed);
-        font-weight: 600;
-      }
-
-      .node-capabilities {
-        display: flex;
-        gap: 4px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
-      }
-
-      .capability-tag {
-        font-size: 9px;
-        padding: 1px 5px;
-        border-radius: 3px;
-        background: rgba(255, 255, 255, 0.05);
-        color: var(--content-secondary, #8a92a5);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-
-      .node-actions {
-        display: flex;
-        gap: 6px;
-        margin-top: 8px;
-      }
-
-      .ping-btn {
-        padding: 3px 10px;
-        font-size: 10px;
-        font-weight: 600;
-        border-radius: 3px;
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        background: rgba(0, 212, 255, 0.08);
-        color: rgba(0, 212, 255, 0.9);
-        cursor: pointer;
-        transition: all 0.15s ease;
-      }
-
-      .ping-btn:hover {
-        background: rgba(0, 212, 255, 0.15);
-        border-color: rgba(0, 212, 255, 0.5);
-      }
-
-      .ping-btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      /* Routing log */
-      .routing-log {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-      }
-
-      .routing-log th {
-        text-align: left;
-        padding: 5px 8px;
-        font-weight: 700;
-        color: var(--content-secondary, #8a92a5);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 9px;
-        border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
-      }
-
-      .routing-log td {
-        padding: 4px 8px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      }
-
-      .route-success { color: var(--content-success, #00ff88); }
-      .route-fail { color: var(--content-error, #ff5050); }
-
-      .empty-state {
-        text-align: center;
-        padding: 40px 20px;
-        color: var(--content-secondary, #8a92a5);
-      }
-
-      .empty-state-title {
-        font-size: 16px;
-        font-weight: 600;
-        margin-bottom: 8px;
-      }
-
-      .empty-state-hint {
-        font-size: 12px;
-        font-style: italic;
-      }
-    `,
+    unsafeCSS(GRID_OVERVIEW_STYLES),
   ] as CSSResultGroup;
 
   // ── State ───────────────────────────────────────────────────────────────
@@ -409,55 +173,40 @@ export class GridOverviewWidget extends ReactiveWidget {
   }
 
   private async _loadInitialState(): Promise<void> {
-    const updated = new Map<string, GridNode>();
+    // Show local machine immediately — don't wait on commands that may timeout
+    const initial = new Map<string, GridNode>();
+    initial.set('local', {
+      nodeId: 'local',
+      nodeName: 'This Machine',
+      status: 'online' as GridNodeStatus,
+      latencyMs: 0,
+      transport: 'local',
+      address: '127.0.0.1',
+      capabilities: ['compute'],
+      pinging: false,
+      latencyHistory: [],
+    });
+    this._nodes = initial;
 
-    // Always show local machine as node zero
-    try {
-      const localInfo = await this.executeCommand<any, any>('system/info', {});
-      updated.set('local', {
-        nodeId: 'local',
-        nodeName: localInfo?.hostname || 'This Machine',
-        status: 'online' as GridNodeStatus,
-        latencyMs: 0,
-        transport: 'local',
-        address: '127.0.0.1',
-        capabilities: ['compute', 'storage', 'inference'],
-        gpu: localInfo?.gpu ? { name: localInfo.gpu.name, vramMb: localInfo.gpu.vramMb } : undefined,
-        pinging: false,
-        latencyHistory: [],
-      });
-    } catch {
-      // system/info not available — add minimal local node
-      updated.set('local', {
-        nodeId: 'local',
-        nodeName: 'This Machine',
-        status: 'online' as GridNodeStatus,
-        latencyMs: 0,
-        transport: 'local',
-        address: '127.0.0.1',
-        capabilities: ['compute'],
-        pinging: false,
-        latencyHistory: [],
-      });
-    }
-
-    // Load remote grid nodes
+    // Load remote grid nodes in background (may timeout if Rust core offline)
     try {
       const result = await this.executeCommand<any, any>('grid/nodes', {});
       const normalized = normalizeGridNodes(result);
 
-      for (const n of normalized) {
-        updated.set(n.nodeId, {
-          ...n,
-          pinging: false,
-          latencyHistory: [],
-        });
+      if (normalized.length > 0) {
+        const updated = new Map(this._nodes);
+        for (const n of normalized) {
+          updated.set(n.nodeId, {
+            ...n,
+            pinging: false,
+            latencyHistory: [],
+          });
+        }
+        this._nodes = updated;
       }
     } catch (err) {
       console.warn('[GridOverview] Failed to load grid nodes:', err);
     }
-
-    this._nodes = updated;
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -478,6 +227,10 @@ export class GridOverviewWidget extends ReactiveWidget {
                 : 'No nodes connected'}
             </div>
           </div>
+          <div class="header-actions">
+            <button class="action-btn primary" @click=${() => this._pairNode()}>+ Pair Node</button>
+            <button class="action-btn" @click=${() => this._loadInitialState()}>Refresh</button>
+          </div>
         </div>
 
         ${this._renderTransportBar(transports)}
@@ -493,9 +246,11 @@ export class GridOverviewWidget extends ReactiveWidget {
           <div class="empty-state">
             <div class="empty-state-title">No Grid Nodes</div>
             <div class="empty-state-hint">
-              Connect nodes via Tailscale or Reticulum to enable distributed compute.
-              Grid nodes appear automatically when they join the mesh.
+              Add a compute node to start forging models on remote GPUs.
             </div>
+            <button class="action-btn primary" style="margin-top: 12px;" @click=${() => this._pairNode()}>
+              + Pair Node
+            </button>
           </div>
         `}
 
@@ -585,6 +340,9 @@ export class GridOverviewWidget extends ReactiveWidget {
             @click=${() => this._pingNode(node.nodeId)}>
             ${node.pinging ? 'Pinging...' : 'Ping'}
           </button>
+          ${node.nodeId !== 'local' ? html`
+            <button class="ping-btn" @click=${() => this._removeNode(node.nodeId)}>Remove</button>
+          ` : nothing}
         </div>
       </div>
     `;
@@ -631,6 +389,23 @@ export class GridOverviewWidget extends ReactiveWidget {
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────
+
+  private async _pairNode(): Promise<void> {
+    try {
+      await this.executeCommand<any, any>('grid/pair', {});
+      // Refresh after pairing
+      await this._loadInitialState();
+    } catch (err) {
+      console.error('[GridOverview] Pair failed:', err);
+    }
+  }
+
+  private _removeNode(nodeId: string): void {
+    const updated = new Map(this._nodes);
+    updated.delete(nodeId);
+    this._nodes = updated;
+    // TODO: persist removal via grid/trust revoke
+  }
 
   private async _pingNode(nodeId: string): Promise<void> {
     const node = this._nodes.get(nodeId);
