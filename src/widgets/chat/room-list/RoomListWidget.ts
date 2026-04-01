@@ -17,6 +17,7 @@ import {
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import '../../shared/EntityListHeader';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
@@ -83,27 +84,20 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   protected override get listTitle(): string { return 'Rooms'; }
   protected override get containerClass(): string { return 'entity-list-body'; }
 
-  // === HEADER with filter chips ===
+  // === HEADER ===
   protected override renderHeader(): TemplateResult {
-    const filters: { id: RoomFilter; label: string }[] = [
-      { id: 'all', label: 'All' },
-      { id: 'rooms', label: 'Rooms' },
-      { id: 'dms', label: 'DMs' }
-    ];
-
     return html`
-      <div class="entity-list-header">
-        <span class="list-title">${this.listTitle}</span>
-        <div class="filter-chips">
-          ${filters.map(f => html`
-            <button
-              class="filter-chip ${this.activeFilter === f.id ? 'active' : ''}"
-              @click=${() => this.setFilter(f.id)}
-            >${f.label}</button>
-          `)}
-        </div>
-        <span class="list-count">${this.entityCount}</span>
-      </div>
+      <entity-list-header
+        .title=${this.listTitle}
+        .count=${this.entityCount}
+        .activeFilter=${this.activeFilter}
+        .filters=${[
+          { id: 'all', label: 'All' },
+          { id: 'rooms', label: 'Rooms' },
+          { id: 'dms', label: 'DMs' },
+        ]}
+        @filter-change=${(e: CustomEvent) => this.setFilter(e.detail.filter)}
+      ></entity-list-header>
     `;
   }
 
