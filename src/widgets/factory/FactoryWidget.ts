@@ -121,8 +121,11 @@ export class FactoryWidget extends ReactiveWidget {
 
   /** Tell the right panel what widget to show for the factory */
   private configureRightPanel(): void {
-    // Small delay to ensure right panel widget is mounted and listening
-    setTimeout(() => this.emitRightPanelConfig(), 500);
+    // Emit immediately AND after a short delay — the right panel may
+    // not be subscribed yet on first mount, but we also need to re-emit
+    // when navigating back to Factory after visiting another tab.
+    this.emitRightPanelConfig();
+    setTimeout(() => this.emitRightPanelConfig(), 200);
   }
 
   private emitRightPanelConfig(): void {
