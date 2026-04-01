@@ -8,7 +8,7 @@
   "layout": {
     "widgets": [
       { "widget": "factory-widget", "position": "center", "order": 0 },
-      { "widget": "factory-stats-widget", "position": "right", "order": 0, "config": { "sectionTitle": "Models", "sectionIcon": "M" } }
+      { "widget": "factory-stats-widget", "position": "right", "order": 0, "title": "Models", "icon": "M" }
     ]
   },
 

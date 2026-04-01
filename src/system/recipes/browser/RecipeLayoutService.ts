@@ -24,7 +24,14 @@ interface LayoutWidget {
   widget: string;
   position: 'left' | 'center' | 'right';
   order: number;
+  /** Widget-specific config (room, compact, etc) */
   config?: Record<string, unknown>;
+  /** Section title when in a panel (right panel accordion) */
+  title?: string;
+  /** Section icon */
+  icon?: string;
+  /** Flex weight for panel layout */
+  flex?: number;
 }
 
 /**
@@ -190,24 +197,13 @@ export class RecipeLayoutService {
       }
 
       // Build sections from all right widgets — each widget becomes a section
-      const sections = rightWidgets.map((w) => {
-        // Convert config to string props for the section
-        const props: Record<string, string> = {};
-        if (w.config) {
-          for (const [k, v] of Object.entries(w.config)) {
-            if (typeof v === 'string') props[k] = v;
-            else if (typeof v === 'boolean' && v) props[k] = '';
-          }
-        }
-        return {
-          id: (w.config?.sectionId as string) || w.widget,
-          title: (w.config?.sectionTitle as string) || w.widget.replace(/-widget$/, '').replace(/-/g, ' '),
-          icon: (w.config?.sectionIcon as string) || undefined,
-          widgetTag: w.widget,
-          props,
-          flexWeight: (w.config?.flexWeight as number) || 1,
-        };
-      });
+      const sections = rightWidgets.map((w) => ({
+        id: w.widget,
+        title: w.title ?? w.widget.replace(/-widget$/, ''),
+        icon: w.icon,
+        widgetTag: w.widget,
+        flexWeight: w.flex ?? 1,
+      }));
 
       return {
         widget: rightWidgets[0].widget,
