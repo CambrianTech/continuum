@@ -117,6 +117,23 @@ export class FactoryWidget extends ReactiveWidget {
     this.loadPublishedModels();
     this.startGridPolling();
     this.configureRightPanel();
+    this.listenForModelSelection();
+  }
+
+  /** Listen for model selection from right panel stats widget */
+  private listenForModelSelection(): void {
+    // Bubble up from shadow DOM — listen on document for composed events
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.modelId) {
+        // Find the forge controls and update the base model
+        const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
+        if (controls?.setBaseModel) {
+          controls.setBaseModel(detail.modelId);
+        }
+      }
+    };
+    this.addEventListener('factory:model:select', handler);
   }
 
   /** Tell the right panel what widget to show for the factory */

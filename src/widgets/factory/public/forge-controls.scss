@@ -113,6 +113,13 @@
   }
 }
 
+.control-hint {
+  font-size: 8px;
+  color: var(--content-tertiary, #5a6070);
+  font-style: italic;
+  margin-top: 2px;
+}
+
 pipeline-composer {
   margin: $spacing-md 0;
 }

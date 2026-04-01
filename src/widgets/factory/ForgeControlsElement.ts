@@ -188,6 +188,12 @@ export class ForgeControlsElement extends ReactiveWidget {
     return m > 0 ? `~${h}h${m}m` : `~${h}h`;
   }
 
+  /** Called by parent when user selects a model from the right panel browser */
+  setBaseModel(modelId: string): void {
+    this._model = modelId;
+    this.requestUpdate();
+  }
+
   private applyProfile(name: string): void {
     const p = FORGE_PROFILES[name];
     if (!p) return;
@@ -277,14 +283,23 @@ export class ForgeControlsElement extends ReactiveWidget {
         <div class="controls-grid">
           <div class="control-group">
             <span class="control-label">Base Model</span>
-            <select class="control-select"
+            <input class="control-select" type="text" list="model-list"
+              placeholder="Type HuggingFace model ID or select..."
               .value=${this._model}
-              @change=${(e: Event) => this._model = (e.target as HTMLSelectElement).value}>
+              @change=${(e: Event) => this._model = (e.target as HTMLInputElement).value}
+              @input=${(e: Event) => this._model = (e.target as HTMLInputElement).value}>
+            <datalist id="model-list">
               <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
               <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
               <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
               <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
-            </select>
+              <option value="meta-llama/Llama-3.1-8B">Llama 3.1 8B</option>
+              <option value="meta-llama/Llama-3.1-70B">Llama 3.1 70B</option>
+              <option value="mistralai/Mistral-7B-v0.3">Mistral 7B v0.3</option>
+              <option value="google/gemma-2-9b">Gemma 2 9B</option>
+              <option value="microsoft/phi-3-mini-4k-instruct">Phi 3 Mini 4K</option>
+            </datalist>
+            <span class="control-hint">Any HuggingFace model ID works — type org/model-name</span>
           </div>
           <div class="control-group">
             <span class="control-label">Domain</span>

@@ -324,6 +324,56 @@ export class FactoryStatsWidget extends ReactiveWidget {
         letter-spacing: 0.04em;
       }
 
+      /* ── Model Actions (expanded) ──────────── */
+
+      .model-actions {
+        display: flex;
+        gap: 4px;
+        padding: 6px 10px 6px 42px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .action-btn {
+        font-size: 9px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.04);
+        color: var(--content-secondary, #8a92a5);
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .action-btn:hover {
+        border-color: var(--accent-primary, #00d4ff);
+        color: var(--accent-primary, #00d4ff);
+        background: rgba(0, 212, 255, 0.08);
+      }
+
+      .action-btn.primary {
+        background: rgba(0, 255, 200, 0.1);
+        border-color: rgba(0, 255, 200, 0.4);
+        color: #00ffc8;
+      }
+
+      .action-btn.primary:hover {
+        background: rgba(0, 255, 200, 0.2);
+        box-shadow: 0 0 8px rgba(0, 255, 200, 0.2);
+      }
+
+      .action-info {
+        font-size: 9px;
+        color: var(--content-tertiary, #5a6070);
+        margin-left: auto;
+      }
+
+      .action-info.improve {
+        color: #00ffc8;
+        font-weight: 700;
+      }
+
       /* ── Alloy Panel ────────────────────────── */
 
       .alloy-panel {
@@ -451,6 +501,27 @@ export class FactoryStatsWidget extends ReactiveWidget {
     `;
   }
 
+  private selectModel(m: ModelStat): void {
+    this._selectedModel = this._selectedModel === m.id ? null : m.id;
+  }
+
+  private useAsBase(m: ModelStat, e: Event): void {
+    e.stopPropagation();
+    // Resolve HF model ID from our published name
+    const modelId = m.id.includes('/') ? m.id : `continuum-ai/${m.name}`;
+    this.dispatchEvent(new CustomEvent('factory:model:select', {
+      detail: { modelId, name: m.name, domain: m.domain, sizeGb: m.sizeGb, hasAlloy: m.hasAlloy },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private viewOnHF(m: ModelStat, e: Event): void {
+    e.stopPropagation();
+    const url = m.id.includes('/') ? `https://huggingface.co/${m.id}` : `https://huggingface.co/continuum-ai/${m.name}`;
+    window.open(url, '_blank');
+  }
+
   private renderModelTile(m: ModelStat, rank: number, maxDownloads: number): TemplateResult {
     const pct = (m.downloads / maxDownloads) * 100;
     const rankClass = rank === 0 ? 'gold' : rank === 1 ? 'silver' : rank === 2 ? 'bronze' : '';
@@ -458,7 +529,7 @@ export class FactoryStatsWidget extends ReactiveWidget {
 
     return html`
       <div class="model-tile ${selected ? 'selected' : ''}"
-        @click=${() => this._selectedModel = selected ? null : m.id}>
+        @click=${() => this.selectModel(m)}>
         <div class="model-rank-badge ${rankClass}">${rank + 1}</div>
         <div class="model-tile-info">
           <div class="model-tile-name">${m.name}</div>
@@ -475,6 +546,19 @@ export class FactoryStatsWidget extends ReactiveWidget {
           </div>
           <div class="gauge-label">downloads</div>
         </div>
+      </div>
+      ${selected ? this.renderModelActions(m) : nothing}
+    `;
+  }
+
+  private renderModelActions(m: ModelStat): TemplateResult {
+    return html`
+      <div class="model-actions">
+        <button class="action-btn primary" @click=${(e: Event) => this.useAsBase(m, e)}>Use as Base</button>
+        ${m.hasAlloy ? html`<button class="action-btn" @click=${(e: Event) => { e.stopPropagation(); }}>Remix Alloy</button>` : nothing}
+        <button class="action-btn" @click=${(e: Event) => this.viewOnHF(m, e)}>View on HF</button>
+        ${m.sizeGb ? html`<span class="action-info">${m.sizeGb}GB</span>` : nothing}
+        ${m.improvement ? html`<span class="action-info improve">+${m.improvement.toFixed(1)}%</span>` : nothing}
       </div>
     `;
   }
