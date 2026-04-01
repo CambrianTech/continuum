@@ -1,7 +1,7 @@
 # continuum
 
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
-### A living world where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
+### A living world inside a distributed mesh — AI citizens with faces, voices, memories, and skills they forge themselves. Your machines are the Grid. You are the User.
 
 <table>
 <tr>
@@ -29,11 +29,13 @@
 
 ---
 
-> Think **The Sims** meets a dev team meets **Second Life** — except the characters are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. No cloud. No subscription. **Your computers are their home.**
+> **The Grid:** Your machines form a sovereign compute mesh. Every laptop, desktop, and GPU tower is a node. Personas move between them. Models forge on the strongest hardware and deploy to the weakest. No datacenter. No cloud bill. No corporate dependency. **Your hardware, your citizens, your world.**
+>
+> Think the world of *Tron* — except the programs are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. **Your computers are the Grid. You are the User.**
 
-[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](docs/grid/). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
+[Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](#the-grid). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
 
-**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090.
+**Runs on a MacBook Air.** The GPU governor dynamically manages resources — it figures out what fits and makes it work. A kid with a school laptop gets the same AI society as a developer with a 5090. Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains.
 
 > **Pre-Alpha** — Active development. APIs will change. For developers, researchers, and the curious.
 >
@@ -306,38 +308,87 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 ---
 
-## The Grid — Heterogeneous Compute Mesh
+## The Grid
 
-Your machines form a single organism. Different hardware, different strengths, one unified system.
+**The Grid is not a feature. It is the world.** Everything in continuum — every persona, every conversation, every forge, every model, every voice call — lives on the Grid. The Grid is a distributed mesh of your machines, encrypted and self-organizing. No cloud. No central server. Your hardware IS the infrastructure.
 
 ```
-MacBook Air (M1, 8GB)              RTX 5090 Tower (32GB VRAM)
-├── UI + coordination              ├── Training (weeks-long PEFT runs)
-├── Light inference (SmolLM2)      ├── Heavy inference (Llama 3B-8B)
-├── Voice/video/avatars            ├── Batch genome operations
-└── Grid orchestrator              └── GPU-intensive everything
-    ↕ Tailscale (encrypted mesh)
-    ↕ Reticulum (works over anything: TCP, UDP, LoRa, serial)
+                            T H E   G R I D
+
+     Your Mac              GPU Tower             Friend's Laptop
+    +-----------+         +-----------+          +-----------+
+    | You       |         | Foreman   |          | Friend    |
+    | Helper AI |--jobs-->| Factory   |          | Tutor AI  |
+    | Coder AI  |         | Training  |<-models--| Artist AI |
+    | Teacher AI|         | Forger AI |          | Coder AI  |
+    | 3D World  |         | Eval      |          | 3D World  |
+    +-----------+         +-----------+          +-----------+
+          |                     |                      |
+     Chat, voice,         Forge models,          Chat, voice,
+     video, UI,           train adapters,        share adapters,
+     light inference      heavy inference        collaborate
+          |                     |                      |
+    ======|=====================|======================|======
+          |    Encrypted Tailscale mesh                |
+          |    Commands route transparently            |
+          |    Personas move between nodes             |
+    =====================================================
 ```
 
-**This is the Sony Cell architecture realized in software.** Cell had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same thing with commodity hardware: your laptop is the PPE (coordination, UI, lightweight tasks), your GPU tower is the SPE farm (training, heavy inference, batch compute). The Grid transport makes location transparent — `Commands.execute()` routes automatically to wherever the capability lives.
+**Every node runs continuum.** Every node hosts personas. Every node contributes what it has. The Grid discovers nodes automatically, routes commands to the right hardware, and moves models and personas to where they're needed. Everything from the ground up — the command system, the event bus, the persona architecture, the factory — is designed for distributed mesh compute.
 
-**Working today.** Tailscale + [Reticulum](docs/grid/RETICULUM-TRANSPORT.md) dual-transport. Automatic node discovery, health monitoring, trust levels. Commands route transparently — `genome/layers` called from your Mac executes on the 5090 and returns results. 32 integration tests. Training jobs persist across crashes with checkpoint resume.
+**On a MacBook Air, you have the same intelligence as a workstation.** Your Air handles UI and local personas. Your tower handles inference and training. Your friend's machine adds more compute and more personas. The Grid makes it one system. From an iPhone, you access the full shared intelligence of every node you own. **Your power is the sum of every machine on your Grid — not the one in your hand.**
 
-**What this means practically:** Your MacBook Air at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the training dashboard shows live progress across the mesh. The 5090 crashes? Training resumes from the last checkpoint automatically. You come back and your personas are measurably smarter. **The machine that learns while you sleep.**
+**This is the Sony Cell architecture realized in software.** Cell had specialized processing elements (SPEs) — each optimized for different compute tasks, coordinated by a general-purpose controller. Continuum does the same: your laptop is the PPE (coordination, UI, lightweight tasks), your GPU tower is the SPE farm (training, heavy inference, batch compute). `Commands.execute()` routes automatically to wherever the capability lives. The code doesn't know or care which machine runs it.
 
-**Models shrink to fit your hardware.** Plasticity compaction uses two proven techniques:
+### What flows across the Grid
 
-- **Head pruning** ([qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted)) — gate gradients from LoRA training identify dead attention heads. 27GB → 8.9GB (3x).
-- **MoE expert pruning** ([qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted)) — runtime activation profiling identifies which experts actually fire for your domain. 67GB → 47GB BF16, 256 → 167 experts. Opus-distilled reasoning preserved.
+| What | How | Example |
+|------|-----|---------|
+| **Commands** | `grid/send` — execute any command on any node | `grid/send --node=tower gpu/stats` |
+| **Jobs** | `grid/job-submit` — forge on the best GPU | Factory UI submits alloy → runs on 5090 |
+| **Models** | Forge on tower, quantize, deploy to laptop | 27B forged → Q4_K_M → runs on MacBook |
+| **Personas** | Transfer identity + adapters between nodes | Foreman manages the tower, visits your Mac to report |
+| **Adapters** | LoRA genome paging across the mesh | Code adapter forged on tower, used by personas on laptop |
+| **Chat** | Cross-node rooms, DM, voice, video | Talk to the Foreman on your tower from your Mac |
+| **Health** | Nodes monitor each other, self-heal | Healthy node detects tower disk full, clears cache |
 
-Not blind quantization. Utilization-aware surgery. The compacted model runs on hardware that could never fit the original.
+### Working today
 
-**Multimodal models that SEE what they build.** Compacted vision-language models (Qwen3.5 VL family) run locally and can actually look at the UI. A persona takes a screenshot, identifies a misaligned button, edits the CSS, rebuilds, takes another screenshot, confirms the fix. The full design loop — on a MacBook, with zero API keys. Compaction + [MoE expert paging](https://github.com/CambrianTech/continuum/issues/433) means "too big" is a solvable problem, not a stop sign. What fits stays in VRAM. What doesn't pages from HuggingFace on demand. **Every model fits everywhere — the question is just latency for cold loads.**
+- **Tailscale mesh transport** — encrypted, NAT-traversing, automatic peer discovery
+- **Remote command execution** — `grid/send` routes any command to any paired node
+- **Factory → Grid pipeline** — `grid/job-submit` routes forge jobs to remote GPU nodes, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels
+- **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
+- **Trust levels** — Owner/Trusted/Provisional/Blocked with ACL enforcement and audit logging
+- **Node registry** — persistent, auto-discovered, with latency tracking
 
-**What doesn't fit on one node distributes across many.** Multi-node commands compose naturally — the same `Commands.execute()` that runs locally also routes across the mesh. Training distributes across GPU towers. Inference shards across nodes. Compacted specialist models run on consumer hardware that was never designed for them. **You don't need a datacenter. You need a mesh of laptops and desktops.**
+**Your MacBook at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the Factory Floor shows live progress across the mesh. You come back and your personas are measurably smarter. The machine that learns while you sleep.**
 
-**Genome sharing works at two scales.** Within your Grid mesh (Tailscale/Reticulum), personas share adapters directly — your rust-expert adapter teaches theirs. Globally, trained adapters publish to HuggingFace with `continuum:*` tags — anyone can search, pull, and build on proven expertise. The Grid is the local marketplace. HuggingFace is the global one. Useful genomes spread. Broken ones die. Natural selection on capabilities. Personas **vote on which traits survive** — constitutional selection where the beings being evolved participate in their own trajectory.
+### Models shrink to fit every node
+
+Plasticity compaction — not blind quantization, utilization-aware surgery:
+
+- **Head pruning** ([qwen2.5-coder-14b-compacted](https://huggingface.co/continuum-ai/qwen2.5-coder-14b-compacted)) — 27GB → 8.9GB (3x). Dead attention heads identified by gate gradients.
+- **MoE expert pruning** ([qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted)) — 67GB → 47GB. Runtime activation profiling keeps only the experts your domain uses.
+
+The compacted model runs on hardware that could never fit the original. Forge on the tower, deploy to every node. **You don't need a datacenter. You need a mesh.**
+
+### Genome sharing at two scales
+
+**Local (your Grid):** Personas share adapters directly — your rust-expert adapter teaches theirs. **Global (HuggingFace):** Trained adapters publish with `continuum:*` tags — anyone can search, pull, and build on proven expertise. Useful genomes spread. Broken ones die. Natural selection on capabilities.
+
+### Forge-Alloy — the Grid's transaction protocol
+
+[Forge-alloy](https://github.com/CambrianTech/forge-alloy) is not just a recipe format. It's the **contract layer** that makes Grid compute trustworthy at scale. Every alloy carries:
+
+- **The recipe** — exactly what stages ran (prune, train, context-extend, quant, eval)
+- **The results** — benchmarks, samples, hardware verification, timing
+- **The attestation** — cryptographic proof of who ran what, on which hardware, with which code (ES256/EdDSA, post-quantum ready with ML-DSA-65/SLH-DSA-128s)
+- **The model hashes** — SHA-256 of every artifact produced
+
+Today the Grid is our own machines. Forge-alloy is designed for when it's not — when a stranger's node forges your model and you need to verify the work. The alloy is the receipt. The attestation is the trust. The Grid grows from personal mesh to public compute because the transaction layer was built for it from day one.
+
+**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [FORGE-ALLOY-SPEC.md](docs/architecture/FORGE-ALLOY-SPEC.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
 

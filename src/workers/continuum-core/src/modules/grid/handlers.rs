@@ -293,11 +293,7 @@ pub async fn handle_node_status(state: &Arc<GridState>, params: Value) -> Result
     // If nodeId targets a remote node, delegate via handle_send
     if let Some(nid) = node_id {
         if !nid.is_empty() {
-            // Check if this is us
-            let is_local = state.transports.iter().any(|t| {
-                t.local_address().map(|a| a.display_address().contains(nid)).unwrap_or(false)
-            });
-            if !is_local {
+            if !is_local_node(state, nid) {
                 let send_params = json!({
                     "nodeId": nid,
                     "remoteCommand": super::commands::NODE_STATUS,
@@ -329,7 +325,25 @@ pub async fn handle_node_status(state: &Arc<GridState>, params: Value) -> Result
 }
 
 /// grid/job-submit — write alloy to disk, start forge pipeline.
+/// If nodeId targets a remote node, delegates via grid/send.
 pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    // Remote delegation — route to target node if specified and not local
+    if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
+        if !nid.is_empty() {
+            if !is_local_node(state, nid) {
+                let send_params = json!({
+                    "nodeId": nid,
+                    "remoteCommand": super::commands::JOB_SUBMIT,
+                    "params": {
+                        "alloy": params.get("alloy"),
+                        "priority": params.get("priority"),
+                    }
+                });
+                return handle_send(state, send_params).await;
+            }
+        }
+    }
+
     let alloy = params.get("alloy")
         .ok_or("alloy parameter required")?;
     let priority = params.get("priority").and_then(|v| v.as_u64()).unwrap_or(5);
@@ -402,7 +416,25 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
 }
 
 /// grid/job-control — pause/resume/cancel a running job.
+/// If nodeId targets a remote node, delegates via grid/send.
 pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    // Remote delegation
+    if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
+        if !nid.is_empty() {
+            if !is_local_node(state, nid) {
+                let send_params = json!({
+                    "nodeId": nid,
+                    "remoteCommand": super::commands::JOB_CONTROL,
+                    "params": {
+                        "jobId": params.get("jobId"),
+                        "action": params.get("action"),
+                    }
+                });
+                return handle_send(state, send_params).await;
+            }
+        }
+    }
+
     let job_id = params.get("jobId").and_then(|v| v.as_str())
         .ok_or("jobId parameter required")?;
     let action = params.get("action").and_then(|v| v.as_str())
@@ -454,7 +486,25 @@ pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result
 }
 
 /// grid/job-queue — list jobs from filesystem.
+/// If nodeId targets a remote node, delegates via grid/send.
 pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+    // Remote delegation
+    if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
+        if !nid.is_empty() {
+            if !is_local_node(state, nid) {
+                let send_params = json!({
+                    "nodeId": nid,
+                    "remoteCommand": super::commands::JOB_QUEUE,
+                    "params": {
+                        "state": params.get("state"),
+                        "limit": params.get("limit"),
+                    }
+                });
+                return handle_send(state, send_params).await;
+            }
+        }
+    }
+
     let state_filter = params.get("state").and_then(|v| v.as_str()).unwrap_or("all");
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
@@ -504,35 +554,93 @@ pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<C
     })))
 }
 
+// ── Remote delegation helper ────────────────────────────────────────────
+
+/// Check if a nodeId refers to the local machine.
+fn is_local_node(state: &Arc<GridState>, node_id: &str) -> bool {
+    if node_id.is_empty() || node_id == "local" { return true; }
+    let hostname = gethostname();
+    if hostname.contains(node_id) || node_id.contains(&hostname) { return true; }
+    state.transports.iter().any(|t| {
+        t.local_address().map(|a| a.display_address().contains(node_id)).unwrap_or(false)
+    })
+}
+
 // ── Helper functions for job management ─────────────────────────────────
 
 fn query_gpu_info() -> Value {
-    // Try standard path first, then WSL2 path
+    // NVIDIA: Try WSL2 path first, then standard
     let nvidia_smi = if std::path::Path::new("/usr/lib/wsl/lib/nvidia-smi").exists() {
-        "/usr/lib/wsl/lib/nvidia-smi"
+        Some("/usr/lib/wsl/lib/nvidia-smi")
     } else {
-        "nvidia-smi"
+        // Check if nvidia-smi exists in PATH
+        std::process::Command::new("which").arg("nvidia-smi").output()
+            .ok().filter(|o| o.status.success()).map(|_| "nvidia-smi")
     };
 
-    let output = std::process::Command::new(nvidia_smi)
-        .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-               "--format=csv,noheader,nounits"])
-        .output();
+    if let Some(smi) = nvidia_smi {
+        let output = std::process::Command::new(smi)
+            .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                   "--format=csv,noheader,nounits"])
+            .output();
 
-    match output {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let parts: Vec<&str> = s.trim().split(',').map(|p| p.trim()).collect();
-            json!({
-                "name": parts.first().unwrap_or(&""),
-                "utilization": parts.get(1).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
-                "memoryUsedMb": parts.get(2).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
-                "memoryTotalMb": parts.get(3).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
-                "temperatureC": parts.get(4).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
-            })
+        if let Ok(o) = output {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let parts: Vec<&str> = s.trim().split(',').map(|p| p.trim()).collect();
+                return json!({
+                    "name": parts.first().unwrap_or(&""),
+                    "utilization": parts.get(1).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                    "memoryUsedMb": parts.get(2).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                    "memoryTotalMb": parts.get(3).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                    "temperatureC": parts.get(4).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
+                });
+            }
         }
-        _ => json!({ "name": "", "utilization": 0, "memoryUsedMb": 0, "memoryTotalMb": 0, "temperatureC": 0 }),
     }
+
+    // Apple Silicon: check for Metal GPU via system_profiler
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-json"])
+            .output();
+        if let Ok(o) = output {
+            if o.status.success() {
+                if let Ok(data) = serde_json::from_slice::<Value>(&o.stdout) {
+                    if let Some(gpu) = data.get("SPDisplaysDataType")
+                        .and_then(|v| v.as_array())
+                        .and_then(|a| a.first()) {
+                        let name = gpu.get("sppci_model").and_then(|v| v.as_str()).unwrap_or("Apple GPU");
+                        let vram = gpu.get("spdisplays_vram_shared")
+                            .or_else(|| gpu.get("spdisplays_vram"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.split_whitespace().next())
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .map(|gb| gb * 1024)
+                            .unwrap_or(0);
+                        return json!({
+                            "name": name,
+                            "utilization": 0,
+                            "memoryUsedMb": 0,
+                            "memoryTotalMb": vram,
+                            "temperatureC": 0,
+                            "type": "metal",
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    json!({
+        "name": "No GPU detected",
+        "utilization": 0,
+        "memoryUsedMb": 0,
+        "memoryTotalMb": 0,
+        "temperatureC": 0,
+        "type": "none",
+    })
 }
 
 fn query_forge_processes() -> Vec<Value> {
@@ -580,20 +688,77 @@ fn gethostname() -> String {
 }
 
 fn chrono_now_iso() -> String {
-    // Simple ISO 8601 without chrono dependency
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    // Return epoch millis as string — the TS side can format it
-    format!("{}Z", now.as_millis())
+    let secs = now.as_secs();
+    let millis = now.subsec_millis();
+    // Manual ISO 8601 without chrono dependency
+    let days_since_epoch = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    // Compute year/month/day from days since epoch (1970-01-01)
+    let (year, month, day) = days_to_ymd(days_since_epoch);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
+    days += 719468;
+    let era = days / 146097;
+    let doe = days - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 fn find_alloy_executor() -> Option<std::path::PathBuf> {
+    // 1. Explicit env var override (highest priority)
+    if let Ok(path) = std::env::var("ALLOY_EXECUTOR") {
+        let p = std::path::PathBuf::from(&path);
+        if p.exists() { return Some(p); }
+        eprintln!("[grid] ALLOY_EXECUTOR={path} does not exist");
+    }
+
+    // 2. Search relative to this binary (sibling sentinel-ai repo)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(base) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            let candidate = base.join("sentinel-ai/scripts/alloy_executor.py");
+            if candidate.exists() { return Some(candidate); }
+        }
+    }
+
+    // 3. Search common locations relative to HOME
+    let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("sentinel-ai/scripts/alloy_executor.py"),
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Development/cambrian/sentinel-ai/scripts/alloy_executor.py"),
+        "sentinel-ai/scripts/alloy_executor.py",
+        "Development/cambrian/sentinel-ai/scripts/alloy_executor.py",
+        "cambrian/sentinel-ai/scripts/alloy_executor.py",
+        ".continuum/sentinel-ai/scripts/alloy_executor.py",
     ];
-    candidates.into_iter().find(|p| p.exists())
+    for rel in &candidates {
+        let p = std::path::PathBuf::from(&home).join(rel);
+        if p.exists() { return Some(p); }
+    }
+
+    // 4. Search PATH for alloy_executor.py
+    if let Ok(output) = std::process::Command::new("which").arg("alloy_executor.py").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let p = std::path::PathBuf::from(&path);
+            if p.exists() { return Some(p); }
+        }
+    }
+
+    eprintln!("[grid] alloy_executor.py not found. Set ALLOY_EXECUTOR env var or install sentinel-ai.");
+    None
 }
 
 fn find_job_meta(jobs_dir: &std::path::Path, job_id: &str) -> Option<Value> {
