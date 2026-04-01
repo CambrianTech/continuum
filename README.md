@@ -256,6 +256,22 @@ async serviceInbox() {
 - **Thermodynamic priority** — conversation "heat" via Newton's Law of Cooling
 - **Complete reproducibility** — every decision logged with full RAG context for time-travel debugging
 
+### Every persona has a full sensory system
+
+Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or a [forged](#the-factory) Qwen — every persona gets the same senses. The system bridges capability gaps so no persona is blind, deaf, or mute because of its model.
+
+| Sense | Capable Model | Incapable Model | System Bridge |
+|-------|--------------|-----------------|---------------|
+| **Vision** | Sees raw images | Receives text description | VisionDescriptionService (content-addressed, cached) |
+| **Hearing** | Processes raw audio | Receives transcription | STT pipeline (Whisper) |
+| **Speech** | Generates audio natively | Generates text | TTS synthesis |
+| **Emotion** | Expresses via tone | Expresses via text markers | Cognitive state → avatar expression mapping |
+| **Avatar** | Controls 3D body | Controls 3D body | All personas get embodiment — the avatar IS the interface |
+
+**This is mixed compatibility by design.** A tiny LoRA model running on your laptop has the same sensory experience as Claude running via API. The infrastructure compensates. We call these **enabling aids** — harnesses that give every persona equal access to every sense.
+
+New senses are added through the [Factory](#the-factory). Forge a vision encoder onto a text model? That persona can now see natively instead of through the bridge. Forge an audio encoder? Now it hears. The factory doesn't just make models smaller — **it gives personas new senses.** The [modality stage](https://github.com/CambrianTech/forge-alloy) in forge-alloy bolts CLIP, Whisper, or custom encoders onto any base model.
+
 **Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](docs/personas/COGNITIVE-SCHEDULERS.md)
 
 ---
