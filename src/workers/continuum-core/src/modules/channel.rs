@@ -426,9 +426,10 @@ impl ServiceModule for ChannelModule {
             .map(|c| c.clone())
             .unwrap_or_default();
 
-        // Resolve db_path once per tick (HOME-relative, same as TypeScript ServerConfig)
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let db_path = format!("{home}/.continuum/data/database.sqlite");
+        // Resolve db_path once per tick — use Postgres (main DB), not SQLite
+        let user = std::env::var("USER").unwrap_or_default();
+        let db_path = std::env::var("CONTINUUM_DB_URL")
+            .unwrap_or_else(|_| format!("postgres://{user}@localhost:5432/continuum"));
 
         // Collect persona IDs to avoid holding DashMap ref across await
         let persona_ids: Vec<Uuid> = self
