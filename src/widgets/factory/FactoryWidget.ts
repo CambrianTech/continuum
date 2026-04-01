@@ -116,9 +116,12 @@ export class FactoryWidget extends ReactiveWidget {
     this.subscribeToForgeEvents();
     this.loadPublishedModels();
     this.startGridPolling();
-    this.configureRightPanel();
     this.listenForModelSelection();
   }
+
+  // Right panel is configured by the recipe system, not by this widget.
+  // factory.json declares: { "right": { "widgets": ["factory-stats-widget"] } }
+  // RightPanelWidget reads the recipe directly on content:switched.
 
   /** Listen for model selection and alloy loading from right panel */
   private listenForModelSelection(): void {
@@ -133,45 +136,17 @@ export class FactoryWidget extends ReactiveWidget {
       }),
       Events.subscribe('factory:alloy:load', (detail: { alloy: Record<string, unknown>; draftId?: string }) => {
         if (detail?.alloy) {
-          // Load alloy into forge controls — set base model and pipeline stages
           const controls = this.shadowRoot?.querySelector('forge-controls-element') as HTMLElement & { setBaseModel?: (id: string) => void };
           const source = detail.alloy.source as Record<string, unknown> | undefined;
           if (controls?.setBaseModel && source?.baseModel) {
             controls.setBaseModel(source.baseModel as string);
           }
-          // Pipeline stages will be loaded when pipeline composer supports it
         }
       }),
     ];
   }
 
   private _factoryUnsubs: Array<() => void> = [];
-
-  /** Tell the right panel what widget to show for the factory.
-   *  Emits on connect AND responds to right panel requests. */
-  private configureRightPanel(): void {
-    this.emitRightPanelConfig();
-    // If the right panel mounts after us, it will request config
-    this._rightPanelRequestUnsub = Events.subscribe('layout:rightpanel:request-config', () => {
-      this.emitRightPanelConfig();
-    });
-  }
-
-  private _rightPanelRequestUnsub?: () => void;
-
-  private emitRightPanelConfig(): void {
-    Events.emit('layout:rightpanel:configure', {
-      widget: 'factory-stats-widget',
-      contentType: 'factory',
-      sections: [{
-        id: 'factory-stats',
-        title: 'Models',
-        icon: '🏭',
-        widgetTag: 'factory-stats-widget',
-        flexWeight: 1,
-      }],
-    });
-  }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
