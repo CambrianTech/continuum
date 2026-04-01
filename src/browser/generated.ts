@@ -337,7 +337,7 @@ import { SettingsNavWidget } from './../widgets/settings-nav/SettingsNavWidget';
 import { SettingsAssistantWidget } from './../widgets/settings/SettingsAssistantWidget';
 import { SettingsWidget } from './../widgets/settings/SettingsWidget';
 import { PanelLayoutWidget } from './../widgets/shared/PanelLayoutWidget';
-import { ThemeWidget } from './../widgets/shared/ThemeWidget';
+import { UniverseWidget } from './../widgets/shared/UniverseWidget';
 import { SidebarWidget } from './../widgets/sidebar/SidebarWidget';
 import { TerminalWidget } from './../widgets/terminal/TerminalWidget';
 import { TrainingDashboardWidget } from './../widgets/training-dashboard/TrainingDashboardWidget';
@@ -2023,10 +2023,10 @@ export const BROWSER_WIDGETS: WidgetEntry[] = [
     tagName: 'PanelLayout'.replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase()) + '-widget'
   },
 {
-    name: 'Theme',
-    className: 'ThemeWidget',
-    widgetClass: ThemeWidget,
-    tagName: 'Theme'.replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase()) + '-widget'
+    name: 'Universe',
+    className: 'UniverseWidget',
+    widgetClass: UniverseWidget,
+    tagName: 'Universe'.replace(/([A-Z])/g, (match, p1, offset) => offset > 0 ? '-' + p1.toLowerCase() : p1.toLowerCase()) + '-widget'
   },
 {
     name: 'Sidebar',

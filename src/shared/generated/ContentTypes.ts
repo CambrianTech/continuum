@@ -11,7 +11,7 @@
  * All valid content type IDs — derived from recipe uniqueId fields.
  * Adding a new content type: create a recipe JSON, run the generator.
  */
-export type ContentType = 'academy-training' | 'ai-debate-club' | 'browser' | 'canvas' | 'chat' | 'coding' | 'creative-writing' | 'diagnostics-log' | 'diagnostics' | 'dm' | 'factory' | 'gan' | 'general-chat' | 'grid-overview' | 'help' | 'inference-sample' | 'live' | 'logs' | 'multi-persona-chat' | 'newsroom' | 'outreach' | 'persona' | 'profile' | 'research' | 'settings' | 'terminal' | 'theme' | 'training-dashboard';
+export type ContentType = 'academy-training' | 'ai-debate-club' | 'browser' | 'canvas' | 'chat' | 'coding' | 'creative-writing' | 'diagnostics-log' | 'diagnostics' | 'dm' | 'factory' | 'gan' | 'general-chat' | 'grid-overview' | 'help' | 'inference-sample' | 'live' | 'logs' | 'multi-persona-chat' | 'newsroom' | 'outreach' | 'persona' | 'profile' | 'research' | 'settings' | 'terminal' | 'training-dashboard' | 'universe';
 
 /**
  * All content type IDs as a runtime array (for validation, iteration).
@@ -43,8 +43,8 @@ export const CONTENT_TYPES: ContentType[] = [
     'research',
     'settings',
     'terminal',
-    'theme',
     'training-dashboard',
+    'universe',
 ];
 
 /**
@@ -297,20 +297,20 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         entityType: null,
         hasRightPanel: true,
     },
-    'theme': {
-        widget: 'theme-widget',
-        displayName: 'Theme',
-        icon: '🎨',
-        pathPrefix: '/theme',
-        requiresEntity: false,
-        entityType: null,
-        hasRightPanel: true,
-    },
     'training-dashboard': {
         widget: 'training-dashboard-widget',
         displayName: 'Training',
         icon: '🧪',
         pathPrefix: '/training-dashboard',
+        requiresEntity: false,
+        entityType: null,
+        hasRightPanel: true,
+    },
+    'universe': {
+        widget: 'universe-widget',
+        displayName: 'Universe',
+        icon: '📄',
+        pathPrefix: '/universe',
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,

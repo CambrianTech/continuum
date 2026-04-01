@@ -51,7 +51,7 @@ export const DEFAULT_ROOMS = {
   DEV_UPDATES: stringToUUID('Dev Updates') as UUID,
   HELP: stringToUUID('Help') as UUID,
   SETTINGS: stringToUUID('Settings') as UUID,
-  THEME: stringToUUID('Theme') as UUID,
+  UNIVERSE: stringToUUID('Universe') as UUID,
   CANVAS: stringToUUID('Canvas') as UUID,
   OUTREACH: stringToUUID('Outreach') as UUID,
   NEWSROOM: stringToUUID('Newsroom') as UUID,
@@ -68,7 +68,7 @@ export const DEFAULT_ROOMS = {
 export const SYSTEM_ROOM_IDS = new Set([
   DEFAULT_ROOMS.HELP,
   DEFAULT_ROOMS.SETTINGS,
-  DEFAULT_ROOMS.THEME,
+  DEFAULT_ROOMS.UNIVERSE,
   DEFAULT_ROOMS.CANVAS
 ]);
 

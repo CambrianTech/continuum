@@ -22,7 +22,7 @@ import * as WidgetUtils from './system/browser/WidgetUtils';
 // Import WidgetDiscovery for universal selector support
 import { WidgetDiscovery } from './system/core/browser/utils/WidgetIntrospection';
 
-// NOTE: ThemeWidget imported via BROWSER_WIDGETS registry - no need for direct import
+// NOTE: UniverseWidget imported via BROWSER_WIDGETS registry - no need for direct import
 
 export const jtag = {
   // Widget debugging utilities

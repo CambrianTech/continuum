@@ -130,7 +130,7 @@ export class HeaderControlsWidget extends ReactiveWidget {
           <button class="status-button" @click=${this.handleFactoryClick}>Factory</button>
           <button class="status-button" @click=${this.handleTrainingClick}>Training</button>
           <button class="status-button" @click=${this.handleGridClick}>Grid</button>
-          <button class="status-button" @click=${this.handleThemeClick}>Theme</button>
+          <button class="status-button" @click=${this.handleUniverseClick}>Universe</button>
           <button class="status-button" @click=${this.handleSettingsClick}>Settings</button>
           <button class="status-button" @click=${this.handleBrowserClick}>Browser</button>
           <button class="status-button" @click=${this.handleHelpClick}>Help</button>
@@ -156,9 +156,9 @@ export class HeaderControlsWidget extends ReactiveWidget {
     this.dispatchEvent(new CustomEvent('factory-clicked', { bubbles: true, composed: true }));
   };
 
-  private handleThemeClick = (): void => {
-    Events.emit('header:theme-clicked', {});
-    this.dispatchEvent(new CustomEvent('theme-clicked', {
+  private handleUniverseClick = (): void => {
+    Events.emit('header:universe-clicked', {});
+    this.dispatchEvent(new CustomEvent('universe-clicked', {
       bubbles: true,
       composed: true
     }));

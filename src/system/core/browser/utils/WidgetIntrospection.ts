@@ -35,7 +35,7 @@ export interface EventSystemInfo {
  * Core widget discovery utilities
  */
 export class WidgetDiscovery {
-  private static readonly WIDGET_CONTAINERS = ['sidebar-widget', 'main-widget', 'theme-widget'];
+  private static readonly WIDGET_CONTAINERS = ['sidebar-widget', 'main-widget', 'universe-widget'];
 
   /**
    * Get all available widget containers with their shadow roots

@@ -286,7 +286,7 @@ async function getAvailableThemes(jtagClient: JTAGClient): Promise<ThemeInfo[]> 
         } else {
           // Fallback to checking theme dropdown
           const themeSelector = document.querySelector('#theme-selector') || 
-                               document.querySelector('theme-widget select') ||
+                               document.querySelector('universe-widget select') ||
                                document.querySelector('[id*="theme"] select');
           
           if (themeSelector && themeSelector.options) {
@@ -342,22 +342,22 @@ async function switchToTheme(jtagClient: JTAGClient, themeName: string): Promise
         let success = false;
         let method = 'none';
         
-        // Method 1: Use ThemeWidget setTheme method
-        const themeWidget = document.querySelector('theme-widget');
+        // Method 1: Use UniverseWidget setTheme method
+        const themeWidget = document.querySelector('universe-widget');
         if (themeWidget && typeof themeWidget.setTheme === 'function') {
           try {
             await themeWidget.setTheme('${themeName}');
             success = true;
-            method = 'ThemeWidget.setTheme';
+            method = 'UniverseWidget.setTheme';
           } catch (e) {
-            console.warn('ThemeWidget.setTheme failed:', e);
+            console.warn('UniverseWidget.setTheme failed:', e);
           }
         }
         
         // Method 2: Use theme selector dropdown
         if (!success) {
           const themeSelector = document.querySelector('#theme-selector') || 
-                               document.querySelector('theme-widget select') ||
+                               document.querySelector('universe-widget select') ||
                                document.querySelector('[id*="theme"] select');
           
           if (themeSelector) {
@@ -371,7 +371,7 @@ async function switchToTheme(jtagClient: JTAGClient, themeName: string): Promise
               
               // Also trigger click on Apply button if available
               const applyButton = document.querySelector('#apply-theme') ||
-                                 document.querySelector('theme-widget button') ||
+                                 document.querySelector('universe-widget button') ||
                                  document.querySelector('[id*="apply"]');
               if (applyButton) {
                 applyButton.click();
@@ -398,7 +398,7 @@ async function switchToTheme(jtagClient: JTAGClient, themeName: string): Promise
           success: success, 
           method: method,
           availableSelectors: {
-            themeWidget: !!document.querySelector('theme-widget'),
+            themeWidget: !!document.querySelector('universe-widget'),
             themeSelector: !!document.querySelector('#theme-selector'),
             themeSelectAny: !!document.querySelector('[id*="theme"] select'),
             applyButton: !!document.querySelector('#apply-theme')

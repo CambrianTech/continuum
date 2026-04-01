@@ -18,10 +18,11 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 </table>
 
 <p align="center">
-<a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a>
+<a href="#the-grid"><strong>Grid</strong></a> · <a href="#the-factory"><strong>Factory</strong></a> · <a href="#autonomous-personas"><strong>Personas</strong></a> · <a href="#genomic-intelligence"><strong>Genome</strong></a> · <a href="#sentinel-engine"><strong>Sentinels</strong></a> · <a href="https://github.com/CambrianTech/forge-alloy"><strong>Forge-Alloy</strong></a> · <a href="https://huggingface.co/continuum-ai"><strong>Models</strong></a>
 </p>
 
 <p align="center">
+<a href="https://huggingface.co/continuum-ai"><img src="https://img.shields.io/badge/HuggingFace-continuum--ai-yellow.svg" alt="HuggingFace"/></a>
 <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
 <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
 <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-nightly-orange.svg" alt="Rust"/></a>

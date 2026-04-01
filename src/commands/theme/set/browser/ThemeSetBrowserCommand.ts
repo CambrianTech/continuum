@@ -33,7 +33,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       // Get current theme before switching
       const previousTheme = await this.getCurrentTheme();
       
-      // COPY THE WORKING THEME SWITCHING CODE FROM ThemeWidget.setTheme()
+      // COPY THE WORKING THEME SWITCHING CODE FROM UniverseWidget.setTheme()
       await this.setThemeDirectly(themeName, params);
       
       return createThemeSetResult(params.context, params.sessionId, {
@@ -59,23 +59,23 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   }
 
   /**
-   * Theme switching with persistence - delegate to ThemeWidget if available, otherwise use persistence logic
+   * Theme switching with persistence - delegate to UniverseWidget if available, otherwise use persistence logic
    */
   private async setThemeDirectly(themeName: string, params: ThemeSetParams): Promise<void> {
     console.log(`🎨 ThemeSetBrowser: Setting theme '${themeName}' with persistence`);
 
     try {
-      // Try to delegate to existing ThemeWidget
-      const themeWidget = document.querySelector('theme-widget') as HTMLElement & { setTheme?: (name: string) => Promise<void> } | null;
+      // Try to delegate to existing UniverseWidget
+      const themeWidget = document.querySelector('universe-widget') as HTMLElement & { setTheme?: (name: string) => Promise<void> } | null;
       if (themeWidget && typeof themeWidget.setTheme === 'function') {
-        console.log('🎨 ThemeSetBrowser: Delegating to ThemeWidget (includes persistence)');
+        console.log('🎨 ThemeSetBrowser: Delegating to UniverseWidget (includes persistence)');
         await themeWidget.setTheme(themeName);
-        console.log('✅ ThemeSetBrowser: Theme set via ThemeWidget delegation');
+        console.log('✅ ThemeSetBrowser: Theme set via UniverseWidget delegation');
         return;
       }
 
       // Fallback - apply theme AND save to UserState for persistence
-      console.log('🎨 ThemeSetBrowser: No ThemeWidget found, applying theme with persistence');
+      console.log('🎨 ThemeSetBrowser: No UniverseWidget found, applying theme with persistence');
 
       // 1. Load and apply CSS
       const baseCSS = await this.loadThemeFile('base/theme.css');
@@ -84,7 +84,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       const combinedCSS = baseCSS + '\n' + themeCSS;
       this.injectCSS(combinedCSS, themeName);
 
-      // 2. Save theme preference to UserState for persistence (same logic as ThemeWidget)
+      // 2. Save theme preference to UserState for persistence (same logic as UniverseWidget)
       await this.saveThemeToUserState(themeName);
 
       console.log(`✅ ThemeSetBrowser: Theme '${themeName}' applied and saved to UserState`);
@@ -138,15 +138,15 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   
   private async getCurrentTheme(): Promise<string | undefined> {
     try {
-      // Try to get current theme from ThemeWidget
-      const themeWidget = document.querySelector('theme-widget') as HTMLElement & { getCurrentTheme?: () => string } | null;
+      // Try to get current theme from UniverseWidget
+      const themeWidget = document.querySelector('universe-widget') as HTMLElement & { getCurrentTheme?: () => string } | null;
       if (themeWidget && typeof themeWidget.getCurrentTheme === 'function') {
         return themeWidget.getCurrentTheme();
       }
       
       // Try to get from theme selector
       const themeSelector = document.querySelector('#theme-selector') as HTMLSelectElement ||
-                           document.querySelector('theme-widget select') as HTMLSelectElement;
+                           document.querySelector('universe-widget select') as HTMLSelectElement;
       
       if (themeSelector && themeSelector.value) {
         return themeSelector.value;
@@ -170,7 +170,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
 
   /**
    * Save theme preference to UserState for persistence
-   * (Same logic as ThemeWidget - prototype for future State.save<EntityType>())
+   * (Same logic as UniverseWidget - prototype for future State.save<EntityType>())
    */
   private async saveThemeToUserState(themeName: string): Promise<void> {
     try {

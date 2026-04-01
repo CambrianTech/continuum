@@ -66,7 +66,7 @@ export class LocalStorageStateManager {
   private static readonly VERSION = 1;
 
   /**
-   * Get the current anonymous user ID (consistent with ThemeWidget approach)
+   * Get the current anonymous user ID (consistent with UniverseWidget approach)
    */
   private static getAnonymousUserId(): UUID {
     return stringToUUID('anonymous');

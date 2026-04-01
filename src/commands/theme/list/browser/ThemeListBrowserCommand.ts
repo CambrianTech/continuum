@@ -79,7 +79,7 @@ export class ThemeListBrowserCommand {
       
       // Method 2: Get from theme selector dropdown
       const themeSelector = document.querySelector('#theme-selector') as HTMLSelectElement ||
-                           document.querySelector('theme-widget select') as HTMLSelectElement;
+                           document.querySelector('universe-widget select') as HTMLSelectElement;
       
       if (themeSelector && themeSelector.options) {
         const themes: string[] = [];
@@ -203,8 +203,8 @@ export class ThemeListBrowserCommand {
   
   private async getCurrentTheme(): Promise<string> {
     try {
-      // Try ThemeWidget first
-      const themeWidget = document.querySelector('theme-widget') as any;
+      // Try UniverseWidget first
+      const themeWidget = document.querySelector('universe-widget') as any;
       if (themeWidget && typeof themeWidget.getCurrentTheme === 'function') {
         const theme = themeWidget.getCurrentTheme();
         if (theme) return theme;
@@ -212,7 +212,7 @@ export class ThemeListBrowserCommand {
       
       // Try dropdown selector
       const themeSelector = document.querySelector('#theme-selector') as HTMLSelectElement ||
-                           document.querySelector('theme-widget select') as HTMLSelectElement;
+                           document.querySelector('universe-widget select') as HTMLSelectElement;
       
       if (themeSelector && themeSelector.value) {
         return themeSelector.value;

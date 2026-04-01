@@ -42,7 +42,7 @@ export interface JTAGWindowProperties {
   /** Debug verbosity flag */
   JTAG_VERBOSE?: boolean;
 
-  /** Theme registry singleton (set by ThemeWidget init) */
+  /** Theme registry singleton (set by UniverseWidget init) */
   ThemeRegistry?: { themes?: Map<string, unknown>; currentTheme?: string; [key: string]: unknown };
 
   /** Monaco editor instance (if loaded) */
