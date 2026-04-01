@@ -507,7 +507,14 @@ pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<C
 // ── Helper functions for job management ─────────────────────────────────
 
 fn query_gpu_info() -> Value {
-    let output = std::process::Command::new("nvidia-smi")
+    // Try standard path first, then WSL2 path
+    let nvidia_smi = if std::path::Path::new("/usr/lib/wsl/lib/nvidia-smi").exists() {
+        "/usr/lib/wsl/lib/nvidia-smi"
+    } else {
+        "nvidia-smi"
+    };
+
+    let output = std::process::Command::new(nvidia_smi)
         .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
                "--format=csv,noheader,nounits"])
         .output();
