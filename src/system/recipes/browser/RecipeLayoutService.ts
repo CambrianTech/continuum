@@ -189,12 +189,31 @@ export class RecipeLayoutService {
         return null; // No right panel widgets = hidden
       }
 
-      const firstRight = rightWidgets[0];
+      // Build sections from all right widgets — each widget becomes a section
+      const sections = rightWidgets.map((w) => {
+        // Convert config to string props for the section
+        const props: Record<string, string> = {};
+        if (w.config) {
+          for (const [k, v] of Object.entries(w.config)) {
+            if (typeof v === 'string') props[k] = v;
+            else if (typeof v === 'boolean' && v) props[k] = '';
+          }
+        }
+        return {
+          id: (w.config?.sectionId as string) || w.widget,
+          title: (w.config?.sectionTitle as string) || w.widget.replace(/-widget$/, '').replace(/-/g, ' '),
+          icon: (w.config?.sectionIcon as string) || undefined,
+          widgetTag: w.widget,
+          props,
+          flexWeight: (w.config?.flexWeight as number) || 1,
+        };
+      });
+
       return {
-        widget: firstRight.widget,
-        room: firstRight.config?.room as string | undefined,
-        compact: firstRight.config?.compact as boolean | undefined,
-        ...firstRight.config
+        widget: rightWidgets[0].widget,
+        room: rightWidgets[0].config?.room as string | undefined,
+        compact: rightWidgets[0].config?.compact as boolean | undefined,
+        sections,
       };
     }
 

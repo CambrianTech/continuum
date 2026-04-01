@@ -394,6 +394,18 @@ export interface RightPanelConfig {
 
   /** Widget-specific configuration */
   config?: Record<string, unknown>;
+
+  /** IDE-style sections — each right widget becomes a section */
+  sections?: Array<{
+    id: string;
+    title: string;
+    icon?: string;
+    widgetTag: string;
+    props?: Record<string, string>;
+    collapsedByDefault?: boolean;
+    flexWeight?: number;
+    popOutContentType?: string;
+  }>;
 }
 
 /**

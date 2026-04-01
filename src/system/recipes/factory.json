@@ -6,10 +6,10 @@
   "version": 2,
 
   "layout": {
-    "main": ["factory-widget"],
-    "right": {
-      "widgets": ["factory-stats-widget"]
-    }
+    "widgets": [
+      { "widget": "factory-widget", "position": "center", "order": 0 },
+      { "widget": "factory-stats-widget", "position": "right", "order": 0, "config": { "sectionTitle": "Models", "sectionIcon": "M" } }
+    ]
   },
 
   "pipeline": [

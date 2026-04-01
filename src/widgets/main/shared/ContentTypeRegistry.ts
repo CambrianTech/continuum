@@ -20,12 +20,9 @@ import type { RightPanelSectionPayload } from '../../../system/core/shared/Event
 
 export type RightPanelSection = RightPanelSectionPayload;
 
-export interface RightPanelConfig {
-    widget?: string;
-    room?: string;
-    compact?: boolean;
-    sections?: RightPanelSection[];
-}
+// Single source of truth for RightPanelConfig — from RecipeTypes
+import type { RightPanelConfig as _RightPanelConfig } from '../../../system/recipes/shared/RecipeTypes';
+export type RightPanelConfig = _RightPanelConfig;
 
 // Re-export generated types for consumers
 export { ContentType, ContentTypeConfig, isContentType, CONTENT_TYPE_CONFIGS };
