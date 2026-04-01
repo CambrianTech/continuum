@@ -17,6 +17,7 @@ import {
 import { nothing } from 'lit';
 import { styles as FORGE_CONTROLS_STYLES } from './public/forge-controls.styles';
 import './stages/PipelineComposer';
+import './DeviceTargetElement';
 
 /** Forge profiles — presets for common configurations */
 const FORGE_PROFILES: Record<string, { prune: number; cycles: number; lr: string; steps: number; label: string; risk: string }> = {
@@ -421,6 +422,7 @@ export class ForgeControlsElement extends ReactiveWidget {
         <pipeline-composer
           @pipeline-change=${(e: CustomEvent) => this._pipelineStages = e.detail as Record<string, unknown>[]}
         ></pipeline-composer>
+        <device-target-element></device-target-element>
       </div>
     `;
   }
