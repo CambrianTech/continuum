@@ -19,10 +19,10 @@ import {
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Events } from '../../system/core/shared/Events';
 import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
-// UI_EVENTS removed — right panel reads recipes directly, no emit needed
+import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
-import { getWidgetForType, buildContentPath, parseContentPath, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
+import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { RoutingService } from '../../system/routing/RoutingService';
@@ -100,8 +100,21 @@ export class MainWidget extends ReactiveWidget {
     // Initialize content tabs
     await this.initializeContentTabs();
 
-    // Right panel reads its own config from the recipe system on content:switched.
-    // No need to emit RIGHT_PANEL_CONFIGURE from here — panels are self-sufficient.
+    // Re-emit right panel config now that BOTH recipes and content tabs are loaded.
+    // Fixes race: content tab may have rendered before recipes were available,
+    // so the right panel got null instead of the recipe's config.
+    // Re-emit right panel for ALL active content tabs, not just the current one.
+    // The initial render may have happened before recipes loaded.
+    if (this.currentViewType) {
+      const rightPanelConfig = getRightPanelConfig(this.currentViewType);
+      Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+        widget: rightPanelConfig?.widget || null,
+        room: rightPanelConfig?.room,
+        compact: rightPanelConfig?.compact,
+        contentType: this.currentViewType,
+        sections: rightPanelConfig?.sections,
+      });
+    }
 
     // Listen to header controls events
     this.setupHeaderControlsListeners();
@@ -340,8 +353,15 @@ export class MainWidget extends ReactiveWidget {
       }
     }
 
-    // Right panel reads its own config from recipe system on content:switched.
-    // No RIGHT_PANEL_CONFIGURE emit needed — panels are self-sufficient.
+    // Emit right panel configuration
+    const rightPanelConfig = getRightPanelConfig(contentType);
+    Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+      widget: rightPanelConfig?.widget || null,
+      room: rightPanelConfig?.room,
+      compact: rightPanelConfig?.compact,
+      contentType: contentType,
+      sections: rightPanelConfig?.sections,
+    });
 
     // Emit Positron widget state
     PositronWidgetState.emit({
@@ -350,6 +370,7 @@ export class MainWidget extends ReactiveWidget {
       title: entityId ? `${contentType} - ${entityId}` : contentType,
       metadata: {
         widget: widgetTag,
+        rightPanelRoom: rightPanelConfig?.room
       }
     });
 
