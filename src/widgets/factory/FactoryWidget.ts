@@ -485,6 +485,9 @@ export class FactoryWidget extends ReactiveWidget {
 
     if (!hasJobs) return html``;
 
+    const deadJobs = this._gridJobs.filter(j => j.state === 'failed' || j.state === 'completed' || j.state === 'cancelled');
+    const liveJobs = this._gridJobs.filter(j => j.state === 'running' || j.state === 'queued' || j.state === 'paused');
+
     return html`
       <div class="grid-jobs">
         <div class="jobs-header">
@@ -492,31 +495,52 @@ export class FactoryWidget extends ReactiveWidget {
           ${this._gridJobSummary.queued > 0 ? html`<span class="jc queued">${this._gridJobSummary.queued} queued</span>` : nothing}
           ${this._gridJobSummary.paused > 0 ? html`<span class="jc paused">${this._gridJobSummary.paused} paused</span>` : nothing}
           ${this._gridJobSummary.completed > 0 ? html`<span class="jc completed">${this._gridJobSummary.completed} done</span>` : nothing}
+          ${deadJobs.length > 0 ? html`
+            <button class="jc-clear" @click=${() => this.clearDeadJobs()}>Clear ${deadJobs.length} finished</button>
+          ` : nothing}
         </div>
-        ${this._gridJobs.map(job => html`
-          <div class="job-row ${job.state}">
-            <div class="job-info">
-              <span class="job-name">${job.alloyName}</span>
-              <span class="job-state-badge">${job.state}</span>
-              ${job.progress?.totalSteps > 0 ? html`
-                <span class="job-progress">${job.progress.step}/${job.progress.totalSteps}</span>
-              ` : nothing}
-              ${job.startedAt ? html`<span class="job-time">${this.formatRelativeTime(job.startedAt)}</span>` : nothing}
-            </div>
-            <div class="job-actions">
-              ${job.state === 'running' ? html`
-                <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'pause')} title="Pause">&#9208;</button>
-                <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
-              ` : nothing}
-              ${job.state === 'paused' ? html`
-                <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'resume')} title="Resume">&#9654;</button>
-                <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
-              ` : nothing}
-            </div>
-          </div>
-        `)}
+        ${liveJobs.map(job => this.renderJobRow(job))}
+        ${deadJobs.map(job => this.renderJobRow(job))}
       </div>
     `;
+  }
+
+  private renderJobRow(job: GridJobEntry): TemplateResult {
+    return html`
+      <div class="job-row ${job.state}">
+        <div class="job-info">
+          <span class="job-name">${job.alloyName}</span>
+          <span class="job-state-badge">${job.state}</span>
+          ${job.progress?.totalSteps > 0 ? html`
+            <span class="job-progress">${job.progress.step}/${job.progress.totalSteps}</span>
+          ` : nothing}
+          ${job.startedAt ? html`<span class="job-time">${this.formatRelativeTime(job.startedAt)}</span>` : nothing}
+        </div>
+        <div class="job-actions">
+          ${job.state === 'running' ? html`
+            <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'pause')} title="Pause">&#9208;</button>
+            <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+          ${job.state === 'paused' ? html`
+            <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'resume')} title="Resume">&#9654;</button>
+            <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
+          ` : nothing}
+          ${job.state === 'failed' || job.state === 'completed' || job.state === 'cancelled' ? html`
+            <button class="job-btn cancel" @click=${() => this.dismissJob(job.jobId)} title="Dismiss">&#10005;</button>
+          ` : nothing}
+        </div>
+      </div>
+    `;
+  }
+
+  private dismissJob(jobId: string): void {
+    this._gridJobs = this._gridJobs.filter(j => j.jobId !== jobId);
+  }
+
+  private clearDeadJobs(): void {
+    this._gridJobs = this._gridJobs.filter(j =>
+      j.state === 'running' || j.state === 'queued' || j.state === 'paused'
+    );
   }
 
   private formatRelativeTime(iso: string): string {

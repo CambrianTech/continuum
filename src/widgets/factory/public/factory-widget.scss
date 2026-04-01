@@ -196,6 +196,25 @@
   &.completed { background: rgba(0, 255, 136, 0.1); color: $color-success; }
 }
 
+.jc-clear {
+  font-size: $font-size-sm;
+  padding: 2px 8px;
+  border-radius: $border-radius-md;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--content-secondary, #8a92a5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  margin-left: auto;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(255, 68, 68, 0.15);
+    border-color: $color-error;
+    color: $color-error;
+  }
+}
+
 .job-row {
   display: flex;
   align-items: center;
