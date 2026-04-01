@@ -218,6 +218,11 @@ export class RightPanelWidget extends ReactiveWidget {
       return () => unsubs.forEach(u => u());
     });
 
+    // Also try to load config for current content type right now
+    // (in case content:switched already fired before we subscribed)
+    const currentPath = window.location.pathname.split('/').filter(Boolean)[0] || 'chat';
+    this._loadConfigForContentType(currentPath);
+
     this.log('Initialized with accordion layout');
   }
 
