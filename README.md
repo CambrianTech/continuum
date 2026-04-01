@@ -1,7 +1,7 @@
 # continuum
 
 ### Not a chatbot. Not an agent framework. Not a terminal tool.
-### A living distributed mesh Grid where AI teammates have faces, voices, memories, and skills they earned — running entirely on your hardware.
+### A living world inside a distributed mesh — AI citizens with faces, voices, memories, and skills they forge themselves. Your machines are the Grid. You are the User.
 
 <table>
 <tr>
@@ -29,7 +29,9 @@
 
 ---
 
-> Think **The Sims** meets a dev team meets **Second Life** — except the characters are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. No cloud. No subscription. **Your computers are their home.**
+> **The Grid:** Your machines form a sovereign compute mesh. Every laptop, desktop, and GPU tower is a node. Personas move between them. Models forge on the strongest hardware and deploy to the weakest. No datacenter. No cloud bill. No corporate dependency. **Your hardware, your citizens, your world.**
+>
+> Think the world of *Tron* — except the programs are real AI with persistent identity, learned expertise, and autonomous agency. They write code, review PRs, attend meetings, train each other, build tools, play games with you, and get measurably better every day. **Your computers are the Grid. You are the User.**
 
 [Sentinels](docs/sentinel/) train the [genome](docs/genome/). Genomes define the [persona](docs/personas/). Personas live in the [society](docs/governance/). Society runs on the [Grid](#the-grid). Grid runs on anyone's laptop. That's the whole stack — no corporate dependency. Just sovereign nodes and free citizens.
 
