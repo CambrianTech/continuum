@@ -323,15 +323,32 @@ export class ForgeControlsElement extends ReactiveWidget {
               .value=${this._model}
               @input=${(e: Event) => this.onModelInput((e.target as HTMLInputElement).value)}>
             <datalist id="model-list">
-              <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB fp16)</option>
-              <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB fp16)</option>
-              <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB, 4-bit)</option>
-              <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE (49GB)</option>
-              <option value="meta-llama/Llama-3.1-8B">Llama 3.1 8B</option>
-              <option value="meta-llama/Llama-3.1-70B">Llama 3.1 70B</option>
-              <option value="mistralai/Mistral-7B-v0.3">Mistral 7B v0.3</option>
-              <option value="google/gemma-2-9b">Gemma 2 9B</option>
-              <option value="microsoft/phi-3-mini-4k-instruct">Phi 3 Mini 4K</option>
+              <optgroup label="Qwen 3.5 (recommended)">
+                <option value="Qwen/Qwen3.5-4B">Qwen3.5-4B (8GB)</option>
+                <option value="Qwen/Qwen3.5-14B">Qwen3.5-14B (28GB)</option>
+                <option value="Qwen/Qwen3.5-27B">Qwen3.5-27B (54GB)</option>
+                <option value="Qwen/Qwen3.5-35B-A3B">Qwen3.5-35B-A3B MoE</option>
+              </optgroup>
+              <optgroup label="Qwen 3">
+                <option value="Qwen/Qwen3-0.6B">Qwen3-0.6B</option>
+                <option value="Qwen/Qwen3-1.7B">Qwen3-1.7B</option>
+                <option value="Qwen/Qwen3-4B">Qwen3-4B</option>
+                <option value="Qwen/Qwen3-8B">Qwen3-8B</option>
+              </optgroup>
+              <optgroup label="Llama">
+                <option value="meta-llama/Llama-3.1-8B-Instruct">Llama 3.1 8B Instruct</option>
+                <option value="meta-llama/Llama-3.2-3B-Instruct">Llama 3.2 3B Instruct</option>
+              </optgroup>
+              <optgroup label="Our forged models">
+                <option value="continuum-ai/qwen3.5-4b-code-forged">qwen3.5-4b-code-forged (+22.7%)</option>
+                <option value="continuum-ai/qwen3.5-35b-a3b-compacted">qwen3.5-35b-a3b-compacted</option>
+                <option value="continuum-ai/qwen2.5-coder-14b-compacted">qwen2.5-coder-14b-compacted</option>
+              </optgroup>
+              <optgroup label="Other popular">
+                <option value="mistralai/Mistral-7B-v0.3">Mistral 7B v0.3</option>
+                <option value="google/gemma-2-9b">Gemma 2 9B</option>
+                <option value="microsoft/phi-3-mini-4k-instruct">Phi 3 Mini 4K</option>
+              </optgroup>
             </datalist>
             <span class="control-hint">Any HuggingFace model — validates on typing</span>
           </div>
