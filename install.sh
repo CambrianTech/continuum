@@ -1,240 +1,186 @@
 #!/bin/bash
-# Continuum — Cross-platform installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/install.sh | bash
-# Or:    ./install.sh (from repo root)
+# Continuum — One-command installer
+# Usage: curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
 #
-# Installs all prerequisites, builds the system, and starts it.
-# Works on macOS (ARM + Intel) and Linux (Ubuntu/Debian, WSL2).
-# Zero API keys required — local inference works out of the box.
+# Docker-first: pulls pre-built images, no compilation needed.
+# Optional: Tailscale for mesh networking + TLS (voice/video).
 set -e
 
-echo "🧬 Continuum Installer"
-echo "======================"
+info()  { echo -e "\033[1;36m→\033[0m $*"; }
+ok()    { echo -e "\033[1;32m✓\033[0m $*"; }
+warn()  { echo -e "\033[1;33m!\033[0m $*"; }
+fail()  { echo -e "\033[1;31m✗\033[0m $*"; exit 1; }
+
+REPO="https://github.com/CambrianTech/continuum.git"
+INSTALL_DIR="${CONTINUUM_DIR:-$HOME/continuum}"
+CONTINUUM_DATA="$HOME/.continuum"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Continuum Installer"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ─── Platform Detection ─────────────────────────────────────────────
+# ── 1. Detect environment ───────────────────────────────────
+info "Detecting environment..."
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-IS_WSL=false
-IS_MAC=false
-IS_LINUX=false
+HAS_GPU=false
 
 case "$OS" in
-    Darwin) IS_MAC=true ;;
-    Linux)
-        IS_LINUX=true
-        if grep -qi microsoft /proc/version 2>/dev/null; then
-            IS_WSL=true
-        fi
-        ;;
-    *)
-        echo "❌ Unsupported OS: $OS"
-        echo "   Continuum supports macOS and Linux (including WSL2)"
-        exit 1
-        ;;
+  Linux)
+    if command -v nvidia-smi &>/dev/null || [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
+      HAS_GPU=true
+      GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "NVIDIA GPU")
+      ok "GPU detected: $GPU_NAME"
+    fi
+    ;;
+  Darwin)
+    ok "macOS $ARCH"
+    ;;
+  *) fail "Unsupported OS: $OS" ;;
 esac
 
-echo "📋 Platform: $OS ($ARCH)$([ "$IS_WSL" = true ] && echo ' [WSL2]')"
-echo ""
-
-# ─── Helper: install a package ──────────────────────────────────────
-install_pkg() {
-    local pkg="$1"
-    local name="${2:-$pkg}"
-
-    if command -v "$pkg" &>/dev/null; then
-        echo "  ✅ $name: $(command -v $pkg)"
-        return 0
-    fi
-
-    echo "  📦 Installing $name..."
-    if [ "$IS_MAC" = true ]; then
-        brew install "$pkg" 2>/dev/null || { echo "  ❌ Failed to install $name via brew"; return 1; }
-    elif [ "$IS_LINUX" = true ]; then
-        sudo apt-get install -y "$pkg" 2>/dev/null || sudo dnf install -y "$pkg" 2>/dev/null || {
-            echo "  ❌ Failed to install $name (tried apt + dnf)"
-            return 1
-        }
-    fi
-    echo "  ✅ $name: installed"
-}
-
-# ─── Step 1: System Prerequisites ───────────────────────────────────
-echo "📋 Step 1: Checking prerequisites"
-echo "----------------------------------"
-
-# Homebrew (macOS only)
-if [ "$IS_MAC" = true ] && ! command -v brew &>/dev/null; then
-    echo "  📦 Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# ── 2. Docker ───────────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+  info "Docker not found"
+  case "$OS" in
+    Linux)
+      info "Installing Docker..."
+      curl -fsSL https://get.docker.com | sh
+      sudo usermod -aG docker "$USER"
+      warn "Added $USER to docker group — log out and back in, then re-run this script"
+      exit 0
+      ;;
+    Darwin)
+      fail "Install Docker Desktop (https://docker.com/products/docker-desktop) or Rancher Desktop (https://rancherdesktop.io) and re-run"
+      ;;
+  esac
 fi
 
-# Node.js
-if ! command -v node &>/dev/null; then
-    echo "  📦 Installing Node.js..."
-    if [ "$IS_MAC" = true ]; then
-        brew install node
-    else
-        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-        sudo apt-get install -y nodejs
-    fi
-fi
-echo "  ✅ Node.js: $(node --version)"
-
-# Rust
-if ! command -v rustc &>/dev/null; then
-    echo "  📦 Installing Rust..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
-fi
-echo "  ✅ Rust: $(rustc --version | awk '{print $2}')"
-
-# Git (should exist but check)
-if ! command -v git &>/dev/null; then
-    install_pkg git "Git"
-fi
-echo "  ✅ Git: $(git --version | awk '{print $3}')"
-
-# Build essentials (Linux only — needed for Rust native deps)
-if [ "$IS_LINUX" = true ]; then
-    NEED_BUILD_DEPS=false
-    for dep in gcc g++ make pkg-config; do
-        if ! command -v "$dep" &>/dev/null; then
-            NEED_BUILD_DEPS=true
-            break
-        fi
-    done
-    if [ "$NEED_BUILD_DEPS" = true ]; then
-        echo "  📦 Installing build essentials..."
-        sudo apt-get install -y build-essential pkg-config libssl-dev 2>/dev/null || \
-        sudo dnf groupinstall -y "Development Tools" 2>/dev/null || \
-        echo "  ⚠️  Could not install build tools. Rust compilation may fail."
-    else
-        echo "  ✅ Build tools: installed"
-    fi
+if ! docker info &>/dev/null 2>&1; then
+  fail "Docker installed but not running. Start Docker Desktop/Rancher Desktop and re-run."
 fi
 
-# PostgreSQL
-if ! command -v psql &>/dev/null; then
-    echo "  📦 Installing PostgreSQL..."
-    if [ "$IS_MAC" = true ]; then
-        brew install postgresql@16 2>/dev/null && brew services start postgresql@16 2>/dev/null
-    elif [ "$IS_LINUX" = true ]; then
-        sudo apt-get install -y postgresql postgresql-contrib 2>/dev/null || \
-        sudo dnf install -y postgresql-server postgresql-contrib 2>/dev/null
-        # Start PostgreSQL service
-        sudo systemctl start postgresql 2>/dev/null || sudo service postgresql start 2>/dev/null || true
-        # Create user if needed (non-fatal — user may need to configure manually)
-        sudo -u postgres createuser --superuser "$USER" 2>/dev/null || true
-        sudo -u postgres createdb "$USER" 2>/dev/null || true
-    fi
-fi
-if command -v psql &>/dev/null; then
-    echo "  ✅ PostgreSQL: $(psql --version | awk '{print $3}')"
-    # Create the continuum database if it doesn't exist
-    if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
-        echo "  📦 Creating 'continuum' database..."
-        createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || \
-            echo "  ⚠️  Could not create database. Run manually: createdb continuum"
-    fi
+ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
+
+# ── 3. Clone / update repo ─────────────────────────────────
+if [ -d "$INSTALL_DIR/.git" ]; then
+  info "Updating existing installation..."
+  cd "$INSTALL_DIR"
+  git pull --ff-only 2>/dev/null || warn "Could not update — using existing version"
 else
-    echo "  ⚠️  PostgreSQL not found. Install manually: sudo apt install postgresql"
+  info "Cloning Continuum..."
+  git clone --depth 1 "$REPO" "$INSTALL_DIR"
+  cd "$INSTALL_DIR"
 fi
 
-# Python3 (for academy training — optional but nice to have)
-if command -v python3 &>/dev/null; then
-    echo "  ✅ Python3: $(python3 --version 2>&1 | awk '{print $2}')"
-else
-    echo "  ⚠️  Python3: not found (optional — needed for academy training)"
-fi
+ok "Source: $INSTALL_DIR"
 
-echo ""
+# ── 4. Configuration ───────────────────────────────────────
+mkdir -p "$CONTINUUM_DATA"
 
-# ─── Step 2: Clone (if running from curl) ───────────────────────────
-if [ ! -f "src/package.json" ]; then
-    if [ -f "package.json" ] && grep -q "continuum" package.json; then
-        # We're in src/ directory
-        cd ..
-    elif [ ! -d "src" ]; then
-        echo "📋 Step 2: Cloning repository"
-        echo "-----------------------------"
-        git clone https://github.com/CambrianTech/continuum.git
-        cd continuum
-        echo "  ✅ Repository cloned"
-        echo ""
-    fi
-fi
-
-# ─── Step 3: Config Bootstrap ────────────────────────────────────────
-echo "📋 Step 3: Configuration"
-echo "------------------------"
-
-CONFIG_DIR="$HOME/.continuum"
-CONFIG_FILE="$CONFIG_DIR/config.env"
-
-mkdir -p "$CONFIG_DIR"
-
+CONFIG_FILE="$CONTINUUM_DATA/config.env"
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "  📝 Creating config.env with defaults (zero API keys = local-only mode)"
-    cat > "$CONFIG_FILE" << 'ENVEOF'
-# Continuum Configuration
-# All API keys are OPTIONAL — the system works with zero keys using local inference.
-# Add keys to enable cloud providers for better quality on complex tasks.
+  info "Creating default config (zero API keys = local-only mode)..."
+  cat > "$CONFIG_FILE" << 'EOF'
+# Continuum Configuration — all API keys OPTIONAL
+# System works with zero keys using local Candle inference.
+# Add keys to enable cloud providers for better quality.
 
-# Cloud providers (uncomment and add your key to enable):
 # ANTHROPIC_API_KEY=sk-ant-...
 # OPENAI_API_KEY=sk-...
 # DEEPSEEK_API_KEY=sk-...
-# GROQ_API_KEY=gsk_...
-# FIREWORKS_API_KEY=fw_...
-# XAI_API_KEY=xai-...
-# TOGETHER_API_KEY=tgp_...
-# GOOGLE_API_KEY=AIza...
 
-# Server config (defaults are fine)
 HTTP_PORT=9000
 WS_PORT=9001
-
-# Database (PostgreSQL — auto-configured by install.sh)
-DATABASE_URL=postgres://$USER@localhost/continuum
-ENVEOF
-    echo "  ✅ Config created: $CONFIG_FILE"
-    echo "  💡 Add API keys later: nano $CONFIG_FILE"
+EOF
+  ok "Config: $CONFIG_FILE"
 else
-    echo "  ✅ Config exists: $CONFIG_FILE"
+  ok "Config exists: $CONFIG_FILE"
 fi
 
-echo ""
+# ── 5. TLS certs (Tailscale) ──────────────────────────────
+TS_HOSTNAME=""
+if command -v tailscale &>/dev/null; then
+  TS_HOSTNAME=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
 
-# ─── Step 4: Full Install via comprehensive installer ────────────────
-# src/scripts/install.sh handles ALL platform-specific dependencies:
-# PostgreSQL, build-essential, CUDA, Python ML stack, Node deps, Rust build
-echo "📋 Step 4: Running full installer"
-echo "-----------------------------------"
-cd src
-if [ -f "scripts/install.sh" ]; then
-    bash scripts/install.sh
+  if [ -n "$TS_HOSTNAME" ]; then
+    if [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
+      ok "TLS: $TS_HOSTNAME (certs provisioned)"
+    else
+      info "Provisioning TLS certificate for $TS_HOSTNAME..."
+      if tailscale cert "$TS_HOSTNAME" 2>/dev/null; then
+        mv "$TS_HOSTNAME.crt" "$TS_HOSTNAME.key" "$CONTINUUM_DATA/"
+        ok "TLS enabled: https://$TS_HOSTNAME"
+      else
+        warn "TLS cert failed — Tailscale Starter plan (\$6/month) required for HTTPS"
+        warn "Enable at: https://login.tailscale.com/admin/dns → HTTPS Certificates"
+      fi
+    fi
+  fi
 else
-    # Fallback: basic npm install if comprehensive script not found
-    npm install --no-audit --no-fund 2>&1 | tail -3
-    echo "  ✅ Node dependencies installed"
+  warn "Tailscale not installed — no mesh networking or TLS"
+  warn "Optional: https://tailscale.com/download"
 fi
 
-# Python/GPU deps handled by src/scripts/install.sh above
+# ── 6. Pull images ─────────────────────────────────────────
+info "Pulling container images..."
+docker compose pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
-# ─── Step 5: Build + Start ──────────────────────────────────────────
-echo "📋 Step 5: Building and starting"
-echo "---------------------------------"
-echo "  This takes ~2 minutes (Rust build + TypeScript + browser)..."
-echo ""
-npm start
+# ── 7. Start ───────────────────────────────────────────────
+info "Starting Continuum..."
 
+COMPOSE_ARGS=""
+if [[ "$HAS_GPU" == "true" ]]; then
+  COMPOSE_ARGS="--profile gpu"
+fi
+
+docker compose $COMPOSE_ARGS up -d
+
+# ── 8. Wait for health ─────────────────────────────────────
+info "Waiting for services..."
+for i in {1..30}; do
+  if curl -sf http://localhost:9000 &>/dev/null || curl -sf https://localhost:9000 -k &>/dev/null; then
+    break
+  fi
+  [ $i -eq 30 ] && warn "Services still starting — check: docker compose logs"
+  sleep 2
+done
+
+# ── 9. Determine URL + open browser ────────────────────────
+if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
+  URL="https://$TS_HOSTNAME:9000"
+else
+  URL="http://localhost:9000"
+fi
+
+case "$OS" in
+  Darwin) open "$URL" 2>/dev/null || true ;;
+  Linux)
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      cmd.exe /c start "" "$URL" 2>/dev/null || true
+    else
+      xdg-open "$URL" 2>/dev/null || true
+    fi
+    ;;
+esac
+
+# ── Done ────────────────────────────────────────────────────
 echo ""
-echo "🧬 Continuum is running!"
-echo "========================"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Continuum is running"
 echo ""
-echo "  🌐 Open: http://localhost:9000"
-echo "  📝 Config: $CONFIG_FILE"
-echo "  🔑 Add API keys for cloud AI (optional)"
-echo "  🛑 Stop: npm stop (from src/)"
+echo "  UI:      $URL"
+echo "  Stop:    cd $INSTALL_DIR && docker compose down"
+echo "  Update:  cd $INSTALL_DIR && git pull && docker compose pull && docker compose up -d"
+echo "  Logs:    cd $INSTALL_DIR && docker compose logs -f"
 echo ""
+if [[ "$HAS_GPU" == "true" ]]; then
+  echo "  GPU:     ${GPU_NAME:-detected}"
+fi
+if [ -n "$TS_HOSTNAME" ]; then
+  echo "  Mesh:    https://$TS_HOSTNAME:9000"
+fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
