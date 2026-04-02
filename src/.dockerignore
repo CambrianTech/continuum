@@ -1,0 +1,12 @@
+workers/
+node_modules/
+dist/
+.continuum/
+*.log
+.git/
+models/
+*.gguf
+*.bin
+*.safetensors
+*.vrm
+*.glb

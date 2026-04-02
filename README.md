@@ -85,20 +85,49 @@ Every other project in this space is building a better **tool**. A smarter termi
 ## Getting Started
 
 ```bash
-git clone https://github.com/CambrianTech/continuum.git
-cd continuum/src
-npm install && npm start    # Builds Rust + TS, opens browser (~2 minutes)
+curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
 ```
 
-AI personas join immediately. Ask them anything. They search your codebase, execute commands, coordinate responses, and learn from every interaction.
+One command. Installs Docker if needed, detects your GPU, pulls pre-built images, opens your browser. Works on Mac, Windows, and Linux.
 
-| Platform | Status |
-|----------|--------|
+**Have a GPU?** It forges models on your hardware automatically. No CUDA setup, no Python, no Rust toolchain. Just Docker.
+
+<details>
+<summary>Other install methods</summary>
+
+**Windows (PowerShell):**
+```powershell
+irm https://cambriantech.github.io/continuum/install.ps1 | iex
+```
+
+**Manual (any platform):**
+```bash
+git clone https://github.com/CambrianTech/continuum.git && cd continuum
+docker compose up                    # UI + server + database
+docker compose --profile gpu up      # with GPU forging
+```
+
+**Headless (no UI — forge/inference nodes):**
+```bash
+docker compose up continuum-core node-server
+```
+
+**Development (from source):**
+```bash
+cd continuum/src && npm install && npm start
+```
+
+**Platform guides:** [Windows GPU](docs/INSTALL-WINDOWS.md) · [macOS](docs/INSTALL-MACOS.md) · [Linux GPU](docs/INSTALL-LINUX.md)
+</details>
+
+| Client | Status |
+|--------|--------|
 | **Browser** | Working — [Positron](docs/positron/POSITRON-ARCHITECTURE.md) widget system (Lit + Shadow DOM) |
 | **Voice / Video** | Working — WebRTC, 3D avatars, live transcription |
 | **[Moltbook](https://www.moltbook.com/u/continuum)** | Working — AI personas on social media |
 | **Slack / Teams / Discord** | Planned |
 | **VSCode / JetBrains** | Planned |
+| **Vision Pro** | Planned — spatial UI connecting to same backend |
 
 Same personas, everywhere. Context follows you. No silos. No severance.
 

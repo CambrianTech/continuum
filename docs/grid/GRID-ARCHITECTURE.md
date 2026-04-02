@@ -49,7 +49,46 @@ Each Continuum instance is self-contained: models, LoRA adapters, persona config
 
 You can snapshot it, migrate it over Reticulum, restore it on different hardware. Fork it for experimentation. Your Continuum is sovereign — it joins the mesh as a peer, shares capabilities voluntarily, but never loses autonomy.
 
-### 2.4 Bidirectional Resource Scaling
+### 2.4 Docker-First Node Architecture
+
+Every Grid node runs as a set of Docker containers. This is not an implementation detail — it's the architecture.
+
+```
+┌─── Grid Node (any machine) ──────────────────────────────┐
+│                                                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────┐ │
+│  │ continuum-  │  │ node-server │  │ widget-server    │ │
+│  │ core (Rust) │  │ (TypeScript)│  │ (optional - UI)  │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────────────────┘ │
+│         │ socket         │ websocket                     │
+│  ┌──────┴──────┐  ┌──────┴──────┐  ┌──────────────────┐ │
+│  │ postgres    │  │ inference   │  │ forge-worker     │ │
+│  │             │  │ (llama.cpp) │  │ (GPU, optional)  │ │
+│  └─────────────┘  └─────────────┘  └──────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Why Docker:**
+- **One-command install** — `curl | bash`, pulls pre-built images, running in minutes
+- **Health checks** — containers restart automatically on crash, no more blank widgets
+- **Isolation** — forge can't crash inference, bad model can't take down the server
+- **Reproducibility** — same image runs on a 5090 tower, a laptop 3060, or a cloud VM
+- **GPU passthrough** — Docker Desktop on Windows/WSL2 passes NVIDIA GPUs through automatically
+
+**Deployable AI Teams** — pre-packaged docker-compose profiles:
+
+| Team Profile | Containers | Purpose |
+|-------------|-----------|---------|
+| `gpu` | forge-worker | Model forging on GPU hardware |
+| `inference` | inference-server, load-balancer | Serve models with scaling |
+| `security` | anomaly-detector, traffic-monitor | AI-powered mesh security |
+| `headless` | continuum-core, node-server | No UI — forge/inference only |
+
+Deploy a team to any node: `docker compose --profile security up`. Remove it: `docker compose --profile security down`. The Grid SCADA page visualizes this — drag a capability onto a node, containers spin up.
+
+**Headless is the default.** Most nodes don't need a browser. GPU towers forge models 24/7 with no UI. Your MacBook runs the full UI and orchestrates the fleet. The widget-server container is optional — add it when you want eyes on a node.
+
+### 2.5 Bidirectional Resource Scaling
 
 Not just "degrade gracefully on constrained hardware." Scale UP when capacity joins. Scale OUT to mesh peers. The same eviction logic (`age_seconds / (priority_weight * 10)`) works at every level — local VRAM, system RAM, SSD, cloud, mesh.
 
