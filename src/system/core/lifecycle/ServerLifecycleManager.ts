@@ -62,7 +62,7 @@ export class ServerLifecycleManager extends EventEmitter {
         // Connect to server's readiness WebSocket endpoint
         // Use wss:// if TLS is active, ws:// otherwise
         let wsProto = 'ws';
-        try { const { getNetworkIdentity } = require('../../../config/NetworkIdentity'); if (getNetworkIdentity()) wsProto = 'wss'; } catch {}
+        try { const { getNetworkIdentity } = eval("require")('../../../config/server/NetworkIdentity'); if (getNetworkIdentity()) wsProto = 'wss'; } catch {}
         const ws = new WebSocket(`${wsProto}://localhost:${websocketPort}/system/readiness`, { rejectUnauthorized: false });
         
         ws.on('open', () => {

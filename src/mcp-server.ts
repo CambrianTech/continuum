@@ -677,7 +677,7 @@ async function getClient(): Promise<JTAGClientServer> {
     targetEnvironment: 'server',
     transportType: 'websocket',
     serverUrl: (() => {
-      try { const { getWebSocketUrl } = require('./system/config/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
+      try { const { getWebSocketUrl } = require('./system/config/server/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
       catch { return `ws://localhost:${instanceConfig.ports.websocket_server}`; }
     })(),
     enableFallback: false,

@@ -16,7 +16,7 @@ import type { ConnectionConfig } from '@continuum/jtag/types';
 const connectionConfig: ConnectionConfig = createConnectionConfigAuto();
 const PORT = connectionConfig.httpPort;
 
-import { getNetworkIdentity, getTlsOptions } from '../system/config/NetworkIdentity';
+import { getNetworkIdentity, getTlsOptions } from '../system/config/server/NetworkIdentity';
 
 class MinimalServer {
   private server: http.Server | https.Server;

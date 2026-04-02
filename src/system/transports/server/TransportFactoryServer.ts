@@ -84,7 +84,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
       // Universal adapter pattern with connect() method
       const instanceConfig = this.context.config.instance;
       const connectParam = config.protocol === 'websocket' ? config.serverUrl ?? (() => {
-        try { const { getWebSocketUrl } = require('../../config/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
+        try { const { getWebSocketUrl } = require('../../config/server/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
         catch { return `ws://localhost:${instanceConfig.ports.websocket_server}`; }
       })() : undefined;
       await adapter.connect(connectParam);
@@ -120,7 +120,7 @@ export class TransportFactoryServer extends TransportFactoryBase {
         // WebSocketServerClientConfig requires url, handler, eventSystem
         const clientConfig: WebSocketServerClientConfig = {
           url: config.serverUrl ?? (() => {
-            try { const { getWebSocketUrl } = require('../../config/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
+            try { const { getWebSocketUrl } = require('../../config/server/NetworkIdentity'); return getWebSocketUrl(instanceConfig.ports.websocket_server); }
             catch { return `ws://localhost:${instanceConfig.ports.websocket_server}`; }
           })(),
           handler: config.handler,

@@ -378,7 +378,7 @@ export class ConnectionBroker implements IConnectionBroker {
     } else {
       // Server: check if TLS is active
       try {
-        const { getWebSocketUrl } = require('../../../config/NetworkIdentity');
+        const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity');
         wsUrl = getWebSocketUrl(port);
       } catch {
         wsUrl = `ws://localhost:${port}`;
@@ -520,7 +520,7 @@ export class ConnectionBroker implements IConnectionBroker {
           return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${server.port}`;
         }
         try {
-          const { getWebSocketUrl } = require('../../../config/NetworkIdentity');
+          const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity');
           return getWebSocketUrl(server.port);
         } catch {
           return `ws://localhost:${server.port}`;

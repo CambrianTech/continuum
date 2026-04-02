@@ -14,7 +14,7 @@ import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
 import * as https from 'https';
-import { getTlsOptions, getNetworkIdentity } from '../../../config/NetworkIdentity';
+import { getTlsOptions, getNetworkIdentity } from '../../../config/server/NetworkIdentity';
 import { WebSocketResponseRouter } from './WebSocketResponseRouter';
 
 /** Internal socket properties exposed by ws library but not in public types */

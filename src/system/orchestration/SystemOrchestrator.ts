@@ -937,7 +937,7 @@ export class SystemOrchestrator extends EventEmitter {
     try {
       const { getActivePorts } = require('../../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
-      const { getServiceUrl } = require('../config/NetworkIdentity');
+      const { getServiceUrl } = require('../config/server/NetworkIdentity');
       return getServiceUrl(activePorts.http_server);
     } catch (error) {
       console.error('❌ FATAL: Could not get active ports - no fallback:', error);

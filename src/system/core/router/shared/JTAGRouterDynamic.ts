@@ -141,7 +141,7 @@ export class JTAGRouterDynamic extends JTAGRouter {
       (typeof window !== 'undefined' && window.location)
         ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${serverPort}`
         : (() => {
-            try { const { getWebSocketUrl } = require('../../../config/NetworkIdentity'); return getWebSocketUrl(serverPort); }
+            try { const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity'); return getWebSocketUrl(serverPort); }
             catch { return `ws://localhost:${serverPort}`; }
           })()
     );
