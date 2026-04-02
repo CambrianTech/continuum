@@ -111,7 +111,35 @@ YAML
     LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
     echo -e "${YELLOW}   WSL2 — YAML config with loopback ICE + TCP${NC}"
   else
-    LIVEKIT_EXTRA_ARGS="--dev --bind 127.0.0.1 --node-ip 127.0.0.1"
+    # Check for TLS certs (Tailscale or manual) in ~/.continuum/
+    LIVEKIT_CERT=$(ls "$CONTINUUM_ROOT"/*.crt 2>/dev/null | head -1)
+    LIVEKIT_KEY=$(ls "$CONTINUUM_ROOT"/*.key 2>/dev/null | head -1)
+    if [ -n "$LIVEKIT_CERT" ] && [ -n "$LIVEKIT_KEY" ]; then
+      # TLS available — use config file instead of --dev
+      LIVEKIT_CONFIG="$CONTINUUM_ROOT/livekit-tls.yaml"
+      LIVEKIT_HOSTNAME=$(echo "$LIVEKIT_CERT" | sed 's|.*/||;s|\.crt$||')
+      cat > "$LIVEKIT_CONFIG" << YAML
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  node_ip: 127.0.0.1
+  enable_loopback_candidate: true
+keys:
+  devkey: secret
+turn:
+  enabled: true
+  domain: $LIVEKIT_HOSTNAME
+  tls_port: 5349
+  cert_file: $LIVEKIT_CERT
+  key_file: $LIVEKIT_KEY
+YAML
+      LIVEKIT_EXTRA_ARGS="--config $LIVEKIT_CONFIG"
+      echo -e "${GREEN}   🔒 TLS enabled: $(basename "$LIVEKIT_CERT")${NC}"
+    else
+      LIVEKIT_EXTRA_ARGS="--dev --bind 127.0.0.1 --node-ip 127.0.0.1"
+    fi
   fi
 
   LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &

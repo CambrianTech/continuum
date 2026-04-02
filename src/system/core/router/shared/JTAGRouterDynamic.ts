@@ -137,7 +137,11 @@ export class JTAGRouterDynamic extends JTAGRouter {
     // Use dynamic port from context instance config if router config doesn't specify one
     const instanceConfig = this.context.config.instance;
     const serverPort = this.config.transport.serverPort ?? instanceConfig.ports.websocket_server;
-    const serverUrl = this.config.transport.serverUrl ?? `ws://localhost:${serverPort}`;
+    const serverUrl = this.config.transport.serverUrl ?? (
+      (typeof window !== 'undefined' && window.location)
+        ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${serverPort}`
+        : `ws://localhost:${serverPort}`
+    );
 
     // Create transport configuration (same pattern as JTAGRouter)
     const transportConfig: TransportConfig = { 

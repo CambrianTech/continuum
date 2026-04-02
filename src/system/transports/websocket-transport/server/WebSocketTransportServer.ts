@@ -13,6 +13,8 @@ import { isJTAGMessage } from '../shared/JTAGWebSocketTypes';
 import { WebSocketServer, type WebSocket as WSWebSocket } from 'ws';
 import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
+import * as https from 'https';
+import { getTlsOptions, getNetworkIdentity } from '../../../config/NetworkIdentity';
 import { WebSocketResponseRouter } from './WebSocketResponseRouter';
 
 /** Internal socket properties exposed by ws library but not in public types */
@@ -54,9 +56,20 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
   }
 
   /**
-   * Server-specific WebSocket server creation
+   * Server-specific WebSocket server creation.
+   * Uses TLS if Tailscale certs are found in ~/.continuum/
    */
   protected async createWebSocketServer(port: number): Promise<WebSocketServer> {
+    const identity = getNetworkIdentity();
+    const tlsOpts = getTlsOptions();
+    if (identity && tlsOpts) {
+      // TLS: create HTTPS server for WebSocket upgrades
+      const httpsServer = https.createServer(tlsOpts);
+      httpsServer.listen(port);
+      console.log(`🔒 WebSocket Server: TLS on port ${port} via ${identity.provider}: ${identity.hostname}`);
+      console.log(`   Remote: wss://${identity.hostname}:${port}`);
+      return new WebSocketServer({ server: httpsServer });
+    }
     return new WebSocketServer({ port });
   }
 

@@ -14,9 +14,23 @@ import type { WebSocketBrowserConfig } from '../websocket-transport/browser/WebS
 import type { UDPMulticastConfig } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPMulticastTypes';
 
+/**
+ * Derive WebSocket URL from the current browser location.
+ * In Docker or remote access, localhost is wrong — use the actual host.
+ * Falls back to localhost for local dev.
+ */
+function deriveWebSocketUrl(port: number): string {
+  if (typeof window !== 'undefined' && window.location) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname;
+    return `${protocol}//${host}:${port}`;
+  }
+  return `ws://localhost:${port}`;
+}
+
 export class TransportFactoryBrowser extends TransportFactoryBase {
   private readonly context: JTAGContext;
-  
+
   constructor(context: JTAGContext) {
     super('browser');
     this.context = context;
@@ -60,7 +74,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     if (adapter.connect) {
       // New adapter pattern with connect() method (use URL for WebSocket)
       const instanceConfig = this.context.config.instance;
-      const connectParam = config.protocol === 'websocket' ? config.serverUrl || `ws://localhost:${instanceConfig.ports.websocket_server}` : undefined;
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl || deriveWebSocketUrl(instanceConfig.ports.websocket_server) : undefined;
       await adapter.connect(connectParam);
     } else {
       // Legacy transport pattern - already connected in constructor
@@ -80,7 +94,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     if (config.protocol === 'websocket' && adapterEntry.className === 'WebSocketTransportBrowser') {
       // WebSocketBrowserConfig requires specific format
       const webSocketConfig: WebSocketBrowserConfig = {
-        url: config.serverUrl || `ws://localhost:${instanceConfig.ports.websocket_server}`,
+        url: config.serverUrl || deriveWebSocketUrl(instanceConfig.ports.websocket_server),
         handler: config.handler,
         eventSystem: config.eventSystem,
         // WebSocket-specific options
@@ -100,7 +114,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
         multicastPort: config.serverPort ?? 37472, // Different port for browser signalling server
         unicastPort: (config.serverPort ?? 37472) + 1000, // Offset for unicast
         // Browser-specific: signalling server URL for WebRTC
-        signallingServer: config.serverUrl || `ws://localhost:${config.serverPort ?? 37472}`
+        signallingServer: config.serverUrl || deriveWebSocketUrl(config.serverPort ?? 37472)
       };
       return udpConfig as UDPMulticastConfig;
     }

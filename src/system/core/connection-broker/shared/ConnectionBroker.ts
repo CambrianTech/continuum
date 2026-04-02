@@ -371,9 +371,22 @@ export class ConnectionBroker implements IConnectionBroker {
       throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
     }
     
-    const systemConfig = { 
-      getWebSocketPort: () => port, 
-      getWebSocketUrl: () => `ws://localhost:${port}` 
+    let wsUrl: string;
+    if (typeof window !== 'undefined' && window.location) {
+      // Browser: derive from page URL
+      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${port}`;
+    } else {
+      // Server: check if TLS is active
+      try {
+        const { getWebSocketUrl } = require('../../config/NetworkIdentity');
+        wsUrl = getWebSocketUrl(port);
+      } catch {
+        wsUrl = `ws://localhost:${port}`;
+      }
+    }
+    const systemConfig = {
+      getWebSocketPort: () => port,
+      getWebSocketUrl: () => wsUrl
     };
     const protocol = params.protocols[0]; // Use first preferred protocol
 
@@ -502,7 +515,17 @@ export class ConnectionBroker implements IConnectionBroker {
       protocol: server.protocol,
       role: 'client',
       serverPort: server.port,
-      serverUrl: `ws://localhost:${server.port}`,
+      serverUrl: (() => {
+        if (typeof window !== 'undefined' && window.location) {
+          return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${server.port}`;
+        }
+        try {
+          const { getWebSocketUrl } = require('../../config/NetworkIdentity');
+          return getWebSocketUrl(server.port);
+        } catch {
+          return `ws://localhost:${server.port}`;
+        }
+      })(),
       sessionId: params.sessionId,
       eventSystem: eventSystem, // Required field provided by caller
       handler: handler, // Required field provided by caller

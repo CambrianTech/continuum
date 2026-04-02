@@ -5,6 +5,7 @@
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,12 +16,28 @@ import type { ConnectionConfig } from '@continuum/jtag/types';
 const connectionConfig: ConnectionConfig = createConnectionConfigAuto();
 const PORT = connectionConfig.httpPort;
 
+import { getNetworkIdentity, getTlsOptions } from '../system/config/NetworkIdentity';
+
 class MinimalServer {
-  private server: http.Server;
+  private server: http.Server | https.Server;
   private requestInProgress = false;
+  private readonly tlsEnabled: boolean;
+  private readonly tlsHostname: string;
 
   constructor() {
-    this.server = http.createServer(this.handleRequest.bind(this));
+    const identity = getNetworkIdentity();
+    const tlsOpts = getTlsOptions();
+    if (identity && tlsOpts) {
+      this.server = https.createServer(tlsOpts, this.handleRequest.bind(this));
+      this.tlsEnabled = true;
+      this.tlsHostname = identity.hostname;
+      console.log(`🔒 TLS enabled: ${identity.hostname} (${identity.provider})`);
+    } else {
+      this.server = http.createServer(this.handleRequest.bind(this));
+      this.tlsEnabled = false;
+      this.tlsHostname = '';
+      console.log('🔓 No TLS — serving HTTP (provision certs: tailscale cert <hostname> && mv *.crt *.key ~/.continuum/)');
+    }
   }
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -1155,17 +1172,20 @@ class MinimalServer {
 
   async start(): Promise<void> {
     const exampleName = path.basename(process.cwd());
-    console.log(`🚀 Starting ${exampleName} HTTP server...`);
+    const protocol = this.tlsEnabled ? 'https' : 'http';
+    console.log(`🚀 Starting ${exampleName} ${protocol.toUpperCase()} server...`);
     console.log('🌐 Browser client will connect to JTAG system via WebSocket');
-    
+
     return new Promise((resolve, reject) => {
       this.server.on('error', reject);
       this.server.listen(PORT, () => {
-        console.log(`✅ HTTP server running at http://localhost:${PORT}`);
-        
-        // Browser launch handled by main JTAG system - no duplicate launch needed
-        console.log(`   🌐 Access at: http://localhost:${PORT} (browser auto-opened by JTAG system)`);
-        
+        console.log(`✅ ${protocol.toUpperCase()} server running at ${protocol}://localhost:${PORT}`);
+
+        if (this.tlsEnabled) {
+          console.log(`   🔒 Secure access: https://${this.tlsHostname}:${PORT}`);
+        }
+        console.log(`   🌐 Local access: ${protocol}://localhost:${PORT}`);
+
         resolve();
       });
     });
