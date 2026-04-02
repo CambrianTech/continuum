@@ -6,6 +6,7 @@
 # Layer strategy:
 #   1. package.json + package-lock.json → npm ci (cached until deps change)
 #   2. TypeScript source → build (fast, ~20s)
+#   3. Runtime: compiled dist/ + examples + templates
 
 FROM node:20-slim AS builder
 
@@ -29,16 +30,20 @@ WORKDIR /app
 COPY --from=builder /app/package.json /app/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
+# Compiled server
 COPY --from=builder /app/dist/ ./dist/
-COPY --from=builder /app/shared/ ./shared/
 
-# Socket directory for IPC with Rust core
+# Runtime assets: active example serves UI to browser
+COPY --from=builder /app/examples/ ./examples/
+COPY --from=builder /app/templates/ ./templates/
+
+# Socket directory for IPC with Rust core + secrets + media
 VOLUME ["/root/.continuum"]
 
-# WebSocket + HTTP
+# HTTP + WebSocket
 EXPOSE 9000 9001
 
-HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
-    CMD curl -f http://localhost:9000/health || exit 1
+HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
+    CMD node -e "fetch('http://localhost:9000/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"
 
-CMD ["node", "dist/server-index.js"]
+CMD ["node", "dist/server/docker-entrypoint.js"]

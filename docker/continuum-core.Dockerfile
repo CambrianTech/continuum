@@ -62,6 +62,10 @@ COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 COPY --from=builder /app/target/release/build/ort-*/out/onnxruntime-*/lib/*.so* /usr/local/lib/ 2>/dev/null || true
 RUN ldconfig
 
+# Working directory — models volume mounts at /app/models so relative
+# paths like "models/avatars" resolve correctly from cwd
+WORKDIR /app
+
 # Socket and data directories
 RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
 

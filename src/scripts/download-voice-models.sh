@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"
 
 # Models go in jtag/models (relative to where binary runs)
-MODELS_DIR="models"
+# Override with MODELS_DIR env var for Docker volume mounts
+MODELS_DIR="${MODELS_DIR:-models}"
 WHISPER_DIR="$MODELS_DIR/whisper"
 PIPER_DIR="$MODELS_DIR/piper"
 

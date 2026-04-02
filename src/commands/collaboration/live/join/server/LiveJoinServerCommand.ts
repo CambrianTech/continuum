@@ -20,8 +20,9 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { getVoiceOrchestrator, getTSVoiceOrchestrator } from '@system/voice/server';
-import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } from '@shared/AudioConstants';
+import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_TLS_PORT } from '@shared/AudioConstants';
 import { getSecret } from '@system/secrets/SecretManager';
+import { getNetworkIdentity, getWebSocketUrl } from '@system/config/server/NetworkIdentity';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
@@ -117,7 +118,8 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       participants: call.getActiveParticipants(),
       myParticipant,
       livekitToken,
-      livekitUrl: getSecret('LIVEKIT_URL', 'LiveJoinServerCommand') || LIVEKIT_URL,
+      livekitUrl: getSecret('LIVEKIT_URL', 'LiveJoinServerCommand')
+        || (getNetworkIdentity() ? getWebSocketUrl(LIVEKIT_TLS_PORT) : LIVEKIT_URL),
     };
 
     // DEBUG: Log what we're returning to browser

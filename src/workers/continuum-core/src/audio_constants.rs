@@ -27,8 +27,11 @@ pub const BYTES_PER_SAMPLE: usize = 2;
 /// WebSocket call server port
 pub const CALL_SERVER_PORT: u16 = 50053;
 
-/// LiveKit SFU server port (WebRTC signaling)
+/// LiveKit SFU server port (WebRTC signaling, plain WS)
 pub const LIVEKIT_PORT: u16 = 7880;
+
+/// LiveKit TLS proxy port (Caddy terminates TLS, proxies to LIVEKIT_PORT)
+pub const LIVEKIT_TLS_PORT: u16 = 7443;
 
 /// LiveKit API key (dev mode)
 pub const LIVEKIT_DEV_KEY: &str = "devkey";

@@ -1,0 +1,16 @@
+# LiveKit TLS Reverse Proxy
+#
+# Terminates TLS on port 7443 and proxies WebSocket connections
+# to LiveKit's plain ws://livekit:7880 inside the Docker network.
+#
+# Certs are auto-discovered from /certs/ (mounted from ~/.continuum/).
+
+{
+	auto_https off
+}
+
+:7443 {
+	tls {$TLS_CERT} {$TLS_KEY}
+
+	reverse_proxy livekit:7880
+}
