@@ -13,8 +13,8 @@
 # Source changes rebuild in ~2-3 minutes.
 
 # ── Stage 1: Chef (dependency cache tool) ───────────────────
-FROM rust:1.87-bookworm AS chef
-RUN cargo install cargo-chef
+FROM rust:1.89-bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # ── Stage 2: Plan dependencies ──────────────────────────────
