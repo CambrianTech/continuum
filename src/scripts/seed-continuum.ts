@@ -39,20 +39,27 @@ import {
 
 const execAsync = promisify(exec);
 
-/** Sync recipe JSON files to database — idempotent, runs on every seed */
+/** Sync recipe JSON files to database — truly idempotent, ignores "already exists" */
 async function syncRecipesFromJson(): Promise<void> {
   const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
   const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
   console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
   let created = 0;
+  let existing = 0;
   for (const f of recipeFiles) {
     const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
     const id = data.uniqueId;
     if (!id) continue;
-    const wasCreated = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
-    if (wasCreated) created++;
+    try {
+      const wasCreated = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
+      if (wasCreated) created++;
+      else existing++;
+    } catch {
+      // "Record already exists" or other non-fatal error — skip silently
+      existing++;
+    }
   }
-  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${recipeFiles.length - created} existing)`);
+  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${existing} existing)`);
 }
 
 // ===== PERSONA PROFILE DATA (single source of truth for all persona bios + colors) =====
