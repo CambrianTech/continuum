@@ -7,6 +7,7 @@
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';
+import { nothing } from 'lit';
 import { StageElement, STAGE_BASE_STYLES } from './StageElement';
 
 const RECOMMENDED_ENCODERS: Record<string, { model: string; dataset: string; label: string }> = {
@@ -25,6 +26,9 @@ export class ModalityStageElement extends StageElement {
   @reactive() private _trainingDataset = '';
   @reactive() private _trainingSteps = 1000;
   @reactive() private _projectionDim = 0;
+  // Resolution / quality controls (vision = pixels, audio = sample rate)
+  @reactive() private _resolution = 448;
+  @reactive() private _sampleRate = 16000;
 
   get stageType(): string { return 'modality'; }
 
@@ -40,6 +44,10 @@ export class ModalityStageElement extends StageElement {
       ...(this._trainingDataset || rec?.dataset ? { trainingDataset: this._trainingDataset || rec?.dataset } : {}),
       trainingSteps: this._trainingSteps,
       ...(this._projectionDim > 0 ? { projectionDim: this._projectionDim } : {}),
+      ...(this._modality === 'vision' || this._modality === 'multimodal'
+        ? { resolution: this._resolution } : {}),
+      ...(this._modality === 'audio' || this._modality === 'multimodal'
+        ? { sampleRate: this._sampleRate } : {}),
     };
   }
 
@@ -180,6 +188,35 @@ export class ModalityStageElement extends StageElement {
           </div>
           <span class="field-hint">Freeze = train projection only (faster, less VRAM)</span>
         </div>
+        ${this._modality === 'vision' || this._modality === 'multimodal' ? html`
+          <div class="field">
+            <span class="field-label">Resolution (px)</span>
+            <select class="field-select"
+              .value=${String(this._resolution)}
+              @change=${(e: Event) => { this._resolution = parseInt((e.target as HTMLSelectElement).value); this.emitChange(); }}>
+              <option value="224">224 (fast, low quality)</option>
+              <option value="336">336</option>
+              <option value="448">448 (default)</option>
+              <option value="672">672</option>
+              <option value="896">896 (high quality)</option>
+              <option value="1344">1344 (very high)</option>
+            </select>
+          </div>
+        ` : nothing}
+        ${this._modality === 'audio' || this._modality === 'multimodal' ? html`
+          <div class="field">
+            <span class="field-label">Sample Rate</span>
+            <select class="field-select"
+              .value=${String(this._sampleRate)}
+              @change=${(e: Event) => { this._sampleRate = parseInt((e.target as HTMLSelectElement).value); this.emitChange(); }}>
+              <option value="8000">8kHz (phone quality)</option>
+              <option value="16000">16kHz (default, speech)</option>
+              <option value="22050">22kHz</option>
+              <option value="44100">44.1kHz (CD quality)</option>
+              <option value="48000">48kHz (studio)</option>
+            </select>
+          </div>
+        ` : nothing}
         <div class="field">
           <span class="field-label">Training Dataset</span>
           <input class="field-input" type="text"
