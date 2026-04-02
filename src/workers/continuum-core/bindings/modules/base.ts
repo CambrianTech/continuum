@@ -103,8 +103,12 @@ export class RustCoreIPCClientBase extends EventEmitter {
 			});
 
 			this._socket.on('error', (err) => {
+				this._connected = false;
 				this._rejectAllPending(err instanceof Error ? err : new Error(String(err)));
-				this.emit('error', err);
+				// Don't emit 'error' — unhandled EventEmitter errors crash Node.
+				// Callers handle failures via the rejected connect() promise or
+				// failed request promises. Emit a non-fatal event for logging.
+				this.emit('connection-error', err);
 				reject(err);
 			});
 

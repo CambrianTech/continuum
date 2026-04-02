@@ -174,7 +174,14 @@ export class RustCoreIPCClient extends ComposedClient {
 		if (!RustCoreIPCClient._singletonInstance) {
 			RustCoreIPCClient._singletonInstance = new RustCoreIPCClient();
 			RustCoreIPCClient._singletonPromise = RustCoreIPCClient._singletonInstance.connect()
-				.then(() => RustCoreIPCClient._singletonInstance!);
+				.then(() => RustCoreIPCClient._singletonInstance!)
+				.catch((err) => {
+					console.error(`⚠️ IPC: continuum-core not available (${err.code || err.message}). Rust-backed features disabled.`);
+					// Reset so next call retries
+					RustCoreIPCClient._singletonInstance = null;
+					RustCoreIPCClient._singletonPromise = null;
+					throw err;
+				});
 		}
 		return RustCoreIPCClient._singletonInstance;
 	}
@@ -186,8 +193,7 @@ export class RustCoreIPCClient extends ComposedClient {
 		if (!RustCoreIPCClient._singletonInstance) {
 			RustCoreIPCClient.getInstance();
 		}
-		await RustCoreIPCClient._singletonPromise;
-		return RustCoreIPCClient._singletonInstance!;
+		return RustCoreIPCClient._singletonPromise!;
 	}
 }
 
