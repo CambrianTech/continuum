@@ -36,14 +36,14 @@ interface DeviceFit {
 }
 
 const DEVICES: DeviceSpec[] = [
-  { id: 'iphone',        label: 'iPhone',       icon: 'P', vramMb: 6144,  category: 'phone' },
-  { id: 'air-8gb',       label: 'Air 8GB',      icon: 'L', vramMb: 6400,  category: 'laptop' },
-  { id: 'air-16gb',      label: 'Air 16GB',     icon: 'L', vramMb: 12800, category: 'laptop' },
-  { id: 'pro-18gb',      label: 'Pro 18GB',     icon: 'L', vramMb: 14400, category: 'laptop' },
-  { id: 'pro-36gb',      label: 'Pro 36GB',     icon: 'L', vramMb: 28800, category: 'laptop' },
-  { id: 'rtx-3090',      label: '3090',         icon: 'G', vramMb: 24576, category: 'desktop' },
-  { id: 'rtx-4090',      label: '4090',         icon: 'G', vramMb: 24576, category: 'desktop' },
-  { id: 'rtx-5090',      label: '5090',         icon: 'G', vramMb: 32768, category: 'desktop' },
+  { id: 'iphone',        label: 'iPhone',       icon: '\u{1F4F1}', vramMb: 6144,  category: 'phone' },
+  { id: 'air-8gb',       label: 'Air 8GB',      icon: '\u{1F4BB}', vramMb: 6400,  category: 'laptop' },
+  { id: 'air-16gb',      label: 'Air 16GB',     icon: '\u{1F4BB}', vramMb: 12800, category: 'laptop' },
+  { id: 'pro-18gb',      label: 'Pro 18GB',     icon: '\u{1F4BB}', vramMb: 14400, category: 'laptop' },
+  { id: 'pro-36gb',      label: 'Pro 36GB',     icon: '\u{1F4BB}', vramMb: 28800, category: 'laptop' },
+  { id: 'rtx-3090',      label: '3090',         icon: '\u{1F5A5}', vramMb: 24576, category: 'desktop' },
+  { id: 'rtx-4090',      label: '4090',         icon: '\u{1F5A5}', vramMb: 24576, category: 'desktop' },
+  { id: 'rtx-5090',      label: '5090',         icon: '\u{1F5A5}', vramMb: 32768, category: 'desktop' },
 ];
 
 // Quant format size multipliers relative to fp16
