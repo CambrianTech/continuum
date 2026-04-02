@@ -1,12 +1,17 @@
 # Continuum — docker compose up
 #
-# Full stack:   docker compose up
+# NORMAL USAGE (pulls pre-built images from GHCR — no local build needed):
+#   docker compose pull
+#   docker compose up
+#
 # With GPU:     docker compose --profile gpu up
 # Forge only:   docker compose run forge-worker alloys/queue/01-qwen3.5-9b-code-128k.alloy.json
 #
 # First install:
 #   curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
-#   docker compose up
+#
+# DEV ONLY (build locally — requires x86_64 Linux for Rust/WebRTC):
+#   docker compose build && docker compose up
 #
 # GPU profile requires sibling repos:
 #   ../sentinel-ai/    — forge worker source
