@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# continuum — Single command to access Continuum from anywhere.
+#
+# Usage:
+#   continuum              Auto-detect: open browser, CLI, or offer setup
+#   continuum start        Start Docker containers + open browser
+#   continuum stop         Stop Docker containers
+#   continuum status       Show running state (local + grid)
+#   continuum open [node]  Open browser to local or named grid node
+#   continuum cli          Force CLI/REPL mode
+#
+# Installed by: curl -fsSL continuum.homes/install | bash
+# Config: ~/.continuum/config.env
+
+set -euo pipefail
+
+CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
+COMPOSE_DIR=""
+
+# ── Find docker-compose.yml ────────────────────────────────
+find_compose() {
+  # Check current directory first
+  if [ -f "./docker-compose.yml" ]; then
+    COMPOSE_DIR="$(pwd)"
+    return 0
+  fi
+  # Check if we're inside a continuum checkout
+  local dir="$(pwd)"
+  while [ "$dir" != "/" ]; do
+    if [ -f "$dir/docker-compose.yml" ] && [ -d "$dir/src/system" ]; then
+      COMPOSE_DIR="$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  # Check common install locations
+  for d in "$HOME/continuum" "/opt/continuum"; do
+    if [ -f "$d/docker-compose.yml" ]; then
+      COMPOSE_DIR="$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ── Detect display availability ─────────────────────────────
+has_display() {
+  case "$(uname -s)" in
+    Darwin) return 0 ;;  # macOS always has a display
+    Linux)
+      # WSL2 can open Windows browser
+      if grep -qi microsoft /proc/version 2>/dev/null; then return 0; fi
+      # X11 or Wayland
+      [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# ── Open a URL in the browser ───────────────────────────────
+open_browser() {
+  local url="$1"
+  case "$(uname -s)" in
+    Darwin)  open "$url" ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        /mnt/c/Windows/explorer.exe "$url"
+      elif command -v xdg-open &>/dev/null; then
+        xdg-open "$url"
+      fi ;;
+  esac
+}
+
+# ── Get best URL for this system ────────────────────────────
+get_url() {
+  # Local Docker running?
+  if docker compose ps --format '{{.Health}}' 2>/dev/null | grep -q healthy; then
+    echo "http://localhost:9003"
+    return 0
+  fi
+  # Tailscale grid node?
+  if command -v tailscale &>/dev/null; then
+    local suffix
+    suffix=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('MagicDNSSuffix',''))" 2>/dev/null || echo "")
+    if [ -n "$suffix" ]; then
+      # Find a continuum node on the tailnet
+      local nodes
+      nodes=$(tailscale status 2>/dev/null | awk '{print $2}' | grep -v "^$")
+      for node in $nodes; do
+        echo "https://${node}.${suffix}"
+        return 0
+      done
+    fi
+  fi
+  return 1
+}
+
+# ── Get URL for a named grid node ───────────────────────────
+get_node_url() {
+  local node="$1"
+  local suffix
+  suffix=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('MagicDNSSuffix',''))" 2>/dev/null || echo "")
+  if [ -n "$suffix" ]; then
+    echo "https://${node}.${suffix}"
+    return 0
+  fi
+  echo "❌ Tailscale not running — can't resolve grid node" >&2
+  return 1
+}
+
+# ── Commands ────────────────────────────────────────────────
+
+cmd_start() {
+  if ! find_compose; then
+    echo "❌ No Continuum installation found."
+    echo "   Run: curl -fsSL continuum.homes/install | bash"
+    exit 1
+  fi
+  echo "🚀 Starting Continuum..."
+  cd "$COMPOSE_DIR"
+  docker compose up -d
+
+  echo "⏳ Waiting for server..."
+  local retries=60
+  while [ $retries -gt 0 ]; do
+    local status
+    status=$(docker compose ps node-server --format '{{.Health}}' 2>/dev/null || echo "starting")
+    if [ "$status" = "healthy" ]; then break; fi
+    retries=$((retries - 1))
+    sleep 2
+  done
+
+  if [ $retries -eq 0 ]; then
+    echo "❌ Server did not become healthy within 120s"
+    echo "   docker compose logs node-server"
+    exit 1
+  fi
+
+  local url
+  url=$(get_url) || url="http://localhost:9003"
+  echo ""
+  echo "✅ Continuum ready at: $url"
+  echo ""
+  if has_display; then
+    open_browser "$url"
+  fi
+}
+
+cmd_stop() {
+  if ! find_compose; then
+    echo "❌ No Continuum installation found."
+    exit 1
+  fi
+  cd "$COMPOSE_DIR"
+  docker compose down
+  echo "✅ Stopped"
+}
+
+cmd_status() {
+  echo "── Local ──"
+  if find_compose; then
+    cd "$COMPOSE_DIR"
+    docker compose ps 2>/dev/null || echo "  Not running"
+  else
+    echo "  No installation found"
+  fi
+  echo ""
+  echo "── Grid ──"
+  if command -v tailscale &>/dev/null; then
+    local suffix
+    suffix=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('MagicDNSSuffix',''))" 2>/dev/null || echo "")
+    tailscale status 2>/dev/null | while read -r ip name rest; do
+      echo "  $name → https://${name}.${suffix}"
+    done
+  else
+    echo "  Tailscale not installed"
+  fi
+}
+
+cmd_open() {
+  local url
+  if [ $# -gt 0 ]; then
+    url=$(get_node_url "$1") || exit 1
+  else
+    url=$(get_url) || {
+      echo "❌ No Continuum instance found. Run: continuum start"
+      exit 1
+    }
+  fi
+  echo "✅ $url"
+  if has_display; then
+    open_browser "$url"
+  else
+    echo "   (No display — open this URL on your local machine)"
+  fi
+}
+
+cmd_cli() {
+  if ! find_compose; then
+    echo "❌ No Continuum installation found."
+    exit 1
+  fi
+  cd "$COMPOSE_DIR/src"
+  if [ -x "./jtag" ]; then
+    exec ./jtag "$@"
+  else
+    echo "❌ CLI not built. Run: cd src && npm run build:cli"
+    exit 1
+  fi
+}
+
+# ── Main ────────────────────────────────────────────────────
+
+case "${1:-}" in
+  start)   shift; cmd_start "$@" ;;
+  stop)    shift; cmd_stop "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  open)    shift; cmd_open "$@" ;;
+  cli)     shift; cmd_cli "$@" ;;
+  help|-h|--help)
+    echo "Usage: continuum [command]"
+    echo ""
+    echo "Commands:"
+    echo "  (none)    Auto-detect: open browser or CLI"
+    echo "  start     Start Docker containers + open browser"
+    echo "  stop      Stop Docker containers"
+    echo "  status    Show running state (local + grid)"
+    echo "  open      Open browser to best node"
+    echo "  open NAME Open browser to named grid node"
+    echo "  cli       CLI/REPL mode"
+    echo ""
+    echo "Config: ~/.continuum/config.env"
+    ;;
+  "")
+    # Default: auto-detect
+    if has_display; then
+      url=$(get_url 2>/dev/null) || {
+        # Nothing running — start it
+        cmd_start
+        exit $?
+      }
+      echo "✅ $url"
+      open_browser "$url"
+    else
+      # Headless — CLI mode
+      cmd_cli "$@"
+    fi
+    ;;
+  *)
+    # Unknown command — pass to CLI
+    cmd_cli "$@"
+    ;;
+esac

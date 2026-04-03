@@ -78,6 +78,20 @@ fi
 
 ok "Source: $INSTALL_DIR"
 
+# ── 3b. Install continuum command ─────────────────────────
+BIN_TARGET="/usr/local/bin/continuum"
+if [ -w "/usr/local/bin" ]; then
+  cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
+elif command -v sudo &>/dev/null; then
+  sudo cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
+else
+  BIN_TARGET="$HOME/.local/bin/continuum"
+  mkdir -p "$HOME/.local/bin"
+  cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
+fi
+chmod +x "$BIN_TARGET"
+ok "Command: $BIN_TARGET"
+
 # ── 4. Configuration ───────────────────────────────────────
 mkdir -p "$CONTINUUM_DATA"
 
@@ -173,9 +187,12 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Continuum is running"
 echo ""
 echo "  UI:      $URL"
-echo "  Stop:    cd $INSTALL_DIR && docker compose down"
-echo "  Update:  cd $INSTALL_DIR && git pull && docker compose pull && docker compose up -d"
-echo "  Logs:    cd $INSTALL_DIR && docker compose logs -f"
+echo ""
+echo "  continuum          Open Continuum (from anywhere)"
+echo "  continuum start    Start containers"
+echo "  continuum stop     Stop containers"
+echo "  continuum status   Show running state"
+echo "  continuum open     Open browser"
 echo ""
 if [[ "$HAS_GPU" == "true" ]]; then
   echo "  GPU:     ${GPU_NAME:-detected}"
