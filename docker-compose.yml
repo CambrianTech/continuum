@@ -114,7 +114,7 @@ services:
       - "7880:7880"   # WebSocket signalling
       - "7881:7881"   # WebRTC TCP
       - "7882:7882/udp"  # WebRTC UDP
-    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1"]
+    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "${LIVEKIT_NODE_IP:-127.0.0.1}"]
 
   # ── Tailscale (grid profile — remote HTTPS access) ────────
   # Joins tailnet, provisions real Let's Encrypt certs, reverse-proxies
