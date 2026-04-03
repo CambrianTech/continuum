@@ -78,7 +78,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "9001:9001"   # WebSocket
+      - "${NODE_WS_PORT:-9001}:9001"   # WebSocket (grid mode: set NODE_WS_PORT=9002 to avoid conflict with Tailscale)
     volumes:
       - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
@@ -111,9 +111,9 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     ports:
-      - "7880:7880"   # WebSocket signalling
-      - "7881:7881"   # WebRTC TCP
-      - "7882:7882/udp"  # WebRTC UDP
+      - "${LIVEKIT_SIGNAL_PORT:-7880}:7880"   # WebSocket signalling (grid: set LIVEKIT_SIGNAL_PORT=7890 to avoid Tailscale conflict)
+      - "7881:7881"   # WebRTC TCP (direct, not proxied)
+      - "7882:7882/udp"  # WebRTC UDP (direct, not proxied)
     command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "${LIVEKIT_NODE_IP:-127.0.0.1}"]
 
   # ── Tailscale (grid profile — remote HTTPS access) ────────
@@ -143,8 +143,8 @@ services:
       - net_raw
     ports:
       - "443:443"     # HTTPS → widget-server
-      - "9443:9001"   # WSS → node-server (9443 avoids conflict with direct 9001)
-      - "7443:7880"   # WSS → livekit
+      - "9001:9001"   # WSS → node-server
+      - "7880:7880"   # WSS → livekit
 
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:
