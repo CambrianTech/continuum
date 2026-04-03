@@ -76,12 +76,14 @@ WORKDIR /app
 
 # Avatar VRM models — baked into image (CC0 licensed, ~132MB).
 # Required for persona avatar selection in live calls.
-# The avatar catalog discovers models at models/avatars/ at runtime.
-# Uses additional_contexts "avatars" from docker-compose.yml.
-COPY --from=avatars . /app/models/avatars/
+# Stored at /app/avatars (not /app/models/) because the voice-models Docker
+# volume mounts over /app/models at runtime and would hide baked-in files.
+# Symlink models/avatars → /app/avatars so Rust catalog discovers them.
+COPY --from=avatars . /app/avatars/
 
-# Socket and data directories
-RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
+# Socket and data directories + avatar symlink
+RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs \
+    /app/models && ln -s /app/avatars /app/models/avatars
 
 # Health check — Rust core listens on its socket
 HEALTHCHECK --interval=5s --timeout=3s --retries=3 \

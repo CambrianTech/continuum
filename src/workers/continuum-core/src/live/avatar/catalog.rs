@@ -110,17 +110,27 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
     },
 ];
 
-/// Models directory relative to the working directory (src/).
-const MODELS_DIR: &str = "models/avatars";
+/// Default models directory relative to the working directory (src/).
+const DEFAULT_MODELS_DIR: &str = "models/avatars";
 
 /// Recognized model file extensions for filesystem discovery.
 const MODEL_EXTENSIONS: &[&str] = &[
     "vrm", "glb", "gltf", "moc3", "svg", "png", "jpg", "jpeg", "webp",
 ];
 
+/// Resolve the avatar models directory.
+/// Checks AVATAR_models_dir() env var first (set in Docker to avoid volume conflicts),
+/// then falls back to the default relative path.
+fn models_dir() -> &'static str {
+    static DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        std::env::var("AVATAR_MODELS_DIR").unwrap_or_else(|_| DEFAULT_MODELS_DIR.to_string())
+    })
+}
+
 /// Get the filesystem path for an avatar model.
 pub fn avatar_model_path(filename: &str) -> PathBuf {
-    PathBuf::from(MODELS_DIR).join(filename)
+    PathBuf::from(models_dir()).join(filename)
 }
 
 // =============================================================================
@@ -345,22 +355,22 @@ impl AvatarCatalog {
     /// For known models (matching static catalog by stem), inherits voice profile metadata.
     /// For unknown models, infers gender from the static catalog or defaults.
     pub fn discover() -> Self {
-        let models_dir = Path::new(MODELS_DIR);
+        let dir = Path::new(models_dir());
 
-        if !models_dir.exists() {
+        if !dir.exists() {
             clog_info!(
                 "🎭 Avatar catalog: {} not found, using static catalog only",
-                MODELS_DIR
+                models_dir()
             );
             return Self::from_static();
         }
 
-        let entries = match std::fs::read_dir(models_dir) {
+        let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(e) => {
                 clog_warn!(
                     "🎭 Failed to read {}: {}, using static catalog",
-                    MODELS_DIR,
+                    models_dir(),
                     e
                 );
                 return Self::from_static();
@@ -510,7 +520,7 @@ impl AvatarCatalog {
         if models.is_empty() {
             clog_info!(
                 "🎭 Avatar catalog: no avatar models in {}, using static catalog",
-                MODELS_DIR
+                models_dir()
             );
             return Self::from_static();
         }

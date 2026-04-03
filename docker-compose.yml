@@ -56,6 +56,7 @@ services:
       - ipc-sockets:/root/.continuum/sockets
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+      - AVATAR_MODELS_DIR=/app/avatars
     healthcheck:
       test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
       interval: 5s
