@@ -331,6 +331,26 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ---
 
+## Phase 11: Docker — Full-Stack Containerization (PR #740)
+
+> `docker compose pull && docker compose up` — any machine, zero setup.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | IN PROGRESS | docker-compose.yml in repo, 7 services: postgres, continuum-core, node-server, widget-server, livekit, livekit-tls, model-init. CI builds & pushes to GHCR. |
+| — | **LiveKit TLS proxy** | DONE (PR #740) | Caddy reverse proxy on port 7443 terminates TLS, proxies to LiveKit plain WS. Browser `wss://` works from HTTPS pages. |
+| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. Logs error, stays alive. |
+| — | **ARM64 Docker: WebRTC native build fails** | TODO | `livekit` crate's `webrtc-sys` C++ headers fail with `-fpermissive` on ARM64 Linux (Docker on Apple Silicon). Fix: either (a) make livekit a cargo feature flag so Docker skips it (LiveKit runs as separate container anyway), (b) cross-compile prebuilt WebRTC for ARM64, or (c) accept amd64 images + Rosetta emulation. |
+| — | **Model volume init** | DONE (PR #740) | `model-init` container downloads voice models (4.1GB), avatars (132MB), scenes into a named Docker volume. `download-voice-models.sh` and `download-avatar-models.sh` respect `MODELS_DIR` env override. |
+| — | **Node-server ESM resolution** | DONE (PR #740) | tsc emits ES2020 imports without `.js` extensions. Docker uses `tsx` at runtime. |
+| — | **Persona seeding in Docker** | TODO | `seed-continuum.ts` uses `./jtag` subprocesses. Needs either: (a) refactor to direct function calls, or (b) one-shot `docker compose exec` after startup. |
+| — | **CI multi-arch images** | TODO | Build ARM64 + AMD64 images in GitHub Actions for native Mac + Linux support. Requires fixing WebRTC ARM64 build first. |
+| — | **Rust Dockerfile version pinning** | DONE (PR #740) | Bumped to `rust:1.89-bookworm` for Bevy 0.18.1. `cargo-chef` installed with `--locked`. |
+
+**Done when**: `docker compose pull && docker compose up` on a fresh Mac or Linux box brings up the full system. Personas chat. Live calls work over TLS. No local compilation required.
+
+---
+
 ## Phase 12: Factory — Model Forge Production Line
 
 > Nature: forge base models. Nurture: academy trains personas. Factory is nature. The factory is the product's front door — the widget that brings people in and the grid that keeps them.
