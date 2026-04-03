@@ -7,7 +7,7 @@ use super::catalog::AVATAR_CATALOG;
 use super::gender::{gender_from_identity, gender_from_voice_name};
 use super::hash::{deterministic_index, deterministic_pick, fnv1a_hash};
 use super::types::*;
-use crate::clog_info;
+use crate::{clog_info, clog_warn};
 use std::collections::{HashMap, HashSet};
 
 /// Select the best avatar model for a persona based on TTS voice characteristics.
@@ -338,12 +338,16 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
     let catalog = discovered_catalog();
     let models = catalog.all();
 
-    // Empty catalog can't happen: discover() falls back to from_static() which has 8 models.
-    // But guard anyway — a panic here is better than a silent wrong selection.
-    assert!(
-        !models.is_empty(),
-        "Avatar catalog is empty — no models on disk and no static fallback"
-    );
+    // discover() always falls back to from_static() (8 models) if no models on disk.
+    // If this is somehow empty, return the first static model rather than panicking —
+    // a panic here kills the tokio worker thread, which poisons IPC and hangs live/join.
+    if models.is_empty() {
+        clog_warn!("🎭 Avatar catalog empty — this should never happen, returning static fallback");
+        let static_catalog = AvatarCatalog::from_static();
+        // Leak the static catalog so we can return a &'static reference
+        let leaked = Box::leak(Box::new(static_catalog));
+        return &leaked.all()[0];
+    }
 
     let mut guard = DYNAMIC_ALLOCATION.lock().unwrap();
     let allocation = guard.get_or_insert_with(HashMap::new);

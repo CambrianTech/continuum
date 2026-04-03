@@ -504,6 +504,17 @@ impl AvatarCatalog {
             models.push(model);
         }
 
+        // If no models discovered on disk, fall back to static catalog.
+        // This happens in Docker where models/ exists (mounted volume) but
+        // contains only voice models, not avatar VRM files.
+        if models.is_empty() {
+            clog_info!(
+                "🎭 Avatar catalog: no avatar models in {}, using static catalog",
+                MODELS_DIR
+            );
+            return Self::from_static();
+        }
+
         // Sort by id for deterministic ordering
         models.sort_by(|a, b| a.id.cmp(&b.id));
 
