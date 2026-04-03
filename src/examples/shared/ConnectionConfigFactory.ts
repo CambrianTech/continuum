@@ -39,28 +39,30 @@ export function createConnectionConfig(exampleDir?: string): ConnectionConfig {
                      packageJson.name?.split('/').pop() ||
                      'unknown-example';
 
-  // Import ports from shared/config.ts (generated from config.env)
-  // This is the SINGLE SOURCE OF TRUTH for port configuration
-  let httpPort: number;
-  let websocketPort: number;
+  // Port resolution: env vars override shared/config.ts.
+  // Docker containers use JTAG_HTTP_PORT / JTAG_WEBSOCKET_PORT to run on
+  // different ports than the default 9000/9001 (e.g. widget-server on 9003).
+  let httpPort = parseInt(process.env.JTAG_HTTP_PORT || '');
+  let websocketPort = parseInt(process.env.JTAG_WEBSOCKET_PORT || '');
 
-  try {
-    // Dynamic import to get the latest values
-    const configModule = require('../../shared/config');
-    httpPort = configModule.HTTP_PORT;
-    websocketPort = configModule.WS_PORT;
-  } catch (error) {
-    throw new Error(
-      `ConnectionConfigFactory: Could not load shared/config.ts. ` +
-      `Make sure you've run 'npm run build:ts' to generate the config file. ` +
-      `Error: ${error instanceof Error ? error.message : String(error)}`
-    );
+  if (!httpPort || !websocketPort) {
+    try {
+      const configModule = require('../../shared/config');
+      httpPort = httpPort || configModule.HTTP_PORT;
+      websocketPort = websocketPort || configModule.WS_PORT;
+    } catch (error) {
+      throw new Error(
+        `ConnectionConfigFactory: Could not load shared/config.ts. ` +
+        `Set JTAG_HTTP_PORT + JTAG_WEBSOCKET_PORT env vars, or run 'npm run build:ts'. ` +
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   if (!httpPort || !websocketPort) {
     throw new Error(
-      `ConnectionConfigFactory: Ports not found in shared/config.ts. ` +
-      `Ensure config.env has HTTP_PORT and WS_PORT defined.`
+      `ConnectionConfigFactory: Ports not resolved. ` +
+      `Set JTAG_HTTP_PORT + JTAG_WEBSOCKET_PORT, or ensure config.env has HTTP_PORT and WS_PORT.`
     );
   }
 

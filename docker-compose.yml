@@ -115,6 +115,9 @@ services:
       - node-server
     ports:
       - "9003:9003"
+    environment:
+      - JTAG_HTTP_PORT=9003
+      - JTAG_WEBSOCKET_PORT=9001
 
   # ── LiveKit TLS Proxy (Caddy) ──────────────────────────────
   # Terminates TLS on 7443, proxies WebSocket to LiveKit plain WS.
