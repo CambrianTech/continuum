@@ -1,46 +1,11 @@
 # Continuum — docker compose up
 #
-# One command. Tailscale handles TLS automatically (real Let's Encrypt certs).
-# Access: https://<hostname>.<tailnet>.ts.net (auto-discovered by Tailscale)
-#
-# REQUIRED: Set TS_AUTHKEY in .env file or environment
-#   Generate at: https://login.tailscale.com/admin/settings/keys
-#   Use reusable + ephemeral key
-#
-# With GPU: docker compose --profile gpu up
-#
-# GPU profile requires sibling repos:
-#   ../sentinel-ai/    — forge worker source
-#   ../forge-alloy/    — alloy recipe definitions
+# Local:  docker compose up                    (HTTP on localhost)
+# Grid:   docker compose --profile grid up     (HTTPS via Tailscale)
+# GPU:    docker compose --profile gpu up      (adds forge + inference)
+# All:    docker compose --profile grid --profile gpu up
 
 services:
-
-  # ── Tailscale (TLS + mesh networking) ─────────────────────
-  # Joins tailnet, provisions real Let's Encrypt certs automatically.
-  # Reverse-proxies HTTPS to plain HTTP containers via Docker DNS.
-  # No manual certs, no self-signed, no Caddy, no warnings.
-  tailscale:
-    image: tailscale/tailscale:latest
-    hostname: ${TS_HOSTNAME:-bigmama}
-    restart: unless-stopped
-    environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
-      - TS_EXTRA_ARGS=
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_SERVE_CONFIG=/config/tailscale-serve.json
-      - TS_USERSPACE=false
-    volumes:
-      - tailscale-state:/var/lib/tailscale
-      - ./docker/tailscale-serve.json:/config/tailscale-serve.json:ro
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - net_admin
-      - net_raw
-    ports:
-      - "443:443"     # HTTPS → widget-server
-      - "9001:9001"   # WSS → node-server
-      - "7880:7880"   # WSS → livekit
 
   # ── PostgreSQL ────────────────────────────────────────────
   postgres:
@@ -79,7 +44,6 @@ services:
       dockerfile: ../../docker/continuum-core.Dockerfile
     image: ghcr.io/cambriantech/continuum-core:latest
     restart: unless-stopped
-    # No mem_limit — Rust PersonaAllocator reads host hardware and decides
     working_dir: /app
     depends_on:
       postgres:
@@ -108,6 +72,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    ports:
+      - "9001:9001"   # WebSocket
     volumes:
       - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
@@ -127,6 +93,8 @@ services:
     mem_limit: 512m
     depends_on:
       - node-server
+    ports:
+      - "9003:9003"   # HTTP
     environment:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=9001
@@ -136,7 +104,41 @@ services:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     mem_limit: 256m
+    ports:
+      - "7880:7880"   # WebSocket signalling
+      - "7881:7881"   # WebRTC TCP
+      - "7882:7882/udp"  # WebRTC UDP
     command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1"]
+
+  # ── Tailscale (grid profile — remote HTTPS access) ────────
+  # Joins tailnet, provisions real Let's Encrypt certs, reverse-proxies
+  # HTTPS/WSS to plain HTTP containers. Only needed for remote access.
+  #
+  # Requires .env:
+  #   TS_AUTHKEY=tskey-auth-...
+  #   TS_HOSTNAME=my-machine
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-continuum}
+    restart: unless-stopped
+    profiles: ["grid"]
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/tailscale-serve.json
+      - TS_USERSPACE=false
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./docker/tailscale-serve.json:/config/tailscale-serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+    ports:
+      - "443:443"     # HTTPS → widget-server
+      - "9443:9001"   # WSS → node-server (9443 avoids conflict with direct 9001)
+      - "7443:7880"   # WSS → livekit
 
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:
