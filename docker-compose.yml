@@ -82,6 +82,7 @@ services:
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1
+      - LIVEKIT_URL=ws://livekit:7880
 
   # ── Widget Server (Vite) ──────────────────────────────────
   widget-server:
