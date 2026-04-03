@@ -28,6 +28,7 @@ pub mod backends;
 pub mod catalog;
 pub mod frame;
 pub mod frame_analysis;
+#[cfg(feature = "livekit-webrtc")]
 pub mod frame_publisher;
 pub mod gender;
 pub mod hash;
@@ -48,10 +49,11 @@ pub use backends::{
 pub use catalog::{avatar_model_path, AvatarCatalog, AVATAR_CATALOG};
 pub use frame::{AvatarConfig, ResolutionTier, RgbaFrame};
 pub use frame_analysis::{FrameAnalysis, HealthVerdict};
+#[cfg(feature = "livekit-webrtc")]
 pub use frame_publisher::{create_publisher, CpuI420Publisher, FramePublisher, PublishError};
 pub use gender::{gender_from_identity, gender_from_voice_name};
 pub use hash::{deterministic_index, deterministic_pick, fnv1a_hash};
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "livekit-webrtc", target_os = "macos"))]
 pub use publishers::gpu_bridge::GpuBridgePublisher;
 pub use render_loop::{
     allocate_bevy_slot, create_renderer, reset_slot_pool, spawn_renderer_loop,

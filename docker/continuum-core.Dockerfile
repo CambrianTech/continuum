@@ -37,12 +37,14 @@ ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
 # Build dependencies from recipe (CACHED — this is the big win)
+# --no-default-features skips livekit-webrtc (WebRTC C++ fails on ARM64 Docker).
+# LiveKit runs as its own container; Rust agent participation is desktop-only.
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
+RUN cargo chef cook --release --no-default-features ${GPU_FEATURES} --recipe-path recipe.json
 
 # Now build actual source (fast — deps already compiled)
 COPY . .
-RUN cargo build --release ${GPU_FEATURES} \
+RUN cargo build --release --no-default-features ${GPU_FEATURES} \
     --bin continuum-core-server \
     --bin archive-worker
 
@@ -57,10 +59,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 
-# Copy ONNX runtime if built with it
-# The load-dynamic feature means we need the .so at runtime
-COPY --from=builder /app/target/release/build/ort-*/out/onnxruntime-*/lib/*.so* /usr/local/lib/ 2>/dev/null || true
-RUN ldconfig
+# Copy ONNX runtime if built with load-dynamic-ort (not always present)
+RUN --mount=from=builder,source=/app/target/release/build,target=/build \
+    cp /build/ort-*/out/onnxruntime-*/lib/*.so* /usr/local/lib/ 2>/dev/null || true \
+    && ldconfig
 
 # Working directory — models volume mounts at /app/models so relative
 # paths like "models/avatars" resolve correctly from cwd
@@ -76,6 +78,7 @@ HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
 # Expose socket directory as volume for IPC with node-server
 VOLUME ["/root/.continuum"]
 
-# Default: start continuum-core-server
-# Override with archive-worker or other binaries as needed
+# Default: start continuum-core-server on the standard socket path.
+# Override with archive-worker or other binaries as needed.
 ENTRYPOINT ["continuum-core-server"]
+CMD ["/root/.continuum/sockets/continuum-core.sock"]

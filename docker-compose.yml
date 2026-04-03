@@ -66,11 +66,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      model-init:
-        condition: service_completed_successfully
     volumes:
       - ~/.continuum:/root/.continuum
       - voice-models:/app/models:ro
+      - ipc-sockets:/root/.continuum/sockets
     environment:
       - DATABASE_URL=postgresql://continuum:continuum@postgres:5432/continuum
     healthcheck:
@@ -98,6 +97,7 @@ services:
       - "9001:9001"   # WSS
     volumes:
       - ~/.continuum:/root/.continuum
+      - ipc-sockets:/root/.continuum/sockets
     environment:
       - DATABASE_URL=postgresql://continuum:continuum@postgres:5432/continuum
       - NODE_ENV=production
@@ -183,3 +183,4 @@ volumes:
   forge-output:
   models:
   voice-models:
+  ipc-sockets:
