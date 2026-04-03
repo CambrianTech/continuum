@@ -333,21 +333,27 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ## Phase 11: Docker — Full-Stack Containerization (PR #740)
 
-> `docker compose pull && docker compose up` — any machine, zero setup.
+> `docker compose up` — Tailscale handles TLS, containers serve HTTP. Real HTTPS, no warnings.
 
 | # | Issue | Status | What |
 |---|-------|--------|------|
-| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | IN PROGRESS | docker-compose.yml in repo, 7 services: postgres, continuum-core, node-server, widget-server, livekit, livekit-tls, model-init. CI builds & pushes to GHCR. |
-| — | **LiveKit TLS proxy** | DONE (PR #740) | Caddy reverse proxy on port 7443 terminates TLS, proxies to LiveKit plain WS. Browser `wss://` works from HTTPS pages. |
-| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. Logs error, stays alive. |
-| — | **ARM64 Docker: WebRTC native build fails** | TODO | `livekit` crate's `webrtc-sys` C++ headers fail with `-fpermissive` on ARM64 Linux (Docker on Apple Silicon). Fix: either (a) make livekit a cargo feature flag so Docker skips it (LiveKit runs as separate container anyway), (b) cross-compile prebuilt WebRTC for ARM64, or (c) accept amd64 images + Rosetta emulation. |
-| — | **Model volume init** | DONE (PR #740) | `model-init` container downloads voice models (4.1GB), avatars (132MB), scenes into a named Docker volume. `download-voice-models.sh` and `download-avatar-models.sh` respect `MODELS_DIR` env override. |
-| — | **Node-server ESM resolution** | DONE (PR #740) | tsc emits ES2020 imports without `.js` extensions. Docker uses `tsx` at runtime. |
-| — | **Persona seeding in Docker** | TODO | `seed-continuum.ts` uses `./jtag` subprocesses. Needs either: (a) refactor to direct function calls, or (b) one-shot `docker compose exec` after startup. |
-| — | **CI multi-arch images** | TODO | Build ARM64 + AMD64 images in GitHub Actions for native Mac + Linux support. Requires fixing WebRTC ARM64 build first. |
-| — | **Rust Dockerfile version pinning** | DONE (PR #740) | Bumped to `rust:1.89-bookworm` for Bevy 0.18.1. `cargo-chef` installed with `--locked`. |
+| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | WORKING | docker-compose.yml: tailscale, postgres, continuum-core, node-server, widget-server, livekit, model-init, forge-worker, inference. All containers healthy on BigMama. |
+| — | **Tailscale sidecar TLS** | DONE | Tailscale container joins tailnet, provisions Let's Encrypt certs, reverse-proxies HTTPS/WSS to plain HTTP containers via TS_SERVE_CONFIG. No Caddy, no self-signed, no manual certs. Two prereqs: enable HTTPS certs in Tailscale DNS settings + generate auth key. |
+| — | **ONNX Runtime in Docker** | DONE | ONNX Runtime 1.24.4 installed in continuum-core image. ORT_DYLIB_PATH env var set. Silero VAD + Piper TTS work (persona hearing + speech). |
+| — | **Postgres in Docker** | DONE | SecretManager no longer overwrites Docker env vars with config.env values. DATABASE_URL from compose takes precedence. |
+| — | **WS localhost fallback bug** | DONE | TransportConfig.ts used `ws://localhost` for non-HTTPS pages. Now always uses `window.location.hostname` in browser. Vite bundle rebuilt. |
+| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. |
+| — | **Auto-seed on first run** | PARTIAL | docker-entrypoint.ts detects empty DB, runs seed-continuum.ts. Rooms seed (11/12). Personas fail (IPC drops under heavy seeding). Needs resilient seeding with retry. |
+| — | **ARM64 Docker: WebRTC** | DEFERRED | LiveKit runs as separate container. Rust binary built without livekit-webrtc feature (`--no-default-features`). |
+| — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
+| — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
+| — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
 
-**Done when**: `docker compose pull && docker compose up` on a fresh Mac or Linux box brings up the full system. Personas chat. Live calls work over TLS. No local compilation required.
+**Prereqs** (one-time, per tailnet):
+1. Tailscale installed + HTTPS certificates enabled in DNS settings
+2. Auth key generated (reusable + ephemeral) → stored in `.env` as `TS_AUTHKEY`
+
+**Done when**: `docker compose up` on a fresh machine with Tailscale brings up the full system with all personas, avatars, and voice models. Accessible at `https://<hostname>.ts.net`.
 
 ---
 
