@@ -148,7 +148,53 @@ Ares monitors container health at a higher level — see [ARES-KERNEL.md](ARES-K
 
 ---
 
-## 6. Building Images
+## 6. Fault Isolation — Docker as Stability Architecture
+
+Docker containers aren't just deployment convenience — they ARE the stability architecture. Resource limits provide hard isolation that prevents any component from killing the host machine.
+
+### The Principle
+
+A runaway persona can't OOM the host. It OOMs its container, gets restarted by Docker, and everything else keeps running. The host machine stays alive no matter what.
+
+| Without Docker | With Docker |
+|----------------|-------------|
+| Runaway persona OOMs the Mac → reboot, lose work | Container hits mem_limit → restart in 3s |
+| Unbounded longterm.db fills disk → system freeze | Volume quota exceeded → eviction kicks in |
+| Bad CUDA version breaks everything → hours debugging | Forge container pins exact torch → isolated |
+| One crash cascades to all services | One container dies, others unaffected |
+
+### Service Criticality Tiers
+
+| Tier | Services | Policy | Rationale |
+|------|----------|--------|-----------|
+| **Critical** | postgres, continuum-core | `restart: always`, generous limits | Data + IPC backbone — if these die, nothing works |
+| **High** | node-server | `restart: unless-stopped`, bounded | Command routing — personas depend on it |
+| **Medium** | widget-server, livekit | `restart: unless-stopped`, tight limits | UI + voice — degraded but functional without |
+| **Best-effort** | forge-worker, inference | `restart: unless-stopped`, capped | Compute tasks — expendable, restartable |
+| **Expendable** | model-init, seed | `restart: no` | One-shot tasks, run once and exit |
+
+### Future: Per-Persona Containers
+
+Each persona as its own container with individual resource budgets:
+- Crash isolation (one persona can't poison others)
+- Independent restart without affecting other personas
+- Resource accounting per persona (who's using what)
+- Scale individual personas across grid nodes
+- Memory/disk budgets enforced by Docker, not application code
+
+### Storage Budget
+
+Application-level limits backed by Docker volume constraints:
+- Persona memory: capped per persona with intelligent eviction (#752)
+- Genome/LoRA storage: LRU eviction when volume fills
+- Voice models: fixed size, downloaded once by model-init
+- Avatars: baked into image (CC0, ~132MB), no runtime growth
+
+The system owns its footprint. Ares monitors disk/memory pressure and triggers eviction before Docker hard-kills containers.
+
+---
+
+## 7. Building Images
 
 ### On the Target Machine (Preferred)
 
@@ -174,7 +220,7 @@ LiveKit WebRTC is excluded from Docker builds (`--no-default-features`) because 
 
 ---
 
-## 7. Networking
+## 8. Networking
 
 ### Internal (Container-to-Container)
 
@@ -211,7 +257,7 @@ Mac browser → https://bigmama.tailnet:9003 → widget-server container
 
 ---
 
-## 8. Auto-Discovery (Future — Ares Integration)
+## 9. Auto-Discovery (Future — Ares Integration)
 
 Currently, `--profile gpu` is a manual flag. The target architecture:
 
@@ -235,7 +281,7 @@ This eliminates manual node configuration. Plug in a machine, install Docker, `d
 
 ---
 
-## 9. Relationship to Other Docs
+## 10. Relationship to Other Docs
 
 | Document | Relationship |
 |----------|-------------|
@@ -246,7 +292,7 @@ This eliminates manual node configuration. Plug in a machine, install Docker, `d
 
 ---
 
-## 10. Implementation Phases
+## 11. Implementation Phases
 
 ### Phase 1: Static Docker (Current — `feature/docker-tls-infrastructure`)
 - [x] Dockerfiles for all services (continuum-core, node-server, widget-server, model-init)
