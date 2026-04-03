@@ -256,7 +256,7 @@ WantedBy=multi-user.target
 ```toml
 [node]
 id = "bigmama"
-mesh_peers = ["100.124.122.107", "100.100.186.92"]
+mesh_peers = ["100.x.x.x", "100.y.y.y"]
 
 [heartbeat]
 interval_secs = 30

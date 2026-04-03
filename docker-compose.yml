@@ -1,7 +1,7 @@
 # Continuum — docker compose up
 #
 # One command. Tailscale handles TLS automatically (real Let's Encrypt certs).
-# Access: https://<hostname>.taila5cb68.ts.net
+# Access: https://<hostname>.<tailnet>.ts.net (auto-discovered by Tailscale)
 #
 # REQUIRED: Set TS_AUTHKEY in .env file or environment
 #   Generate at: https://login.tailscale.com/admin/settings/keys

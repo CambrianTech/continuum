@@ -5,7 +5,7 @@
 #   tailscale cert --cert-file ~/.continuum/<hostname>.crt --key-file ~/.continuum/<hostname>.key <hostname>.ts.net
 #
 # On WSL2 (Tailscale on Windows side):
-#   From PowerShell: tailscale cert bigmama.taila5cb68.ts.net
+#   From PowerShell: tailscale cert bigmama.<tailnet>.ts.net
 #   Then: cp /mnt/c/Users/<user>/bigmama.*.crt ~/.continuum/
 #         cp /mnt/c/Users/<user>/bigmama.*.key ~/.continuum/
 
@@ -19,11 +19,11 @@ if [ -z "$CRT" ] || [ -z "$KEY" ]; then
   echo "Tailscale certs are required. Provision them once:"
   echo ""
   echo "  From the machine running Tailscale (Windows PowerShell for WSL2):"
-  echo "    tailscale cert <hostname>.taila5cb68.ts.net"
+  echo "    tailscale cert <hostname>.<tailnet>.ts.net"
   echo ""
   echo "  Then copy to ~/.continuum/:"
-  echo "    cp <hostname>.taila5cb68.ts.net.crt ~/.continuum/"
-  echo "    cp <hostname>.taila5cb68.ts.net.key ~/.continuum/"
+  echo "    cp <hostname>.<tailnet>.ts.net.crt ~/.continuum/"
+  echo "    cp <hostname>.<tailnet>.ts.net.key ~/.continuum/"
   echo ""
   echo "  Then restart: docker compose restart tls-proxy"
   echo ""
