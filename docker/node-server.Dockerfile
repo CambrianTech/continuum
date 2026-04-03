@@ -33,8 +33,10 @@ VOLUME ["/root/.continuum"]
 # HTTP + WebSocket
 EXPOSE 9000 9001
 
+# Health check via WebSocket port (HTTP is skipped in Docker — widget-server handles it).
+# Uses a TCP connect check since WebSocket upgrade requires a client library.
 HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
-    CMD node -e "fetch('http://localhost:9000/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"
+    CMD node -e "const s=require('net').connect(9001,'localhost',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"
 
 # tsx runs TypeScript directly, handling ESM module resolution
 CMD ["npx", "tsx", "server/docker-entrypoint.ts"]

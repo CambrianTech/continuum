@@ -158,7 +158,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: ./src/examples/widget-ui
+          context: ./src
           file: ./docker/widget-server.Dockerfile
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}

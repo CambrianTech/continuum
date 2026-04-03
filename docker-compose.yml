@@ -93,8 +93,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "9000:9000"   # HTTPS
-      - "9001:9001"   # WSS
+      - "9001:9001"   # WSS (HTTP skipped — widget-server handles static files)
     volumes:
       - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
@@ -155,8 +154,11 @@ services:
     build: ../sentinel-ai
     image: ghcr.io/cambriantech/forge-worker:latest
     profiles: ["gpu"]
+    mem_limit: 28g
     deploy:
       resources:
+        limits:
+          memory: 28g
         reservations:
           devices:
             - driver: nvidia
@@ -165,22 +167,35 @@ services:
     volumes:
       - forge-output:/app/output
       - hf-cache:/root/.cache/huggingface
+      - models:/app/models
       - ../forge-alloy/examples:/app/alloys:ro
     environment:
       - CUDA_VISIBLE_DEVICES=0
       - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
 
-  # ── Inference Server ──────────────────────────────────────
-  # Serves forged models via llama.cpp
+  # ── Inference Server (GPU nodes only) ──────────────────────
+  # Serves forged models via llama.cpp with full GPU offload.
+  # On Mac/CPU nodes, continuum-core's Candle backend handles inference natively —
+  # no separate container needed. This is for GPU nodes serving larger models.
   inference:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     restart: unless-stopped
-    mem_limit: 4g
+    profiles: ["gpu"]
+    mem_limit: 8g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     ports:
       - "8090:8090"
     volumes:
       - models:/models
-    command: ["-m", "/models/current.gguf", "-c", "2048", "-ngl", "99", "--port", "8090"]
+      - forge-output:/app/output:ro
+    command: ["-m", "/models/current.gguf", "-c", "4096", "-ngl", "99", "--port", "8090", "--host", "0.0.0.0"]
 
 volumes:
   pgdata:
