@@ -633,21 +633,27 @@ export class SystemOrchestrator extends EventEmitter {
 
     // Phase 2: Wait for server to finish bootstrapping (commands registered).
     // This prevents the browser from opening to a white screen while the
-    // WebSocket server is still registering 261 commands and 17 daemons.
+    // WebSocket server is still registering commands and daemons.
+    //
+    // Check readiness DIRECTLY via the server instance — no subprocess.
+    // The old approach (./jtag ping) spawned a CLI that connected via WebSocket
+    // back to itself, which is circular in Docker and fragile everywhere.
     console.debug('⏳ Waiting for server bootstrap (commands + daemons)...');
     const maxBootstrapRetries = 30;
     let bootstrapAttempt = 0;
+    const { JTAGSystemServer: ServerClass } = await import('../core/system/server/JTAGSystemServer');
 
     while (bootstrapAttempt < maxBootstrapRetries) {
       try {
-        const { stdout } = await execAsync('./jtag ping --timeout=3000', { timeout: 5000 });
-        const pingResult = JSON.parse(stdout);
-
-        if (pingResult.success && pingResult.server?.health?.systemReady) {
-          const cmds = pingResult.server.health.commandsRegistered || 0;
-          const daemons = pingResult.server.health.daemonsActive || 0;
-          console.debug(`✅ Server bootstrapped: ${cmds} commands, ${daemons} daemons`);
-          break;
+        const server = ServerClass.instance;
+        if (server) {
+          const commandDaemon = server.getCommandDaemon() as any;
+          const cmds = commandDaemon?.commands?.size ?? 0;
+          const daemons = server.systemDaemons.length;
+          if (cmds > 0) {
+            console.debug(`✅ Server bootstrapped: ${cmds} commands, ${daemons} daemons`);
+            break;
+          }
         }
       } catch {
         // Server not ready yet
