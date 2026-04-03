@@ -59,10 +59,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 
-# Copy ONNX runtime if built with load-dynamic-ort (not always present)
-RUN --mount=from=builder,source=/app/target/release/build,target=/build \
-    cp /build/ort-*/out/onnxruntime-*/lib/*.so* /usr/local/lib/ 2>/dev/null || true \
+# ONNX Runtime — required for Silero VAD (voice activity detection) and Piper TTS.
+# These are core persona sensory capabilities (hearing + speech).
+# The ort crate uses load-dynamic (dlopen), so libonnxruntime must be present at runtime.
+ARG ONNX_VERSION=1.24.4
+RUN curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz" \
+    | tar xz --strip-components=1 -C /usr/local \
     && ldconfig
+
+# ort crate (load-dynamic feature) requires this env var to find the .so
+ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 
 # Working directory — models volume mounts at /app/models so relative
 # paths like "models/avatars" resolve correctly from cwd

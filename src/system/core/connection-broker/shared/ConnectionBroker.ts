@@ -375,6 +375,7 @@ export class ConnectionBroker implements IConnectionBroker {
     if (typeof window !== 'undefined' && window.location) {
       // Browser: derive from page URL
       wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${port}`;
+      console.log(`🔌 ConnectionBroker: WS URL derived from page: ${wsUrl} (page: ${window.location.href})`);
     } else {
       // Server: check if TLS is active
       try {

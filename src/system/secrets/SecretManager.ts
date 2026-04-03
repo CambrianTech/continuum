@@ -395,11 +395,15 @@ export class SecretManager {
         // Store in secrets Map
         this.secrets.set(key, value);
 
-        // Also set config vars in process.env for ServerConfig to use
+        // Also set config vars in process.env for ServerConfig to use.
+        // IMPORTANT: Don't overwrite env vars already set (e.g. by Docker compose).
+        // Docker/orchestrator env vars take precedence over config.env file.
         if (key.startsWith('DATABASE_') || key.startsWith('DATASETS_') ||
             key === 'HTTP_PORT' || key === 'WS_PORT' ||
             key === 'SENTINEL_PATH' || key === 'REPO_PATH') {
-          process.env[key] = value;
+          if (!process.env[key]) {
+            process.env[key] = value;
+          }
         }
       }
     }

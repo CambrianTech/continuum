@@ -75,6 +75,7 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
       // New adapter pattern with connect() method (use URL for WebSocket)
       const instanceConfig = this.context.config.instance;
       const connectParam = config.protocol === 'websocket' ? config.serverUrl || deriveWebSocketUrl(instanceConfig.ports.websocket_server) : undefined;
+      console.log(`🔌 Browser Factory: Connecting ${config.protocol} to: ${connectParam}`);
       await adapter.connect(connectParam);
     } else {
       // Legacy transport pattern - already connected in constructor

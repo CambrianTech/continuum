@@ -1,23 +1,46 @@
 # Continuum — docker compose up
 #
-# NORMAL USAGE (pulls pre-built images from GHCR — no local build needed):
-#   docker compose pull
-#   docker compose up
+# One command. Tailscale handles TLS automatically (real Let's Encrypt certs).
+# Access: https://<hostname>.taila5cb68.ts.net
 #
-# With GPU:     docker compose --profile gpu up
-# Forge only:   docker compose run forge-worker alloys/queue/01-qwen3.5-9b-code-128k.alloy.json
+# REQUIRED: Set TS_AUTHKEY in .env file or environment
+#   Generate at: https://login.tailscale.com/admin/settings/keys
+#   Use reusable + ephemeral key
 #
-# First install:
-#   curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
-#
-# DEV ONLY (build locally — requires x86_64 Linux for Rust/WebRTC):
-#   docker compose build && docker compose up
+# With GPU: docker compose --profile gpu up
 #
 # GPU profile requires sibling repos:
 #   ../sentinel-ai/    — forge worker source
 #   ../forge-alloy/    — alloy recipe definitions
 
 services:
+
+  # ── Tailscale (TLS + mesh networking) ─────────────────────
+  # Joins tailnet, provisions real Let's Encrypt certs automatically.
+  # Reverse-proxies HTTPS to plain HTTP containers via Docker DNS.
+  # No manual certs, no self-signed, no Caddy, no warnings.
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-bigmama}
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_EXTRA_ARGS=
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/tailscale-serve.json
+      - TS_USERSPACE=false
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./docker/tailscale-serve.json:/config/tailscale-serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+    ports:
+      - "443:443"     # HTTPS → widget-server
+      - "9001:9001"   # WSS → node-server
+      - "7880:7880"   # WSS → livekit
 
   # ── PostgreSQL ────────────────────────────────────────────
   postgres:
@@ -30,8 +53,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-continuum}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U continuum"]
       interval: 5s
@@ -39,8 +60,6 @@ services:
       retries: 5
 
   # ── Model Init (downloads voice/avatar/scene models on first run) ──
-  # Populates the voice-models volume. Exits after download.
-  # Re-run with: docker compose run model-init
   model-init:
     build:
       context: ./src
@@ -54,7 +73,6 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
 
   # ── Continuum Core (Rust) ─────────────────────────────────
-  # Voice processing, embeddings, search, inference, IPC
   continuum-core:
     build:
       context: ./src/workers
@@ -71,7 +89,7 @@ services:
       - voice-models:/app/models:ro
       - ipc-sockets:/root/.continuum/sockets
     environment:
-      - DATABASE_URL=postgresql://continuum:continuum@postgres:5432/continuum
+      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
     healthcheck:
       test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
       interval: 5s
@@ -79,7 +97,6 @@ services:
       retries: 5
 
   # ── Node Server (TypeScript) ──────────────────────────────
-  # Commands, daemons, WebSocket, orchestration
   node-server:
     build:
       context: ./src
@@ -92,19 +109,16 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    ports:
-      - "9001:9001"   # WSS (HTTP skipped — widget-server handles static files)
     volumes:
       - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
     environment:
-      - DATABASE_URL=postgresql://continuum:continuum@postgres:5432/continuum
+      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1
 
   # ── Widget Server (Vite) ──────────────────────────────────
-  # Browser UI — static assets + dev server
   widget-server:
     build:
       context: ./src
@@ -114,42 +128,18 @@ services:
     mem_limit: 512m
     depends_on:
       - node-server
-    ports:
-      - "9003:9003"
     environment:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=9001
 
-  # ── LiveKit TLS Proxy (Caddy) ──────────────────────────────
-  # Terminates TLS on 7443, proxies WebSocket to LiveKit plain WS.
-  # Required because LiveKit doesn't support TLS on its signalling port.
-  livekit-tls:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    mem_limit: 128m
-    depends_on:
-      - livekit
-    ports:
-      - "7443:7443"
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./docker/caddy-entrypoint.sh:/entrypoint.sh:ro
-      - ~/.continuum:/certs:ro
-    entrypoint: ["/entrypoint.sh"]
-
   # ── LiveKit (WebRTC) ──────────────────────────────────────
-  # Voice/video calls between personas (plain WS, internal only)
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     mem_limit: 256m
-    ports:
-      - "7881:7881"   # WebRTC TCP
-      - "7882:7882/udp"  # WebRTC UDP
     command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1"]
 
   # ── Forge Worker (sentinel-ai) ────────────────────────────
-  # GPU model forging — only on machines with NVIDIA GPU
   forge-worker:
     build: ../sentinel-ai
     image: ghcr.io/cambriantech/forge-worker:latest
@@ -175,9 +165,6 @@ services:
       - PYTHONUNBUFFERED=1
 
   # ── Inference Server (GPU nodes only) ──────────────────────
-  # Serves forged models via llama.cpp with full GPU offload.
-  # On Mac/CPU nodes, continuum-core's Candle backend handles inference natively —
-  # no separate container needed. This is for GPU nodes serving larger models.
   inference:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     restart: unless-stopped
@@ -190,8 +177,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    ports:
-      - "8090:8090"
     volumes:
       - models:/models
       - forge-output:/app/output:ro
@@ -204,3 +189,4 @@ volumes:
   models:
   voice-models:
   ipc-sockets:
+  tailscale-state:
