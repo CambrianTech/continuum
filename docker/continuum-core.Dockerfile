@@ -81,9 +81,8 @@ WORKDIR /app
 # Symlink models/avatars → /app/avatars so Rust catalog discovers them.
 COPY --from=avatars . /app/avatars/
 
-# Socket and data directories + avatar symlink
-RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs \
-    /app/models && ln -s /app/avatars /app/models/avatars
+# Socket and data directories
+RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
 
 # Health check — Rust core listens on its socket
 HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
