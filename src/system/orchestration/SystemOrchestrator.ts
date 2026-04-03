@@ -510,33 +510,40 @@ export class SystemOrchestrator extends EventEmitter {
     // Two separate servers:
     //   1. JTAGSystemServer (WebSocket + daemons) - core backend
     //   2. minimal-server.ts (HTTP) - serves UI and static files
-    const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
-    const activeExamplePath = getActiveExamplePath();
-    const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
+    //
+    // In Docker, the widget-server container handles HTTP separately,
+    // so skip spawning the HTTP server when JTAG_SKIP_HTTP is set.
+    if (!process.env.JTAG_SKIP_HTTP) {
+      const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
+      const activeExamplePath = getActiveExamplePath();
+      const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
 
-    console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
+      console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
 
-    this.serverProcess = spawn('npx', ['tsx', serverScript], {
-      cwd: activeExamplePath,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false
-    });
+      this.serverProcess = spawn('npx', ['tsx', serverScript], {
+        cwd: activeExamplePath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false
+      });
 
-    this.serverProcess.stdout?.on('data', (data) => {
-      console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
-    });
+      this.serverProcess.stdout?.on('data', (data) => {
+        console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
+      });
 
-    this.serverProcess.stderr?.on('data', (data) => {
-      console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
-    });
+      this.serverProcess.stderr?.on('data', (data) => {
+        console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
+      });
 
-    this.serverProcess.on('error', (error) => {
-      console.error(`❌ Server process failed: ${error.message}`);
-    });
+      this.serverProcess.on('error', (error) => {
+        console.error(`❌ Server process failed: ${error.message}`);
+      });
 
-    this.serverProcess.on('exit', (code, signal) => {
-      console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
-    });
+      this.serverProcess.on('exit', (code, signal) => {
+        console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
+      });
+    } else {
+      console.debug(`⏭️ Skipping HTTP server (JTAG_SKIP_HTTP set — widget-server handles HTTP)`);
+    }
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_START,
@@ -602,13 +609,14 @@ export class SystemOrchestrator extends EventEmitter {
 
     while (attempt < maxPortRetries) {
       try {
-        const portChecks = await Promise.all([
-          this.checkPortReady(activePorts.websocket_server),
-          this.checkPortReady(activePorts.http_server)
-        ]);
+        const checks = [this.checkPortReady(activePorts.websocket_server)];
+        if (!process.env.JTAG_SKIP_HTTP) {
+          checks.push(this.checkPortReady(activePorts.http_server));
+        }
+        const portChecks = await Promise.all(checks);
 
         if (portChecks.every(ready => ready)) {
-          console.debug(`✅ Ports listening: WS=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+          console.debug(`✅ Ports listening: WS=${activePorts.websocket_server}${process.env.JTAG_SKIP_HTTP ? ' (HTTP skipped)' : `, HTTP=${activePorts.http_server}`}`);
           break;
         }
       } catch {

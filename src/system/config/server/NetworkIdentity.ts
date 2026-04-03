@@ -37,6 +37,14 @@ let _cached: NetworkIdentity | null | undefined;
 export function getNetworkIdentity(): NetworkIdentity | null {
   if (_cached !== undefined) return _cached;
 
+  // Docker containers: TLS is handled by Caddy (livekit-tls), not by the app.
+  // The mounted ~/.continuum has certs from the host, but using them inside
+  // Docker causes protocol mismatches (WSS server vs WS browser on localhost).
+  if (process.env.JTAG_NO_TLS) {
+    _cached = null;
+    return _cached;
+  }
+
   _cached = discoverFromTailscale() ?? discoverFromCerts();
   return _cached;
 }
