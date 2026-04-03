@@ -42,6 +42,8 @@ services:
     build:
       context: ./src/workers
       dockerfile: ../../docker/continuum-core.Dockerfile
+      additional_contexts:
+        avatars: ./src/models/avatars
     image: ghcr.io/cambriantech/continuum-core:latest
     restart: unless-stopped
     working_dir: /app

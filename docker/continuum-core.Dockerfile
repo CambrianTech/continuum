@@ -4,10 +4,10 @@
 #   Stage 1 (chef):   Install cargo-chef for dependency caching
 #   Stage 2 (planner): Analyze workspace, generate recipe.json (dep lockfile)
 #   Stage 3 (builder): Build deps from recipe (cached), then build source
-#   Stage 4 (runtime): Minimal image with just the binaries
+#   Stage 4 (runtime): Minimal image with just the binaries + avatar models
 #
-# Build:
-#   docker build -f docker/continuum-core.Dockerfile -t continuum-core src/workers/
+# Build context: src/workers/ (Rust workspace)
+# Additional context "avatars": src/models/avatars/ (VRM files for live calls)
 #
 # The dep layer (~30 min) only rebuilds when Cargo.toml/Cargo.lock change.
 # Source changes rebuild in ~2-3 minutes.
@@ -73,6 +73,12 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 # Working directory — models volume mounts at /app/models so relative
 # paths like "models/avatars" resolve correctly from cwd
 WORKDIR /app
+
+# Avatar VRM models — baked into image (CC0 licensed, ~132MB).
+# Required for persona avatar selection in live calls.
+# The avatar catalog discovers models at models/avatars/ at runtime.
+# Uses additional_contexts "avatars" from docker-compose.yml.
+COPY --from=avatars . /app/models/avatars/
 
 # Socket and data directories
 RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
