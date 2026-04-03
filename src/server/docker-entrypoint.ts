@@ -32,35 +32,37 @@ async function main(): Promise<void> {
   console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
   // Auto-seed database if empty (first run).
-  // The seed script uses ./jtag CLI which connects back to this server via WebSocket.
-  // Give the WS server a moment to be fully ready before spawning the seed.
+  // Server is already ready at this point. The seed script uses ./jtag CLI
+  // which connects back via WebSocket. SKIP_READINESS_CHECK bypasses the
+  // seed script's own 180s readiness wait (server is already confirmed ready).
   setTimeout(async () => {
     try {
       const { exec } = await import('child_process');
       const { promisify } = await import('util');
       const execAsync = promisify(exec);
-      // Make jtag executable
       await execAsync('chmod +x ./jtag 2>/dev/null || true');
-      // Check if rooms exist
-      const { stdout } = await execAsync('./jtag data/list --collection=rooms --limit=1');
-      const parsed = JSON.parse(stdout);
-      if (!parsed?.data?.length) {
+      // Check if rooms exist using raw jtag
+      const { stdout } = await execAsync('./jtag data/list --collection=rooms --limit=1', { timeout: 15000 });
+      const firstBrace = stdout.indexOf('{');
+      const lastBrace = stdout.lastIndexOf('}');
+      const json = firstBrace >= 0 ? JSON.parse(stdout.substring(firstBrace, lastBrace + 1)) : null;
+      const hasData = json?.items?.length > 0;
+      if (!hasData) {
         console.log('🌱 Empty database detected — seeding...');
         const { stdout: seedOut, stderr: seedErr } = await execAsync(
-          'npx tsx scripts/seed-continuum.ts',
-          { timeout: 180000, env: { ...process.env, PATH: process.env.PATH } }
+          'SKIP_READINESS_CHECK=1 npx tsx scripts/seed-continuum.ts',
+          { timeout: 300000 }
         );
-        if (seedOut) console.log(seedOut);
-        if (seedErr) console.error(seedErr);
+        if (seedOut) console.log(seedOut.slice(-2000));
         console.log('✅ Database seeded');
       } else {
-        console.log(`✅ Database already seeded (${parsed.data.length}+ rooms)`);
+        console.log(`✅ Database already seeded (${json.items.length}+ rooms)`);
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`⚠️ Auto-seed: ${msg}`);
     }
-  }, 3000);
+  }, 5000);
 
   // Keep process alive — server event loop runs in background
 }

@@ -35,9 +35,10 @@ import {
   updateUserModelConfig,
   createUserViaCommand,
   seedRecords,
+  execWithRetry,
 } from './seed/helpers';
 
-const execAsync = promisify(exec);
+const execAsync = execWithRetry;
 
 /** Sync recipe JSON files to database — truly idempotent, ignores "already exists" */
 async function syncRecipesFromJson(): Promise<void> {
@@ -337,10 +338,14 @@ async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // Wait for JTAG system to be ready
-    const isReady = await waitForJTAGReady();
-    if (!isReady) {
-      throw new Error('❌ JTAG system not ready - commands not registered yet');
+    // Wait for JTAG system to be ready (skip in Docker — server already confirmed ready)
+    if (process.env.SKIP_READINESS_CHECK) {
+      console.log('⏭️ Skipping readiness check (SKIP_READINESS_CHECK set)');
+    } else {
+      const isReady = await waitForJTAGReady();
+      if (!isReady) {
+        throw new Error('❌ JTAG system not ready - commands not registered yet');
+      }
     }
 
     // Hardware-aware persona selection via Rust PersonaAllocator (single source of truth)
