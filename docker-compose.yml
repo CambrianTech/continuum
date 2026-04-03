@@ -44,6 +44,8 @@ services:
       dockerfile: ../../docker/continuum-core.Dockerfile
       additional_contexts:
         avatars: ./src/models/avatars
+      args:
+        GPU_FEATURES: "--features livekit-webrtc,load-dynamic-ort"
     image: ghcr.io/cambriantech/continuum-core:latest
     restart: unless-stopped
     working_dir: /app
