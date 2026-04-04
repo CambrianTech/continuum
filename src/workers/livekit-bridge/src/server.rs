@@ -4,7 +4,7 @@
 //! Same wire format as livekit-protocol::encode_frame/decode_frame.
 
 use crate::agent::AgentManager;
-use livekit_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
+use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::io::{Read, Write};
@@ -84,7 +84,7 @@ fn handle_client(
             let frame_data = pending[4..4 + frame_len].to_vec();
             pending.drain(..4 + frame_len);
 
-            let (json_bytes, binary) = livekit_protocol::decode_frame(&frame_data);
+            let (json_bytes, binary) = continuum_bridge_protocol::decode_frame(&frame_data);
 
             // Parse command
             match serde_json::from_slice::<CommandEnvelope>(json_bytes) {
@@ -98,7 +98,7 @@ fn handle_client(
 
                     // Send response
                     let resp_json = serde_json::to_vec(&response).unwrap_or_default();
-                    let resp_frame = livekit_protocol::encode_frame(&resp_json, None);
+                    let resp_frame = continuum_bridge_protocol::encode_frame(&resp_json, None);
                     if let Err(e) = stream.write_all(&resp_frame) {
                         warn!("🌉 Write error: {}", e);
                         return Err(e.into());

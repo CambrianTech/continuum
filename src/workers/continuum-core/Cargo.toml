@@ -88,8 +88,13 @@ fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC 
 # LiveKit WebRTC SFU — AI agents join rooms with native audio/video.
 # Optional: Docker ARM64 builds skip this (webrtc-sys C++ fails on ARM64 Linux).
 # LiveKit server runs as its own container; this is only for Rust-side agent participation.
+# MIGRATION: bridge_client.rs replaces direct LiveKit usage. These deps will be removed
+# once bridge_client is fully validated. livekit-bridge binary handles WebRTC.
 livekit = { version = "0.7", features = ["native-tls"], optional = true }
 livekit-api = { version = "0.4", features = ["native-tls"], optional = true }
+
+# Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
+continuum-bridge-protocol = { path = "../livekit-protocol" }
 
 # Bevy 3D engine — headless rendering for VRM avatar video frames
 # One shared Bevy instance renders all 14 avatars via RenderLayers isolation

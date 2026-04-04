@@ -14,7 +14,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
-use livekit_protocol::{ParticipantMetadata, ParticipantRole, SAMPLE_RATE, SAMPLES_PER_10MS};
+use continuum_bridge_protocol::{ParticipantMetadata, ParticipantRole, SAMPLE_RATE, SAMPLES_PER_10MS};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -217,13 +217,13 @@ pub struct AgentManager {
     listeners: RwLock<HashMap<String, Arc<Room>>>,
     livekit_url: String,
     /// Channel to send audio frames from STT listeners back to core.
-    audio_tx: mpsc::UnboundedSender<livekit_protocol::BridgeEvent>,
+    audio_tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
 }
 
 impl AgentManager {
     pub fn new(
         livekit_url: String,
-        audio_tx: mpsc::UnboundedSender<livekit_protocol::BridgeEvent>,
+        audio_tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
     ) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
@@ -342,7 +342,7 @@ impl AgentManager {
         self.listeners.write().await.insert(call_id.to_string(), room.clone());
 
         // Notify core that listener is ready
-        let _ = self.audio_tx.send(livekit_protocol::BridgeEvent::ListenerReady {
+        let _ = self.audio_tx.send(continuum_bridge_protocol::BridgeEvent::ListenerReady {
             call_id: call_id.to_string(),
         });
 
@@ -398,7 +398,7 @@ impl AgentManager {
                             m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona
                         }).unwrap_or(true);
                         if is_visible {
-                            let _ = audio_tx.send(livekit_protocol::BridgeEvent::ParticipantJoined {
+                            let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::ParticipantJoined {
                                 call_id: call_id_owned.clone(),
                                 identity: p.identity().to_string(),
                                 name: p.name().to_string(),
@@ -406,14 +406,14 @@ impl AgentManager {
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
-                        let _ = audio_tx.send(livekit_protocol::BridgeEvent::ParticipantLeft {
+                        let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::ParticipantLeft {
                             call_id: call_id_owned.clone(),
                             identity: p.identity().to_string(),
                         });
                     }
                     RoomEvent::Disconnected { reason } => {
                         info!("🎤 STT listener disconnected: {:?}", reason);
-                        let _ = audio_tx.send(livekit_protocol::BridgeEvent::RoomDisconnected {
+                        let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::RoomDisconnected {
                             call_id: call_id_owned.clone(),
                             reason: format!("{:?}", reason),
                         });
@@ -444,7 +444,7 @@ impl AgentManager {
 /// Core handles VAD/STT — bridge just transports bytes.
 async fn forward_audio_to_core(
     audio_track: RemoteAudioTrack,
-    tx: mpsc::UnboundedSender<livekit_protocol::BridgeEvent>,
+    tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
     call_id: String,
     speaker_id: String,
     speaker_name: String,
@@ -472,7 +472,7 @@ async fn forward_audio_to_core(
         }
 
         // Send raw PCM to core — core does VAD/STT
-        let event = livekit_protocol::BridgeEvent::AudioFrame {
+        let event = continuum_bridge_protocol::BridgeEvent::AudioFrame {
             call_id: call_id.clone(),
             speaker_id: speaker_id.clone(),
             speaker_name: speaker_name.clone(),

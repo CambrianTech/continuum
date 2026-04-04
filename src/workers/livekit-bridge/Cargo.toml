@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Protocol types shared with continuum-core
-livekit-protocol = { path = "../livekit-protocol" }
+continuum-bridge-protocol = { path = "../livekit-protocol" }
 
 # LiveKit WebRTC — the ONLY binary that links webrtc-sys.
 # No ort, no fastembed, no candle — zero protobuf conflict.
