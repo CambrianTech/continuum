@@ -58,6 +58,18 @@ async function main(): Promise<void> {
       } else {
         console.log(`✅ Database already seeded (${json.items.length}+ rooms)`);
       }
+
+      // Generate avatar PNGs if missing (always runs — idempotent, skips existing)
+      try {
+        const { stdout: avatarOut } = await execAsync(
+          'npx tsx scripts/seed/generate-avatars.ts',
+          { timeout: 60000 }
+        );
+        if (avatarOut) console.log(avatarOut.trim());
+      } catch (avatarErr: unknown) {
+        const msg = avatarErr instanceof Error ? avatarErr.message : String(avatarErr);
+        console.warn(`⚠️ Avatar generation: ${msg}`);
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`⚠️ Auto-seed: ${msg}`);
