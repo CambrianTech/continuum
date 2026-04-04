@@ -359,26 +359,22 @@ export class ConnectionBroker implements IConnectionBroker {
   ): Promise<ConnectionResult> {
     console.log(`🔗 ConnectionBroker: Creating client connection to existing server`);
 
-    // Connect to existing JTAG system server (assumes system is already running)
-    // Runtime config from widget-server takes precedence (Docker may remap ports).
-    const runtimeConfig = (typeof window !== 'undefined' && (window as any).__CONTINUUM_CONFIG__) || {};
+    // Connect to existing JTAG system server.
+    // Browser: use same host:port as the page (widget-server proxies WS internally).
+    // Server: use configured port from shared/config.
     let port: number;
-    if (runtimeConfig.websocketPort) {
-      port = runtimeConfig.websocketPort;
-    } else {
-      try {
-        const config = await import('../../../../shared/config');
-        port = config.WS_PORT;
-      } catch (error) {
-        throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
-      }
+    try {
+      const config = await import('../../../../shared/config');
+      port = config.WS_PORT;
+    } catch (error) {
+      throw new Error(`ConnectionBroker: Failed to load WebSocket port. ${error}`);
     }
-    
+
     let wsUrl: string;
     if (typeof window !== 'undefined' && window.location) {
-      // Browser: derive from page URL
-      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${port}`;
-      console.log(`🔌 ConnectionBroker: WS URL derived from page: ${wsUrl} (page: ${window.location.href})`);
+      // Browser: same host:port as page — widget-server proxies WS to node-server
+      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+      console.log(`🔌 ConnectionBroker: WS URL from page: ${wsUrl}`);
     } else {
       // Server: check if TLS is active
       try {

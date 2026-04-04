@@ -1191,10 +1191,44 @@ window.__CONTINUUM_CONFIG__=${JSON.stringify({
     console.log(`🚀 Starting ${exampleName} ${protocol.toUpperCase()} server...`);
     console.log('🌐 Browser client will connect to JTAG system via WebSocket');
 
+    // WebSocket proxy: browser connects to ws://same-host:same-port,
+    // widget-server forwards to node-server's internal WS port.
+    // No port configuration needed in the browser — just use the page URL.
+    const wsTargetPort = connectionConfig.websocketPort;
+    this.server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
+      const targetUrl = `ws://localhost:${wsTargetPort}${req.url || '/'}`;
+      const targetWs = http.request({
+        hostname: 'localhost',
+        port: wsTargetPort,
+        path: req.url || '/',
+        method: 'GET',
+        headers: { ...req.headers, host: `localhost:${wsTargetPort}` },
+      });
+
+      targetWs.on('upgrade', (_res, targetSocket, targetHead) => {
+        socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          Object.entries(_res.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
+          '\r\n\r\n');
+        if (targetHead.length) socket.write(targetHead);
+        targetSocket.pipe(socket);
+        socket.pipe(targetSocket);
+      });
+
+      targetWs.on('error', (err) => {
+        console.error(`❌ WebSocket proxy error: ${err.message}`);
+        socket.destroy();
+      });
+
+      targetWs.end();
+    });
+
     return new Promise((resolve, reject) => {
       this.server.on('error', reject);
       this.server.listen(PORT, () => {
         console.log(`✅ ${protocol.toUpperCase()} server running at ${protocol}://localhost:${PORT}`);
+        console.log(`   📡 WebSocket proxy: ws://localhost:${PORT} → ws://localhost:${wsTargetPort}`);
 
         if (this.tlsEnabled) {
           console.log(`   🔒 Secure access: https://${this.tlsHostname}:${PORT}`);

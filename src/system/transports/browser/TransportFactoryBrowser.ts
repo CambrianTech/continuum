@@ -16,16 +16,17 @@ import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPM
 
 /**
  * Derive WebSocket URL from the current browser location.
- * In Docker or remote access, localhost is wrong — use the actual host.
- * Falls back to localhost for local dev.
+ * Uses the SAME host and port as the page — the widget-server proxies
+ * WebSocket connections to the node-server internally.
+ * No port configuration needed.
  */
-function deriveWebSocketUrl(port: number): string {
+function deriveWebSocketUrl(_port: number): string {
   if (typeof window !== 'undefined' && window.location) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    return `${protocol}//${host}:${port}`;
+    const host = window.location.host; // includes port (e.g. "localhost:9003")
+    return `${protocol}//${host}`;
   }
-  return `ws://localhost:${port}`;
+  return `ws://localhost:${_port}`;
 }
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
