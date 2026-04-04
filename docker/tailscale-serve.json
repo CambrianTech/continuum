@@ -28,7 +28,7 @@
     "${TS_CERT_DOMAIN}:7880": {
       "Handlers": {
         "/": {
-          "Proxy": "http://livekit:7880"
+          "Proxy": "http://127.0.0.1:7890"
         }
       }
     }

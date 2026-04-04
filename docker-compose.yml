@@ -1,9 +1,16 @@
 # Continuum — docker compose up
 #
-# Local:  docker compose up                    (HTTP on localhost)
-# Grid:   docker compose --profile grid up     (HTTPS via Tailscale)
+# Local:  docker compose up                    (HTTP on localhost, live calls on ws://localhost:7880)
+# Grid:   docker compose --profile grid up     (HTTPS via Tailscale, WebRTC over Tailscale mesh)
 # GPU:    docker compose --profile gpu up      (adds forge + inference)
 # All:    docker compose --profile grid --profile gpu up
+#
+# Grid mode .env (required):
+#   TS_AUTHKEY=tskey-auth-...
+#   TS_HOSTNAME=my-machine
+#   LIVEKIT_HOST_PORT=0              # disable local livekit host binding (grid uses livekit-grid)
+#   LIVEKIT_URL=ws://tailscale:7890  # continuum-core connects to livekit-grid internally
+#   LIVEKIT_BROWSER_URL=ws://tailscale:7880  # node-server returns port 7880 to browser (Tailscale serve TLS proxy)
 
 services:
 
@@ -59,6 +66,7 @@ services:
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - AVATAR_MODELS_DIR=/app/avatars
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
     healthcheck:
       test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
       interval: 5s
@@ -87,7 +95,7 @@ services:
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1
-      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_URL=${LIVEKIT_BROWSER_URL:-ws://livekit:7880}
 
   # ── Widget Server (Vite) ──────────────────────────────────
   widget-server:
@@ -105,16 +113,36 @@ services:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=9001
 
-  # ── LiveKit (WebRTC) ──────────────────────────────────────
+  # ── LiveKit (WebRTC) — local mode ───────────────────────────
+  # Dev server for local development. Always starts.
+  # In grid mode, set LIVEKIT_HOST_PORT=0 in .env to avoid port conflict with tailscale.
+  # (LiveKit still runs but on unmapped ports — harmless, ~50MB RAM.)
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     mem_limit: 256m
     ports:
-      - "${LIVEKIT_SIGNAL_PORT:-7880}:7880"   # WebSocket signalling (grid: set LIVEKIT_SIGNAL_PORT=7890 to avoid Tailscale conflict)
-      - "7881:7881"   # WebRTC TCP (direct, not proxied)
-      - "7882:7882/udp"  # WebRTC UDP (direct, not proxied)
-    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "${LIVEKIT_NODE_IP:-127.0.0.1}"]
+      - "${LIVEKIT_HOST_PORT:-7880}:7880"     # WebSocket signalling
+      - "${LIVEKIT_HOST_RTC_TCP:-7881}:7881"  # WebRTC TCP
+      - "${LIVEKIT_HOST_RTC_UDP:-7882}:7882/udp" # WebRTC UDP
+    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1"]
+
+  # ── LiveKit (WebRTC) — grid mode ──────────────────────────
+  # Shares Tailscale's network namespace so WebRTC media ports (7881/7882)
+  # are directly on the Tailscale interface — real UDP, no relay, no TURN.
+  # Signaling proxied by Tailscale serve: wss://7880 → localhost:7890.
+  livekit-grid:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    mem_limit: 256m
+    profiles: ["grid"]
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    volumes:
+      - ./docker/livekit.yaml:/etc/livekit.yaml:ro
+      - ./docker/livekit-entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/entrypoint.sh"]
 
   # ── Tailscale (grid profile — remote HTTPS access) ────────
   # Joins tailnet, provisions real Let's Encrypt certs, reverse-proxies
@@ -142,9 +170,11 @@ services:
       - net_admin
       - net_raw
     ports:
-      - "443:443"     # HTTPS → widget-server
-      - "9001:9001"   # WSS → node-server
-      - "7880:7880"   # WSS → livekit
+      - "443:443"      # HTTPS → widget-server
+      - "9001:9001"    # WSS → node-server
+      - "7880:7880"    # WSS → livekit signaling (Tailscale serve terminates TLS, proxies to localhost:7890)
+      # WebRTC ports 7881/7882 are NOT mapped here — they're directly on tailscale0
+      # (shared by livekit-grid). Tailnet peers reach them via WireGuard, not Docker ports.
 
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:
