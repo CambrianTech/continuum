@@ -59,6 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libpq5 curl \
     libglib2.0-0t64 \
     libvulkan1 mesa-vulkan-drivers \
+    libnvidia-gl-535 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binaries
