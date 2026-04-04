@@ -37,10 +37,9 @@ ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
 # Build dependencies from recipe (CACHED — this is the big win)
-# Docker builds use --no-default-features to EXCLUDE livekit-webrtc.
-# webrtc-sys and ort both statically link different C++ protobuf versions,
-# causing a deadlock at startup (process hangs after Whisper load).
-# LiveKit agent connections are handled by the TS VoiceOrchestrator instead.
+# Default features include livekit-webrtc for STT/TTS in live calls.
+# load-dynamic-ort avoids protobuf symbol conflict by loading ORT as .so at runtime
+# instead of statically linking (which clashes with webrtc-sys's protobuf).
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
