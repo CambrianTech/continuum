@@ -85,11 +85,17 @@ function generateConfig() {
 // Network Configuration — runtime override from widget-server injection.
 // Docker remaps ports (e.g. grid mode maps host 9002 → container 9001).
 // The widget-server injects window.__CONTINUUM_CONFIG__ with the actual host ports.
-// Server-side (Node.js) uses the build-time defaults from config.env.
-const _runtimeConfig: Record<string, number> =
-  (typeof window !== 'undefined' && (window as any).__CONTINUUM_CONFIG__) || {};
-export const HTTP_PORT = _runtimeConfig.httpPort || ${httpPort};
-export const WS_PORT = _runtimeConfig.websocketPort || ${wsPort};
+// IMPORTANT: Function call prevents Vite/esbuild constant-folding at build time.
+function _getRuntimePort(key: string, fallback: number): number {
+  try {
+    if (typeof globalThis !== 'undefined' && (globalThis as any).__CONTINUUM_CONFIG__) {
+      return (globalThis as any).__CONTINUUM_CONFIG__[key] || fallback;
+    }
+  } catch { /* server-side or no config */ }
+  return fallback;
+}
+export const HTTP_PORT = _getRuntimePort('httpPort', ${httpPort});
+export const WS_PORT = _getRuntimePort('websocketPort', ${wsPort});
 
 // Socket Configuration - Single Source of Truth
 // All Rust workers and TypeScript clients use these paths
