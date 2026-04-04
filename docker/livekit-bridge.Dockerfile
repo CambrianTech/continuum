@@ -38,6 +38,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 curl \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/livekit-bridge /usr/local/bin/
