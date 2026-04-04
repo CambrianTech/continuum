@@ -140,6 +140,8 @@ services:
       - node-server
     ports:
       - "9003:9003"   # HTTP
+    volumes:
+      - ~/.continuum:/root/.continuum:ro
     environment:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=9001
