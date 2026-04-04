@@ -446,6 +446,27 @@ pub fn allocate_dynamic_batch(identities: &[(&str, Option<&str>)]) {
     );
 }
 
+/// Get all identities that have been allocated avatars.
+/// Used by AvatarModule's auto-refresh tick to know which personas need snapshots.
+pub fn get_allocated_identities() -> Vec<String> {
+    let mut identities = Vec::new();
+    if let Ok(guard) = AVATAR_ALLOCATION.lock() {
+        if let Some(map) = guard.as_ref() {
+            identities.extend(map.keys().cloned());
+        }
+    }
+    if let Ok(guard) = DYNAMIC_ALLOCATION.lock() {
+        if let Some(map) = guard.as_ref() {
+            for key in map.keys() {
+                if !identities.contains(key) {
+                    identities.push(key.clone());
+                }
+            }
+        }
+    }
+    identities
+}
+
 /// Reset the global allocation map. Only for testing.
 #[cfg(test)]
 pub fn reset_allocation() {

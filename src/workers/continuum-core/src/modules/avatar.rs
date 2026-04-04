@@ -194,13 +194,15 @@ impl ServiceModule for AvatarModule {
             command_prefixes: &["avatar/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 2, // Allow 2 concurrent snapshots
-            tick_interval: None,
+            max_concurrency: 2,
+            // Tick every 60s — refresh stale avatar snapshots when Bevy is running.
+            // Independent of live calls. Personas always have a current face.
+            tick_interval: Some(std::time::Duration::from_secs(60)),
         }
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        log_info!("module", "avatar", "AvatarModule initialized");
+        log_info!("module", "avatar", "AvatarModule initialized (auto-refresh every 60s)");
         Ok(())
     }
 
@@ -216,6 +218,85 @@ impl ServiceModule for AvatarModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
+        // Auto-refresh avatar snapshots for all known personas.
+        // Only runs when Bevy is available (headless 3D renderer).
+        // Independent of live calls — personas always have a current face.
+        let bevy_available = crate::live::video::bevy_renderer::try_get().is_some();
+        if !bevy_available {
+            return Ok(()); // No renderer — keep existing static avatars
+        }
+
+        let avatar_dir = match dirs::home_dir() {
+            Some(h) => h.join(".continuum").join("avatars"),
+            None => return Ok(()),
+        };
+
+        // Get all persona identities that need avatars.
+        // Use the allocator's known personas (populated during persona init).
+        let identities = crate::live::avatar::get_allocated_identities();
+        if identities.is_empty() {
+            return Ok(());
+        }
+
+        // Find personas without a recent avatar (older than 1 hour or missing)
+        let stale_threshold = std::time::Duration::from_secs(3600);
+        let mut needs_refresh = Vec::new();
+
+        for identity in &identities {
+            let png_path = avatar_dir.join(format!("{identity}.png"));
+            let needs_update = if png_path.exists() {
+                // Check age
+                match std::fs::metadata(&png_path) {
+                    Ok(meta) => {
+                        match meta.modified() {
+                            Ok(modified) => modified.elapsed().unwrap_or_default() > stale_threshold,
+                            Err(_) => true,
+                        }
+                    }
+                    Err(_) => true,
+                }
+            } else {
+                true
+            };
+
+            if needs_update {
+                needs_refresh.push(identity.clone());
+            }
+        }
+
+        if needs_refresh.is_empty() {
+            return Ok(());
+        }
+
+        log_info!(
+            "module",
+            "avatar",
+            "Auto-refreshing {} avatar snapshots ({} total personas)",
+            needs_refresh.len(),
+            identities.len()
+        );
+
+        // Refresh one per tick (don't overwhelm Bevy with 17 simultaneous renders)
+        let identity = &needs_refresh[0];
+        let id = identity.clone();
+        let dir = avatar_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            Self::capture_snapshot(&id, 480, 480, &dir)
+        }).await;
+
+        match result {
+            Ok(Ok(path)) => {
+                log_info!("module", "avatar", "Auto-refreshed avatar: {}", path);
+            }
+            Ok(Err(e)) => {
+                // Not an error — Bevy slot might be busy, try next tick
+                log_info!("module", "avatar", "Avatar refresh deferred for '{}': {}", identity, e);
+            }
+            Err(e) => {
+                log_info!("module", "avatar", "Avatar refresh task failed for '{}': {}", identity, e);
+            }
+        }
+
         Ok(())
     }
 
