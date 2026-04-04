@@ -224,9 +224,11 @@ impl ServiceModule for AvatarModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 2,
-            // Tick every 60s — refresh stale avatar snapshots when Bevy is running.
-            // Independent of live calls. Personas always have a current face.
-            tick_interval: Some(std::time::Duration::from_secs(60)),
+            // Avatar auto-refresh disabled in Docker (software Vulkan renderer
+            // produces invalid frames that crash ORT via mutex poisoning).
+            // Avatars use static fallbacks. Bevy 3D renders work on native GPU.
+            // TODO: Re-enable when GPU Vulkan works in Docker containers.
+            tick_interval: None,
         }
     }
 
