@@ -9,3 +9,6 @@ pub mod stt_service;
 pub mod tts;
 pub mod tts_service;
 pub mod vad;
+
+#[cfg(test)]
+mod sensory_pipeline_test;
