@@ -67,20 +67,16 @@ services:
       - ~/.continuum:/root/.continuum
       - voice-models:/app/models:ro
       - ipc-sockets:/root/.continuum/sockets
+    # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
+    # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
+    # Default: runc (CPU only — uses static avatar fallbacks).
+    runtime: ${DOCKER_GPU_RUNTIME:-runc}
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - AVATAR_MODELS_DIR=/app/avatars
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
-    # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
-    # Docker Desktop on Windows handles NVIDIA passthrough automatically.
-    # On Linux: requires nvidia-container-toolkit.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
     healthcheck:
       test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
       interval: 5s
