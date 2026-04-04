@@ -77,8 +77,6 @@ services:
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
-      # Force wgpu/Bevy to use NVIDIA Vulkan (not llvmpipe software renderer)
-      - VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
     healthcheck:
       test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
       interval: 5s
