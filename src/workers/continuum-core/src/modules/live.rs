@@ -15,7 +15,7 @@
 use crate::live::audio::buffer::AudioBufferPool;
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;
-use crate::live::transport::livekit_agent::LiveKitAgentManager;
+use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
 use crate::logging::TimingGuard;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};

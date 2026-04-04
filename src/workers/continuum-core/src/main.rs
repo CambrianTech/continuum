@@ -14,7 +14,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
 
-use continuum_core::live::transport::livekit_agent::LiveKitAgentManager;
+use continuum_core::live::transport::bridge_client::LiveKitAgentManager;
 use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 /// Continuum Core Server - Unified Modular Rust Runtime
 ///

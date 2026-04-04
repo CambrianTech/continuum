@@ -297,6 +297,59 @@ impl LiveKitAgentManager {
         if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
     }
 
+    pub async fn add_ambient_source(
+        &self,
+        call_id: &str,
+        source_name: &str,
+    ) -> Result<String, String> {
+        let resp = self.send_command(
+            BridgeCommand::AddAmbient {
+                call_id: call_id.to_string(),
+                source_name: source_name.to_string(),
+            },
+            None,
+        )?;
+        if resp.success {
+            let handle = resp.data
+                .and_then(|d| d.get("handle").and_then(|h| h.as_str().map(|s| s.to_string())))
+                .unwrap_or_else(|| format!("ambient-{}", call_id));
+            Ok(handle)
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
+    }
+
+    pub async fn inject_ambient(
+        &self,
+        call_id: &str,
+        handle: &str,
+        samples: Vec<i16>,
+    ) -> Result<(), String> {
+        let pcm_bytes: Vec<u8> = samples.iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        let resp = self.send_command(
+            BridgeCommand::InjectAmbient {
+                call_id: call_id.to_string(),
+                handle: handle.to_string(),
+                sample_count: samples.len() as u32,
+            },
+            Some(&pcm_bytes),
+        )?;
+        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+    }
+
+    pub async fn remove_ambient_source(&self, call_id: &str, handle: &str) -> Result<(), String> {
+        let resp = self.send_command(
+            BridgeCommand::RemoveAmbient {
+                call_id: call_id.to_string(),
+                handle: handle.to_string(),
+            },
+            None,
+        )?;
+        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+    }
+
     pub async fn start_ambient_audio(&self, call_id: &str) -> Result<(), String> {
         let resp = self.send_command(
             BridgeCommand::AddAmbient {
