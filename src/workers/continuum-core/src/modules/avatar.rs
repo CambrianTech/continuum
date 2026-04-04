@@ -144,19 +144,38 @@ impl AvatarModule {
             )
         })?;
 
-        let expected_size = (frame.width * frame.height * 4) as usize;
-        if frame.data.len() != expected_size {
-            return Err(format!(
-                "Frame size mismatch for '{}': {}x{} expects {} bytes but got {} bytes ({} frames received in {}ms)",
-                identity, frame.width, frame.height, expected_size, frame.data.len(),
-                frames_received, start.elapsed().as_millis()
-            ));
-        }
+        // Derive actual dimensions from data length (readback may differ from requested).
+        // Software renderers (llvmpipe) can produce different resolutions than requested.
+        let actual_pixels = frame.data.len() / 4;
+        let (actual_w, actual_h) = if (frame.width * frame.height) as usize == actual_pixels {
+            (frame.width, frame.height)
+        } else {
+            // Try to infer dimensions from data length using common aspect ratios
+            let w = (actual_pixels as f64).sqrt() as u32;
+            let h = actual_pixels as u32 / w.max(1);
+            if (w * h) as usize == actual_pixels {
+                (w, h)
+            } else {
+                // Last resort: assume 16:9 or square
+                let h = ((actual_pixels as f64 / (16.0 / 9.0)).sqrt()) as u32;
+                let w = actual_pixels as u32 / h.max(1);
+                if (w * h) as usize == actual_pixels {
+                    (w, h)
+                } else {
+                    return Err(format!(
+                        "Cannot determine frame dimensions for '{}': {} bytes ({} pixels), reported {}x{}",
+                        identity, frame.data.len(), actual_pixels, frame.width, frame.height
+                    ));
+                }
+            }
+        };
 
         log_info!(
             "module",
             "avatar",
-            "Got frame {}x{} after {} frames in {}ms",
+            "Got frame {}x{} (reported {}x{}) after {} frames in {}ms",
+            actual_w,
+            actual_h,
             frame.width,
             frame.height,
             frames_received,
@@ -165,8 +184,8 @@ impl AvatarModule {
 
         // Encode RGBA → PNG
         let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            frame.width,
-            frame.height,
+            actual_w,
+            actual_h,
             frame.data,
         )
         .ok_or("Invalid frame dimensions for image buffer")?;
