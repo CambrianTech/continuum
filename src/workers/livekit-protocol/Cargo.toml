@@ -1,0 +1,9 @@
+[package]
+name = "livekit-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "IPC protocol types for livekit-bridge ↔ continuum-core communication"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "livekit-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "LiveKit WebRTC transport adapter — bridges audio/video between LiveKit rooms and continuum-core"
+
+[[bin]]
+name = "livekit-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Protocol types shared with continuum-core
+livekit-protocol = { path = "../livekit-protocol" }
+
+# LiveKit WebRTC — the ONLY binary that links webrtc-sys.
+# No ort, no fastembed, no candle — zero protobuf conflict.
+livekit = { version = "0.7", features = ["native-tls"] }
+livekit-api = { version = "0.4", features = ["native-tls"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
