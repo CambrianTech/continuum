@@ -396,8 +396,24 @@ impl AgentManager {
                                     ).await;
                                 });
                             }
-                            RemoteTrack::Video(_) => {
-                                // Video capture for vision — future extension
+                            RemoteTrack::Video(video_track) => {
+                                let is_visible = meta.as_ref().map(|m| {
+                                    m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona
+                                }).unwrap_or(true);
+                                if !is_visible {
+                                    continue;
+                                }
+
+                                info!("👁 Subscribed to video from '{}' ({})", speaker_name, &speaker_id[..8.min(speaker_id.len())]);
+
+                                let tx = audio_tx.clone();
+                                let cid = call_id_owned.clone();
+                                let sid = speaker_id.clone();
+                                let sname = speaker_name.clone();
+
+                                tokio::spawn(async move {
+                                    forward_video_to_core(video_track, tx, cid, sid, sname).await;
+                                });
                             }
                         }
                     }
@@ -512,6 +528,132 @@ async fn forward_audio_to_core(
     }
 
     info!("🎤 Audio stream ended for '{}'", speaker_name);
+}
+
+// =============================================================================
+// Video stream forwarder — LiveKit → core (JPEG snapshots)
+// =============================================================================
+
+/// Capture video frames from a LiveKit participant, convert to JPEG,
+/// and forward to core for vision processing.
+/// Rate-limited to 1 fps — AI vision doesn't need every frame.
+async fn forward_video_to_core(
+    video_track: RemoteVideoTrack,
+    tx: mpsc::UnboundedSender<EventWithPayload>,
+    call_id: String,
+    speaker_id: String,
+    speaker_name: String,
+) {
+    use livekit::webrtc::video_stream::native::NativeVideoStream;
+    use futures_util::StreamExt;
+
+    let video_stream = NativeVideoStream::new(video_track.rtc_track());
+    let mut pinned_stream = std::pin::pin!(video_stream);
+
+    let min_interval = std::time::Duration::from_secs(1); // 1 fps
+    let mut last_capture = std::time::Instant::now() - min_interval;
+    let mut frame_count: u64 = 0;
+
+    loop {
+        let frame = match pinned_stream.next().await {
+            Some(f) => f,
+            None => break,
+        };
+
+        frame_count += 1;
+
+        // Rate limit
+        if last_capture.elapsed() < min_interval {
+            continue;
+        }
+
+        let width = frame.buffer.width();
+        let height = frame.buffer.height();
+        if width == 0 || height == 0 {
+            continue;
+        }
+
+        // Convert I420 → RGBA on blocking thread
+        let sid = speaker_id.clone();
+        let sname = speaker_name.clone();
+        let cid = call_id.clone();
+        let tx_clone = tx.clone();
+
+        let i420_data = frame.buffer.to_i420();
+        let (data_y, data_u, data_v) = i420_data.data();
+        let strides = i420_data.strides();
+
+        // Copy the plane data for spawn_blocking
+        let y_plane = data_y.to_vec();
+        let u_plane = data_u.to_vec();
+        let v_plane = data_v.to_vec();
+        let stride_y = strides.0 as usize;
+        let stride_u = strides.1 as usize;
+        let stride_v = strides.2 as usize;
+
+        tokio::task::spawn_blocking(move || {
+            let w = width as usize;
+            let h = height as usize;
+
+            // I420 → RGBA
+            let mut rgba = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let y_val = y_plane[y * stride_y + x] as f32;
+                    let u_val = u_plane[(y / 2) * stride_u + (x / 2)] as f32 - 128.0;
+                    let v_val = v_plane[(y / 2) * stride_v + (x / 2)] as f32 - 128.0;
+
+                    let r = (y_val + 1.402 * v_val).clamp(0.0, 255.0) as u8;
+                    let g = (y_val - 0.344 * u_val - 0.714 * v_val).clamp(0.0, 255.0) as u8;
+                    let b = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
+
+                    let i = (y * w + x) * 4;
+                    rgba[i] = r;
+                    rgba[i + 1] = g;
+                    rgba[i + 2] = b;
+                    rgba[i + 3] = 255;
+                }
+            }
+
+            // RGBA → RGB → JPEG (JPEG doesn't support alpha channel)
+            let img: image::RgbaImage = image::ImageBuffer::from_raw(
+                width, height, rgba,
+            ).unwrap();
+            let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
+            let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+            rgb_img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).ok();
+            let jpeg = jpeg_buf.into_inner();
+
+            if jpeg.is_empty() {
+                return;
+            }
+
+            // Content hash for dedup
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            jpeg[..jpeg.len().min(1024)].hash(&mut hasher);
+            let hash = format!("{:016x}", hasher.finish());
+
+            let _ = tx_clone.send(EventWithPayload {
+                event: continuum_bridge_protocol::BridgeEvent::VideoFrame {
+                    call_id: cid,
+                    speaker_id: sid,
+                    speaker_name: sname,
+                    width,
+                    height,
+                },
+                binary: Some(jpeg),
+            });
+        });
+
+        last_capture = std::time::Instant::now();
+
+        if frame_count == 1 {
+            info!("👁 First video frame from '{}': {}x{}", speaker_name, width, height);
+        }
+    }
+
+    info!("👁 Video stream ended for '{}'", speaker_name);
 }
 
 // =============================================================================

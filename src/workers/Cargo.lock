@@ -5313,6 +5313,7 @@ version = "0.1.0"
 dependencies = [
  "continuum-bridge-protocol",
  "futures-util",
+ "image",
  "livekit",
  "livekit-api",
  "serde",

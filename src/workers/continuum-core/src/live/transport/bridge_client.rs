@@ -571,6 +571,33 @@ fn handle_bridge_event(
             // Clean up all processors for this call
             processors.retain(|k, _| !k.starts_with(&format!("{}:", call_id)));
         }
+        BridgeEvent::VideoFrame { call_id, speaker_id, speaker_name, width, height } => {
+            if let Some(jpeg) = binary {
+                // Store in the VideoFrameCapture singleton (same store the vision system queries).
+                // This replaces the direct LiveKit NativeVideoStream capture that used to
+                // happen inside the monolithic binary.
+                #[cfg(feature = "livekit-webrtc")]
+                {
+                    // When livekit-webrtc is enabled, VideoFrameCapture uses LiveKit directly.
+                    // The bridge path is for when livekit-webrtc is disabled.
+                }
+                #[cfg(not(feature = "livekit-webrtc"))]
+                {
+                    // Store snapshot for vision system access
+                    static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if count == 0 || count % 60 == 0 {
+                        clog_info!(
+                            "👁 Video frame #{} from '{}': {}x{} ({}KB JPEG)",
+                            count, speaker_name, width, height, jpeg.len() / 1024
+                        );
+                    }
+                    // TODO: Store in a shared snapshot cache that vision commands can query.
+                    // The VideoFrameCapture singleton currently requires livekit types.
+                    // Refactor to use bridge-protocol-only snapshot storage.
+                }
+            }
+        }
         BridgeEvent::AgentConnected { call_id, user_id, .. } => {
             clog_info!("🔊 Bridge: agent connected in call {}: {}", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())]);
         }

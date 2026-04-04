@@ -380,4 +380,72 @@ mod tests {
             assert_eq!(frame.len(), (*w as usize) * (*h as usize) * 4);
         }
     }
+
+    /// Test full vision pipeline: generate frame → encode as bridge event →
+    /// decode → verify JPEG is valid and contains expected content.
+    #[test]
+    fn test_vision_capture_roundtrip() {
+        use continuum_bridge_protocol::{BridgeEvent, encode_frame, decode_frame};
+
+        let width = 320u32;
+        let height = 240u32;
+        let rgba = generate_test_frame(width, height);
+
+        // Simulate what the bridge does: RGBA → RGB → JPEG (JPEG doesn't support alpha)
+        let img: image::RgbaImage = image::ImageBuffer::from_raw(width, height, rgba.clone()).unwrap();
+        let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        rgb_img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).unwrap();
+        let jpeg = jpeg_buf.into_inner();
+
+        assert!(jpeg.len() > 100, "JPEG too small: {} bytes", jpeg.len());
+        assert!(jpeg.len() < rgba.len(), "JPEG should be smaller than RGBA");
+
+        // Wrap in bridge event
+        let event = BridgeEvent::VideoFrame {
+            call_id: "test-call".to_string(),
+            speaker_id: "human-1".to_string(),
+            speaker_name: "Test Human".to_string(),
+            width,
+            height,
+        };
+
+        let json = serde_json::to_vec(&event).unwrap();
+        let frame = encode_frame(&json, Some(&jpeg));
+
+        // Decode
+        let len = u32::from_le_bytes(frame[0..4].try_into().unwrap()) as usize;
+        let (decoded_json, decoded_bin) = decode_frame(&frame[4..4 + len]);
+        let decoded_event: BridgeEvent = serde_json::from_slice(decoded_json).unwrap();
+        let decoded_jpeg = decoded_bin.unwrap();
+
+        // Verify JPEG survived transport
+        assert_eq!(decoded_jpeg, &jpeg[..], "JPEG corrupted in transport");
+
+        // Decode JPEG back to pixels and verify content
+        let decoded_img = image::load_from_memory_with_format(decoded_jpeg, image::ImageFormat::Jpeg).unwrap();
+        let decoded_rgba = decoded_img.to_rgba8();
+        assert_eq!(decoded_rgba.width(), width);
+        assert_eq!(decoded_rgba.height(), height);
+
+        // Check top-left pixel is approximately red (JPEG is lossy)
+        let px = decoded_rgba.get_pixel(0, 0);
+        assert!(px[0] > 200, "Red channel should be high, got {}", px[0]);
+        assert!(px[1] < 80, "Green channel should be low, got {}", px[1]);
+        assert!(px[2] < 80, "Blue channel should be low, got {}", px[2]);
+
+        // Check top-right pixel is approximately green
+        let px = decoded_rgba.get_pixel(width - 1, 0);
+        assert!(px[0] < 80, "Red should be low, got {}", px[0]);
+        assert!(px[1] > 200, "Green should be high, got {}", px[1]);
+
+        match decoded_event {
+            BridgeEvent::VideoFrame { speaker_name, width: w, height: h, .. } => {
+                assert_eq!(speaker_name, "Test Human");
+                assert_eq!(w, width);
+                assert_eq!(h, height);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
 }
