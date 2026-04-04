@@ -231,7 +231,8 @@ window.__CONTINUUM_CONFIG__=${JSON.stringify({
 
       const serveHtmlWithConfig = (htmlContent: string) => {
         // Inject config script before the closing </head> or before first <script>
-        const injected = htmlContent.replace('</head>', `${runtimeConfig}\n</head>`);
+        // Inject BEFORE any <script> tag so config is set before module evaluation
+        const injected = htmlContent.replace('<script', `${runtimeConfig}\n<script`);
         res.writeHead(200, {
           'Content-Type': 'text/html',
           'Cache-Control': 'no-cache, no-store, must-revalidate'
