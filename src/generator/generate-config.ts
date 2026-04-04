@@ -82,20 +82,20 @@ function generateConfig() {
  * Edit source files and run: npm run build
  */
 
-// Network Configuration — runtime override from widget-server injection.
-// Docker remaps ports (e.g. grid mode maps host 9002 → container 9001).
-// The widget-server injects window.__CONTINUUM_CONFIG__ with the actual host ports.
-// IMPORTANT: Function call prevents Vite/esbuild constant-folding at build time.
-function _getRuntimePort(key: string, fallback: number): number {
-  try {
-    if (typeof globalThis !== 'undefined' && (globalThis as any).__CONTINUUM_CONFIG__) {
-      return (globalThis as any).__CONTINUUM_CONFIG__[key] || fallback;
-    }
-  } catch { /* server-side or no config */ }
-  return fallback;
+// Network Configuration — DO NOT use literal constants here.
+// Docker remaps ports (grid mode: host 9002 → container 9001).
+// Widget-server injects <script>window.__CONTINUUM_CONFIG__={...}</script>.
+// Functions called at use-time to read runtime config. Getters prevent Vite inlining.
+export function getWebSocketPort(): number {
+  try { const c = (globalThis as any).__CONTINUUM_CONFIG__; if (c?.websocketPort) return c.websocketPort; } catch {}
+  return ${wsPort};
 }
-export const HTTP_PORT = _getRuntimePort('httpPort', ${httpPort});
-export const WS_PORT = _getRuntimePort('websocketPort', ${wsPort});
+export function getHttpPort(): number {
+  try { const c = (globalThis as any).__CONTINUUM_CONFIG__; if (c?.httpPort) return c.httpPort; } catch {}
+  return ${httpPort};
+}
+export const HTTP_PORT = getHttpPort();
+export const WS_PORT = getWebSocketPort();
 
 // Socket Configuration - Single Source of Truth
 // All Rust workers and TypeScript clients use these paths
