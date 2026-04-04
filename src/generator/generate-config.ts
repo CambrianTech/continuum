@@ -82,9 +82,14 @@ function generateConfig() {
  * Edit source files and run: npm run build
  */
 
-// Network Configuration (from config.env)
-export const HTTP_PORT = ${httpPort};
-export const WS_PORT = ${wsPort};
+// Network Configuration — runtime override from widget-server injection.
+// Docker remaps ports (e.g. grid mode maps host 9002 → container 9001).
+// The widget-server injects window.__CONTINUUM_CONFIG__ with the actual host ports.
+// Server-side (Node.js) uses the build-time defaults from config.env.
+const _runtimeConfig: Record<string, number> =
+  (typeof window !== 'undefined' && (window as any).__CONTINUUM_CONFIG__) || {};
+export const HTTP_PORT = _runtimeConfig.httpPort || ${httpPort};
+export const WS_PORT = _runtimeConfig.websocketPort || ${wsPort};
 
 // Socket Configuration - Single Source of Truth
 // All Rust workers and TypeScript clients use these paths
@@ -105,8 +110,8 @@ export const EXAMPLE_CONFIG = {
   name: '${examplePackageJson.name || `JTAG ${activeExample}`}',
   description: '${examplePackageJson.description || `${activeExample} development environment`}',
   ports: {
-    http_server: ${httpPort},
-    websocket_server: ${wsPort}
+    http_server: HTTP_PORT,
+    websocket_server: WS_PORT
   },
   paths: {
     directory: 'examples/${activeExample}',
