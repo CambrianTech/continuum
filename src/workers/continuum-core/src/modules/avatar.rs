@@ -14,6 +14,7 @@ use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use tracing::info as trace_info;
 
 pub struct AvatarModule;
 
@@ -290,10 +291,8 @@ impl ServiceModule for AvatarModule {
             return Ok(());
         }
 
-        log_info!(
-            "module",
-            "avatar",
-            "Auto-refreshing {} avatar snapshots ({} total personas)",
+        trace_info!(
+            "🖼️ Auto-refreshing {} avatar snapshots ({} total personas)",
             needs_refresh.len(),
             identities.len()
         );
@@ -308,14 +307,13 @@ impl ServiceModule for AvatarModule {
 
         match result {
             Ok(Ok(path)) => {
-                log_info!("module", "avatar", "Auto-refreshed avatar: {}", path);
+                trace_info!("🖼️ Auto-refreshed avatar: {}", path);
             }
             Ok(Err(e)) => {
-                // Not an error — Bevy slot might be busy, try next tick
-                log_info!("module", "avatar", "Avatar refresh deferred for '{}': {}", identity, e);
+                trace_info!("🖼️ Avatar refresh deferred for '{}': {}", identity, e);
             }
             Err(e) => {
-                log_info!("module", "avatar", "Avatar refresh task failed for '{}': {}", identity, e);
+                trace_info!("🖼️ Avatar refresh task failed for '{}': {}", identity, e);
             }
         }
 
