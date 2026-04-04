@@ -66,11 +66,38 @@ if [[ "$SETUP_TAILSCALE" =~ ^[Yy] ]]; then
   if [[ -z "$TS_KEY" ]]; then
     echo "⚠️  No key provided — starting in local-only mode."
     PROFILE=""
-  else
-    echo "TS_AUTHKEY=$TS_KEY" > .env
-    echo "TS_HOSTNAME=$(hostname | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')" >> .env
-    echo "COMPOSE_PROFILES=grid" >> .env
-    echo "✅ Saved to .env"
+  elif [[ ! "$TS_KEY" == tskey-auth-* ]]; then
+    echo ""
+    echo "❌ That doesn't look like a Tailscale auth key."
+    echo "   Auth keys start with 'tskey-auth-'"
+    echo ""
+    echo "   Go to: https://login.tailscale.com/admin/settings/keys"
+    echo "   Click 'Generate auth key', check 'Reusable' + 'Ephemeral', copy the key."
+    echo ""
+    open "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || \
+      xdg-open "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || \
+      cmd.exe /c start "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || true
+    read -p "Paste your auth key: " TS_KEY
+    if [[ ! "$TS_KEY" == tskey-auth-* ]]; then
+      echo "⚠️  Skipping Tailscale — starting in local-only mode."
+      PROFILE=""
+      TS_KEY=""
+    fi
+  fi
+
+  if [[ -n "$TS_KEY" ]]; then
+    TS_HOST=$(hostname | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+    cat > .env <<EOF
+TS_AUTHKEY=$TS_KEY
+TS_HOSTNAME=$TS_HOST
+COMPOSE_PROFILES=grid
+EOF
+    echo "✅ Saved to .env (hostname: $TS_HOST)"
+    echo ""
+    echo "⚠️  IMPORTANT: Make sure you enabled HTTPS certificates in Tailscale:"
+    echo "   https://login.tailscale.com/admin/dns → 'HTTPS Certificates' must be ON"
+    echo "   (Without this, the HTTPS URL won't work)"
+    echo ""
     PROFILE="--profile grid"
   fi
 else
