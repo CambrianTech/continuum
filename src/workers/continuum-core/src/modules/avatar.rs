@@ -223,11 +223,11 @@ impl ServiceModule for AvatarModule {
         // Only runs when Bevy is available (headless 3D renderer).
         // Independent of live calls — personas always have a current face.
         // Initialize Bevy on first tick if not already running.
-        // get_or_init() starts the headless 3D renderer on a dedicated thread.
-        // Subsequent calls return the existing instance.
         let bevy_system = crate::live::video::bevy_renderer::get_or_init();
-        if !bevy_system.is_ready() {
-            return Ok(()); // Bevy started but not ready yet — try next tick
+        let ready = bevy_system.is_ready();
+        trace_info!("🖼️ Avatar tick: Bevy ready={}", ready);
+        if !ready {
+            return Ok(());
         }
 
         let avatar_dir = match dirs::home_dir() {
@@ -257,6 +257,7 @@ impl ServiceModule for AvatarModule {
             }
         }
 
+        trace_info!("🖼️ Avatar tick: {} identities found", identities.len());
         if identities.is_empty() {
             return Ok(());
         }
