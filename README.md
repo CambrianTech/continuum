@@ -84,35 +84,27 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
+**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac, Windows, or Linux)
+
 ```bash
-curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+docker compose up
 ```
 
-One command. Installs Docker if needed, detects your GPU, pulls pre-built images, opens your browser. Works on Mac, Windows, and Linux.
+Open [http://localhost:9003](http://localhost:9003). That's it.
 
-**Have a GPU?** It forges models on your hardware automatically. No CUDA setup, no Python, no Rust toolchain. Just Docker.
+No Python, no Rust toolchain, no CUDA setup. Docker handles everything. First run downloads voice models (~2GB) and seeds the database — subsequent starts are instant.
+
+**Have a GPU?** Add the gpu profile for model forging:
+```bash
+docker compose --profile gpu up
+```
 
 <details>
 <summary>Other install methods</summary>
 
-**Windows (PowerShell):**
-```powershell
-irm https://cambriantech.github.io/continuum/install.ps1 | iex
-```
-
-**Manual (any platform):**
-```bash
-git clone https://github.com/CambrianTech/continuum.git && cd continuum
-docker compose up                    # UI + server + database
-docker compose --profile gpu up      # with GPU forging
-```
-
-**Headless (no UI — forge/inference nodes):**
-```bash
-docker compose up continuum-core node-server
-```
-
-**Development (from source):**
+**Development (from source — requires Node.js + Rust):**
 ```bash
 cd continuum/src && npm install && npm start
 ```
