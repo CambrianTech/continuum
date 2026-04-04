@@ -157,6 +157,11 @@ if [[ -n "$PROFILE" ]]; then
     echo "  https://$TS_HOSTNAME.your-tailnet.ts.net"
     echo ""
     echo "  (Find your exact URL: tailscale status)"
+    echo ""
+    # Try to open in browser
+    open "https://$TS_HOSTNAME.ts.net" 2>/dev/null || \
+      xdg-open "https://$TS_HOSTNAME.ts.net" 2>/dev/null || \
+      cmd.exe /c start "https://$TS_HOSTNAME.ts.net" 2>/dev/null || true
   elif echo "$TS_STATUS" | grep -qi "auth\|unauthorized\|invalid"; then
     echo "  ⚠️  Continuum started but Tailscale auth failed."
     echo ""
@@ -184,6 +189,11 @@ if [[ -n "$PROFILE" ]]; then
 else
   echo "  ✅ Continuum is running!"
   echo ""
-  echo "  Open: http://localhost:9003"
+  echo "  Opening http://localhost:9003 ..."
+  # Open browser (works on Mac, Linux, WSL2)
+  open "http://localhost:9003" 2>/dev/null || \
+    xdg-open "http://localhost:9003" 2>/dev/null || \
+    cmd.exe /c start "http://localhost:9003" 2>/dev/null || \
+    echo "  Open: http://localhost:9003"
 fi
 echo ""
