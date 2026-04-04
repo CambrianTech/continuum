@@ -68,13 +68,16 @@ COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 # ONNX Runtime — required for Silero VAD (voice activity detection) and Piper TTS.
 # These are core persona sensory capabilities (hearing + speech).
 # The ort crate uses load-dynamic (dlopen), so libonnxruntime must be present at runtime.
+# TARGETARCH is set by Docker BuildKit (amd64, arm64) — more reliable than uname -m
+# for cross-platform builds and acts as a natural cache-bust per architecture.
+ARG TARGETARCH
 ARG ONNX_VERSION=1.24.4
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
       ORT_ARCH="linux-aarch64"; \
     else \
       ORT_ARCH="linux-x64"; \
     fi && \
+    echo "TARGETARCH=$TARGETARCH → ORT_ARCH=$ORT_ARCH" && \
     curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-${ORT_ARCH}-${ONNX_VERSION}.tgz" \
     | tar xz --strip-components=1 -C /usr/local \
     && ldconfig

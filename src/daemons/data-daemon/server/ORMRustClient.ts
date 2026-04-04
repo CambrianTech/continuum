@@ -417,40 +417,50 @@ export class ORMRustClient {
 
   /**
    * Pick the least-busy connected connection.
-   * Reconnects dropped connections lazily.
+   * If all connections are down (e.g. core restarted), waits for any
+   * connection to come back rather than failing immediately.
+   * Individual connections auto-reconnect via scheduleReconnect().
    */
   private async getConnection(): Promise<IPCConnection> {
+    const conn = this.findBestConnection();
+    if (conn) return conn;
+
+    // All disconnected — kick off reconnection on all, then wait for any to come back.
+    // This prevents message loss during core restart (10-30s reconnection window).
+    for (const c of this.connections) {
+      if (!c.connected) c.connect().catch(() => {});
+    }
+
+    const maxWaitMs = 15_000;
+    const pollMs = 100;
+    const deadline = Date.now() + maxWaitMs;
+
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, pollMs));
+      const recovered = this.findBestConnection();
+      if (recovered) return recovered;
+    }
+
+    throw new Error('All IPC connections to continuum-core failed (waited 15s for reconnection)');
+  }
+
+  private findBestConnection(): IPCConnection | null {
     let best: IPCConnection | null = null;
     let totalPending = 0;
 
     for (const conn of this.connections) {
-      if (!conn.connected) {
-        // Reconnect in background — don't block this request
-        conn.connect().catch(() => {});
-        continue;
-      }
+      if (!conn.connected) continue;
       totalPending += conn.pendingCount;
       if (!best || conn.pendingCount < best.pendingCount) {
         best = conn;
       }
     }
 
-    // Backpressure warning — if we're piling up, something is wrong
     if (totalPending > 100) {
       console.warn(`[ORM] BACKPRESSURE: ${totalPending} pending IPC requests across ${POOL_SIZE} connections`);
     }
 
-    if (best) return best;
-
-    // All disconnected — try to reconnect one synchronously
-    for (const conn of this.connections) {
-      try {
-        await conn.connect();
-        return conn;
-      } catch { continue; }
-    }
-
-    throw new Error('All IPC connections to continuum-core failed');
+    return best;
   }
 
   /**

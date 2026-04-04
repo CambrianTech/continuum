@@ -17,13 +17,21 @@ PIPER_DIR="$MODELS_DIR/piper"
 mkdir -p "$WHISPER_DIR"
 mkdir -p "$PIPER_DIR"
 
-# Load config.env if it exists to get WHISPER_MODEL preference
+# Preserve any env-provided WHISPER_MODEL (e.g. from docker-compose.yml)
+# before sourcing config.env, which may override it.
+_ENV_WHISPER_MODEL="${WHISPER_MODEL:-}"
+
+# Load config.env if it exists to get API keys and preferences
 CONFIG_FILE="$HOME/.continuum/config.env"
 if [ -f "$CONFIG_FILE" ]; then
-  # Source the config to load WHISPER_MODEL
   set -a  # Export all variables
   source "$CONFIG_FILE"
   set +a
+fi
+
+# Docker/env override takes precedence over config.env
+if [ -n "$_ENV_WHISPER_MODEL" ]; then
+  WHISPER_MODEL="$_ENV_WHISPER_MODEL"
 fi
 
 # Default to large-v3-turbo if not set (best balance of speed + accuracy)

@@ -35,7 +35,8 @@ EXPOSE 9000 9001
 
 # Health check via WebSocket port (HTTP is skipped in Docker — widget-server handles it).
 # Uses a TCP connect check since WebSocket upgrade requires a client library.
-HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
+# Start period gives the Node.js server time to bootstrap (344 commands, 17 daemons).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD node -e "const s=require('net').connect(9001,'localhost',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"
 
 # tsx runs TypeScript directly, handling ESM module resolution

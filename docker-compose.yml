@@ -42,7 +42,9 @@ services:
     environment:
       - MODELS_DIR=/models
       - HF_TOKEN=${HF_TOKEN:-}
-      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
+      # base: small (74MB), fast, works with all whisper.cpp versions.
+      # large-v3-turbo requires whisper.cpp v1.7+ (different tensor count).
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
 
   # ── Continuum Core (Rust) ─────────────────────────────────
   continuum-core:
