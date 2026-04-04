@@ -37,14 +37,14 @@ ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
 # Build dependencies from recipe (CACHED — this is the big win)
-# --no-default-features skips livekit-webrtc (WebRTC C++ fails on ARM64 Docker).
-# LiveKit runs as its own container; Rust agent participation is desktop-only.
+# Default features include livekit-webrtc for STT/TTS in live calls.
+# Pre-built WebRTC binaries exist for both x86_64 and ARM64 Linux.
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --no-default-features ${GPU_FEATURES} --recipe-path recipe.json
+RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
 # Now build actual source (fast — deps already compiled)
 COPY . .
-RUN cargo build --release --no-default-features ${GPU_FEATURES} \
+RUN cargo build --release ${GPU_FEATURES} \
     --bin continuum-core-server \
     --bin archive-worker
 
@@ -53,6 +53,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 libpq5 curl \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binaries
