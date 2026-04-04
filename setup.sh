@@ -46,6 +46,26 @@ if ! docker info &>/dev/null; then
 fi
 echo "✅ Docker is running"
 
+# ── Check Docker resources ────────────────────────
+# Rancher Desktop and Docker Desktop have configurable VM memory.
+# 8GB minimum needed for all containers.
+DOCKER_MEM=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo "0")
+DOCKER_MEM_GB=$((DOCKER_MEM / 1073741824))
+if [ "$DOCKER_MEM_GB" -lt 8 ] && [ "$DOCKER_MEM_GB" -gt 0 ]; then
+  echo ""
+  echo "⚠️  Docker has ${DOCKER_MEM_GB}GB RAM. Continuum needs at least 8GB."
+  echo "   Increase in Docker Desktop → Settings → Resources → Memory"
+  echo "   Or Rancher Desktop → Preferences → Virtual Machine → Memory"
+  echo ""
+fi
+
+# ── Pull pre-built images ────────────────────────
+echo ""
+echo "📦 Pulling pre-built images from GitHub Container Registry..."
+echo "   (This replaces a 30+ minute build with a 2 minute download)"
+echo ""
+docker compose pull --ignore-pull-failures 2>&1 | grep -E "Pulled|exists|error" || true
+
 # ── Ask about Tailscale (optional) ────────────────
 echo ""
 echo "Tailscale gives you encrypted HTTPS access from any device (phone, laptop, etc)."
@@ -130,15 +150,18 @@ echo ""
 docker compose $PROFILE up -d
 
 echo ""
-echo "⏳ First run downloads voice models (~2GB). This takes a few minutes."
-echo "   Subsequent starts are instant."
+echo "⏳ First run downloads voice models (~150MB). Subsequent starts are instant."
 echo ""
 
-# Wait for widget-server to be healthy
-echo "Waiting for services to start..."
-for i in $(seq 1 60); do
+# Wait for services to be healthy (widget-server is the last in the chain)
+echo "Waiting for services..."
+for i in $(seq 1 90); do
   if docker compose ps widget-server 2>/dev/null | grep -q "healthy"; then
     break
+  fi
+  if [ $((i % 10)) -eq 0 ]; then
+    HEALTHY=$(docker compose ps 2>/dev/null | grep -c "healthy" || echo "0")
+    echo "   $HEALTHY/6 services ready..."
   fi
   sleep 2
 done
