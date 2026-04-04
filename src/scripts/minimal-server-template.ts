@@ -220,10 +220,14 @@ class MinimalServer {
       // Inject runtime config into HTML so browser JS can read dynamic ports.
       // The JS bundle has ports baked in at compile time, but Docker may map
       // different host ports (e.g. grid mode maps 9002:9001).
-      const runtimeConfig = `<script>window.__CONTINUUM_CONFIG__=${JSON.stringify({
-        websocketPort: connectionConfig.websocketPort,
-        httpPort: connectionConfig.httpPort,
-      })};</script>`;
+      const runtimeConfig = `<script>
+window.__CONTINUUM_CONFIG__=${JSON.stringify({
+  websocketPort: connectionConfig.websocketPort,
+  httpPort: connectionConfig.httpPort,
+})};
+// Auto-reload: poll widget-server, reload when it comes back after restart
+(function(){var alive=true;setInterval(function(){fetch('/').then(function(){if(!alive){alive=true;location.reload()}}).catch(function(){alive=false})},3000)})();
+</script>`;
 
       const serveHtmlWithConfig = (htmlContent: string) => {
         // Inject config script before the closing </head> or before first <script>
