@@ -262,21 +262,16 @@ impl ServiceModule for AvatarModule {
             return Ok(());
         }
 
-        // Find personas without a recent avatar (older than 1 hour or missing)
-        let stale_threshold = std::time::Duration::from_secs(3600);
+        // Find personas whose avatar is a small static fallback (< 100KB)
+        // or missing entirely. Real Bevy renders are ~250KB+.
         let mut needs_refresh = Vec::new();
 
         for identity in &identities {
             let png_path = avatar_dir.join(format!("{identity}.png"));
             let needs_update = if png_path.exists() {
-                // Check age
+                // Small file = static fallback from seeding, not a real 3D render
                 match std::fs::metadata(&png_path) {
-                    Ok(meta) => {
-                        match meta.modified() {
-                            Ok(modified) => modified.elapsed().unwrap_or_default() > stale_threshold,
-                            Err(_) => true,
-                        }
-                    }
+                    Ok(meta) => meta.len() < 100_000, // < 100KB = not a Bevy render
                     Err(_) => true,
                 }
             } else {
