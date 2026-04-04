@@ -435,6 +435,9 @@ fn reader_loop(
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     let mut data = Vec::new();
 
+    // Audio processing state per speaker (call_id + speaker_id → VAD state)
+    let mut audio_processors: HashMap<String, AudioProcessor> = HashMap::new();
+
     loop {
         let n = match stream.read(&mut buf) {
             Ok(0) => {
@@ -459,7 +462,7 @@ fn reader_loop(
             let frame_data = data[4..4 + frame_len].to_vec();
             data.drain(..4 + frame_len);
 
-            let (json_bytes, _binary) = continuum_bridge_protocol::decode_frame(&frame_data);
+            let (json_bytes, binary) = continuum_bridge_protocol::decode_frame(&frame_data);
 
             // Try as BridgeResponse first (has request_id)
             if let Ok(response) = serde_json::from_slice::<BridgeResponse>(json_bytes) {
@@ -474,40 +477,101 @@ fn reader_loop(
 
             // Try as BridgeEvent (pushed from bridge)
             if let Ok(event) = serde_json::from_slice::<BridgeEvent>(json_bytes) {
-                handle_bridge_event(event);
+                handle_bridge_event(event, binary, &mut audio_processors);
             }
         }
     }
 }
 
+/// Per-speaker audio processing state (VAD frame accumulation).
+struct AudioProcessor {
+    call_id: String,
+    speaker_id: String,
+    speaker_name: String,
+    track_sid: String,
+    /// Accumulation buffer for VAD (needs 512 samples = 32ms at 16kHz).
+    accum_buf: Vec<i16>,
+    frame_count: u64,
+}
+
+impl AudioProcessor {
+    fn new(call_id: String, speaker_id: String, speaker_name: String, track_sid: String) -> Self {
+        Self {
+            call_id,
+            speaker_id,
+            speaker_name,
+            track_sid,
+            accum_buf: Vec::with_capacity(crate::audio_constants::AUDIO_FRAME_SIZE),
+            frame_count: 0,
+        }
+    }
+}
+
 /// Handle a pushed event from the bridge.
-fn handle_bridge_event(event: BridgeEvent) {
+fn handle_bridge_event(
+    event: BridgeEvent,
+    binary: Option<&[u8]>,
+    processors: &mut HashMap<String, AudioProcessor>,
+) {
     match event {
         BridgeEvent::AudioFrame { call_id, speaker_id, speaker_name, track_sid, sample_count } => {
-            // TODO: Feed into VAD/STT pipeline
-            // For now, log periodically
-            static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-            if count == 0 || count % 1000 == 0 {
+            // Decode PCM samples from binary payload
+            let samples: Vec<i16> = match binary {
+                Some(bytes) => bytes.chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+                None => return, // No audio data
+            };
+
+            let key = format!("{}:{}", call_id, speaker_id);
+            let processor = processors.entry(key).or_insert_with(|| {
+                clog_info!("🎤 New audio processor for '{}' in call {}", speaker_name, &call_id[..8.min(call_id.len())]);
+                AudioProcessor::new(call_id.clone(), speaker_id.clone(), speaker_name.clone(), track_sid.clone())
+            });
+
+            processor.frame_count += 1;
+            if processor.frame_count == 1 || processor.frame_count % 3000 == 0 {
+                let max_amp = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                 clog_info!(
-                    "🎤 Bridge audio frame #{} from '{}' ({} samples)",
-                    count, speaker_name, sample_count
+                    "🎤 Audio frame #{} from '{}': {} samples, max_amp={}",
+                    processor.frame_count, processor.speaker_name, samples.len(), max_amp
                 );
+            }
+
+            // Accumulate into VAD-sized chunks and process
+            processor.accum_buf.extend_from_slice(&samples);
+            let vad_frame_size = crate::audio_constants::AUDIO_FRAME_SIZE;
+
+            while processor.accum_buf.len() >= vad_frame_size {
+                let vad_frame: Vec<i16> = processor.accum_buf.drain(..vad_frame_size).collect();
+
+                // TODO: Feed vad_frame into ProductionVAD → STT pipeline.
+                // This requires initializing VAD per-speaker (spawn_blocking for ORT)
+                // and routing completed transcriptions to the TS server.
+                // For now, the frame accumulation is correct and ready for wiring.
+                // The VAD/STT integration is the next step after verifying the
+                // bridge audio transport works end-to-end.
+                let _ = vad_frame; // Silence unused warning
             }
         }
         BridgeEvent::ParticipantJoined { call_id, identity, name } => {
             clog_info!("👤 Bridge: participant joined call {}: {} ({})", &call_id[..8.min(call_id.len())], name, &identity[..8.min(identity.len())]);
         }
-        BridgeEvent::ParticipantLeft { call_id, identity } => {
+        BridgeEvent::ParticipantLeft { ref call_id, ref identity } => {
             clog_info!("👤 Bridge: participant left call {}: {}", &call_id[..8.min(call_id.len())], &identity[..8.min(identity.len())]);
+            // Clean up audio processor for this speaker
+            let key = format!("{}:{}", call_id, identity);
+            processors.remove(&key);
         }
         BridgeEvent::ListenerReady { call_id } => {
             clog_info!("🎤 Bridge: STT listener ready for call {}", &call_id[..8.min(call_id.len())]);
         }
         BridgeEvent::RoomDisconnected { call_id, reason } => {
             clog_warn!("🌉 Bridge: room disconnected for call {}: {}", &call_id[..8.min(call_id.len())], reason);
+            // Clean up all processors for this call
+            processors.retain(|k, _| !k.starts_with(&format!("{}:", call_id)));
         }
-        BridgeEvent::AgentConnected { call_id, user_id, audio_track_sid } => {
+        BridgeEvent::AgentConnected { call_id, user_id, .. } => {
             clog_info!("🔊 Bridge: agent connected in call {}: {}", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())]);
         }
         BridgeEvent::AgentDisconnected { call_id, user_id, reason } => {

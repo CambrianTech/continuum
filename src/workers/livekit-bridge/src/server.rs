@@ -6,7 +6,7 @@
 //! Both directions share the same Unix socket connection. Messages are
 //! length-prefixed frames. Commands have `request_id`; events don't.
 
-use crate::agent::AgentManager;
+use crate::agent::{AgentManager, EventWithPayload};
 use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 
 use std::io::{Read, Write};
@@ -22,7 +22,7 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
     info!("🌉 Bridge IPC listening on {}", socket_path);
 
     // Event channel — AgentManager sends events here, we forward to core
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<BridgeEvent>();
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<EventWithPayload>();
     let manager = Arc::new(AgentManager::new(livekit_url.to_string(), event_tx));
 
     let rt = tokio::runtime::Handle::current();
@@ -48,17 +48,12 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                 let writer_for_events = writer.clone();
 
                 // Spawn event forwarder — pushes bridge events to core
-                let mut event_rx_moved = {
-                    // We can only have one receiver, so take it on first connection.
-                    // Subsequent connections won't get events (single-client design).
-                    // TODO: For multi-client, use broadcast channel.
-                    event_rx
-                };
+                let mut event_rx_moved = event_rx;
                 let event_handle = handle.clone();
                 std::thread::spawn(move || {
                     event_handle.block_on(async move {
-                        while let Some(event) = event_rx_moved.recv().await {
-                            let json = match serde_json::to_vec(&event) {
+                        while let Some(payload) = event_rx_moved.recv().await {
+                            let json = match serde_json::to_vec(&payload.event) {
                                 Ok(j) => j,
                                 Err(e) => {
                                     warn!("🌉 Event serialize error: {}", e);
@@ -66,9 +61,10 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                                 }
                             };
 
-                            // For AudioFrame events, include binary PCM payload
-                            // (TODO: optimize — currently audio samples are in the JSON)
-                            let frame = continuum_bridge_protocol::encode_frame(&json, None);
+                            let frame = continuum_bridge_protocol::encode_frame(
+                                &json,
+                                payload.binary.as_deref(),
+                            );
 
                             let mut w = writer_for_events.lock().unwrap();
                             if let Err(e) = w.write_all(&frame) {

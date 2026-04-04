@@ -22,6 +22,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn, error};
 
+/// Event with optional binary payload (e.g., PCM audio samples).
+pub struct EventWithPayload {
+    pub event: continuum_bridge_protocol::BridgeEvent,
+    pub binary: Option<Vec<u8>>,
+}
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -217,13 +223,13 @@ pub struct AgentManager {
     listeners: RwLock<HashMap<String, Arc<Room>>>,
     livekit_url: String,
     /// Channel to send audio frames from STT listeners back to core.
-    audio_tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
+    audio_tx: mpsc::UnboundedSender<EventWithPayload>,
 }
 
 impl AgentManager {
     pub fn new(
         livekit_url: String,
-        audio_tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
+        audio_tx: mpsc::UnboundedSender<EventWithPayload>,
     ) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
@@ -342,8 +348,11 @@ impl AgentManager {
         self.listeners.write().await.insert(call_id.to_string(), room.clone());
 
         // Notify core that listener is ready
-        let _ = self.audio_tx.send(continuum_bridge_protocol::BridgeEvent::ListenerReady {
-            call_id: call_id.to_string(),
+        let _ = self.audio_tx.send(EventWithPayload {
+            event: continuum_bridge_protocol::BridgeEvent::ListenerReady {
+                call_id: call_id.to_string(),
+            },
+            binary: None,
         });
 
         let audio_tx = self.audio_tx.clone();
@@ -398,24 +407,33 @@ impl AgentManager {
                             m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona
                         }).unwrap_or(true);
                         if is_visible {
-                            let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::ParticipantJoined {
-                                call_id: call_id_owned.clone(),
-                                identity: p.identity().to_string(),
-                                name: p.name().to_string(),
+                            let _ = audio_tx.send(EventWithPayload {
+                                event: continuum_bridge_protocol::BridgeEvent::ParticipantJoined {
+                                    call_id: call_id_owned.clone(),
+                                    identity: p.identity().to_string(),
+                                    name: p.name().to_string(),
+                                },
+                                binary: None,
                             });
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
-                        let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::ParticipantLeft {
-                            call_id: call_id_owned.clone(),
-                            identity: p.identity().to_string(),
+                        let _ = audio_tx.send(EventWithPayload {
+                            event: continuum_bridge_protocol::BridgeEvent::ParticipantLeft {
+                                call_id: call_id_owned.clone(),
+                                identity: p.identity().to_string(),
+                            },
+                            binary: None,
                         });
                     }
                     RoomEvent::Disconnected { reason } => {
                         info!("🎤 STT listener disconnected: {:?}", reason);
-                        let _ = audio_tx.send(continuum_bridge_protocol::BridgeEvent::RoomDisconnected {
-                            call_id: call_id_owned.clone(),
-                            reason: format!("{:?}", reason),
+                        let _ = audio_tx.send(EventWithPayload {
+                            event: continuum_bridge_protocol::BridgeEvent::RoomDisconnected {
+                                call_id: call_id_owned.clone(),
+                                reason: format!("{:?}", reason),
+                            },
+                            binary: None,
                         });
                         break;
                     }
@@ -444,7 +462,7 @@ impl AgentManager {
 /// Core handles VAD/STT — bridge just transports bytes.
 async fn forward_audio_to_core(
     audio_track: RemoteAudioTrack,
-    tx: mpsc::UnboundedSender<continuum_bridge_protocol::BridgeEvent>,
+    tx: mpsc::UnboundedSender<EventWithPayload>,
     call_id: String,
     speaker_id: String,
     speaker_name: String,
@@ -472,17 +490,22 @@ async fn forward_audio_to_core(
         }
 
         // Send raw PCM to core — core does VAD/STT
-        let event = continuum_bridge_protocol::BridgeEvent::AudioFrame {
-            call_id: call_id.clone(),
-            speaker_id: speaker_id.clone(),
-            speaker_name: speaker_name.clone(),
-            track_sid: track_sid.clone(),
-            sample_count: samples.len() as u32,
+        let pcm_bytes: Vec<u8> = samples.iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+
+        let payload = EventWithPayload {
+            event: continuum_bridge_protocol::BridgeEvent::AudioFrame {
+                call_id: call_id.clone(),
+                speaker_id: speaker_id.clone(),
+                speaker_name: speaker_name.clone(),
+                track_sid: track_sid.clone(),
+                sample_count: samples.len() as u32,
+            },
+            binary: Some(pcm_bytes),
         };
 
-        // TODO: For now, encode samples in the event. Later optimize with
-        // binary payload in the frame codec for zero-copy transport.
-        if tx.send(event).is_err() {
+        if tx.send(payload).is_err() {
             warn!("🎤 Audio channel closed for '{}'", speaker_name);
             break;
         }
