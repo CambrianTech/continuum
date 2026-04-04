@@ -144,6 +144,15 @@ impl AvatarModule {
             )
         })?;
 
+        let expected_size = (frame.width * frame.height * 4) as usize;
+        if frame.data.len() != expected_size {
+            return Err(format!(
+                "Frame size mismatch for '{}': {}x{} expects {} bytes but got {} bytes ({} frames received in {}ms)",
+                identity, frame.width, frame.height, expected_size, frame.data.len(),
+                frames_received, start.elapsed().as_millis()
+            ));
+        }
+
         log_info!(
             "module",
             "avatar",
