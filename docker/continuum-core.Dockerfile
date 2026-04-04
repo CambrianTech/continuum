@@ -50,11 +50,14 @@ RUN cargo build --release ${GPU_FEATURES} \
     --bin archive-worker
 
 # ── Stage 4: Runtime ────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+# Ubuntu 24.04 for Mesa 24+ with Vulkan dzn backend (WSL2 DirectX GPU access).
+# Debian bookworm's Mesa 22 only has llvmpipe (CPU software rendering).
+# Ubuntu 24.04 works on all platforms: WSL2 (dzn), Linux (nvidia/radeon), Mac (MoltenVK).
+FROM ubuntu:24.04 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 libpq5 curl \
-    libglib2.0-0 \
+    ca-certificates libssl3t64 libpq5 curl \
+    libglib2.0-0t64 \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
