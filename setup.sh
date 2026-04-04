@@ -8,22 +8,19 @@ echo "  ║        continuum — setup              ║"
 echo "  ╚═══════════════════════════════════════╝"
 echo ""
 
-# ── Windows: WSL2 required ────────────────────────
+# ── Detect platform ───────────────────────────────
 if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-  echo "❌ Windows requires WSL2 to run Continuum."
-  echo ""
-  echo "   1. Open PowerShell as Administrator"
-  echo "   2. Run: wsl --install"
-  echo "   3. Restart your computer"
-  echo "   4. Open Ubuntu from Start menu"
-  echo "   5. Run this setup again from inside WSL2"
-  echo ""
-  echo "   Also install Docker Desktop: https://docker.com/products/docker-desktop"
-  echo "   (In Docker Desktop settings, enable WSL2 integration)"
-  echo ""
-  exit 1
+  echo "✅ Windows (Git Bash) detected"
+  PLATFORM="windows"
 elif [[ "$(uname -r 2>/dev/null)" == *microsoft* ]] || [[ "$(uname -r 2>/dev/null)" == *WSL* ]]; then
   echo "✅ WSL2 detected"
+  PLATFORM="wsl"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+  echo "✅ macOS detected"
+  PLATFORM="mac"
+else
+  echo "✅ Linux detected"
+  PLATFORM="linux"
 fi
 
 # ── Check Docker ──────────────────────────────────

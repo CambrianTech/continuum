@@ -85,20 +85,30 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
-**Windows:** Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first (`wsl --install` in PowerShell as admin, restart, open Ubuntu).
+Install [Docker Desktop](https://docker.com/products/docker-desktop), then:
 
+**Mac / Linux / WSL2:**
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum
 ./setup.sh
 ```
 
-The setup script checks for [Docker Desktop](https://docker.com/products/docker-desktop) (opens the download page if missing), optionally sets up [Tailscale](https://tailscale.com) for encrypted remote access, and starts all services. First run downloads voice models (~2GB) — subsequent starts are instant.
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+setup.bat
+```
 
-**Already have Docker?** Skip the script:
+Pre-built images pull in ~2 minutes. No compilation, no dependencies, no npm. The setup script checks Docker, pulls images, starts services, and opens your browser.
+
+**Already have Docker?** Three commands:
 ```bash
-docker compose up                       # local only (http://localhost:9003)
-docker compose --profile gpu up         # with GPU model forging
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+docker compose up -d                    # pulls images automatically
+# open http://localhost:9003
 ```
 
 <details>
