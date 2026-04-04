@@ -15,7 +15,7 @@ import { Commands } from '@system/core/shared/Commands';
 import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { getTSVoiceOrchestrator } from '@system/voice/server';
+import { getRustVoiceOrchestrator, getTSVoiceOrchestrator } from '@system/voice/server';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
@@ -81,12 +81,19 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
     const remainingParticipants = call.getActiveParticipants().length;
     const callEnded = call.status === 'ended';
 
-    // 7. Unregister voice session if call ended
+    // 7. Unregister voice session if call ended — tear down both TS and Rust sides.
+    // Rust side: disconnects all LiveKit agents + STT listener, clears active_sessions
+    // so the next join can re-register. TS side: clears utterance history.
     if (callEnded) {
+      try {
+        await getRustVoiceOrchestrator().endSession(call.id);
+      } catch (error) {
+        console.warn('Failed to end Rust voice session:', error);
+      }
       try {
         getTSVoiceOrchestrator().unregisterSession(call.id);
       } catch (error) {
-        console.warn('Failed to unregister voice session:', error);
+        console.warn('Failed to unregister TS voice session:', error);
       }
     }
 

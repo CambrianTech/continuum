@@ -24,6 +24,7 @@ use crate::{log_error, log_info};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Response field name for voice responder IDs
@@ -35,6 +36,9 @@ pub struct VoiceState {
     pub livekit_manager: Arc<LiveKitAgentManager>,
     pub audio_pool: Arc<AudioBufferPool>,
     pub resource_lifecycle: Arc<AudioResourceLifecycle>,
+    /// Track active session IDs to make register-session idempotent.
+    /// Prevents duplicate agent spawns on browser refresh / re-navigate.
+    active_sessions: std::sync::Mutex<HashSet<String>>,
 }
 
 impl VoiceState {
@@ -49,6 +53,7 @@ impl VoiceState {
             livekit_manager,
             audio_pool,
             resource_lifecycle,
+            active_sessions: std::sync::Mutex::new(HashSet::new()),
         }
     }
 }
@@ -94,6 +99,26 @@ impl ServiceModule for VoiceModule {
                 let session_id = p.str("session_id")?;
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
+
+                // Idempotency: skip if this session is already registered.
+                // Browser refresh triggers a re-join which calls register-session again.
+                // Without this guard, we spawn duplicate STT listeners and agent batches,
+                // causing the reconnect churn cycle (agents connect → old ones get evicted
+                // by LiveKit → new ones reconnect → repeat).
+                {
+                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    if !sessions.insert(session_id.to_string()) {
+                        log_info!(
+                            "module",
+                            "voice_register_session",
+                            "Session {} already active — skipping duplicate registration",
+                            &session_id[..8.min(session_id.len())]
+                        );
+                        return Ok(CommandResult::Json(
+                            serde_json::json!({ "registered": true, "already_active": true }),
+                        ));
+                    }
+                }
 
                 // Extract AI participant info BEFORE register_session consumes the vec
                 let ai_participants: Vec<(String, String)> = participants
@@ -204,6 +229,12 @@ impl ServiceModule for VoiceModule {
             "voice/end-session" => {
                 let _timer = TimingGuard::new("module", "voice_end_session");
                 let session_id = p.str("session_id")?;
+
+                // Remove from active sessions so a future register-session can proceed.
+                {
+                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    sessions.remove(session_id);
+                }
 
                 log_info!(
                     "module",
