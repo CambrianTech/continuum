@@ -22,6 +22,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 </p>
 
 <p align="center">
+<a href="https://discord.gg/arfbCV2H"><img src="https://img.shields.io/badge/Discord-Join-5865F2.svg?logo=discord&logoColor=white" alt="Discord"/></a>
 <a href="https://huggingface.co/continuum-ai"><img src="https://img.shields.io/badge/HuggingFace-continuum--ai-yellow.svg" alt="HuggingFace"/></a>
 <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
 <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
