@@ -758,6 +758,25 @@ async function seedViaJTAG() {
     // Sync recipes on first-time seed too
     await syncRecipesFromJson();
 
+    // Generate static avatar PNGs for all personas (colored circles with initials).
+    // These are the BASE avatars — always available, no Bevy/GPU needed.
+    // Bevy 3D renders upgrade these when available (local dev, game mode).
+    try {
+      const { generateAllAvatars } = await import('./seed/generate-avatars');
+      const avatarSpecs = Object.entries(PERSONA_PROFILES).map(([uniqueId, profile]) => {
+        const persona = ALL_PERSONAS.find(p => p.uniqueId === uniqueId);
+        return {
+          uniqueId,
+          displayName: persona?.displayName || uniqueId,
+          accentColor: profile.accentColor,
+        };
+      });
+      const avatarCount = await generateAllAvatars(avatarSpecs);
+      console.log(`🖼️  Generated ${avatarCount} persona avatars (${avatarSpecs.length - avatarCount} cached)`);
+    } catch (err) {
+      console.warn(`⚠️ Avatar generation skipped: ${err}`);
+    }
+
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
   } catch (error: unknown) {
