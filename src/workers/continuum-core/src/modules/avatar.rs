@@ -235,8 +235,27 @@ impl ServiceModule for AvatarModule {
         };
 
         // Get all persona identities that need avatars.
-        // Use the allocator's known personas (populated during persona init).
-        let identities = crate::live::avatar::get_allocated_identities();
+        // First try allocated personas (populated during live calls).
+        // If none allocated yet, scan the avatars directory for existing entries
+        // and check known persona names from the catalog.
+        let mut identities = crate::live::avatar::get_allocated_identities();
+
+        // If no personas allocated yet, discover from avatar directory
+        // (static fallback PNGs exist from seeding — their filenames are the uniqueIds)
+        if identities.is_empty() {
+            if let Ok(entries) = std::fs::read_dir(&avatar_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.path().file_stem() {
+                        let name = name.to_string_lossy().to_string();
+                        // Skip UUID-named files (36 chars with dashes)
+                        if name.len() < 30 && !name.contains('-') || name.len() < 10 {
+                            identities.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
         if identities.is_empty() {
             return Ok(());
         }
