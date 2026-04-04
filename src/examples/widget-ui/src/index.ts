@@ -34,26 +34,35 @@ let jtagClient: JTAGClient | null = null;
 
 // Initialize the widget UI when page loads (only in browser)
 if (isBrowser) {
-  document.addEventListener('DOMContentLoaded', async () => {
-    // console.log('🎪 Widget UI: Page loaded');
-
+  // Close WebSocket cleanly on page unload — prevents 30-49s stall on refresh.
+  // Without this, Chrome waits for the old WS TCP connection to time out before
+  // the new page's WS can connect (6 connection limit per domain).
+  window.addEventListener('beforeunload', () => {
+    // Synchronous close — beforeunload can't await async
+    try { jtagClient?.disconnect(); } catch { /* best effort */ }
+    // Belt and suspenders: close any raw WebSocket directly
     try {
-      // Connect to JTAG client and get status
-      const connectionResult = await jtag.connect();
+      const ws = (jtagClient as any)?.systemInstance?.router?.transports?.get?.('cross-context')?.socket;
+      if (ws?.close) ws.close();
+    } catch { /* best effort */ }
+  });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    // Initialize UI immediately — don't wait for WS connection.
+    // Connection happens in background. UI renders instantly.
+    initializeWidgetUI();
+
+    // Connect in background — UI updates when ready
+    jtag.connect().then(connectionResult => {
       jtagClient = connectionResult.client;
       jtagConnected = true;
-
-      // Set up global window.jtag for backwards compatibility with tests
       window.jtag = jtagClient;
-
-
-      // console.log('✅ Widget UI: JTAG Client connected successfully');
-    } catch (error) {
+      updateConnectionStatus();
+    }).catch(error => {
       console.error('❌ Widget UI: Failed to connect to JTAG Client:', error);
       jtagConnected = false;
-    }
-    
-    initializeWidgetUI();
+      updateConnectionStatus();
+    });
   });
 }
 
