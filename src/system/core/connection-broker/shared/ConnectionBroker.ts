@@ -517,7 +517,7 @@ export class ConnectionBroker implements IConnectionBroker {
       serverPort: server.port,
       serverUrl: (() => {
         if (typeof window !== 'undefined' && window.location) {
-          return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:${server.port}`;
+          return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
         }
         try {
           const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity');
