@@ -221,9 +221,12 @@ impl ServiceModule for AvatarModule {
         // Auto-refresh avatar snapshots for all known personas.
         // Only runs when Bevy is available (headless 3D renderer).
         // Independent of live calls — personas always have a current face.
-        let bevy_available = crate::live::video::bevy_renderer::try_get().is_some();
-        if !bevy_available {
-            return Ok(()); // No renderer — keep existing static avatars
+        // Initialize Bevy on first tick if not already running.
+        // get_or_init() starts the headless 3D renderer on a dedicated thread.
+        // Subsequent calls return the existing instance.
+        let bevy_system = crate::live::video::bevy_renderer::get_or_init();
+        if !bevy_system.is_ready() {
+            return Ok(()); // Bevy started but not ready yet — try next tick
         }
 
         let avatar_dir = match dirs::home_dir() {
