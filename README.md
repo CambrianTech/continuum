@@ -84,44 +84,18 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
-### Prerequisites
-
-1. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** — Mac, Windows, or Linux
-2. **[Tailscale](https://tailscale.com/download)** — free, one-click install (provides encrypted HTTPS access)
-3. **Tailscale setup** (two clicks in [admin console](https://login.tailscale.com/admin)):
-   - **DNS** → Enable "HTTPS Certificates"
-   - **Settings → Keys** → Generate auth key (reusable + ephemeral)
-
-### Run
-
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum
-echo "TS_AUTHKEY=tskey-auth-YOUR_KEY_HERE" > .env
-docker compose --profile grid up
+./setup.sh
 ```
 
-Open `https://YOUR-MACHINE.tailnet-name.ts.net` from any device on your tailnet. Real HTTPS, real certs, no port forwarding.
+The setup script handles everything: checks for Docker (tells you where to get it if missing), optionally sets up [Tailscale](https://tailscale.com) for encrypted remote access, and starts all services. First run downloads voice models (~2GB) — subsequent starts are instant.
 
-### Local only (no Tailscale)
-
-If you just want to try it on one machine:
-
+**Already have Docker?** Skip the script:
 ```bash
-git clone https://github.com/CambrianTech/continuum.git
-cd continuum
-docker compose up
-```
-
-Open [http://localhost:9003](http://localhost:9003).
-
----
-
-No Python, no Rust toolchain, no CUDA setup. Docker handles everything. First run downloads voice models (~2GB) and seeds the database — subsequent starts are instant.
-
-**Have a GPU?** Add the gpu profile for model forging:
-```bash
-docker compose --profile gpu up
+docker compose up                       # local only (http://localhost:9003)
+docker compose --profile gpu up         # with GPU model forging
 ```
 
 <details>
