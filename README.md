@@ -84,7 +84,28 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
-**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac, Windows, or Linux)
+### Prerequisites
+
+1. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** — Mac, Windows, or Linux
+2. **[Tailscale](https://tailscale.com/download)** — free, one-click install (provides encrypted HTTPS access)
+3. **Tailscale setup** (two clicks in [admin console](https://login.tailscale.com/admin)):
+   - **DNS** → Enable "HTTPS Certificates"
+   - **Settings → Keys** → Generate auth key (reusable + ephemeral)
+
+### Run
+
+```bash
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+echo "TS_AUTHKEY=tskey-auth-YOUR_KEY_HERE" > .env
+docker compose --profile grid up
+```
+
+Open `https://YOUR-MACHINE.tailnet-name.ts.net` from any device on your tailnet. Real HTTPS, real certs, no port forwarding.
+
+### Local only (no Tailscale)
+
+If you just want to try it on one machine:
 
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
@@ -92,7 +113,9 @@ cd continuum
 docker compose up
 ```
 
-Open [http://localhost:9003](http://localhost:9003). That's it.
+Open [http://localhost:9003](http://localhost:9003).
+
+---
 
 No Python, no Rust toolchain, no CUDA setup. Docker handles everything. First run downloads voice models (~2GB) and seeds the database — subsequent starts are instant.
 
@@ -102,9 +125,9 @@ docker compose --profile gpu up
 ```
 
 <details>
-<summary>Other install methods</summary>
+<summary>Development (from source)</summary>
 
-**Development (from source — requires Node.js + Rust):**
+Requires Node.js 20+ and Rust nightly:
 ```bash
 cd continuum/src && npm install && npm start
 ```
