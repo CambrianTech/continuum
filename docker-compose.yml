@@ -52,7 +52,7 @@ services:
       additional_contexts:
         avatars: ./src/models/avatars
       args:
-        GPU_FEATURES: "--features load-dynamic-ort"
+        GPU_FEATURES: "--no-default-features --features load-dynamic-ort"
     image: ghcr.io/cambriantech/continuum-core:latest
     restart: unless-stopped
     working_dir: /app
