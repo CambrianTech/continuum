@@ -125,22 +125,47 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
+echo ""
+
 if [[ -n "$PROFILE" ]]; then
-  # Get Tailscale hostname
-  TS_HOSTNAME=$(grep TS_HOSTNAME .env 2>/dev/null | cut -d= -f2)
-  echo ""
-  echo "  ╔═══════════════════════════════════════╗"
-  echo "  ║  ✅ Continuum is running!              ║"
-  echo "  ║                                        ║"
-  echo "  ║  Open from any device on your tailnet: ║"
-  echo "  ║  https://$TS_HOSTNAME.tailnet-name.ts.net"
-  echo "  ╚═══════════════════════════════════════╝"
+  # Verify Tailscale actually connected
+  TS_STATUS=$(docker compose logs tailscale 2>&1 | tail -20)
+
+  if echo "$TS_STATUS" | grep -qi "logged in\|Success\|ready"; then
+    TS_HOSTNAME=$(grep TS_HOSTNAME .env 2>/dev/null | cut -d= -f2)
+    echo "  ✅ Continuum is running!"
+    echo ""
+    echo "  Open from any device on your tailnet:"
+    echo "  https://$TS_HOSTNAME.your-tailnet.ts.net"
+    echo ""
+    echo "  (Find your exact URL: tailscale status)"
+  elif echo "$TS_STATUS" | grep -qi "auth\|unauthorized\|invalid"; then
+    echo "  ⚠️  Continuum started but Tailscale auth failed."
+    echo ""
+    echo "  Your auth key may be invalid or expired."
+    echo "  Generate a new one: https://login.tailscale.com/admin/settings/keys"
+    echo "  Then update .env and run: docker compose --profile grid restart tailscale"
+    echo ""
+    echo "  Local access still works: http://localhost:9003"
+  elif echo "$TS_STATUS" | grep -qi "certificate\|acme\|tls"; then
+    echo "  ⚠️  Continuum started but HTTPS certificates failed."
+    echo ""
+    echo "  You need to enable HTTPS in Tailscale:"
+    echo "  https://login.tailscale.com/admin/dns → toggle 'HTTPS Certificates' ON"
+    echo "  Then: docker compose --profile grid restart tailscale"
+    echo ""
+    echo "  Local access still works: http://localhost:9003"
+  else
+    echo "  ✅ Continuum is running!"
+    echo ""
+    echo "  Tailscale is still connecting (can take 30s)..."
+    echo "  Check status: docker compose logs tailscale"
+    echo ""
+    echo "  Local access: http://localhost:9003"
+  fi
 else
+  echo "  ✅ Continuum is running!"
   echo ""
-  echo "  ╔═══════════════════════════════════════╗"
-  echo "  ║  ✅ Continuum is running!              ║"
-  echo "  ║                                        ║"
-  echo "  ║  Open: http://localhost:9003            ║"
-  echo "  ╚═══════════════════════════════════════╝"
+  echo "  Open: http://localhost:9003"
 fi
 echo ""
