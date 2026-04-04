@@ -1,27 +1,21 @@
 //! Bridge Client — proxies LiveKit operations to livekit-bridge via Unix socket IPC.
 //!
-//! Drop-in replacement for LiveKitAgentManager. Same public API, but instead of
-//! linking webrtc-sys and managing LiveKit rooms directly, sends commands to the
-//! livekit-bridge process over a Unix socket.
+//! Drop-in replacement for LiveKitAgentManager. Same public API, but sends commands
+//! to the livekit-bridge process over a Unix socket instead of linking webrtc-sys.
 //!
-//! This eliminates the ort/webrtc-sys protobuf conflict: continuum-core has ort
-//! (for VAD, TTS, embeddings) and the bridge has webrtc-sys (for LiveKit rooms).
-//! They never share an address space.
-//!
-//! Audio pipeline:
-//!   Core does TTS → PCM → bridge publishes to LiveKit
-//!   Bridge receives human audio → PCM → core does VAD/STT
+//! Bidirectional: sends commands (request/response), receives pushed events
+//! (audio frames from human participants for VAD/STT processing).
 
-use continuum_bridge_protocol::{BridgeCommand, BridgeResponse, SAMPLE_RATE};
-use std::collections::VecDeque;
+use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::{clog_error, clog_info, clog_warn};
 
-/// Captured transcription (same structure as original livekit_agent.rs).
+/// Captured transcription from STT.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptionEntry {
     pub call_id: String,
@@ -33,35 +27,35 @@ pub struct TranscriptionEntry {
 
 pub type TranscriptionBuffer = Arc<tokio::sync::Mutex<VecDeque<TranscriptionEntry>>>;
 
-const MAX_TRANSCRIPTION_BUFFER: usize = 100;
-
-/// Participant metadata — re-exported from protocol crate for compatibility.
+/// Re-export for compatibility.
 pub use continuum_bridge_protocol::{ParticipantMetadata, ParticipantRole};
 
+/// Pending request — waiting for response from bridge.
+struct PendingRequest {
+    response: Mutex<Option<BridgeResponse>>,
+    signal: Condvar,
+}
+
 /// Bridge client — proxies LiveKit operations to livekit-bridge process.
-/// Thread-safe: all state behind Arc<Mutex>.
 pub struct LiveKitAgentManager {
-    /// Connection to the bridge process. None if not connected.
-    connection: Mutex<Option<BridgeConnection>>,
-    /// Path to the bridge's Unix socket.
+    /// Shared write access to the bridge socket.
+    writer: Mutex<Option<UnixStream>>,
+    /// Pending command responses keyed by request_id.
+    pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>,
+    /// Bridge socket path.
     bridge_socket_path: String,
-    /// LiveKit URL (for logging/diagnostics only — bridge has the actual connection).
+    /// LiveKit URL (for logging only — bridge has the actual connection).
     livekit_url: String,
     /// Request ID counter.
     next_request_id: AtomicU64,
-    /// Transcription buffer (populated by audio frame handler from bridge).
+    /// Transcription buffer (populated by event handler).
     transcription_buffer: TranscriptionBuffer,
-}
-
-struct BridgeConnection {
-    stream: UnixStream,
+    /// Whether the reader thread is running.
+    reader_started: Mutex<bool>,
 }
 
 impl LiveKitAgentManager {
-    /// Create a new bridge client. Does NOT connect immediately — lazy connection
-    /// on first command, with automatic reconnection on failure.
     pub fn new() -> Self {
-        // Bridge socket path: same directory as core's socket, predictable name.
         let socket_dir = std::env::var("CONTINUUM_SOCKET_DIR")
             .unwrap_or_else(|_| {
                 dirs::home_dir()
@@ -69,16 +63,17 @@ impl LiveKitAgentManager {
                     .unwrap_or_else(|| "/tmp".to_string())
             });
         let bridge_socket_path = format!("{}/livekit-bridge.sock", socket_dir);
-
         let livekit_url = std::env::var("LIVEKIT_URL")
             .unwrap_or_else(|_| "ws://localhost:7880".to_string());
 
         Self {
-            connection: Mutex::new(None),
+            writer: Mutex::new(None),
+            pending: Arc::new(Mutex::new(HashMap::new())),
             bridge_socket_path,
             livekit_url,
             next_request_id: AtomicU64::new(1),
             transcription_buffer: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            reader_started: Mutex::new(false),
         }
     }
 
@@ -86,60 +81,89 @@ impl LiveKitAgentManager {
         &self.livekit_url
     }
 
-    /// Send a command to the bridge and wait for response.
-    fn send_command(&self, command: BridgeCommand, binary: Option<&[u8]>) -> Result<BridgeResponse, String> {
-        let mut conn = self.connection.lock().unwrap();
+    /// Ensure connected to bridge. Spawns reader thread on first connection.
+    fn ensure_connected(&self) -> Result<(), String> {
+        let mut writer = self.writer.lock().unwrap();
+        if writer.is_some() {
+            return Ok(());
+        }
 
-        // Lazy connect
-        if conn.is_none() {
-            match UnixStream::connect(&self.bridge_socket_path) {
-                Ok(stream) => {
-                    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
-                    clog_info!("🌉 Connected to livekit-bridge at {}", self.bridge_socket_path);
-                    *conn = Some(BridgeConnection { stream });
+        let stream = UnixStream::connect(&self.bridge_socket_path)
+            .map_err(|e| format!("Bridge not available at {}: {}", self.bridge_socket_path, e))?;
+
+        clog_info!("🌉 Connected to livekit-bridge at {}", self.bridge_socket_path);
+
+        // Clone for reader thread
+        let reader_stream = stream.try_clone()
+            .map_err(|e| format!("Failed to clone socket: {}", e))?;
+
+        *writer = Some(stream);
+
+        // Start reader thread (once)
+        let mut started = self.reader_started.lock().unwrap();
+        if !*started {
+            *started = true;
+            let pending = self.pending.clone();
+            std::thread::spawn(move || {
+                reader_loop(reader_stream, pending);
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Send command and wait for response (up to 30s).
+    fn send_command(&self, command: BridgeCommand, binary: Option<&[u8]>) -> Result<BridgeResponse, String> {
+        self.ensure_connected()?;
+
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+
+        // Build envelope
+        let mut envelope = serde_json::to_value(&command)
+            .map_err(|e| format!("Serialize error: {}", e))?;
+        envelope.as_object_mut().unwrap()
+            .insert("request_id".to_string(), request_id.into());
+        let json_bytes = serde_json::to_vec(&envelope)
+            .map_err(|e| format!("Serialize error: {}", e))?;
+        let frame = continuum_bridge_protocol::encode_frame(&json_bytes, binary);
+
+        // Register pending request
+        let pending_req = Arc::new(PendingRequest {
+            response: Mutex::new(None),
+            signal: Condvar::new(),
+        });
+        self.pending.lock().unwrap().insert(request_id, pending_req.clone());
+
+        // Write command
+        {
+            let mut writer = self.writer.lock().unwrap();
+            if let Some(ref mut stream) = *writer {
+                if let Err(e) = stream.write_all(&frame) {
+                    *writer = None;
+                    self.pending.lock().unwrap().remove(&request_id);
+                    return Err(format!("Bridge write failed: {}", e));
                 }
-                Err(e) => {
-                    return Err(format!("Bridge not available at {}: {}", self.bridge_socket_path, e));
-                }
+            } else {
+                self.pending.lock().unwrap().remove(&request_id);
+                return Err("Not connected".to_string());
             }
         }
 
-        let bc = conn.as_mut().unwrap();
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        // Wait for response (30s timeout)
+        let mut response = pending_req.response.lock().unwrap();
+        let timeout = std::time::Duration::from_secs(30);
+        let (mut guard, timed_out) = pending_req.signal.wait_timeout_while(
+            response,
+            timeout,
+            |r| r.is_none(),
+        ).unwrap();
 
-        // Build envelope: { request_id, ...command fields }
-        let mut envelope = serde_json::to_value(&command)
-            .map_err(|e| format!("Serialize error: {}", e))?;
-        envelope.as_object_mut().unwrap().insert("request_id".to_string(), request_id.into());
-
-        let json_bytes = serde_json::to_vec(&envelope)
-            .map_err(|e| format!("Serialize error: {}", e))?;
-
-        let frame = continuum_bridge_protocol::encode_frame(&json_bytes, binary);
-
-        // Send
-        if let Err(e) = bc.stream.write_all(&frame) {
-            *conn = None; // Drop broken connection
-            return Err(format!("Bridge write failed: {}", e));
+        if timed_out.timed_out() {
+            self.pending.lock().unwrap().remove(&request_id);
+            return Err("Bridge command timed out after 30s".to_string());
         }
 
-        // Read response
-        let mut len_buf = [0u8; 4];
-        if let Err(e) = bc.stream.read_exact(&mut len_buf) {
-            *conn = None;
-            return Err(format!("Bridge read failed: {}", e));
-        }
-        let resp_len = u32::from_le_bytes(len_buf) as usize;
-
-        let mut resp_buf = vec![0u8; resp_len];
-        if let Err(e) = bc.stream.read_exact(&mut resp_buf) {
-            *conn = None;
-            return Err(format!("Bridge read failed: {}", e));
-        }
-
-        let (json_bytes, _binary) = continuum_bridge_protocol::decode_frame(&resp_buf);
-        serde_json::from_slice::<BridgeResponse>(json_bytes)
-            .map_err(|e| format!("Bridge response parse error: {}", e))
+        guard.take().ok_or_else(|| "No response received".to_string())
     }
 
     // =========================================================================
@@ -211,8 +235,6 @@ impl LiveKitAgentManager {
         );
     }
 
-    /// Synthesize TTS locally (ort — safe, no webrtc in this process), then
-    /// send the resulting PCM to the bridge for LiveKit publishing.
     pub async fn speak_in_call(
         &self,
         call_id: &str,
@@ -229,7 +251,7 @@ impl LiveKitAgentManager {
         // Ensure agent exists in bridge
         let _ = self.get_or_create_agent(call_id, user_id, display_name).await?;
 
-        // TTS runs HERE in core (uses ort — safe, no webrtc conflict)
+        // TTS runs HERE in core (uses ort — safe, no webrtc in this process)
         let gender = gender_from_identity(user_id);
         let gender_str = match gender {
             AvatarGender::Male => "male",
@@ -244,7 +266,7 @@ impl LiveKitAgentManager {
         let duration_ms = synthesis.duration_ms;
         let sample_rate = synthesis.sample_rate;
 
-        // Publish subtitle BEFORE audio (same ordering as original)
+        // Publish subtitle BEFORE audio
         let _ = self.send_command(
             BridgeCommand::PublishTranscription {
                 call_id: call_id.to_string(),
@@ -256,7 +278,7 @@ impl LiveKitAgentManager {
             None,
         );
 
-        // Send Bevy animation commands (still in core — Bevy stays in core)
+        // Bevy animation (stays in core)
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
         // Send PCM audio to bridge for LiveKit publishing
@@ -285,7 +307,6 @@ impl LiveKitAgentManager {
         let pcm_bytes: Vec<u8> = samples.iter()
             .flat_map(|s| s.to_le_bytes())
             .collect();
-
         let resp = self.send_command(
             BridgeCommand::InjectAudio {
                 call_id: call_id.to_string(),
@@ -297,11 +318,7 @@ impl LiveKitAgentManager {
         if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
     }
 
-    pub async fn add_ambient_source(
-        &self,
-        call_id: &str,
-        source_name: &str,
-    ) -> Result<String, String> {
+    pub async fn add_ambient_source(&self, call_id: &str, source_name: &str) -> Result<String, String> {
         let resp = self.send_command(
             BridgeCommand::AddAmbient {
                 call_id: call_id.to_string(),
@@ -310,24 +327,15 @@ impl LiveKitAgentManager {
             None,
         )?;
         if resp.success {
-            let handle = resp.data
-                .and_then(|d| d.get("handle").and_then(|h| h.as_str().map(|s| s.to_string())))
-                .unwrap_or_else(|| format!("ambient-{}", call_id));
-            Ok(handle)
+            Ok(resp.data.and_then(|d| d.get("handle").and_then(|h| h.as_str().map(|s| s.to_string())))
+                .unwrap_or_else(|| format!("ambient-{}", call_id)))
         } else {
             Err(resp.error.unwrap_or_default())
         }
     }
 
-    pub async fn inject_ambient(
-        &self,
-        call_id: &str,
-        handle: &str,
-        samples: Vec<i16>,
-    ) -> Result<(), String> {
-        let pcm_bytes: Vec<u8> = samples.iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+    pub async fn inject_ambient(&self, call_id: &str, handle: &str, samples: Vec<i16>) -> Result<(), String> {
+        let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let resp = self.send_command(
             BridgeCommand::InjectAmbient {
                 call_id: call_id.to_string(),
@@ -373,10 +381,6 @@ impl LiveKitAgentManager {
         }
     }
 
-    // =========================================================================
-    // Bevy animation (stays in core — core owns the renderer)
-    // =========================================================================
-
     fn trigger_speech_animation(
         &self,
         user_id: &str,
@@ -390,34 +394,18 @@ impl LiveKitAgentManager {
             use crate::live::session::sentiment::extract_sentiment;
 
             let sentiment = extract_sentiment(text);
-
-            // Mouth weights for lip sync
             let lip_sync_window_ms = 66u32;
             let mouth_weights = calculate_rms_weights(samples, sample_rate, lip_sync_window_ms);
 
-            // Emotion
             if sentiment.emotion != crate::live::video::bevy_renderer::Emotion::Neutral {
-                bevy_system.set_emotion_by_identity(
-                    user_id,
-                    sentiment.emotion,
-                    sentiment.intensity,
-                    300,
-                );
+                bevy_system.set_emotion_by_identity(user_id, sentiment.emotion, sentiment.intensity, 300);
             }
-
-            // Gesture
             if sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None {
                 bevy_system.set_gesture_by_identity(user_id, sentiment.gesture, 2000);
             }
-
-            // Speech animation
             bevy_system.play_speech_by_identity(
                 user_id,
-                SpeechAnimationClip {
-                    mouth_weights,
-                    interval_ms: lip_sync_window_ms,
-                    duration_ms,
-                },
+                SpeechAnimationClip { mouth_weights, interval_ms: lip_sync_window_ms, duration_ms },
             );
         }
     }
@@ -429,8 +417,7 @@ impl Default for LiveKitAgentManager {
     }
 }
 
-/// Lightweight handle returned by get_or_create_agent.
-/// The actual agent lives in the bridge process — this is just metadata.
+/// Lightweight handle — actual agent lives in bridge process.
 pub struct AgentHandle {
     pub call_id: String,
     pub user_id: String,
@@ -438,7 +425,100 @@ pub struct AgentHandle {
 }
 
 // =============================================================================
-// RMS calculation for mouth weight animation (copied from livekit_agent.rs)
+// Reader thread — receives responses + pushed events from bridge
+// =============================================================================
+
+fn reader_loop(
+    mut stream: UnixStream,
+    pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>,
+) {
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    let mut data = Vec::new();
+
+    loop {
+        let n = match stream.read(&mut buf) {
+            Ok(0) => {
+                clog_warn!("🌉 Bridge disconnected");
+                break;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                clog_warn!("🌉 Bridge read error: {}", e);
+                break;
+            }
+        };
+
+        data.extend_from_slice(&buf[..n]);
+
+        while data.len() >= 4 {
+            let frame_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+            if data.len() < 4 + frame_len {
+                break;
+            }
+
+            let frame_data = data[4..4 + frame_len].to_vec();
+            data.drain(..4 + frame_len);
+
+            let (json_bytes, _binary) = continuum_bridge_protocol::decode_frame(&frame_data);
+
+            // Try as BridgeResponse first (has request_id)
+            if let Ok(response) = serde_json::from_slice::<BridgeResponse>(json_bytes) {
+                let mut map = pending.lock().unwrap();
+                if let Some(req) = map.remove(&response.request_id) {
+                    let mut resp = req.response.lock().unwrap();
+                    *resp = Some(response);
+                    req.signal.notify_one();
+                }
+                continue;
+            }
+
+            // Try as BridgeEvent (pushed from bridge)
+            if let Ok(event) = serde_json::from_slice::<BridgeEvent>(json_bytes) {
+                handle_bridge_event(event);
+            }
+        }
+    }
+}
+
+/// Handle a pushed event from the bridge.
+fn handle_bridge_event(event: BridgeEvent) {
+    match event {
+        BridgeEvent::AudioFrame { call_id, speaker_id, speaker_name, track_sid, sample_count } => {
+            // TODO: Feed into VAD/STT pipeline
+            // For now, log periodically
+            static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+            if count == 0 || count % 1000 == 0 {
+                clog_info!(
+                    "🎤 Bridge audio frame #{} from '{}' ({} samples)",
+                    count, speaker_name, sample_count
+                );
+            }
+        }
+        BridgeEvent::ParticipantJoined { call_id, identity, name } => {
+            clog_info!("👤 Bridge: participant joined call {}: {} ({})", &call_id[..8.min(call_id.len())], name, &identity[..8.min(identity.len())]);
+        }
+        BridgeEvent::ParticipantLeft { call_id, identity } => {
+            clog_info!("👤 Bridge: participant left call {}: {}", &call_id[..8.min(call_id.len())], &identity[..8.min(identity.len())]);
+        }
+        BridgeEvent::ListenerReady { call_id } => {
+            clog_info!("🎤 Bridge: STT listener ready for call {}", &call_id[..8.min(call_id.len())]);
+        }
+        BridgeEvent::RoomDisconnected { call_id, reason } => {
+            clog_warn!("🌉 Bridge: room disconnected for call {}: {}", &call_id[..8.min(call_id.len())], reason);
+        }
+        BridgeEvent::AgentConnected { call_id, user_id, audio_track_sid } => {
+            clog_info!("🔊 Bridge: agent connected in call {}: {}", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())]);
+        }
+        BridgeEvent::AgentDisconnected { call_id, user_id, reason } => {
+            clog_info!("🔊 Bridge: agent disconnected from call {}: {} ({})", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())], reason);
+        }
+        _ => {}
+    }
+}
+
+// =============================================================================
+// RMS calculation for mouth weight animation
 // =============================================================================
 
 fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> Vec<f32> {
@@ -446,14 +526,9 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
     if window_size == 0 || samples.is_empty() {
         return vec![];
     }
-
-    let mut weights = Vec::new();
-    for chunk in samples.chunks(window_size) {
+    samples.chunks(window_size).map(|chunk| {
         let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
         let rms = (sum_sq / chunk.len() as f64).sqrt();
-        // Normalize to 0.0-1.0 range (32768 is max i16 amplitude)
-        let normalized = (rms / 8000.0).min(1.0) as f32;
-        weights.push(normalized);
-    }
-    weights
+        (rms / 8000.0).min(1.0) as f32
+    }).collect()
 }

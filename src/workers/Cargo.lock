@@ -2119,6 +2119,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-bridge-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [
@@ -2130,6 +2138,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "chrono",
+ "continuum-bridge-protocol",
  "crossbeam-channel",
  "csv",
  "dashmap",
@@ -5296,6 +5305,22 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.20.1",
  "url",
+]
+
+[[package]]
+name = "livekit-bridge"
+version = "0.1.0"
+dependencies = [
+ "continuum-bridge-protocol",
+ "futures-util",
+ "livekit",
+ "livekit-api",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
