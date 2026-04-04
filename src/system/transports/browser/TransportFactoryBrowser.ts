@@ -73,8 +73,11 @@ export class TransportFactoryBrowser extends TransportFactoryBase {
     // ✅ Type-safe connection - handle different connection patterns
     if (adapter.connect) {
       // New adapter pattern with connect() method (use URL for WebSocket)
+      // Runtime config from widget-server takes precedence (Docker may remap ports).
+      const runtimeConfig = (typeof window !== 'undefined' && (window as any).__CONTINUUM_CONFIG__) || {};
       const instanceConfig = this.context.config.instance;
-      const connectParam = config.protocol === 'websocket' ? config.serverUrl || deriveWebSocketUrl(instanceConfig.ports.websocket_server) : undefined;
+      const wsPort = runtimeConfig.websocketPort || instanceConfig.ports.websocket_server;
+      const connectParam = config.protocol === 'websocket' ? config.serverUrl || deriveWebSocketUrl(wsPort) : undefined;
       console.log(`🔌 Browser Factory: Connecting ${config.protocol} to: ${connectParam}`);
       await adapter.connect(connectParam);
     } else {

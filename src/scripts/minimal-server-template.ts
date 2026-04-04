@@ -217,22 +217,32 @@ class MinimalServer {
     try {
       const templatePath = path.join(__dirname, '../../templates/universal-demo.html');
       
-      if (fs.existsSync(templatePath)) {
-        const content = fs.readFileSync(templatePath, 'utf8');
-        res.writeHead(200, { 
+      // Inject runtime config into HTML so browser JS can read dynamic ports.
+      // The JS bundle has ports baked in at compile time, but Docker may map
+      // different host ports (e.g. grid mode maps 9002:9001).
+      const runtimeConfig = `<script>window.__CONTINUUM_CONFIG__=${JSON.stringify({
+        websocketPort: connectionConfig.websocketPort,
+        httpPort: connectionConfig.httpPort,
+      })};</script>`;
+
+      const serveHtmlWithConfig = (htmlContent: string) => {
+        // Inject config script before the closing </head> or before first <script>
+        const injected = htmlContent.replace('</head>', `${runtimeConfig}\n</head>`);
+        res.writeHead(200, {
           'Content-Type': 'text/html',
           'Cache-Control': 'no-cache, no-store, must-revalidate'
         });
-        res.end(content);
+        res.end(injected);
+      };
+
+      if (fs.existsSync(templatePath)) {
+        serveHtmlWithConfig(fs.readFileSync(templatePath, 'utf8'));
+      } else if (fs.existsSync('public/demo.html')) {
+        serveHtmlWithConfig(fs.readFileSync(path.join(process.cwd(), 'public/demo.html'), 'utf8'));
+      } else if (fs.existsSync('index.html')) {
+        serveHtmlWithConfig(fs.readFileSync(path.join(process.cwd(), 'index.html'), 'utf8'));
       } else {
-        // Fallback to local demo.html or index.html
-        if (fs.existsSync('public/demo.html')) {
-          this.serveFile(res, 'public/demo.html', 'text/html');
-        } else if (fs.existsSync('index.html')) {
-          this.serveFile(res, 'index.html', 'text/html');
-        } else {
-          this.serve404(res);
-        }
+        this.serve404(res);
       }
     } catch (error) {
       console.error('❌ Failed to serve universal demo:', error.message);

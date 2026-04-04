@@ -360,15 +360,18 @@ export class ConnectionBroker implements IConnectionBroker {
     console.log(`🔗 ConnectionBroker: Creating client connection to existing server`);
 
     // Connect to existing JTAG system server (assumes system is already running)
-    // Use dynamic port configuration instead of hardcoded values
+    // Runtime config from widget-server takes precedence (Docker may remap ports).
+    const runtimeConfig = (typeof window !== 'undefined' && (window as any).__CONTINUUM_CONFIG__) || {};
     let port: number;
-    try {
-      // Try static import first (works in bundled/compiled contexts),
-      // then dynamic import (works in vitest/ESM contexts)
-      const config = await import('../../../../shared/config');
-      port = config.WS_PORT;
-    } catch (error) {
-      throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
+    if (runtimeConfig.websocketPort) {
+      port = runtimeConfig.websocketPort;
+    } else {
+      try {
+        const config = await import('../../../../shared/config');
+        port = config.WS_PORT;
+      } catch (error) {
+        throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
+      }
     }
     
     let wsUrl: string;
