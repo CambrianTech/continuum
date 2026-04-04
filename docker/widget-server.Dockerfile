@@ -27,8 +27,9 @@ RUN npx tsc --project tsconfig.json --noEmit false --outDir dist 2>/dev/null || 
     npm run build:ts 2>/dev/null || \
     echo "TS build skipped — tsx will handle at runtime"
 
-# Widget-ui deps
+# Widget-ui deps + Vite bundle (must build inside Docker to pick up source changes)
 RUN cd examples/widget-ui && npm install 2>/dev/null || true
+RUN cd examples/widget-ui && npx vite build
 
 EXPOSE 9003
 
