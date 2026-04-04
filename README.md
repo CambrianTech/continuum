@@ -84,13 +84,15 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
+**Windows:** Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first (`wsl --install` in PowerShell as admin, restart, open Ubuntu).
+
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum
 ./setup.sh
 ```
 
-The setup script handles everything: checks for Docker (tells you where to get it if missing), optionally sets up [Tailscale](https://tailscale.com) for encrypted remote access, and starts all services. First run downloads voice models (~2GB) — subsequent starts are instant.
+The setup script checks for [Docker Desktop](https://docker.com/products/docker-desktop) (opens the download page if missing), optionally sets up [Tailscale](https://tailscale.com) for encrypted remote access, and starts all services. First run downloads voice models (~2GB) — subsequent starts are instant.
 
 **Already have Docker?** Skip the script:
 ```bash
