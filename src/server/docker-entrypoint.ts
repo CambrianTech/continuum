@@ -32,43 +32,16 @@ async function main(): Promise<void> {
   console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
   // Auto-seed database if empty (first run).
-  // Server is already ready at this point. The seed script uses ./jtag CLI
-  // which connects back via WebSocket. SKIP_READINESS_CHECK bypasses the
-  // seed script's own 180s readiness wait (server is already confirmed ready).
+  // In-process via Commands.execute() — zero subprocess spawns.
+  // ~200MB instead of 2GB, <5 seconds instead of 30+.
   setTimeout(async () => {
     try {
-      const { exec } = await import('child_process');
-      const { promisify } = await import('util');
-      const execAsync = promisify(exec);
-      await execAsync('chmod +x ./jtag 2>/dev/null || true');
-      // Check if rooms exist using raw jtag
-      const { stdout } = await execAsync('./jtag data/list --collection=rooms --limit=1', { timeout: 15000 });
-      const firstBrace = stdout.indexOf('{');
-      const lastBrace = stdout.lastIndexOf('}');
-      const json = firstBrace >= 0 ? JSON.parse(stdout.substring(firstBrace, lastBrace + 1)) : null;
-      const hasData = json?.items?.length > 0;
-      if (!hasData) {
-        console.log('🌱 Empty database detected — seeding...');
-        const { stdout: seedOut, stderr: seedErr } = await execAsync(
-          'SKIP_READINESS_CHECK=1 npx tsx scripts/seed-continuum.ts',
-          { timeout: 300000 }
-        );
-        if (seedOut) console.log(seedOut.slice(-2000));
+      const { seedDatabase } = await import('./seed-in-process');
+      const seeded = await seedDatabase();
+      if (seeded) {
         console.log('✅ Database seeded');
       } else {
-        console.log(`✅ Database already seeded (${json.items.length}+ rooms)`);
-      }
-
-      // Generate avatar PNGs if missing (always runs — idempotent, skips existing)
-      try {
-        const { stdout: avatarOut } = await execAsync(
-          'npx tsx scripts/seed/generate-avatars.ts',
-          { timeout: 60000 }
-        );
-        if (avatarOut) console.log(avatarOut.trim());
-      } catch (avatarErr: unknown) {
-        const msg = avatarErr instanceof Error ? avatarErr.message : String(avatarErr);
-        console.warn(`⚠️ Avatar generation: ${msg}`);
+        console.log('✅ Database already seeded');
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
