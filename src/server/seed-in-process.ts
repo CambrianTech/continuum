@@ -241,6 +241,7 @@ async function createRoom(
 
   const room = new RoomEntity();
   room.uniqueId = uniqueId;
+  room.name = displayName;
   room.displayName = displayName;
   room.description = description;
   room.ownerId = ownerId;
