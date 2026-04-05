@@ -59,7 +59,7 @@ case "${1:-}" in
     echo "  <anything>    Forward to jtag inside Docker"
     ;;
   "")
-    # No args: open browser, start if not running
+    # No args: open browser if not already open, start if not running
     cd "$DIR"
     if ! docker compose ps widget-server 2>/dev/null | grep -q "healthy"; then
       docker compose up -d
@@ -69,8 +69,14 @@ case "${1:-}" in
         sleep 2
       done
     fi
-    echo "✅ Continuum is running"
-    open_browser
+    # Check if browser already connected (ping returns browser info)
+    if docker exec continuum-node-server-1 ./jtag ping 2>/dev/null | grep -q '"url"'; then
+      URL=$(docker exec continuum-node-server-1 ./jtag ping 2>/dev/null | grep '"url"' | sed 's/.*"url": "//;s/".*//')
+      echo "✅ Continuum is running (browser: $URL)"
+    else
+      echo "✅ Continuum is running"
+      open_browser
+    fi
     ;;
   *)
     # Everything else → jtag inside Docker
