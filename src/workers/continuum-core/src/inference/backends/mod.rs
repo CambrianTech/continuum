@@ -586,6 +586,22 @@ pub fn load_gguf_backend(
             ));
             Ok(Box::new(backend))
         }
+        // Qwen3/3.5 — same tensor layout as Qwen2 in GGUF
+        "qwen3" => {
+            let backend = llama_gguf::LlamaGgufBackend::from_gguf(
+                content,
+                &mut reader,
+                tokenizer,
+                model_id,
+                model_path,
+                device,
+            )?;
+            log.info(&format!(
+                "Loaded Qwen3 via Llama GGUF backend: context_length={}",
+                backend.context_length()
+            ));
+            Ok(Box::new(backend))
+        }
         // Future architectures:
         // "phi3" => { phi3_gguf::... }
         other => Err(format!(
