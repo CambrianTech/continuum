@@ -396,7 +396,6 @@ export class GridOverviewWidget extends ReactiveWidget {
           ${!isLocal ? html`
             <button class="ping-btn ssh-btn" @click=${() => navigator.clipboard.writeText(sshCmd)}
               title="Copy: ${sshCmd}">SSH</button>
-            <button class="ping-btn remove-btn" @click=${() => this._removeNode(node.nodeId)}>Remove</button>
           ` : nothing}
         </div>
       </div>
