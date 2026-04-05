@@ -1,21 +1,23 @@
-# Node-server Docker context — exclude everything not needed at runtime.
-# Target: <500MB context instead of 3.3GB.
+# Docker build context exclusions for node-server.
+# Goal: exclude Rust compilation artifacts and large binary files.
+# Keep ALL TypeScript source (tsx needs it at runtime).
 
-# Rust workers — ALL of it except the TS bindings
+# Rust build output (the big one — gigabytes)
 workers/target/
+
+# Rust source code (not needed by node-server)
 workers/continuum-core/src/
-workers/archive/
-workers/inference-grpc/
-workers/jtag-mcp/
-workers/livekit-bridge/
-workers/livekit-protocol/
+workers/livekit-bridge/src/
+workers/livekit-protocol/src/
+workers/archive/src/
+workers/inference-grpc/src/
+workers/jtag-mcp/src/
 workers/candle-core-patched/
-workers/shared/
-workers/Cargo.toml
+
+# Rust build files
 workers/Cargo.lock
-workers/*.sh
-workers/*.md
-workers/*.json
+workers/*/Cargo.toml
+workers/*/*.toml
 
 # Dev artifacts
 node_modules/
@@ -24,7 +26,7 @@ dist/
 .git/
 *.log
 
-# Models and media (runtime downloads)
+# Models and media (downloaded at runtime)
 models/
 blobs/
 datasets/
@@ -34,21 +36,8 @@ datasets/
 *.vrm
 *.glb
 
-# Projects (ML training, not runtime)
+# Projects (ML training notebooks, not runtime)
 projects/
 
-# Tools (dev utilities)
-tools/
-
-# Tests
-**/*.test.ts
-**/test/
+# Test fixtures
 **/__tests__/
-
-# Media files
-*.png
-*.jpg
-*.jpeg
-*.mp4
-*.wav
-*.mp3

@@ -5,18 +5,12 @@
 
 FROM node:20-slim
 
-# System deps for sharp (avatar generation) and git
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Dependencies (cached layer — only rebuilds when package*.json change)
+# Sharp uses prebuilt binaries — no python3/make/g++ needed
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts && \
-    npx rebuild sharp 2>/dev/null || true && \
-    npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 # Source code (filtered by .dockerignore)
 COPY . .
