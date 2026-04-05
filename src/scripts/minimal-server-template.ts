@@ -1195,8 +1195,10 @@ window.__CONTINUUM_CONFIG__=${JSON.stringify({
     // widget-server forwards to node-server's internal WS port.
     // In Docker: containers reach each other by service name (node-server:9001).
     // Native: localhost works (both run on same machine).
-    const wsTargetHost = process.env.NODE_ENV === 'production' ? 'node-server' : 'localhost';
-    const wsTargetPort = process.env.NODE_ENV === 'production' ? 9001 : connectionConfig.websocketPort;
+    // JTAG_WS_PROXY_HOST: Docker compose sets this to "node-server" (container name).
+    // Native: falls back to localhost with the configured port.
+    const wsTargetHost = process.env.JTAG_WS_PROXY_HOST || 'localhost';
+    const wsTargetPort = process.env.JTAG_WS_PROXY_PORT ? parseInt(process.env.JTAG_WS_PROXY_PORT) : connectionConfig.websocketPort;
     this.server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
       const targetWs = http.request({
         hostname: wsTargetHost,

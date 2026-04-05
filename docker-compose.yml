@@ -146,9 +146,10 @@ services:
       - ~/.continuum:/root/.continuum:ro
     environment:
       - JTAG_HTTP_PORT=9003
-      # Must match the HOST port (NODE_WS_PORT), not the container port.
-      # Grid mode maps 9002:9001, local mode maps 9001:9001.
       - JTAG_WEBSOCKET_PORT=${NODE_WS_PORT:-9001}
+      # WS proxy: widget-server forwards browser WebSocket to node-server container
+      - JTAG_WS_PROXY_HOST=node-server
+      - JTAG_WS_PROXY_PORT=9001
 
   # ── LiveKit (WebRTC) — local mode ───────────────────────────
   # Dev server for local development. Always starts.
