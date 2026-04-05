@@ -122,6 +122,7 @@ class DatabaseSeeder {
     room.name = def.name;
     room.displayName = def.name;
     room.description = def.description;
+    room.topic = def.description;
     room.ownerId = ownerId;
     room.type = 'public' as RoomType;
     room.isPublic = true;
