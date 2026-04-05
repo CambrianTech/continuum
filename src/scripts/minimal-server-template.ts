@@ -1193,12 +1193,13 @@ window.__CONTINUUM_CONFIG__=${JSON.stringify({
 
     // WebSocket proxy: browser connects to ws://same-host:same-port,
     // widget-server forwards to node-server's internal WS port.
-    // No port configuration needed in the browser — just use the page URL.
-    const wsTargetPort = connectionConfig.websocketPort;
+    // In Docker: containers reach each other by service name (node-server:9001).
+    // Native: localhost works (both run on same machine).
+    const wsTargetHost = process.env.NODE_ENV === 'production' ? 'node-server' : 'localhost';
+    const wsTargetPort = process.env.NODE_ENV === 'production' ? 9001 : connectionConfig.websocketPort;
     this.server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
-      const targetUrl = `ws://localhost:${wsTargetPort}${req.url || '/'}`;
       const targetWs = http.request({
-        hostname: 'localhost',
+        hostname: wsTargetHost,
         port: wsTargetPort,
         path: req.url || '/',
         method: 'GET',
