@@ -14,6 +14,7 @@ use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use tracing::info as trace_info;
 
 pub struct AvatarModule;
 
@@ -143,10 +144,38 @@ impl AvatarModule {
             )
         })?;
 
+        // Derive actual dimensions from data length (readback may differ from requested).
+        // Software renderers (llvmpipe) can produce different resolutions than requested.
+        let actual_pixels = frame.data.len() / 4;
+        let (actual_w, actual_h) = if (frame.width * frame.height) as usize == actual_pixels {
+            (frame.width, frame.height)
+        } else {
+            // Try to infer dimensions from data length using common aspect ratios
+            let w = (actual_pixels as f64).sqrt() as u32;
+            let h = actual_pixels as u32 / w.max(1);
+            if (w * h) as usize == actual_pixels {
+                (w, h)
+            } else {
+                // Last resort: assume 16:9 or square
+                let h = ((actual_pixels as f64 / (16.0 / 9.0)).sqrt()) as u32;
+                let w = actual_pixels as u32 / h.max(1);
+                if (w * h) as usize == actual_pixels {
+                    (w, h)
+                } else {
+                    return Err(format!(
+                        "Cannot determine frame dimensions for '{}': {} bytes ({} pixels), reported {}x{}",
+                        identity, frame.data.len(), actual_pixels, frame.width, frame.height
+                    ));
+                }
+            }
+        };
+
         log_info!(
             "module",
             "avatar",
-            "Got frame {}x{} after {} frames in {}ms",
+            "Got frame {}x{} (reported {}x{}) after {} frames in {}ms",
+            actual_w,
+            actual_h,
             frame.width,
             frame.height,
             frames_received,
@@ -155,8 +184,8 @@ impl AvatarModule {
 
         // Encode RGBA → PNG
         let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            frame.width,
-            frame.height,
+            actual_w,
+            actual_h,
             frame.data,
         )
         .ok_or("Invalid frame dimensions for image buffer")?;
@@ -194,13 +223,17 @@ impl ServiceModule for AvatarModule {
             command_prefixes: &["avatar/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 2, // Allow 2 concurrent snapshots
+            max_concurrency: 2,
+            // Avatar auto-refresh disabled in Docker (software Vulkan renderer
+            // produces invalid frames that crash ORT via mutex poisoning).
+            // Avatars use static fallbacks. Bevy 3D renders work on native GPU.
+            // TODO: Re-enable when GPU Vulkan works in Docker containers.
             tick_interval: None,
         }
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        log_info!("module", "avatar", "AvatarModule initialized");
+        log_info!("module", "avatar", "AvatarModule initialized (auto-refresh every 60s)");
         Ok(())
     }
 
@@ -216,6 +249,100 @@ impl ServiceModule for AvatarModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
+        // Auto-refresh avatar snapshots for all known personas.
+        // Only runs when Bevy is available (headless 3D renderer).
+        // Independent of live calls — personas always have a current face.
+        // Initialize Bevy on first tick if not already running.
+        let bevy_system = crate::live::video::bevy_renderer::get_or_init();
+        let ready = bevy_system.is_ready();
+        trace_info!("🖼️ Avatar tick: Bevy ready={}", ready);
+        if !ready {
+            return Ok(());
+        }
+
+        let avatar_dir = match dirs::home_dir() {
+            Some(h) => h.join(".continuum").join("avatars"),
+            None => return Ok(()),
+        };
+
+        // Get all persona identities that need avatars.
+        // First try allocated personas (populated during live calls).
+        // If none allocated yet, scan the avatars directory for existing entries
+        // and check known persona names from the catalog.
+        let mut identities = crate::live::avatar::get_allocated_identities();
+
+        // If no personas allocated yet, discover from avatar directory
+        // (static fallback PNGs exist from seeding — their filenames are the uniqueIds)
+        if identities.is_empty() {
+            if let Ok(entries) = std::fs::read_dir(&avatar_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.path().file_stem() {
+                        let name = name.to_string_lossy().to_string();
+                        // Skip UUID-named files (36 chars with dashes)
+                        if name.len() < 30 && !name.contains('-') || name.len() < 10 {
+                            identities.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        trace_info!("🖼️ Avatar tick: {} identities found", identities.len());
+        if identities.is_empty() {
+            return Ok(());
+        }
+
+        // Find personas whose avatar is a small static fallback (< 100KB)
+        // or missing entirely. Real Bevy renders are ~250KB+.
+        let mut needs_refresh = Vec::new();
+
+        for identity in &identities {
+            let png_path = avatar_dir.join(format!("{identity}.png"));
+            let needs_update = if png_path.exists() {
+                // Small file = static fallback from seeding, not a real 3D render
+                match std::fs::metadata(&png_path) {
+                    Ok(meta) => meta.len() < 100_000, // < 100KB = not a Bevy render
+                    Err(_) => true,
+                }
+            } else {
+                true
+            };
+
+            if needs_update {
+                needs_refresh.push(identity.clone());
+            }
+        }
+
+        if needs_refresh.is_empty() {
+            return Ok(());
+        }
+
+        trace_info!(
+            "🖼️ Auto-refreshing {} avatar snapshots ({} total personas)",
+            needs_refresh.len(),
+            identities.len()
+        );
+
+        // Refresh one per tick (don't overwhelm Bevy with 17 simultaneous renders)
+        let identity = &needs_refresh[0];
+        let id = identity.clone();
+        let dir = avatar_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            Self::capture_snapshot(&id, 480, 480, &dir)
+        }).await;
+
+        match result {
+            Ok(Ok(path)) => {
+                trace_info!("🖼️ Auto-refreshed avatar: {}", path);
+            }
+            Ok(Err(e)) => {
+                trace_info!("🖼️ Avatar refresh deferred for '{}': {}", identity, e);
+            }
+            Err(e) => {
+                trace_info!("🖼️ Avatar refresh task failed for '{}': {}", identity, e);
+            }
+        }
+
         Ok(())
     }
 

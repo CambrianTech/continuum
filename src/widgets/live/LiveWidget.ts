@@ -623,12 +623,13 @@ export class LiveWidget extends ReactiveWidget implements ContentLifecyclePartic
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          // Rewrite LiveKit URL to use the browser's hostname — critical for WSL2
-          // where server sends ws://127.0.0.1:7880 but the browser (on Windows)
-          // may need ws://localhost:7880 for WSL2 localhost forwarding to work.
+          // Rewrite LiveKit URL to match browser's context:
+          // - Use browser hostname (for WSL2 / remote access)
+          // - Use wss:// if page is HTTPS (required for WebRTC from secure context)
+          const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
           const livekitUrl = result.livekitUrl.replace(
-            /ws:\/\/127\.0\.0\.1:/,
-            `ws://${window.location.hostname}:`
+            /wss?:\/\/[^:]+:/,
+            `${wsProtocol}//${window.location.hostname}:`
           );
           console.log('LiveWidget: Connecting to LiveKit at', livekitUrl);
           // Diagnostic: tell server we're about to attempt LiveKit connection

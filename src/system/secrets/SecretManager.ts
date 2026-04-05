@@ -395,10 +395,11 @@ export class SecretManager {
         // Store in secrets Map
         this.secrets.set(key, value);
 
-        // Also set config vars in process.env for ServerConfig to use
-        if (key.startsWith('DATABASE_') || key.startsWith('DATASETS_') ||
-            key === 'HTTP_PORT' || key === 'WS_PORT' ||
-            key === 'SENTINEL_PATH' || key === 'REPO_PATH') {
+        // Mirror all config.env values to process.env so they're visible to
+        // subprocesses (jtag CLI, seed scripts) and commands that check process.env
+        // (persona/allocate checks API keys). Don't overwrite env vars already set
+        // by Docker compose or the shell — orchestrator env takes precedence.
+        if (!process.env[key]) {
           process.env[key] = value;
         }
       }

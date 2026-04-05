@@ -12,6 +12,53 @@ import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
 const execAsync = promisify(exec);
 
+/** Delay between seed operations to prevent IPC pool exhaustion */
+const SEED_DELAY_MS = parseInt(process.env.SEED_DELAY_MS || '200');
+const SEED_RETRIES = parseInt(process.env.SEED_RETRIES || '3');
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Execute a jtag command with retry and delay */
+export async function execWithRetry(cmd: string, retries = SEED_RETRIES): Promise<{ stdout: string; stderr: string }> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 0) {
+        await delay(SEED_DELAY_MS * attempt); // Exponential backoff
+      }
+      const result = await execAsync(cmd, { timeout: 15000 });
+      await delay(SEED_DELAY_MS); // Pace between operations
+      return result;
+    } catch (error: unknown) {
+      const err = toExecError(error);
+      // If stdout has success, it worked despite exit code
+      if (err.stdout && err.stdout.includes('"success": true')) {
+        await delay(SEED_DELAY_MS);
+        return { stdout: err.stdout, stderr: err.stderr || '' };
+      }
+      if (attempt === retries) throw error;
+      console.warn(`  ⏳ Retry ${attempt + 1}/${retries} for: ${cmd.substring(0, 80)}...`);
+    }
+  }
+  throw new Error('Unreachable');
+}
+
+/** Run a jtag command and return parsed JSON result */
+async function jtag(command: string, args: Record<string, string | number | boolean> = {}): Promise<{ success: boolean; data?: unknown; stdout: string }> {
+  const argStr = Object.entries(args)
+    .map(([k, v]) => typeof v === 'string' ? `--${k}='${v.replace(/'/g, `'"'"'`)}'` : `--${k}=${v}`)
+    .join(' ');
+  const cmd = `./jtag ${command} ${argStr}`;
+  const { stdout } = await execWithRetry(cmd);
+  try {
+    const parsed = JSON.parse(stdout);
+    return { success: parsed.success !== false, data: parsed.data ?? parsed, stdout };
+  } catch {
+    return { success: stdout.includes('"success": true'), stdout };
+  }
+}
+
 /** Child process exec error — has stdout/stderr from the failed command */
 interface ExecError extends Error {
   stdout?: string;
@@ -39,7 +86,7 @@ export async function createRecord(
   const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
-    const result = await execAsync(cmd);
+    const result = await execWithRetry(cmd);
     const success = result.stdout.includes('"success": true');
 
     if (success) {
@@ -52,18 +99,9 @@ export async function createRecord(
     }
   } catch (error: unknown) {
     const err = toExecError(error);
-    const hasSuccess = err.stdout && err.stdout.includes('"success": true');
-
-    if (hasSuccess) {
-      console.log(`✅ Created ${collection}: ${displayName || id}`);
-      return true;
-    } else {
-      console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
-      console.error(`   Error: ${err.message}`);
-      if (err.stdout) console.error(`   Output: ${err.stdout.substring(0, 500)}...`);
-      if (err.stderr) console.error(`   Stderr: ${err.stderr.substring(0, 500)}...`);
-      return false;
-    }
+    console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
+    console.error(`   Error: ${err.message}`);
+    return false;
   }
 }
 
@@ -81,20 +119,19 @@ export async function createStateRecord(
   const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
-    const result = await execAsync(cmd);
-    const success = result.stdout.includes('\"success\": true');
+    const result = await execWithRetry(cmd);
+    const success = result.stdout.includes('"success": true');
 
     if (success) {
       console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
       return true;
     } else {
       console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
-      console.error(`Response: ${result.stdout}`);
       return false;
     }
   } catch (error: unknown) {
     const err = toExecError(error);
-    const hasSuccess = err.stdout && err.stdout.includes('\"success\": true');
+    const hasSuccess = err.stdout && err.stdout.includes('"success": true');
 
     if (hasSuccess) {
       console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
@@ -124,7 +161,7 @@ export async function updatePersonaProfile(
   const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
-    const { stdout } = await execAsync(cmd);
+    const { stdout } = await execWithRetry(cmd);
     const result = JSON.parse(stdout);
 
     if (result.success) {
@@ -154,7 +191,7 @@ export async function updatePersonaProfile(
   // Check if profile already exists
   try {
     const checkFilter = JSON.stringify({ userId }).replace(/'/g, `'"'"'`);
-    const { stdout: checkOut } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=user_profiles --filter='${checkFilter}' --limit=1`);
+    const { stdout: checkOut } = await execWithRetry(`./jtag ${DATA_COMMANDS.LIST} --collection=user_profiles --filter='${checkFilter}' --limit=1`);
     const checkResult = JSON.parse(checkOut);
 
     if (checkResult.success && checkResult.items?.length > 0) {
@@ -162,7 +199,7 @@ export async function updatePersonaProfile(
       const existingId = checkResult.items[0].id;
       const updateProfileData = { bio: profile.bio, speciality: profile.speciality, visualIdentity };
       const updateArg = JSON.stringify(updateProfileData).replace(/'/g, `'"'"'`);
-      await execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=user_profiles --id=${existingId} --data='${updateArg}'`);
+      await execWithRetry(`./jtag ${DATA_COMMANDS.UPDATE} --collection=user_profiles --id=${existingId} --data='${updateArg}'`);
       console.log(`  ✅ Updated profile entity for user ${userId.slice(0, 8)}...`);
       return true;
     }
@@ -183,7 +220,7 @@ export async function updatePersonaProfile(
   const profileCmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=user_profiles --data='${profileArg}'`;
 
   try {
-    const { stdout } = await execAsync(profileCmd);
+    const { stdout } = await execWithRetry(profileCmd);
     if (stdout.includes('"success"')) {
       console.log(`  ✅ Created profile entity for user ${userId.slice(0, 8)}...`);
       return true;
@@ -209,7 +246,7 @@ export async function updatePersonaConfig(userId: string, config: Record<string,
   const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
-    const { stdout } = await execAsync(cmd);
+    const { stdout } = await execWithRetry(cmd);
     const result = JSON.parse(stdout);
 
     if (result.success) {
@@ -238,7 +275,7 @@ export async function updateUserModelConfig(
   const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
-    const { stdout } = await execAsync(cmd);
+    const { stdout } = await execWithRetry(cmd);
     const result = JSON.parse(stdout);
 
     if (result.success) {
@@ -267,7 +304,7 @@ export async function updateUserMetadata(
   const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
-    const { stdout } = await execAsync(cmd);
+    const { stdout } = await execWithRetry(cmd);
     const result = JSON.parse(stdout);
 
     if (result.success) {
@@ -302,7 +339,7 @@ export async function createUserViaCommand(
   const MAX_RETRIES = 3;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const { stdout } = await execAsync(cmd, { timeout: 15000 });
+      const { stdout } = await execWithRetry(cmd);
       const response: UserCreateResult = JSON.parse(stdout);
 
       if (response.success && response.user) {
@@ -365,7 +402,7 @@ export async function createUserViaCommand(
  */
 async function loadFirstUserByType(type: string): Promise<UserEntity | null> {
   try {
-    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"type":"${type}"}' --limit=1`);
+    const { stdout } = await execWithRetry(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"type":"${type}"}' --limit=1`);
     const response = JSON.parse(stdout);
     if (response.success && response.items?.length > 0) {
       return response.items[0] as UserEntity;
@@ -379,7 +416,7 @@ async function loadFirstUserByType(type: string): Promise<UserEntity | null> {
  */
 export async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
   try {
-    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
+    const { stdout } = await execWithRetry(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
     const response = JSON.parse(stdout);
 
     if (response.success && response.items && response.items.length > 0) {

@@ -57,12 +57,17 @@ export const CALL_SERVER_PORT = 50053;
 export const CALL_SERVER_URL = `ws://127.0.0.1:${CALL_SERVER_PORT}`;
 
 /**
- * LiveKit SFU server port (WebRTC signaling)
+ * LiveKit SFU server port (WebRTC signaling, plain WS)
  */
 export const LIVEKIT_PORT = 7880;
 
 /**
- * LiveKit server URL
+ * LiveKit TLS proxy port (Caddy terminates TLS, proxies to LIVEKIT_PORT)
+ */
+export const LIVEKIT_TLS_PORT = 7443;
+
+/**
+ * LiveKit server URL (plain WS — for server-side use and local dev)
  */
 export const LIVEKIT_URL = `ws://127.0.0.1:${LIVEKIT_PORT}`;
 

@@ -136,6 +136,7 @@ class IPCConnection {
       this.socket.on('connect', () => {
         this._connected = true;
         this._connecting = false;
+        this.reconnectAttempts = 0;
         resolve();
       });
 
@@ -147,6 +148,7 @@ class IPCConnection {
       });
 
       this.socket.on('close', () => {
+        const wasPreviouslyConnected = this._connected;
         this._connected = false;
         this._connecting = false;
         this.socket = null;
@@ -156,6 +158,10 @@ class IPCConnection {
         }
         this.pendingRequests.clear();
         this.pendingTimings.clear();
+        // Auto-reconnect with exponential backoff if we were previously connected
+        if (wasPreviouslyConnected) {
+          this.scheduleReconnect();
+        }
       });
 
       setTimeout(() => {
@@ -165,6 +171,29 @@ class IPCConnection {
         }
       }, 5000);
     });
+  }
+
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return; // already scheduled
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000); // 1s, 2s, 4s, ... max 30s
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.connect();
+        this.reconnectAttempts = 0;
+        console.log(`[IPC#${this.connectionIndex}] Reconnected to continuum-core`);
+      } catch {
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts < 10) {
+          this.scheduleReconnect(); // try again with longer delay
+        } else {
+          console.error(`[IPC#${this.connectionIndex}] Gave up reconnecting after ${this.reconnectAttempts} attempts`);
+        }
+      }
+    }, delay);
   }
 
   private onData(data: Buffer): void {
@@ -347,56 +376,91 @@ export class ORMRustClient {
 
     this.poolConnecting = true;
     try {
-      const connectPromises: Promise<void>[] = [];
+      // Create connections — connect as many as possible, don't fail if some drop
       for (let i = 0; i < POOL_SIZE; i++) {
-        const conn = new IPCConnection(SOCKET_PATH, i);
-        this.connections.push(conn);
-        connectPromises.push(conn.connect());
+        this.connections.push(new IPCConnection(SOCKET_PATH, i));
       }
-      await Promise.all(connectPromises);
+      const results = await Promise.allSettled(
+        this.connections.map(c => c.connect())
+      );
+      const connected = results.filter(r => r.status === 'fulfilled').length;
+      if (connected === 0) {
+        throw new Error('No IPC connections to continuum-core — is it running?');
+      }
+      if (connected < POOL_SIZE) {
+        console.warn(`[ORM] ${connected}/${POOL_SIZE} IPC connections established (rest will auto-reconnect)`);
+      }
       this.poolReady = true;
-      // Pool ready
+      this.startHealthCheck();
     } finally {
       this.poolConnecting = false;
     }
   }
 
+  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Periodic health check — counts live connections, logs warnings.
+   * Dead connections auto-reconnect via IPCConnection.scheduleReconnect().
+   */
+  private startHealthCheck(): void {
+    if (this.healthCheckInterval) return;
+    this.healthCheckInterval = setInterval(() => {
+      const alive = this.connections.filter(c => c.connected).length;
+      if (alive === 0 && this.poolReady) {
+        console.error('[ORM] CRITICAL: All IPC connections dead — Rust core may have crashed');
+      } else if (alive < POOL_SIZE / 2) {
+        console.warn(`[ORM] IPC health: ${alive}/${POOL_SIZE} connections alive`);
+      }
+    }, 10_000); // Check every 10 seconds
+  }
+
   /**
    * Pick the least-busy connected connection.
-   * Reconnects dropped connections lazily.
+   * If all connections are down (e.g. core restarted), waits for any
+   * connection to come back rather than failing immediately.
+   * Individual connections auto-reconnect via scheduleReconnect().
    */
   private async getConnection(): Promise<IPCConnection> {
+    const conn = this.findBestConnection();
+    if (conn) return conn;
+
+    // All disconnected — kick off reconnection on all, then wait for any to come back.
+    // This prevents message loss during core restart (10-30s reconnection window).
+    for (const c of this.connections) {
+      if (!c.connected) c.connect().catch(() => {});
+    }
+
+    const maxWaitMs = 15_000;
+    const pollMs = 100;
+    const deadline = Date.now() + maxWaitMs;
+
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, pollMs));
+      const recovered = this.findBestConnection();
+      if (recovered) return recovered;
+    }
+
+    throw new Error('All IPC connections to continuum-core failed (waited 15s for reconnection)');
+  }
+
+  private findBestConnection(): IPCConnection | null {
     let best: IPCConnection | null = null;
     let totalPending = 0;
 
     for (const conn of this.connections) {
-      if (!conn.connected) {
-        // Reconnect in background — don't block this request
-        conn.connect().catch(() => {});
-        continue;
-      }
+      if (!conn.connected) continue;
       totalPending += conn.pendingCount;
       if (!best || conn.pendingCount < best.pendingCount) {
         best = conn;
       }
     }
 
-    // Backpressure warning — if we're piling up, something is wrong
     if (totalPending > 100) {
       console.warn(`[ORM] BACKPRESSURE: ${totalPending} pending IPC requests across ${POOL_SIZE} connections`);
     }
 
-    if (best) return best;
-
-    // All disconnected — try to reconnect one synchronously
-    for (const conn of this.connections) {
-      try {
-        await conn.connect();
-        return conn;
-      } catch { continue; }
-    }
-
-    throw new Error('All IPC connections to continuum-core failed');
+    return best;
   }
 
   /**

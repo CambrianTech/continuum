@@ -209,6 +209,7 @@ export const STAGE_COLORS: Record<string, string> = {
   package:          'rgba(0, 200, 255, 0.15)',
   eval:             'rgba(255, 255, 100, 0.15)',
   publish:          'rgba(100, 200, 255, 0.15)',
+  deliver:          'rgba(100, 200, 255, 0.15)',
   deploy:           'rgba(100, 255, 200, 0.15)',
 };
 
@@ -228,6 +229,7 @@ export const STAGE_TEXT_COLORS: Record<string, string> = {
   package:          '#00c8ff',
   eval:             '#ffff64',
   publish:          '#64c8ff',
+  deliver:          '#64c8ff',
   deploy:           '#64ffc8',
 };
 

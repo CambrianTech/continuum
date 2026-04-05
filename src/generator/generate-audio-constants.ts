@@ -23,6 +23,7 @@ interface AudioConstants {
   BYTES_PER_SAMPLE: number;
   CALL_SERVER_PORT: number;
   LIVEKIT_PORT: number;
+  LIVEKIT_TLS_PORT: number;
   LIVEKIT_DEV_KEY: string;
   LIVEKIT_DEV_SECRET: string;
 }
@@ -89,12 +90,17 @@ export const CALL_SERVER_PORT = ${constants.CALL_SERVER_PORT};
 export const CALL_SERVER_URL = \`ws://127.0.0.1:\${CALL_SERVER_PORT}\`;
 
 /**
- * LiveKit SFU server port (WebRTC signaling)
+ * LiveKit SFU server port (WebRTC signaling, plain WS)
  */
 export const LIVEKIT_PORT = ${constants.LIVEKIT_PORT};
 
 /**
- * LiveKit server URL
+ * LiveKit TLS proxy port (Caddy terminates TLS, proxies to LIVEKIT_PORT)
+ */
+export const LIVEKIT_TLS_PORT = ${constants.LIVEKIT_TLS_PORT};
+
+/**
+ * LiveKit server URL (plain WS — for server-side use and local dev)
  */
 export const LIVEKIT_URL = \`ws://127.0.0.1:\${LIVEKIT_PORT}\`;
 
@@ -142,8 +148,11 @@ pub const BYTES_PER_SAMPLE: usize = ${constants.BYTES_PER_SAMPLE};
 /// WebSocket call server port
 pub const CALL_SERVER_PORT: u16 = ${constants.CALL_SERVER_PORT};
 
-/// LiveKit SFU server port (WebRTC signaling)
+/// LiveKit SFU server port (WebRTC signaling, plain WS)
 pub const LIVEKIT_PORT: u16 = ${constants.LIVEKIT_PORT};
+
+/// LiveKit TLS proxy port (Caddy terminates TLS, proxies to LIVEKIT_PORT)
+pub const LIVEKIT_TLS_PORT: u16 = ${constants.LIVEKIT_TLS_PORT};
 
 /// LiveKit API key (dev mode)
 pub const LIVEKIT_DEV_KEY: &str = "${constants.LIVEKIT_DEV_KEY}";

@@ -20,8 +20,9 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { getVoiceOrchestrator, getTSVoiceOrchestrator } from '@system/voice/server';
-import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } from '@shared/AudioConstants';
+import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_TLS_PORT } from '@shared/AudioConstants';
 import { getSecret } from '@system/secrets/SecretManager';
+import { getNetworkIdentity, getWebSocketUrl } from '@system/config/server/NetworkIdentity';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
@@ -32,9 +33,15 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   private static readonly SERVER_START_TIME = Date.now();
 
   protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
+    const t0 = performance.now();
+    const step = (label: string) => console.log(`🎙️ LiveJoin [${(performance.now() - t0).toFixed(0)}ms]: ${label}`);
+
+    step(`START entityId=${params.entityId} userId=${params.userId}`);
+
     // 1. Resolve the entity (room/activity)
     const room = await this.resolveRoom(params.entityId, params);
     if (!room) {
+      step(`FAIL entity not found: ${params.entityId}`);
       return transformPayload(params, {
         success: false,
         message: `Entity not found: ${params.entityId}`,
@@ -47,10 +54,12 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         livekitUrl: '',
       });
     }
+    step(`room resolved: ${room.uniqueId}`);
 
     // 2. Get current user from params.userId (auto-injected by infrastructure)
     const user = await this.findUserById(params.userId, params);
     if (!user) {
+      step(`FAIL user not found: ${params.userId}`);
       return transformPayload(params, {
         success: false,
         message: 'Could not identify current user',
@@ -63,15 +72,18 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         livekitUrl: '',
       });
     }
+    step(`user found: ${user.displayName} (${user.type})`);
 
     // 3. Find or create active call for this room (with retry logic for race conditions)
     const { call, existed } = await this.findOrCreateCall(room, params);
+    step(`call ${existed ? 'found' : 'created'}: ${call.id.slice(0, 8)}`);
 
     // 3b. Sync late joiners — add room members who came online after the call was created.
     // Persona initialization is batched (6 at a time), so some personas come online
     // after the call exists. Every join sweeps them in. No hard limits.
     if (existed) {
       await this.syncLateJoiners(call, room, params);
+      step('late joiners synced');
     }
 
     // 4. Add current user as participant (if not already in the call)
@@ -83,6 +95,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     // 5. Save updated call
     await this.saveCall(call, params);
+    step('call saved');
 
     // 6. Emit join event for other clients
     Events.emit(`live:joined:${call.id}`, {
@@ -92,19 +105,25 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
 
     // 7. Register with VoiceOrchestrator — spawns STT listener in LiveKit room
     const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
+    step('registering Rust VoiceOrchestrator...');
     await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
+    step('Rust VoiceOrchestrator registered');
 
     // Also register with TS VoiceOrchestrator for session context tracking.
     // In Rust voice mode, the Rust bridge handles routing but TS tracks utterance
     // history for RAG context (VoiceConversationSource) and live/export.
+    step('registering TS VoiceOrchestrator...');
     await getTSVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
+    step('TS VoiceOrchestrator registered');
 
     // 8. Generate LiveKit access token for WebRTC connection
+    step('generating LiveKit token...');
     const livekitToken = await this.generateLiveKitToken(
       call.id,
       user.id,
       user.displayName
     );
+    step('LiveKit token generated');
 
     const result = {
       success: true,
@@ -117,11 +136,11 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       participants: call.getActiveParticipants(),
       myParticipant,
       livekitToken,
-      livekitUrl: getSecret('LIVEKIT_URL', 'LiveJoinServerCommand') || LIVEKIT_URL,
+      livekitUrl: getSecret('LIVEKIT_URL', 'LiveJoinServerCommand')
+        || (getNetworkIdentity() ? getWebSocketUrl(LIVEKIT_TLS_PORT) : LIVEKIT_URL),
     };
 
-    // DEBUG: Log what we're returning to browser
-    console.error(`🎙️ LiveJoin RESULT: callId=${call.id.slice(0, 8)}, existed=${existed}, participants=${call.getActiveParticipants().length}, myParticipant=${myParticipant.displayName}, livekitToken=${livekitToken.slice(0, 20)}...`);
+    step(`SUCCESS participants=${call.getActiveParticipants().length} livekitUrl=${result.livekitUrl}`);
 
     // 9. Auto-join AI personas — fire-and-forget so human join returns immediately.
     // Only trigger when a human joins to prevent recursive auto-joins.

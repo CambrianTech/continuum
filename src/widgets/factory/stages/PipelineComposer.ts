@@ -34,24 +34,43 @@ import './EvalStageElement';
 import './PublishStageElement';
 import './DeployStageElement';
 
+/** Source model metadata — determines which stages are available */
+interface SourceModelInfo {
+  isMoE: boolean;
+  hasVision: boolean;
+  hasAudio: boolean;
+  architecture: string;
+}
+
 /** Registry of available stage types → custom element tags.
  *  Organized by pipeline position: input → transform → output.
- *  Add a new alloy stage type → register it here → the composer discovers it. */
-const STAGE_REGISTRY: Record<string, { tag: string; label: string; description: string; position: 'input' | 'transform' | 'output' }> = {
+ *  Add a new alloy stage type → register it here → the composer discovers it.
+ *
+ *  `requires`: optional function that gates visibility based on source model.
+ *  If omitted, stage is always available. */
+const STAGE_REGISTRY: Record<string, {
+  tag: string;
+  label: string;
+  description: string;
+  position: 'input' | 'transform' | 'output';
+  requires?: (model: SourceModelInfo) => boolean;
+}> = {
   // Input stages (front bookend)
   'source-config':  { tag: 'source-config-stage-element',  label: 'Source Config',  description: 'Context window, modalities, target devices',      position: 'input' },
   'context-extend': { tag: 'context-extend-stage-element', label: 'Context Extend', description: 'RoPE rescaling (YaRN, NTK) — extend to 128K+',   position: 'input' },
-  'modality':       { tag: 'modality-stage-element',       label: 'Modality',       description: 'Bolt vision, audio, or video onto a text model',  position: 'input' },
+  'modality':       { tag: 'modality-stage-element',       label: 'Modality',       description: 'Bolt vision, audio, or video onto a text model',  position: 'input',
+                      requires: (m) => !m.hasVision },  // Only show for text-only models
   // Transform stages
   'prune':          { tag: 'prune-stage-element',          label: 'Prune',          description: 'Head pruning (entropy, magnitude, gradient)',      position: 'transform' },
   'train':          { tag: 'train-stage-element',          label: 'Train',          description: 'Recovery/fine-tuning with full config',            position: 'transform' },
   'lora':           { tag: 'lora-stage-element',           label: 'LoRA',           description: 'Low-rank adaptation with QLoRA support',           position: 'transform' },
   'compact':        { tag: 'compact-stage-element',        label: 'Compact',        description: 'Utilization-aware mixed-precision compaction',     position: 'transform' },
-  'expert-prune':   { tag: 'expert-prune-stage-element',   label: 'Expert Prune',   description: 'MoE expert selection by activation',               position: 'transform' },
+  'expert-prune':   { tag: 'expert-prune-stage-element',   label: 'Expert Prune',   description: 'MoE expert selection by activation',               position: 'transform',
+                      requires: (m) => m.isMoE },  // Only show for MoE models
   // Output stages (end bookend)
   'quant':          { tag: 'quant-stage-element',          label: 'Quantize',       description: 'GGUF, MLX, ONNX, safetensors',                    position: 'output' },
   'eval':           { tag: 'eval-stage-element',           label: 'Evaluate',       description: 'HumanEval, MMLU, GSM8K, IMO-ProofBench',          position: 'output' },
-  'publish':        { tag: 'publish-stage-element',        label: 'Publish',        description: 'Push to HuggingFace with model card + alloy',     position: 'output' },
+  'deliver':        { tag: 'publish-stage-element',        label: 'Deliver',        description: 'Prepare for review — publish manually after',      position: 'output' },
   'deploy':         { tag: 'deploy-stage-element',         label: 'Deploy',         description: 'Push to grid node for serving',                    position: 'output' },
 };
 
@@ -64,13 +83,29 @@ export class PipelineComposer extends ReactiveWidget {
 
   @reactive() stages: PipelineStage[] = [
     { type: 'source-config', config: {} },
+    { type: 'context-extend', config: {} },
     { type: 'prune', config: {} },
     { type: 'train', config: {} },
-    { type: 'quant', config: {} },
     { type: 'eval', config: {} },
+    { type: 'deliver', config: {} },
   ];
 
   @reactive() private _showAddMenu = false;
+
+  /** Source model info — gates which stages are available in the add menu */
+  @reactive() sourceModel: SourceModelInfo = {
+    isMoE: false,
+    hasVision: false,
+    hasAudio: false,
+    architecture: '',
+  };
+
+  /** Check if a stage type is available for the current source model */
+  private isStageAvailable(type: string): boolean {
+    const reg = STAGE_REGISTRY[type];
+    if (!reg?.requires) return true;
+    return reg.requires(this.sourceModel);
+  }
 
   /** Current pipeline as alloy stages array */
   get pipelineConfig(): Record<string, unknown>[] {
@@ -313,7 +348,7 @@ export class PipelineComposer extends ReactiveWidget {
         return html`<quant-stage-element .order=${order}></quant-stage-element>`;
       case 'eval-stage-element':
         return html`<eval-stage-element .order=${order}></eval-stage-element>`;
-      case 'publish-stage-element':
+      case 'publish-stage-element':  // Used by both 'deliver' and legacy 'publish'
         return html`<publish-stage-element .order=${order}></publish-stage-element>`;
       case 'deploy-stage-element':
         return html`<deploy-stage-element .order=${order}></deploy-stage-element>`;
@@ -329,7 +364,8 @@ export class PipelineComposer extends ReactiveWidget {
     return html`
       <div class="add-menu">
         ${groups.map(group => {
-          const stages = Object.entries(STAGE_REGISTRY).filter(([, r]) => r.position === group);
+          const stages = Object.entries(STAGE_REGISTRY)
+            .filter(([type, r]) => r.position === group && this.isStageAvailable(type));
           if (stages.length === 0) return nothing;
           return html`
             <div class="add-menu-group">

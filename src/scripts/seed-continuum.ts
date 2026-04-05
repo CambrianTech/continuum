@@ -35,9 +35,10 @@ import {
   updateUserModelConfig,
   createUserViaCommand,
   seedRecords,
+  execWithRetry,
 } from './seed/helpers';
 
-const execAsync = promisify(exec);
+const execAsync = execWithRetry;
 
 /** Sync recipe JSON files to database — truly idempotent, ignores "already exists" */
 async function syncRecipesFromJson(): Promise<void> {
@@ -337,64 +338,22 @@ async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // Wait for JTAG system to be ready
-    const isReady = await waitForJTAGReady();
-    if (!isReady) {
-      throw new Error('❌ JTAG system not ready - commands not registered yet');
-    }
-
-    // Hardware-aware persona selection via Rust PersonaAllocator (single source of truth)
-    let activePersonas: PersonaConfig[];
-    let localModel: string;
-
-    try {
-      // Collect available API keys from environment
-      const knownKeyVars = [
-        'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'GROQ_API_KEY',
-        'XAI_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY', 'DASHSCOPE_API_KEY',
-        'GOOGLE_API_KEY', 'HF_TOKEN', 'SENTINEL_PATH',
-      ];
-      const availableApiKeys = knownKeyVars.filter(k => !!process.env[k]);
-      const keysJson = JSON.stringify(availableApiKeys);
-
-      const { stdout: allocStdout } = await execAsync(
-        `./jtag persona/allocate --availableApiKeys='${keysJson}'`
-      );
-      const allocResponse = JSON.parse(allocStdout);
-
-      if (allocResponse.success !== false && allocResponse.allocations) {
-        // Map Rust allocations back to PersonaConfig format for compatibility
-        activePersonas = allocResponse.allocations.map((a: any) => ({
-          uniqueId: a.uniqueId,
-          displayName: a.displayName,
-          provider: a.provider,
-          type: a.personaType,
-          voiceId: a.voiceId,
-          modelId: a.resolvedModel || a.modelId,
-          isAudioNative: a.isAudioNative,
-          apiKeyEnv: a.apiKeyEnv,
-          minVramGB: a.vramBudgetGb,
-        }));
-        localModel = allocResponse.localModel || selectLocalModel(allocResponse.totalVramGb || 0);
-
-        console.log('🔍 Rust PersonaAllocator (single source of truth):');
-        for (const line of allocResponse.summary || []) {
-          console.log(`   ${line}`);
-        }
-      } else {
-        throw new Error('Rust allocator returned no allocations');
-      }
-    } catch (allocError) {
-      // Fallback to TS allocator if Rust IPC not available (shouldn't happen)
-      console.warn('⚠️ Rust persona/allocate failed, falling back to TS allocator:', allocError instanceof Error ? allocError.message : allocError);
-      const tsResult = getAvailablePersonas();
-      activePersonas = tsResult.personas;
-      localModel = selectLocalModel(tsResult.gpu.vramGB);
-      console.log('🔍 TS fallback persona selection:');
-      for (const line of tsResult.summary) {
-        console.log(`   ${line}`);
+    // Wait for JTAG system to be ready (skip in Docker — server already confirmed ready)
+    if (process.env.SKIP_READINESS_CHECK) {
+      console.log('⏭️ Skipping readiness check (SKIP_READINESS_CHECK set)');
+    } else {
+      const isReady = await waitForJTAGReady();
+      if (!isReady) {
+        throw new Error('❌ JTAG system not ready - commands not registered yet');
       }
     }
+
+    // Seed ALL personas — existence ≠ activation.
+    // The allocator decides which are ACTIVE at runtime based on hardware.
+    // But every persona must EXIST in the DB so they're ready when resources allow.
+    const activePersonas: PersonaConfig[] = Object.values(PERSONA_CONFIGS);
+    const localModel = selectLocalModel(0); // Default model, allocator overrides at runtime
+    console.log(`🎭 Seeding all ${activePersonas.length} personas (allocator activates at runtime)`);
 
     // BULK LOAD: One subprocess call replaces N individual lookups
     const { usersByUniqueId, missingUniqueIds } = await loadAllUsers(activePersonas);
@@ -798,6 +757,25 @@ async function seedViaJTAG() {
 
     // Sync recipes on first-time seed too
     await syncRecipesFromJson();
+
+    // Generate static avatar PNGs for all personas (colored circles with initials).
+    // These are the BASE avatars — always available, no Bevy/GPU needed.
+    // Bevy 3D renders upgrade these when available (local dev, game mode).
+    try {
+      const { generateAllAvatars } = await import('./seed/generate-avatars');
+      const avatarSpecs = Object.entries(PERSONA_PROFILES).map(([uniqueId, profile]) => {
+        const persona = ALL_PERSONAS.find(p => p.uniqueId === uniqueId);
+        return {
+          uniqueId,
+          displayName: persona?.displayName || uniqueId,
+          accentColor: profile.accentColor,
+        };
+      });
+      const avatarCount = await generateAllAvatars(avatarSpecs);
+      console.log(`🖼️  Generated ${avatarCount} persona avatars (${avatarSpecs.length - avatarCount} cached)`);
+    } catch (err) {
+      console.warn(`⚠️ Avatar generation skipped: ${err}`);
+    }
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 

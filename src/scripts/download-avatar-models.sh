@@ -13,7 +13,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"
 
-MODELS_DIR="models/avatars"
+# Override root with MODELS_DIR env var for Docker volume mounts
+MODELS_DIR="${MODELS_DIR:-models}/avatars"
 mkdir -p "$MODELS_DIR"
 
 # Track how many we download vs already have

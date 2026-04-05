@@ -66,7 +66,7 @@ pub(super) fn run_bevy_app(
         )))
         ;
         // GPU bridge: Metal compute shader for zero-copy RGBA→NV12 on macOS.
-        #[cfg(target_os = "macos")]
+        #[cfg(all(feature = "livekit-webrtc", target_os = "macos"))]
         app.add_plugins(super::super::metal_gpu_convert::GpuConvertPlugin);
         // wgpu compute shader for GPU RGBA→I420 conversion (cross-platform: Vulkan/DX12/Metal).
         // On macOS this is a fallback behind the Metal IOSurface path.

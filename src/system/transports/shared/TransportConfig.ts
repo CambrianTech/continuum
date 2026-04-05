@@ -22,7 +22,9 @@ export class TransportConfigHelper {
         protocol: 'websocket',
         role: 'client',
         fallback: true,
-        serverUrl: `ws://localhost:${wsPort}`
+        serverUrl: (typeof window !== 'undefined' && window.location?.host)
+          ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+          : `ws://localhost:${wsPort}`
       };
     }
     

@@ -1,9 +1,10 @@
 /**
- * PublishStageElement — UI for the alloy 'publish' stage
+ * PublishStageElement — UI for the alloy 'deliver' stage
  *
- * Push forged model to HuggingFace with model card, alloy, and attestation.
+ * Prepares forge output for review. The actual publish to HuggingFace
+ * happens manually via model/publish command after reviewing results.
  * Controls: org, repo name, tags, privacy, card generation
- * Maps 1:1 to ForgeAlloy PublishStage schema.
+ * Maps 1:1 to ForgeAlloy DeliverStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';
@@ -18,11 +19,11 @@ export class PublishStageElement extends StageElement {
   @reactive() private _private = false;
   @reactive() private _tags: string[] = ['continuum', 'forged', 'experiential-plasticity', 'forge-alloy'];
 
-  get stageType(): string { return 'publish'; }
+  get stageType(): string { return 'deliver'; }
 
   get stageConfig(): Record<string, unknown> {
     return {
-      type: 'publish',
+      type: 'deliver',
       org: this._org,
       repoNameTemplate: this._repoNameTemplate,
       includeAlloy: this._includeAlloy,

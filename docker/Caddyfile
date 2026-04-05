@@ -1,0 +1,24 @@
+# Continuum TLS Reverse Proxy
+#
+# Terminates TLS for all external-facing services.
+# Uses Caddy internal CA by default (self-signed, browser warns once).
+# Drop Tailscale certs in ~/.continuum/ for real certs (entrypoint.sh detects).
+#
+# Access: https://<host>  (UI), wss://<host>:9001 (WebSocket), wss://<host>:7443 (LiveKit)
+
+# Widget Server (Browser UI) — HTTPS on 443
+https:// {
+	tls internal
+
+	reverse_proxy widget-server:9003
+}
+
+# WebSocket Server — WSS on 9001
+:9001 {
+	reverse_proxy node-server:9001
+}
+
+# LiveKit Signalling — WSS on 7443
+:7443 {
+	reverse_proxy livekit:7880
+}

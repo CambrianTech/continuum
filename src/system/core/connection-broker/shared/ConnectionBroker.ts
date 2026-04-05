@@ -359,21 +359,34 @@ export class ConnectionBroker implements IConnectionBroker {
   ): Promise<ConnectionResult> {
     console.log(`🔗 ConnectionBroker: Creating client connection to existing server`);
 
-    // Connect to existing JTAG system server (assumes system is already running)
-    // Use dynamic port configuration instead of hardcoded values
+    // Connect to existing JTAG system server.
+    // Browser: use same host:port as the page (widget-server proxies WS internally).
+    // Server: use configured port from shared/config.
     let port: number;
     try {
-      // Try static import first (works in bundled/compiled contexts),
-      // then dynamic import (works in vitest/ESM contexts)
       const config = await import('../../../../shared/config');
       port = config.WS_PORT;
     } catch (error) {
-      throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
+      throw new Error(`ConnectionBroker: Failed to load WebSocket port. ${error}`);
     }
-    
-    const systemConfig = { 
-      getWebSocketPort: () => port, 
-      getWebSocketUrl: () => `ws://localhost:${port}` 
+
+    let wsUrl: string;
+    if (typeof window !== 'undefined' && window.location) {
+      // Browser: same host:port as page — widget-server proxies WS to node-server
+      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+      console.log(`🔌 ConnectionBroker: WS URL from page: ${wsUrl}`);
+    } else {
+      // Server: check if TLS is active
+      try {
+        const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity');
+        wsUrl = getWebSocketUrl(port);
+      } catch {
+        wsUrl = `ws://localhost:${port}`;
+      }
+    }
+    const systemConfig = {
+      getWebSocketPort: () => port,
+      getWebSocketUrl: () => wsUrl
     };
     const protocol = params.protocols[0]; // Use first preferred protocol
 
@@ -502,7 +515,17 @@ export class ConnectionBroker implements IConnectionBroker {
       protocol: server.protocol,
       role: 'client',
       serverPort: server.port,
-      serverUrl: `ws://localhost:${server.port}`,
+      serverUrl: (() => {
+        if (typeof window !== 'undefined' && window.location) {
+          return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+        }
+        try {
+          const { getWebSocketUrl } = eval("require")('../../../config/server/NetworkIdentity');
+          return getWebSocketUrl(server.port);
+        } catch {
+          return `ws://localhost:${server.port}`;
+        }
+      })(),
       sessionId: params.sessionId,
       eventSystem: eventSystem, // Required field provided by caller
       handler: handler, // Required field provided by caller

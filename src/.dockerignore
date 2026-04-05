@@ -1,0 +1,20 @@
+# Rust build artifacts (huge) — keep TS bindings for type resolution
+workers/target/
+workers/continuum-core/src/
+workers/archive-worker/
+workers/inference-grpc/
+workers/jtag-mcp/
+workers/*.toml
+workers/*.lock
+workers/*.sh
+node_modules/
+dist/
+.continuum/
+*.log
+.git/
+models/
+*.gguf
+*.bin
+*.safetensors
+*.vrm
+*.glb

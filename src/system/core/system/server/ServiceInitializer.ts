@@ -78,8 +78,14 @@ export async function initializeServices(): Promise<void> {
   initializeTrainingRecovery();
   log.debug('Training recovery service initialized');
 
-  // Codebase indexing: background incremental index so personas can answer code questions
-  initializeCodebaseIndexing();
+  // Codebase indexing: background incremental index so personas can answer code questions.
+  // Skip in production/Docker — no source tree to index, and the ORM.store() events
+  // (data:code_index:created × thousands) peg the CPU at 100% and starve voice/chat.
+  if (process.env.NODE_ENV !== 'production') {
+    initializeCodebaseIndexing();
+  } else {
+    log.info('Skipping codebase indexing (production mode)');
+  }
 
   const ms = Date.now() - start;
   log.info(`Cross-cutting services initialized (${ms}ms)`);

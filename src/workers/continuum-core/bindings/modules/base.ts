@@ -57,6 +57,12 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	public _nextRequestId = 1;
 	public _connected = false;
 	public _socketPath: string;
+	// Public due to TypeScript mixin limitations — treat as private (prefixed with _)
+	public _reconnectAttempts = 0;
+	public _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	public _wasConnected = false;
+	public _reconnectPromise: Promise<void> | null = null;
+	public _reconnectResolve: (() => void) | null = null;
 
 	/** Rate-limit slow IPC warnings */
 	private static slowWarningTimestamps: Map<string, number> = new Map();
@@ -82,7 +88,9 @@ export class RustCoreIPCClientBase extends EventEmitter {
 	}
 
 	/**
-	 * Connect to continuum-core server
+	 * Connect to continuum-core server.
+	 * Auto-reconnects with exponential backoff if the connection drops
+	 * after a successful initial connection (e.g. core container restart).
 	 */
 	async connect(): Promise<void> {
 		if (this._connected) {
@@ -94,6 +102,13 @@ export class RustCoreIPCClientBase extends EventEmitter {
 
 			this._socket.on('connect', () => {
 				this._connected = true;
+				this._wasConnected = true;
+				this._reconnectAttempts = 0;
+				if (this._reconnectResolve) {
+					this._reconnectResolve();
+					this._reconnectResolve = null;
+					this._reconnectPromise = null;
+				}
 				this.emit('connect');
 				resolve();
 			});
@@ -103,17 +118,61 @@ export class RustCoreIPCClientBase extends EventEmitter {
 			});
 
 			this._socket.on('error', (err) => {
+				this._connected = false;
 				this._rejectAllPending(err instanceof Error ? err : new Error(String(err)));
-				this.emit('error', err);
-				reject(err);
+				this.emit('connection-error', err);
+				// Only reject the initial connect() promise — reconnects are handled internally
+				if (!this._wasConnected) {
+					reject(err);
+				}
 			});
 
 			this._socket.on('close', () => {
 				this._connected = false;
+				this._socket = null;
 				this._rejectAllPending(new Error('IPC socket closed'));
 				this.emit('close');
+				// Auto-reconnect if we were previously connected (core restarted)
+				if (this._wasConnected) {
+					this._scheduleReconnect();
+				}
 			});
 		});
+	}
+
+	/**
+	 * Schedule reconnection with exponential backoff.
+	 * Creates a promise that _ensureConnected() can await.
+	 */
+	public _scheduleReconnect(): void {
+		if (this._reconnectTimer) return;
+		if (!this._reconnectPromise) {
+			this._reconnectPromise = new Promise<void>(resolve => {
+				this._reconnectResolve = resolve;
+			});
+		}
+		const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 15000);
+		console.log(`[IPC] Reconnecting to continuum-core in ${delay}ms (attempt ${this._reconnectAttempts + 1})`);
+		this._reconnectTimer = setTimeout(async () => {
+			this._reconnectTimer = null;
+			try {
+				await this.connect();
+				console.log('[IPC] Reconnected to continuum-core');
+			} catch {
+				this._reconnectAttempts++;
+				if (this._reconnectAttempts < 20) {
+					this._scheduleReconnect();
+				} else {
+					console.error('[IPC] Gave up reconnecting to continuum-core after 20 attempts');
+					if (this._reconnectResolve) {
+						// Don't leave waiters hanging forever — they'll get "not connected" errors
+						this._reconnectResolve();
+						this._reconnectResolve = null;
+						this._reconnectPromise = null;
+					}
+				}
+			}
+		}, delay);
 	}
 
 	/**
@@ -182,12 +241,25 @@ export class RustCoreIPCClientBase extends EventEmitter {
 
 	/**
 	 * Ensure connected before making request.
+	 * If reconnecting (core restarted), waits up to 15s for the connection
+	 * to come back rather than failing immediately.
 	 * @internal
 	 */
 	public async _ensureConnected(): Promise<void> {
-		if (!this._connected || !this._socket) {
-			throw new Error('Not connected to continuum-core server');
+		if (this._connected && this._socket) return;
+
+		// If a reconnection is in progress, wait for it
+		if (this._reconnectPromise) {
+			await Promise.race([
+				this._reconnectPromise,
+				new Promise<void>((_, reject) =>
+					setTimeout(() => reject(new Error('Timed out waiting for continuum-core reconnection (15s)')), 15_000)
+				),
+			]);
+			if (this._connected && this._socket) return;
 		}
+
+		throw new Error('Not connected to continuum-core server');
 	}
 
 	/**

@@ -83,6 +83,8 @@ function generateConfig() {
  */
 
 // Network Configuration (from config.env)
+// Browser connects to same host:port as page (widget-server proxies WS).
+// These are server-side defaults only.
 export const HTTP_PORT = ${httpPort};
 export const WS_PORT = ${wsPort};
 
@@ -105,8 +107,8 @@ export const EXAMPLE_CONFIG = {
   name: '${examplePackageJson.name || `JTAG ${activeExample}`}',
   description: '${examplePackageJson.description || `${activeExample} development environment`}',
   ports: {
-    http_server: ${httpPort},
-    websocket_server: ${wsPort}
+    http_server: HTTP_PORT,
+    websocket_server: WS_PORT
   },
   paths: {
     directory: 'examples/${activeExample}',

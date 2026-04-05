@@ -1,0 +1,20 @@
+# LiveKit Server Configuration — Docker Grid Mode
+#
+# Used when LiveKit shares Tailscale's network namespace.
+# Signaling on port 7890 (Tailscale serve proxies wss://7880 -> localhost:7890)
+# WebRTC media on 7881 (TCP) and 7882 (UDP) — directly on Tailscale interface.
+#
+# NODE_IP is injected at runtime by livekit-entrypoint.sh from the tailscale0 interface.
+
+port: 7890
+log_level: info
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 7882
+  port_range_end: 7882
+  use_external_ip: false
+  # node_ip set via CLI --node-ip flag from entrypoint script
+
+keys:
+  devkey: secret

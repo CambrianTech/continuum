@@ -756,7 +756,7 @@ mod tests {
 
 pub fn start_server(
     socket_path: &str,
-    livekit_manager: Arc<crate::live::transport::livekit_agent::LiveKitAgentManager>,
+    livekit_manager: Arc<crate::live::transport::bridge_client::LiveKitAgentManager>,
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,

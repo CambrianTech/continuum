@@ -1,0 +1,267 @@
+# Continuum — docker compose up
+#
+# Local:  docker compose up                    (HTTP on localhost, live calls on ws://localhost:7880)
+# Grid:   docker compose --profile grid up     (HTTPS via Tailscale, WebRTC over Tailscale mesh)
+# GPU:    docker compose --profile gpu up      (adds forge + inference)
+# All:    docker compose --profile grid --profile gpu up
+#
+# Grid mode .env (required):
+#   TS_AUTHKEY=tskey-auth-...
+#   TS_HOSTNAME=my-machine
+#   LIVEKIT_HOST_PORT=0              # disable local livekit host binding (grid uses livekit-grid)
+#   LIVEKIT_URL=ws://tailscale:7890  # continuum-core connects to livekit-grid internally
+#   LIVEKIT_BROWSER_URL=ws://tailscale:7880  # node-server returns port 7880 to browser (Tailscale serve TLS proxy)
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      POSTGRES_DB: continuum
+      POSTGRES_USER: ${POSTGRES_USER:-continuum}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-continuum}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U continuum"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Model Init (downloads voice/avatar/scene models on first run) ──
+  model-init:
+    build:
+      context: ./src
+      dockerfile: ../docker/model-init.Dockerfile
+    image: ghcr.io/cambriantech/continuum-model-init:latest
+    volumes:
+      - voice-models:/models
+    environment:
+      - MODELS_DIR=/models
+      - HF_TOKEN=${HF_TOKEN:-}
+      # base: small (74MB), fast, works with all whisper.cpp versions.
+      # large-v3-turbo requires whisper.cpp v1.7+ (different tensor count).
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+
+  # ── Continuum Core (Rust) ─────────────────────────────────
+  continuum-core:
+    build:
+      context: ./src/workers
+      dockerfile: ../../docker/continuum-core.Dockerfile
+      additional_contexts:
+        avatars: ./src/models/avatars
+      args:
+        # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
+        # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).
+        GPU_FEATURES: "--no-default-features --features load-dynamic-ort"
+    image: ghcr.io/cambriantech/continuum-core:latest
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit-bridge:
+        condition: service_healthy
+    volumes:
+      - ~/.continuum:/root/.continuum
+      - voice-models:/app/models:ro
+      - ipc-sockets:/root/.continuum/sockets
+    # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
+    # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
+    # Default: runc (CPU only — uses static avatar fallbacks).
+    runtime: ${DOCKER_GPU_RUNTIME:-runc}
+    environment:
+      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+      - AVATAR_MODELS_DIR=/app/avatars
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
+    healthcheck:
+      test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── LiveKit Bridge (Rust — WebRTC transport adapter) ──────
+  # Links webrtc-sys but NOT ort. Separate process eliminates
+  # the protobuf symbol conflict that deadlocked continuum-core.
+  livekit-bridge:
+    build:
+      context: ./src/workers
+      dockerfile: ../../docker/livekit-bridge.Dockerfile
+    image: ghcr.io/cambriantech/continuum-livekit-bridge:latest
+    restart: unless-stopped
+    depends_on:
+      - livekit
+    volumes:
+      - ipc-sockets:/root/.continuum/sockets
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
+    healthcheck:
+      test: ["CMD", "test", "-S", "/root/.continuum/sockets/livekit-bridge.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Node Server (TypeScript) ──────────────────────────────
+  node-server:
+    build:
+      context: ./src
+      dockerfile: ../docker/node-server.Dockerfile
+    image: ghcr.io/cambriantech/continuum-node:latest
+    restart: unless-stopped
+    depends_on:
+      continuum-core:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${NODE_WS_PORT:-9001}:9001"   # WebSocket (grid mode: set NODE_WS_PORT=9002 to avoid conflict with Tailscale)
+    volumes:
+      - ~/.continuum:/root/.continuum
+      - ipc-sockets:/root/.continuum/sockets
+    environment:
+      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+      - NODE_ENV=production
+      - JTAG_SKIP_HTTP=1
+      - JTAG_NO_TLS=1
+      - LIVEKIT_URL=${LIVEKIT_BROWSER_URL:-ws://livekit:7880}
+
+  # ── Widget Server (Vite) ──────────────────────────────────
+  widget-server:
+    build:
+      context: ./src
+      dockerfile: ../docker/widget-server.Dockerfile
+    image: ghcr.io/cambriantech/continuum-widgets:latest
+    restart: unless-stopped
+    mem_limit: 512m
+    depends_on:
+      - node-server
+    ports:
+      - "9003:9003"   # HTTP
+    volumes:
+      - ~/.continuum:/root/.continuum:ro
+    environment:
+      - JTAG_HTTP_PORT=9003
+      - JTAG_WEBSOCKET_PORT=${NODE_WS_PORT:-9001}
+      # WS proxy: widget-server forwards browser WebSocket to node-server container
+      - JTAG_WS_PROXY_HOST=node-server
+      - JTAG_WS_PROXY_PORT=9001
+
+  # ── LiveKit (WebRTC) — local mode ───────────────────────────
+  # Dev server for local development. Always starts.
+  # In grid mode, set LIVEKIT_HOST_PORT=0 in .env to avoid port conflict with tailscale.
+  # (LiveKit still runs but on unmapped ports — harmless, ~50MB RAM.)
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "${LIVEKIT_HOST_PORT:-7880}:7880"     # WebSocket signalling
+      - "${LIVEKIT_HOST_RTC_TCP:-7881}:7881"  # WebRTC TCP
+      - "${LIVEKIT_HOST_RTC_UDP:-7882}:7882/udp" # WebRTC UDP
+    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1"]
+
+  # ── LiveKit (WebRTC) — grid mode ──────────────────────────
+  # Shares Tailscale's network namespace so WebRTC media ports (7881/7882)
+  # are directly on the Tailscale interface — real UDP, no relay, no TURN.
+  # Signaling proxied by Tailscale serve: wss://7880 → localhost:7890.
+  livekit-grid:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    mem_limit: 256m
+    profiles: ["grid"]
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    volumes:
+      - ./docker/livekit.yaml:/etc/livekit.yaml:ro
+      - ./docker/livekit-entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/entrypoint.sh"]
+
+  # ── Tailscale (grid profile — remote HTTPS access) ────────
+  # Joins tailnet, provisions real Let's Encrypt certs, reverse-proxies
+  # HTTPS/WSS to plain HTTP containers. Only needed for remote access.
+  #
+  # Requires .env:
+  #   TS_AUTHKEY=tskey-auth-...
+  #   TS_HOSTNAME=my-machine
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-continuum}
+    restart: unless-stopped
+    profiles: ["grid"]
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/tailscale-serve.json
+      - TS_USERSPACE=false
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./docker/tailscale-serve.json:/config/tailscale-serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - net_raw
+    ports:
+      - "443:443"      # HTTPS → widget-server
+      - "9001:9001"    # WSS → node-server
+      - "7880:7880"    # WSS → livekit signaling (Tailscale serve terminates TLS, proxies to localhost:7890)
+      # WebRTC ports 7881/7882 are NOT mapped here — they're directly on tailscale0
+      # (shared by livekit-grid). Tailnet peers reach them via WireGuard, not Docker ports.
+
+  # ── Forge Worker (sentinel-ai) ────────────────────────────
+  forge-worker:
+    build: ../sentinel-ai
+    image: ghcr.io/cambriantech/forge-worker:latest
+    profiles: ["gpu"]
+    mem_limit: 28g
+    deploy:
+      resources:
+        limits:
+          memory: 28g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - forge-output:/app/output
+      - hf-cache:/root/.cache/huggingface
+      - models:/app/models
+      - ../forge-alloy/examples:/app/alloys:ro
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+
+  # ── Inference Server (GPU nodes only) ──────────────────────
+  inference:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    restart: unless-stopped
+    profiles: ["gpu"]
+    mem_limit: 8g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - models:/models
+      - forge-output:/app/output:ro
+    command: ["-m", "/models/current.gguf", "-c", "4096", "-ngl", "99", "--port", "8090", "--host", "0.0.0.0"]
+
+volumes:
+  pgdata:
+  hf-cache:
+  forge-output:
+  models:
+  voice-models:
+  ipc-sockets:
+  tailscale-state:

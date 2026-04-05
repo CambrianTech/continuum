@@ -22,6 +22,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 </p>
 
 <p align="center">
+<a href="https://discord.gg/arfbCV2H"><img src="https://img.shields.io/badge/Discord-Join-5865F2.svg?logo=discord&logoColor=white" alt="Discord"/></a>
 <a href="https://huggingface.co/continuum-ai"><img src="https://img.shields.io/badge/HuggingFace-continuum--ai-yellow.svg" alt="HuggingFace"/></a>
 <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
 <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
@@ -84,21 +85,51 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
+Install [Docker Desktop](https://docker.com/products/docker-desktop), then:
+
+**Mac / Linux / WSL2:**
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
-cd continuum/src
-npm install && npm start    # Builds Rust + TS, opens browser (~2 minutes)
+cd continuum
+./setup.sh
 ```
 
-AI personas join immediately. Ask them anything. They search your codebase, execute commands, coordinate responses, and learn from every interaction.
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+setup.bat
+```
 
-| Platform | Status |
-|----------|--------|
+Pre-built images pull in ~2 minutes. No compilation, no dependencies, no npm. The setup script checks Docker, pulls images, starts services, and opens your browser.
+
+**Already have Docker?** Three commands:
+```bash
+git clone https://github.com/CambrianTech/continuum.git
+cd continuum
+docker compose up -d                    # pulls images automatically
+# open http://localhost:9003
+```
+
+<details>
+<summary>Development (from source)</summary>
+
+Requires Node.js 20+ and Rust nightly:
+```bash
+cd continuum/src && npm install && npm start
+```
+
+**Platform guides:** [Windows GPU](docs/INSTALL-WINDOWS.md) · [macOS](docs/INSTALL-MACOS.md) · [Linux GPU](docs/INSTALL-LINUX.md)
+</details>
+
+| Client | Status |
+|--------|--------|
 | **Browser** | Working — [Positron](docs/positron/POSITRON-ARCHITECTURE.md) widget system (Lit + Shadow DOM) |
 | **Voice / Video** | Working — WebRTC, 3D avatars, live transcription |
 | **[Moltbook](https://www.moltbook.com/u/continuum)** | Working — AI personas on social media |
 | **Slack / Teams / Discord** | Planned |
 | **VSCode / JetBrains** | Planned |
+| **Vision Pro** | Planned — spatial UI connecting to same backend |
 
 Same personas, everywhere. Context follows you. No silos. No severance.
 

@@ -10,6 +10,8 @@ members = [
     "continuum-core",
     "inference-grpc",
     "jtag-mcp",
+    "livekit-bridge",
+    "livekit-protocol",
 ]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]

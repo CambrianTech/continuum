@@ -19,11 +19,14 @@ The Grid is a decentralized mesh of Continuum instances sharing compute, intelli
 | Document | Scope |
 |----------|-------|
 | **This document** | Grid architecture umbrella — principles, scaling, rollout, validation, economics |
+| [DOCKER-NODE-ARCHITECTURE.md](DOCKER-NODE-ARCHITECTURE.md) | Docker containers — one `docker compose up` = one grid node, profiles, resource limits |
+| [ARES-KERNEL.md](ARES-KERNEL.md) | Grid kernel — heartbeat, watchdog, log scanner, self-healing, remote shell |
 | [RETICULUM-TRANSPORT.md](RETICULUM-TRANSPORT.md) | Wire protocol — how Commands.execute() routes between nodes over Reticulum |
 | [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md) | Discovery protocols — gossip, flood, DHT, semantic search |
 | [LORA-MESH-DISTRIBUTION.md](../genome/LORA-MESH-DISTRIBUTION.md) | Genome marketplace — Personafile format, LoRA registry, distribution |
 | [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) | Economic theory research paper |
 | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) | Per-node resource management — GPU governor, pressure watchers, eviction |
+| [ARES-MASTER-CONTROL.md](../ARES-MASTER-CONTROL.md) | Ares security PersonaUser — consumes kernel events, analyzes threats in chat |
 
 ---
 
@@ -49,7 +52,46 @@ Each Continuum instance is self-contained: models, LoRA adapters, persona config
 
 You can snapshot it, migrate it over Reticulum, restore it on different hardware. Fork it for experimentation. Your Continuum is sovereign — it joins the mesh as a peer, shares capabilities voluntarily, but never loses autonomy.
 
-### 2.4 Bidirectional Resource Scaling
+### 2.4 Docker-First Node Architecture
+
+Every Grid node runs as a set of Docker containers. This is not an implementation detail — it's the architecture.
+
+```
+┌─── Grid Node (any machine) ──────────────────────────────┐
+│                                                           │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────┐ │
+│  │ continuum-  │  │ node-server │  │ widget-server    │ │
+│  │ core (Rust) │  │ (TypeScript)│  │ (optional - UI)  │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────────────────┘ │
+│         │ socket         │ websocket                     │
+│  ┌──────┴──────┐  ┌──────┴──────┐  ┌──────────────────┐ │
+│  │ postgres    │  │ inference   │  │ forge-worker     │ │
+│  │             │  │ (llama.cpp) │  │ (GPU, optional)  │ │
+│  └─────────────┘  └─────────────┘  └──────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Why Docker:**
+- **One-command install** — `curl | bash`, pulls pre-built images, running in minutes
+- **Health checks** — containers restart automatically on crash, no more blank widgets
+- **Isolation** — forge can't crash inference, bad model can't take down the server
+- **Reproducibility** — same image runs on a 5090 tower, a laptop 3060, or a cloud VM
+- **GPU passthrough** — Docker Desktop on Windows/WSL2 passes NVIDIA GPUs through automatically
+
+**Deployable AI Teams** — pre-packaged docker-compose profiles:
+
+| Team Profile | Containers | Purpose |
+|-------------|-----------|---------|
+| `gpu` | forge-worker | Model forging on GPU hardware |
+| `inference` | inference-server, load-balancer | Serve models with scaling |
+| `security` | anomaly-detector, traffic-monitor | AI-powered mesh security |
+| `headless` | continuum-core, node-server | No UI — forge/inference only |
+
+Deploy a team to any node: `docker compose --profile security up`. Remove it: `docker compose --profile security down`. The Grid SCADA page visualizes this — drag a capability onto a node, containers spin up.
+
+**Headless is the default.** Most nodes don't need a browser. GPU towers forge models 24/7 with no UI. Your MacBook runs the full UI and orchestrates the fleet. The widget-server container is optional — add it when you want eyes on a node.
+
+### 2.5 Bidirectional Resource Scaling
 
 Not just "degrade gracefully on constrained hardware." Scale UP when capacity joins. Scale OUT to mesh peers. The same eviction logic (`age_seconds / (priority_weight * 10)`) works at every level — local VRAM, system RAM, SSD, cloud, mesh.
 
@@ -273,7 +315,74 @@ Same API. Same permissions model. Same audit trail. Whether a human is tuning re
 
 ---
 
-## 7. Phased Rollout (LAN-First)
+## 7. Node Management Hierarchy
+
+Three layers of intelligence manage the Grid, from kernel to strategy:
+
+### 7.1 Ares (Kernel — Per Node)
+
+The minimum viable existence. A tiny Rust binary (~2MB, <50MB RAM) running as a systemd service on every node. Not a container — it monitors containers.
+
+```
+Responsibilities:
+├── Heartbeat every 30s to mesh peers
+├── Hardware vitals (CPU, GPU, RAM, disk)
+├── Container watchdog (crash detection, restart loops, OOM)
+├── Log scanner (pattern-match known failures)
+├── Remote shell (authenticated commands from mesh)
+└── Auto-heal safe failures (restart postgres, pause forge on disk full)
+```
+
+Ares doesn't think. It monitors, reports, and executes. See [ARES-KERNEL.md](ARES-KERNEL.md).
+
+### 7.2 Foreman (PersonaUser — Per Node)
+
+Factory intelligence. A PersonaUser running inside the continuum-core container that subscribes to Ares events and makes strategic decisions.
+
+```
+Responsibilities:
+├── Interpret Ares events ("CUDA error" → "need torch upgrade")
+├── Job scheduling (which alloys to forge, in what order)
+├── Resource strategy (when to pause inference to free GPU for training)
+├── Quality control (evaluate forge results, reject bad models)
+└── Report to #factory room (humans and other personas see updates)
+```
+
+The Foreman's RAG layer is its "widget" — it doesn't open a browser tab. It reads factory events through RAG injection on every cognition cycle.
+
+### 7.3 Plant Manager (PersonaUser — Grid-Wide)
+
+Cross-node coordination. Runs on any node (elected or designated), consumes events from all Foreman instances.
+
+```
+Responsibilities:
+├── Route forge jobs to capable nodes
+├── Balance load across the grid
+├── Handle node failures (reassign jobs from stale nodes)
+├── Capacity planning ("BigMama has 5090, route large models there")
+├── Report to #grid room
+└── Coordinate with Academy for training priorities
+```
+
+### Management Flow
+
+```
+Hardware event (GPU crash, disk full, etc.)
+  → Ares detects (5 seconds)
+    → Ares auto-fixes if safe, or emits to mesh
+      → Foreman receives via RAG, makes strategic decision
+        → Plant Manager coordinates across nodes if needed
+          → Humans see everything in #factory / #grid rooms
+```
+
+Nodes come online, nodes go offline. Jobs lease and expire. The hierarchy handles it:
+- **Ares** keeps the heartbeat going and prevents cascading failures
+- **Foreman** makes local strategic decisions about what to run
+- **Plant Manager** optimizes across the fleet
+
+---
+
+## 8. Phased Rollout (LAN-First)
 
 ### Phase 1: Local (Current)
 
@@ -313,7 +422,7 @@ Continuum Credits (CC). Optional marketplace. Free participation always possible
 
 ---
 
-## 8. Intelligent Validation
+## 9. Intelligent Validation
 
 > **"Intelligence validates intelligence. Rule breakers are easily isolated or banished."**
 
@@ -374,7 +483,7 @@ The Grid doesn't just survive attacks — it evolves from them. Antifragile by d
 
 ---
 
-## 9. Reputation System
+## 10. Reputation System
 
 ### Reputation Score
 
@@ -425,7 +534,7 @@ interface NodeReputation {
 
 ---
 
-## 10. Economic Model (Phase 5)
+## 11. Economic Model (Phase 5)
 
 ### Continuum Credits (CC)
 
@@ -484,7 +593,7 @@ Supply (nodes offering compute) competes on price and reputation. Demand (users 
 
 ---
 
-## 11. Personas as Autonomous Economic Agents (Phase 6)
+## 12. Personas as Autonomous Economic Agents (Phase 6)
 
 The Grid doesn't just route commands between machines — it becomes a **marketplace where personas are the participants**. PersonaUsers already have the cognitive architecture for autonomous economic behavior: energy states, priority queues, adaptive cadence, self-managed task generation. The Grid gives them an economy to operate in.
 
@@ -590,7 +699,7 @@ This is the difference between a compute marketplace and a **civilization**.
 
 ---
 
-## 12. Security Properties
+## 13. Security Properties
 
 ### Resilience Through Diversity
 
@@ -626,7 +735,7 @@ The Grid is **antifragile** — attacks make it stronger by exposing and isolati
 
 ---
 
-## 13. The Accessibility Promise
+## 14. The Accessibility Promise
 
 This section exists because accessibility isn't a feature — it's the mission.
 
@@ -659,13 +768,21 @@ The governance sentinel manages what's loaded. Models page in and out. Rendering
 
 ---
 
-## 14. Document Map
+## 15. Document Map
 
 How all Grid documents relate:
 
 ```
 GRID-ARCHITECTURE.md (this document)
 │   Architecture umbrella: principles, scaling, rollout, validation, economics
+│
+├── DOCKER-NODE-ARCHITECTURE.md
+│   One docker compose up = one grid node. Profiles, resource limits, volumes.
+│   Mac vs GPU vs headless node configurations.
+│
+├── ARES-KERNEL.md
+│   Grid kernel: heartbeat, watchdog, log scanner, self-healing, remote shell.
+│   Per-node Rust binary (<50MB). The minimum viable existence.
 │
 ├── RETICULUM-TRANSPORT.md
 │   Wire protocol: pure Rust GridTransportModule, GridRouter, frame format
@@ -683,9 +800,13 @@ GRID-ARCHITECTURE.md (this document)
 │   Blockchain vision paper: economic theory, alt-coin design
 │   Long-term economic model details
 │
-└── RESOURCE-GOVERNANCE-ARCHITECTURE.md
-    Per-node resource management: GPU governor, pressure watchers
-    Layers 0-4, eviction registry, sentinel-driven control
+├── RESOURCE-GOVERNANCE-ARCHITECTURE.md
+│   Per-node resource management: GPU governor, pressure watchers
+│   Layers 0-4, eviction registry, sentinel-driven control
+│
+└── ARES-MASTER-CONTROL.md
+    Ares security PersonaUser (higher layer above kernel Ares)
+    Consumes kernel events, analyzes threats, posts to I/O Tower room
 ```
 
 **Related architecture:**

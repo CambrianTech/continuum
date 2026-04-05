@@ -510,33 +510,40 @@ export class SystemOrchestrator extends EventEmitter {
     // Two separate servers:
     //   1. JTAGSystemServer (WebSocket + daemons) - core backend
     //   2. minimal-server.ts (HTTP) - serves UI and static files
-    const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
-    const activeExamplePath = getActiveExamplePath();
-    const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
+    //
+    // In Docker, the widget-server container handles HTTP separately,
+    // so skip spawning the HTTP server when JTAG_SKIP_HTTP is set.
+    if (!process.env.JTAG_SKIP_HTTP) {
+      const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
+      const activeExamplePath = getActiveExamplePath();
+      const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
 
-    console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
+      console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
 
-    this.serverProcess = spawn('npx', ['tsx', serverScript], {
-      cwd: activeExamplePath,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false
-    });
+      this.serverProcess = spawn('npx', ['tsx', serverScript], {
+        cwd: activeExamplePath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false
+      });
 
-    this.serverProcess.stdout?.on('data', (data) => {
-      console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
-    });
+      this.serverProcess.stdout?.on('data', (data) => {
+        console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
+      });
 
-    this.serverProcess.stderr?.on('data', (data) => {
-      console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
-    });
+      this.serverProcess.stderr?.on('data', (data) => {
+        console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
+      });
 
-    this.serverProcess.on('error', (error) => {
-      console.error(`❌ Server process failed: ${error.message}`);
-    });
+      this.serverProcess.on('error', (error) => {
+        console.error(`❌ Server process failed: ${error.message}`);
+      });
 
-    this.serverProcess.on('exit', (code, signal) => {
-      console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
-    });
+      this.serverProcess.on('exit', (code, signal) => {
+        console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
+      });
+    } else {
+      console.debug(`⏭️ Skipping HTTP server (JTAG_SKIP_HTTP set — widget-server handles HTTP)`);
+    }
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_START,
@@ -602,13 +609,14 @@ export class SystemOrchestrator extends EventEmitter {
 
     while (attempt < maxPortRetries) {
       try {
-        const portChecks = await Promise.all([
-          this.checkPortReady(activePorts.websocket_server),
-          this.checkPortReady(activePorts.http_server)
-        ]);
+        const checks = [this.checkPortReady(activePorts.websocket_server)];
+        if (!process.env.JTAG_SKIP_HTTP) {
+          checks.push(this.checkPortReady(activePorts.http_server));
+        }
+        const portChecks = await Promise.all(checks);
 
         if (portChecks.every(ready => ready)) {
-          console.debug(`✅ Ports listening: WS=${activePorts.websocket_server}, HTTP=${activePorts.http_server}`);
+          console.debug(`✅ Ports listening: WS=${activePorts.websocket_server}${process.env.JTAG_SKIP_HTTP ? ' (HTTP skipped)' : `, HTTP=${activePorts.http_server}`}`);
           break;
         }
       } catch {
@@ -625,21 +633,27 @@ export class SystemOrchestrator extends EventEmitter {
 
     // Phase 2: Wait for server to finish bootstrapping (commands registered).
     // This prevents the browser from opening to a white screen while the
-    // WebSocket server is still registering 261 commands and 17 daemons.
+    // WebSocket server is still registering commands and daemons.
+    //
+    // Check readiness DIRECTLY via the server instance — no subprocess.
+    // The old approach (./jtag ping) spawned a CLI that connected via WebSocket
+    // back to itself, which is circular in Docker and fragile everywhere.
     console.debug('⏳ Waiting for server bootstrap (commands + daemons)...');
     const maxBootstrapRetries = 30;
     let bootstrapAttempt = 0;
+    const { JTAGSystemServer: ServerClass } = await import('../core/system/server/JTAGSystemServer');
 
     while (bootstrapAttempt < maxBootstrapRetries) {
       try {
-        const { stdout } = await execAsync('./jtag ping --timeout=3000', { timeout: 5000 });
-        const pingResult = JSON.parse(stdout);
-
-        if (pingResult.success && pingResult.server?.health?.systemReady) {
-          const cmds = pingResult.server.health.commandsRegistered || 0;
-          const daemons = pingResult.server.health.daemonsActive || 0;
-          console.debug(`✅ Server bootstrapped: ${cmds} commands, ${daemons} daemons`);
-          break;
+        const server = ServerClass.instance;
+        if (server) {
+          const commandDaemon = server.getCommandDaemon() as any;
+          const cmds = commandDaemon?.commands?.size ?? 0;
+          const daemons = server.systemDaemons.length;
+          if (cmds > 0) {
+            console.debug(`✅ Server bootstrapped: ${cmds} commands, ${daemons} daemons`);
+            break;
+          }
         }
       } catch {
         // Server not ready yet
@@ -937,7 +951,8 @@ export class SystemOrchestrator extends EventEmitter {
     try {
       const { getActivePorts } = require('../../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
-      return `http://localhost:${activePorts.http_server}`;
+      const { getServiceUrl } = require('../config/server/NetworkIdentity');
+      return getServiceUrl(activePorts.http_server);
     } catch (error) {
       console.error('❌ FATAL: Could not get active ports - no fallback:', error);
       throw error;

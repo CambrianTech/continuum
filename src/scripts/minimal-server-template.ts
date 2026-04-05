@@ -5,6 +5,7 @@
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,12 +16,28 @@ import type { ConnectionConfig } from '@continuum/jtag/types';
 const connectionConfig: ConnectionConfig = createConnectionConfigAuto();
 const PORT = connectionConfig.httpPort;
 
+import { getNetworkIdentity, getTlsOptions } from '../system/config/server/NetworkIdentity';
+
 class MinimalServer {
-  private server: http.Server;
+  private server: http.Server | https.Server;
   private requestInProgress = false;
+  private readonly tlsEnabled: boolean;
+  private readonly tlsHostname: string;
 
   constructor() {
-    this.server = http.createServer(this.handleRequest.bind(this));
+    const identity = getNetworkIdentity();
+    const tlsOpts = getTlsOptions();
+    if (identity && tlsOpts) {
+      this.server = https.createServer(tlsOpts, this.handleRequest.bind(this));
+      this.tlsEnabled = true;
+      this.tlsHostname = identity.hostname;
+      console.log(`🔒 TLS enabled: ${identity.hostname} (${identity.provider})`);
+    } else {
+      this.server = http.createServer(this.handleRequest.bind(this));
+      this.tlsEnabled = false;
+      this.tlsHostname = '';
+      console.log('🔓 No TLS — serving HTTP (provision certs: tailscale cert <hostname> && mv *.crt *.key ~/.continuum/)');
+    }
   }
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -200,22 +217,37 @@ class MinimalServer {
     try {
       const templatePath = path.join(__dirname, '../../templates/universal-demo.html');
       
-      if (fs.existsSync(templatePath)) {
-        const content = fs.readFileSync(templatePath, 'utf8');
-        res.writeHead(200, { 
+      // Inject runtime config into HTML so browser JS can read dynamic ports.
+      // The JS bundle has ports baked in at compile time, but Docker may map
+      // different host ports (e.g. grid mode maps 9002:9001).
+      const runtimeConfig = `<script>
+window.__CONTINUUM_CONFIG__=${JSON.stringify({
+  websocketPort: connectionConfig.websocketPort,
+  httpPort: connectionConfig.httpPort,
+})};
+// Auto-reload: poll widget-server, reload when it comes back after restart
+(function(){var alive=true;setInterval(function(){fetch('/').then(function(){if(!alive){alive=true;location.reload()}}).catch(function(){alive=false})},3000)})();
+</script>`;
+
+      const serveHtmlWithConfig = (htmlContent: string) => {
+        // Inject config script before the closing </head> or before first <script>
+        // Inject BEFORE any <script> tag so config is set before module evaluation
+        const injected = htmlContent.replace('<script', `${runtimeConfig}\n<script`);
+        res.writeHead(200, {
           'Content-Type': 'text/html',
           'Cache-Control': 'no-cache, no-store, must-revalidate'
         });
-        res.end(content);
+        res.end(injected);
+      };
+
+      if (fs.existsSync(templatePath)) {
+        serveHtmlWithConfig(fs.readFileSync(templatePath, 'utf8'));
+      } else if (fs.existsSync('public/demo.html')) {
+        serveHtmlWithConfig(fs.readFileSync(path.join(process.cwd(), 'public/demo.html'), 'utf8'));
+      } else if (fs.existsSync('index.html')) {
+        serveHtmlWithConfig(fs.readFileSync(path.join(process.cwd(), 'index.html'), 'utf8'));
       } else {
-        // Fallback to local demo.html or index.html
-        if (fs.existsSync('public/demo.html')) {
-          this.serveFile(res, 'public/demo.html', 'text/html');
-        } else if (fs.existsSync('index.html')) {
-          this.serveFile(res, 'index.html', 'text/html');
-        } else {
-          this.serve404(res);
-        }
+        this.serve404(res);
       }
     } catch (error) {
       console.error('❌ Failed to serve universal demo:', error.message);
@@ -1155,17 +1187,63 @@ class MinimalServer {
 
   async start(): Promise<void> {
     const exampleName = path.basename(process.cwd());
-    console.log(`🚀 Starting ${exampleName} HTTP server...`);
+    const protocol = this.tlsEnabled ? 'https' : 'http';
+    console.log(`🚀 Starting ${exampleName} ${protocol.toUpperCase()} server...`);
     console.log('🌐 Browser client will connect to JTAG system via WebSocket');
-    
+
+    // WebSocket proxy: browser connects to ws://same-host:same-port,
+    // widget-server forwards to node-server's internal WS port.
+    // In Docker: containers reach each other by service name (node-server:9001).
+    // Native: localhost works (both run on same machine).
+    // JTAG_WS_PROXY_HOST: Docker compose sets this to "node-server" (container name).
+    // Native: falls back to localhost with the configured port.
+    const wsTargetHost = process.env.JTAG_WS_PROXY_HOST || 'localhost';
+    const wsTargetPort = process.env.JTAG_WS_PROXY_PORT ? parseInt(process.env.JTAG_WS_PROXY_PORT) : connectionConfig.websocketPort;
+    console.log(`   📡 WebSocket proxy: ws://localhost:${PORT} → ws://${wsTargetHost}:${wsTargetPort}`);
+    this.server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
+      console.log(`📡 WS proxy: upgrade request → ${wsTargetHost}:${wsTargetPort}${req.url}`);
+      const proxyReq = http.request({
+        hostname: wsTargetHost,
+        port: wsTargetPort,
+        path: req.url || '/',
+        method: 'GET',
+        headers: { ...req.headers, host: `${wsTargetHost}:${wsTargetPort}` },
+      });
+
+      proxyReq.on('upgrade', (_res, targetSocket, targetHead) => {
+        console.log(`📡 WS proxy: upgrade success, piping`);
+        // Write the 101 response back to the browser
+        let response = 'HTTP/1.1 101 Switching Protocols\r\n';
+        for (const [key, value] of Object.entries(_res.headers)) {
+          if (value) response += `${key}: ${value}\r\n`;
+        }
+        response += '\r\n';
+        socket.write(response);
+        if (targetHead.length) socket.write(targetHead);
+        if (head.length) targetSocket.write(head);
+        targetSocket.pipe(socket);
+        socket.pipe(targetSocket);
+      });
+
+      proxyReq.on('error', (err) => {
+        console.error(`❌ WS proxy error: ${err.message}`);
+        socket.destroy();
+      });
+
+      proxyReq.end();
+    });
+
     return new Promise((resolve, reject) => {
       this.server.on('error', reject);
       this.server.listen(PORT, () => {
-        console.log(`✅ HTTP server running at http://localhost:${PORT}`);
-        
-        // Browser launch handled by main JTAG system - no duplicate launch needed
-        console.log(`   🌐 Access at: http://localhost:${PORT} (browser auto-opened by JTAG system)`);
-        
+        console.log(`✅ ${protocol.toUpperCase()} server running at ${protocol}://localhost:${PORT}`);
+        console.log(`   📡 WebSocket proxy: ws://localhost:${PORT} → ws://localhost:${wsTargetPort}`);
+
+        if (this.tlsEnabled) {
+          console.log(`   🔒 Secure access: https://${this.tlsHostname}:${PORT}`);
+        }
+        console.log(`   🌐 Local access: ${protocol}://localhost:${PORT}`);
+
         resolve();
       });
     });

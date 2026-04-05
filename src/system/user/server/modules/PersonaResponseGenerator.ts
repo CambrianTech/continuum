@@ -987,15 +987,19 @@ export class PersonaResponseGenerator {
         storedToolResultIds: allStoredResultIds  // Always return array, even if empty
       };
     } catch (error) {
-      // Fail silently - real people don't send canned error messages, they just stay quiet
-      AIDecisionLogger.logError(
-        this.personaName,
-        'Response generation/posting',
-        error instanceof Error ? error.message : String(error)
-      );
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      // "not available" = no API key configured. Expected, silent.
+      // Everything else (rate limit, auth fail, timeout) = show error so user knows.
+      const isNotConfigured = errorMsg.includes('not available') && errorMsg.includes('Available:');
 
-      // Emit ERROR event (fire-and-forget — UI indicator)
-      if (this.client) {
+      if (isNotConfigured) {
+        this.log(`⏭️ ${this.personaName}: Provider not configured, staying quiet`);
+      } else {
+        AIDecisionLogger.logError(this.personaName, 'Response generation/posting', errorMsg);
+      }
+
+      // Only emit ERROR event for real failures (not unconfigured providers)
+      if (this.client && !isNotConfigured) {
         Events.emit<AIErrorEventData>(
           DataDaemon.jtagContext!,
           AI_DECISION_EVENTS.ERROR,
@@ -1006,7 +1010,7 @@ export class PersonaResponseGenerator {
             messageId: originalMessage.id,
             isHumanMessage: originalMessage.senderType === 'human',
             timestamp: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMsg,
             phase: 'generating'
           },
           {

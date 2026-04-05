@@ -154,6 +154,61 @@ export class NetstatPortChecker implements PortCheckStrategy {
 }
 
 /**
+ * TCP connect port checking — works everywhere (no lsof/netstat needed).
+ * Attempts a TCP connection to localhost:port. If it connects, the port is active.
+ */
+export class TcpConnectPortChecker implements PortCheckStrategy {
+  readonly name = 'tcp-connect';
+  readonly method = PortCheckMethod.LSOF; // reuse enum, it's just a label
+
+  async checkPort(port: PortNumber): Promise<PortStatus> {
+    const timestamp = Date.now();
+    const net = await import('net');
+
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(2000);
+
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve({
+          port,
+          isActive: true,
+          result: PortCheckResult.ACTIVE,
+          method: this.method,
+          process: createProcessId('tcp-connect'),
+          timestamp
+        });
+      });
+
+      socket.on('error', () => {
+        socket.destroy();
+        resolve({
+          port,
+          isActive: false,
+          result: PortCheckResult.INACTIVE,
+          method: this.method,
+          timestamp
+        });
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve({
+          port,
+          isActive: false,
+          result: PortCheckResult.INACTIVE,
+          method: this.method,
+          timestamp
+        });
+      });
+
+      socket.connect(port as number, '127.0.0.1');
+    });
+  }
+}
+
+/**
  * Multi-strategy port checker with fallbacks
  */
 export class PortChecker {
@@ -161,6 +216,7 @@ export class PortChecker {
 
   constructor(strategies?: PortCheckStrategy[]) {
     this.strategies = strategies || [
+      new TcpConnectPortChecker(),
       new LsofPortChecker(),
       new NetstatPortChecker()
     ];

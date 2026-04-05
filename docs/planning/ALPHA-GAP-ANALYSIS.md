@@ -331,6 +331,32 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ---
 
+## Phase 11: Docker — Full-Stack Containerization (PR #740)
+
+> `docker compose up` — Tailscale handles TLS, containers serve HTTP. Real HTTPS, no warnings.
+
+| # | Issue | Status | What |
+|---|-------|--------|------|
+| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | WORKING | docker-compose.yml: tailscale, postgres, continuum-core, node-server, widget-server, livekit, model-init, forge-worker, inference. All containers healthy on BigMama. |
+| — | **Tailscale sidecar TLS** | DONE | Tailscale container joins tailnet, provisions Let's Encrypt certs, reverse-proxies HTTPS/WSS to plain HTTP containers via TS_SERVE_CONFIG. No Caddy, no self-signed, no manual certs. Two prereqs: enable HTTPS certs in Tailscale DNS settings + generate auth key. |
+| — | **ONNX Runtime in Docker** | DONE | ONNX Runtime 1.24.4 installed in continuum-core image. ORT_DYLIB_PATH env var set. Silero VAD + Piper TTS work (persona hearing + speech). |
+| — | **Postgres in Docker** | DONE | SecretManager no longer overwrites Docker env vars with config.env values. DATABASE_URL from compose takes precedence. |
+| — | **WS localhost fallback bug** | DONE | TransportConfig.ts used `ws://localhost` for non-HTTPS pages. Now always uses `window.location.hostname` in browser. Vite bundle rebuilt. |
+| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. |
+| — | **Auto-seed on first run** | PARTIAL | docker-entrypoint.ts detects empty DB, runs seed-continuum.ts. Rooms seed (11/12). Personas fail (IPC drops under heavy seeding). Needs resilient seeding with retry. |
+| — | **ARM64 Docker: WebRTC** | DEFERRED | LiveKit runs as separate container. Rust binary built without livekit-webrtc feature (`--no-default-features`). |
+| — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
+| — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
+| — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
+
+**Prereqs** (one-time, per tailnet):
+1. Tailscale installed + HTTPS certificates enabled in DNS settings
+2. Auth key generated (reusable + ephemeral) → stored in `.env` as `TS_AUTHKEY`
+
+**Done when**: `docker compose up` on a fresh machine with Tailscale brings up the full system with all personas, avatars, and voice models. Accessible at `https://<hostname>.ts.net`.
+
+---
+
 ## Phase 12: Factory — Model Forge Production Line
 
 > Nature: forge base models. Nurture: academy trains personas. Factory is nature. The factory is the product's front door — the widget that brings people in and the grid that keeps them.

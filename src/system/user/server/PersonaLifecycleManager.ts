@@ -77,6 +77,41 @@ export class PersonaLifecycleManager {
     });
 
     console.log('🔄 PersonaLifecycleManager: Subscribed to config change events');
+
+    // Run initial allocation on startup — config.env keys are already loaded
+    // by SecretManager but no key-added event fires for pre-existing keys.
+    setTimeout(() => this.runInitialAllocation().catch(err => {
+      console.error('❌ PersonaLifecycleManager: Initial allocation failed:', err);
+    }), 2000);
+  }
+
+  /**
+   * Run allocation on startup with all currently available API keys.
+   * Creates any personas that should exist based on the current hardware + keys.
+   */
+  private async runInitialAllocation(): Promise<void> {
+    const availableApiKeys = this.collectAvailableApiKeys();
+    console.log(`🎭 PersonaLifecycleManager: Initial allocation with ${availableApiKeys.length} API keys: [${availableApiKeys.join(', ')}]`);
+
+    const allocation = await Commands.execute(
+      'persona/allocate',
+      { availableApiKeys } as Partial<CommandParams>
+    ) as unknown as AllocationResult;
+
+    if (!allocation?.allocations?.length) {
+      console.warn('⚠️ PersonaLifecycleManager: No allocations from initial run');
+      return;
+    }
+
+    console.log(`🎭 PersonaLifecycleManager: Allocator returned ${allocation.allocations.length} persona(s)`);
+
+    let created = 0;
+    for (const persona of allocation.allocations) {
+      await this.createPersona(persona);
+      created++;
+    }
+
+    console.log(`✅ PersonaLifecycleManager: ${created} persona(s) activated on startup`);
   }
 
   /**

@@ -15,7 +15,7 @@
 use crate::live::audio::buffer::AudioBufferPool;
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;
-use crate::live::transport::livekit_agent::LiveKitAgentManager;
+use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
 use crate::logging::TimingGuard;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -24,6 +24,7 @@ use crate::{log_error, log_info};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Response field name for voice responder IDs
@@ -35,6 +36,9 @@ pub struct VoiceState {
     pub livekit_manager: Arc<LiveKitAgentManager>,
     pub audio_pool: Arc<AudioBufferPool>,
     pub resource_lifecycle: Arc<AudioResourceLifecycle>,
+    /// Track active session IDs to make register-session idempotent.
+    /// Prevents duplicate agent spawns on browser refresh / re-navigate.
+    active_sessions: std::sync::Mutex<HashSet<String>>,
 }
 
 impl VoiceState {
@@ -49,6 +53,7 @@ impl VoiceState {
             livekit_manager,
             audio_pool,
             resource_lifecycle,
+            active_sessions: std::sync::Mutex::new(HashSet::new()),
         }
     }
 }
@@ -94,6 +99,26 @@ impl ServiceModule for VoiceModule {
                 let session_id = p.str("session_id")?;
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
+
+                // Idempotency: skip if this session is already registered.
+                // Browser refresh triggers a re-join which calls register-session again.
+                // Without this guard, we spawn duplicate STT listeners and agent batches,
+                // causing the reconnect churn cycle (agents connect → old ones get evicted
+                // by LiveKit → new ones reconnect → repeat).
+                {
+                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    if !sessions.insert(session_id.to_string()) {
+                        log_info!(
+                            "module",
+                            "voice_register_session",
+                            "Session {} already active — skipping duplicate registration",
+                            &session_id[..8.min(session_id.len())]
+                        );
+                        return Ok(CommandResult::Json(
+                            serde_json::json!({ "registered": true, "already_active": true }),
+                        ));
+                    }
+                }
 
                 // Extract AI participant info BEFORE register_session consumes the vec
                 let ai_participants: Vec<(String, String)> = participants
@@ -204,6 +229,12 @@ impl ServiceModule for VoiceModule {
             "voice/end-session" => {
                 let _timer = TimingGuard::new("module", "voice_end_session");
                 let session_id = p.str("session_id")?;
+
+                // Remove from active sessions so a future register-session can proceed.
+                {
+                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    sessions.remove(session_id);
+                }
 
                 log_info!(
                     "module",
@@ -838,57 +869,73 @@ impl ServiceModule for VoiceModule {
             }
 
             "voice/snapshot-room" => {
-                use crate::live::video::capture::VideoFrameCapture;
-                use base64::Engine;
+                #[cfg(feature = "livekit-webrtc")]
+                {
+                    use crate::live::video::capture::VideoFrameCapture;
+                    use base64::Engine;
 
-                let capture = VideoFrameCapture::instance();
-                match capture.snapshot_room().await {
-                    Some(snap) => {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "success": true,
-                            "base64": b64,
-                            "mimeType": "image/jpeg",
-                            "width": snap.width,
-                            "height": snap.height,
-                            "participants": snap.display_name,
-                            "hash": snap.hash,
-                            "capturedAt": snap.captured_at,
-                        })))
+                    let capture = VideoFrameCapture::instance();
+                    match capture.snapshot_room().await {
+                        Some(snap) => {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
+                            Ok(CommandResult::Json(serde_json::json!({
+                                "success": true,
+                                "base64": b64,
+                                "mimeType": "image/jpeg",
+                                "width": snap.width,
+                                "height": snap.height,
+                                "participants": snap.display_name,
+                                "hash": snap.hash,
+                                "capturedAt": snap.captured_at,
+                            })))
+                        }
+                        None => Ok(CommandResult::Json(serde_json::json!({
+                            "success": false,
+                            "error": "No video frames captured yet"
+                        }))),
                     }
-                    None => Ok(CommandResult::Json(serde_json::json!({
-                        "success": false,
-                        "error": "No video frames captured yet"
-                    }))),
                 }
+                #[cfg(not(feature = "livekit-webrtc"))]
+                Ok(CommandResult::Json(serde_json::json!({
+                    "success": false,
+                    "error": "Video capture unavailable (compiled without livekit-webrtc)"
+                })))
             }
 
             "voice/snapshot-participant" => {
-                use crate::live::video::capture::VideoFrameCapture;
-                use base64::Engine;
+                #[cfg(feature = "livekit-webrtc")]
+                {
+                    use crate::live::video::capture::VideoFrameCapture;
+                    use base64::Engine;
 
-                let identity = p.str("identity")?;
-                let capture = VideoFrameCapture::instance();
-                match capture.snapshot_participant(identity).await {
-                    Some(snap) => {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "success": true,
-                            "base64": b64,
-                            "mimeType": "image/jpeg",
-                            "width": snap.width,
-                            "height": snap.height,
-                            "identity": snap.identity,
-                            "displayName": snap.display_name,
-                            "hash": snap.hash,
-                            "capturedAt": snap.captured_at,
-                        })))
+                    let identity = p.str("identity")?;
+                    let capture = VideoFrameCapture::instance();
+                    match capture.snapshot_participant(identity).await {
+                        Some(snap) => {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&snap.jpeg);
+                            Ok(CommandResult::Json(serde_json::json!({
+                                "success": true,
+                                "base64": b64,
+                                "mimeType": "image/jpeg",
+                                "width": snap.width,
+                                "height": snap.height,
+                                "identity": snap.identity,
+                                "displayName": snap.display_name,
+                                "hash": snap.hash,
+                                "capturedAt": snap.captured_at,
+                            })))
+                        }
+                        None => Ok(CommandResult::Json(serde_json::json!({
+                            "success": false,
+                            "error": format!("No video frame for participant '{}'", identity)
+                        }))),
                     }
-                    None => Ok(CommandResult::Json(serde_json::json!({
-                        "success": false,
-                        "error": format!("No video frame for participant '{}'", identity)
-                    }))),
                 }
+                #[cfg(not(feature = "livekit-webrtc"))]
+                Ok(CommandResult::Json(serde_json::json!({
+                    "success": false,
+                    "error": "Video capture unavailable (compiled without livekit-webrtc)"
+                })))
             }
 
             "voice/resource-status" => {

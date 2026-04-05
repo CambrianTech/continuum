@@ -141,7 +141,7 @@ export class ForgeDeltaElement extends ReactiveWidget {
       deltas.push({ key: 'eval', label: 'Benchmarks', current: 'none', target: this._targetBenchmarks.join(', '), changed: true, stageType: 'eval', costMinutes: this._targetBenchmarks.length * 10 });
     }
     if (this._targetPublish) {
-      deltas.push({ key: 'publish', label: 'Publish', current: 'no', target: 'HuggingFace', changed: true, stageType: 'publish', costMinutes: 2 });
+      deltas.push({ key: 'publish', label: 'Deliver', current: 'no', target: 'Review → Publish', changed: true, stageType: 'deliver', costMinutes: 2 });
     }
     if (this._targetDeploy) {
       deltas.push({ key: 'deploy', label: 'Deploy', current: 'nowhere', target: this._targetDeploy, changed: true, stageType: 'deploy', costMinutes: 1 });
@@ -1247,7 +1247,7 @@ export class ForgeDeltaElement extends ReactiveWidget {
     const stageColors: Record<string, string> = {
       'prune': '#ff6464', 'train': '#00d4ff', 'modality': '#64ffc8',
       'context-extend': '#c864ff', 'quant': '#00ffc8', 'eval': '#ffff64',
-      'publish': '#64c8ff', 'deploy': '#64ffc8', 'expert-prune': '#ff9664',
+      'publish': '#64c8ff', 'deliver': '#64c8ff', 'deploy': '#64ffc8', 'expert-prune': '#ff9664',
     };
 
     return html`
