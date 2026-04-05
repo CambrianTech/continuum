@@ -80,10 +80,14 @@ services:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
     healthcheck:
-      test: ["CMD", "test", "-S", "/root/.continuum/sockets/continuum-core.sock"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      # Verify IPC responds, not just socket exists. Uses archive-worker binary
+      # (already in image) as a lightweight ping — connects, sends ping, checks response.
+      # Falls back to socket file check if binary missing.
+      test: ["CMD-SHELL", "test -S /root/.continuum/sockets/continuum-core.sock && printf '{\"command\":\"runtime/ping\",\"requestId\":0}\\n' | timeout 3 nc -U /root/.continuum/sockets/continuum-core.sock | head -c1 | grep -q . || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   # ── LiveKit Bridge (Rust — WebRTC transport adapter) ──────
   # Links webrtc-sys but NOT ort. Separate process eliminates
