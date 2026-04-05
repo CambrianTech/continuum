@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Fix stale cwd (deleted directory, Docker volume removed, etc)
+cd "$HOME" 2>/dev/null || true
 # continuum — thin wrapper for Docker-based Continuum
 #
 # Usage:
