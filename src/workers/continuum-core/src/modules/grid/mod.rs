@@ -228,95 +228,66 @@ impl ServiceModule for GridModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        let before_ids: std::collections::HashSet<String> = self.state.registry
-            .all_nodes().iter().map(|n| n.node_id.clone()).collect();
-
-        // Discover peers from transports
+        // Discover peers from transports — just read the peer list, no blocking probes.
+        // Probing happens in a spawned background task to avoid blocking IPC.
         for transport in &self.state.transports {
             if let Ok(discovered) = transport.discover().await {
                 for node in discovered {
-                    // Probe: only register peers that respond on the grid port.
-                    // A Tailscale peer without Continuum running is not a grid node.
                     let addr = &node.address;
-                    if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
-                        // Skip blocked nodes — user explicitly removed them
+                    if let node::TransportAddress::Tailscale { ip, .. } = addr {
+                        // Skip blocked nodes
                         if let Some(existing) = self.state.registry.get(ip) {
                             if existing.trust_level == node::TrustLevel::Blocked {
                                 continue;
                             }
                         }
+                    }
+                    // Register discovered nodes optimistically.
+                    // They'll be probed in background and removed if unreachable.
+                    self.state.registry.upsert_discovered(node);
+                }
+            }
+        }
+
+        // Background probe: check which nodes are actually reachable.
+        // Spawned so it doesn't block IPC command handling.
+        let registry = Arc::clone(&self.state.registry);
+        let bus = self.state.bus.lock().await.clone();
+        tokio::spawn(async move {
+            let nodes = registry.all_nodes();
+            for node in &nodes {
+                if node.trust_level == node::TrustLevel::Blocked { continue; }
+                for addr in &node.addresses {
+                    if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
                         let target = format!("{ip}:{port}");
                         match tokio::time::timeout(
                             Duration::from_secs(2),
                             tokio::net::TcpStream::connect(&target),
                         ).await {
-                            Ok(Ok(_stream)) => {
-                                // Continuum is listening — register this node
-                                self.state.registry.upsert_discovered(node);
+                            Ok(Ok(_)) => {
+                                registry.update_latency(&node.node_id, 0);
                             }
                             _ => {
-                                // Not a Continuum node or offline — remove if stale
-                                let node_id = ip.clone();
-                                if self.state.registry.get(&node_id).is_some() {
-                                    self.state.registry.remove(&node_id);
-                                    eprintln!("[grid] Removed unreachable node {node_id}");
+                                // Unreachable — only remove auto-discovered (default trust) nodes.
+                                // Owner/Trusted nodes stay but age out of online_nodes().
+                                if node.trust_level == node::TrustLevel::default() {
+                                    registry.remove(&node.node_id);
+                                    eprintln!("[grid] Removed unreachable node {} ({})",
+                                        node.node_name.as_deref().unwrap_or("?"), node.node_id);
+                                    if let Some(bus) = &bus {
+                                        bus.publish_async_only("grid:node:left", serde_json::json!({
+                                            "nodeId": node.node_id,
+                                        }));
+                                    }
                                 }
                             }
                         }
-                    } else {
-                        // Non-Tailscale transports: register as-is
-                        self.state.registry.upsert_discovered(node);
+                        break;
                     }
                 }
             }
-        }
-
-        // Probe existing registry nodes — remove any that no longer respond
-        let existing_nodes = self.state.registry.all_nodes();
-        for node in &existing_nodes {
-            // Skip nodes we just discovered (already probed above)
-            if !before_ids.contains(&node.node_id) { continue; }
-            for addr in &node.addresses {
-                if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
-                    let target = format!("{ip}:{port}");
-                    match tokio::time::timeout(
-                        Duration::from_secs(2),
-                        tokio::net::TcpStream::connect(&target),
-                    ).await {
-                        Ok(Ok(_)) => {
-                            // Still alive — update last_seen
-                            self.state.registry.update_latency(&node.node_id, 0);
-                        }
-                        _ => {
-                            self.state.registry.remove(&node.node_id);
-                            eprintln!("[grid] Removed stale node {} ({})", node.node_name.as_deref().unwrap_or("?"), node.node_id);
-                        }
-                    }
-                    break; // Only probe first address
-                }
-            }
-        }
-
-        // Emit events for changes
-        let after_ids: std::collections::HashSet<String> = self.state.registry
-            .all_nodes().iter().map(|n| n.node_id.clone()).collect();
-
-        if let Some(bus) = self.state.bus.lock().await.as_ref() {
-            for id in after_ids.difference(&before_ids) {
-                if let Some(node) = self.state.registry.get(id) {
-                    bus.publish_async_only("grid:node:joined", serde_json::json!({
-                        "nodeId": node.node_id,
-                        "nodeName": node.node_name,
-                        "transport": "tailscale",
-                    }));
-                }
-            }
-            for id in before_ids.difference(&after_ids) {
-                bus.publish_async_only("grid:node:left", serde_json::json!({
-                    "nodeId": id,
-                }));
-            }
-        }
+            let _ = registry.save_to_disk();
+        });
 
         let _ = self.state.registry.save_to_disk();
         Ok(())
