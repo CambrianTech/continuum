@@ -10,8 +10,8 @@
  */
 
 import { Commands } from '../system/core/shared/Commands';
-import { UserEntity } from '../system/data/entities/UserEntity';
-import { RoomEntity } from '../system/data/entities/RoomEntity';
+import { UserEntity, type UserType, type UserStatus } from '../system/data/entities/UserEntity';
+import { RoomEntity, type RoomType } from '../system/data/entities/RoomEntity';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel, type PersonaConfig } from '../scripts/seed/personas';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
@@ -188,7 +188,7 @@ export async function seedDatabase(): Promise<boolean> {
 async function createUser(
   uniqueId: string,
   displayName: string,
-  type: 'human' | 'persona' | 'agent',
+  type: UserType,
   provider?: string,
   modelId?: string,
 ): Promise<UserEntity> {
@@ -207,10 +207,10 @@ async function createUser(
   const user = new UserEntity();
   user.uniqueId = uniqueId;
   user.displayName = displayName;
-  user.type = type as any;
+  user.type = type;
   user.isAI = type !== 'human';
-  user.status = 'online';
-  if (provider) (user as any).provider = provider;
+  user.status = 'online' as UserStatus;
+  if (provider) user.provider = provider;
   if (modelId) (user as any).modelId = modelId;
 
   const result = await DataCreate.execute<UserEntity>({
@@ -245,9 +245,9 @@ async function createRoom(
   room.displayName = displayName;
   room.description = description;
   room.ownerId = ownerId;
-  room.type = 'public' as any;
+  room.type = 'public' as RoomType;
   room.isPublic = true;
-  room.members = [{ userId: ownerId, role: 'owner', joinedAt: new Date().toISOString() } as any];
+  room.members = [{ userId: ownerId, role: 'owner', joinedAt: new Date().toISOString() }] as any;
 
   const result = await DataCreate.execute<RoomEntity>({
     collection: RoomEntity.collection,
