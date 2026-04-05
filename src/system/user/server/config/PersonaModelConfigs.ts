@@ -30,13 +30,10 @@ export const SOTA_PROVIDERS = new Set([
 export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   'candle': {
     provider: 'candle',
-    model: LOCAL_MODELS.DEFAULT,  // Must match CandleAdapter default_model
+    model: LOCAL_MODELS.DEFAULT,
     temperature: 0.7,
-    maxTokens: 200,
-    // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)
-    // ChatRAGBuilder uses ModelContextWindows.getContextWindow(modelId) for budget calculation
-    // Latency-aware budgeting further limits slow local models to prevent timeouts
-    systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
+    maxTokens: 1000,
+    systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
   'groq': {
     provider: 'groq',

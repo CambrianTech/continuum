@@ -114,19 +114,61 @@ pub fn load_quantized_model(
     Ok(backend)
 }
 
-/// Load default quantized model (Q8_0 Llama 3.2 3B).
+/// Auto-select the best quantized model for this machine's available memory.
+///
+/// Device ladder (our own forged models first):
+///   32GB+ → qwen3.5-4b Q8_0 (5GB, high quality, fast)
+///    8GB+ → qwen3.5-4b Q4_K_M (2.6GB, good quality, fits everywhere)
+///    <8GB → qwen3.5-4b Q4_K_M (still fits, just slower)
+///
+/// When 27B GGUF is available: 32GB+ gets that instead.
 pub fn load_default_quantized(
 ) -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
-    let gguf_path = download_gguf_model(
-        "hugging-quants/Llama-3.2-3B-Instruct-Q8_0-GGUF",
-        "llama-3.2-3b-instruct-q8_0.gguf",
-    )?;
+    let log = runtime::logger("candle");
 
-    load_quantized_model(
-        &gguf_path,
-        "unsloth/Llama-3.2-3B-Instruct",
-        "unsloth/Llama-3.2-3B-Instruct",
-    )
+    let total_ram_gb = {
+        #[cfg(target_os = "macos")]
+        {
+            let mut size: u64 = 0;
+            let mut len = std::mem::size_of::<u64>();
+            let key = std::ffi::CString::new("hw.memsize").unwrap();
+            unsafe { libc::sysctlbyname(key.as_ptr(), &mut size as *mut u64 as *mut _, &mut len, std::ptr::null_mut(), 0) };
+            (size / (1024 * 1024 * 1024)) as u32
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Linux: read /proc/meminfo
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| s.lines().next().map(String::from))
+                .and_then(|line| line.split_whitespace().nth(1).map(String::from))
+                .and_then(|kb| kb.parse::<u64>().ok())
+                .map(|kb| (kb / (1024 * 1024)) as u32)
+                .unwrap_or(8)
+        }
+    };
+
+    log.info(&format!("System RAM: {}GB — selecting best model", total_ram_gb));
+
+    // Model selection: our forged Qwen3.5 models
+    let (repo, filename, tokenizer_repo) = if total_ram_gb >= 32 {
+        log.info("Selected: qwen3.5-4b-code-forged Q8_0 (high quality, 32GB+ device)");
+        (
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            "qwen3.5-4b-code-forged-Q8_0.gguf",
+            "Qwen/Qwen3-4B",
+        )
+    } else {
+        log.info("Selected: qwen3.5-4b-code-forged Q4_K_M (compact, universal)");
+        (
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            "qwen3.5-4b-code-forged-Q4_K_M.gguf",
+            "Qwen/Qwen3-4B",
+        )
+    };
+
+    let gguf_path = download_gguf_model(repo, filename)?;
+    load_quantized_model(&gguf_path, tokenizer_repo, repo)
 }
 
 #[cfg(test)]

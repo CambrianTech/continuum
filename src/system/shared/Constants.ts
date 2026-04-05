@@ -161,15 +161,14 @@ export const MODEL_IDS = {
 export const LOCAL_MODELS = {
   /** Default models for inference worker to preload at startup */
   PRELOAD: [
-    'unsloth/Llama-3.2-3B-Instruct',  // Default model for inference + training
-    'Qwen/Qwen2-0.5B-Instruct',       // Fast model for gating/classification
+    'continuum-ai/qwen3.5-4b-code-forged-GGUF',  // Our forged Qwen3.5 — auto-selects best quant for hardware
+    'Qwen/Qwen2-0.5B-Instruct',                   // Fast model for gating/classification
   ],
 
-  /** Default model for local inference AND training.
-   *  CRITICAL: This MUST match CandleAdapter's default_model in candle_adapter.rs.
-   *  LoRA adapters trained on one model CANNOT work on a different architecture.
-   *  Using unsloth/ mirror because meta-llama/ requires HuggingFace access approval. */
-  DEFAULT: 'unsloth/Llama-3.2-3B-Instruct',
+  /** Default model for local inference.
+   *  Rust auto-selects Q4_K_M or Q8_0 based on available RAM.
+   *  Our own forged model — 70%+ HumanEval, runs on 8GB devices. */
+  DEFAULT: 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
 
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',

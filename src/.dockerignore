@@ -1,33 +1,43 @@
-# Rust build artifacts (huge) — keep TS bindings for type resolution
+# Docker build context exclusions for node-server.
+# Goal: exclude Rust compilation artifacts and large binary files.
+# Keep ALL TypeScript source (tsx needs it at runtime).
+
+# Rust build output (the big one — gigabytes)
 workers/target/
+
+# Rust source code (not needed by node-server)
 workers/continuum-core/src/
-workers/archive-worker/
-workers/inference-grpc/
-workers/jtag-mcp/
-workers/*.toml
-workers/*.lock
-workers/*.sh
+workers/livekit-bridge/src/
+workers/livekit-protocol/src/
+workers/archive/src/
+workers/inference-grpc/src/
+workers/jtag-mcp/src/
+workers/candle-core-patched/
+
+# Rust build files
+workers/Cargo.lock
+workers/*/Cargo.toml
+workers/*/*.toml
+
+# Dev artifacts
 node_modules/
 dist/
 .continuum/
-*.log
 .git/
+*.log
+
+# Models and media (downloaded at runtime)
 models/
+blobs/
+datasets/
 *.gguf
 *.bin
 *.safetensors
 *.vrm
 *.glb
 
-# Test fixtures and dev files
-**/*.test.ts
-**/test/
+# Projects (ML training notebooks, not runtime)
+projects/
+
+# Test fixtures
 **/__tests__/
-blobs/
-datasets/
-*.png
-*.jpg
-*.jpeg
-*.mp4
-*.wav
-*.mp3

@@ -151,6 +151,24 @@ function detectGpu(): GpuInfo {
   return { vramGB: 0, device: 'CPU', type: 'cpu' };
 }
 
+/** Get total system RAM in GB — used for CPU inference budget when no GPU */
+function getSystemRamGB(): number {
+  const run = (cmd: string): string | null => {
+    try { return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim(); }
+    catch { return null; }
+  };
+  // macOS
+  const memBytes = run('sysctl -n hw.memsize');
+  if (memBytes) return Math.floor(parseInt(memBytes) / (1024 * 1024 * 1024));
+  // Linux (Docker)
+  const memInfo = run('grep MemTotal /proc/meminfo');
+  if (memInfo) {
+    const kb = parseInt(memInfo.split(/\s+/)[1]);
+    if (kb > 0) return Math.floor(kb / (1024 * 1024));
+  }
+  return 8; // safe default
+}
+
 /**
  * Filter PERSONA_CONFIGS to only personas that can actually run on this hardware.
  *
@@ -206,18 +224,21 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
       continue;
     }
 
-    // Local candle inference: check VRAM
+    // Local candle inference: check available memory (VRAM or system RAM)
+    // In Docker / CPU mode, Metal/CUDA aren't available — Candle uses system RAM.
+    // A 4B Q4_K_M model needs ~3GB regardless of whether it's in VRAM or RAM.
     if (persona.provider === 'candle') {
       const needed = persona.minVramGB ?? 4;
-      if (vramAllocated + needed <= usableVram) {
+      // Use VRAM if available, otherwise fall back to system RAM
+      const effectiveMemory = usableVram > 0 ? usableVram : getSystemRamGB() - 4; // 4GB reserve for OS + Docker
+      if (vramAllocated + needed <= effectiveMemory) {
         available.push(persona);
         vramAllocated += needed;
-      } else if (usableVram === 0 && available.filter(p => p.provider === 'candle').length === 0) {
-        // No GPU at all — still create ONE local persona for CPU fallback mode
-        available.push(persona);
-        summary.push(`${persona.displayName}: CPU fallback mode (no GPU)`);
+        if (usableVram === 0) {
+          summary.push(`${persona.displayName}: CPU inference (${needed}GB RAM)`);
+        }
       } else {
-        skipped.push(`${persona.displayName} (needs ${needed}GB VRAM, ${usableVram - vramAllocated}GB left)`);
+        skipped.push(`${persona.displayName} (needs ${needed}GB, ${effectiveMemory - vramAllocated}GB left)`);
       }
       continue;
     }

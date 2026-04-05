@@ -67,9 +67,11 @@ export class RoomEntity extends BaseEntity {
   @TextField({ description: true })
   displayName: string;
 
+  /** AI-generated visual description of the room (from vision snapshots) */
   @TextField({ nullable: true })
   description?: string;
 
+  /** Human-set room subtitle shown in the sidebar */
   @TextField({ nullable: true })
   topic?: string;
 
