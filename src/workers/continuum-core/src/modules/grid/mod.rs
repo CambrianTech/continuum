@@ -228,13 +228,64 @@ impl ServiceModule for GridModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
+        let before_ids: std::collections::HashSet<String> = self.state.registry
+            .all_nodes().iter().map(|n| n.node_id.clone()).collect();
+
+        // Discover peers from transports
         for transport in &self.state.transports {
             if let Ok(discovered) = transport.discover().await {
                 for node in discovered {
-                    self.state.registry.upsert_discovered(node);
+                    // Probe: only register peers that respond on the grid port.
+                    // A Tailscale peer without Continuum running is not a grid node.
+                    let addr = &node.address;
+                    if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
+                        let target = format!("{ip}:{port}");
+                        match tokio::time::timeout(
+                            Duration::from_secs(2),
+                            tokio::net::TcpStream::connect(&target),
+                        ).await {
+                            Ok(Ok(_stream)) => {
+                                // Continuum is listening — register this node
+                                self.state.registry.upsert_discovered(node);
+                            }
+                            _ => {
+                                // Not a Continuum node or offline — remove if stale
+                                let node_id = ip.clone();
+                                if self.state.registry.get(&node_id).is_some() {
+                                    self.state.registry.remove(&node_id);
+                                    eprintln!("[grid] Removed unreachable node {node_id}");
+                                }
+                            }
+                        }
+                    } else {
+                        // Non-Tailscale transports: register as-is
+                        self.state.registry.upsert_discovered(node);
+                    }
                 }
             }
         }
+
+        // Emit events for changes
+        let after_ids: std::collections::HashSet<String> = self.state.registry
+            .all_nodes().iter().map(|n| n.node_id.clone()).collect();
+
+        if let Some(bus) = self.state.bus.lock().await.as_ref() {
+            for id in after_ids.difference(&before_ids) {
+                if let Some(node) = self.state.registry.get(id) {
+                    bus.publish_async_only("grid:node:joined", serde_json::json!({
+                        "nodeId": node.node_id,
+                        "nodeName": node.node_name,
+                        "transport": "tailscale",
+                    }));
+                }
+            }
+            for id in before_ids.difference(&after_ids) {
+                bus.publish_async_only("grid:node:left", serde_json::json!({
+                    "nodeId": id,
+                }));
+            }
+        }
+
         let _ = self.state.registry.save_to_disk();
         Ok(())
     }
