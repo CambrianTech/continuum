@@ -78,5 +78,7 @@ export function normalizeGridNode(raw: Record<string, any>): NormalizedGridNode 
 export function normalizeGridNodes(result: any): NormalizedGridNode[] {
   const nodes = result?.nodes;
   if (!Array.isArray(nodes)) return [];
-  return nodes.map(normalizeGridNode);
+  return nodes
+    .filter((n: any) => (n.trust_level ?? n.trustLevel ?? '') !== 'blocked')
+    .map(normalizeGridNode);
 }

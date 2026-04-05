@@ -87,6 +87,7 @@ export class GridOverviewWidget extends ReactiveWidget {
 
   private _cleanups: (() => void)[] = [];
   private _latencyStep = 0;
+  private _healthInterval?: ReturnType<typeof setInterval>;
 
   constructor() {
     super({ widgetName: 'GridOverviewWidget' });
@@ -165,12 +166,19 @@ export class GridOverviewWidget extends ReactiveWidget {
     );
 
     this._loadInitialState();
+
+    // Poll remote node health every 15 seconds
+    this._healthInterval = setInterval(() => this._pollNodeHealth(), 15000);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._cleanups.forEach(fn => fn());
     this._cleanups = [];
+    if (this._healthInterval) {
+      clearInterval(this._healthInterval);
+      this._healthInterval = undefined;
+    }
   }
 
   private async _loadInitialState(): Promise<void> {
@@ -388,7 +396,6 @@ export class GridOverviewWidget extends ReactiveWidget {
           ${!isLocal ? html`
             <button class="ping-btn ssh-btn" @click=${() => navigator.clipboard.writeText(sshCmd)}
               title="Copy: ${sshCmd}">SSH</button>
-            <button class="ping-btn remove-btn" @click=${() => this._removeNode(node.nodeId)}>Remove</button>
           ` : nothing}
         </div>
       </div>
@@ -437,6 +444,43 @@ export class GridOverviewWidget extends ReactiveWidget {
 
   // ── Actions ─────────────────────────────────────────────────────────────
 
+  private async _pollNodeHealth(): Promise<void> {
+    const updated = new Map(this._nodes);
+    let changed = false;
+
+    for (const [id, node] of this._nodes) {
+      if (id === 'local') continue; // Skip local machine
+
+      try {
+        const result = await Promise.race([
+          this.executeCommand<any, any>('grid/node-status', { nodeId: id }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+        ]);
+
+        if (result?.gpu) {
+          updated.set(id, {
+            ...node,
+            gpuUtilization: result.gpu.utilization ?? node.gpuUtilization,
+            gpuMemoryUsedMb: result.gpu.memoryUsedMb ?? node.gpuMemoryUsedMb,
+            gpuTemperatureC: result.gpu.temperatureC ?? node.gpuTemperatureC,
+            status: 'online' as GridNodeStatus,
+          });
+          changed = true;
+        }
+      } catch {
+        // Node unreachable — mark degraded but don't remove
+        if (node.status !== 'degraded') {
+          updated.set(id, { ...node, status: 'degraded' as GridNodeStatus });
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this._nodes = updated;
+    }
+  }
+
   private async _pairNode(): Promise<void> {
     try {
       await this.executeCommand<any, any>('grid/pair', {});
@@ -447,11 +491,18 @@ export class GridOverviewWidget extends ReactiveWidget {
     }
   }
 
-  private _removeNode(nodeId: string): void {
+  private async _removeNode(nodeId: string): Promise<void> {
+    try {
+      // Set to blocked — won't reappear until manually re-paired.
+      // Use "+ Pair Node" to bring it back.
+      await this.executeCommand<any, any>('grid/trust', { nodeId, trust: 'blocked' });
+    } catch (err) {
+      console.error('[GridOverview] Remove failed:', err);
+    }
+    // Remove from UI immediately
     const updated = new Map(this._nodes);
     updated.delete(nodeId);
     this._nodes = updated;
-    // TODO: persist removal via grid/trust revoke
   }
 
   private async _pingNode(nodeId: string): Promise<void> {

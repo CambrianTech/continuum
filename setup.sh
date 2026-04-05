@@ -75,81 +75,25 @@ echo "   (This replaces a 30+ minute build with a 2 minute download)"
 echo ""
 docker compose pull --ignore-pull-failures 2>&1 | grep -E "Pulled|exists|error" || true
 
-# ── Ask about Tailscale (optional) ────────────────
-echo ""
-echo "Tailscale gives you encrypted HTTPS access from any device (phone, laptop, etc)."
-echo "It's free and takes 2 minutes. Skip if you only want local access."
-echo ""
-read -p "Set up Tailscale for remote access? [y/N] " SETUP_TAILSCALE
-
-if [[ "$SETUP_TAILSCALE" =~ ^[Yy] ]]; then
-  # Check if Tailscale is installed
-  if ! command -v tailscale &>/dev/null; then
-    echo ""
-    echo "📦 Install Tailscale first: https://tailscale.com/download"
-    open "https://tailscale.com/download" 2>/dev/null || \
-      xdg-open "https://tailscale.com/download" 2>/dev/null || \
-      cmd.exe /c start "https://tailscale.com/download" 2>/dev/null || true
-    echo ""
-    read -p "Press Enter after installing Tailscale..."
-  fi
-
-  echo ""
-  echo "Two quick steps in the Tailscale admin console:"
-  echo ""
-  echo "  1. Enable HTTPS: DNS tab → toggle 'HTTPS Certificates' ON"
-  echo "  2. Create auth key: Settings → Keys → 'Generate auth key'"
-  echo "     (check 'Reusable' and 'Ephemeral')"
-  echo ""
-  echo "Opening Tailscale admin console..."
-  sleep 1
-  open "https://login.tailscale.com/admin/dns" 2>/dev/null || \
-    xdg-open "https://login.tailscale.com/admin/dns" 2>/dev/null || \
-    cmd.exe /c start "https://login.tailscale.com/admin/dns" 2>/dev/null || true
-
-  echo ""
-  read -p "Paste your Tailscale auth key (tskey-auth-...): " TS_KEY
-
-  if [[ -z "$TS_KEY" ]]; then
-    echo "⚠️  No key provided — starting in local-only mode."
-    PROFILE=""
-  elif [[ ! "$TS_KEY" == tskey-auth-* ]]; then
-    echo ""
-    echo "❌ That doesn't look like a Tailscale auth key."
-    echo "   Auth keys start with 'tskey-auth-'"
-    echo ""
-    echo "   Go to: https://login.tailscale.com/admin/settings/keys"
-    echo "   Click 'Generate auth key', check 'Reusable' + 'Ephemeral', copy the key."
-    echo ""
-    open "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || \
-      xdg-open "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || \
-      cmd.exe /c start "https://login.tailscale.com/admin/settings/keys" 2>/dev/null || true
-    read -p "Paste your auth key: " TS_KEY
-    if [[ ! "$TS_KEY" == tskey-auth-* ]]; then
-      echo "⚠️  Skipping Tailscale — starting in local-only mode."
-      PROFILE=""
-      TS_KEY=""
-    fi
-  fi
-
-  if [[ -n "$TS_KEY" ]]; then
-    TS_HOST=$(hostname | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
-    cat > .env <<EOF
-TS_AUTHKEY=$TS_KEY
-TS_HOSTNAME=$TS_HOST
-COMPOSE_PROFILES=grid
-EOF
-    echo "✅ Saved to .env (hostname: $TS_HOST)"
-    echo ""
-    echo "⚠️  IMPORTANT: Make sure you enabled HTTPS certificates in Tailscale:"
-    echo "   https://login.tailscale.com/admin/dns → 'HTTPS Certificates' must be ON"
-    echo "   (Without this, the HTTPS URL won't work)"
-    echo ""
-    PROFILE="--profile grid"
-  fi
+# ── Detect Tailscale (no questions, no prompts) ──
+# If Tailscale is installed and connected, the Grid auto-discovers peers.
+# The Rust GridModule handles everything: discovery, connection, routing.
+# No Docker sidecar needed — host Tailscale IPs are reachable directly.
+# For dedicated server HTTPS (Docker sidecar): continuum grid enable
+PROFILE=""
+if [ -f .env ] && grep -q "COMPOSE_PROFILES=grid" .env; then
+  PROFILE="--profile grid"
+fi
+if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+  TS_IP=$(tailscale ip -4 2>/dev/null)
+  echo "✅ Tailscale connected ($TS_IP) — Grid will auto-discover peers"
+  # Write peer list so Docker containers can discover Tailscale nodes.
+  # Containers can't run `tailscale status` (no CLI), but they CAN reach
+  # Tailscale IPs via the host network. This file bridges the gap.
+  mkdir -p "$HOME/.continuum/grid"
+  tailscale status --json 2>/dev/null > "$HOME/.continuum/grid/tailscale-status.json" || true
 else
-  PROFILE=""
-  echo "✅ Local-only mode (http://localhost:9003)"
+  echo "ℹ️  No Tailscale — local only. Install https://tailscale.com for multi-machine Grid."
 fi
 
 # ── Start ─────────────────────────────────────────
@@ -177,69 +121,24 @@ done
 
 echo ""
 
-if [[ -n "$PROFILE" ]]; then
-  # Verify Tailscale actually connected
-  TS_STATUS=$(docker compose logs tailscale 2>&1 | tail -20)
+echo "  ✅ Continuum is running!"
+echo ""
 
-  if echo "$TS_STATUS" | grep -qi "logged in\|Success\|ready"; then
-    TS_HOSTNAME=$(grep TS_HOSTNAME .env 2>/dev/null | cut -d= -f2)
-    echo "  ✅ Continuum is running!"
-    echo ""
-    echo "  Open from any device on your tailnet:"
-    echo "  https://$TS_HOSTNAME.your-tailnet.ts.net"
-    echo ""
-    echo "  (Find your exact URL: tailscale status)"
-    echo ""
-    # Try to open in browser
-    open "https://$TS_HOSTNAME.ts.net" 2>/dev/null || \
-      xdg-open "https://$TS_HOSTNAME.ts.net" 2>/dev/null || \
-      cmd.exe /c start "https://$TS_HOSTNAME.ts.net" 2>/dev/null || true
-  elif echo "$TS_STATUS" | grep -qi "auth\|unauthorized\|invalid"; then
-    echo "  ⚠️  Continuum started but Tailscale auth failed."
-    echo ""
-    echo "  Your auth key may be invalid or expired."
-    echo "  Generate a new one: https://login.tailscale.com/admin/settings/keys"
-    echo "  Then update .env and run: docker compose --profile grid restart tailscale"
-    echo ""
-    echo "  Local access still works: http://localhost:9003"
-  elif echo "$TS_STATUS" | grep -qi "certificate\|acme\|tls"; then
-    echo "  ⚠️  Continuum started but HTTPS certificates failed."
-    echo ""
-    echo "  You need to enable HTTPS in Tailscale:"
-    echo "  https://login.tailscale.com/admin/dns → toggle 'HTTPS Certificates' ON"
-    echo "  Then: docker compose --profile grid restart tailscale"
-    echo ""
-    echo "  Local access still works: http://localhost:9003"
-  else
-    echo "  ✅ Continuum is running!"
-    echo ""
-    echo "  Tailscale is still connecting (can take 30s)..."
-    echo "  Check status: docker compose logs tailscale"
-    echo ""
-    echo "  Local access: http://localhost:9003"
+# Show remote access info if Tailscale is available
+if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+  TS_IP=$(tailscale ip -4 2>/dev/null)
+  if [[ -n "$TS_IP" ]]; then
+    echo "  📱 Remote (any device on your tailnet): http://$TS_IP:9003"
   fi
-else
-  echo "  ✅ Continuum is running!"
-  echo ""
-
-  # Auto-detect Tailscale on host — zero config remote access.
-  # If Tailscale is installed and connected, Docker ports are accessible
-  # via the Tailscale IP (WireGuard encrypts the tunnel automatically).
-  if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
-    TS_IP=$(tailscale ip -4 2>/dev/null)
-    if [[ -n "$TS_IP" ]]; then
-      echo "  📱 Remote access (any device on your tailnet):"
-      echo "     http://$TS_IP:9003"
-      echo ""
-    fi
-  fi
-
-  LOCAL_URL="http://localhost:9003"
-  echo "  Opening $LOCAL_URL ..."
-  # Open browser (works on Mac, Linux, WSL2)
-  open "$LOCAL_URL" 2>/dev/null || \
-    xdg-open "$LOCAL_URL" 2>/dev/null || \
-    cmd.exe /c start "$LOCAL_URL" 2>/dev/null || \
-    echo "  Open: $LOCAL_URL"
 fi
+
+LOCAL_URL="http://localhost:9003"
+echo "  🏠 Local: $LOCAL_URL"
+echo ""
+
+# Open browser
+open "$LOCAL_URL" 2>/dev/null || \
+  xdg-open "$LOCAL_URL" 2>/dev/null || \
+  cmd.exe /c start "$LOCAL_URL" 2>/dev/null || \
+  echo "  Open: $LOCAL_URL"
 echo ""

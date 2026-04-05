@@ -18,3 +18,16 @@ models/
 *.safetensors
 *.vrm
 *.glb
+
+# Test fixtures and dev files
+**/*.test.ts
+**/test/
+**/__tests__/
+blobs/
+datasets/
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.wav
+*.mp3

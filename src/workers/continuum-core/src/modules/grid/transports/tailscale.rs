@@ -317,14 +317,30 @@ struct RawTailscalePeer {
     online: bool,
 }
 
-/// Query `tailscale status --json` and parse the result.
+/// Query Tailscale status — tries CLI first, falls back to cached file.
+///
+/// In Docker, the `tailscale` CLI isn't available. The host writes
+/// `~/.continuum/grid/tailscale-status.json` (via setup.sh / continuum CLI),
+/// which is mounted into the container. The Rust code reads it as fallback.
+/// Tailscale IPs are reachable from Docker via the host's network stack.
 async fn query_tailscale_status() -> Result<TailscaleStatus, TransportError> {
+    // Try CLI first (works on host, fails in Docker)
+    if let Ok(status) = query_tailscale_cli().await {
+        return Ok(status);
+    }
+
+    // Fallback: read cached status file from host (Docker mount)
+    query_tailscale_file().await
+}
+
+/// Query via `tailscale status --json` CLI.
+async fn query_tailscale_cli() -> Result<TailscaleStatus, TransportError> {
     let output = tokio::process::Command::new("tailscale")
         .args(["status", "--json"])
         .output()
         .await
         .map_err(|e| TransportError::NotReady(
-            format!("Failed to run `tailscale status --json`: {e}. Is Tailscale installed?")
+            format!("tailscale CLI not available: {e}")
         ))?;
 
     if !output.status.success() {
@@ -334,7 +350,41 @@ async fn query_tailscale_status() -> Result<TailscaleStatus, TransportError> {
         ));
     }
 
-    let raw: RawTailscaleStatus = serde_json::from_slice(&output.stdout)
+    parse_tailscale_json(&output.stdout)
+}
+
+/// Read cached `tailscale-status.json` written by host.
+async fn query_tailscale_file() -> Result<TailscaleStatus, TransportError> {
+    // Check standard locations
+    let paths = [
+        std::path::PathBuf::from("/root/.continuum/grid/tailscale-status.json"),
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".continuum/grid/tailscale-status.json"),
+    ];
+
+    for path in &paths {
+        if let Ok(bytes) = tokio::fs::read(path).await {
+            match parse_tailscale_json(&bytes) {
+                Ok(status) => {
+                    eprintln!("[grid/tailscale] Using cached status from {}", path.display());
+                    return Ok(status);
+                }
+                Err(e) => {
+                    eprintln!("[grid/tailscale] Failed to parse {}: {e}", path.display());
+                }
+            }
+        }
+    }
+
+    Err(TransportError::NotReady(
+        "No tailscale CLI and no cached tailscale-status.json from host".into()
+    ))
+}
+
+/// Parse raw Tailscale status JSON bytes into our TailscaleStatus.
+fn parse_tailscale_json(bytes: &[u8]) -> Result<TailscaleStatus, TransportError> {
+    let raw: RawTailscaleStatus = serde_json::from_slice(bytes)
         .map_err(|e| TransportError::IoError(
             format!("Failed to parse tailscale status JSON: {e}")
         ))?;

@@ -65,6 +65,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected sessionId?: UUID;
   protected connected = false;
   protected messageHandler?: (message: JTAGMessage) => void;
+  private _pendingIncoming: JTAGMessage[] = [];
   protected reconnectAttempt = 0;
   protected reconnectTimeout?: ReturnType<typeof setTimeout>;
   protected manualDisconnect = false;
@@ -145,11 +146,11 @@ export abstract class WebSocketTransportClient extends TransportBase {
           return;
         }
 
-        // Forward regular messages to handler
+        // Forward regular messages to handler, or buffer if handler not yet set
         if (this.messageHandler) {
           this.messageHandler(parsed);
         } else {
-          console.warn(`${this.name}: Received message but no handler set:`, parsed);
+          this._pendingIncoming.push(parsed);
         }
       } catch (error: unknown) {
         const wrapped = error instanceof Error ? error : new Error(String(error));
@@ -226,6 +227,13 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   setMessageHandler(handler: (message: JTAGMessage) => void): void {
     this.messageHandler = handler;
+    // Flush any messages that arrived before the handler was set
+    if (this._pendingIncoming.length > 0) {
+      const pending = this._pendingIncoming.splice(0);
+      for (const msg of pending) {
+        handler(msg);
+      }
+    }
   }
 
   /**

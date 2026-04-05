@@ -172,15 +172,22 @@ impl ServiceModule for GridModule {
                     eprintln!("[grid] Transport '{}' started: {}", transport.name(), addr);
                 }
                 Err(e) => {
-                    eprintln!("[grid] Transport '{}' failed to start: {e} (non-fatal)", transport.name());
+                    let hint = match transport.name() {
+                        "tailscale" => " — install Tailscale and run 'tailscale up' to enable grid",
+                        "reticulum" => " — Reticulum transport not yet implemented",
+                        _ => "",
+                    };
+                    eprintln!("[grid] Transport '{}' not available: {e}{hint}", transport.name());
                 }
             }
         }
 
         // Announce our capabilities on each started transport
         let caps = self.state.local_capabilities.read().await.clone();
+        let mut active_transports = 0;
         for transport in &self.state.transports {
             if transport.local_address().is_some() {
+                active_transports += 1;
                 let _ = transport.announce(&caps).await;
 
                 // Spawn accept loop for incoming connections
@@ -191,6 +198,10 @@ impl ServiceModule for GridModule {
                 });
             }
         }
+
+        let known = self.state.registry.all_nodes().len();
+        let online = self.state.registry.online_nodes().len();
+        eprintln!("[grid] Ready: {active_transports} transport(s), {known} known node(s) ({online} online). Run 'grid/setup-check' for diagnostics.");
 
         Ok(())
     }
@@ -211,18 +222,73 @@ impl ServiceModule for GridModule {
             commands::JOB_SUBMIT  => handlers::handle_job_submit(&self.state, params).await,
             commands::JOB_CONTROL => handlers::handle_job_control(&self.state, params).await,
             commands::JOB_QUEUE   => handlers::handle_job_queue(&self.state, params).await,
+            commands::SETUP_CHECK => handlers::handle_setup_check(&self.state).await,
             _ => Err(format!("Unknown grid command: {command}")),
         }
     }
 
     async fn tick(&self) -> Result<(), String> {
+        // Discover peers from transports — just read the peer list, no blocking probes.
+        // Probing happens in a spawned background task to avoid blocking IPC.
         for transport in &self.state.transports {
             if let Ok(discovered) = transport.discover().await {
                 for node in discovered {
+                    let addr = &node.address;
+                    if let node::TransportAddress::Tailscale { ip, .. } = addr {
+                        // Skip blocked nodes
+                        if let Some(existing) = self.state.registry.get(ip) {
+                            if existing.trust_level == node::TrustLevel::Blocked {
+                                continue;
+                            }
+                        }
+                    }
+                    // Register discovered nodes optimistically.
+                    // They'll be probed in background and removed if unreachable.
                     self.state.registry.upsert_discovered(node);
                 }
             }
         }
+
+        // Background probe: check which nodes are actually reachable.
+        // Spawned so it doesn't block IPC command handling.
+        let registry = Arc::clone(&self.state.registry);
+        let bus = self.state.bus.lock().await.clone();
+        tokio::spawn(async move {
+            let nodes = registry.all_nodes();
+            for node in &nodes {
+                if node.trust_level == node::TrustLevel::Blocked { continue; }
+                for addr in &node.addresses {
+                    if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
+                        let target = format!("{ip}:{port}");
+                        match tokio::time::timeout(
+                            Duration::from_secs(2),
+                            tokio::net::TcpStream::connect(&target),
+                        ).await {
+                            Ok(Ok(_)) => {
+                                registry.update_latency(&node.node_id, 0);
+                            }
+                            _ => {
+                                // Unreachable — only remove auto-discovered (default trust) nodes.
+                                // Owner/Trusted nodes stay but age out of online_nodes().
+                                if node.trust_level == node::TrustLevel::default() {
+                                    registry.remove(&node.node_id);
+                                    eprintln!("[grid] Removed unreachable node {} ({})",
+                                        node.node_name.as_deref().unwrap_or("?"), node.node_id);
+                                    if let Some(bus) = &bus {
+                                        bus.publish_async_only("grid:node:left", serde_json::json!({
+                                            "nodeId": node.node_id,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            let _ = registry.save_to_disk();
+        });
+
         let _ = self.state.registry.save_to_disk();
         Ok(())
     }
