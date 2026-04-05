@@ -447,11 +447,18 @@ export class GridOverviewWidget extends ReactiveWidget {
     }
   }
 
-  private _removeNode(nodeId: string): void {
+  private async _removeNode(nodeId: string): Promise<void> {
+    try {
+      // Set to blocked — won't reappear until manually re-paired.
+      // Use "+ Pair Node" to bring it back.
+      await this.executeCommand<any, any>('grid/trust', { nodeId, trust: 'blocked' });
+    } catch (err) {
+      console.error('[GridOverview] Remove failed:', err);
+    }
+    // Remove from UI immediately
     const updated = new Map(this._nodes);
     updated.delete(nodeId);
     this._nodes = updated;
-    // TODO: persist removal via grid/trust revoke
   }
 
   private async _pingNode(nodeId: string): Promise<void> {

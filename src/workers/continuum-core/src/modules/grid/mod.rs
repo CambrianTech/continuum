@@ -239,6 +239,12 @@ impl ServiceModule for GridModule {
                     // A Tailscale peer without Continuum running is not a grid node.
                     let addr = &node.address;
                     if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
+                        // Skip blocked nodes — user explicitly removed them
+                        if let Some(existing) = self.state.registry.get(ip) {
+                            if existing.trust_level == node::TrustLevel::Blocked {
+                                continue;
+                            }
+                        }
                         let target = format!("{ip}:{port}");
                         match tokio::time::timeout(
                             Duration::from_secs(2),
