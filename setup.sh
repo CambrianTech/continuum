@@ -209,11 +209,25 @@ if [[ -n "$PROFILE" ]]; then
 else
   echo "  ✅ Continuum is running!"
   echo ""
-  echo "  Opening http://localhost:9003 ..."
+
+  # Auto-detect Tailscale on host — zero config remote access.
+  # If Tailscale is installed and connected, Docker ports are accessible
+  # via the Tailscale IP (WireGuard encrypts the tunnel automatically).
+  if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+    TS_IP=$(tailscale ip -4 2>/dev/null)
+    if [[ -n "$TS_IP" ]]; then
+      echo "  📱 Remote access (any device on your tailnet):"
+      echo "     http://$TS_IP:9003"
+      echo ""
+    fi
+  fi
+
+  LOCAL_URL="http://localhost:9003"
+  echo "  Opening $LOCAL_URL ..."
   # Open browser (works on Mac, Linux, WSL2)
-  open "http://localhost:9003" 2>/dev/null || \
-    xdg-open "http://localhost:9003" 2>/dev/null || \
-    cmd.exe /c start "http://localhost:9003" 2>/dev/null || \
-    echo "  Open: http://localhost:9003"
+  open "$LOCAL_URL" 2>/dev/null || \
+    xdg-open "$LOCAL_URL" 2>/dev/null || \
+    cmd.exe /c start "$LOCAL_URL" 2>/dev/null || \
+    echo "  Open: $LOCAL_URL"
 fi
 echo ""
