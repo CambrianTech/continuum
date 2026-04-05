@@ -1199,32 +1199,38 @@ window.__CONTINUUM_CONFIG__=${JSON.stringify({
     // Native: falls back to localhost with the configured port.
     const wsTargetHost = process.env.JTAG_WS_PROXY_HOST || 'localhost';
     const wsTargetPort = process.env.JTAG_WS_PROXY_PORT ? parseInt(process.env.JTAG_WS_PROXY_PORT) : connectionConfig.websocketPort;
+    console.log(`   📡 WebSocket proxy: ws://localhost:${PORT} → ws://${wsTargetHost}:${wsTargetPort}`);
     this.server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
-      const targetWs = http.request({
+      console.log(`📡 WS proxy: upgrade request → ${wsTargetHost}:${wsTargetPort}${req.url}`);
+      const proxyReq = http.request({
         hostname: wsTargetHost,
         port: wsTargetPort,
         path: req.url || '/',
         method: 'GET',
-        headers: { ...req.headers, host: `localhost:${wsTargetPort}` },
+        headers: { ...req.headers, host: `${wsTargetHost}:${wsTargetPort}` },
       });
 
-      targetWs.on('upgrade', (_res, targetSocket, targetHead) => {
-        socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
-          'Upgrade: websocket\r\n' +
-          'Connection: Upgrade\r\n' +
-          Object.entries(_res.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
-          '\r\n\r\n');
+      proxyReq.on('upgrade', (_res, targetSocket, targetHead) => {
+        console.log(`📡 WS proxy: upgrade success, piping`);
+        // Write the 101 response back to the browser
+        let response = 'HTTP/1.1 101 Switching Protocols\r\n';
+        for (const [key, value] of Object.entries(_res.headers)) {
+          if (value) response += `${key}: ${value}\r\n`;
+        }
+        response += '\r\n';
+        socket.write(response);
         if (targetHead.length) socket.write(targetHead);
+        if (head.length) targetSocket.write(head);
         targetSocket.pipe(socket);
         socket.pipe(targetSocket);
       });
 
-      targetWs.on('error', (err) => {
-        console.error(`❌ WebSocket proxy error: ${err.message}`);
+      proxyReq.on('error', (err) => {
+        console.error(`❌ WS proxy error: ${err.message}`);
         socket.destroy();
       });
 
-      targetWs.end();
+      proxyReq.end();
     });
 
     return new Promise((resolve, reject) => {
