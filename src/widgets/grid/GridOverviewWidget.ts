@@ -87,6 +87,7 @@ export class GridOverviewWidget extends ReactiveWidget {
 
   private _cleanups: (() => void)[] = [];
   private _latencyStep = 0;
+  private _healthInterval?: ReturnType<typeof setInterval>;
 
   constructor() {
     super({ widgetName: 'GridOverviewWidget' });
@@ -165,12 +166,19 @@ export class GridOverviewWidget extends ReactiveWidget {
     );
 
     this._loadInitialState();
+
+    // Poll remote node health every 15 seconds
+    this._healthInterval = setInterval(() => this._pollNodeHealth(), 15000);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this._cleanups.forEach(fn => fn());
     this._cleanups = [];
+    if (this._healthInterval) {
+      clearInterval(this._healthInterval);
+      this._healthInterval = undefined;
+    }
   }
 
   private async _loadInitialState(): Promise<void> {
@@ -436,6 +444,43 @@ export class GridOverviewWidget extends ReactiveWidget {
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────
+
+  private async _pollNodeHealth(): Promise<void> {
+    const updated = new Map(this._nodes);
+    let changed = false;
+
+    for (const [id, node] of this._nodes) {
+      if (id === 'local') continue; // Skip local machine
+
+      try {
+        const result = await Promise.race([
+          this.executeCommand<any, any>('grid/node-status', { nodeId: id }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+        ]);
+
+        if (result?.gpu) {
+          updated.set(id, {
+            ...node,
+            gpuUtilization: result.gpu.utilization ?? node.gpuUtilization,
+            gpuMemoryUsedMb: result.gpu.memoryUsedMb ?? node.gpuMemoryUsedMb,
+            gpuTemperatureC: result.gpu.temperatureC ?? node.gpuTemperatureC,
+            status: 'online' as GridNodeStatus,
+          });
+          changed = true;
+        }
+      } catch {
+        // Node unreachable — mark degraded but don't remove
+        if (node.status !== 'degraded') {
+          updated.set(id, { ...node, status: 'degraded' as GridNodeStatus });
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this._nodes = updated;
+    }
+  }
 
   private async _pairNode(): Promise<void> {
     try {
