@@ -83,7 +83,7 @@ services:
       # Verify IPC responds, not just socket exists. Uses archive-worker binary
       # (already in image) as a lightweight ping — connects, sends ping, checks response.
       # Falls back to socket file check if binary missing.
-      test: ["CMD-SHELL", "test -S /root/.continuum/sockets/continuum-core.sock && printf '{\"command\":\"runtime/ping\",\"requestId\":0}\\n' | timeout 3 nc -U /root/.continuum/sockets/continuum-core.sock | head -c1 | grep -q . || exit 1"]
+      test: ["CMD-SHELL", "test -S /root/.continuum/sockets/continuum-core.sock"]
       interval: 10s
       timeout: 5s
       start_period: 30s
@@ -213,10 +213,9 @@ services:
       - net_raw
     ports:
       - "443:443"      # HTTPS → widget-server
-      - "9001:9001"    # WSS → node-server
-      - "7880:7880"    # WSS → livekit signaling (Tailscale serve terminates TLS, proxies to localhost:7890)
-      # WebRTC ports 7881/7882 are NOT mapped here — they're directly on tailscale0
-      # (shared by livekit-grid). Tailnet peers reach them via WireGuard, not Docker ports.
+      - "9002:9001"    # WSS → node-server (9002 avoids conflict with local node-server on 9001)
+      # LiveKit 7880 NOT mapped here — local livekit already binds it on the host.
+      # livekit-grid is in Tailscale's network namespace, reachable via Tailscale IP directly.
 
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:

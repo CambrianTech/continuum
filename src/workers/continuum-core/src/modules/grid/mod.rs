@@ -172,15 +172,22 @@ impl ServiceModule for GridModule {
                     eprintln!("[grid] Transport '{}' started: {}", transport.name(), addr);
                 }
                 Err(e) => {
-                    eprintln!("[grid] Transport '{}' failed to start: {e} (non-fatal)", transport.name());
+                    let hint = match transport.name() {
+                        "tailscale" => " — install Tailscale and run 'tailscale up' to enable grid",
+                        "reticulum" => " — Reticulum transport not yet implemented",
+                        _ => "",
+                    };
+                    eprintln!("[grid] Transport '{}' not available: {e}{hint}", transport.name());
                 }
             }
         }
 
         // Announce our capabilities on each started transport
         let caps = self.state.local_capabilities.read().await.clone();
+        let mut active_transports = 0;
         for transport in &self.state.transports {
             if transport.local_address().is_some() {
+                active_transports += 1;
                 let _ = transport.announce(&caps).await;
 
                 // Spawn accept loop for incoming connections
@@ -191,6 +198,10 @@ impl ServiceModule for GridModule {
                 });
             }
         }
+
+        let known = self.state.registry.all_nodes().len();
+        let online = self.state.registry.online_nodes().len();
+        eprintln!("[grid] Ready: {active_transports} transport(s), {known} known node(s) ({online} online). Run 'grid/setup-check' for diagnostics.");
 
         Ok(())
     }
@@ -211,6 +222,7 @@ impl ServiceModule for GridModule {
             commands::JOB_SUBMIT  => handlers::handle_job_submit(&self.state, params).await,
             commands::JOB_CONTROL => handlers::handle_job_control(&self.state, params).await,
             commands::JOB_QUEUE   => handlers::handle_job_queue(&self.state, params).await,
+            commands::SETUP_CHECK => handlers::handle_setup_check(&self.state).await,
             _ => Err(format!("Unknown grid command: {command}")),
         }
     }

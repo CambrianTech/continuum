@@ -26,6 +26,7 @@ pub const NODE_STATUS: &str = "grid/node-status";
 pub const JOB_SUBMIT:  &str = "grid/job-submit";
 pub const JOB_CONTROL: &str = "grid/job-control";
 pub const JOB_QUEUE:   &str = "grid/job-queue";
+pub const SETUP_CHECK: &str = "grid/setup-check";
 
 // ============================================================================
 // Command schemas (defined alongside their names — no duplication)
@@ -130,6 +131,11 @@ pub fn schemas() -> Vec<CommandSchema> {
                 ParamSchema { name: "limit", param_type: "number", required: false, description: "Max jobs to return (default: 20)" },
             ],
         },
+        CommandSchema {
+            name: SETUP_CHECK,
+            description: "Diagnose grid setup: Tailscale install, connectivity, HTTPS certs, peers, and actionable fix steps",
+            params: vec![],
+        },
     ]
 }
 
@@ -140,7 +146,7 @@ mod tests {
     #[test]
     fn test_all_commands_have_grid_prefix() {
         let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
-                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE];
+                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE, SETUP_CHECK];
         for cmd in &all {
             assert!(cmd.starts_with("grid/"), "Command {cmd} missing grid/ prefix");
         }
@@ -150,7 +156,7 @@ mod tests {
     fn test_schemas_match_constants() {
         let schemas = schemas();
         let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
-                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE];
+                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE, SETUP_CHECK];
         assert_eq!(schemas.len(), all.len(), "Schema count mismatch");
         for (schema, constant) in schemas.iter().zip(all.iter()) {
             assert_eq!(schema.name, *constant, "Schema name doesn't match constant");

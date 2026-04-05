@@ -62,6 +62,21 @@ export interface GridRouteResponse {
 	reason: string;
 }
 
+export interface GridSetupCheckResponse {
+	ready: boolean;
+	tailscaleIp: string | null;
+	dnsName: string | null;
+	peerCount: number;
+	checks: Array<{
+		check: string;
+		status: 'pass' | 'fail' | 'warn' | 'info' | 'skip';
+		detail: string;
+		peers?: string[];
+	}>;
+	actions: string[];
+	summary: string;
+}
+
 // ============================================================================
 // Mixin
 // ============================================================================
@@ -76,6 +91,7 @@ export interface GridMixin {
 	gridTrust(nodeId: string, trust: string): Promise<{ nodeId: string; trustLevel: string }>;
 	gridAudit(limit?: number): Promise<unknown[]>;
 	gridRoute(command: string, routingHint?: string): Promise<GridRouteResponse>;
+	gridSetupCheck(): Promise<GridSetupCheckResponse>;
 }
 
 export function GridMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -138,6 +154,12 @@ export function GridMixin<T extends new (...args: any[]) => RustCoreIPCClientBas
 			});
 			if (!response.success) throw new Error(response.error || 'grid/route failed');
 			return response.result as GridRouteResponse;
+		}
+
+		async gridSetupCheck(): Promise<GridSetupCheckResponse> {
+			const response = await this.request({ command: 'grid/setup-check' });
+			if (!response.success) throw new Error(response.error || 'grid/setup-check failed');
+			return response.result as GridSetupCheckResponse;
 		}
 	};
 }

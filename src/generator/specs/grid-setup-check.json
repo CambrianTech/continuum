@@ -1,0 +1,50 @@
+{
+  "name": "grid/setup-check",
+  "description": "Diagnose grid setup: Tailscale install, connectivity, HTTPS certs, peers, Docker grid profile, and actionable fix steps. Run this to see what's needed before enabling distributed compute.",
+  "params": [],
+  "results": [
+    {
+      "name": "ready",
+      "type": "boolean",
+      "description": "True if grid is fully operational (Tailscale connected, transport listening)"
+    },
+    {
+      "name": "tailscaleIp",
+      "type": "string",
+      "description": "This node's Tailscale IP (null if not connected)"
+    },
+    {
+      "name": "dnsName",
+      "type": "string",
+      "description": "This node's Tailscale DNS name (e.g., bigmama.tailnet-name.ts.net)"
+    },
+    {
+      "name": "peerCount",
+      "type": "number",
+      "description": "Number of online Tailscale peers"
+    },
+    {
+      "name": "checks",
+      "type": "array",
+      "description": "Diagnostic checks: { check, status (pass|fail|warn|info|skip), detail, peers? }"
+    },
+    {
+      "name": "actions",
+      "type": "array",
+      "description": "Ordered list of actionable fix steps (empty if everything passes)"
+    },
+    {
+      "name": "summary",
+      "type": "string",
+      "description": "Human-readable summary of grid readiness"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check if grid is ready",
+      "params": {}
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "grid"
+}
