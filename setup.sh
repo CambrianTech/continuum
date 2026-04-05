@@ -56,6 +56,18 @@ if [ "$DOCKER_MEM_GB" -lt 8 ] && [ "$DOCKER_MEM_GB" -gt 0 ]; then
   echo ""
 fi
 
+# ── Install continuum CLI ─────────────────────────
+INSTALL_DIR="${HOME}/.local/bin"
+mkdir -p "$INSTALL_DIR"
+cp src/scripts/continuum.sh "$INSTALL_DIR/continuum"
+chmod +x "$INSTALL_DIR/continuum"
+if echo "$PATH" | grep -q "$INSTALL_DIR"; then
+  echo "✅ 'continuum' command installed"
+else
+  echo "✅ 'continuum' command installed at $INSTALL_DIR/continuum"
+  echo "   Add to PATH: export PATH=\"$INSTALL_DIR:\$PATH\""
+fi
+
 # ── Pull pre-built images ────────────────────────
 echo ""
 echo "📦 Pulling pre-built images from GitHub Container Registry..."
