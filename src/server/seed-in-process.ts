@@ -245,7 +245,7 @@ async function createRoom(
   room.displayName = displayName;
   room.description = description;
   room.ownerId = ownerId;
-  room.type = 'room' as any;
+  room.type = 'public' as any;
   room.isPublic = true;
   room.members = [{ userId: ownerId, role: 'owner', joinedAt: new Date().toISOString() } as any];
 
