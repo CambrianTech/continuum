@@ -16,6 +16,7 @@ import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
+import { Events } from '../system/core/shared/Events';
 
 // ── Persona profile definitions ────────────────────────────────────────
 
@@ -213,6 +214,8 @@ export async function seedDatabase(): Promise<boolean> {
 
   // Owner
   const owner = await seeder.findOrCreateUser('joel', 'Developer', 'human');
+  // Emit event so SessionDaemon upgrades anonymous browser sessions to this owner
+  Events.emit('data:users:created', owner);
   console.log(`  ✅ Owner: ${owner.displayName}`);
 
   // Rooms
