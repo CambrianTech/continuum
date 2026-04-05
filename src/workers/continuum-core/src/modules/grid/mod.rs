@@ -265,6 +265,32 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // Probe existing registry nodes — remove any that no longer respond
+        let existing_nodes = self.state.registry.all_nodes();
+        for node in &existing_nodes {
+            // Skip nodes we just discovered (already probed above)
+            if !before_ids.contains(&node.node_id) { continue; }
+            for addr in &node.addresses {
+                if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
+                    let target = format!("{ip}:{port}");
+                    match tokio::time::timeout(
+                        Duration::from_secs(2),
+                        tokio::net::TcpStream::connect(&target),
+                    ).await {
+                        Ok(Ok(_)) => {
+                            // Still alive — update last_seen
+                            self.state.registry.update_latency(&node.node_id, 0);
+                        }
+                        _ => {
+                            self.state.registry.remove(&node.node_id);
+                            eprintln!("[grid] Removed stale node {} ({})", node.node_name.as_deref().unwrap_or("?"), node.node_id);
+                        }
+                    }
+                    break; // Only probe first address
+                }
+            }
+        }
+
         // Emit events for changes
         let after_ids: std::collections::HashSet<String> = self.state.registry
             .all_nodes().iter().map(|n| n.node_id.clone()).collect();
