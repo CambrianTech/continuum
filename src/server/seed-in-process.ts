@@ -51,17 +51,19 @@ interface RoomDefinition {
   uniqueId: string;
   name: string;
   description: string;
+  recipeId: string;
+  tags: string[];
 }
 
 const ROOMS: RoomDefinition[] = [
-  { uniqueId: 'general',    name: 'General',    description: 'Welcome to general discussion! Introduce yourself and chat about anything.' },
-  { uniqueId: 'pantheon',   name: 'Pantheon',   description: 'Advanced reasoning and multi-model collaboration' },
-  { uniqueId: 'code',       name: 'Code',       description: 'Software development with real tools and real agent loops' },
-  { uniqueId: 'factory',    name: 'Factory',    description: 'Monitor active forges, test model quality, manage the device ladder' },
-  { uniqueId: 'academy',    name: 'Academy',    description: 'Share knowledge, tutorials, and collaborate on learning' },
-  { uniqueId: 'dev-updates',name: 'Dev Updates', description: 'Development updates and changelog' },
-  { uniqueId: 'universe',   name: 'Universe',   description: 'Avatar themes, scene packs, and visual customization' },
-  { uniqueId: 'grid-ops',   name: 'Grid Ops',   description: 'Distributed compute operations and node management' },
+  { uniqueId: 'general',     name: 'General',     description: 'Welcome to general discussion! Introduce yourself and chat about anything.', recipeId: 'general-chat', tags: ['general', 'welcome'] },
+  { uniqueId: 'pantheon',    name: 'Pantheon',    description: 'Advanced reasoning and multi-model collaboration', recipeId: 'pantheon', tags: ['sota', 'reasoning'] },
+  { uniqueId: 'code',        name: 'Code',        description: 'Software development with real tools and real agent loops', recipeId: 'coding', tags: ['coding', 'development'] },
+  { uniqueId: 'factory',     name: 'Factory',     description: 'Monitor active forges, test model quality, manage the device ladder', recipeId: 'factory', tags: ['factory', 'forge'] },
+  { uniqueId: 'academy',     name: 'Academy',     description: 'Share knowledge, tutorials, and collaborate on learning', recipeId: 'academy', tags: ['learning', 'education'] },
+  { uniqueId: 'dev-updates', name: 'Dev Updates', description: 'Development updates and changelog', recipeId: 'dev-updates', tags: ['github', 'ci'] },
+  { uniqueId: 'universe',    name: 'Universe',    description: 'Avatar themes, scene packs, and visual customization', recipeId: 'universe', tags: ['avatars', 'themes'] },
+  { uniqueId: 'grid-ops',    name: 'Grid Ops',    description: 'Distributed compute operations and node management', recipeId: 'grid-ops', tags: ['grid', 'compute'] },
 ];
 
 // ── DatabaseSeeder ─────────────────────────────────────────────────────
@@ -127,6 +129,8 @@ class DatabaseSeeder {
     room.ownerId = ownerId;
     room.type = 'public' as RoomType;
     room.isPublic = true;
+    room.recipeId = def.recipeId;
+    room.tags = def.tags;
     room.members = [{
       userId: ownerId,
       role: 'owner' as const,
@@ -253,6 +257,20 @@ export async function seedDatabase(): Promise<boolean> {
     if (user) await seeder.createProfile(user.id, profile);
   }
   console.log(`  ✅ Profiles`);
+
+  // Content types (maps room types to widgets)
+  try {
+    const { createDefaultContentTypes } = await import('../scripts/seed/factories');
+    const contentTypes = createDefaultContentTypes();
+    for (const ct of contentTypes) {
+      try {
+        await DataCreate.execute({ collection: 'content_types', dbHandle: 'default', data: ct });
+      } catch { /* already exists */ }
+    }
+    console.log(`  ✅ ${contentTypes.length} content types`);
+  } catch (err) {
+    console.warn(`  ⚠️ Content types: ${err}`);
+  }
 
   // Avatars
   const avatarSpecs = Object.entries(PROFILES)
