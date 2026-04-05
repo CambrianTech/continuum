@@ -586,8 +586,9 @@ pub fn load_gguf_backend(
             ));
             Ok(Box::new(backend))
         }
-        // Qwen3/3.5 — same tensor layout as Qwen2 in GGUF
-        "qwen3" => {
+        // Qwen3/3.5 — same tensor layout as Qwen2 in GGUF.
+        // GGUF metadata uses "qwen3" or "qwen35" depending on the converter.
+        "qwen3" | "qwen35" => {
             let backend = llama_gguf::LlamaGgufBackend::from_gguf(
                 content,
                 &mut reader,
