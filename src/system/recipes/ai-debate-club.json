@@ -146,7 +146,5 @@
     "education",
     "conversation",
     "competitive"
-  ],
-  "entityType": "room",
-  "view": "chat"
+  ]
 }
