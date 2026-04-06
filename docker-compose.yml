@@ -194,7 +194,7 @@ services:
   # Once registered, state volume persists identity — key only needed for first run.
   tailscale:
     image: tailscale/tailscale:latest
-    hostname: ${TS_HOSTNAME:?Set TS_HOSTNAME in .env (e.g. bigmama, joels-laptop)}
+    hostname: ${TS_HOSTNAME:-${HOSTNAME}-grid}
     restart: unless-stopped
     profiles: ["grid"]
     environment:
