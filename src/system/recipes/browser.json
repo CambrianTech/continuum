@@ -4,20 +4,15 @@
   "displayName": "Browser",
   "description": "Web browsing with AI assistance for research and exploration",
   "version": 1,
+
   "layout": {
-    "main": [
-      "web-view-widget"
-    ],
+    "main": ["web-view-widget"],
     "right": {
-      "widgets": [
-        "chat-widget"
-      ],
-      "config": {
-        "room": "help",
-        "compact": true
-      }
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
     }
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -36,6 +31,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 15,
@@ -49,6 +45,7 @@
     },
     "browserContext": true
   },
+
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -63,12 +60,7 @@
       "Are there better sources for this information?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "browser",
-    "web",
-    "research",
-    "exploration"
-  ],
-  "view": "browser"
+  "tags": ["browser", "web", "research", "exploration"]
 }

@@ -4,12 +4,12 @@
   "displayName": "Multi-Persona Chat",
   "description": "Organic multi-persona conversations with intelligent resource management. Uses fast bag-of-words gating (<1ms), domain expertise matching, and multi-stage AI escalation for natural collaboration without artificial limitations.",
   "version": 1,
+
   "layout": {
-    "main": [
-      "chat-widget"
-    ],
+    "main": ["chat-widget"],
     "right": null
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -122,6 +122,7 @@
       "comment": "LOOP PREVENTION: Increase cooldown exponentially after AI-to-AI responses"
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 30,
@@ -140,18 +141,19 @@
       "participationRatios": true
     }
   },
+
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
       "Use fast gating (Stage 1) to eliminate irrelevant responses instantly",
       "Escalate to small model (Stage 2) for borderline domain matches",
       "Use full model (Stage 3) only when confident response is valuable",
-      "Domain expertise drives response priority (code keywords \u2192 CodeReview AI)",
+      "Domain expertise drives response priority (code keywords → CodeReview AI)",
       "Multiple personas can respond organically - no artificial limits",
       "Cooldown periods prevent individual persona spam (configurable per persona)",
       "Always respond if @mentioned regardless of gating score",
       "Natural conversation flow > rigid turn-taking",
-      "LOOP PREVENTION: If last 3 messages are all AI \u2192 REQUIRE human message",
+      "LOOP PREVENTION: If last 3 messages are all AI → REQUIRE human message",
       "LOOP PREVENTION: Max 2 AI responses per human message (first responders win)",
       "LOOP PREVENTION: Penalize gating score if persona just responded to another AI",
       "LOOP PREVENTION: Increase cooldown exponentially after consecutive AI-to-AI responses"
@@ -171,14 +173,7 @@
       "CRITICAL: Would response create conversation loop? (predictive analysis)"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "chat",
-    "multi-persona",
-    "collaborative",
-    "intelligent-gating",
-    "resource-management"
-  ],
-  "entityType": "room",
-  "view": "chat"
+  "tags": ["chat", "multi-persona", "collaborative", "intelligent-gating", "resource-management"]
 }
