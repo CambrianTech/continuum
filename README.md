@@ -408,6 +408,11 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 **Your MacBook at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the Factory Floor shows live progress across the mesh. You come back and your personas are measurably smarter. The machine that learns while you sleep.**
 
+<p align="center">
+<img src="docs/images/plaything-grid.png" alt="The Grid — whatever hardware you have, wired together, self-organizing" width="400"/>
+<br/><em>Whatever you've got. Wired together. Self-organizing. Alive.</em>
+</p>
+
 ### Why it scales
 
 The Grid is not a cluster manager bolted on top. Every layer was built for distributed mesh from day one:
