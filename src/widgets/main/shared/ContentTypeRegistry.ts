@@ -68,6 +68,7 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
                 requiresEntity: generated?.requiresEntity || false,
                 entityType: generated?.entityType || null,
                 hasRightPanel: rightPanel !== null && rightPanel !== undefined,
+                rightPanelRoom: generated?.rightPanelRoom || null,
             };
         }
     }
@@ -140,12 +141,17 @@ export function getRightPanelConfig(contentType: string): RightPanelConfig | nul
         if (rightPanel) return rightPanel;     // Recipe provides right panel config
     }
 
-    // 2. Generated config — only use if recipe service has no opinion
+    // 2. Generated config — includes right panel room from recipe
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
     if (config && !config.hasRightPanel) return null;
+    if (config?.hasRightPanel) {
+        return {
+            widget: 'chat-widget',
+            room: config.rightPanelRoom || undefined,
+            compact: true,
+        } as RightPanelConfig;
+    }
 
-    // 3. No config found — return null, NOT a default chat widget.
-    // If a recipe wants a right panel, it declares one. No guessing.
     return null;
 }
 

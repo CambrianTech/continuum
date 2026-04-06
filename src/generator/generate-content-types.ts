@@ -106,6 +106,12 @@ function main() {
 
         const view = (r as any).view || r.uniqueId;
 
+        // Extract right panel room from recipe layout
+        const rightWidgets = Array.isArray(r.layout?.widgets)
+            ? r.layout.widgets.filter((w: any) => w.position === 'right')
+            : [];
+        const rightPanelRoom = rightWidgets[0]?.config?.room || null;
+
         return `    '${r.uniqueId}': {
         widget: '${widget}',
         displayName: '${displayName}',
@@ -114,6 +120,7 @@ function main() {
         requiresEntity: ${requiresEntity},
         entityType: ${entityType ? `'${entityType}'` : 'null'},
         hasRightPanel: ${hasRightPanel},
+        rightPanelRoom: ${rightPanelRoom ? `'${rightPanelRoom}'` : 'null'},
     }`;
     }).join(',\n');
 
@@ -153,6 +160,8 @@ export interface ContentTypeConfig {
     requiresEntity: boolean;
     entityType: EntityType;
     hasRightPanel: boolean;
+    /** Room uniqueId for right panel chat — from recipe layout config */
+    rightPanelRoom: string | null;
 }
 
 export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {

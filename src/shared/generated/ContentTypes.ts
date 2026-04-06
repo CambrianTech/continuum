@@ -61,6 +61,8 @@ export interface ContentTypeConfig {
     requiresEntity: boolean;
     entityType: EntityType;
     hasRightPanel: boolean;
+    /** Room uniqueId for right panel chat — from recipe layout config */
+    rightPanelRoom: string | null;
 }
 
 export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
@@ -72,6 +74,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'ai-debate-club': {
         widget: 'chat',
@@ -81,6 +84,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'browser': {
         widget: 'web-view-widget',
@@ -90,6 +94,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'canvas': {
         widget: 'drawing-canvas-widget',
@@ -99,6 +104,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: 'canvas',
     },
     'chat': {
         widget: 'chat-widget',
@@ -108,6 +114,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'coding': {
         widget: 'chat-widget',
@@ -117,6 +124,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'creative-writing': {
         widget: 'chat-widget',
@@ -126,6 +134,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'diagnostics-log': {
         widget: 'log-viewer-widget',
@@ -135,6 +144,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'diagnostics': {
         widget: 'diagnostics-widget',
@@ -144,6 +154,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'dm': {
         widget: 'chat-widget',
@@ -153,6 +164,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'factory': {
         widget: 'factory-widget',
@@ -162,6 +174,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'gan': {
         widget: 'gan-widget',
@@ -171,6 +184,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'general-chat': {
         widget: 'chat-widget',
@@ -180,6 +194,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'grid-overview': {
         widget: 'grid-overview-widget',
@@ -189,6 +204,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'help': {
         widget: 'help-widget',
@@ -198,6 +214,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'inference-sample': {
         widget: 'inference-sample-widget',
@@ -207,6 +224,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'live': {
         widget: 'live-widget',
@@ -216,6 +234,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'logs': {
         widget: 'log-viewer-widget',
@@ -225,6 +244,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: 'help',
     },
     'multi-persona-chat': {
         widget: 'chat-widget',
@@ -234,6 +254,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'newsroom': {
         widget: 'chat-widget',
@@ -243,6 +264,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'outreach': {
         widget: 'chat-widget',
@@ -252,6 +274,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'persona': {
         widget: 'persona-brain-widget',
@@ -261,6 +284,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'user',
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'profile': {
         widget: 'user-profile-widget',
@@ -270,6 +294,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'user',
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'research': {
         widget: 'chat-widget',
@@ -279,6 +304,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: true,
         entityType: 'room',
         hasRightPanel: false,
+        rightPanelRoom: null,
     },
     'settings': {
         widget: 'settings-widget',
@@ -288,6 +314,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'terminal': {
         widget: 'terminal-widget',
@@ -297,6 +324,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'training-dashboard': {
         widget: 'training-dashboard-widget',
@@ -306,6 +334,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: null,
     },
     'universe': {
         widget: 'universe-widget',
@@ -315,6 +344,7 @@ export const CONTENT_TYPE_CONFIGS: Record<ContentType, ContentTypeConfig> = {
         requiresEntity: false,
         entityType: null,
         hasRightPanel: true,
+        rightPanelRoom: 'universe',
     },
 };
 
