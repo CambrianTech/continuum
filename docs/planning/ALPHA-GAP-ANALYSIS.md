@@ -342,8 +342,11 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#806](https://github.com/CambrianTech/continuum/issues/806) | **Tailscale ghost nodes on restart** | DONE (PR #809) | State volume persists identity. `TS_HOSTNAME` defaults to `{hostname}-grid`. No more orphaned devices. |
 | [#807](https://github.com/CambrianTech/continuum/issues/807) | **Auto grid profile when Tailscale configured** | TODO | `setup.sh` detects Tailscale → enables grid automatically. No manual `.env.grid` copy or `--profile grid`. |
 | [#808](https://github.com/CambrianTech/continuum/issues/808) | **Grid config provisioning** ⚠️ HIGH | TODO | `grid/provision` syncs config.env from primary node. No manual `scp`. One Tailscale key is the only manual step. |
+| [#811](https://github.com/CambrianTech/continuum/issues/811) | **Docker node shows 127.0.0.1 / no GPU** | PR #813 | Grid Overview fetches grid/status for real Tailscale IP and GPU capabilities. |
+| [#814](https://github.com/CambrianTech/continuum/issues/814) | **Self-healing — auto-wake and restart downed nodes** | TODO | Foreman detects offline → WoL via Tailscale → SSH restart. Grid is the immune system. |
+| [#815](https://github.com/CambrianTech/continuum/issues/815) | **In-browser terminal for node management** | TODO | AWS-style console. SSH button → terminal widget → Tailscale IP. Wake/restart/rebuild/logs from grid page. |
 
-**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale. Config propagates automatically to new nodes via `grid/provision`.
+**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale. Config propagates automatically to new nodes via `grid/provision`. Downed nodes auto-revive. Full node management from browser.
 
 ---
 
