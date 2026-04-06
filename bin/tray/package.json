@@ -1,0 +1,35 @@
+{
+  "name": "continuum-tray",
+  "version": "1.0.0",
+  "description": "Continuum system tray — grid health at a glance",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.cambriantech.continuum-tray",
+    "productName": "Continuum",
+    "mac": {
+      "icon": "icons/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "target": "dmg"
+    },
+    "win": {
+      "icon": "icons/icon.ico",
+      "target": "nsis"
+    },
+    "linux": {
+      "icon": "icons/icon.png",
+      "target": "AppImage"
+    }
+  },
+  "dependencies": {
+    "electron": "^35.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.0.0"
+  }
+}
