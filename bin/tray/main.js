@@ -170,8 +170,107 @@ async function updateStatus(color, tooltip, nodeCount) {
 
 // ── Menu ─────────────────────────────────────────────────────
 
+// ── Menu Section Registry ────────────────────────────────────
+// Pluggable menu system. Each section is a function that returns MenuItemConstructorOptions[].
+// Add sections by calling registerMenuSection(name, priority, builder).
+// Lower priority = higher in menu. Sections separated by dividers.
+
+const menuSections = new Map();
+
+function registerMenuSection(name, priority, builder) {
+  menuSections.set(name, { name, priority, builder });
+}
+
+function buildMenuFromSections(context) {
+  const sections = [...menuSections.values()]
+    .sort((a, b) => a.priority - b.priority);
+
+  const items = [];
+  for (const section of sections) {
+    try {
+      const sectionItems = section.builder(context);
+      if (sectionItems && sectionItems.length > 0) {
+        if (items.length > 0) items.push({ type: 'separator' });
+        items.push(...sectionItems);
+      }
+    } catch (e) {
+      console.error(`Menu section '${section.name}' failed:`, e);
+    }
+  }
+  return items;
+}
+
+// Get tailnet suffix for building HTTPS URLs
+let cachedTailnet = '';
+function getTailnet() {
+  if (cachedTailnet) return cachedTailnet;
+  try {
+    cachedTailnet = runCommandSync('health').match(/(\S+\.ts\.net)/)?.[1]?.replace(/^\S+\./, '') || '';
+  } catch {}
+  return cachedTailnet;
+}
+
+// ── Default Menu Sections ────────────────────────────────────
+
+registerMenuSection('header', 0, (ctx) => [
+  { label: 'Continuum', enabled: false },
+  { label: `${ctx.statusIcon}  ${ctx.statusText}`, enabled: false },
+]);
+
+registerMenuSection('grid-nodes', 10, (ctx) => {
+  if (ctx.gridNodes.length === 0) return [{ label: '  No grid nodes', enabled: false }];
+  return ctx.gridNodes.map(n => {
+    const isGrid = n.name.includes('-grid');
+    const isOnline = !n.detail.includes('offline');
+    const hasUI = n.detail.includes('UI OK');
+    const icon = hasUI ? '🟢' : isOnline ? '🟡' : '🔴';
+    const url = isGrid && ctx.tailnet ? `https://${n.name}.${ctx.tailnet}` : null;
+    return {
+      label: `${icon}  ${n.name}`,
+      sublabel: url || n.ip,
+      enabled: isOnline,
+      click: () => {
+        if (url) openBrowser(url);
+        else if (isGrid) openBrowser(`http://${n.ip}:9003`);
+      }
+    };
+  });
+});
+
+registerMenuSection('services', 20, () => [
+  { label: 'Start Services', click: () => { exec(`"${CONTINUUM_BIN}" start`); setTimeout(checkHealth, 5000); } },
+  { label: 'Stop Services', click: () => { exec(`"${CONTINUUM_BIN}" stop`); setTimeout(checkHealth, 3000); } },
+  { label: 'Restart Services', click: () => { exec(`"${CONTINUUM_BIN}" restart`); setTimeout(checkHealth, 5000); } },
+]);
+
+registerMenuSection('tools', 30, () => [
+  {
+    label: 'Logs',
+    submenu: [
+      { label: 'All Services', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" logs`) },
+      { label: 'Node Server', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" logs node-server`) },
+      { label: 'Core', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" logs continuum-core`) },
+    ]
+  },
+  {
+    label: 'More',
+    submenu: [
+      { label: 'Doctor', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" doctor`) },
+      { label: 'Update', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" update`) },
+      { label: 'Provision Config', click: () => exec(`open -a Terminal.app "${CONTINUUM_BIN}" provision`) },
+    ]
+  },
+]);
+
+registerMenuSection('footer', 100, () => [
+  { label: 'Continuum v1.0', enabled: false },
+  { label: 'Quit Continuum', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
+]);
+
+// ── Menu Builder ─────────────────────────────────────────────
+
 function rebuildMenu(status, statusText) {
-  // Get grid nodes for the menu
+  // Gather context for section builders
   let gridNodes = [];
   try {
     const output = runCommandSync('health');
@@ -181,58 +280,20 @@ function rebuildMenu(status, statusText) {
       if (match) return { name: match[1], ip: match[2], detail: match[3].trim() };
       return null;
     }).filter(Boolean);
-  } catch { /* no grid */ }
+  } catch {}
 
-  const statusIcon = status === 'green' ? '🟢' : status === 'yellow' ? '🟡' : '🔴';
+  const ctx = {
+    status,
+    statusText,
+    statusIcon: status === 'green' ? '🟢' : status === 'yellow' ? '🟡' : '🔴',
+    gridNodes,
+    tailnet: getTailnet(),
+    nodeCount: lastNodeCount,
+  };
 
-  const menuTemplate = [
-    { label: `${statusIcon}  ${statusText}`, enabled: false },
-    { type: 'separator' },
-
-    // Quick actions
-    { label: 'Open UI', click: () => runCommand('open', () => {}) },
-    {
-      label: 'Grid Nodes',
-      submenu: gridNodes.length > 0
-        ? gridNodes.map(n => ({
-            label: `${n.detail.includes('UI OK') ? '🟢' : '⚪'}  ${n.name}`,
-            sublabel: n.ip,
-            click: () => {
-              if (n.name.includes('-grid')) {
-                // Try to open the grid node's UI
-                const suffix = runCommandSync('health').match(/\S+\.ts\.net/)?.[0]?.replace(/^\S+\./, '') || '';
-                if (suffix) openBrowser(`https://${n.name}.${suffix}`);
-              }
-            }
-          }))
-        : [{ label: 'No grid nodes', enabled: false }]
-    },
-    { type: 'separator' },
-
-    // Management
-    { label: 'Start', click: () => runCommand('start', () => checkHealth()) },
-    { label: 'Stop', click: () => runCommand('stop', () => checkHealth()) },
-    { label: 'Restart', click: () => runCommand('restart', () => checkHealth()) },
-    { type: 'separator' },
-
-    // Diagnostics
-    {
-      label: 'Logs',
-      submenu: [
-        { label: 'All Services', click: () => exec(`open -a Terminal "${CONTINUUM_BIN} logs"`) },
-        { label: 'Node Server', click: () => exec(`open -a Terminal "${CONTINUUM_BIN} logs node-server"`) },
-        { label: 'Continuum Core', click: () => exec(`open -a Terminal "${CONTINUUM_BIN} logs continuum-core"`) },
-      ]
-    },
-    { label: 'Doctor', click: () => exec(`open -a Terminal "${CONTINUUM_BIN} doctor"`) },
-    { label: 'Update', click: () => exec(`open -a Terminal "${CONTINUUM_BIN} update"`) },
-    { type: 'separator' },
-
-    { label: 'Refresh', click: () => checkHealth() },
-    { label: 'Quit', click: () => app.quit() },
-  ];
-
-  const contextMenu = Menu.buildFromTemplate(menuTemplate);
+  // Build menu from registered sections
+  const items = buildMenuFromSections(ctx);
+  const contextMenu = Menu.buildFromTemplate(items);
   tray.setContextMenu(contextMenu);
 }
 
