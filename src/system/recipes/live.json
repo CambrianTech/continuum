@@ -5,23 +5,25 @@
   "description": "Real-time voice collaboration with AI participants. AIs can hear humans AND each other with clear speaker type labeling.",
   "version": 2,
   "entityType": "room",
-
   "layout": {
     "widgets": [
-      { "widget": "live-widget", "position": "center", "order": 0 }
+      {
+        "widget": "live-widget",
+        "position": "center",
+        "order": 0
+      }
     ],
     "rightPanel": null
   },
-
-  "locked": ["layout"],
-
+  "locked": [
+    "layout"
+  ],
   "inputs": {
     "voiceSessionId": {
       "description": "Voice call session ID",
       "required": true
     }
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -52,7 +54,6 @@
       "condition": "decision.shouldRespond === true"
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 20,
@@ -83,13 +84,14 @@
       "includeVoiceIds": true
     },
     "artifacts": {
-      "types": ["audio"],
+      "types": [
+        "audio"
+      ],
       "maxItems": 0,
       "includeMetadata": false
     },
     "roomMetadata": false
   },
-
   "strategy": {
     "conversationPattern": "live-collaboration",
     "responseRules": [
@@ -110,15 +112,25 @@
       "Have I spoken recently? (avoid dominating conversation)"
     ]
   },
-
   "tools": [
     {
       "name": "voice_speak",
       "description": "Synthesize and speak text in the live session",
-      "enabledFor": ["ai"]
+      "enabledFor": [
+        "ai"
+      ]
     }
   ],
-
   "isPublic": true,
-  "tags": ["live", "audio", "video", "voice", "collaboration", "huddle", "real-time", "multimodal"]
+  "tags": [
+    "live",
+    "audio",
+    "video",
+    "voice",
+    "collaboration",
+    "huddle",
+    "real-time",
+    "multimodal"
+  ],
+  "view": "live"
 }
