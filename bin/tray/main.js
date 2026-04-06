@@ -24,27 +24,29 @@ const CONTINUUM_BIN = path.resolve(__dirname, '..', 'continuum');
 const POLL_INTERVAL = 30_000; // 30s health poll
 
 // ── Icon Generation ──────────────────────────────────────────
-// Generate tray icons programmatically — circle with colored center dot
-// macOS uses "template" images (black/white) but we need color for the dot
+// Circle ring with number inside. Color = status. Number = node count.
+// Uses SVG data URL → nativeImage (Electron supports this natively).
 
-function createTrayIcon(dotColor) {
-  const size = 22; // macOS menu bar standard
-  const scale = 2; // @2x retina
-  const s = size * scale;
-  const canvas = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
-      <!-- Outer ring -->
-      <circle cx="${s/2}" cy="${s/2}" r="${s/2 - 2}" fill="none" stroke="${nativeTheme.shouldUseDarkColors ? '#ffffff' : '#000000'}" stroke-width="2.5" opacity="0.8"/>
-      <!-- Center status dot -->
-      <circle cx="${s/2}" cy="${s/2}" r="${s/6}" fill="${dotColor}"/>
-    </svg>
-  `.trim();
+function createTrayIcon(statusColor, nodeCount) {
+  const s = 44; // 22pt @2x retina
+  const ringColor = nativeTheme.shouldUseDarkColors ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)';
+  const num = (typeof nodeCount === 'number' && nodeCount > 0) ? String(nodeCount) : '';
+  // Thin font weight for the number, slightly smaller if 2+ digits
+  const fontSize = num.length > 1 ? 18 : 20;
 
-  const img = nativeImage.createFromBuffer(
-    Buffer.from(canvas),
-    { width: size, height: size, scaleFactor: scale }
-  );
-  return img;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
+    <circle cx="${s/2}" cy="${s/2}" r="${s/2 - 3}" fill="none" stroke="${ringColor}" stroke-width="2.5"/>
+    ${num
+      ? `<text x="${s/2}" y="${s/2}" text-anchor="middle" dominant-baseline="central"
+           font-family="-apple-system, Helvetica Neue, sans-serif" font-size="${fontSize}"
+           font-weight="300" fill="${statusColor}">${num}</text>`
+      : `<circle cx="${s/2}" cy="${s/2}" r="5" fill="${statusColor}"/>`
+    }
+  </svg>`;
+
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  const img = nativeImage.createFromDataURL(dataUrl);
+  return img.resize({ width: 22, height: 22 });
 }
 
 // ── CLI Helpers ──────────────────────────────────────────────
@@ -70,22 +72,34 @@ function openBrowser(url) {
 // ── Health Check ─────────────────────────────────────────────
 
 function checkHealth() {
-  // Check local Docker first
+  // Count grid nodes first (works even without local Docker)
+  let onlineNodes = 0;
   try {
-    const dockerStatus = execSync('docker info', { timeout: 5000, stdio: 'pipe' }).toString();
-    if (!dockerStatus) {
-      updateStatus('red', 'Docker not running');
-      return;
-    }
+    const healthOutput = runCommandSync('health');
+    onlineNodes = (healthOutput.match(/●/g) || []).length;
+  } catch { /* no grid */ }
+
+  // Check local Docker
+  try {
+    execSync('docker info', { timeout: 5000, stdio: 'pipe' });
   } catch {
-    updateStatus('red', 'Docker not running');
+    // Docker not running — but grid nodes might be
+    if (onlineNodes > 0) {
+      updateStatus('yellow', `Docker off, ${onlineNodes} grid nodes`, onlineNodes);
+    } else {
+      updateStatus('red', 'Docker not running', 0);
+    }
     return;
   }
 
   // Check local containers
   runCommand('status', (err, stdout) => {
     if (err || !stdout) {
-      updateStatus('yellow', 'Stack not running');
+      if (onlineNodes > 0) {
+        updateStatus('yellow', `Local off, ${onlineNodes} grid nodes`, onlineNodes);
+      } else {
+        updateStatus('yellow', 'Stack not running', 0);
+      }
       return;
     }
 
@@ -93,19 +107,24 @@ function checkHealth() {
     const unhealthyCount = (stdout.match(/unhealthy/g) || []).length;
 
     if (unhealthyCount > 0) {
-      updateStatus('yellow', `${unhealthyCount} unhealthy`);
+      updateStatus('yellow', `${unhealthyCount} unhealthy, ${onlineNodes} nodes`, onlineNodes);
     } else if (healthyCount >= 4) {
-      updateStatus('green', `${healthyCount} services healthy`);
+      updateStatus('green', `${healthyCount} services, ${onlineNodes} nodes`, onlineNodes);
     } else if (healthyCount > 0) {
-      updateStatus('yellow', `${healthyCount} services`);
+      updateStatus('yellow', `${healthyCount} services, ${onlineNodes} nodes`, onlineNodes);
+    } else if (onlineNodes > 0) {
+      updateStatus('yellow', `${onlineNodes} grid nodes`, onlineNodes);
     } else {
-      updateStatus('red', 'Not running');
+      updateStatus('red', 'Not running', 0);
     }
   });
 }
 
-function updateStatus(color, tooltip) {
+let lastNodeCount = 0;
+
+function updateStatus(color, tooltip, nodeCount) {
   if (!tray) return;
+  lastNodeCount = nodeCount || 0;
 
   const colors = {
     green: '#00ff88',
@@ -114,8 +133,10 @@ function updateStatus(color, tooltip) {
     gray: '#888888',
   };
 
-  tray.setImage(createTrayIcon(colors[color] || colors.gray));
+  tray.setImage(createTrayIcon(colors[color] || colors.gray, lastNodeCount));
   tray.setToolTip(`Continuum — ${tooltip}`);
+  tray.setTitle('');
+
   rebuildMenu(color, tooltip);
 }
 
