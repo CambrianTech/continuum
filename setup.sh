@@ -36,6 +36,9 @@ if ! command -v docker &>/dev/null; then
 fi
 echo "✅ Docker found"
 
+# ── Ensure ~/.continuum exists ────────────────────
+mkdir -p "$HOME/.continuum/grid"
+
 # ── Check if Docker is running ────────────────────
 if ! docker info &>/dev/null; then
   echo "❌ Docker is installed but not running. Start Docker Desktop and try again."
@@ -70,42 +73,43 @@ else
 fi
 
 # ── Install tray app (macOS) ─────────────────────
-if [[ "$PLATFORM" == "mac" ]]; then
-  TRAY_APP="/Applications/continuum.app"
-  TRAY_SRC="bin/tray/dist/mac-arm64/continuum.app"
+if [[ "$PLATFORM" == "mac" ]] && command -v swiftc &>/dev/null; then
+  TRAY_BIN="bin/tray/continuum-tray"
+  TRAY_INSTALL="$HOME/.local/bin/continuum-tray"
 
-  # Build tray app if not already built
-  if [[ ! -d "$TRAY_SRC" ]]; then
-    echo "🔨 Building tray app..."
-    (cd bin/tray && npm install --no-audit --no-fund 2>/dev/null && npx electron-builder --mac --dir 2>/dev/null) || {
-      echo "⚠️  Tray app build failed (non-critical). Install manually: cd bin/tray && npm run build:mac"
+  # Build Swift tray if binary doesn't exist
+  if [[ ! -f "$TRAY_BIN" ]]; then
+    echo "🔨 Building tray app (Swift)..."
+    (cd bin/tray && swiftc -O -o continuum-tray ContinuumTray.swift -framework Cocoa 2>/dev/null) || {
+      echo "⚠️  Tray app build failed (non-critical). Requires Xcode command line tools."
     }
   fi
 
-  if [[ -d "$TRAY_SRC" ]]; then
-    # Install to /Applications
-    if [[ -d "$TRAY_APP" ]]; then
-      rm -rf "$TRAY_APP"
-    fi
-    cp -R "$TRAY_SRC" "$TRAY_APP"
-    echo "✅ Tray app installed → $TRAY_APP"
-
-    # Add to Login Items (auto-start on boot)
-    osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/continuum.app", hidden:true}' 2>/dev/null || true
-    echo "✅ Tray app set to launch on login"
-
-    # Start it now
-    open "$TRAY_APP"
-    echo "✅ Tray app running"
+  if [[ -f "$TRAY_BIN" ]]; then
+    cp "$TRAY_BIN" "$TRAY_INSTALL"
+    chmod +x "$TRAY_INSTALL"
+    echo "✅ Tray app installed → $TRAY_INSTALL"
+    echo "   Run: continuum-tray &"
   fi
 fi
 
 # ── Pull pre-built images ────────────────────────
+# Our images are public on GHCR — no auth needed.
+# Logout to prevent Docker from flooding Keychain with credential prompts on macOS.
+docker logout ghcr.io 2>/dev/null || true
+
 echo ""
-echo "📦 Pulling pre-built images from GitHub Container Registry..."
-echo "   (This replaces a 30+ minute build with a 2 minute download)"
-echo ""
-docker compose pull --ignore-pull-failures 2>&1 | grep -E "Pulled|exists|error" || true
+echo "📦 Pulling pre-built images..."
+if docker compose pull 2>&1 | tee /tmp/continuum-pull.log | grep -q "Pulled"; then
+  echo "✅ Images pulled from registry"
+else
+  # Pull failed (arch mismatch, network, etc.) — build locally
+  echo "⚠️  Pre-built images not available for this platform. Building locally..."
+  echo "   (This takes 15-20 minutes the first time. Subsequent starts are instant.)"
+  echo ""
+  docker compose build --parallel 2>&1 | tail -5
+  echo "✅ Images built locally"
+fi
 
 # ── Detect Tailscale + auto-enable Grid ──────────
 # If Tailscale is connected and TS_AUTHKEY exists, enable grid profile automatically.
