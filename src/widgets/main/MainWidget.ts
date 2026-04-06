@@ -315,20 +315,23 @@ export class MainWidget extends ReactiveWidget {
     });
 
     // === GET OR CREATE widget ===
-    let widget = this.widgetCache.get(widgetTag);
+    // Cache key includes entityId for entity-backed widgets (e.g., chat-widget per room)
+    // so each room gets its own widget instance with its own state.
+    const cacheKey = entityId ? `${widgetTag}:${entityId}` : widgetTag;
+    let widget = this.widgetCache.get(cacheKey);
 
     if (!widget) {
-      const existingInDom = contentView.querySelector(widgetTag) as HTMLElement;
+      const existingInDom = !entityId ? contentView.querySelector(widgetTag) as HTMLElement : null;
       if (existingInDom) {
         widget = existingInDom;
-        this.widgetCache.set(widgetTag, widget);
+        this.widgetCache.set(cacheKey, widget);
         this.log(`Cached existing ${widgetTag} from template`);
       } else {
         widget = document.createElement(widgetTag);
         widget.style.display = 'none';
         contentView.appendChild(widget);
-        this.widgetCache.set(widgetTag, widget);
-        this.log(`Created and cached ${widgetTag}`);
+        this.widgetCache.set(cacheKey, widget);
+        this.log(`Created ${widgetTag} for ${entityId || 'singleton'}`);
       }
     }
 
