@@ -59,8 +59,9 @@ fi
 # ── Install continuum CLI ─────────────────────────
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "$INSTALL_DIR"
-cp src/scripts/continuum.sh "$INSTALL_DIR/continuum"
+cp bin/continuum "$INSTALL_DIR/continuum"
 chmod +x "$INSTALL_DIR/continuum"
+chmod +x bin/continuum
 if echo "$PATH" | grep -q "$INSTALL_DIR"; then
   echo "✅ 'continuum' command installed"
 else
@@ -75,25 +76,57 @@ echo "   (This replaces a 30+ minute build with a 2 minute download)"
 echo ""
 docker compose pull --ignore-pull-failures 2>&1 | grep -E "Pulled|exists|error" || true
 
-# ── Detect Tailscale (no questions, no prompts) ──
-# If Tailscale is installed and connected, the Grid auto-discovers peers.
-# The Rust GridModule handles everything: discovery, connection, routing.
-# No Docker sidecar needed — host Tailscale IPs are reachable directly.
-# For dedicated server HTTPS (Docker sidecar): continuum grid enable
+# ── Detect Tailscale + auto-enable Grid ──────────
+# If Tailscale is connected and TS_AUTHKEY exists, enable grid profile automatically.
+# No manual .env editing, no --profile flags, no questions.
 PROFILE=""
-if [ -f .env ] && grep -q "COMPOSE_PROFILES=grid" .env; then
-  PROFILE="--profile grid"
+
+# Load config.env for TS_AUTHKEY
+if [ -f "$HOME/.continuum/config.env" ]; then
+  source "$HOME/.continuum/config.env" 2>/dev/null || true
 fi
+
 if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
   TS_IP=$(tailscale ip -4 2>/dev/null)
-  echo "✅ Tailscale connected ($TS_IP) — Grid will auto-discover peers"
-  # Write peer list so Docker containers can discover Tailscale nodes.
-  # Containers can't run `tailscale status` (no CLI), but they CAN reach
-  # Tailscale IPs via the host network. This file bridges the gap.
+  echo "✅ Tailscale connected ($TS_IP)"
+
+  # Cache Tailscale status for Docker containers (they can't run tailscale CLI)
   mkdir -p "$HOME/.continuum/grid"
   tailscale status --json 2>/dev/null > "$HOME/.continuum/grid/tailscale-status.json" || true
+
+  # Auto-enable grid if we have an auth key
+  if [ -n "${TS_AUTHKEY:-}" ]; then
+    TS_HOSTNAME="${TS_HOSTNAME:-$(hostname -s)-grid}"
+
+    # Write .env for docker compose (only grid-specific settings)
+    if ! grep -q "COMPOSE_PROFILES=grid" .env 2>/dev/null; then
+      cat > .env << ENVEOF
+TS_HOSTNAME=$TS_HOSTNAME
+TS_AUTHKEY=$TS_AUTHKEY
+COMPOSE_PROFILES=grid
+ENVEOF
+      echo "✅ Grid enabled (hostname: $TS_HOSTNAME)"
+    else
+      echo "✅ Grid already configured"
+    fi
+    PROFILE="--profile grid"
+  else
+    echo "ℹ️  Tailscale connected but no TS_AUTHKEY in ~/.continuum/config.env"
+    echo "   Grid HTTPS disabled. To enable:"
+    echo "   1. Generate auth key: https://login.tailscale.com/admin/settings/keys"
+    echo "      (Set: Reusable ON, 90 days, NOT ephemeral)"
+    echo "   2. Add to ~/.continuum/config.env: TS_AUTHKEY=tskey-auth-..."
+    echo "   3. Re-run: ./setup.sh"
+    echo ""
+    echo "   Grid discovery still works via host Tailscale (http://$TS_IP:9003)"
+  fi
 else
   echo "ℹ️  No Tailscale — local only. Install https://tailscale.com for multi-machine Grid."
+fi
+
+# Respect existing .env profile
+if [ -f .env ] && grep -q "COMPOSE_PROFILES=grid" .env 2>/dev/null; then
+  PROFILE=""  # docker compose reads from .env automatically
 fi
 
 # ── Start ─────────────────────────────────────────
@@ -124,21 +157,33 @@ echo ""
 echo "  ✅ Continuum is running!"
 echo ""
 
-# Show remote access info if Tailscale is available
-if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+# Show access URLs
+LOCAL_URL="http://localhost:9003"
+echo "  🏠 Local: $LOCAL_URL"
+
+if [ -n "${TS_HOSTNAME:-}" ]; then
+  # Get tailnet suffix for HTTPS URL
+  TAILNET=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('MagicDNSSuffix',''))" 2>/dev/null || echo "")
+  if [ -n "$TAILNET" ]; then
+    REMOTE_URL="https://$TS_HOSTNAME.$TAILNET"
+    echo "  🌐 Grid:  $REMOTE_URL (HTTPS, accessible from any device)"
+  fi
+elif command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
   TS_IP=$(tailscale ip -4 2>/dev/null)
-  if [[ -n "$TS_IP" ]]; then
-    echo "  📱 Remote (any device on your tailnet): http://$TS_IP:9003"
+  if [ -n "$TS_IP" ]; then
+    echo "  📱 Remote: http://$TS_IP:9003 (any device on your tailnet)"
   fi
 fi
 
-LOCAL_URL="http://localhost:9003"
-echo "  🏠 Local: $LOCAL_URL"
+echo ""
+echo "  Run 'continuum status' anytime to check health."
+echo "  Run 'continuum doctor' to diagnose issues."
 echo ""
 
-# Open browser
-open "$LOCAL_URL" 2>/dev/null || \
-  xdg-open "$LOCAL_URL" 2>/dev/null || \
-  cmd.exe /c start "$LOCAL_URL" 2>/dev/null || \
-  echo "  Open: $LOCAL_URL"
+# Open browser (prefer HTTPS grid URL if available)
+OPEN_URL="${REMOTE_URL:-$LOCAL_URL}"
+open "$OPEN_URL" 2>/dev/null || \
+  xdg-open "$OPEN_URL" 2>/dev/null || \
+  cmd.exe /c start "$OPEN_URL" 2>/dev/null || \
+  echo "  Open: $OPEN_URL"
 echo ""

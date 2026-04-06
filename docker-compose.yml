@@ -69,6 +69,7 @@ services:
       - ~/.continuum:/root/.continuum
       - voice-models:/app/models:ro
       - ipc-sockets:/root/.continuum/sockets
+      - ~/.continuum/grid:/root/.continuum/grid:ro
     # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
     # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
     # Default: runc (CPU only — uses static avatar fallbacks).
