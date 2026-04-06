@@ -1,5 +1,5 @@
 /**
- * Continuum Tray — system tray app for grid management
+ * continuum Tray — system tray app for grid management
  *
  * Shows a circle icon with colored center dot:
  *   Green  = all healthy
@@ -162,7 +162,7 @@ async function updateStatus(color, tooltip, nodeCount) {
   } catch (e) {
     console.error('Icon render failed:', e);
   }
-  tray.setToolTip(`Continuum — ${tooltip}`);
+  tray.setToolTip(`continuum — ${tooltip}`);
   tray.setTitle('');
 
   rebuildMenu(color, tooltip);
@@ -213,7 +213,7 @@ function getTailnet() {
 // ── Default Menu Sections ────────────────────────────────────
 
 registerMenuSection('header', 0, (ctx) => [
-  { label: 'Continuum', enabled: false },
+  { label: 'continuum', enabled: false },
   { label: `${ctx.statusIcon}  ${ctx.statusText}`, enabled: false },
 ]);
 
@@ -263,8 +263,8 @@ registerMenuSection('tools', 30, () => [
 ]);
 
 registerMenuSection('footer', 100, () => [
-  { label: 'Continuum v1.0', enabled: false },
-  { label: 'Quit Continuum', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
+  { label: 'continuum v1.0', enabled: false },
+  { label: 'Quit continuum', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
 ]);
 
 // ── Menu Builder ─────────────────────────────────────────────
@@ -302,7 +302,7 @@ function rebuildMenu(status, statusText) {
 app.whenReady().then(() => {
   // Create tray with empty icon (async render will fill it)
   tray = new Tray(createFallbackIcon());
-  tray.setToolTip('Continuum — checking...');
+  tray.setToolTip('continuum — checking...');
   // Render initial gray icon
   createTrayIconAsync('#888888', 0).then(icon => tray.setImage(icon)).catch(() => {});
 
