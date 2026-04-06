@@ -24,15 +24,21 @@ const CONTINUUM_BIN = path.resolve(__dirname, '..', 'continuum');
 const POLL_INTERVAL = 30_000; // 30s health poll
 
 // ── Icon Generation ──────────────────────────────────────────
-// Circle ring with number inside. Color = status. Number = node count.
-// Uses SVG data URL → nativeImage (Electron supports this natively).
+// Circle ring with colored number/dot inside.
+// Uses offscreen BrowserWindow to render SVG → PNG snapshot.
+// Cached per color+count so we don't re-render every poll.
 
-function createTrayIcon(statusColor, nodeCount) {
-  const s = 44; // 22pt @2x retina
+const { BrowserWindow } = require('electron');
+const iconCache = new Map();
+
+async function createTrayIconAsync(statusColor, nodeCount) {
+  const key = `${statusColor}-${nodeCount}`;
+  if (iconCache.has(key)) return iconCache.get(key);
+
+  const s = 44;
   const ringColor = nativeTheme.shouldUseDarkColors ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)';
   const num = (typeof nodeCount === 'number' && nodeCount > 0) ? String(nodeCount) : '';
-  // Thin font weight for the number, slightly smaller if 2+ digits
-  const fontSize = num.length > 1 ? 18 : 20;
+  const fontSize = num.length > 1 ? 18 : 22;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
     <circle cx="${s/2}" cy="${s/2}" r="${s/2 - 3}" fill="none" stroke="${ringColor}" stroke-width="2.5"/>
@@ -44,9 +50,26 @@ function createTrayIcon(statusColor, nodeCount) {
     }
   </svg>`;
 
-  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-  const img = nativeImage.createFromDataURL(dataUrl);
-  return img.resize({ width: 22, height: 22 });
+  const html = `<html><body style="margin:0;background:transparent;">${svg}</body></html>`;
+
+  const win = new BrowserWindow({
+    width: s, height: s, show: false, frame: false, transparent: true,
+    webPreferences: { offscreen: true }
+  });
+
+  await win.loadURL(`data:text/html;base64,${Buffer.from(html).toString('base64')}`);
+  const img = await win.webContents.capturePage({ x: 0, y: 0, width: s, height: s });
+  win.destroy();
+
+  const resized = img.resize({ width: 22, height: 22 });
+  iconCache.set(key, resized);
+  return resized;
+}
+
+// Synchronous fallback for initial icon (before async render completes)
+function createFallbackIcon() {
+  // 22x22 empty icon — just so the tray doesn't crash on creation
+  return nativeImage.createEmpty();
 }
 
 // ── CLI Helpers ──────────────────────────────────────────────
@@ -122,7 +145,7 @@ function checkHealth() {
 
 let lastNodeCount = 0;
 
-function updateStatus(color, tooltip, nodeCount) {
+async function updateStatus(color, tooltip, nodeCount) {
   if (!tray) return;
   lastNodeCount = nodeCount || 0;
 
@@ -133,7 +156,12 @@ function updateStatus(color, tooltip, nodeCount) {
     gray: '#888888',
   };
 
-  tray.setImage(createTrayIcon(colors[color] || colors.gray, lastNodeCount));
+  try {
+    const icon = await createTrayIconAsync(colors[color] || colors.gray, lastNodeCount);
+    tray.setImage(icon);
+  } catch (e) {
+    console.error('Icon render failed:', e);
+  }
   tray.setToolTip(`Continuum — ${tooltip}`);
   tray.setTitle('');
 
@@ -211,9 +239,11 @@ function rebuildMenu(status, statusText) {
 // ── App Lifecycle ────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  // Create tray with gray icon (checking...)
-  tray = new Tray(createTrayIcon('#888888'));
+  // Create tray with empty icon (async render will fill it)
+  tray = new Tray(createFallbackIcon());
   tray.setToolTip('Continuum — checking...');
+  // Render initial gray icon
+  createTrayIconAsync('#888888', 0).then(icon => tray.setImage(icon)).catch(() => {});
 
   // Initial health check
   checkHealth();
