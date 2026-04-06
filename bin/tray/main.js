@@ -251,9 +251,9 @@ app.whenReady().then(() => {
   // Poll every 30s
   healthInterval = setInterval(checkHealth, POLL_INTERVAL);
 
-  // Click tray icon → open UI
+  // Click tray icon → show context menu (same as right-click)
   tray.on('click', () => {
-    runCommand('open', () => {});
+    tray.popUpContextMenu();
   });
 });
 
