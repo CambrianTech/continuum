@@ -4,15 +4,20 @@
   "displayName": "Diagnostics",
   "description": "System health, performance metrics, and persona logs overview",
   "version": 1,
-
   "layout": {
-    "main": ["diagnostics-widget"],
+    "main": [
+      "diagnostics-widget"
+    ],
     "right": {
-      "widgets": ["chat-widget"],
-      "config": { "room": "help", "compact": true }
+      "widgets": [
+        "chat-widget"
+      ],
+      "config": {
+        "room": "help",
+        "compact": true
+      }
     }
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -30,7 +35,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -43,7 +47,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -58,7 +61,12 @@
       "Would historical comparison be useful?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["diagnostics", "system", "logs", "monitoring"]
+  "tags": [
+    "diagnostics",
+    "system",
+    "logs",
+    "monitoring"
+  ],
+  "view": "diagnostics"
 }

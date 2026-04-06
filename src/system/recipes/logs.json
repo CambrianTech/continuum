@@ -4,17 +4,33 @@
   "displayName": "Logs",
   "description": "View and analyze system logs with AI-assisted debugging",
   "version": 2,
-
   "layout": {
     "widgets": [
-      { "widget": "logs-nav-widget", "position": "left", "order": 0, "persistent": true },
-      { "widget": "log-viewer-widget", "position": "center", "order": 0 },
-      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "help", "compact": true } }
+      {
+        "widget": "logs-nav-widget",
+        "position": "left",
+        "order": 0,
+        "persistent": true
+      },
+      {
+        "widget": "log-viewer-widget",
+        "position": "center",
+        "order": 0
+      },
+      {
+        "widget": "chat-widget",
+        "position": "right",
+        "order": 0,
+        "config": {
+          "room": "help",
+          "compact": true
+        }
+      }
     ]
   },
-
-  "locked": ["layout.main"],
-
+  "locked": [
+    "layout.main"
+  ],
   "pipeline": [
     {
       "command": "rag/build",
@@ -32,7 +48,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 15,
@@ -40,7 +55,6 @@
       "includeTimestamps": true
     }
   },
-
   "strategy": {
     "conversationPattern": "teaching",
     "responseRules": [
@@ -55,7 +69,11 @@
       "Are there recurring issues to highlight?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["logs", "debugging", "analysis"]
+  "tags": [
+    "logs",
+    "debugging",
+    "analysis"
+  ],
+  "view": "logs"
 }

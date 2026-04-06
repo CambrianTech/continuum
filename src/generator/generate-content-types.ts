@@ -104,11 +104,14 @@ function main() {
         const entityType = r.entityType || null;
         const requiresEntity = entityType !== null || !!r.inputs;
 
+        // view = URL prefix (verb/noun). From recipe's view field.
+        const view = (r as any).view || r.uniqueId;
+
         return `    '${r.uniqueId}': {
         widget: '${widget}',
         displayName: '${displayName}',
         icon: '${icon}',
-        pathPrefix: '/${r.uniqueId}',
+        view: '${view}',
         requiresEntity: ${requiresEntity},
         entityType: ${entityType ? `'${entityType}'` : 'null'},
         hasRightPanel: ${hasRightPanel},
@@ -146,7 +149,8 @@ export interface ContentTypeConfig {
     widget: string;
     displayName: string;
     icon: string;
-    pathPrefix: string;
+    /** URL prefix — verb/noun pattern. /chat, /live, /profile, /factory */
+    view: string;
     requiresEntity: boolean;
     entityType: EntityType;
     hasRightPanel: boolean;
