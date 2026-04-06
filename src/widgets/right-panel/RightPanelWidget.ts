@@ -324,20 +324,17 @@ export class RightPanelWidget extends ReactiveWidget {
 
     if (!widget) {
       widget = document.createElement(section.widgetTag);
-
-      // Apply props as attributes
-      if (section.props) {
-        for (const [key, value] of Object.entries(section.props)) {
-          widget.setAttribute(key, value);
-        }
-      }
-
-      // Mark as sidebar instance
       widget.setAttribute('sidebar', '');
       widget.classList.add('sidebar-widget');
-
       this._widgetCache.set(cacheKey, widget);
       this.log(`Created ${section.widgetTag} for section '${section.id}'`);
+    }
+
+    // Always update props — the room may change when switching content types
+    if (section.props) {
+      for (const [key, value] of Object.entries(section.props)) {
+        widget.setAttribute(key, value);
+      }
     }
 
     return widget;
