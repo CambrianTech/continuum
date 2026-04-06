@@ -2,19 +2,35 @@
   "uniqueId": "training-dashboard",
   "name": "Training Dashboard",
   "displayName": "Training",
-  "description": "Real-time training visualization — loss curves, learning rate, GPU usage, historical runs. TensorBoard replacement.",
+  "description": "Real-time training visualization \u2014 loss curves, learning rate, GPU usage, historical runs. TensorBoard replacement.",
   "version": 1,
-
   "layout": {
-    "main": ["training-dashboard-widget"],
+    "main": [
+      "training-dashboard-widget"
+    ],
     "right": {
       "sections": [
-        { "id": "training-status", "title": "Training Status", "icon": "\ud83d\udcca", "widgetTag": "training-status-section", "flexWeight": 1 },
-        { "id": "training-chat", "title": "Assistant", "icon": "\ud83d\udcac", "widgetTag": "chat-widget", "props": { "room": "help", "compact": "" }, "flexWeight": 2 }
+        {
+          "id": "training-status",
+          "title": "Training Status",
+          "icon": "\ud83d\udcca",
+          "widgetTag": "training-status-section",
+          "flexWeight": 1
+        },
+        {
+          "id": "training-chat",
+          "title": "Assistant",
+          "icon": "\ud83d\udcac",
+          "widgetTag": "chat-widget",
+          "props": {
+            "room": "help",
+            "compact": ""
+          },
+          "flexWeight": 2
+        }
       ]
     }
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -32,7 +48,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -45,7 +60,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -60,7 +74,13 @@
       "Would comparison with historical runs be useful?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["training", "genome", "lora", "monitoring", "dashboard"]
+  "tags": [
+    "training",
+    "genome",
+    "lora",
+    "monitoring",
+    "dashboard"
+  ],
+  "view": "training"
 }
