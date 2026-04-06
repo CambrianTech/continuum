@@ -4,12 +4,12 @@
   "displayName": "Academy Training",
   "description": "Progressive learning system where Teacher AI creates exams, Student AI responds, and Teacher scores/provides feedback. Student's LoRA adapter trains on the conversation subject to improve over time. Difficulty progressively increases as student improves. Training is orchestrated by sentinel pipelines (genome/academy-session), not this recipe's pipeline section.",
   "version": 2,
-
   "layout": {
-    "main": ["chat-widget"],
+    "main": [
+      "chat-widget"
+    ],
     "right": null
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -40,7 +40,6 @@
       "comment": "Send response to chat"
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 50,
@@ -53,7 +52,6 @@
       "includeHistory": true
     }
   },
-
   "strategy": {
     "conversationPattern": "teaching",
     "responseRules": [
@@ -69,7 +67,7 @@
       "SYSTEM: Student's genome evolves based on exam performance and remediation"
     ],
     "feedbackLoopRules": [
-      "Teacher generates exam → Student responds → Teacher grades → Student trains on weak areas → repeat",
+      "Teacher generates exam \u2192 Student responds \u2192 Teacher grades \u2192 Student trains on weak areas \u2192 repeat",
       "Quality gate: adapters only registered if phenotype validation shows improvement",
       "Plasticity compaction runs post-training to produce target-device optimized models"
     ],
@@ -81,7 +79,15 @@
       "Is student showing improvement trajectory?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["academy", "teaching", "lora-training", "progressive-difficulty", "adaptive-learning", "genome"]
+  "tags": [
+    "academy",
+    "teaching",
+    "lora-training",
+    "progressive-difficulty",
+    "adaptive-learning",
+    "genome"
+  ],
+  "view": "chat",
+  "entityType": "room"
 }

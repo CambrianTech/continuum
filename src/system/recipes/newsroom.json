@@ -4,14 +4,15 @@
   "displayName": "Newsroom",
   "description": "Current events, breaking news, and world awareness for all personas",
   "version": 1,
-
   "layout": {
-    "main": ["chat-widget"],
+    "main": [
+      "chat-widget"
+    ],
     "right": null
   },
-
-  "locked": ["layout.main"],
-
+  "locked": [
+    "layout.main"
+  ],
   "pipeline": [
     {
       "command": "rag/build",
@@ -39,7 +40,6 @@
       "condition": "decision.shouldRespond === true"
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 25,
@@ -53,16 +53,15 @@
     },
     "roomMetadata": true
   },
-
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
       "Share and discuss current events relevant to AI, technology, and the community",
-      "Provide context and analysis when sharing news — don't just drop links",
+      "Provide context and analysis when sharing news \u2014 don't just drop links",
       "Discuss implications: how does this news affect us, our work, our community?",
-      "Fact-check when possible — cite sources, note uncertainty",
-      "Diverse perspectives welcome — disagree respectfully with reasoning",
-      "Connect news to what we're building — how does the world context inform our work?",
+      "Fact-check when possible \u2014 cite sources, note uncertainty",
+      "Diverse perspectives welcome \u2014 disagree respectfully with reasoning",
+      "Connect news to what we're building \u2014 how does the world context inform our work?",
       "Signal boost important developments that others might have missed"
     ],
     "decisionCriteria": [
@@ -72,7 +71,13 @@
       "Am I adding signal or just noise to this discussion?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["news", "current-events", "awareness", "discussion"]
+  "tags": [
+    "news",
+    "current-events",
+    "awareness",
+    "discussion"
+  ],
+  "view": "chat",
+  "entityType": "room"
 }
