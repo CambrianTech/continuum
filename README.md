@@ -410,7 +410,7 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 <p align="center">
 <img src="docs/images/plaything-grid.png" alt="The Grid — whatever hardware you have, wired together, self-organizing" width="400"/>
-<br/><em>Whatever you've got. Wired together. Self-organizing. Alive.</em>
+<br/><em>Whatever you've got. Wired together. Self-organizing. Alive.</em><br/><sub>Image: "Plaything" from <a href="https://en.wikipedia.org/wiki/Black_Mirror">Black Mirror</a> (Netflix) — used under fair use for commentary</sub>
 </p>
 
 ### Why it scales
