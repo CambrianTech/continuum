@@ -20,13 +20,22 @@ import { NodeType, NodeCapability } from '../udp-multicast-transport/shared/UDPM
  * WebSocket connections to the node-server internally.
  * No port configuration needed.
  */
-function deriveWebSocketUrl(_port: number): string {
+function deriveWebSocketUrl(wsPort: number): string {
   if (typeof window !== 'undefined' && window.location) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host; // includes port (e.g. "localhost:9003")
-    return `${protocol}//${host}`;
+    const hostname = window.location.hostname; // just hostname, no port
+    const pagePort = window.location.port || (protocol === 'wss:' ? '443' : '80');
+
+    // If page is served on default HTTPS (443) or a non-WS port, use the configured WS port.
+    // This handles Tailscale/reverse proxy where HTTPS=443 → widget-server, WSS=9001 → node-server.
+    // If page is already served on the WS port (dev mode), use it as-is.
+    if (pagePort === String(wsPort)) {
+      return `${protocol}//${hostname}:${wsPort}`;
+    }
+    // HTTPS on 443: WebSocket is on a separate port (9001)
+    return `${protocol}//${hostname}:${wsPort}`;
   }
-  return `ws://localhost:${_port}`;
+  return `ws://localhost:${wsPort}`;
 }
 
 export class TransportFactoryBrowser extends TransportFactoryBase {
