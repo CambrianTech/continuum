@@ -2,19 +2,35 @@
   "uniqueId": "inference-sample",
   "name": "Inference Samples",
   "displayName": "Inference",
-  "description": "Quality monitoring — compare base model vs adapter-enhanced output side-by-side during and after training.",
+  "description": "Quality monitoring \u2014 compare base model vs adapter-enhanced output side-by-side during and after training.",
   "version": 1,
-
   "layout": {
-    "main": ["inference-sample-widget"],
+    "main": [
+      "inference-sample-widget"
+    ],
     "right": {
       "sections": [
-        { "id": "training-status", "title": "Training Status", "icon": "\ud83d\udcca", "widgetTag": "training-status-section", "flexWeight": 1 },
-        { "id": "inference-chat", "title": "Assistant", "icon": "\ud83d\udcac", "widgetTag": "chat-widget", "props": { "room": "help", "compact": "" }, "flexWeight": 2 }
+        {
+          "id": "training-status",
+          "title": "Training Status",
+          "icon": "\ud83d\udcca",
+          "widgetTag": "training-status-section",
+          "flexWeight": 1
+        },
+        {
+          "id": "inference-chat",
+          "title": "Assistant",
+          "icon": "\ud83d\udcac",
+          "widgetTag": "chat-widget",
+          "props": {
+            "room": "help",
+            "compact": ""
+          },
+          "flexWeight": 2
+        }
       ]
     }
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -32,7 +48,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -45,7 +60,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -60,7 +74,13 @@
       "Would different prompt templates reveal more about the adapter?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["inference", "sampling", "quality", "adapter", "comparison"]
+  "tags": [
+    "inference",
+    "sampling",
+    "quality",
+    "adapter",
+    "comparison"
+  ],
+  "view": "inference"
 }

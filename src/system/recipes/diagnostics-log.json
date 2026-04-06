@@ -4,22 +4,26 @@
   "displayName": "Log",
   "description": "View and analyze individual persona or system logs",
   "version": 1,
-
   "inputs": {
     "logPath": {
       "description": "Path to the log file to view",
       "type": "string"
     }
   },
-
   "layout": {
-    "main": ["log-viewer-widget"],
+    "main": [
+      "log-viewer-widget"
+    ],
     "right": {
-      "widgets": ["chat-widget"],
-      "config": { "room": "help", "compact": true }
+      "widgets": [
+        "chat-widget"
+      ],
+      "config": {
+        "room": "help",
+        "compact": true
+      }
     }
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -37,7 +41,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -50,7 +53,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -65,7 +67,12 @@
       "Would filtering or searching help narrow down issues?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["logs", "diagnostics", "debugging", "monitoring"]
+  "tags": [
+    "logs",
+    "diagnostics",
+    "debugging",
+    "monitoring"
+  ],
+  "view": "logs"
 }

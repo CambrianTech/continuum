@@ -104,11 +104,17 @@ function main() {
         const entityType = r.entityType || null;
         const requiresEntity = entityType !== null || !!r.inputs;
 
+        // URL rule: view field determines prefix. verb/noun pattern.
+        //   /chat/general, /live/general, /profile/helper, /factory
+        // The view field is REQUIRED in every recipe JSON.
+        const view = (r as any).view || r.uniqueId;
+        const pathPrefix = `/${view}`;
+
         return `    '${r.uniqueId}': {
         widget: '${widget}',
         displayName: '${displayName}',
         icon: '${icon}',
-        pathPrefix: '/${r.uniqueId}',
+        pathPrefix: '${pathPrefix}',
         requiresEntity: ${requiresEntity},
         entityType: ${entityType ? `'${entityType}'` : 'null'},
         hasRightPanel: ${hasRightPanel},

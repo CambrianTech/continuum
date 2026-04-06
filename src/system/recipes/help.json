@@ -4,12 +4,12 @@
   "displayName": "Help",
   "description": "System help, documentation, and onboarding",
   "version": 1,
-
   "layout": {
-    "main": ["help-widget"],
+    "main": [
+      "help-widget"
+    ],
     "right": null
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -27,7 +27,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -40,7 +39,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "teaching",
     "responseRules": [
@@ -55,7 +53,11 @@
       "Are there related features they should know about?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["help", "documentation", "onboarding"]
+  "tags": [
+    "help",
+    "documentation",
+    "onboarding"
+  ],
+  "view": "help"
 }
