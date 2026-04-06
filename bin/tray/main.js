@@ -93,7 +93,7 @@ function checkHealth() {
   // Count grid nodes first (works even without local Docker)
   let onlineNodes = 0;
   try {
-    const healthOutput = runCommandSync('health');
+    const healthOutput = stripAnsi(runCommandSync('health'));
     onlineNodes = (healthOutput.match(/●/g) || []).length;
   } catch { /* no grid */ }
 
@@ -264,11 +264,17 @@ registerMenuSection('footer', 100, () => [
 
 // ── Menu Builder ─────────────────────────────────────────────
 
+// Strip ANSI escape codes from CLI output
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 function rebuildMenu(status, statusText) {
   // Gather context for section builders
   let gridNodes = [];
   try {
-    const output = runCommandSync('health');
+    const raw = runCommandSync('health');
+    const output = stripAnsi(raw);
     const lines = output.split('\n').filter(l => l.includes('●'));
     gridNodes = lines.map(line => {
       const match = line.match(/●\s+(\S+)\s+(\S+)\s+(.*)/);
