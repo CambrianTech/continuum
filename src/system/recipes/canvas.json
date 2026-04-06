@@ -4,27 +4,16 @@
   "displayName": "Canvas",
   "description": "Shared drawing canvas with real-time collaboration and AI assistance",
   "version": 1,
+
   "layout": {
     "widgets": [
-      {
-        "widget": "drawing-canvas-widget",
-        "position": "center",
-        "order": 0
-      },
-      {
-        "widget": "chat-widget",
-        "position": "right",
-        "order": 0,
-        "config": {
-          "room": "canvas",
-          "compact": true
-        }
-      }
+      { "widget": "drawing-canvas-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "canvas", "compact": true } }
     ]
   },
-  "locked": [
-    "layout.main"
-  ],
+
+  "locked": ["layout.main"],
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -42,6 +31,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 15,
@@ -54,6 +44,7 @@
       "includeHistory": false
     }
   },
+
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
@@ -70,29 +61,20 @@
       "What artistic style matches the current work?"
     ]
   },
+
   "tools": [
     {
       "name": "canvas_draw",
       "description": "Draw strokes on the collaborative canvas",
-      "enabledFor": [
-        "ai"
-      ]
+      "enabledFor": ["ai"]
     },
     {
       "name": "canvas_describe",
       "description": "Analyze and describe what's on the canvas",
-      "enabledFor": [
-        "ai"
-      ]
+      "enabledFor": ["ai"]
     }
   ],
+
   "isPublic": true,
-  "tags": [
-    "canvas",
-    "drawing",
-    "art",
-    "collaboration",
-    "ai-assisted"
-  ],
-  "view": "canvas"
+  "tags": ["canvas", "drawing", "art", "collaboration", "ai-assisted"]
 }

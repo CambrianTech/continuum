@@ -5,26 +5,22 @@
   "description": "View and interact with AI persona cognitive state, memory, and activity",
   "version": 1,
   "entityType": "user",
+
   "inputs": {
     "personaId": {
       "description": "The persona to view (uniqueId or UUID)",
       "entity": "users"
     }
   },
+
   "layout": {
-    "main": [
-      "persona-brain-widget"
-    ],
+    "main": ["persona-brain-widget"],
     "right": {
-      "widgets": [
-        "chat-widget"
-      ],
-      "config": {
-        "room": "help",
-        "compact": true
-      }
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
     }
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -42,6 +38,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 20,
@@ -54,6 +51,7 @@
       "includeHistory": true
     }
   },
+
   "strategy": {
     "conversationPattern": "exploring",
     "responseRules": [
@@ -68,12 +66,7 @@
       "Would historical context be helpful?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "persona",
-    "ai",
-    "cognitive",
-    "memory"
-  ],
-  "view": "persona"
+  "tags": ["persona", "ai", "cognitive", "memory"]
 }

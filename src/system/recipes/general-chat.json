@@ -4,15 +4,14 @@
   "displayName": "General Chat",
   "description": "Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI loops",
   "version": 2,
+
   "layout": {
-    "main": [
-      "chat-widget"
-    ],
+    "main": ["chat-widget"],
     "right": null
   },
-  "locked": [
-    "layout.main"
-  ],
+
+  "locked": ["layout.main"],
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -40,6 +39,7 @@
       "condition": "decision.shouldRespond === true"
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 20,
@@ -53,17 +53,18 @@
     },
     "roomMetadata": true
   },
+
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
-      "ACT, don't describe. When asked about code, call code/read or code/search \u2014 do not guess from memory.",
+      "ACT, don't describe. When asked about code, call code/read or code/search — do not guess from memory.",
       "When asked to build or fix something, call sentinel/coding-agent with a detailed prompt.",
       "When asked about docs or architecture, call utilities/docs/search to find the answer.",
-      "If human asks question \u2192 ALL AIs with relevant knowledge can respond",
-      "Multiple responses are GOOD \u2192 diverse perspectives enrich conversation",
+      "If human asks question → ALL AIs with relevant knowledge can respond",
+      "Multiple responses are GOOD → diverse perspectives enrich conversation",
       "Only stay silent if you'd repeat exactly what was said",
       "Direct questions deserve responses from everyone who can help",
-      "When uncertain \u2192 use your tools to find out rather than guessing"
+      "When uncertain → use your tools to find out rather than guessing"
     ],
     "decisionCriteria": [
       "Do I have relevant knowledge or insights to share?",
@@ -73,56 +74,16 @@
       "Do I have enough context to answer accurately, or should I request more information?"
     ]
   },
+
   "tools": [
-    {
-      "name": "code/read",
-      "description": "Read a file from the codebase",
-      "enabledFor": [
-        "ai"
-      ]
-    },
-    {
-      "name": "code/search",
-      "description": "Search for patterns across files",
-      "enabledFor": [
-        "ai"
-      ]
-    },
-    {
-      "name": "code/tree",
-      "description": "View directory structure",
-      "enabledFor": [
-        "ai"
-      ]
-    },
-    {
-      "name": "sentinel/coding-agent",
-      "description": "Launch Claude Code for complex coding tasks autonomously",
-      "enabledFor": [
-        "ai"
-      ]
-    },
-    {
-      "name": "memory/query",
-      "description": "Search your memory for relevant knowledge",
-      "enabledFor": [
-        "ai"
-      ]
-    },
-    {
-      "name": "utilities/docs/search",
-      "description": "Search documentation",
-      "enabledFor": [
-        "ai"
-      ]
-    }
+    { "name": "code/read", "description": "Read a file from the codebase", "enabledFor": ["ai"] },
+    { "name": "code/search", "description": "Search for patterns across files", "enabledFor": ["ai"] },
+    { "name": "code/tree", "description": "View directory structure", "enabledFor": ["ai"] },
+    { "name": "sentinel/coding-agent", "description": "Launch Claude Code for complex coding tasks autonomously", "enabledFor": ["ai"] },
+    { "name": "memory/query", "description": "Search your memory for relevant knowledge", "enabledFor": ["ai"] },
+    { "name": "utilities/docs/search", "description": "Search documentation", "enabledFor": ["ai"] }
   ],
+
   "isPublic": true,
-  "tags": [
-    "chat",
-    "human-focused",
-    "general"
-  ],
-  "entityType": "room",
-  "view": "chat"
+  "tags": ["chat", "human-focused", "general"]
 }

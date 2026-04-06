@@ -2,28 +2,25 @@
   "uniqueId": "profile",
   "name": "User Profile",
   "displayName": "Profile",
-  "description": "View and manage user profile \u2014 social page with pathway cards",
+  "description": "View and manage user profile — social page with pathway cards",
   "version": 2,
   "entityType": "user",
+
   "inputs": {
     "userId": {
       "description": "The user to view (uniqueId or UUID)",
       "entity": "users"
     }
   },
+
   "layout": {
-    "main": [
-      "user-profile-widget"
-    ],
+    "main": ["user-profile-widget"],
     "right": {
-      "widgets": [
-        "chat-widget"
-      ],
-      "config": {
-        "compact": true
-      }
+      "widgets": ["chat-widget"],
+      "config": { "compact": true }
     }
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -41,6 +38,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -53,6 +51,7 @@
       "includeHistory": false
     }
   },
+
   "strategy": {
     "conversationPattern": "administrative",
     "responseRules": [
@@ -67,12 +66,7 @@
       "Does the user need confirmation?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "profile",
-    "user",
-    "management",
-    "settings"
-  ],
-  "view": "profile"
+  "tags": ["profile", "user", "management", "settings"]
 }

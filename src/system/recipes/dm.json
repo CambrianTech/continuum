@@ -4,15 +4,14 @@
   "displayName": "DM",
   "description": "Private one-on-one conversation between two participants",
   "version": 1,
+
   "layout": {
-    "main": [
-      "chat-widget"
-    ],
+    "main": ["chat-widget"],
     "right": null
   },
-  "locked": [
-    "layout.main"
-  ],
+
+  "locked": ["layout.main"],
+
   "room": {
     "type": "direct",
     "maxParticipants": 2,
@@ -23,6 +22,7 @@
       "searchable": false
     }
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -50,6 +50,7 @@
       "condition": "decision.shouldRespond === true"
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 30,
@@ -63,6 +64,7 @@
     },
     "roomMetadata": false
   },
+
   "strategy": {
     "conversationPattern": "one-on-one",
     "responseRules": [
@@ -76,12 +78,7 @@
       "Has the human sent a message that needs response?"
     ]
   },
+
   "isPublic": false,
-  "tags": [
-    "dm",
-    "private",
-    "one-on-one"
-  ],
-  "entityType": "room",
-  "view": "dm"
+  "tags": ["dm", "private", "one-on-one"]
 }
