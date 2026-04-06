@@ -85,7 +85,7 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 ## Getting Started
 
-> **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back.
+> **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back *(coming soon)*.
 
 Install [Docker Desktop](https://docker.com/products/docker-desktop), then:
 
