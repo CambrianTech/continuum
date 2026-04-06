@@ -339,8 +339,11 @@ This document is the **single source of truth** for remaining work. Each phase i
 **The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
 
 | [#798](https://github.com/CambrianTech/continuum/issues/798) | **Route inference through grid to GPU nodes** | TODO | When BigMama online, route `ai/generate`, STT, TTS to 5090 instead of laptop. Grid router exists, needs wiring to AI provider. |
+| [#806](https://github.com/CambrianTech/continuum/issues/806) | **Tailscale ghost nodes on restart** | DONE (PR #809) | State volume persists identity. `TS_HOSTNAME` defaults to `{hostname}-grid`. No more orphaned devices. |
+| [#807](https://github.com/CambrianTech/continuum/issues/807) | **Auto grid profile when Tailscale configured** | TODO | `setup.sh` detects Tailscale → enables grid automatically. No manual `.env.grid` copy or `--profile grid`. |
+| [#808](https://github.com/CambrianTech/continuum/issues/808) | **Grid config provisioning** ⚠️ HIGH | TODO | `grid/provision` syncs config.env from primary node. No manual `scp`. One Tailscale key is the only manual step. |
 
-**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale.
+**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale. Config propagates automatically to new nodes via `grid/provision`.
 
 ---
 
@@ -361,7 +364,10 @@ This document is the **single source of truth** for remaining work. Each phase i
 | — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
 | — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
 | — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
-| [#796](https://github.com/CambrianTech/continuum/issues/796) | **Docker E2E with live mode + grid** | TODO | Full validation: chat, live calls, grid discovery, factory leaderboard, right panel widgets. Blocks community release. |
+| — | **WSS port routing** | DONE (PR #809) | Browser WebSocket now connects to configured WS_PORT (9001), not page port (443). Fixes Tailscale reverse proxy. |
+| — | **Port conflict Tailscale vs node-server** | DONE (PR #809) | Removed duplicate 9002:9001 host mapping from Tailscale. Tailscale serve proxies internally. |
+| — | **GHCR images rebuilt** | DONE | All 5 images rebuilt on BigMama and pushed to GHCR (2026-04-06). |
+| [#796](https://github.com/CambrianTech/continuum/issues/796) | **Docker E2E with live mode + grid** | PARTIAL | Chat works, AIs respond, HTTPS via Tailscale works, factory shows leaderboard. Remaining: live calls, grid discovery from browser. |
 
 **Prereqs** (one-time, per tailnet):
 1. Tailscale installed + HTTPS certificates enabled in DNS settings
