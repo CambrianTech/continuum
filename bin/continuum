@@ -380,7 +380,7 @@ cmd_ssh() {
     ip="$node"  # Assume it's an IP
   fi
   echo -e "${CYAN}🔗 SSH → $node ($ip)${RESET}"
-  exec ssh -o StrictHostKeyChecking=no "joel@$ip"
+  exec ssh -o StrictHostKeyChecking=no "${CONTINUUM_SSH_USER:-$(whoami)}@$ip"
 }
 
 cmd_wake() {
@@ -398,7 +398,7 @@ cmd_wake() {
 
   # Try SSH to restart Docker services
   echo -e "  Connecting to $ip..."
-  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "joel@$ip" \
+  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "${CONTINUUM_SSH_USER:-$(whoami)}@$ip" \
     "cd ~/continuum && docker compose up -d" 2>&1 && {
     echo -e "${GREEN}✅ $node services starting${RESET}"
   } || {
@@ -452,14 +452,14 @@ cmd_transfer() {
   [ -z "$ip" ] && ip="$target"
 
   echo -e "  Step 1: Config..."
-  ssh -o StrictHostKeyChecking=no "joel@$ip" "mkdir -p ~/.continuum" 2>/dev/null
+  ssh -o StrictHostKeyChecking=no "${CONTINUUM_SSH_USER:-$(whoami)}@$ip" "mkdir -p ~/.continuum" 2>/dev/null
   scp -o StrictHostKeyChecking=no "$CONTINUUM_HOME/config.env" "joel@$ip:~/.continuum/config.env" 2>/dev/null || {
     echo -e "${RED}❌ Failed to copy config${RESET}"; exit 1
   }
   echo -e "  ${GREEN}✓${RESET} Config transferred"
 
   echo -e "  Step 2: Repo..."
-  ssh -o StrictHostKeyChecking=no "joel@$ip" "
+  ssh -o StrictHostKeyChecking=no "${CONTINUUM_SSH_USER:-$(whoami)}@$ip" "
     if [ -d ~/continuum ]; then
       cd ~/continuum && git pull origin main
     else
@@ -471,7 +471,7 @@ cmd_transfer() {
   echo -e "  ${GREEN}✓${RESET} Repo ready"
 
   echo -e "  Step 3: Starting..."
-  ssh -o StrictHostKeyChecking=no "joel@$ip" "
+  ssh -o StrictHostKeyChecking=no "${CONTINUUM_SSH_USER:-$(whoami)}@$ip" "
     cd ~/continuum
     export TS_HOSTNAME=\$(hostname)-grid
     echo \"TS_HOSTNAME=\$TS_HOSTNAME\" > .env
