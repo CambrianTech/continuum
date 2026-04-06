@@ -123,7 +123,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${NODE_WS_PORT:-9001}:9001"   # WebSocket (grid mode: set NODE_WS_PORT=9002 to avoid conflict with Tailscale)
+      - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
       - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
@@ -211,8 +211,7 @@ services:
       - net_admin
       - net_raw
     ports:
-      - "443:443"      # HTTPS → widget-server
-      - "9002:9001"    # WSS → node-server (9002 avoids conflict with local node-server on 9001)
+      - "443:443"      # HTTPS → widget-server (Tailscale serve proxies to widget-server:9003)
       # LiveKit 7880 NOT mapped here — local livekit already binds it on the host.
       # livekit-grid is in Tailscale's network namespace, reachable via Tailscale IP directly.
 
