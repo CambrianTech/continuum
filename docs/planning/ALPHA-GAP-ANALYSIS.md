@@ -255,8 +255,10 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#383](https://github.com/CambrianTech/continuum/issues/383) | **Self-task generation** | TODO | generateSelfTasks() not implemented. Personas only react, never initiate. |
 | [#329](https://github.com/CambrianTech/continuum/issues/329) | **Persona-sentinel integration** | TODO | Autonomous dispatch, sentinel memory → RAG, NL → pipeline, multi-teacher. |
 | [#336](https://github.com/CambrianTech/continuum/issues/336) | **First-run onboarding** | TODO | Guide users to configure API keys, understand the system. |
+| [PR #709](https://github.com/CambrianTech/continuum/pull/709) | **Epistemic grounding** | DESIGN MERGED | 5-tier source hierarchy, EpistemicSource metadata on RAG artifacts, Devil's Advocate persona role, training data filters. Prerequisite for external communication. See [EPISTEMIC-GROUNDING.md](EPISTEMIC-GROUNDING.md). |
+| [PR #701](https://github.com/CambrianTech/continuum/pull/701) | **Social & calendar integrations** | DESIGN MERGED | Calendar → Discord → Slack → Newsroom/Email. IntegrationDaemon, command modules, RAG sources. Depends on epistemic grounding. See [SOCIAL-CALENDAR-INTEGRATIONS.md](SOCIAL-CALENDAR-INTEGRATIONS.md). |
 
-**Done when**: Leave the system running overnight → come back to find personas have consolidated memories, audited skills, searched HuggingFace for useful adapters, and initiated peer learning sessions. Without any human prompt.
+**Done when**: Leave the system running overnight → come back to find personas have consolidated memories, audited skills, searched HuggingFace for useful adapters, and initiated peer learning sessions. Personas know your calendar. External communication gated by epistemic verification. Without any human prompt.
 
 ---
 
