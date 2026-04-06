@@ -31,23 +31,18 @@ const POLL_INTERVAL = 30_000; // 30s health poll
 const { BrowserWindow } = require('electron');
 const iconCache = new Map();
 
-async function createTrayIconAsync(statusColor, nodeCount) {
-  const key = `${statusColor}-${nodeCount}`;
+async function createTrayIconAsync(statusColor) {
+  const key = statusColor;
   if (iconCache.has(key)) return iconCache.get(key);
 
   const s = 44;
-  const ringColor = nativeTheme.shouldUseDarkColors ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)';
-  const num = (typeof nodeCount === 'number' && nodeCount > 0) ? String(nodeCount) : '';
-  const fontSize = num.length > 1 ? 18 : 22;
+  const ringColor = nativeTheme.shouldUseDarkColors ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)';
 
+  // HAL 9000. Ring + glowing center eye. Color = mood.
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
-    <circle cx="${s/2}" cy="${s/2}" r="${s/2 - 3}" fill="none" stroke="${ringColor}" stroke-width="2.5"/>
-    ${num
-      ? `<text x="${s/2}" y="${s/2}" text-anchor="middle" dominant-baseline="central"
-           font-family="-apple-system, Helvetica Neue, sans-serif" font-size="${fontSize}"
-           font-weight="300" fill="${statusColor}">${num}</text>`
-      : `<circle cx="${s/2}" cy="${s/2}" r="5" fill="${statusColor}"/>`
-    }
+    <circle cx="${s/2}" cy="${s/2}" r="${s/2 - 3}" fill="none" stroke="${ringColor}" stroke-width="2"/>
+    <circle cx="${s/2}" cy="${s/2}" r="6" fill="${statusColor}"/>
+    <circle cx="${s/2}" cy="${s/2}" r="9" fill="${statusColor}" opacity="0.2"/>
   </svg>`;
 
   const html = `<html><body style="margin:0;background:transparent;">${svg}</body></html>`;
@@ -157,7 +152,7 @@ async function updateStatus(color, tooltip, nodeCount) {
   };
 
   try {
-    const icon = await createTrayIconAsync(colors[color] || colors.gray, lastNodeCount);
+    const icon = await createTrayIconAsync(colors[color] || colors.gray);
     tray.setImage(icon);
   } catch (e) {
     console.error('Icon render failed:', e);
@@ -303,8 +298,8 @@ app.whenReady().then(() => {
   // Create tray with empty icon (async render will fill it)
   tray = new Tray(createFallbackIcon());
   tray.setToolTip('continuum — checking...');
-  // Render initial gray icon
-  createTrayIconAsync('#888888', 0).then(icon => tray.setImage(icon)).catch(() => {});
+  // Render initial gray eye
+  createTrayIconAsync('#888888').then(icon => tray.setImage(icon)).catch(() => {});
 
   // Initial health check
   checkHealth();
