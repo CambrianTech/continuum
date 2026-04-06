@@ -408,6 +408,23 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 **Your MacBook at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the Factory Floor shows live progress across the mesh. You come back and your personas are measurably smarter. The machine that learns while you sleep.**
 
+### Why it scales
+
+The Grid is not a cluster manager bolted on top. Every layer was built for distributed mesh from day one:
+
+- **Flat mesh** — no central server, no coordinator bottleneck. Every node discovers peers via WireGuard. Tailscale scales to thousands per tailnet. Reticulum (planned) scales to millions with identity-based routing.
+- **Per-node routing** — each node decides locally what to run and what to forward. No global scheduler. `Commands.execute()` checks local capabilities first, routes to the mesh only when needed. O(1) routing decisions.
+- **Recipes are work units** — any node can execute any recipe. The grid routes to whoever has the GPU and RAM for it. Add a machine, it immediately contributes.
+- **Adapters are portable skills** — trained on the strongest GPU, published to HuggingFace, pulled by any node that needs them. Zero hosting cost. HuggingFace is the distribution backbone.
+- **Additive by nature** — wire up whatever you have. An old GTX 970 contributes light inference. A 5090 tower runs the forge. Three 1080 Tis handle distributed GGUF conversion. A MacBook Air runs UI. They all compose into one system. **Your power is the sum of every GPU you own — not the best one.**
+
+| Scale | Discovery | Scheduling | Trust |
+|-------|-----------|------------|-------|
+| 1-5 nodes | Tailscale peer list | Direct `grid/send` | Owner (your machines) |
+| 5-50 nodes | Tailscale + capability announcements | Foreman per node, Plant Manager per grid | Owner + Trusted peers |
+| 50-1000 nodes | Gossip protocol + capability index | Distributed job queue with affinity | Vouched tiers + ACLs |
+| 1000+ nodes | Reticulum identity mesh | Market-based (compute credits) | Cryptographic attestation (forge-alloy) |
+
 ### Models shrink to fit every node
 
 Plasticity compaction — not blind quantization, utilization-aware surgery:
