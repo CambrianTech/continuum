@@ -64,7 +64,7 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
                 widget,
                 displayName: recipeService.getDisplayName(contentType) || contentType,
                 icon: generated?.icon || '📄',
-                view: generated?.view || contentType,
+                pathPrefix: `/${contentType}`,
                 requiresEntity: generated?.requiresEntity || false,
                 entityType: generated?.entityType || null,
                 hasRightPanel: rightPanel !== null && rightPanel !== undefined,
@@ -77,36 +77,30 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
 }
 
 /**
- * Parse URL path → content type + entity uniqueId.
- * Uses the `view` field (verb/noun URL prefix), not the recipe uniqueId.
- *
- * /chat/general → { type: first recipe with view='chat', entityId: 'general' }
- * /live/general → { type: 'live', entityId: 'general' }
- * /factory     → { type: 'factory' }
+ * Parse URL path to content type and entity.
  */
 export function parseContentPath(path: string): { type: string; entityId?: string } {
     const normalized = path.startsWith('/') ? path : `/${path}`;
 
-    // Match by view prefix — sort longest first to avoid /grid matching before /grid-overview
-    const entries = Object.entries(CONTENT_TYPE_CONFIGS)
-        .sort((a, b) => (b[1].view?.length || 0) - (a[1].view?.length || 0));
-
-    for (const [type, config] of entries) {
-        const viewPrefix = `/${config.view || type}`;
-        if (normalized === viewPrefix || normalized.startsWith(viewPrefix + '/')) {
-            const remainder = normalized.slice(viewPrefix.length);
+    // Check generated configs (all have pathPrefix = /{uniqueId})
+    for (const [type, config] of Object.entries(CONTENT_TYPE_CONFIGS)) {
+        if (normalized.startsWith(config.pathPrefix)) {
+            const remainder = normalized.slice(config.pathPrefix.length);
             const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
             return { type, entityId: entityId || undefined };
         }
     }
 
-    // Fallback: match by recipe uniqueId (backwards compat for old URLs)
-    for (const [type] of Object.entries(CONTENT_TYPE_CONFIGS)) {
-        const prefix = `/${type}`;
-        if (normalized.startsWith(prefix)) {
-            const remainder = normalized.slice(prefix.length);
-            const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
-            return { type, entityId: entityId || undefined };
+    // Check recipe service for types not in generated config (shouldn't happen, but safe)
+    const recipeService = getRecipeLayoutService();
+    if (recipeService.isLoaded()) {
+        for (const type of recipeService.getAllContentTypes()) {
+            const prefix = `/${type}`;
+            if (normalized.startsWith(prefix)) {
+                const remainder = normalized.slice(prefix.length);
+                const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
+                return { type, entityId: entityId || undefined };
+            }
         }
     }
 
@@ -114,17 +108,12 @@ export function parseContentPath(path: string): { type: string; entityId?: strin
 }
 
 /**
- * Build URL path from content type + entity uniqueId.
- * Uses the `view` field for the URL prefix (verb/noun pattern).
- *
- * ('general-chat', 'general') → '/chat/general'
- * ('live', 'general')         → '/live/general'
- * ('factory')                 → '/factory'
+ * Build URL path from content type and entity.
  */
 export function buildContentPath(contentType: string, entityId?: string): string {
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
-    const view = config?.view || contentType;
-    return entityId ? `/${view}/${entityId}` : `/${view}`;
+    const pathPrefix = config?.pathPrefix || `/${contentType}`;
+    return entityId ? `${pathPrefix}/${entityId}` : pathPrefix;
 }
 
 /**

@@ -4,20 +4,20 @@
   "displayName": "Terminal",
   "description": "tmux-like terminal multiplexer showing AI shell sessions and live process output",
   "version": 1,
+
   "layout": {
-    "main": [
-      "terminal-widget"
-    ],
+    "main": ["terminal-widget"],
     "right": {
-      "widgets": [
-        "chat-widget"
-      ],
-      "config": {
-        "room": "help",
-        "compact": true
-      }
+        "widgets": [
+            "chat-widget"
+        ],
+        "config": {
+            "room": "help",
+            "compact": true
+        }
     }
   },
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -35,6 +35,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -47,6 +48,7 @@
       "includeHistory": false
     }
   },
+
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
@@ -57,9 +59,7 @@
       "What is the user trying to accomplish?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "terminal"
-  ],
-  "view": "terminal"
+  "tags": ["terminal"]
 }
