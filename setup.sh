@@ -66,7 +66,38 @@ if echo "$PATH" | grep -q "$INSTALL_DIR"; then
   echo "✅ 'continuum' command installed"
 else
   echo "✅ 'continuum' command installed at $INSTALL_DIR/continuum"
-  echo "   Add to PATH: export PATH=\"$INSTALL_DIR:\$PATH\""
+  echo "   Add to PATH: export PATH=\"\$INSTALL_DIR:\$PATH\""
+fi
+
+# ── Install tray app (macOS) ─────────────────────
+if [[ "$PLATFORM" == "mac" ]]; then
+  TRAY_APP="/Applications/continuum.app"
+  TRAY_SRC="bin/tray/dist/mac-arm64/continuum.app"
+
+  # Build tray app if not already built
+  if [[ ! -d "$TRAY_SRC" ]]; then
+    echo "🔨 Building tray app..."
+    (cd bin/tray && npm install --no-audit --no-fund 2>/dev/null && npx electron-builder --mac --dir 2>/dev/null) || {
+      echo "⚠️  Tray app build failed (non-critical). Install manually: cd bin/tray && npm run build:mac"
+    }
+  fi
+
+  if [[ -d "$TRAY_SRC" ]]; then
+    # Install to /Applications
+    if [[ -d "$TRAY_APP" ]]; then
+      rm -rf "$TRAY_APP"
+    fi
+    cp -R "$TRAY_SRC" "$TRAY_APP"
+    echo "✅ Tray app installed → $TRAY_APP"
+
+    # Add to Login Items (auto-start on boot)
+    osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/continuum.app", hidden:true}' 2>/dev/null || true
+    echo "✅ Tray app set to launch on login"
+
+    # Start it now
+    open "$TRAY_APP"
+    echo "✅ Tray app running"
+  fi
 fi
 
 # ── Pull pre-built images ────────────────────────

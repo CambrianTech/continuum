@@ -499,6 +499,90 @@ cmd_update() {
   echo -e "${GREEN}✅ Updated${RESET}"
 }
 
+cmd_tray_data() {
+  # JSON output for native tray apps. Single source of truth.
+  # Tray apps are thin renderers — they read this and build native menus.
+  local docker_ok="false"
+  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    docker_ok="true"
+  fi
+
+  # Container health
+  local healthy=0 total=0
+  if [ "$docker_ok" = "true" ] && find_compose 2>/dev/null; then
+    cd "$COMPOSE_DIR"
+    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || echo 0)
+    total=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l | tr -d ' ')
+  fi
+
+  # Grid nodes
+  local nodes_json="[]"
+  local suffix=""
+  if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+    suffix=$(tailnet_suffix)
+    local node_arr="["
+    local first=true
+    while read -r ip name user os rest; do
+      [ -z "$name" ] && continue
+      local online="true" ui_ok="false" url="null"
+      if echo "$rest" | grep -q "offline"; then
+        online="false"
+      fi
+      local is_grid="false"
+      if echo "$name" | grep -q "\-grid"; then
+        is_grid="true"
+        if [ "$online" = "true" ] && [ -n "$suffix" ]; then
+          url="\"https://${name}.${suffix}\""
+          local code
+          code=$(curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 2 "https://${name}.${suffix}" 2>/dev/null || echo "000")
+          if [ "$code" = "200" ]; then ui_ok="true"; fi
+        fi
+      fi
+      [ "$first" = "true" ] && first=false || node_arr="$node_arr,"
+      node_arr="$node_arr{\"name\":\"$name\",\"ip\":\"$ip\",\"online\":$online,\"isGrid\":$is_grid,\"uiOk\":$ui_ok,\"url\":$url}"
+    done < <(tailscale status 2>/dev/null)
+    nodes_json="${node_arr}]"
+  fi
+
+  # Status
+  local online_count
+  online_count=$(echo "$nodes_json" | grep -o '"online":true' | wc -l | tr -d ' ')
+
+  local status="red" status_text="Not running"
+  if [ "$docker_ok" = "false" ] && [ "$online_count" -gt 0 ]; then
+    status="yellow"; status_text="Docker off, $online_count grid nodes"
+  elif [ "$docker_ok" = "false" ]; then
+    status="red"; status_text="Docker not running"
+  elif [ "$healthy" -ge 4 ]; then
+    status="green"; status_text="$healthy services, $online_count nodes"
+  elif [ "$healthy" -gt 0 ]; then
+    status="yellow"; status_text="$healthy services, $online_count nodes"
+  elif [ "$online_count" -gt 0 ]; then
+    status="yellow"; status_text="$online_count grid nodes"
+  fi
+
+  cat << JSONEOF
+{
+  "status": "$status",
+  "statusText": "$status_text",
+  "docker": $docker_ok,
+  "services": {"healthy": $healthy, "total": $total},
+  "tailnet": "$suffix",
+  "nodes": $nodes_json,
+  "actions": [
+    {"id": "start", "label": "Start Services", "command": "continuum start"},
+    {"id": "stop", "label": "Stop Services", "command": "continuum stop"},
+    {"id": "restart", "label": "Restart Services", "command": "continuum restart"},
+    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"},
+    {"id": "update", "label": "Update", "command": "continuum update"},
+    {"id": "provision", "label": "Provision Config", "command": "continuum provision"},
+    {"id": "logs", "label": "Logs", "command": "continuum logs"}
+  ],
+  "version": "1.0"
+}
+JSONEOF
+}
+
 cmd_doctor() {
   echo -e "${CYAN}── Continuum Doctor ──${RESET}"
   echo ""
@@ -592,6 +676,7 @@ case "${1:-}" in
   provision) shift; cmd_provision "$@" ;;
   transfer)  shift; cmd_transfer "$@" ;;
   update)    shift; cmd_update "$@" ;;
+  tray-data) shift; cmd_tray_data "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   help|-h|--help)
     echo "continuum — Distributed AI platform"
