@@ -197,6 +197,41 @@ export class GridOverviewWidget extends ReactiveWidget {
     });
     this._nodes = initial;
 
+    // Enrich local node with real IP and GPU from grid/status
+    try {
+      const status = await this.executeCommand<any, any>('grid/status', {});
+      if (status) {
+        const updated = new Map(this._nodes);
+        const local = { ...updated.get('local')! };
+
+        // Use Tailscale IP if available, otherwise first transport address
+        const transports = status.transports as Array<{ name: string; connected: boolean; address?: string }>;
+        const tailscale = transports?.find(t => t.name === 'tailscale' && t.connected && t.address);
+        const anyTransport = transports?.find(t => t.connected && t.address);
+        if (tailscale?.address) {
+          local.address = tailscale.address;
+          local.transport = 'tailscale';
+        } else if (anyTransport?.address) {
+          local.address = anyTransport.address;
+        }
+
+        // Extract GPU from localCapabilities
+        const caps = status.localCapabilities as Array<{ Compute?: { gpu_name?: string; vram_mb?: number } }>;
+        const compute = caps?.find(c => c.Compute)?.Compute;
+        if (compute?.gpu_name) {
+          local.gpu = {
+            name: compute.gpu_name,
+            vramMb: compute.vram_mb || 0,
+          };
+        }
+
+        updated.set('local', local);
+        this._nodes = updated;
+      }
+    } catch (err) {
+      console.warn('[GridOverview] grid/status unavailable, using defaults:', err);
+    }
+
     // Load remote grid nodes in background (may timeout if Rust core offline)
     try {
       const result = await this.executeCommand<any, any>('grid/nodes', {});
