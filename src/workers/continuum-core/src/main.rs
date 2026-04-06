@@ -160,39 +160,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
+    // Wrapped in catch_unwind because ORT panics (not errors) when libonnxruntime.dylib
+    // is missing. A missing TTS/STT model must NEVER crash the entire server.
     tokio::spawn(async {
-        // Initialize STT registry and adapters
-        continuum_core::live::audio::stt::init_registry();
-        match continuum_core::live::audio::stt::initialize().await {
-            Ok(_) => {
-                info!("✅ STT adapter initialized successfully");
+        let result = tokio::task::spawn(async {
+            // Initialize STT registry and adapters
+            continuum_core::live::audio::stt::init_registry();
+            match continuum_core::live::audio::stt::initialize().await {
+                Ok(_) => {
+                    info!("✅ STT adapter initialized successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "⚠️  STT adapter not available: {}. STT will return errors until model is loaded.",
+                        e
+                    );
+                    tracing::warn!("   Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+                    tracing::warn!("   Place in: models/whisper/ggml-base.en.bin");
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "⚠️  STT adapter not available: {}. STT will return errors until model is loaded.",
-                    e
-                );
-                tracing::warn!("   Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp/tree/main");
-                tracing::warn!("   Place in: models/whisper/ggml-base.en.bin");
-            }
-        }
 
-        // Initialize TTS registry and adapters
-        continuum_core::live::audio::tts::init_registry();
-        match continuum_core::live::audio::tts::initialize().await {
-            Ok(_) => {
-                info!("✅ TTS adapter initialized successfully");
+            // Initialize TTS registry and adapters
+            continuum_core::live::audio::tts::init_registry();
+            match continuum_core::live::audio::tts::initialize().await {
+                Ok(_) => {
+                    info!("✅ TTS adapter initialized successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "⚠️  TTS adapter not available: {}. TTS will use fallback (silence).",
+                        e
+                    );
+                    tracing::warn!(
+                        "   Download Piper ONNX from https://huggingface.co/rhasspy/piper-voices"
+                    );
+                    tracing::warn!("   Place in: models/piper/");
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "⚠️  TTS adapter not available: {}. TTS will use fallback (silence).",
-                    e
-                );
-                tracing::warn!(
-                    "   Download Piper ONNX from https://huggingface.co/rhasspy/piper-voices"
-                );
-                tracing::warn!("   Place in: models/piper/");
-            }
+        }).await;
+
+        if let Err(e) = result {
+            // ORT panics when libonnxruntime.dylib is missing — catch it here
+            // instead of letting it poison the tokio runtime
+            tracing::error!("⚠️  TTS/STT initialization panicked (ORT dylib missing?): {:?}", e);
+            tracing::error!("   Voice features disabled. Install libonnxruntime or set ORT_DYLIB_PATH.");
         }
     });
 

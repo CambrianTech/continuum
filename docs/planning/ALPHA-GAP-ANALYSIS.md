@@ -1,7 +1,7 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-03-30
-**Status**: **FACTORY OPERATIONAL + FORGE-ALLOY SPEC LIVE.** 11 models published on HuggingFace (**14,967 total downloads**). ForgeAlloy portable pipeline format launched (CambrianTech/forge-alloy) — Rust/Python/TypeScript, peer-reviewed attestation model (WebAuthn-inspired, post-quantum ready), wired into sentinel-ai forge + publish flow. Factory widget live with forge controls. model/forge sends alloy JSON to nodes. Full lifecycle pipeline mapped: Factory → HF Leaderboards → Grid → Academy → Re-forge (#655). Re-forge from known provenance is the moat (#657). 4B code-forged at **74.4% HumanEval** (2.6GB GGUF, iPhone-sized).
+**Updated**: 2026-04-06
+**Status**: **RECIPE-DRIVEN UI MERGED (PR #790).** URL scheme verb/noun, RecipeEntity as proper ORM entity (view, entityType, team, modes, locked), right panel widgets from recipes not hardcoded. 19,774 HF downloads. ORT panic fix committed. Stability issues identified: IPC reconnection (#793), event bridge (#794), duplicate tabs (#795). Docker+Live+Grid E2E validation next (#796). Custom STT/TTS forging planned (#800, #801).
 **Branch**: `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
@@ -77,8 +77,12 @@ This document is the **single source of truth** for remaining work. Each phase i
 | — | **CLI bundle broken (readFileSync on argv)** | DONE | Removed generator main blocks that esbuild executed at bundle time (#581). |
 | [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
 | [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
+| [#792](https://github.com/CambrianTech/continuum/issues/792) | **ORT panic crashes server** | DONE | `tokio::task::spawn` catches ORT dylib panics. Voice degrades, core stays alive. |
+| [#793](https://github.com/CambrianTech/continuum/issues/793) | **IPC reconnection — Node doesn't recover** | TODO | When Rust core restarts, Node.js IPC client stays wedged. Total system death until `npm start`. |
+| [#794](https://github.com/CambrianTech/continuum/issues/794) | **AI messages don't reach browser** | TODO | Messages stored in DB but WebSocket event bridge doesn't forward `data:chat_messages:created` for AI senders. Requires page refresh. |
+| [#795](https://github.com/CambrianTech/continuum/issues/795) | **Duplicate tabs** | TODO | Same room opens multiple tab entries. `contentItemsMatch()` dedup has gaps. |
 
-**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes.
+**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh.
 
 ---
 
@@ -142,7 +146,12 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#436](https://github.com/CambrianTech/continuum/issues/436) | **Cost/metrics widgets** | TODO | Auto-adjust time segments. |
 | [#473](https://github.com/CambrianTech/continuum/issues/473) | **Grid telemetry widget** | TODO | SCADA-style per-node CPU/MEM/GPU + sparklines. |
 
-**Done when**: Avatar geometry works for ALL personas (no vertex corruption). Live call closes → memory baseline in 30s. Latency under 5s. All personas can see. Grid telemetry visible.
+| [#797](https://github.com/CambrianTech/continuum/issues/797) | **LiveKit + livekit-bridge Docker validation** | TODO | Validate three-binary split works in Docker. Bridge socket, audio pipeline, browser call join. |
+| [#799](https://github.com/CambrianTech/continuum/issues/799) | **Qwen3.5 native audio — skip VAD→STT→LLM→TTS** | TODO | Audio-native models bypass the entire pipeline. Router exists in `live/audio/router.rs`. Needs Qwen3.5-Omni GGUF. |
+| [#800](https://github.com/CambrianTech/continuum/issues/800) | **Custom forged STT model** | TODO | Whisper-equivalent trained on technical vocabulary. Publish as `continuum-ai/whisper-forged`. |
+| [#801](https://github.com/CambrianTech/continuum/issues/801) | **Custom TTS voices per persona** | TODO | Persona-specific voice synthesis via Pocket-TTS cloning + fine-tuning. |
+
+**Done when**: Avatar geometry works for ALL personas (no vertex corruption). Live call closes → memory baseline in 30s. Latency under 5s. All personas can see. Grid telemetry visible. Native audio models skip STT/TTS chain.
 
 ---
 
@@ -327,7 +336,9 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 **The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
 
-**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges.
+| [#798](https://github.com/CambrianTech/continuum/issues/798) | **Route inference through grid to GPU nodes** | TODO | When BigMama online, route `ai/generate`, STT, TTS to 5090 instead of laptop. Grid router exists, needs wiring to AI provider. |
+
+**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale.
 
 ---
 
@@ -348,6 +359,7 @@ This document is the **single source of truth** for remaining work. Each phase i
 | — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
 | — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
 | — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
+| [#796](https://github.com/CambrianTech/continuum/issues/796) | **Docker E2E with live mode + grid** | TODO | Full validation: chat, live calls, grid discovery, factory leaderboard, right panel widgets. Blocks community release. |
 
 **Prereqs** (one-time, per tailnet):
 1. Tailscale installed + HTTPS certificates enabled in DNS settings
