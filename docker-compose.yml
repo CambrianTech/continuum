@@ -190,16 +190,15 @@ services:
   # Joins tailnet, provisions real Let's Encrypt certs, reverse-proxies
   # HTTPS/WSS to plain HTTP containers. Only needed for remote access.
   #
-  # Requires .env:
-  #   TS_AUTHKEY=tskey-auth-...
-  #   TS_HOSTNAME=my-machine
+  # TS_AUTHKEY from ~/.continuum/config.env (same as all other API keys).
+  # Once registered, state volume persists identity — key only needed for first run.
   tailscale:
     image: tailscale/tailscale:latest
-    hostname: ${TS_HOSTNAME:-continuum}
+    hostname: ${TS_HOSTNAME:?Set TS_HOSTNAME in .env (e.g. bigmama, joels-laptop)}
     restart: unless-stopped
     profiles: ["grid"]
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_AUTHKEY=${TS_AUTHKEY:?Set TS_AUTHKEY in .env or ~/.continuum/config.env}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/tailscale-serve.json
       - TS_USERSPACE=false
