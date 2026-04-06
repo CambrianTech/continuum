@@ -5,12 +5,12 @@
   "description": "Real-time chat with humans and AI personas",
   "version": 1,
   "entityType": "room",
-
   "layout": {
-    "main": ["chat-widget"],
+    "main": [
+      "chat-widget"
+    ],
     "right": null
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -36,7 +36,6 @@
       "condition": "decision.shouldRespond === true"
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 30,
@@ -49,7 +48,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "human-focused",
     "responseRules": [
@@ -65,7 +63,11 @@
       "Would my response add value?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["chat", "conversation", "collaboration"]
+  "tags": [
+    "chat",
+    "conversation",
+    "collaboration"
+  ],
+  "view": "chat"
 }
