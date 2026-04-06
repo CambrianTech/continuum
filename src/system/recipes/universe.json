@@ -2,29 +2,18 @@
   "uniqueId": "universe",
   "name": "Universe Designer",
   "displayName": "Universe",
-  "description": "Design complete experiences \u2014 Tron Universe, Ghibli Universe \u2014 with AI-assisted universe creation",
+  "description": "Design complete experiences — Tron Universe, Ghibli Universe — with AI-assisted universe creation",
   "version": 2,
+
   "layout": {
     "widgets": [
-      {
-        "widget": "universe-widget",
-        "position": "center",
-        "order": 0
-      },
-      {
-        "widget": "chat-widget",
-        "position": "right",
-        "order": 0,
-        "config": {
-          "room": "universe",
-          "compact": true
-        }
-      }
+      { "widget": "universe-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "universe", "compact": true } }
     ]
   },
-  "locked": [
-    "layout.main"
-  ],
+
+  "locked": ["layout.main"],
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -42,6 +31,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -49,6 +39,7 @@
       "includeTimestamps": false
     }
   },
+
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
@@ -63,12 +54,7 @@
       "Are there accessibility issues to address?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "universe",
-    "design",
-    "customization",
-    "experience"
-  ],
-  "view": "universe"
+  "tags": ["universe", "design", "customization", "experience"]
 }

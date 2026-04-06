@@ -4,36 +4,20 @@
   "displayName": "Settings",
   "description": "Configure API keys, preferences, and system settings with AI assistance",
   "version": 2,
+
   "layout": {
     "widgets": [
-      {
-        "widget": "settings-nav-widget",
-        "position": "left",
-        "order": 0
-      },
-      {
-        "widget": "settings-widget",
-        "position": "center",
-        "order": 0
-      },
-      {
-        "widget": "settings-assistant",
-        "position": "right",
-        "order": 0,
-        "config": {
-          "reactive": true
-        }
-      }
+      { "widget": "settings-nav-widget", "position": "left", "order": 0 },
+      { "widget": "settings-widget", "position": "center", "order": 0 },
+      { "widget": "settings-assistant", "position": "right", "order": 0, "config": { "reactive": true } }
     ],
     "panels": {
-      "left": {
-        "visible": true
-      }
+      "left": { "visible": true }
     }
   },
-  "locked": [
-    "layout.main"
-  ],
+
+  "locked": ["layout.main"],
+
   "pipeline": [
     {
       "command": "rag/build",
@@ -51,6 +35,7 @@
       }
     }
   ],
+
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -63,6 +48,7 @@
       "includeHistory": false
     }
   },
+
   "strategy": {
     "conversationPattern": "teaching",
     "responseRules": [
@@ -77,11 +63,7 @@
       "Are there security concerns to address?"
     ]
   },
+
   "isPublic": true,
-  "tags": [
-    "settings",
-    "configuration",
-    "help"
-  ],
-  "view": "settings"
+  "tags": ["settings", "configuration", "help"]
 }
