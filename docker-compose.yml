@@ -66,10 +66,10 @@ services:
       livekit-bridge:
         condition: service_healthy
     volumes:
-      - ~/.continuum:/root/.continuum
-      - voice-models:/app/models:ro
       - ipc-sockets:/root/.continuum/sockets
+      - voice-models:/app/models:ro
       - ~/.continuum/grid:/root/.continuum/grid:ro
+      - ~/.continuum/config.env:/root/.continuum/config.env:ro
     # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
     # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
     # Default: runc (CPU only — uses static avatar fallbacks).
@@ -126,8 +126,8 @@ services:
     ports:
       - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
-      - ~/.continuum:/root/.continuum
       - ipc-sockets:/root/.continuum/sockets
+      - ~/.continuum/config.env:/root/.continuum/config.env:ro
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - NODE_ENV=production
@@ -148,7 +148,7 @@ services:
     ports:
       - "9003:9003"   # HTTP
     volumes:
-      - ~/.continuum:/root/.continuum:ro
+      - ~/.continuum/config.env:/root/.continuum/config.env:ro
     environment:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=${NODE_WS_PORT:-9001}
@@ -266,4 +266,8 @@ volumes:
   models:
   voice-models:
   ipc-sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
   tailscale-state:
