@@ -18,6 +18,7 @@ import {
 } from '../../shared/ReactiveListWidget';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
+import { CONTENT_TYPE_CONFIGS, type ContentType } from '../../../shared/generated/ContentTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { pageState } from '../../../system/state/PageStateService';
@@ -329,9 +330,10 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   // === ROOM SELECTION ===
   private selectRoom(room: RoomEntity): void {
     const roomId = room.id as UUID;
-    // Use room's recipeId as contentType — not hardcoded 'chat'
-    // The recipe determines what widget renders (chat-widget, factory-widget, etc.)
-    const contentType = room.recipeId || 'chat';
+    // Use the recipe's VIEW as contentType — all chat rooms share 'chat' view.
+    // This ensures URLs are verb/noun (/chat/general, /chat/code) and tabs match.
+    const recipeConfig = CONTENT_TYPE_CONFIGS[room.recipeId as ContentType];
+    const contentType = recipeConfig?.view || room.recipeId || 'chat';
 
     if (pageState.contentType === contentType && pageState.entityId === roomId) {
       return;

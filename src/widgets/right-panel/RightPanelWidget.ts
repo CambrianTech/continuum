@@ -324,20 +324,17 @@ export class RightPanelWidget extends ReactiveWidget {
 
     if (!widget) {
       widget = document.createElement(section.widgetTag);
-
-      // Apply props as attributes
-      if (section.props) {
-        for (const [key, value] of Object.entries(section.props)) {
-          widget.setAttribute(key, value);
-        }
-      }
-
-      // Mark as sidebar instance
       widget.setAttribute('sidebar', '');
       widget.classList.add('sidebar-widget');
-
       this._widgetCache.set(cacheKey, widget);
       this.log(`Created ${section.widgetTag} for section '${section.id}'`);
+    }
+
+    // Always update props — the room may change when switching content types
+    if (section.props) {
+      for (const [key, value] of Object.entries(section.props)) {
+        widget.setAttribute(key, value);
+      }
     }
 
     return widget;
@@ -382,7 +379,13 @@ export class RightPanelWidget extends ReactiveWidget {
 
     if (config.sections && config.sections.length > 0) {
       // IDE-style: use declared sections
-      sections = config.sections;
+      // Propagate parent-level room to sections that don't have their own
+      sections = config.sections.map(s => {
+        if (config.room && (!s.props || !s.props.room)) {
+          return { ...s, props: { ...s.props, room: config.room } };
+        }
+        return s;
+      });
     } else {
       // Legacy: single chat-widget section
       sections = [{

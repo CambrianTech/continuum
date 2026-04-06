@@ -2,16 +2,24 @@
   "uniqueId": "factory",
   "name": "Factory",
   "displayName": "Factory",
-  "description": "Model forge production floor — active forges, published models, grid status, leaderboard",
+  "description": "Model forge production floor \u2014 active forges, published models, grid status, leaderboard",
   "version": 2,
-
   "layout": {
     "widgets": [
-      { "widget": "factory-widget", "position": "center", "order": 0 },
-      { "widget": "factory-stats-widget", "position": "right", "order": 0, "title": "Models", "icon": "M" }
+      {
+        "widget": "factory-widget",
+        "position": "center",
+        "order": 0
+      },
+      {
+        "widget": "factory-stats-widget",
+        "position": "right",
+        "order": 0,
+        "title": "Models",
+        "icon": "M"
+      }
     ]
   },
-
   "pipeline": [
     {
       "command": "rag/build",
@@ -29,7 +37,6 @@
       }
     }
   ],
-
   "ragTemplate": {
     "messageHistory": {
       "maxMessages": 10,
@@ -42,7 +49,6 @@
       "includeHistory": false
     }
   },
-
   "strategy": {
     "conversationPattern": "collaborative",
     "responseRules": [
@@ -53,7 +59,9 @@
       "What is the user trying to accomplish?"
     ]
   },
-
   "isPublic": true,
-  "tags": ["factory"]
+  "tags": [
+    "factory"
+  ],
+  "view": "factory"
 }

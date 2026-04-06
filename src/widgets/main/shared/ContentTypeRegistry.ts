@@ -44,9 +44,8 @@ export function getWidgetForType(contentType: string): string {
         if (widget) return widget;
     }
 
-    // 3. No match — unknown type
-    console.error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json`);
-    return 'chat-widget'; // Graceful degradation to prevent blank screen
+    // 3. No match — unknown type. Fail visibly. No fallbacks.
+    throw new Error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json and run the generator.`);
 }
 
 /**
@@ -64,10 +63,12 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
                 widget,
                 displayName: recipeService.getDisplayName(contentType) || contentType,
                 icon: generated?.icon || '📄',
-                pathPrefix: `/${contentType}`,
+                view: generated?.view || contentType,
                 requiresEntity: generated?.requiresEntity || false,
                 entityType: generated?.entityType || null,
                 hasRightPanel: rightPanel !== null && rightPanel !== undefined,
+                rightPanelWidget: generated?.rightPanelWidget || (rightPanel?.widget ?? null),
+                rightPanelRoom: generated?.rightPanelRoom || null,
             };
         }
     }
@@ -77,30 +78,36 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
 }
 
 /**
- * Parse URL path to content type and entity.
+ * Parse URL path → content type + entity uniqueId.
+ * Matches by view prefix. Returns the recipe's content type, not the view.
+ *
+ * /chat/general → { type: 'general-chat', entityId: 'general' }  (first 'chat' view match)
+ * /live/general → { type: 'live', entityId: 'general' }
+ * /factory      → { type: 'factory' }
  */
 export function parseContentPath(path: string): { type: string; entityId?: string } {
     const normalized = path.startsWith('/') ? path : `/${path}`;
 
-    // Check generated configs (all have pathPrefix = /{uniqueId})
-    for (const [type, config] of Object.entries(CONTENT_TYPE_CONFIGS)) {
-        if (normalized.startsWith(config.pathPrefix)) {
-            const remainder = normalized.slice(config.pathPrefix.length);
+    // Match by view — sort longest first to prevent /grid matching before /grid-overview
+    const entries = Object.entries(CONTENT_TYPE_CONFIGS)
+        .sort((a, b) => (b[1].view?.length || 0) - (a[1].view?.length || 0));
+
+    for (const [type, config] of entries) {
+        const viewPrefix = `/${config.view || type}`;
+        if (normalized === viewPrefix || normalized.startsWith(viewPrefix + '/')) {
+            const remainder = normalized.slice(viewPrefix.length);
             const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
             return { type, entityId: entityId || undefined };
         }
     }
 
-    // Check recipe service for types not in generated config (shouldn't happen, but safe)
-    const recipeService = getRecipeLayoutService();
-    if (recipeService.isLoaded()) {
-        for (const type of recipeService.getAllContentTypes()) {
-            const prefix = `/${type}`;
-            if (normalized.startsWith(prefix)) {
-                const remainder = normalized.slice(prefix.length);
-                const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
-                return { type, entityId: entityId || undefined };
-            }
+    // Fallback: match by recipe uniqueId (backwards compat)
+    for (const [type] of Object.entries(CONTENT_TYPE_CONFIGS)) {
+        const prefix = `/${type}`;
+        if (normalized === prefix || normalized.startsWith(prefix + '/')) {
+            const remainder = normalized.slice(prefix.length);
+            const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
+            return { type, entityId: entityId || undefined };
         }
     }
 
@@ -108,12 +115,17 @@ export function parseContentPath(path: string): { type: string; entityId?: strin
 }
 
 /**
- * Build URL path from content type and entity.
+ * Build URL path from content type + entity uniqueId.
+ * Uses view field for URL prefix (verb/noun).
+ *
+ * ('general-chat', 'general') → '/chat/general'
+ * ('live', 'general')         → '/live/general'
+ * ('factory')                 → '/factory'
  */
 export function buildContentPath(contentType: string, entityId?: string): string {
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
-    const pathPrefix = config?.pathPrefix || `/${contentType}`;
-    return entityId ? `${pathPrefix}/${entityId}` : pathPrefix;
+    const view = config?.view || contentType;
+    return entityId ? `/${view}/${entityId}` : `/${view}`;
 }
 
 /**
@@ -129,13 +141,15 @@ export function getRightPanelConfig(contentType: string): RightPanelConfig | nul
         if (rightPanel) return rightPanel;     // Recipe provides right panel config
     }
 
-    // 2. Generated config — only use if recipe service has no opinion
+    // 2. Generated config — includes right panel widget and room from recipe
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
-    if (config && !config.hasRightPanel) return null;
+    if (!config?.hasRightPanel || !config.rightPanelWidget) return null;
 
-    // 3. No config found — return null, NOT a default chat widget.
-    // If a recipe wants a right panel, it declares one. No guessing.
-    return null;
+    return {
+        widget: config.rightPanelWidget,
+        room: config.rightPanelRoom || undefined,
+        compact: true,
+    } as RightPanelConfig;
 }
 
 /**

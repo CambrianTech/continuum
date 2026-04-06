@@ -14,6 +14,7 @@ import { RoomEntity, type RoomType } from '../system/data/entities/RoomEntity';
 import { UserProfileEntity, type UserSpecialityType } from '../system/data/entities/UserProfileEntity';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
+import { CONTENT_TYPE_CONFIGS } from '../shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
 import { Events } from '../system/core/shared/Events';
@@ -55,15 +56,17 @@ interface RoomDefinition {
   tags: string[];
 }
 
+// recipeId MUST match an actual file in system/recipes/*.json
+// If no specific recipe, use 'general-chat' (the default chat recipe)
 const ROOMS: RoomDefinition[] = [
   { uniqueId: 'general',     name: 'General',     description: 'Welcome to general discussion! Introduce yourself and chat about anything.', recipeId: 'general-chat', tags: ['general', 'welcome'] },
-  { uniqueId: 'pantheon',    name: 'Pantheon',    description: 'Advanced reasoning and multi-model collaboration', recipeId: 'pantheon', tags: ['sota', 'reasoning'] },
+  { uniqueId: 'pantheon',    name: 'Pantheon',    description: 'Advanced reasoning and multi-model collaboration', recipeId: 'multi-persona-chat', tags: ['sota', 'reasoning'] },
   { uniqueId: 'code',        name: 'Code',        description: 'Software development with real tools and real agent loops', recipeId: 'coding', tags: ['coding', 'development'] },
-  { uniqueId: 'factory',     name: 'Factory',     description: 'Monitor active forges, test model quality, manage the device ladder', recipeId: 'factory', tags: ['factory', 'forge'] },
-  { uniqueId: 'academy',     name: 'Academy',     description: 'Share knowledge, tutorials, and collaborate on learning', recipeId: 'academy', tags: ['learning', 'education'] },
-  { uniqueId: 'dev-updates', name: 'Dev Updates', description: 'Development updates and changelog', recipeId: 'dev-updates', tags: ['github', 'ci'] },
-  { uniqueId: 'universe',    name: 'Universe',    description: 'Avatar themes, scene packs, and visual customization', recipeId: 'universe', tags: ['avatars', 'themes'] },
-  { uniqueId: 'grid-ops',    name: 'Grid Ops',    description: 'Distributed compute operations and node management', recipeId: 'grid-ops', tags: ['grid', 'compute'] },
+  { uniqueId: 'factory',     name: 'Factory',     description: 'Monitor active forges, test model quality, manage the device ladder', recipeId: 'general-chat', tags: ['factory', 'forge'] },
+  { uniqueId: 'academy',     name: 'Academy',     description: 'Share knowledge, tutorials, and collaborate on learning', recipeId: 'academy-training', tags: ['learning', 'education'] },
+  { uniqueId: 'dev-updates', name: 'Dev Updates', description: 'Development updates and changelog', recipeId: 'newsroom', tags: ['github', 'ci'] },
+  { uniqueId: 'universe',    name: 'Universe',    description: 'Avatar themes, scene packs, and visual customization', recipeId: 'general-chat', tags: ['avatars', 'themes'] },
+  { uniqueId: 'grid-ops',    name: 'Grid Ops',    description: 'Distributed compute operations and node management', recipeId: 'general-chat', tags: ['grid', 'compute'] },
 ];
 
 // ── DatabaseSeeder ─────────────────────────────────────────────────────
@@ -222,7 +225,14 @@ export async function seedDatabase(): Promise<boolean> {
   Events.emit('data:users:created', owner);
   console.log(`  ✅ Owner: ${owner.displayName}`);
 
-  // Rooms
+  // Rooms — validate recipeIds exist before creating anything
+  const validRecipes = new Set(Object.keys(CONTENT_TYPE_CONFIGS));
+  for (const def of ROOMS) {
+    if (!validRecipes.has(def.recipeId)) {
+      throw new Error(`Seed FATAL: Room "${def.uniqueId}" has recipeId "${def.recipeId}" which doesn't match any recipe file in system/recipes/. Valid recipes: ${[...validRecipes].sort().join(', ')}`);
+    }
+  }
+
   const roomEntities: RoomEntity[] = [];
   for (const def of ROOMS) {
     roomEntities.push(await seeder.findOrCreateRoom(def, owner.id));

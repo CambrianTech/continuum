@@ -49,7 +49,11 @@ interface NewFormatLayout {
 interface RecipeLayoutData {
   uniqueId: string;
   displayName: string;
+  view?: string;
+  entityType?: 'room' | 'user' | 'activity' | null;
   layout?: ActivityUILayout | NewFormatLayout;
+  team?: string[] | null;
+  modes?: string[];
 }
 
 /**
@@ -90,7 +94,7 @@ export class RecipeLayoutService {
       const result = await DataList.execute({
         collection: 'recipes',
         limit: 100,
-        fields: ['uniqueId', 'displayName', 'layout'] // Only fetch layout-relevant fields
+        fields: ['uniqueId', 'displayName', 'view', 'entityType', 'layout', 'team', 'modes']
       }) as unknown as { items?: RecipeLayoutData[]; success?: boolean; error?: string };
 
       if (verbose) console.log('📚 RecipeLayoutService: data/list result:', result);
@@ -102,7 +106,11 @@ export class RecipeLayoutService {
             this.layouts.set(recipe.uniqueId, {
               uniqueId: recipe.uniqueId,
               displayName: recipe.displayName || recipe.uniqueId,
-              layout: recipe.layout
+              view: recipe.view,
+              entityType: recipe.entityType,
+              layout: recipe.layout,
+              team: recipe.team,
+              modes: recipe.modes,
             });
           }
         }
@@ -197,12 +205,16 @@ export class RecipeLayoutService {
       }
 
       // Build sections from all right widgets — each widget becomes a section
+      // CRITICAL: propagate w.config into section props so widgets get room/compact attributes
       const sections = rightWidgets.map((w) => ({
         id: w.widget,
         title: w.title ?? w.widget.replace(/-widget$/, ''),
         icon: w.icon,
         widgetTag: w.widget,
         flexWeight: w.flex ?? 1,
+        props: w.config ? Object.fromEntries(
+          Object.entries(w.config).map(([k, v]) => [k, String(v)])
+        ) : undefined,
       }));
 
       return {
